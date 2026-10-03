@@ -9,15 +9,20 @@ import json
 import os
 import re
 import sys
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
 from urllib.parse import urlparse
 
 
 DEFAULT_TITLE = "Quarterdeck"
-ALLOWED_CONFIG_KEYS = {"page_title", "output_dir"}
+ALLOWED_CONFIG_KEYS = {"page_title", "output_dir", "homes"}
 PR_URL_RE = re.compile(r"https://github\.com/[^\s|)]+/pull/\d+", re.IGNORECASE)
+SECONDMATE_ENTRY_RE = re.compile(
+    r"^\s*[-*]\s+(?P<id>[A-Za-z0-9][A-Za-z0-9._-]*)\s+-\s+(?P<summary>.*?)\s+\((?P<attributes>.*)\)\s*$"
+)
+ROUTE_HOME_RE = re.compile(r"(?:^|;\s*)home:\s*(.*?)(?=\s*;\s*(?:scope|projects|added):|$)", re.I)
+ROUTE_HOST_RE = re.compile(r"(?:^|;\s*)host:\s*([^;]+)", re.I)
 MARKDOWN_LINK_RE = re.compile(r"\[([^\]]+)\]\(([^)]+)\)")
 FIELD_RE = re.compile(
     r"(?i)(captain_actionable|hold_bucket|hold_kind|hold_reason|hold_until|"
@@ -42,6 +47,29 @@ class Report:
     title: str
     path: Path
     recommendation: str | None
+
+
+@dataclass
+class HomeSpec:
+    label: str
+    home: Path | None
+    data_dir: Path | None = None
+    parent_label: str | None = None
+    route_id: str | None = None
+    remote_host: str | None = None
+    unavailable_reason: str | None = None
+
+
+@dataclass
+class HomeSnapshot:
+    spec: HomeSpec
+    data_dir: Path | None = None
+    records: list[Record] = field(default_factory=list)
+    reports: list[Report] = field(default_factory=list)
+    warnings: list[str] = field(default_factory=list)
+    error: str | None = None
+    registry_error: str | None = None
+    children: list[HomeSnapshot] = field(default_factory=list)
 
 
 def markdown_text(value: str) -> str:
@@ -99,14 +127,16 @@ def report_recommendation(text: str) -> str | None:
     return None
 
 
-def read_reports(data_dir: Path) -> list[Report]:
+def read_reports(data_dir: Path, warnings: list[str] | None = None) -> list[Report]:
     reports: list[Report] = []
     if not data_dir.is_dir():
         return reports
     for report_path in sorted(data_dir.glob("*/report.md")):
         try:
             source = report_path.read_text(encoding="utf-8", errors="replace")
-        except OSError:
+        except OSError as exc:
+            if warnings is not None:
+                warnings.append(f"Could not read report {report_path}: {exc}")
             continue
         title = next(
             (markdown_text(match.group(1)) for line in source.splitlines()
@@ -307,25 +337,96 @@ def report_card(report: Report, home: Path) -> str:
 
 def section_html(title: str, description: str, cards: list[str], empty: str) -> str:
     content = "".join(cards) if cards else f'<p class="empty">{html.escape(empty)}</p>'
-    return f'<section><div class="section-head"><div><h2>{html.escape(title)}</h2><p>{html.escape(description)}</p></div><span class="count">{len(cards)}</span></div><div class="cards">{content}</div></section>'
+    return f'<div class="dashboard-section"><div class="section-head"><div><h3>{html.escape(title)}</h3><p>{html.escape(description)}</p></div><span class="count">{len(cards)}</span></div><div class="cards">{content}</div></div>'
 
 
-def build_html(home: Path, data_dir: Path, records: list[Record], reports: list[Report], title: str) -> str:
-    held = sorted((record for record in records if is_held(record)), key=lambda r: (r.fields.get("hold_bucket", "live") != "live", r.title.lower()))
-    reviews = [record for record in records if is_review_ready(record)]
-    active = [record for record in records if is_active(record) and record not in held and record not in reviews]
-    review_records = [card(record, home, data_dir, "Review-ready pull request") for record in reviews]
-    held_cards = [card(record, home, data_dir, "Held for captain review") for record in held]
-    active_cards = [card(record, home, data_dir, "Active task") for record in active]
-    report_cards = [report_card(report, home) for report in reports]
+def snapshot_counts(snapshot: HomeSnapshot) -> tuple[int, int, int, int]:
+    if snapshot.error:
+        return (0, 0, 0, 0)
+    held = [record for record in snapshot.records if is_held(record)]
+    reviews = [record for record in snapshot.records if is_review_ready(record)]
+    active = [record for record in snapshot.records if is_active(record) and record not in held and record not in reviews]
+    return (len(held), len(reviews), len(snapshot.reports), len(active))
 
-    sections = "".join([
-        section_html("Held for review", "Items that have a recorded hold or need a decision.", held_cards, "Nothing is waiting on a recorded hold."),
-        section_html("Review-ready pull requests", "Open the linked change when a task marks it ready for review.", review_records, "No review-ready pull requests are recorded."),
-        section_html("Scout reports", "Reports found in the active data directory.", report_cards, "No scout reports were found."),
-        section_html("Active tasks", "In-flight and queued work from the backlog.", active_cards, "No active backlog items were found."),
-    ])
-    counts = [len(held), len(reviews), len(reports), len(active)]
+
+def home_panel(snapshot: HomeSnapshot) -> str:
+    spec = snapshot.spec
+    if spec.parent_label:
+        role = f"Secondmate · registered by {spec.parent_label}"
+    else:
+        role = "Firstmate home"
+    if spec.route_id:
+        role += f" · {spec.route_id}"
+    heading = [
+        f'<section class="home"><div class="home-head"><div><p class="home-role">{html.escape(role)}</p>',
+        f'<h2>{html.escape(spec.label)}</h2>',
+    ]
+    if snapshot.data_dir and not spec.remote_host:
+        heading.append(f'<p class="home-source">Source: {html.escape(str(snapshot.data_dir))}</p>')
+    if spec.remote_host:
+        heading.append(f'<p class="home-source">Registered on remote host {html.escape(spec.remote_host)}.</p>')
+    heading.append('</div></div>')
+
+    body: list[str] = []
+    if snapshot.error:
+        body.append(
+            '<div class="failure" role="status"><strong>Home could not be read</strong>'
+            f'<p>{html.escape(snapshot.error)}</p></div>'
+        )
+    else:
+        held = sorted(
+            (record for record in snapshot.records if is_held(record)),
+            key=lambda record: (record.fields.get("hold_bucket", "live") != "live", record.title.lower()),
+        )
+        reviews = [record for record in snapshot.records if is_review_ready(record)]
+        active = [
+            record for record in snapshot.records
+            if is_active(record) and record not in held and record not in reviews
+        ]
+        counts = snapshot_counts(snapshot)
+        body.append(
+            '<div class="home-counts">'
+            f'<span>{counts[0]} held</span><span>{counts[1]} review-ready</span>'
+            f'<span>{counts[2]} reports</span><span>{counts[3]} active</span></div>'
+        )
+        review_cards = [card(record, spec.home, snapshot.data_dir, "Review-ready pull request") for record in reviews]
+        held_cards = [card(record, spec.home, snapshot.data_dir, "Held for captain review") for record in held]
+        active_cards = [card(record, spec.home, snapshot.data_dir, "Active task") for record in active]
+        report_cards = [report_card(report, spec.home) for report in snapshot.reports]
+        body.extend([
+            section_html("Held for review", "Items that have a recorded hold or need a decision.", held_cards, "Nothing is waiting on a recorded hold."),
+            section_html("Review-ready pull requests", "Open the linked change when a task marks it ready for review.", review_cards, "No review-ready pull requests are recorded."),
+            section_html("Scout reports", "Reports found in this home's data directory.", report_cards, "No scout reports were found."),
+            section_html("Active tasks", "In-flight and queued work from this home's backlog.", active_cards, "No active backlog items were found."),
+        ])
+    if snapshot.registry_error:
+        body.append(
+            '<div class="warning"><strong>Secondmate registry could not be read</strong>'
+            f'<p>{html.escape(snapshot.registry_error)}</p></div>'
+        )
+    if snapshot.warnings:
+        body.append(
+            '<div class="warning"><strong>Some report files could not be read</strong>'
+            f'<p>{html.escape("; ".join(snapshot.warnings))}</p></div>'
+        )
+    if snapshot.children:
+        body.append('<div class="secondmates"><h3>Registered secondmates</h3>')
+        body.extend(home_panel(child) for child in snapshot.children)
+        body.append('</div>')
+    return ''.join(heading + body + ['</section>'])
+
+
+def all_snapshots(snapshots: list[HomeSnapshot]) -> list[HomeSnapshot]:
+    result: list[HomeSnapshot] = []
+    for snapshot in snapshots:
+        result.append(snapshot)
+        result.extend(all_snapshots(snapshot.children))
+    return result
+
+
+def build_html(homes: list[HomeSnapshot], title: str) -> str:
+    snapshots = all_snapshots(homes)
+    counts = [sum(snapshot_counts(snapshot)[index] for snapshot in snapshots) for index in range(4)]
     timestamp = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
     return f'''<!doctype html>
 <html lang="en">
@@ -347,9 +448,16 @@ def build_html(home: Path, data_dir: Path, records: list[Record], reports: list[
     .metric {{ background: var(--paper); border: 1px solid var(--line); border-radius: 12px; padding: 1rem 1.1rem; }}
     .metric b {{ display: block; color: var(--sea); font: 700 1.8rem Georgia, serif; }}
     .metric span {{ color: var(--muted); font-size: .9rem; }}
-    section {{ margin: 2rem 0 2.5rem; }}
+    .home {{ margin: 2rem 0 2.5rem; padding: 1.2rem; background: #ffffff70; border: 1px solid var(--line); border-radius: 16px; }}
+    .home-head {{ display: flex; justify-content: space-between; gap: 1rem; margin-bottom: 1rem; }}
+    .home h2 {{ margin: 0; color: var(--navy); font: 700 1.8rem Georgia, serif; overflow-wrap: anywhere; }}
+    .home-role {{ margin: 0 0 .25rem; color: var(--sea); font-size: .73rem; text-transform: uppercase; letter-spacing: .09em; font-weight: 700; }}
+    .home-source {{ margin: .35rem 0 0; color: var(--muted); font-size: .83rem; overflow-wrap: anywhere; }}
+    .home-counts {{ display: flex; flex-wrap: wrap; gap: .5rem; margin: .3rem 0 1rem; }}
+    .home-counts span {{ padding: .2rem .6rem; border: 1px solid var(--line); border-radius: 999px; background: var(--paper); color: var(--muted); font-size: .82rem; }}
+    .dashboard-section {{ margin: 1.5rem 0 1.8rem; }}
     .section-head {{ display: flex; align-items: start; justify-content: space-between; gap: 1rem; margin-bottom: .8rem; }}
-    h2 {{ margin: 0; color: var(--navy); font: 700 1.65rem Georgia, serif; }}
+    .section-head h3 {{ margin: 0; color: var(--navy); font: 700 1.35rem Georgia, serif; }}
     .section-head p {{ margin: .3rem 0; color: var(--muted); }}
     .count {{ border: 1px solid var(--line); background: var(--paper); color: var(--sea); border-radius: 999px; min-width: 2.2rem; padding: .25rem .65rem; text-align: center; font-weight: 700; }}
     .cards {{ display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 310px), 1fr)); gap: .8rem; }}
@@ -362,6 +470,13 @@ def build_html(home: Path, data_dir: Path, records: list[Record], reports: list[
     a:focus-visible {{ outline: 3px solid var(--gold); outline-offset: 3px; }}
     .path {{ color: var(--muted); font-weight: 400; overflow-wrap: anywhere; }}
     .empty {{ background: #ffffff80; border: 1px dashed var(--line); border-radius: 10px; color: var(--muted); padding: 1rem; }}
+    .failure, .warning {{ margin: 1rem 0; border-radius: 10px; padding: 1rem; }}
+    .failure {{ border: 1px solid #b8503c; background: #fff2ee; color: #6f251b; }}
+    .warning {{ border: 1px solid #c98635; background: #fff8e9; color: #624313; }}
+    .failure p, .warning p {{ margin: .35rem 0 0; overflow-wrap: anywhere; }}
+    .secondmates {{ margin: 1.7rem 0 0; padding-left: 1rem; border-left: 3px solid var(--line); }}
+    .secondmates > h3 {{ margin: 0 0 .8rem; color: var(--navy); font: 700 1.2rem Georgia, serif; }}
+    .secondmates .home {{ margin: 1rem 0; background: var(--paper); }}
     footer {{ border-top: 1px solid var(--line); margin-top: 3rem; padding-top: 1rem; color: var(--muted); font-size: .85rem; }}
     @media (max-width: 640px) {{ .summary {{ grid-template-columns: repeat(2, 1fr); }} }}
     @media print {{ body {{ background: #fff; }} header {{ padding: 1.2rem; }} main {{ width: 100%; margin: 1rem 0; }} .card {{ break-inside: avoid; }} }}
@@ -371,7 +486,7 @@ def build_html(home: Path, data_dir: Path, records: list[Record], reports: list[
   <header>
     <div class="kicker">Firstmate · local review</div>
     <h1>⚓ {html.escape(title)}</h1>
-    <p>A quiet lookout over held decisions, scout reports, active work, and changes ready for review.</p>
+    <p>A read-only lookout over configured Firstmate homes and their registered secondmates.</p>
   </header>
   <main>
     <div class="summary" aria-label="Review counts">
@@ -380,15 +495,15 @@ def build_html(home: Path, data_dir: Path, records: list[Record], reports: list[
       <div class="metric"><b>{counts[2]}</b><span>Scout reports</span></div>
       <div class="metric"><b>{counts[3]}</b><span>Active tasks</span></div>
     </div>
-    {sections}
-    <footer>Read-only snapshot · refreshed {timestamp} · source: {html.escape(str(data_dir))}</footer>
+    {''.join(home_panel(home) for home in homes)}
+    <footer>Read-only snapshot · refreshed {timestamp} · sources are identified within each home section.</footer>
   </main>
 </body>
 </html>
 '''
 
 
-def load_config(path: Path | None) -> dict[str, str]:
+def load_config(path: Path | None) -> dict[str, object]:
     if path is None:
         return {}
     try:
@@ -404,6 +519,24 @@ def load_config(path: Path | None) -> dict[str, str]:
         raise ValueError("config page_title must be a string")
     if "output_dir" in config and not isinstance(config["output_dir"], str):
         raise ValueError("config output_dir must be a path string")
+    if "homes" in config:
+        homes = config["homes"]
+        if not isinstance(homes, list) or not homes:
+            raise ValueError("config homes must be a non-empty array")
+        for index, home in enumerate(homes, start=1):
+            if not isinstance(home, dict):
+                raise ValueError(f"config homes entry {index} must be an object")
+            unknown_home_keys = sorted(set(home) - {"label", "path", "data_dir"})
+            if unknown_home_keys:
+                raise ValueError(
+                    f"unsupported key(s) in config homes entry {index}: {', '.join(unknown_home_keys)}"
+                )
+            if not isinstance(home.get("path"), str) or not home["path"].strip():
+                raise ValueError(f"config homes entry {index} needs a non-empty path string")
+            if "label" in home and (not isinstance(home["label"], str) or not home["label"].strip()):
+                raise ValueError(f"config homes entry {index} label must be a non-empty string")
+            if "data_dir" in home and (not isinstance(home["data_dir"], str) or not home["data_dir"].strip()):
+                raise ValueError(f"config homes entry {index} data_dir must be a non-empty path string")
     return config
 
 
@@ -412,35 +545,129 @@ def default_output_dir() -> Path:
     return base / "quarterdeck"
 
 
+def configured_path(value: str, config_path: Path) -> Path:
+    path = Path(value).expanduser()
+    if not path.is_absolute():
+        path = config_path.parent / path
+    return path.resolve()
+
+
+def resolve_home_specs(args: argparse.Namespace, config: dict[str, object]) -> tuple[list[HomeSpec], bool]:
+    if args.home:
+        home = Path(args.home).expanduser().resolve()
+        override = os.environ.get("FM_DATA_OVERRIDE")
+        data_dir = Path(override).expanduser().resolve() if override else None
+        return [HomeSpec(home.name or "Firstmate home", home, data_dir)], True
+
+    if "homes" in config:
+        assert args.config is not None
+        config_path = args.config.expanduser().resolve()
+        specs: list[HomeSpec] = []
+        for entry in config["homes"]:
+            assert isinstance(entry, dict)
+            home = configured_path(entry["path"], config_path)
+            label = entry.get("label") or home.name or "Firstmate home"
+            data_dir = configured_path(entry["data_dir"], config_path) if entry.get("data_dir") else None
+            specs.append(HomeSpec(label, home, data_dir))
+        return specs, False
+
+    raw_home = os.environ.get("FM_HOME")
+    if raw_home:
+        home = Path(raw_home).expanduser().resolve()
+        override = os.environ.get("FM_DATA_OVERRIDE")
+        data_dir = Path(override).expanduser().resolve() if override else None
+        return [HomeSpec(home.name or "Firstmate home", home, data_dir)], True
+    raise ValueError("a Firstmate home is required; pass --home, set FM_HOME, or configure homes")
+
+
+def parse_secondmates(source: str, parent_label: str) -> tuple[list[HomeSpec], list[str]]:
+    specs: list[HomeSpec] = []
+    errors: list[str] = []
+    for line_number, line in enumerate(source.splitlines(), start=1):
+        if not re.match(r"^\s*[-*]\s+", line):
+            continue
+        match = SECONDMATE_ENTRY_RE.match(line)
+        if not match:
+            errors.append(f"unrecognized route on line {line_number}")
+            continue
+        attributes = match.group("attributes")
+        home_match = ROUTE_HOME_RE.search(attributes)
+        host_match = ROUTE_HOST_RE.search(attributes)
+        raw_home = home_match.group(1).strip().strip("`") if home_match else ""
+        remote_host = host_match.group(1).strip() if host_match else None
+        route_id = match.group("id")
+        summary = markdown_text(match.group("summary"))
+        reason = None if raw_home else "The registered route does not contain a home: path."
+        route_home = Path(raw_home).expanduser() if raw_home else None
+        if route_home and not remote_host and not route_home.is_absolute():
+            reason = "The registered local home path is not absolute."
+        specs.append(HomeSpec(
+            label=f"{route_id} — {summary}",
+            home=route_home,
+            parent_label=parent_label,
+            route_id=route_id,
+            remote_host=remote_host,
+            unavailable_reason=reason,
+        ))
+    return specs, errors
+
+
+def load_home_snapshot(spec: HomeSpec, discover_secondmates: bool = False) -> HomeSnapshot:
+    snapshot = HomeSnapshot(spec)
+    if spec.unavailable_reason:
+        snapshot.error = spec.unavailable_reason
+    elif spec.remote_host:
+        snapshot.error = f"This secondmate is on remote host {spec.remote_host}; Quarterdeck reads local files only."
+    elif spec.home is None:
+        snapshot.error = "The registered route does not contain a local home path."
+    else:
+        try:
+            if not spec.home.is_dir():
+                raise FileNotFoundError(f"Firstmate home is not a directory: {spec.home}")
+            data_dir = spec.data_dir or (spec.home / "data")
+            snapshot.data_dir = data_dir
+            backlog_path = data_dir / "backlog.md"
+            if not backlog_path.is_file():
+                raise FileNotFoundError(f"backlog not found: {backlog_path}")
+            source = backlog_path.read_text(encoding="utf-8", errors="replace")
+            snapshot.reports = read_reports(data_dir, snapshot.warnings)
+            snapshot.records = parse_backlog(source, data_dir, snapshot.reports)
+        except (OSError, ValueError) as exc:
+            snapshot.error = str(exc)
+
+    if discover_secondmates and spec.home is not None and not spec.remote_host:
+        registry_path = spec.home / "data" / "secondmates.md"
+        try:
+            registry = registry_path.read_text(encoding="utf-8", errors="replace")
+        except FileNotFoundError:
+            registry = ""
+        except OSError as exc:
+            snapshot.registry_error = f"{registry_path}: {exc}"
+            registry = ""
+        if registry:
+            children, parse_errors = parse_secondmates(registry, spec.label)
+            snapshot.children = [load_home_snapshot(child) for child in children]
+            if parse_errors:
+                snapshot.registry_error = "; ".join(parse_errors)
+    return snapshot
+
+
 def render(args: argparse.Namespace) -> int:
-    raw_home = args.home or os.environ.get("FM_HOME")
-    if not raw_home:
-        print("quarterdeck: Firstmate home is required; pass --home or set FM_HOME.", file=sys.stderr)
-        return 2
-    home = Path(raw_home).expanduser().resolve()
-    if not home.is_dir():
-        print(f"quarterdeck: Firstmate home is not a directory: {home}", file=sys.stderr)
-        return 2
-
-    data_override = os.environ.get("FM_DATA_OVERRIDE")
-    data_dir = Path(data_override).expanduser().resolve() if data_override else home / "data"
-    backlog_path = data_dir / "backlog.md"
-    if not backlog_path.is_file():
-        print(f"quarterdeck: backlog not found: {backlog_path}", file=sys.stderr)
-        return 2
-
     try:
         config = load_config(args.config)
-        source = backlog_path.read_text(encoding="utf-8", errors="replace")
-        reports = read_reports(data_dir)
-        records = parse_backlog(source, data_dir, reports)
+        specs, legacy_single_home = resolve_home_specs(args, config)
+        homes = [load_home_snapshot(spec, discover_secondmates=True) for spec in specs]
+        if legacy_single_home and homes[0].error:
+            print(f"quarterdeck: {homes[0].error}", file=sys.stderr)
+            return 2
         configured_output = config.get("output_dir")
-        output_dir = Path(configured_output).expanduser() if configured_output else default_output_dir()
+        output_dir = Path(configured_output).expanduser() if isinstance(configured_output, str) else default_output_dir()
         output_path = Path(args.output).expanduser() if args.output else output_dir / "index.html"
-        title = args.title or config.get("page_title") or DEFAULT_TITLE
+        configured_title = config.get("page_title")
+        title = args.title or (configured_title if isinstance(configured_title, str) else None) or DEFAULT_TITLE
         output_path = output_path.resolve()
         output_path.parent.mkdir(parents=True, exist_ok=True)
-        output_path.write_text(build_html(home, data_dir, records, reports, title), encoding="utf-8")
+        output_path.write_text(build_html(homes, title), encoding="utf-8")
     except (OSError, ValueError) as exc:
         print(f"quarterdeck: {exc}", file=sys.stderr)
         return 2
@@ -453,7 +680,7 @@ def make_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="quarterdeck", description="Render a read-only Firstmate review page.")
     subparsers = parser.add_subparsers(dest="command", required=True)
     render_parser = subparsers.add_parser("render", help="regenerate the local HTML page")
-    render_parser.add_argument("--home", help="Firstmate home (or use FM_HOME)")
+    render_parser.add_argument("--home", help="render this Firstmate home instead of configured homes or FM_HOME")
     render_parser.add_argument("--output", help="HTML file path; defaults to the configured state directory")
     render_parser.add_argument("--config", type=Path, help="optional JSON config file")
     render_parser.add_argument("--title", help="override the page title")

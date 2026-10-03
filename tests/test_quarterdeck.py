@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import os
 import subprocess
 import sys
@@ -50,6 +51,24 @@ Use the compact format for the first release.
 """,
             encoding="utf-8",
         )
+        secondmate = root / "fictional-secondmate"
+        secondmate_data = secondmate / "data"
+        secondmate_data.mkdir(parents=True)
+        (secondmate_data / "backlog.md").write_text(
+            """# Secondmate queue
+
+## In flight
+- Chart the Willow Quay field guide [working]
+""",
+            encoding="utf-8",
+        )
+        (data / "secondmates.md").write_text(
+            f"""# Registered secondmates
+- kestrel - Maintains the Willow Quay field guide. (home: {secondmate}; scope: Field guide work; projects: quarterdeck-demo; added 2026-01-04)
+- lantern - Maintains remote map notes. (host: sample-remote; root: /srv/sample-firstmate; home: /srv/sample-homes/lantern; scope: Map notes; projects: map-demo; added 2026-01-04)
+""",
+            encoding="utf-8",
+        )
         return home
 
     def test_render_groups_holds_reports_active_work_and_reviews(self) -> None:
@@ -69,9 +88,73 @@ Use the compact format for the first release.
             self.assertIn("Use the compact format for the first release.", page)
             self.assertIn("https://github.com/example/quarterdeck-demo/" + "pull/42", page)
             self.assertIn("Chart the Maple Harbor catalog", page)
+            self.assertIn("kestrel — Maintains the Willow Quay field guide.", page)
+            self.assertIn("Chart the Willow Quay field guide", page)
+            self.assertIn("Secondmate · registered by fictional-firstmate", page)
+            self.assertIn("remote host sample-remote", page)
             self.assertIn("Read report", page)
             self.assertIn('name="quarterdeck-generated"', page)
             self.assertNotIn("https://fonts.", page)
+
+    def test_configured_homes_render_together_and_isolate_a_missing_home(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            home = self.make_home(root)
+            config = root / "quarterdeck.json"
+            config.write_text(
+                json.dumps({
+                    "page_title": "Fleet Example",
+                    "homes": [
+                        {"label": "Main Harbor", "path": home.name},
+                        {"label": "Unreadable Lantern", "path": "missing-home"},
+                    ],
+                }),
+                encoding="utf-8",
+            )
+            output = root / "outside-output" / "index.html"
+            result = subprocess.run(
+                [sys.executable, str(ROOT / "quarterdeck.py"), "render", "--config", str(config), "--output", str(output)],
+                check=False,
+                text=True,
+                capture_output=True,
+            )
+            self.assertEqual(result.returncode, 0, result.stderr)
+            page = output.read_text(encoding="utf-8")
+            self.assertIn("Main Harbor", page)
+            self.assertIn("Unreadable Lantern", page)
+            self.assertIn("Home could not be read", page)
+            self.assertIn("Chart the Maple Harbor catalog", page)
+
+    def test_home_argument_overrides_configured_home_list(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            home = self.make_home(root)
+            config = root / "quarterdeck.json"
+            config.write_text(
+                json.dumps({"homes": [{"label": "Configured Other", "path": "missing-home"}]}),
+                encoding="utf-8",
+            )
+            output = root / "outside-output" / "index.html"
+            result = subprocess.run(
+                [sys.executable, str(ROOT / "quarterdeck.py"), "render", "--home", str(home), "--config", str(config), "--output", str(output)],
+                check=False,
+                text=True,
+                capture_output=True,
+            )
+            self.assertEqual(result.returncode, 0, result.stderr)
+            page = output.read_text(encoding="utf-8")
+            self.assertIn("Chart the Maple Harbor catalog", page)
+            self.assertNotIn("Configured Other", page)
+
+    def test_render_uses_fm_home_for_backward_compatible_single_home_mode(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            home = self.make_home(root)
+            output = root / "outside-output" / "index.html"
+            with patch.dict(os.environ, {"FM_HOME": str(home)}, clear=True):
+                result = quarterdeck.main(["render", "--output", str(output)])
+            self.assertEqual(result, 0)
+            self.assertIn("Chart the Maple Harbor catalog", output.read_text(encoding="utf-8"))
 
     def test_render_requires_home_or_environment(self) -> None:
         with patch.dict(os.environ, {}, clear=True):

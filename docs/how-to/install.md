@@ -28,4 +28,5 @@ quarterdeck render --home /path/to/firstmate
 
 The generated page defaults to `${XDG_STATE_HOME:-~/.local/state}/quarterdeck/index.html`.
 See [CLI and configuration reference](../reference/cli-and-config.md) for
-custom output and config options.
+custom output and config options. To review several homes together, create a
+private config using the [multiple homes how-to](configure-multiple-homes.md).
