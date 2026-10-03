@@ -8,7 +8,9 @@ import html
 import json
 import os
 import re
+import subprocess
 import sys
+import tempfile
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
@@ -540,6 +542,207 @@ def load_config(path: Path | None) -> dict[str, object]:
     return config
 
 
+def default_config_path() -> Path:
+    config_home = Path(os.environ.get("XDG_CONFIG_HOME") or "~/.config").expanduser()
+    return (config_home / "quarterdeck.json").resolve()
+
+
+def selected_config_path(path: Path | None) -> Path:
+    config_path = (path.expanduser() if path else default_config_path()).resolve()
+    checkout = Path(__file__).resolve().parent
+    try:
+        config_path.relative_to(checkout)
+    except ValueError:
+        return config_path
+    raise ValueError("config must be outside the Quarterdeck checkout")
+
+
+def read_manage_config(config_path: Path) -> dict[str, object]:
+    if not config_path.exists():
+        return {}
+    return load_config(config_path)
+
+
+def write_config(config_path: Path, config: dict[str, object]) -> None:
+    if config_path.is_symlink():
+        raise ValueError(f"refusing to replace symbolic-link config: {config_path}")
+    config_path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
+    temp_path: Path | None = None
+    try:
+        with tempfile.NamedTemporaryFile(
+            "w", encoding="utf-8", dir=config_path.parent,
+            prefix=f".{config_path.name}.", suffix=".tmp", delete=False,
+        ) as stream:
+            temp_path = Path(stream.name)
+            json.dump(config, stream, indent=2)
+            stream.write("\n")
+        os.chmod(temp_path, 0o600)
+        os.replace(temp_path, config_path)
+    except OSError:
+        if temp_path is not None:
+            temp_path.unlink(missing_ok=True)
+        raise
+
+
+def normalized_home_path(raw_path: str, config_path: Path | None = None) -> Path:
+    path = Path(raw_path).expanduser()
+    if config_path is not None and not path.is_absolute():
+        path = config_path.parent / path
+    return path.resolve()
+
+
+def add_home(args: argparse.Namespace) -> int:
+    try:
+        config_path = selected_config_path(args.config)
+        home = normalized_home_path(args.home)
+        data_dir = home / "data"
+        if not home.is_dir() or not data_dir.is_dir() or not (data_dir / "backlog.md").is_file():
+            raise ValueError(f"not a Firstmate home: {home} (expected data/backlog.md)")
+
+        config = read_manage_config(config_path)
+        homes = config.get("homes", [])
+        assert isinstance(homes, list)
+        for entry in homes:
+            assert isinstance(entry, dict)
+            existing_path = normalized_home_path(entry["path"], config_path)
+            if existing_path == home:
+                raise ValueError(f"home is already registered as {entry.get('label') or existing_path.name!r}")
+
+        label = args.label if args.label is not None else (home.name or "Firstmate home")
+        if not label.strip():
+            raise ValueError("label must not be empty")
+        if any(str(entry.get("label") or normalized_home_path(entry["path"], config_path).name).casefold() == label.casefold()
+               for entry in homes):
+            raise ValueError(f"label is already in use: {label}")
+
+        new_homes = [dict(entry) for entry in homes]
+        new_homes.append({"label": label, "path": str(home)})
+        config["homes"] = new_homes
+        write_config(config_path, config)
+    except (OSError, ValueError, KeyError) as exc:
+        print(f"quarterdeck: {exc}", file=sys.stderr)
+        return 2
+
+    if args.label is None:
+        print(f'Using default label "{label}".')
+    print(f'Registered "{label}" ({home}).')
+    return 0
+
+
+def list_homes(args: argparse.Namespace) -> int:
+    try:
+        config_path = selected_config_path(args.config)
+        config = read_manage_config(config_path)
+        homes = config.get("homes", [])
+        assert isinstance(homes, list)
+        if not homes:
+            print("No homes registered.")
+            return 0
+        for entry in homes:
+            assert isinstance(entry, dict)
+            home = normalized_home_path(entry["path"], config_path)
+            label = entry.get("label") or home.name or "Firstmate home"
+            print(f"{label}\t{home}")
+    except (OSError, ValueError, KeyError) as exc:
+        print(f"quarterdeck: {exc}", file=sys.stderr)
+        return 2
+    return 0
+
+
+def remove_home(args: argparse.Namespace) -> int:
+    try:
+        config_path = selected_config_path(args.config)
+        config = read_manage_config(config_path)
+        homes = config.get("homes", [])
+        assert isinstance(homes, list)
+        query_path = normalized_home_path(args.target)
+        label_matches: list[int] = []
+        path_matches: list[int] = []
+        for index, entry in enumerate(homes):
+            assert isinstance(entry, dict)
+            label = entry.get("label") or normalized_home_path(entry["path"], config_path).name
+            if label.casefold() == args.target.casefold():
+                label_matches.append(index)
+            if normalized_home_path(entry["path"], config_path) == query_path:
+                path_matches.append(index)
+        matches = sorted(set(label_matches + path_matches))
+        if not matches:
+            raise ValueError(f"no registered home matches: {args.target}")
+        if len(matches) > 1:
+            raise ValueError(f"ambiguous home name or path: {args.target}")
+        removed = homes[matches[0]]
+        remaining = [dict(entry) for index, entry in enumerate(homes) if index != matches[0]]
+        if remaining:
+            config["homes"] = remaining
+        else:
+            config.pop("homes", None)
+        write_config(config_path, config)
+    except (OSError, ValueError, KeyError) as exc:
+        print(f"quarterdeck: {exc}", file=sys.stderr)
+        return 2
+
+    label = removed.get("label") or normalized_home_path(removed["path"], config_path).name
+    print(f'Removed "{label}". Firstmate data was not changed.')
+    return 0
+
+
+COMMAND_DOCS = {
+    "render": ["reference/cli-and-config.md", "explanation/privacy-and-architecture.md"],
+    "add": ["how-to/configure-multiple-homes.md", "reference/cli-and-config.md"],
+    "list": ["how-to/configure-multiple-homes.md", "reference/cli-and-config.md"],
+    "remove": ["how-to/configure-multiple-homes.md", "reference/cli-and-config.md"],
+    "install": ["how-to/install.md", "how-to/update.md", "how-to/uninstall.md"],
+    "help": ["README.md", "reference/cli-and-config.md"],
+}
+
+
+def run_installer(args: argparse.Namespace) -> int:
+    installer = Path(__file__).resolve().with_name("install.sh")
+    if not installer.is_file():
+        print(f"quarterdeck: installer script not found: {installer}", file=sys.stderr)
+        return 2
+    command = ["sh", str(installer)]
+    if args.uninstall:
+        command.append("--uninstall")
+    try:
+        return subprocess.run(command, check=False).returncode
+    except OSError as exc:
+        print(f"quarterdeck: could not run installer: {exc}", file=sys.stderr)
+        return 2
+
+
+def show_help(args: argparse.Namespace) -> int:
+    docs_root = (Path(__file__).resolve().parent / "docs").resolve()
+    if args.as_json:
+        commands = []
+        for name, command_parser in args.command_parsers.items():
+            commands.append({
+                "name": name,
+                "usage": command_parser.format_usage().strip(),
+                "summary": command_parser.description or command_parser.prog,
+                "docs": COMMAND_DOCS.get(name, []),
+            })
+        print(json.dumps({"program": "quarterdeck", "docs_root": str(docs_root), "commands": commands}, indent=2))
+        return 0
+
+    if args.topic:
+        command_parser = args.command_parsers.get(args.topic)
+        if command_parser is None:
+            print(f"quarterdeck: unknown help topic: {args.topic}", file=sys.stderr)
+            return 2
+        command_parser.print_help()
+        doc_paths = COMMAND_DOCS.get(args.topic, [])
+    else:
+        args.root_parser.print_help()
+        doc_paths = ["how-to/install.md", "reference/cli-and-config.md"]
+
+    print(f"\nDocumentation tree: {docs_root}")
+    if doc_paths:
+        print("Read: " + ", ".join(str(docs_root / item) for item in doc_paths))
+    print("Machine-readable command index: quarterdeck help --json")
+    return 0
+
+
 def default_output_dir() -> Path:
     base = Path(os.environ.get("XDG_STATE_HOME") or "~/.local/state").expanduser()
     return base / "quarterdeck"
@@ -654,6 +857,9 @@ def load_home_snapshot(spec: HomeSpec, discover_secondmates: bool = False) -> Ho
 
 def render(args: argparse.Namespace) -> int:
     try:
+        if args.config is None:
+            default_path = default_config_path()
+            args.config = default_path if default_path.is_file() else None
         config = load_config(args.config)
         specs, legacy_single_home = resolve_home_specs(args, config)
         homes = [load_home_snapshot(spec, discover_secondmates=True) for spec in specs]
@@ -677,14 +883,54 @@ def render(args: argparse.Namespace) -> int:
 
 
 def make_parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(prog="quarterdeck", description="Render a read-only Firstmate review page.")
+    parser = argparse.ArgumentParser(prog="quarterdeck", description="Render and manage a read-only Firstmate review page.")
     subparsers = parser.add_subparsers(dest="command", required=True)
-    render_parser = subparsers.add_parser("render", help="regenerate the local HTML page")
+    command_parsers: dict[str, argparse.ArgumentParser] = {}
+
+    render_parser = subparsers.add_parser(
+        "render", help="regenerate the local HTML page", description="Render registered or explicitly selected homes."
+    )
+    command_parsers["render"] = render_parser
     render_parser.add_argument("--home", help="render this Firstmate home instead of configured homes or FM_HOME")
     render_parser.add_argument("--output", help="HTML file path; defaults to the configured state directory")
     render_parser.add_argument("--config", type=Path, help="optional JSON config file")
     render_parser.add_argument("--title", help="override the page title")
     render_parser.set_defaults(handler=render)
+
+    add_parser = subparsers.add_parser("add", help="register a Firstmate home", description="Validate and register a Firstmate home.")
+    command_parsers["add"] = add_parser
+    add_parser.add_argument("home", help="Firstmate home containing data/backlog.md")
+    add_parser.add_argument("--label", help="display label; defaults to the home's last path component")
+    add_parser.add_argument("--config", type=Path, help="JSON config file; defaults to the private user config")
+    add_parser.set_defaults(handler=add_home)
+
+    list_parser = subparsers.add_parser("list", help="show registered Firstmate homes", description="List registered Firstmate homes.")
+    command_parsers["list"] = list_parser
+    list_parser.add_argument("--config", type=Path, help="JSON config file; defaults to the private user config")
+    list_parser.set_defaults(handler=list_homes)
+
+    remove_parser = subparsers.add_parser(
+        "remove", help="unregister a home by label or path", description="Unregister a home without changing its data."
+    )
+    command_parsers["remove"] = remove_parser
+    remove_parser.add_argument("target", help="registered label or Firstmate home path")
+    remove_parser.add_argument("--config", type=Path, help="JSON config file; defaults to the private user config")
+    remove_parser.set_defaults(handler=remove_home)
+
+    install_parser = subparsers.add_parser(
+        "install", help="install, update, or uninstall Quarterdeck", description="Run the user-local shell installer."
+    )
+    command_parsers["install"] = install_parser
+    install_parser.add_argument("--uninstall", action="store_true", help="remove installer-created files and keep config/data")
+    install_parser.set_defaults(handler=run_installer)
+
+    help_parser = subparsers.add_parser(
+        "help", help="show command and documentation help", description="Discover commands and documentation."
+    )
+    command_parsers["help"] = help_parser
+    help_parser.add_argument("topic", nargs="?", help="show help for one command")
+    help_parser.add_argument("--json", dest="as_json", action="store_true", help="print a machine-readable command index")
+    help_parser.set_defaults(handler=show_help, root_parser=parser, command_parsers=command_parsers)
     return parser
 
 

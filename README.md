@@ -28,19 +28,23 @@ or runtime network dependency.
 
 ## Quick Start
 
-Quarterdeck needs Python 3 and a Firstmate home. Give the home explicitly with
-`--home`, or set `FM_HOME`:
+Install Quarterdeck with the [user-local installer](docs/how-to/install.md),
+then register a Firstmate home and render the page:
 
 ```sh
-python3 quarterdeck.py render --home /path/to/firstmate
+quarterdeck add /path/to/firstmate
+quarterdeck render
 ```
 
-The command prints the generated page path. Open it in a browser, or run
-`lavish-axi /path/to/generated/index.html`. The default output is
-`${XDG_STATE_HOME:-~/.local/state}/quarterdeck/index.html`.
+The add command checks for `data/backlog.md` and uses the path's last component
+as the default label. The render command prints the generated page path. Open
+it in a browser, or run `lavish-axi /path/to/generated/index.html`. The
+default output is `${XDG_STATE_HOME:-~/.local/state}/quarterdeck/index.html`.
 
-For installation, updates, removal, a first-render walkthrough, configuration,
+For installation, updates, uninstallation, a first-render walkthrough, configuration,
 multiple-home setup, and scheduled refresh examples, see the [documentation](docs/).
+Run `quarterdeck help` for the docs directory and `quarterdeck help --json` for
+the machine-readable command index.
 
 ## How it relates to Firstmate
 
@@ -79,14 +83,17 @@ inline CSS and has no runtime network requests.
 
 ### How do I select several homes?
 
-Create a private JSON config with a `homes` array and run
-`quarterdeck render --config /path/to/quarterdeck.json`. See the
+Register each home with `quarterdeck add`, then run `quarterdeck render`. Use
+`quarterdeck list` to see entries and `quarterdeck remove` to unregister one.
+These commands use `${XDG_CONFIG_HOME:-~/.config}/quarterdeck.json` by default;
+pass `--config FILE` to select another config. See the
 [multiple homes how-to](docs/how-to/configure-multiple-homes.md).
 
 ### What if there is no Firstmate home setting?
 
-Pass `--home /path/to/firstmate`, set `FM_HOME`, or provide a config with
-`homes`. Quarterdeck stops with a clear error if none is set.
+Run `quarterdeck add /path/to/firstmate`, pass `--home /path/to/firstmate`, set
+`FM_HOME`, or provide a config with `homes`. Quarterdeck stops with a clear
+error if none is set.
 
 ## Roadmap
 
