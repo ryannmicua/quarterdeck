@@ -4,10 +4,12 @@
 from __future__ import annotations
 
 import argparse
+import hashlib
 import html
 import json
 import os
 import re
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -294,9 +296,16 @@ def file_link(path: Path) -> str:
     return path.resolve().as_uri()
 
 
-def card(record: Record, home: Path, data_dir: Path, badge: str) -> str:
+def review_element_id(kind: str, home: Path, identity: str) -> str:
+    digest = hashlib.sha256(f"{home.resolve()}\0{identity}".encode("utf-8")).hexdigest()[:12]
+    return f"review-{kind}-{digest}"
+
+
+def card(record: Record, home: Path, data_dir: Path, badge: str, lavish: bool = False) -> str:
     safe_title = html.escape(record.title)
-    chunks = [f'<article class="card"><p class="eyebrow">{html.escape(badge)}</p>', f"<h3>{safe_title}</h3>"]
+    identity = value_for(record.fields, "id") or f"{record.section}:{record.title}:{record.text}"
+    element_id = f' id="{review_element_id("item", home, identity)}"' if lavish else ""
+    chunks = [f'<article class="card"{element_id}><p class="eyebrow">{html.escape(badge)}</p>', f"<h3>{safe_title}</h3>"]
     if record.recommendation:
         chunks.append(f'<p><strong>Recommendation:</strong> {html.escape(record.recommendation)}</p>')
     elif record.text and record.text != record.title:
@@ -323,14 +332,15 @@ def card(record: Record, home: Path, data_dir: Path, badge: str) -> str:
     return "".join(chunks)
 
 
-def report_card(report: Report, home: Path) -> str:
+def report_card(report: Report, home: Path, lavish: bool = False) -> str:
     relative = report.path.relative_to(home) if report.path.is_relative_to(home) else report.path
     recommendation = (
         f'<p><strong>Recommendation:</strong> {html.escape(report.recommendation)}</p>'
         if report.recommendation else ""
     )
+    element_id = f' id="{review_element_id("report", home, str(report.path))}"' if lavish else ""
     return (
-        '<article class="card"><p class="eyebrow">Scout report</p>'
+        f'<article class="card"{element_id}><p class="eyebrow">Scout report</p>'
         f'<h3>{html.escape(report.title)}</h3>{recommendation}'
         f'<p class="links"><a href="{html.escape(file_link(report.path), quote=True)}">Read report '
         f'<span class="path">{html.escape(str(relative))}</span></a></p></article>'
@@ -351,7 +361,7 @@ def snapshot_counts(snapshot: HomeSnapshot) -> tuple[int, int, int, int]:
     return (len(held), len(reviews), len(snapshot.reports), len(active))
 
 
-def home_panel(snapshot: HomeSnapshot) -> str:
+def home_panel(snapshot: HomeSnapshot, lavish: bool = False) -> str:
     spec = snapshot.spec
     if spec.parent_label:
         role = f"Secondmate · registered by {spec.parent_label}"
@@ -391,10 +401,10 @@ def home_panel(snapshot: HomeSnapshot) -> str:
             f'<span>{counts[0]} held</span><span>{counts[1]} review-ready</span>'
             f'<span>{counts[2]} reports</span><span>{counts[3]} active</span></div>'
         )
-        review_cards = [card(record, spec.home, snapshot.data_dir, "Review-ready pull request") for record in reviews]
-        held_cards = [card(record, spec.home, snapshot.data_dir, "Held for captain review") for record in held]
-        active_cards = [card(record, spec.home, snapshot.data_dir, "Active task") for record in active]
-        report_cards = [report_card(report, spec.home) for report in snapshot.reports]
+        review_cards = [card(record, spec.home, snapshot.data_dir, "Review-ready pull request", lavish) for record in reviews]
+        held_cards = [card(record, spec.home, snapshot.data_dir, "Held for captain review", lavish) for record in held]
+        active_cards = [card(record, spec.home, snapshot.data_dir, "Active task", lavish) for record in active]
+        report_cards = [report_card(report, spec.home, lavish) for report in snapshot.reports]
         body.extend([
             section_html("Held for review", "Items that have a recorded hold or need a decision.", held_cards, "Nothing is waiting on a recorded hold."),
             section_html("Review-ready pull requests", "Open the linked change when a task marks it ready for review.", review_cards, "No review-ready pull requests are recorded."),
@@ -413,7 +423,7 @@ def home_panel(snapshot: HomeSnapshot) -> str:
         )
     if snapshot.children:
         body.append('<div class="secondmates"><h3>Registered secondmates</h3>')
-        body.extend(home_panel(child) for child in snapshot.children)
+        body.extend(home_panel(child, lavish) for child in snapshot.children)
         body.append('</div>')
     return ''.join(heading + body + ['</section>'])
 
@@ -426,7 +436,7 @@ def all_snapshots(snapshots: list[HomeSnapshot]) -> list[HomeSnapshot]:
     return result
 
 
-def build_html(homes: list[HomeSnapshot], title: str) -> str:
+def build_html(homes: list[HomeSnapshot], title: str, lavish: bool = False) -> str:
     snapshots = all_snapshots(homes)
     counts = [sum(snapshot_counts(snapshot)[index] for snapshot in snapshots) for index in range(4)]
     timestamp = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
@@ -497,7 +507,7 @@ def build_html(homes: list[HomeSnapshot], title: str) -> str:
       <div class="metric"><b>{counts[2]}</b><span>Scout reports</span></div>
       <div class="metric"><b>{counts[3]}</b><span>Active tasks</span></div>
     </div>
-    {''.join(home_panel(home) for home in homes)}
+    {''.join(home_panel(home, lavish) for home in homes)}
     <footer>Read-only snapshot · refreshed {timestamp} · sources are identified within each home section.</footer>
   </main>
 </body>
@@ -687,7 +697,7 @@ def remove_home(args: argparse.Namespace) -> int:
 
 
 COMMAND_DOCS = {
-    "render": ["reference/cli-and-config.md", "explanation/privacy-and-architecture.md"],
+    "render": ["how-to/view-in-lavish.md", "reference/cli-and-config.md", "explanation/privacy-and-architecture.md"],
     "add": ["how-to/configure-multiple-homes.md", "reference/cli-and-config.md"],
     "list": ["how-to/configure-multiple-homes.md", "reference/cli-and-config.md"],
     "remove": ["how-to/configure-multiple-homes.md", "reference/cli-and-config.md"],
@@ -869,16 +879,38 @@ def render(args: argparse.Namespace) -> int:
         configured_output = config.get("output_dir")
         output_dir = Path(configured_output).expanduser() if isinstance(configured_output, str) else default_output_dir()
         output_path = Path(args.output).expanduser() if args.output else output_dir / "index.html"
+        if args.lavish:
+            output_path = output_path.with_name(f"{output_path.stem}.lavish{output_path.suffix or '.html'}")
         configured_title = config.get("page_title")
         title = args.title or (configured_title if isinstance(configured_title, str) else None) or DEFAULT_TITLE
         output_path = output_path.resolve()
         output_path.parent.mkdir(parents=True, exist_ok=True)
-        output_path.write_text(build_html(homes, title), encoding="utf-8")
+        output_path.write_text(build_html(homes, title, lavish=args.lavish), encoding="utf-8")
     except (OSError, ValueError) as exc:
         print(f"quarterdeck: {exc}", file=sys.stderr)
         return 2
 
     print(output_path)
+    if args.lavish:
+        executable = shutil.which("lavish-axi")
+        if executable is None:
+            print(f"Lavish page ready; open it later with: lavish-axi {output_path}")
+            return 0
+        try:
+            opened = subprocess.run([executable, str(output_path)], check=False, capture_output=True, text=True)
+        except OSError as exc:
+            print(f"quarterdeck: could not open Lavish page: {exc}", file=sys.stderr)
+            return 2
+        output = "\n".join(part.strip() for part in (opened.stdout, opened.stderr) if part.strip())
+        session_url = re.search(r"https?://[^\s<>]+", output)
+        if opened.returncode != 0:
+            if output:
+                print(output, file=sys.stderr)
+            return opened.returncode
+        if session_url:
+            print(session_url.group(0).rstrip(".,;"))
+        elif output:
+            print(output)
     return 0
 
 
@@ -888,13 +920,14 @@ def make_parser() -> argparse.ArgumentParser:
     command_parsers: dict[str, argparse.ArgumentParser] = {}
 
     render_parser = subparsers.add_parser(
-        "render", help="regenerate the local HTML page", description="Render registered or explicitly selected homes."
+        "render", help="regenerate the local HTML page", description="Render registered or explicitly selected homes; --lavish writes a separate Lavish review page and opens it when available."
     )
     command_parsers["render"] = render_parser
     render_parser.add_argument("--home", help="render this Firstmate home instead of configured homes or FM_HOME")
     render_parser.add_argument("--output", help="HTML file path; defaults to the configured state directory")
     render_parser.add_argument("--config", type=Path, help="optional JSON config file")
     render_parser.add_argument("--title", help="override the page title")
+    render_parser.add_argument("--lavish", action="store_true", help="write a separate Lavish-ready page and open it when lavish-axi is available")
     render_parser.set_defaults(handler=render)
 
     add_parser = subparsers.add_parser("add", help="register a Firstmate home", description="Validate and register a Firstmate home.")

@@ -3,7 +3,7 @@
 ## Command
 
 ```text
-quarterdeck render [--home PATH] [--output PATH] [--config FILE] [--title TEXT]
+quarterdeck render [--home PATH] [--output PATH] [--config FILE] [--title TEXT] [--lavish]
 quarterdeck add <firstmate-home> [--label LABEL] [--config FILE]
 quarterdeck list [--config FILE]
 quarterdeck remove <label-or-path> [--config FILE]
@@ -53,6 +53,7 @@ source reports and backlogs, and HTTPS links for GitHub pull requests.
 | `--output PATH` | Output HTML path; overrides `output_dir` in config. Keep it outside the repo. |
 | `--config FILE` | JSON config for this command; defaults to the private user config where documented above. It may supply homes, title, and output directory. |
 | `--title TEXT` | Page title; overrides `page_title` in config. |
+| `--lavish` | Write a separate `*.lavish.html` review page with stable IDs on review cards, then open it with `lavish-axi` when available. Without Lavish, print a command hint and succeed. |
 
 `add`, `list`, and `remove` accept the same `--config FILE` option. `add` also
 accepts `--label LABEL`; `remove` takes one label or path.
@@ -113,5 +114,8 @@ as well as held/needs-decision section labels. Review-ready pull requests need a
 GitHub pull-request link and a review-ready state or flag. Recommendations are
 shown only when a report explicitly labels a recommendation.
 
-The page is regenerated on demand. `lavish-axi <output-file>` can open the
-generated HTML as a local artifact.
+The page is regenerated on demand. `quarterdeck render --lavish` writes a separate
+Lavish-ready file beside the normal output (for example, `index.lavish.html`) and
+opens it with `lavish-axi` when that command is on `PATH`. It prints Lavish's
+session URL. If the command is absent, it prints the command to open the page
+later and still succeeds. This does not poll for feedback or run a listener.
