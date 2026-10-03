@@ -25,9 +25,22 @@ shows its own error while other sections still render.
 The page may include task names, recommendations, and local paths from every
 selected home. Its default location is under
 `${XDG_STATE_HOME:-~/.local/state}/quarterdeck/`, outside the repo. Keep any
-custom output and real config outside the repo as well. The page uses inline
-CSS and makes no network requests. There is no daemon, token, or write-back
-path.
+custom output outside the repo and selected homes, and keep real config outside
+the repo as well. Quarterdeck refuses output inside its checkout or a selected
+home. The page uses inline CSS and makes no network requests. There is no
+daemon, token, or write-back path.
+
+Quarterdeck writes readable HTML copies of linked reports and the backlog
+beside the main page; the dependency-free Markdown renderer escapes source
+HTML. The default output location is outside the repo, and custom output and
+real config should stay outside it too.
+
+Lavish request controls are present only on `quarterdeck render --lavish`
+pages. They queue a structured prompt through Lavish's page API. Quarterdeck
+does not send the prompt, listen for requests, poll for a result, or create a
+Lavish page. An armed listener on that session must do that work and reply with
+the page link in the session conversation panel. Without an armed listener,
+the request has no effect.
 
 The repository ignores common output folders, image screenshots, and local
 configuration files. The staged-file privacy guard rejects generated HTML,

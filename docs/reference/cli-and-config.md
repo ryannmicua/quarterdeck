@@ -3,7 +3,7 @@
 ## Command
 
 ```text
-quarterdeck render [--home PATH] [--output PATH] [--config FILE] [--title TEXT] [--lavish]
+quarterdeck render [--home PATH] [--output PATH] [--config FILE] [--title TEXT] [--all] [--lavish]
 quarterdeck add <firstmate-home> [--label LABEL] [--config FILE]
 quarterdeck list [--config FILE]
 quarterdeck remove <label-or-path> [--config FILE]
@@ -44,15 +44,17 @@ child `*/report.md` files. It also reads the parent's optional
 `data/secondmates.md` registry and renders each registered local secondmate
 under that parent. It does not run Firstmate commands or connect to remote
 hosts. A missing or unreadable home in a configured list gets a failure section;
-the other homes still render. The output page contains local `file:` links to
-source reports and backlogs, and HTTPS links for GitHub pull requests.
+the other homes still render. The page links to readable HTML copies of
+selected reports and backlogs, generated beside the main page, and HTTPS links
+for GitHub pull requests.
 
 | Option | Meaning |
 | --- | --- |
 | `--home PATH` | Firstmate home; overrides a configured `homes` list and `FM_HOME`. |
-| `--output PATH` | Output HTML path; overrides `output_dir` in config. Keep it outside the repo. |
+| `--output PATH` | Output HTML path; overrides `output_dir` in config. Keep it outside the repo and selected homes; those locations are refused. |
 | `--config FILE` | JSON config for this command; defaults to the private user config where documented above. It may supply homes, title, and output directory. |
 | `--title TEXT` | Page title; overrides `page_title` in config. |
+| `--all` | Show every backlog item and report, including queued, finished, closed, and unlinked historical records. |
 | `--lavish` | Write a separate `*.lavish.html` review page with stable IDs on review cards, then open it with `lavish-axi` when available. Without Lavish, print a command hint and succeed. |
 
 `add`, `list`, and `remove` accept the same `--config FILE` option. `add` also
@@ -108,14 +110,21 @@ or name it `.quarterdeck.json`, which is ignored by Git.
 
 ## Data shown
 
-The held list recognizes structured backlog hold fields such as
-`captain_actionable`, `hold_bucket`, `hold_kind`, `hold_reason`, and `hold_until`,
-as well as held/needs-decision section labels. Review-ready pull requests need a
-GitHub pull-request link and a review-ready state or flag. Recommendations are
-shown only when a report explicitly labels a recommendation.
+The default attention view shows unresolved captain holds (held=yes,
+hold_kind=captain, and not closed), review-ready GitHub pull requests, in-flight
+work, and blocked items with a structured captain or external-party blocker.
+Held cards show their recorded hold reason. A report is linked only when its
+backlog item is held for the captain or marked review-ready; answered and closed
+items no longer surface their reports. Queued and finished work is omitted from
+cards. Use `--all` to restore the exhaustive view. Recommendations are shown
+only when a report explicitly labels one.
 
 The page is regenerated on demand. `quarterdeck render --lavish` writes a separate
 Lavish-ready file beside the normal output (for example, `index.lavish.html`) and
 opens it with `lavish-axi` when that command is on `PATH`. It prints Lavish's
-session URL. If the command is absent, it prints the command to open the page
-later and still succeeds. This does not poll for feedback or run a listener.
+session URL. Held, review-ready, and in-flight cards include a control that
+queues a structured page request in that Lavish session. Quarterdeck does not
+send the queued prompt, listen, poll, or create the requested page; an armed
+listener must receive it and reply with the page link in the session
+conversation panel. Without Lavish, Quarterdeck prints a command hint and
+still succeeds.

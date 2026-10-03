@@ -19,6 +19,8 @@ lavish-axi ~/.local/state/quarterdeck/index.lavish.html
 
 Each review card has a stable ID so annotations remain attached to a specific
 item. Use Lavish's annotation and queued feedback controls in its review page.
-Quarterdeck does not poll for feedback or start a listener. The ordinary
-`index.html` remains available as a self-contained page that can be opened
-directly in a browser.
+Held, review-ready, and in-flight cards also have a **Request a Lavish page**
+control. It queues a structured prompt for a listener on that session; see
+[Request a Lavish page](request-lavish-page.md) for the complete flow and its
+listener requirement. The ordinary `index.html` remains available as a
+readable page that can be opened directly in a browser.

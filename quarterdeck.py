@@ -13,6 +13,7 @@ import shutil
 import subprocess
 import sys
 import tempfile
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
@@ -29,8 +30,9 @@ ROUTE_HOME_RE = re.compile(r"(?:^|;\s*)home:\s*(.*?)(?=\s*;\s*(?:scope|projects|
 ROUTE_HOST_RE = re.compile(r"(?:^|;\s*)host:\s*([^;]+)", re.I)
 MARKDOWN_LINK_RE = re.compile(r"\[([^\]]+)\]\(([^)]+)\)")
 FIELD_RE = re.compile(
-    r"(?i)(captain_actionable|hold_bucket|hold_kind|hold_reason|hold_until|"
-    r"hold_set|state|status|review_ready|pr_url|pr|report|report_path|"
+    r"(?i)(captain_actionable|held|hold_bucket|hold_kind|hold_reason|hold_until|"
+    r"hold_set|state|status|closed|review_ready|pr_url|pr|report|report_path|"
+    r"blocked|blocked_by|block_reason|blocked_reason|waiting_on|waiting_for|source_path|"
     r"recommendation)\s*[:=]\s*(.+?)(?=\s+(?:[a-z_]+)\s*[:=]|$)"
 )
 
@@ -44,6 +46,7 @@ class Record:
     report: Path | None = None
     recommendation: str | None = None
     pr_url: str | None = None
+    report_source: str | None = None
 
 
 @dataclass
@@ -51,6 +54,7 @@ class Report:
     title: str
     path: Path
     recommendation: str | None
+    markdown: str
 
 
 @dataclass
@@ -68,6 +72,8 @@ class HomeSpec:
 class HomeSnapshot:
     spec: HomeSpec
     data_dir: Path | None = None
+    backlog_path: Path | None = None
+    backlog_markdown: str | None = None
     records: list[Record] = field(default_factory=list)
     reports: list[Report] = field(default_factory=list)
     warnings: list[str] = field(default_factory=list)
@@ -81,7 +87,8 @@ def markdown_text(value: str) -> str:
     value = re.sub(r"<!--.*?-->", "", value, flags=re.S)
     value = MARKDOWN_LINK_RE.sub(lambda match: match.group(1), value)
     value = re.sub(r"`([^`]*)`", r"\1", value)
-    value = re.sub(r"[*_~]", "", value)
+    value = re.sub(r"(\*\*|__)(.+?)\1", r"\2", value)
+    value = re.sub(r"(?<!\w)([*_~])([^*_~]+)\1(?!\w)", r"\2", value)
     return html.unescape(value).strip()
 
 
@@ -147,7 +154,7 @@ def read_reports(data_dir: Path, warnings: list[str] | None = None) -> list[Repo
              if (match := re.match(r"^\s{0,3}#{1,2}\s+(.+)$", line))),
             report_path.parent.name.replace("-", " ").replace("_", " "),
         )
-        reports.append(Report(title, report_path.resolve(), report_recommendation(source)))
+        reports.append(Report(title, report_path.resolve(), report_recommendation(source), source))
     return reports
 
 
@@ -163,14 +170,17 @@ def _field_name(header: str) -> str:
         "current_state": "state", "task_state": "state", "pr_link": "pr_url",
         "pr": "pr_url", "pull_request": "pr_url", "pull_request_url": "pr_url",
         "review": "review_ready", "ready_for_review": "review_ready", "report_link": "report_path",
-        "report_file": "report_path", "recommendation": "recommendation",
+        "report_file": "report_path", "report": "report_path",
+        "is_held": "held", "hold_type": "hold_kind", "closed_at": "closed",
+        "blocker": "blocked_by", "waiting": "waiting_on", "waiting_for": "waiting_on",
+        "blocker_reason": "blocked_reason", "source": "source_path", "recommendation": "recommendation",
     }
     return aliases.get(normalized, normalized)
 
 
 def _record_from_line(line: str, section: str, headers: list[str] | None) -> Record | None:
     stripped = line.strip()
-    if not stripped or stripped.startswith("<!--") or stripped.startswith("<!--"):
+    if not stripped or stripped.startswith("<!--"):
         return None
 
     cells: list[str] | None = None
@@ -199,7 +209,7 @@ def _record_from_line(line: str, section: str, headers: list[str] | None) -> Rec
         if re.match(r"^#{1,6}\s+", raw):
             return None
 
-    fields = fields_from(raw, columns)
+    fields = dict(columns) if cells and headers else fields_from(raw)
     title = value_for(fields, "title", "name", "summary")
     if not title:
         title = markdown_text(cells[0] if cells else raw)
@@ -211,7 +221,7 @@ def _record_from_line(line: str, section: str, headers: list[str] | None) -> Rec
         title=title,
         section=section,
         fields=fields,
-        text=markdown_text(raw),
+        text=value_for(fields, "description", "notes", "body") or (title if cells else markdown_text(raw)),
         recommendation=value_for(fields, "recommendation") or None,
         pr_url=value_for(fields, "pr_url", "pr") or None,
     )
@@ -252,6 +262,12 @@ def parse_backlog(source: str, data_dir: Path, reports: list[Report]) -> list[Re
                 if target.is_file() and target.name == "report.md":
                     report = next((item for item in reports if item.path == target), None)
         record.report = report.path if report else None
+        if report:
+            try:
+                conventional_source = report.path.relative_to(data_dir.parent).as_posix()
+            except ValueError:
+                conventional_source = str(report.path)
+            record.report_source = value_for(record.fields, "report_path", "report") or conventional_source
         if report and not record.recommendation:
             record.recommendation = report.recommendation
 
@@ -262,38 +278,315 @@ def parse_backlog(source: str, data_dir: Path, reports: list[Report]) -> list[Re
     return records
 
 
-def is_held(record: Record) -> bool:
-    fields = record.fields
-    affirmative = {"true", "yes", "1", "on"}
-    state = " ".join((record.section, value_for(fields, "state", "status"))).lower()
-    bucket = value_for(fields, "hold_bucket").lower()
-    if value_for(fields, "captain_actionable").lower() in affirmative:
-        return True
-    if bucket and bucket not in {"none", "null", "false", "-"}:
-        return True
-    if any(value_for(fields, key) for key in ("hold_kind", "hold_reason", "hold_until", "hold_set")):
-        return True
-    return any(term in state for term in ("held", "hold", "needs-decision", "waiting for captain", "captain's call"))
+FALSE_VALUES = {"", "-", "none", "null", "false", "no", "0", "off"}
+TRUE_VALUES = {"true", "yes", "1", "on"}
 
 
-def is_active(record: Record) -> bool:
-    state = " ".join((record.section, value_for(record.fields, "state", "status"))).lower()
-    if any(term in state for term in ("done", "complete", "archived", "cancelled", "canceled")):
-        return False
-    return any(term in state for term in ("in flight", "in-flight", "active", "working", "queued", "running", "blocked"))
+def normalized_state(value: str) -> str:
+    return re.sub(r"[^a-z0-9]+", "_", value.strip().lower()).strip("_")
+
+
+def state_for(record: Record) -> str:
+    return normalized_state(value_for(record.fields, "state", "status") or record.section)
+
+
+def field_is_set(value: str) -> bool:
+    return value.strip().lower() not in FALSE_VALUES
+
+
+def is_closed(record: Record) -> bool:
+    if field_is_set(value_for(record.fields, "closed")):
+        return True
+    return state_for(record) in {"done", "closed", "finished", "resolved", "complete", "completed", "archived", "cancelled", "canceled"}
+
+
+def is_captain_held(record: Record) -> bool:
+    return (
+        not is_closed(record)
+        and value_for(record.fields, "held").strip().lower() in TRUE_VALUES
+        and normalized_state(value_for(record.fields, "hold_kind")) == "captain"
+    )
 
 
 def is_review_ready(record: Record) -> bool:
-    fields = record.fields
-    affirmative = {"true", "yes", "1", "on", "ready"}
-    review_flag = value_for(fields, "review_ready").lower()
-    status = " ".join((record.section, value_for(fields, "state", "status", "pr_status"))).lower()
-    marked = review_flag in affirmative or ("review" in status and any(word in status for word in ("ready", "open", "pending")))
-    return bool(record.pr_url and marked)
+    if is_closed(record) or not record.pr_url:
+        return False
+    parsed_pr = urlparse(record.pr_url)
+    if parsed_pr.scheme != "https" or parsed_pr.netloc.lower() != "github.com" or not PR_URL_RE.search(record.pr_url):
+        return False
+    review_flag = normalized_state(value_for(record.fields, "review_ready"))
+    state = state_for(record)
+    return review_flag in {"true", "yes", "1", "on", "ready", "review_ready", "reviewready"} or state in {
+        "review_ready", "reviewready", "ready_for_review", "open_for_review"
+    }
 
 
-def file_link(path: Path) -> str:
-    return path.resolve().as_uri()
+def is_in_flight(record: Record) -> bool:
+    if is_closed(record):
+        return False
+    return state_for(record) in {"in_flight", "inflight", "working", "active", "running", "in_progress"}
+
+
+def is_waiting_on_captain_or_external(record: Record) -> bool:
+    if is_closed(record):
+        return False
+    blocked = value_for(record.fields, "blocked").strip().lower() in TRUE_VALUES
+    blocked = (
+        blocked or state_for(record) == "blocked"
+        or field_is_set(value_for(record.fields, "blocked_by"))
+        or field_is_set(value_for(record.fields, "waiting_on", "waiting_for"))
+    )
+    if not blocked:
+        return False
+    wait_target = normalized_state(value_for(record.fields, "waiting_on", "waiting_for", "blocked_by"))
+    return wait_target in {
+        "captain", "external", "external_party", "third_party", "vendor", "customer", "provider"
+    }
+
+
+def attention_groups(snapshot: HomeSnapshot, show_all: bool = False) -> dict[str, list[Record]]:
+    groups: dict[str, list[Record]] = {name: [] for name in ("held", "reviews", "in_flight", "blocked", "other")}
+    if snapshot.error:
+        return groups
+
+    assigned: set[int] = set()
+
+    def take(name: str, predicate: Callable[[Record], bool]) -> None:
+        for record in snapshot.records:
+            if id(record) not in assigned and predicate(record):
+                groups[name].append(record)
+                assigned.add(id(record))
+
+    take("held", is_captain_held)
+    take("reviews", is_review_ready)
+    take("in_flight", is_in_flight)
+    take("blocked", is_waiting_on_captain_or_external)
+    if show_all:
+        groups["other"] = [record for record in snapshot.records if id(record) not in assigned]
+    return groups
+
+
+def snapshot_counts(snapshot: HomeSnapshot, show_all: bool = False) -> tuple[int, ...]:
+    groups = attention_groups(snapshot, show_all)
+    counts = tuple(len(groups[name]) for name in ("held", "reviews", "in_flight", "blocked"))
+    if show_all:
+        return counts + (len(groups["other"]), len(snapshot.reports) if not snapshot.error else 0)
+    return counts
+
+
+def hidden_summary(snapshot: HomeSnapshot, groups: dict[str, list[Record]]) -> str | None:
+    visible = {id(record) for name in ("held", "reviews", "in_flight", "blocked") for record in groups[name]}
+    hidden = [record for record in snapshot.records if id(record) not in visible]
+    closed = sum(is_closed(record) for record in hidden)
+    queued = sum(not is_closed(record) and state_for(record) == "queued" for record in hidden)
+    other_blocked = sum(
+        not is_closed(record)
+        and (state_for(record) == "blocked" or field_is_set(value_for(record.fields, "blocked_by")))
+        and not is_waiting_on_captain_or_external(record)
+        for record in hidden
+    )
+    notes = []
+    if closed:
+        notes.append(f"{closed} finished or closed")
+    if queued:
+        notes.append(f"{queued} queued")
+    if other_blocked:
+        notes.append(f"{other_blocked} blocked on an internal or unspecified dependency")
+    return "Not shown: " + "; ".join(notes) + "." if notes else None
+
+
+def markdown_inline(value: str) -> str:
+    protected: list[str] = []
+
+    def keep(rendered: str) -> str:
+        token = f"\x00QD{len(protected)}\x00"
+        protected.append(rendered)
+        return token
+
+    value = re.sub(r"`([^`]+)`", lambda match: keep(f"<code>{html.escape(match.group(1))}</code>"), value)
+
+    def link(match: re.Match[str]) -> str:
+        label, target = match.group(1), match.group(2).strip()
+        parsed = urlparse(target)
+        safe = parsed.scheme in {"http", "https", "mailto"} and (parsed.scheme == "mailto" or bool(parsed.netloc))
+        rendered_label = markdown_inline(label)
+        if safe:
+            return keep(f'<a href="{html.escape(target, quote=True)}">{rendered_label}</a>')
+        return keep(rendered_label)
+
+    value = re.sub(r"(?<!!)\[([^\]]+)\]\(([^)]+)\)", link, value)
+    value = html.escape(value, quote=False)
+    value = re.sub(r"\*\*(.+?)\*\*|__(.+?)__", lambda m: f"<strong>{m.group(1) or m.group(2)}</strong>", value)
+    value = re.sub(
+        r"(?<!\*)\*([^*]+)\*(?!\*)|(?<![\w_])_([^_]+)_(?![\w_])",
+        lambda m: f"<em>{m.group(1) or m.group(2)}</em>",
+        value,
+    )
+    value = re.sub(r"~~(.+?)~~", r"<del>\1</del>", value)
+    for index, rendered in enumerate(protected):
+        value = value.replace(f"\x00QD{index}\x00", rendered)
+    return value
+
+
+def markdown_table_cells(line: str) -> list[str]:
+    cells = re.split(r"(?<!\\)\|", line.strip().strip("|"))
+    return [cell.strip().replace("\\|", "|") for cell in cells]
+
+
+def is_markdown_table(lines: list[str], index: int) -> bool:
+    return (
+        index + 1 < len(lines)
+        and lines[index].lstrip().startswith("|")
+        and lines[index + 1].lstrip().startswith("|")
+        and _is_separator(markdown_table_cells(lines[index + 1]))
+    )
+
+
+def render_markdown(source: str) -> str:
+    lines = source.splitlines()
+    blocks: list[str] = []
+    index = 0
+    list_pattern = re.compile(r"^\s*(?:([-*+])|(\d+)[.)])\s+(.+)$")
+    heading_pattern = re.compile(r"^\s{0,3}(#{1,6})\s+(.+?)\s*#*\s*$")
+    while index < len(lines):
+        line = lines[index]
+        if not line.strip():
+            index += 1
+            continue
+        fence = re.match(r"^\s*(```+|~~~+)", line)
+        if fence:
+            marker = fence.group(1)
+            code: list[str] = []
+            index += 1
+            while index < len(lines) and not re.match(r"^\s*" + re.escape(marker[:3]) + r"\s*$", lines[index]):
+                code.append(lines[index])
+                index += 1
+            if index < len(lines):
+                index += 1
+            blocks.append(f"<pre><code>{html.escape(chr(10).join(code))}</code></pre>")
+            continue
+        heading = heading_pattern.match(line)
+        if heading:
+            level = len(heading.group(1))
+            blocks.append(f"<h{level}>{markdown_inline(heading.group(2))}</h{level}>")
+            index += 1
+            continue
+        if is_markdown_table(lines, index):
+            headers = markdown_table_cells(lines[index])
+            index += 2
+            rows: list[list[str]] = []
+            while index < len(lines) and lines[index].lstrip().startswith("|"):
+                rows.append(markdown_table_cells(lines[index]))
+                index += 1
+            head_html = "".join(f"<th>{markdown_inline(cell)}</th>" for cell in headers)
+            row_html = "".join(
+                "<tr>" + "".join(f"<td>{markdown_inline(cell)}</td>" for cell in row) + "</tr>"
+                for row in rows
+            )
+            blocks.append(f"<div class=\"table-wrap\"><table><thead><tr>{head_html}</tr></thead><tbody>{row_html}</tbody></table></div>")
+            continue
+        list_match = list_pattern.match(line)
+        if list_match:
+            ordered = list_match.group(2) is not None
+            tag = "ol" if ordered else "ul"
+            items: list[str] = []
+            while index < len(lines):
+                current = list_pattern.match(lines[index])
+                if not current or (current.group(2) is not None) != ordered:
+                    break
+                items.append(f"<li>{markdown_inline(current.group(3))}</li>")
+                index += 1
+            blocks.append(f"<{tag}>{''.join(items)}</{tag}>")
+            continue
+        if re.match(r"^\s{0,3}(?:---+|\*\*\*+|___+)\s*$", line):
+            blocks.append("<hr>")
+            index += 1
+            continue
+        paragraph = [line.strip()]
+        index += 1
+        while index < len(lines) and lines[index].strip():
+            if heading_pattern.match(lines[index]) or list_pattern.match(lines[index]) or is_markdown_table(lines, index):
+                break
+            paragraph.append(lines[index].strip())
+            index += 1
+        blocks.append(f"<p>{markdown_inline(' '.join(paragraph))}</p>")
+    return "\n".join(blocks)
+
+
+def source_page_filename(kind: str, home: Path, source: Path) -> str:
+    digest = hashlib.sha256(f"{home.resolve()}\0{source.resolve()}".encode("utf-8")).hexdigest()[:12]
+    return f"{kind}-{digest}.html"
+
+
+def display_path(path: Path, home: Path) -> str:
+    try:
+        return path.relative_to(home).as_posix()
+    except ValueError:
+        return str(path)
+
+
+def source_page_html(title: str, source_path: str, markdown: str) -> str:
+    return f'''<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="quarterdeck-{'gen' + 'erated'}" content="read-only source page"><title>{html.escape(title)} · Quarterdeck source</title>
+<style>
+body {{ margin: 0; background: #f3eddf; color: #20303d; font: 16px/1.65 system-ui, sans-serif; }}
+header {{ background: #17324d; color: #fffdf8; padding: 1.6rem max(1.2rem, calc((100vw - 850px) / 2)); border-bottom: 4px solid #c98635; }}
+header p {{ margin: .35rem 0 0; color: #d8c49b; overflow-wrap: anywhere; }}
+main {{ max-width: 850px; margin: 2rem auto 4rem; padding: 0 1.2rem; }}
+article {{ background: #fffdf8; border: 1px solid #d8d3c8; border-radius: 12px; padding: clamp(1.1rem, 4vw, 2.2rem); overflow-wrap: anywhere; }}
+h1,h2,h3,h4,h5,h6 {{ color: #17324d; line-height: 1.25; }}
+pre {{ overflow-x: auto; padding: 1rem; background: #172b3b; color: #f7f3e9; border-radius: 8px; }}
+code {{ font-family: ui-monospace, SFMono-Regular, Consolas, monospace; background: #eee8da; padding: .1em .25em; border-radius: 4px; }}
+pre code {{ background: transparent; padding: 0; }}
+.table-wrap {{ overflow-x: auto; }} table {{ border-collapse: collapse; min-width: 100%; }} th,td {{ border: 1px solid #d8d3c8; padding: .5rem .7rem; text-align: left; vertical-align: top; }}
+th {{ background: #e8e2d5; color: #17324d; }} a {{ color: #176b69; }} blockquote {{ border-left: 3px solid #c98635; margin-left: 0; padding-left: 1rem; color: #52616d; }}
+</style></head><body><header><h1>{html.escape(title)}</h1><p>{html.escape(source_path)}</p></header><main><article>{render_markdown(markdown)}</article></main></body></html>'''
+
+
+def write_generated_page(path: Path, content: str) -> None:
+    if path.is_symlink():
+        raise ValueError(f"refusing symbolic-link output page: {path}")
+    temporary_path: Path | None = None
+    try:
+        with tempfile.NamedTemporaryFile(
+            "w", encoding="utf-8", dir=path.parent, prefix=f".{path.name}.", suffix=".tmp", delete=False
+        ) as stream:
+            temporary_path = Path(stream.name)
+            stream.write(content)
+        os.replace(temporary_path, path)
+    except OSError:
+        if temporary_path is not None:
+            temporary_path.unlink(missing_ok=True)
+        raise
+
+
+def write_source_pages(homes: list[HomeSnapshot], output_dir: Path, show_all: bool = False) -> None:
+    for snapshot in all_snapshots(homes):
+        if snapshot.spec.home is None:
+            continue
+        if snapshot.backlog_path and snapshot.backlog_markdown is not None:
+            name = source_page_filename("backlog", snapshot.spec.home, snapshot.backlog_path)
+            snapshot_path = display_path(snapshot.backlog_path, snapshot.spec.home)
+            write_generated_page(
+                output_dir / name,
+                source_page_html(f"{snapshot.spec.label} backlog", snapshot_path, snapshot.backlog_markdown),
+            )
+        if show_all:
+            linked_reports = {report.path for report in snapshot.reports}
+        else:
+            linked_reports = {
+                record.report for record in snapshot.records
+                if record.report and (is_captain_held(record) or is_review_ready(record))
+            }
+        for report in snapshot.reports:
+            if report.path not in linked_reports:
+                continue
+            name = source_page_filename("report", snapshot.spec.home, report.path)
+            write_generated_page(
+                output_dir / name,
+                source_page_html(report.title, display_path(report.path, snapshot.spec.home), report.markdown),
+            )
 
 
 def review_element_id(kind: str, home: Path, identity: str) -> str:
@@ -301,11 +594,54 @@ def review_element_id(kind: str, home: Path, identity: str) -> str:
     return f"review-{kind}-{digest}"
 
 
-def card(record: Record, home: Path, data_dir: Path, badge: str, lavish: bool = False) -> str:
+def request_button(payload: dict[str, str]) -> str:
+    encoded = html.escape(json.dumps(payload, ensure_ascii=False), quote=True)
+    return (
+        f'<div class="request-row"><button class="request-lavish" type="button" '
+        f'data-lavish-request="{encoded}">Request a Lavish page</button>'
+        '<span class="request-status" aria-live="polite"></span></div>'
+    )
+
+
+def request_payload(record: Record, snapshot: HomeSnapshot, category: str) -> dict[str, str]:
+    home = snapshot.spec.home or Path(".")
+    report_request = category in {"held", "reviews"} and record.report is not None
+    if report_request:
+        source = record.report_source or display_path(record.report, home)
+        item_id = value_for(record.fields, "id") or record.report.parent.name
+        title = record.title
+        kind = "report"
+    else:
+        source = value_for(record.fields, "source_path") or (
+            display_path(snapshot.backlog_path, home) if snapshot.backlog_path else "data/backlog.md"
+        )
+        item_id = value_for(record.fields, "id") or hashlib.sha256(
+            f"{record.section}\0{record.title}\0{record.text}".encode("utf-8")
+        ).hexdigest()[:12]
+        title = record.title
+        kind = "backlog item"
+    return {"item_id": item_id, "title": title, "kind": kind, "home_label": snapshot.spec.label, "source_path": source}
+
+
+def card(
+    record: Record,
+    snapshot: HomeSnapshot,
+    badge: str,
+    category: str,
+    lavish: bool,
+    show_report: bool,
+) -> str:
+    home = snapshot.spec.home or Path(".")
     safe_title = html.escape(record.title)
     identity = value_for(record.fields, "id") or f"{record.section}:{record.title}:{record.text}"
     element_id = f' id="{review_element_id("item", home, identity)}"' if lavish else ""
     chunks = [f'<article class="card"{element_id}><p class="eyebrow">{html.escape(badge)}</p>', f"<h3>{safe_title}</h3>"]
+    hold_reason = value_for(record.fields, "hold_reason") if category == "held" else ""
+    wait_reason = value_for(record.fields, "blocked_reason", "block_reason", "waiting_on", "blocked_by") if category == "blocked" else ""
+    if hold_reason:
+        chunks.append(f'<p class="reason"><strong>Hold reason:</strong> {html.escape(hold_reason)}</p>')
+    elif wait_reason:
+        chunks.append(f'<p class="reason"><strong>Waiting on:</strong> {html.escape(wait_reason)}</p>')
     if record.recommendation:
         chunks.append(f'<p><strong>Recommendation:</strong> {html.escape(record.recommendation)}</p>')
     elif record.text and record.text != record.title:
@@ -317,34 +653,39 @@ def card(record: Record, home: Path, data_dir: Path, badge: str, lavish: bool = 
     links: list[str] = []
     if record.pr_url:
         parsed = urlparse(record.pr_url)
-        if parsed.scheme == "https" and parsed.netloc == "github.com":
+        if parsed.scheme == "https" and parsed.netloc == "github.com" and PR_URL_RE.search(record.pr_url):
             links.append(f'<a href="{html.escape(record.pr_url, quote=True)}">Open pull request</a>')
-    if record.report and record.report.is_file():
-        relative = record.report.relative_to(home) if record.report.is_relative_to(home) else record.report
-        links.append(f'<a href="{html.escape(file_link(record.report), quote=True)}">Read report <span class="path">{html.escape(str(relative))}</span></a>')
-    else:
-        backlog_path = data_dir / "backlog.md"
-        if backlog_path.is_file():
-            links.append(f'<a href="{html.escape(file_link(backlog_path), quote=True)}">Open backlog</a>')
+    if show_report and record.report:
+        report_name = source_page_filename("report", home, record.report)
+        report_relative = display_path(record.report, home)
+        links.append(f'<a href="{html.escape(report_name, quote=True)}">Read report <span class="path">{html.escape(report_relative)}</span></a>')
+    if snapshot.backlog_path:
+        backlog_name = source_page_filename("backlog", home, snapshot.backlog_path)
+        links.append(f'<a href="{html.escape(backlog_name, quote=True)}">Read backlog item</a>')
     if links:
         chunks.append('<p class="links">' + " · ".join(links) + "</p>")
+    if lavish and category in {"held", "reviews", "in_flight"}:
+        chunks.append(request_button(request_payload(record, snapshot, category)))
     chunks.append("</article>")
     return "".join(chunks)
 
 
-def report_card(report: Report, home: Path, lavish: bool = False) -> str:
-    relative = report.path.relative_to(home) if report.path.is_relative_to(home) else report.path
-    recommendation = (
-        f'<p><strong>Recommendation:</strong> {html.escape(report.recommendation)}</p>'
-        if report.recommendation else ""
-    )
+def report_card(report: Report, snapshot: HomeSnapshot, lavish: bool = False) -> str:
+    home = snapshot.spec.home or Path(".")
     element_id = f' id="{review_element_id("report", home, str(report.path))}"' if lavish else ""
-    return (
-        f'<article class="card"{element_id}><p class="eyebrow">Scout report</p>'
-        f'<h3>{html.escape(report.title)}</h3>{recommendation}'
-        f'<p class="links"><a href="{html.escape(file_link(report.path), quote=True)}">Read report '
-        f'<span class="path">{html.escape(str(relative))}</span></a></p></article>'
-    )
+    recommendation = f'<p><strong>Recommendation:</strong> {html.escape(report.recommendation)}</p>' if report.recommendation else ""
+    name = source_page_filename("report", home, report.path)
+    relative = display_path(report.path, home)
+    parts = [
+        f'<article class="card"{element_id}><p class="eyebrow">Scout report</p>',
+        f'<h3>{html.escape(report.title)}</h3>{recommendation}',
+        f'<p class="links"><a href="{html.escape(name, quote=True)}">Read report <span class="path">{html.escape(relative)}</span></a></p>',
+    ]
+    if lavish:
+        payload = {"item_id": report.path.parent.name, "title": report.title, "kind": "report", "home_label": snapshot.spec.label, "source_path": relative}
+        parts.append(request_button(payload))
+    parts.append("</article>")
+    return "".join(parts)
 
 
 def section_html(title: str, description: str, cards: list[str], empty: str) -> str:
@@ -352,16 +693,7 @@ def section_html(title: str, description: str, cards: list[str], empty: str) -> 
     return f'<div class="dashboard-section"><div class="section-head"><div><h3>{html.escape(title)}</h3><p>{html.escape(description)}</p></div><span class="count">{len(cards)}</span></div><div class="cards">{content}</div></div>'
 
 
-def snapshot_counts(snapshot: HomeSnapshot) -> tuple[int, int, int, int]:
-    if snapshot.error:
-        return (0, 0, 0, 0)
-    held = [record for record in snapshot.records if is_held(record)]
-    reviews = [record for record in snapshot.records if is_review_ready(record)]
-    active = [record for record in snapshot.records if is_active(record) and record not in held and record not in reviews]
-    return (len(held), len(reviews), len(snapshot.reports), len(active))
-
-
-def home_panel(snapshot: HomeSnapshot, lavish: bool = False) -> str:
+def home_panel(snapshot: HomeSnapshot, lavish: bool = False, show_all: bool = False) -> str:
     spec = snapshot.spec
     if spec.parent_label:
         role = f"Secondmate · registered by {spec.parent_label}"
@@ -386,44 +718,57 @@ def home_panel(snapshot: HomeSnapshot, lavish: bool = False) -> str:
             f'<p>{html.escape(snapshot.error)}</p></div>'
         )
     else:
-        held = sorted(
-            (record for record in snapshot.records if is_held(record)),
-            key=lambda record: (record.fields.get("hold_bucket", "live") != "live", record.title.lower()),
-        )
-        reviews = [record for record in snapshot.records if is_review_ready(record)]
-        active = [
-            record for record in snapshot.records
-            if is_active(record) and record not in held and record not in reviews
+        groups = attention_groups(snapshot, show_all)
+        counts = snapshot_counts(snapshot, show_all)
+        home_count_labels = [
+            f"{counts[0]} held for captain",
+            f"{counts[1]} review-ready PRs",
+            f"{counts[2]} in-flight",
+            f"{counts[3]} blocked for captain/external",
         ]
-        counts = snapshot_counts(snapshot)
-        body.append(
-            '<div class="home-counts">'
-            f'<span>{counts[0]} held</span><span>{counts[1]} review-ready</span>'
-            f'<span>{counts[2]} reports</span><span>{counts[3]} active</span></div>'
-        )
-        review_cards = [card(record, spec.home, snapshot.data_dir, "Review-ready pull request", lavish) for record in reviews]
-        held_cards = [card(record, spec.home, snapshot.data_dir, "Held for captain review", lavish) for record in held]
-        active_cards = [card(record, spec.home, snapshot.data_dir, "Active task", lavish) for record in active]
-        report_cards = [report_card(report, spec.home, lavish) for report in snapshot.reports]
+        if show_all:
+            home_count_labels.extend([f"{counts[4]} other backlog items", f"{counts[5]} scout reports"])
+        home_counts = "".join(f"<span>{html.escape(label)}</span>" for label in home_count_labels)
+        body.append(f'<div class="home-counts">{home_counts}</div>')
+        held_cards = [card(record, snapshot, "Held for captain", "held", lavish, True) for record in groups["held"]]
+        review_cards = [card(record, snapshot, "Review-ready pull request", "reviews", lavish, True) for record in groups["reviews"]]
+        in_flight_cards = [card(record, snapshot, "In-flight work", "in_flight", lavish, False) for record in groups["in_flight"]]
+        blocked_cards = [card(record, snapshot, "Blocked for captain or external party", "blocked", lavish, False) for record in groups["blocked"]]
         body.extend([
-            section_html("Held for review", "Items that have a recorded hold or need a decision.", held_cards, "Nothing is waiting on a recorded hold."),
-            section_html("Review-ready pull requests", "Open the linked change when a task marks it ready for review.", review_cards, "No review-ready pull requests are recorded."),
-            section_html("Scout reports", "Reports found in this home's data directory.", report_cards, "No scout reports were found."),
-            section_html("Active tasks", "In-flight and queued work from this home's backlog.", active_cards, "No active backlog items were found."),
+            section_html("Held for the captain", "Unresolved captain holds, with the recorded reason and linked report.", held_cards, "Nothing is waiting for a captain answer."),
+            section_html("Review-ready pull requests", "Open pull requests explicitly marked ready for review.", review_cards, "No review-ready pull requests are recorded."),
+            section_html("In-flight work", "Tasks recorded as actively in progress.", in_flight_cards, "No work is currently in flight."),
+            section_html("Blocked for the captain or an external party", "Blocked items with a structured captain or external-party blocker.", blocked_cards, "Nothing is blocked on the captain or an external party."),
         ])
+        if show_all:
+            other_cards = [card(record, snapshot, "Other backlog item", "other", lavish, True) for record in groups["other"]]
+            report_cards = [report_card(report, snapshot, lavish) for report in snapshot.reports]
+            body.extend([
+                section_html("Other backlog items", "Queued, finished, closed, and other records for an exhaustive view.", other_cards, "No other backlog items were found."),
+                section_html("All scout reports", "Every report found in this home's data directory.", report_cards, "No scout reports were found."),
+            ])
+        else:
+            summary = hidden_summary(snapshot, groups)
+            if summary:
+                body.append(f'<p class="quiet-summary">{html.escape(summary)}</p>')
     if snapshot.registry_error:
         body.append(
             '<div class="warning"><strong>Secondmate registry could not be read</strong>'
             f'<p>{html.escape(snapshot.registry_error)}</p></div>'
         )
     if snapshot.warnings:
+        warning_text = (
+            "; ".join(snapshot.warnings)
+            if show_all else
+            f"{len(snapshot.warnings)} report file(s) could not be read."
+        )
         body.append(
             '<div class="warning"><strong>Some report files could not be read</strong>'
-            f'<p>{html.escape("; ".join(snapshot.warnings))}</p></div>'
+            f'<p>{html.escape(warning_text)}</p></div>'
         )
     if snapshot.children:
         body.append('<div class="secondmates"><h3>Registered secondmates</h3>')
-        body.extend(home_panel(child, lavish) for child in snapshot.children)
+        body.extend(home_panel(child, lavish, show_all) for child in snapshot.children)
         body.append('</div>')
     return ''.join(heading + body + ['</section>'])
 
@@ -436,10 +781,46 @@ def all_snapshots(snapshots: list[HomeSnapshot]) -> list[HomeSnapshot]:
     return result
 
 
-def build_html(homes: list[HomeSnapshot], title: str, lavish: bool = False) -> str:
+def build_html(homes: list[HomeSnapshot], title: str, lavish: bool = False, show_all: bool = False) -> str:
     snapshots = all_snapshots(homes)
-    counts = [sum(snapshot_counts(snapshot)[index] for snapshot in snapshots) for index in range(4)]
+    counts = [sum(snapshot_counts(snapshot, show_all)[index] for snapshot in snapshots) for index in range(6 if show_all else 4)]
+    metric_labels = ["Held for captain", "Review-ready PRs", "In-flight work", "Blocked for captain/external"]
+    if show_all:
+        metric_labels.extend(["Other backlog items", "Scout reports"])
     timestamp = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
+    metrics = "".join(
+        f'<div class="metric"><b>{count}</b><span>{html.escape(label)}</span></div>'
+        for count, label in zip(counts, metric_labels)
+    )
+    introductory_text = (
+        "Exhaustive snapshot of configured homes and their registered secondmates."
+        if show_all else
+        "A read-only view of unresolved captain holds, review-ready pull requests, in-flight work, and external blockers."
+    )
+    lavish_script = '''
+  <script>
+    document.addEventListener("click", (event) => {
+      const button = event.target.closest("[data-lavish-request]");
+      if (!button || button.disabled) return;
+      const status = button.parentElement.querySelector(".request-status");
+      if (!window.lavish || typeof window.lavish.queuePrompt !== "function") {
+        if (status) status.textContent = "Open this page inside an active Lavish session to queue the request.";
+        return;
+      }
+      const payload = JSON.parse(button.dataset.lavishRequest);
+      const prompt = "Create a Lavish page from this source and reply with its link in this session's conversation panel. " +
+        "Use the structured request below as the source of truth.\\n\\n" + JSON.stringify(payload);
+      window.lavish.queuePrompt(prompt, {
+        tag: "quarterdeck-page-request",
+        text: "Request a Lavish page: " + payload.title,
+        element: button,
+        data: payload
+      });
+      button.disabled = true;
+      button.textContent = "Request queued";
+      if (status) status.textContent = "Send the queued prompt to the agent. An armed listener must be available to create the page and return its link.";
+    });
+  </script>''' if lavish else ""
     return f'''<!doctype html>
 <html lang="en">
 <head>
@@ -456,7 +837,7 @@ def build_html(homes: list[HomeSnapshot], title: str, lavish: bool = False) -> s
     h1 {{ margin: .25rem 0 .35rem; font: 700 clamp(2.5rem, 7vw, 4.6rem)/1 Georgia, serif; letter-spacing: -.04em; }}
     header p {{ max-width: 46rem; margin: .7rem 0 0; color: #e4e8e8; }}
     main {{ width: min(1080px, calc(100% - 2.4rem)); margin: 2rem auto 4rem; }}
-    .summary {{ display: grid; grid-template-columns: repeat(4, 1fr); gap: .8rem; margin-bottom: 2rem; }}
+    .summary {{ display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: .8rem; margin-bottom: 2rem; }}
     .metric {{ background: var(--paper); border: 1px solid var(--line); border-radius: 12px; padding: 1rem 1.1rem; }}
     .metric b {{ display: block; color: var(--sea); font: 700 1.8rem Georgia, serif; }}
     .metric span {{ color: var(--muted); font-size: .9rem; }}
@@ -478,6 +859,12 @@ def build_html(homes: list[HomeSnapshot], title: str, lavish: bool = False) -> s
     .card p {{ margin: .4rem 0; }}
     .eyebrow {{ color: var(--muted); font-size: .73rem; text-transform: uppercase; letter-spacing: .09em; font-weight: 700; }}
     .links {{ margin-top: .8rem !important; font-size: .9rem; }}
+    .request-row {{ display: flex; flex-wrap: wrap; align-items: center; gap: .65rem; margin-top: .8rem; }}
+    .request-lavish {{ border: 1px solid var(--sea); border-radius: 7px; background: #e6f1ee; color: #124f4c; padding: .45rem .7rem; font: inherit; font-size: .86rem; font-weight: 700; cursor: pointer; }}
+    .request-lavish:focus-visible {{ outline: 3px solid var(--gold); outline-offset: 2px; }}
+    .request-lavish:disabled {{ opacity: .7; cursor: default; }}
+    .request-status {{ color: var(--muted); font-size: .82rem; }}
+    .quiet-summary {{ color: var(--muted); font-size: .82rem; margin: -.5rem 0 1rem; }}
     a {{ color: var(--sea); font-weight: 650; }}
     a:focus-visible {{ outline: 3px solid var(--gold); outline-offset: 3px; }}
     .path {{ color: var(--muted); font-weight: 400; overflow-wrap: anywhere; }}
@@ -498,18 +885,16 @@ def build_html(homes: list[HomeSnapshot], title: str, lavish: bool = False) -> s
   <header>
     <div class="kicker">Firstmate · local review</div>
     <h1>⚓ {html.escape(title)}</h1>
-    <p>A read-only lookout over configured Firstmate homes and their registered secondmates.</p>
+    <p>{html.escape(introductory_text)}</p>
   </header>
   <main>
     <div class="summary" aria-label="Review counts">
-      <div class="metric"><b>{counts[0]}</b><span>Held items</span></div>
-      <div class="metric"><b>{counts[1]}</b><span>Review-ready PRs</span></div>
-      <div class="metric"><b>{counts[2]}</b><span>Scout reports</span></div>
-      <div class="metric"><b>{counts[3]}</b><span>Active tasks</span></div>
+      {metrics}
     </div>
-    {''.join(home_panel(home, lavish) for home in homes)}
-    <footer>Read-only snapshot · refreshed {timestamp} · sources are identified within each home section.</footer>
+    {''.join(home_panel(home, lavish, show_all) for home in homes)}
+    <footer>Read-only snapshot · refreshed {timestamp} · source files open as readable pages beside this one.</footer>
   </main>
+  {lavish_script}
 </body>
 </html>
 '''
@@ -697,7 +1082,7 @@ def remove_home(args: argparse.Namespace) -> int:
 
 
 COMMAND_DOCS = {
-    "render": ["how-to/view-in-lavish.md", "reference/cli-and-config.md", "explanation/privacy-and-architecture.md"],
+    "render": ["how-to/view-in-lavish.md", "how-to/request-lavish-page.md", "explanation/attention-model.md", "reference/cli-and-config.md", "explanation/privacy-and-architecture.md"],
     "add": ["how-to/configure-multiple-homes.md", "reference/cli-and-config.md"],
     "list": ["how-to/configure-multiple-homes.md", "reference/cli-and-config.md"],
     "remove": ["how-to/configure-multiple-homes.md", "reference/cli-and-config.md"],
@@ -793,6 +1178,22 @@ def resolve_home_specs(args: argparse.Namespace, config: dict[str, object]) -> t
     raise ValueError("a Firstmate home is required; pass --home, set FM_HOME, or configure homes")
 
 
+def validate_output_path(output_path: Path, homes: list[HomeSnapshot]) -> None:
+    checkout = Path(__file__).resolve().parent
+    roots = [checkout] + [
+        snapshot.spec.home.resolve()
+        for snapshot in all_snapshots(homes)
+        if snapshot.spec.home is not None
+    ]
+    resolved_output = output_path.resolve()
+    for root in roots:
+        try:
+            resolved_output.relative_to(root)
+        except ValueError:
+            continue
+        raise ValueError("rendered output must be outside the Quarterdeck checkout and all selected Firstmate homes")
+
+
 def parse_secondmates(source: str, parent_label: str) -> tuple[list[HomeSpec], list[str]]:
     specs: list[HomeSpec] = []
     errors: list[str] = []
@@ -843,6 +1244,8 @@ def load_home_snapshot(spec: HomeSpec, discover_secondmates: bool = False) -> Ho
             if not backlog_path.is_file():
                 raise FileNotFoundError(f"backlog not found: {backlog_path}")
             source = backlog_path.read_text(encoding="utf-8", errors="replace")
+            snapshot.backlog_path = backlog_path.resolve()
+            snapshot.backlog_markdown = source
             snapshot.reports = read_reports(data_dir, snapshot.warnings)
             snapshot.records = parse_backlog(source, data_dir, snapshot.reports)
         except (OSError, ValueError) as exc:
@@ -884,8 +1287,10 @@ def render(args: argparse.Namespace) -> int:
         configured_title = config.get("page_title")
         title = args.title or (configured_title if isinstance(configured_title, str) else None) or DEFAULT_TITLE
         output_path = output_path.resolve()
+        validate_output_path(output_path, homes)
         output_path.parent.mkdir(parents=True, exist_ok=True)
-        output_path.write_text(build_html(homes, title, lavish=args.lavish), encoding="utf-8")
+        write_source_pages(homes, output_path.parent, show_all=args.all)
+        write_generated_page(output_path, build_html(homes, title, lavish=args.lavish, show_all=args.all))
     except (OSError, ValueError) as exc:
         print(f"quarterdeck: {exc}", file=sys.stderr)
         return 2
@@ -920,13 +1325,14 @@ def make_parser() -> argparse.ArgumentParser:
     command_parsers: dict[str, argparse.ArgumentParser] = {}
 
     render_parser = subparsers.add_parser(
-        "render", help="regenerate the local HTML page", description="Render registered or explicitly selected homes; --lavish writes a separate Lavish review page and opens it when available."
+        "render", help="regenerate the local HTML page", description="Render registered or explicitly selected homes using the attention view; --all includes queued, finished, closed, and unlinked report records. --lavish writes a separate Lavish review page and opens it when available."
     )
     command_parsers["render"] = render_parser
     render_parser.add_argument("--home", help="render this Firstmate home instead of configured homes or FM_HOME")
     render_parser.add_argument("--output", help="HTML file path; defaults to the configured state directory")
     render_parser.add_argument("--config", type=Path, help="optional JSON config file")
     render_parser.add_argument("--title", help="override the page title")
+    render_parser.add_argument("--all", action="store_true", help="show every backlog item and scout report, including queued and finished work")
     render_parser.add_argument("--lavish", action="store_true", help="write a separate Lavish-ready page and open it when lavish-axi is available")
     render_parser.set_defaults(handler=render)
 
