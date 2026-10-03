@@ -1,10 +1,51 @@
 # Install Quarterdeck
 
-Quarterdeck has no package dependencies. It runs with Python 3.
+Quarterdeck has no Python package dependencies. The installer uses Git and
+requires Python 3 for running the command.
 
-## Install a user-local checkout
+## Read and run the installer
 
-Clone the public repository into a user-owned tools directory:
+The user-local installer clones or updates the checkout at
+`~/.local/share/quarterdeck`, links `quarterdeck` into `~/.local/bin`, and
+creates `~/.config/quarterdeck.json` only when it does not already exist. If
+`XDG_CONFIG_HOME` is set, the config is stored there instead. It never uses
+root or sudo.
+
+To review the script before running it, download and print it first:
+
+```sh
+curl -fsSLo /tmp/quarterdeck-install.sh https://raw.githubusercontent.com/ryannmicua/quarterdeck/main/install.sh
+cat /tmp/quarterdeck-install.sh
+sh /tmp/quarterdeck-install.sh
+```
+
+For a one-line install, run:
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/ryannmicua/quarterdeck/main/install.sh | sh
+```
+
+The installer warns if `~/.local/bin` is not on `PATH`. Once it is available,
+register a home and render the dashboard:
+
+```sh
+quarterdeck add /path/to/firstmate
+quarterdeck render
+```
+
+After installation, `quarterdeck install` reruns the installer. Use
+`quarterdeck install --help` to see its options.
+
+The generated page defaults to
+`${XDG_STATE_HOME:-~/.local/state}/quarterdeck/index.html`. The config and
+generated page stay outside the checkout. See [CLI and configuration
+reference](../reference/cli-and-config.md) for custom paths and
+[Configure multiple homes](configure-multiple-homes.md) for home management.
+
+## Manual installation alternative
+
+If you prefer to manage the checkout yourself, clone the public repository and
+create the command link:
 
 ```sh
 git clone https://github.com/ryannmicua/quarterdeck.git ~/.local/share/quarterdeck
@@ -12,21 +53,5 @@ mkdir -p ~/.local/bin
 ln -s ~/.local/share/quarterdeck/quarterdeck.py ~/.local/bin/quarterdeck
 ```
 
-Ensure `~/.local/bin` is on `PATH`. Check the command:
-
-```sh
-quarterdeck --help
-```
-
-## Render a page
-
-Set the Firstmate home explicitly on each run:
-
-```sh
-quarterdeck render --home /path/to/firstmate
-```
-
-The generated page defaults to `${XDG_STATE_HOME:-~/.local/state}/quarterdeck/index.html`.
-See [CLI and configuration reference](../reference/cli-and-config.md) for
-custom output and config options. To review several homes together, create a
-private config using the [multiple homes how-to](configure-multiple-homes.md).
+Create `~/.config/quarterdeck.json` with `{}` if you want to register homes
+without specifying `--config`. Keep the config outside the repository.

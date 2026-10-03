@@ -1,15 +1,22 @@
 # Update Quarterdeck
 
-For a checkout installed at `~/.local/share/quarterdeck`, update from its
-current branch with:
+For the installer-managed checkout, rerun the installer:
+
+```sh
+quarterdeck install
+```
+
+It updates a clean checkout with `git pull --ff-only`. If the checkout has
+tracked or untracked local changes, the installer stops without updating it;
+review or save those changes, then run the installer again. Your config and
+registered homes remain in place. The next `quarterdeck render` uses the
+updated code; existing HTML remains until rendered again.
+
+For a manually managed checkout, use the same fast-forward-only update:
 
 ```sh
 git -C ~/.local/share/quarterdeck pull --ff-only
 ```
 
-The command preserves local-only changes by refusing a non-fast-forward
-update. If the checkout has local edits, review or save those edits before
-updating. The next `quarterdeck render` uses the updated code; existing HTML
-remains until rendered again. Your config and its home list stay in place; no
-migration is needed. A config may include a `homes` array to render several
-independent homes together. See [Configure multiple homes](configure-multiple-homes.md).
+See [Configure multiple homes](configure-multiple-homes.md) to manage the
+registered home list.

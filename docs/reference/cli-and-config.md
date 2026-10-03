@@ -4,13 +4,40 @@
 
 ```text
 quarterdeck render [--home PATH] [--output PATH] [--config FILE] [--title TEXT]
+quarterdeck add <firstmate-home> [--label LABEL] [--config FILE]
+quarterdeck list [--config FILE]
+quarterdeck remove <label-or-path> [--config FILE]
+quarterdeck install [--uninstall]
+quarterdeck help [COMMAND] [--json]
 ```
 
-Homes are selected in this order: `--home`, the `homes` array in the config,
-then `FM_HOME`. `--home` renders just that home and overrides a configured home
-list. If the config has no `homes` array, the original single-home behavior
-remains: set `FM_HOME` or pass `--home`. Without a selected home, the command
-prints an error and exits with status 2.
+Run `quarterdeck --help` or `quarterdeck help` for a command overview.
+`quarterdeck <command> --help` describes that command. `quarterdeck help
+--json` prints the command index and each command's documentation paths for
+tools that need to discover the interface. `quarterdeck install` runs the
+user-local installer; add `--uninstall` to remove installer-created files.
+The documentation tree is included in the checkout and its path is printed by
+`quarterdeck help`.
+
+The private default config is
+`${XDG_CONFIG_HOME:-~/.config}/quarterdeck.json`. `render` reads it when it
+exists; `add`, `list`, and `remove` use it by default. `render`, `add`, `list`,
+and `remove` accept `--config FILE` to select another config. `add` creates a
+missing file and parent directory, and `add` and `remove` write atomically with
+mode `0600`. Config writes inside the Quarterdeck checkout are refused.
+
+Homes for `render` are selected in this order: `--home`, the `homes` array in
+the selected config, then `FM_HOME`. `--home` renders just that home and
+overrides a configured home list. If there is no configured home list, the
+single-home behavior remains: set `FM_HOME` or pass `--home`. Without a
+selected home, the command prints an error and exits with status 2.
+
+`add` requires a directory containing `data/backlog.md`. It expands `~`,
+normalizes the path to an absolute path from the current working directory, and
+refuses duplicate normalized paths and labels. The default label is the last
+path component; the command prints that choice. `list` prints registered
+labels and paths. `remove` accepts a label (case-insensitive) or normalized
+path and only unregisters the entry; it never changes Firstmate data.
 
 For each configured home, Quarterdeck reads `data/backlog.md` and immediate
 child `*/report.md` files. It also reads the parent's optional
@@ -24,8 +51,11 @@ source reports and backlogs, and HTTPS links for GitHub pull requests.
 | --- | --- |
 | `--home PATH` | Firstmate home; overrides a configured `homes` list and `FM_HOME`. |
 | `--output PATH` | Output HTML path; overrides `output_dir` in config. Keep it outside the repo. |
-| `--config FILE` | Optional JSON configuration file. It may supply homes, title, and output directory. |
+| `--config FILE` | JSON config for this command; defaults to the private user config where documented above. It may supply homes, title, and output directory. |
 | `--title TEXT` | Page title; overrides `page_title` in config. |
+
+`add`, `list`, and `remove` accept the same `--config FILE` option. `add` also
+accepts `--label LABEL`; `remove` takes one label or path.
 
 `FM_DATA_OVERRIDE` applies to the single home selected by `--home` or
 `FM_HOME`. In a configured home list, use each home's optional `data_dir`
@@ -36,7 +66,7 @@ Without an output override, the output is
 
 ## JSON configuration schema
 
-Configuration is optional. Supply it with `--config`. Only these top-level
+Configuration is optional for rendering a single home. Only these top-level
 keys are accepted:
 
 | Key | Type | Default | Meaning |
