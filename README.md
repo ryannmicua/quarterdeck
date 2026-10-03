@@ -26,25 +26,24 @@ or runtime network dependency.
 - Python 3 standard library only; no tokens and no write-back to Firstmate.
 - Generated pages default to the user's state directory outside the repo.
 
-## Quick Start
+## Quick Start: Make Ready to Sail
 
-Install Quarterdeck with the [user-local installer](docs/how-to/install.md),
-then register a Firstmate home and render the page:
+Install Quarterdeck, register a Firstmate home, and render your lookout page:
 
 ```sh
-quarterdeck add /path/to/firstmate
+curl -fsSL https://raw.githubusercontent.com/ryannmicua/quarterdeck/main/install.sh | sh
+quarterdeck add ~/firstmate
 quarterdeck render
 ```
 
-The add command checks for `data/backlog.md` and uses the path's last component
-as the default label. The render command prints the generated page path. Open
-it in a browser, or run `lavish-axi /path/to/generated/index.html`. The
-default output is `${XDG_STATE_HOME:-~/.local/state}/quarterdeck/index.html`.
+You should see Quarterdeck installed, your home registered, and the path to the
+rendered page. Open that printed `index.html` in your browser. By default, it
+lives at `${XDG_STATE_HOME:-~/.local/state}/quarterdeck/index.html`; run
+`quarterdeck render` again whenever you want a fresh page.
 
-For installation, updates, uninstallation, a first-render walkthrough, configuration,
-multiple-home setup, and scheduled refresh examples, see the [documentation](docs/).
-Run `quarterdeck help` for the docs directory and `quarterdeck help --json` for
-the machine-readable command index.
+For the first-render walkthrough, installation and refresh how-tos, and command
+reference, see the [tutorial](docs/tutorials/first-render.md),
+[how-to guides](docs/how-to/), and [CLI reference](docs/reference/cli-and-config.md).
 
 ## How it relates to Firstmate
 
