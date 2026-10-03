@@ -1,0 +1,18 @@
+# Generated pages and local Firstmate data must stay out of the public repo.
+/quarterdeck-output/
+/output/
+/screenshots/
+**/screenshots/
+.quarterdeck.json
+quarterdeck.local.json
+config.local.json
+*.local.json
+*.png
+*.jpg
+*.jpeg
+*.gif
+*.webp
+*.html
+
+__pycache__/
+*.py[cod]
