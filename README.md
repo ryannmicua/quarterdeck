@@ -36,6 +36,11 @@ quarterdeck add ~/firstmate
 quarterdeck render
 ```
 
+For a read-first install, download `install.sh`, read it, then run it. Here
+`~/firstmate` is a placeholder for the path to your Firstmate home. Run
+`quarterdeck help` for command help or `quarterdeck help --json` for the command
+index.
+
 You should see Quarterdeck installed, your home registered, and the path to the
 rendered page. Open that printed `index.html` in your browser. By default, it
 lives at `${XDG_STATE_HOME:-~/.local/state}/quarterdeck/index.html`; run
