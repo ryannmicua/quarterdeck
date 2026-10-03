@@ -1087,6 +1087,7 @@ COMMAND_DOCS = {
     "list": ["how-to/configure-multiple-homes.md", "reference/cli-and-config.md"],
     "remove": ["how-to/configure-multiple-homes.md", "reference/cli-and-config.md"],
     "install": ["how-to/install.md", "how-to/update.md", "how-to/uninstall.md"],
+    "update": ["how-to/update.md", "reference/cli-and-config.md"],
     "help": ["README.md", "reference/cli-and-config.md"],
 }
 
@@ -1357,11 +1358,17 @@ def make_parser() -> argparse.ArgumentParser:
     remove_parser.set_defaults(handler=remove_home)
 
     install_parser = subparsers.add_parser(
-        "install", help="install, update, or uninstall Quarterdeck", description="Run the user-local shell installer."
+        "install", help="install or uninstall Quarterdeck", description="Run the user-local shell installer."
     )
     command_parsers["install"] = install_parser
     install_parser.add_argument("--uninstall", action="store_true", help="remove installer-created files and keep config/data")
     install_parser.set_defaults(handler=run_installer)
+
+    update_parser = subparsers.add_parser(
+        "update", help="update an installed Quarterdeck", description="Run the user-local shell installer to update the installed checkout."
+    )
+    command_parsers["update"] = update_parser
+    update_parser.set_defaults(handler=run_installer, uninstall=False)
 
     help_parser = subparsers.add_parser(
         "help", help="show command and documentation help", description="Discover commands and documentation."

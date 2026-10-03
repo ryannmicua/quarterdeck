@@ -47,10 +47,11 @@ index.
 You should see Quarterdeck installed, your home registered, and the path to the
 rendered page. Open that printed `index.html` in your browser. By default, it
 lives at `${XDG_STATE_HOME:-~/.local/state}/quarterdeck/index.html`; run
-`quarterdeck render` again whenever you want a fresh page.
+`quarterdeck render` again whenever you want a fresh page. To update the
+installation later, run `quarterdeck update`.
 
-For the first-render walkthrough, installation and refresh how-tos, and command
-reference, see the [tutorial](docs/tutorials/first-render.md),
+For the first-render walkthrough, installation, update and refresh how-tos, and
+command reference, see the [tutorial](docs/tutorials/first-render.md),
 [how-to guides](docs/how-to/), and [CLI reference](docs/reference/cli-and-config.md).
 
 ## How it relates to Firstmate

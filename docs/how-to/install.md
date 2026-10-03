@@ -33,8 +33,9 @@ quarterdeck add /path/to/firstmate
 quarterdeck render
 ```
 
-After installation, `quarterdeck install` reruns the installer. Use
-`quarterdeck install --help` to see its options.
+After installation, run `quarterdeck update` to update the checkout. The
+existing `quarterdeck install` command also reruns the installer; use
+`quarterdeck update --help` or `quarterdeck install --help` for command help.
 
 The generated page defaults to
 `${XDG_STATE_HOME:-~/.local/state}/quarterdeck/index.html`. The config and

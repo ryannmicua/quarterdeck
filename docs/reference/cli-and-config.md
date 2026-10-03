@@ -8,6 +8,7 @@ quarterdeck add <firstmate-home> [--label LABEL] [--config FILE]
 quarterdeck list [--config FILE]
 quarterdeck remove <label-or-path> [--config FILE]
 quarterdeck install [--uninstall]
+quarterdeck update
 quarterdeck help [COMMAND] [--json]
 ```
 
@@ -16,8 +17,9 @@ Run `quarterdeck --help` or `quarterdeck help` for a command overview.
 --json` prints the command index and each command's documentation paths for
 tools that need to discover the interface. `quarterdeck install` runs the
 user-local installer; add `--uninstall` to remove installer-created files.
-The documentation tree is included in the checkout and its path is printed by
-`quarterdeck help`.
+`quarterdeck update` runs that same installer path to update the installed
+checkout. The documentation tree is included in the checkout and its path is
+printed by `quarterdeck help`.
 
 The private default config is
 `${XDG_CONFIG_HOME:-~/.config}/quarterdeck.json`. `render` reads it when it
