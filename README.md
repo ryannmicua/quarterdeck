@@ -7,9 +7,9 @@
 Quarterdeck turns running Firstmate homes' backlogs and scout reports into one
 read-only HTML review page. Configure several homes to review them together;
 each home is grouped under a clear label, with its registered local secondmates
-under their parent. It puts held items first, then review-ready pull requests,
-scout reports, and active tasks. Every item links to its report, pull request,
-or backlog file.
+under their parent. It shows unresolved captain holds, review-ready pull
+requests, in-flight work, and items blocked on the captain or an external
+party. Use `--all` to restore the exhaustive view.
 
 Render on demand, open the returned file in a browser, or hand it to
 `lavish-axi` as a local artifact. Quarterdeck has no daemon, agent, build step,
@@ -19,11 +19,13 @@ or runtime network dependency.
 
 - Primary review list for held items and recorded decisions.
 - Scout reports with an explicit recommendation when the report states one.
-- Active backlog items and pull requests marked ready for review.
+- In-flight tasks and pull requests marked ready for review.
+- Attention filtering, with `quarterdeck render --all` restoring queued, finished, closed, and historical items.
 - Combined pages for configured homes, with registered secondmates grouped
   under their parent.
-- One self-contained page with inline styling and local file links.
+- Inline-styled review page with readable local report and backlog pages.
 - Optional `quarterdeck render --lavish` creates and opens an annotation-ready Lavish review page.
+- Lavish request controls queue a report or backlog-item page request for an armed session listener.
 - Python 3 standard library only; no tokens and no write-back to Firstmate.
 - Generated pages default to the user's state directory outside the repo.
 
@@ -65,8 +67,8 @@ Quarterdeck writes it outside the repository under the user's state directory.
 It reads each configured Firstmate home's `data/backlog.md` and
 `data/<id>/report.md` files. It also reads the parent's optional
 `data/secondmates.md` registry and the listed local secondmate homes. It does
-not write to those homes. Keep custom output paths and real configs outside
-the repository too.
+not write to those homes or to the Quarterdeck checkout. Keep custom output
+paths outside both and real configs outside the repository too.
 
 The repo ignores common output folders, local config files, and screenshots.
 Run `python3 scripts/privacy_guard.py --staged` before committing; it rejects

@@ -5,3 +5,5 @@
 - [Uninstall Quarterdeck](uninstall.md)
 - [Configure multiple homes](configure-multiple-homes.md)
 - [Refresh on a schedule](schedule-refresh.md)
+- [View in Lavish](view-in-lavish.md)
+- [Request a Lavish page](request-lavish-page.md)
