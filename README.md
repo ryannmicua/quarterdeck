@@ -23,6 +23,7 @@ or runtime network dependency.
 - Combined pages for configured homes, with registered secondmates grouped
   under their parent.
 - One self-contained page with inline styling and local file links.
+- Optional `quarterdeck render --lavish` creates and opens an annotation-ready Lavish review page.
 - Python 3 standard library only; no tokens and no write-back to Firstmate.
 - Generated pages default to the user's state directory outside the repo.
 

@@ -111,6 +111,51 @@ Use the compact format for the first release.
             self.assertIn('name="quarterdeck-generated"', page)
             self.assertNotIn("https://fonts.", page)
 
+    def test_lavish_render_creates_annotatable_page_and_opens_cli(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            home = self.make_home(root)
+            output = root / "output" / "index.html"
+            bin_dir = root / "bin"
+            bin_dir.mkdir()
+            stub = bin_dir / "lavish-axi"
+            stub.write_text("#!/bin/sh\nprintf '%s\\n' 'Session: https://review.example.invalid/session/fictional'\n", encoding="utf-8")
+            stub.chmod(0o755)
+            env = os.environ.copy()
+            env["PATH"] = f"{bin_dir}:{env.get('PATH', '')}"
+            result = subprocess.run(
+                [sys.executable, str(ROOT / "quarterdeck.py"), "render", "--lavish", "--home", str(home), "--output", str(output)],
+                check=False, text=True, capture_output=True, env=env,
+            )
+            lavish_page = output.with_name("index.lavish.html")
+            page = lavish_page.read_text(encoding="utf-8")
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertTrue(output.parent.exists())
+            self.assertFalse(output.exists())
+            self.assertIn("https://review.example.invalid/session/fictional", result.stdout)
+            self.assertRegex(page, r'<article class="card" id="review-item-[0-9a-f]{12}">')
+            self.assertRegex(page, r'<article class="card" id="review-report-[0-9a-f]{12}">')
+            self.assertEqual(page, quarterdeck.build_html(
+                [quarterdeck.load_home_snapshot(quarterdeck.HomeSpec(home.name, home), discover_secondmates=True)],
+                "Quarterdeck", lavish=True,
+            ))
+
+    def test_lavish_render_without_cli_prints_open_hint(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            home = self.make_home(root)
+            empty_path = root / "empty-bin"
+            empty_path.mkdir()
+            env = os.environ.copy()
+            env["PATH"] = str(empty_path)
+            result = subprocess.run(
+                [sys.executable, str(ROOT / "quarterdeck.py"), "render", "--lavish", "--home", str(home), "--output", str(root / "page.html")],
+                check=False, text=True, capture_output=True, env=env,
+            )
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertIn("Lavish page ready; open it later with: lavish-axi", result.stdout)
+            self.assertTrue((root / "page.lavish.html").is_file())
+
     def test_configured_homes_render_together_and_isolate_a_missing_home(self) -> None:
         with tempfile.TemporaryDirectory() as temp:
             root = Path(temp)
@@ -166,13 +211,15 @@ Use the compact format for the first release.
             root = Path(temp)
             home = self.make_home(root)
             output = root / "outside-output" / "index.html"
-            with patch.dict(os.environ, {"FM_HOME": str(home)}, clear=True):
+            with patch.dict(os.environ, {"FM_HOME": str(home), "XDG_CONFIG_HOME": str(root / "config")}, clear=True):
                 result = quarterdeck.main(["render", "--output", str(output)])
             self.assertEqual(result, 0)
             self.assertIn("Chart the Maple Harbor catalog", output.read_text(encoding="utf-8"))
 
     def test_render_requires_home_or_environment(self) -> None:
-        with patch.dict(os.environ, {}, clear=True):
+        with tempfile.TemporaryDirectory() as temp, patch.dict(
+            os.environ, {"HOME": temp, "XDG_CONFIG_HOME": str(Path(temp) / "config")}, clear=True
+        ):
             result = quarterdeck.main(["render"])
         self.assertEqual(result, 2)
 
@@ -283,11 +330,15 @@ Use the compact format for the first release.
             commands = {entry["name"]: entry for entry in index["commands"]}
             self.assertTrue({"install", "add", "list", "remove", "render", "help"}.issubset(commands))
             self.assertIn("how-to/install.md", commands["install"]["docs"])
+            self.assertIn("--lavish", commands["render"]["usage"])
+            self.assertIn("Lavish", commands["render"]["summary"])
 
             for command in ("install", "add", "list", "remove", "render"):
                 with self.subTest(command=command):
                     result = self.run_cli([command, "--help"], cli_home, config_home)
                     self.assertEqual(result.returncode, 0, result.stderr)
+                    if command == "render":
+                        self.assertIn("--lavish", result.stdout)
 
     def test_installer_clones_updates_reuses_and_uninstalls_safely(self) -> None:
         with tempfile.TemporaryDirectory() as temp:
