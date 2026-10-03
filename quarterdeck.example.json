@@ -1,4 +1,14 @@
 {
   "page_title": "Quarterdeck Example",
-  "output_dir": "~/.local/state/quarterdeck"
+  "output_dir": "~/.local/state/quarterdeck",
+  "homes": [
+    {
+      "label": "Maple Harbor",
+      "path": "~/firstmate-maple"
+    },
+    {
+      "label": "Willow Quay",
+      "path": "~/firstmate-willow"
+    }
+  ]
 }

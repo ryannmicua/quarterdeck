@@ -32,3 +32,6 @@ associated report includes a `Recommendation` heading or field.
 
 Run the same `render` command again to replace the page with a fresh snapshot.
 For recurring refreshes, follow the [scheduled refresh how-to](../how-to/schedule-refresh.md).
+
+To place several independent homes on one page, continue with
+[Configure multiple homes](../how-to/configure-multiple-homes.md).

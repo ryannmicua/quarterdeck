@@ -6,7 +6,7 @@ This file is the project's committed home for project-intrinsic agent knowledge:
 
 ## Project notes
 
-- Preserve the read-only boundary: `quarterdeck.py` reads backlog and report files directly; do not invoke fleet scripts that may refresh caches in a Firstmate home. See `docs/explanation/privacy-and-architecture.md`.
+- Preserve the read-only boundary: `quarterdeck.py` reads backlog, report, and `data/secondmates.md` route files directly; do not invoke fleet scripts that may refresh caches in a Firstmate home. See `docs/explanation/privacy-and-architecture.md`.
 - Validation commands live in `CONTRIBUTING.md`.
 
 ## Maintaining this file

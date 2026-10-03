@@ -4,10 +4,12 @@
 
 ## What it is
 
-Quarterdeck turns a running Firstmate home's backlog and scout reports into one
-read-only HTML review page. It puts held items first, then review-ready pull
-requests, scout reports, and active tasks. Every item links to its report,
-pull request, or backlog file.
+Quarterdeck turns running Firstmate homes' backlogs and scout reports into one
+read-only HTML review page. Configure several homes to review them together;
+each home is grouped under a clear label, with its registered local secondmates
+under their parent. It puts held items first, then review-ready pull requests,
+scout reports, and active tasks. Every item links to its report, pull request,
+or backlog file.
 
 Render on demand, open the returned file in a browser, or hand it to
 `lavish-axi` as a local artifact. Quarterdeck has no daemon, agent, build step,
@@ -18,6 +20,8 @@ or runtime network dependency.
 - Primary review list for held items and recorded decisions.
 - Scout reports with an explicit recommendation when the report states one.
 - Active backlog items and pull requests marked ready for review.
+- Combined pages for configured homes, with registered secondmates grouped
+  under their parent.
 - One self-contained page with inline styling and local file links.
 - Python 3 standard library only; no tokens and no write-back to Firstmate.
 - Generated pages default to the user's state directory outside the repo.
@@ -36,7 +40,7 @@ The command prints the generated page path. Open it in a browser, or run
 `${XDG_STATE_HOME:-~/.local/state}/quarterdeck/index.html`.
 
 For installation, updates, removal, a first-render walkthrough, configuration,
-and scheduled refresh examples, see the [documentation](docs/).
+multiple-home setup, and scheduled refresh examples, see the [documentation](docs/).
 
 ## How it relates to Firstmate
 
@@ -49,9 +53,11 @@ happens only when `quarterdeck render` is run.
 
 The page can contain real task names, recommendations, and paths. By default,
 Quarterdeck writes it outside the repository under the user's state directory.
-It reads the configured Firstmate home's `data/backlog.md` and
-`data/<id>/report.md` files; it does not write to that home. Keep custom output
-paths outside the repository too.
+It reads each configured Firstmate home's `data/backlog.md` and
+`data/<id>/report.md` files. It also reads the parent's optional
+`data/secondmates.md` registry and the listed local secondmate homes. It does
+not write to those homes. Keep custom output paths and real configs outside
+the repository too.
 
 The repo ignores common output folders, local config files, and screenshots.
 Run `python3 scripts/privacy_guard.py --staged` before committing; it rejects
@@ -71,10 +77,16 @@ run that command on a schedule; see [scheduled refresh](docs/how-to/schedule-ref
 No. Rendering reads local files and writes a local HTML file. The page uses
 inline CSS and has no runtime network requests.
 
+### How do I select several homes?
+
+Create a private JSON config with a `homes` array and run
+`quarterdeck render --config /path/to/quarterdeck.json`. See the
+[multiple homes how-to](docs/how-to/configure-multiple-homes.md).
+
 ### What if there is no Firstmate home setting?
 
-Pass `--home /path/to/firstmate` or set `FM_HOME`. Quarterdeck stops with a
-clear error if neither is set.
+Pass `--home /path/to/firstmate`, set `FM_HOME`, or provide a config with
+`homes`. Quarterdeck stops with a clear error if none is set.
 
 ## Roadmap
 

@@ -10,4 +10,6 @@ rm -rf ~/.local/share/quarterdeck
 To remove generated pages too, delete
 `${XDG_STATE_HOME:-~/.local/state}/quarterdeck/`. This output directory is
 separate from the Firstmate home. Uninstalling Quarterdeck does not remove or
-change Firstmate data.
+change Firstmate data. If you created a private config such as
+`~/.config/quarterdeck.json`, remove it separately when you no longer need its
+home list.
