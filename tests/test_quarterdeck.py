@@ -484,6 +484,10 @@ Use the compact format for the first release.
             root = Path(temp)
             cli_home = root / "user"
             config_home = cli_home / ".config"
+            root_help = self.run_cli(["--help"], cli_home, config_home)
+            self.assertEqual(root_help.returncode, 0, root_help.stderr)
+            self.assertIn("update", root_help.stdout)
+
             general = self.run_cli(["help"], cli_home, config_home)
             self.assertEqual(general.returncode, 0, general.stderr)
             self.assertIn("Documentation tree:", general.stdout)
@@ -493,18 +497,21 @@ Use the compact format for the first release.
             self.assertEqual(machine.returncode, 0, machine.stderr)
             index = json.loads(machine.stdout)
             commands = {entry["name"]: entry for entry in index["commands"]}
-            self.assertTrue({"install", "add", "list", "remove", "render", "help"}.issubset(commands))
+            self.assertTrue({"install", "update", "add", "list", "remove", "render", "help"}.issubset(commands))
             self.assertIn("how-to/install.md", commands["install"]["docs"])
+            self.assertIn("how-to/update.md", commands["update"]["docs"])
             self.assertIn("--lavish", commands["render"]["usage"])
             self.assertIn("--all", commands["render"]["usage"])
             self.assertIn("explanation/attention-model.md", commands["render"]["docs"])
             self.assertIn("how-to/request-lavish-page.md", commands["render"]["docs"])
             self.assertIn("Lavish", commands["render"]["summary"])
 
-            for command in ("install", "add", "list", "remove", "render"):
+            for command in ("install", "update", "add", "list", "remove", "render"):
                 with self.subTest(command=command):
                     result = self.run_cli([command, "--help"], cli_home, config_home)
                     self.assertEqual(result.returncode, 0, result.stderr)
+                    if command == "update":
+                        self.assertIn("Run the user-local shell installer to update", result.stdout)
                     if command == "render":
                         self.assertIn("--lavish", result.stdout)
                         self.assertIn("--all", result.stdout)
@@ -560,6 +567,17 @@ Use the compact format for the first release.
             self.assertEqual((installed / "README.md").read_text(encoding="utf-8"), "fixture version two\n")
             self.assertEqual(config_path.read_text(encoding="utf-8"), '{"page_title":"Private setup"}\n')
 
+            (source / "README.md").write_text("fixture version three\n", encoding="utf-8")
+            subprocess.run(["git", "add", "README.md"], cwd=source, check=True)
+            subprocess.run(["git", "commit", "-m", "fixture v3"], cwd=source, check=True, capture_output=True, text=True)
+            subprocess.run(["git", "push"], cwd=source, check=True, capture_output=True, text=True)
+            updated_again = subprocess.run(
+                [sys.executable, str(ROOT / "quarterdeck.py"), "update"], env=env, text=True, capture_output=True
+            )
+            self.assertEqual(updated_again.returncode, 0, updated_again.stderr)
+            self.assertEqual((installed / "README.md").read_text(encoding="utf-8"), "fixture version three\n")
+            self.assertEqual(config_path.read_text(encoding="utf-8"), '{"page_title":"Private setup"}\n')
+
             uninstall = subprocess.run(["sh", str(installed / "install.sh"), "--uninstall"], env=env, text=True, capture_output=True)
             self.assertEqual(uninstall.returncode, 0, uninstall.stderr)
             self.assertFalse((user_home / ".local/bin/quarterdeck").exists())
@@ -572,11 +590,13 @@ Use the compact format for the first release.
             reused = subprocess.run(["sh", str(ROOT / "install.sh")], env=env, text=True, capture_output=True)
             self.assertEqual(reused.returncode, 0, reused.stderr)
             (reused_install / "README.md").write_text("local edit\n", encoding="utf-8")
-            (source / "README.md").write_text("fixture version three\n", encoding="utf-8")
+            (source / "README.md").write_text("fixture version four\n", encoding="utf-8")
             subprocess.run(["git", "add", "README.md"], cwd=source, check=True)
-            subprocess.run(["git", "commit", "-m", "fixture v3"], cwd=source, check=True, capture_output=True, text=True)
+            subprocess.run(["git", "commit", "-m", "fixture v4"], cwd=source, check=True, capture_output=True, text=True)
             subprocess.run(["git", "push"], cwd=source, check=True, capture_output=True, text=True)
-            refused = subprocess.run(["sh", str(ROOT / "install.sh")], env=env, text=True, capture_output=True)
+            refused = subprocess.run(
+                [sys.executable, str(ROOT / "quarterdeck.py"), "update"], env=env, text=True, capture_output=True
+            )
             self.assertEqual(refused.returncode, 1)
             self.assertIn("has local changes", refused.stderr)
             self.assertEqual((reused_install / "README.md").read_text(encoding="utf-8"), "local edit\n")
