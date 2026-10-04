@@ -7,10 +7,12 @@ review as its own Lavish page.
 
    `quarterdeck render --lavish`
 
-2. Open the printed session URL and find a held, review-ready, or in-flight
-   card.
-3. Select **Request a Lavish page**. Quarterdeck queues a prompt containing the
-   item ID, title, source kind, home label, and recorded source path.
+2. Open the printed session URL and select a card with a **Request a Lavish
+   page** control. See [The attention model](../explanation/attention-model.md)
+   for report placement in the default and `--all` views.
+3. Select **Request a Lavish page**. Quarterdeck queues a prompt with the
+   source context. The report request fields are described in [Privacy and
+   architecture](../explanation/privacy-and-architecture.md).
 4. Send the queued prompt to the agent from Lavish's conversation panel.
 
 An armed listener must be active on that same session to receive the request.

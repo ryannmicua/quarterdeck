@@ -2,13 +2,16 @@ from __future__ import annotations
 
 import json
 import html
+import io
 import os
 import re
 import stat
 import subprocess
 import sys
 import tempfile
+import threading
 import unittest
+from contextlib import redirect_stderr, redirect_stdout
 from pathlib import Path
 from unittest.mock import patch
 
@@ -105,6 +108,7 @@ Use the compact format for the first release.
         env = os.environ.copy()
         env["HOME"] = str(home)
         env["XDG_CONFIG_HOME"] = str(config_home)
+        env["XDG_STATE_HOME"] = str(config_home.parent / "state")
         env.pop("FM_HOME", None)
         env.pop("FM_DATA_OVERRIDE", None)
         return subprocess.run(
@@ -120,12 +124,7 @@ Use the compact format for the first release.
             root = Path(temp)
             home = self.make_home(root)
             output = root / "outside-output" / "index.html"
-            result = subprocess.run(
-                [sys.executable, str(ROOT / "quarterdeck.py"), "render", "--home", str(home), "--output", str(output)],
-                check=False,
-                text=True,
-                capture_output=True,
-            )
+            result = self.run_cli(["render", "--home", str(home), "--output", str(output)], root, root / "config")
             self.assertEqual(result.returncode, 0, result.stderr)
             page = output.read_text(encoding="utf-8")
             self.assertIn("Choose the Amber Kite import format", page)
@@ -138,8 +137,13 @@ Use the compact format for the first release.
             self.assertIn("remote host sample-remote", page)
             self.assertIn("Read report", page)
             self.assertNotIn("Gather the Finch field notes", page)
-            self.assertNotIn("Finished Finch report", page)
-            self.assertNotIn("Unlinked old report", page)
+            self.assertIn("Reports needing review", page)
+            self.assertIn("Finished Finch report", page)
+            self.assertIn("Unlinked old report", page)
+            orphan_path = home / "data" / "orphan-35" / "report.md"
+            orphan_page = quarterdeck.source_page_filename("report", home, orphan_path)
+            self.assertIn('<code>fictional-firstmate/orphan-35</code>', page)
+            self.assertIn(f'href="{orphan_page}">Read report <code>fictional-firstmate/orphan-35</code>', page)
             self.assertNotIn("Merge the local sample dependency", page)
             self.assertNotIn("file://", page)
             self.assertIn("Read backlog item", page)
@@ -159,7 +163,7 @@ Use the compact format for the first release.
             self.assertIn('name="quarterdeck-' + "generated" + '"', page)
             self.assertNotIn("https://fonts.", page)
             report_pages = list(output.parent.glob("report-*.html"))
-            self.assertEqual(len(report_pages), 3)
+            self.assertEqual(len(report_pages), 6)
             self.assertTrue(all(path.is_file() for path in report_pages))
             backlog_pages = list(output.parent.glob("backlog-*.html"))
             self.assertEqual(len(backlog_pages), 2)
@@ -177,6 +181,7 @@ Use the compact format for the first release.
             stub.chmod(0o755)
             env = os.environ.copy()
             env["PATH"] = f"{bin_dir}:{env.get('PATH', '')}"
+            env["XDG_STATE_HOME"] = str(root / "state")
             result = subprocess.run(
                 [sys.executable, str(ROOT / "quarterdeck.py"), "render", "--lavish", "--home", str(home), "--output", str(output)],
                 check=False, text=True, capture_output=True, env=env,
@@ -190,7 +195,8 @@ Use the compact format for the first release.
             self.assertRegex(page, r'<article class="card" id="review-item-[0-9a-f]{12}">')
             self.assertIn("queuePrompt", page)
             self.assertIn("Request a Lavish page", page)
-            self.assertNotRegex(page, r'<article class="card" id="review-report-[0-9a-f]{12}">')
+            self.assertRegex(page, r'<article class="card" id="review-report-[0-9a-f]{12}">')
+            self.assertIn("Reports needing review", page)
             self.assertEqual(page, quarterdeck.build_html(
                 [quarterdeck.load_home_snapshot(quarterdeck.HomeSpec(home.name, home), discover_secondmates=True)],
                 "Quarterdeck", lavish=True,
@@ -212,7 +218,53 @@ Use the compact format for the first release.
             self.assertRegex(page, r'<b>5</b><span>Other backlog items</span>')
             self.assertRegex(page, r'<b>6</b><span>Scout reports</span>')
             self.assertEqual(page.count('<p class="eyebrow">Other backlog item</p>'), 5)
-            self.assertEqual(page.count('<p class="eyebrow">Scout report</p>'), 6)
+            self.assertEqual(page.count("<h3>Finished Finch report</h3>"), 1)
+            self.assertEqual(page.count("<h3>Unlinked old report</h3>"), 1)
+
+    def test_all_lavish_request_control_is_limited_to_unreviewed_report_cards(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            home = self.make_home(root)
+            config_home = root / "config"
+            report_id = "fictional-firstmate/amber-18"
+
+            marked = self.run_cli(
+                ["reports", "mark-reviewed", report_id, "--home", str(home)],
+                root, config_home,
+            )
+            self.assertEqual(marked.returncode, 0, marked.stderr)
+
+            empty_bin = root / "empty-bin"
+            empty_bin.mkdir()
+            output = root / "dashboard.html"
+            env = os.environ.copy()
+            env["HOME"] = str(root)
+            env["XDG_CONFIG_HOME"] = str(config_home)
+            env["XDG_STATE_HOME"] = str(root / "state")
+            env["PATH"] = str(empty_bin)
+            env.pop("FM_HOME", None)
+            env.pop("FM_DATA_OVERRIDE", None)
+            rendered = subprocess.run(
+                [sys.executable, str(ROOT / "quarterdeck.py"), "render", "--all", "--lavish",
+                 "--home", str(home), "--output", str(output)],
+                check=False, text=True, capture_output=True, env=env,
+            )
+            self.assertEqual(rendered.returncode, 0, rendered.stderr)
+
+            page = output.with_name("dashboard.lavish.html").read_text(encoding="utf-8")
+            report_cards = re.findall(r'<article class="card" id="review-report-[^"]+">.*?</article>', page, re.DOTALL)
+            reviewed_card = next(card for card in report_cards if "<h3>Amber Kite import review</h3>" in card)
+            unreviewed_card = next(card for card in report_cards if "<h3>Unlinked old report</h3>" in card)
+            self.assertIn("Scout report · Reviewed", reviewed_card)
+            self.assertNotIn("data-lavish-request", reviewed_card)
+            self.assertIn("Scout report · Needs review", unreviewed_card)
+            self.assertIn("data-lavish-request", unreviewed_card)
+
+            payloads = [
+                json.loads(html.unescape(value))
+                for value in re.findall(r'data-lavish-request="([^"]+)"', page)
+            ]
+            self.assertTrue(any(payload.get("report_id") == report_id for payload in payloads))
 
     def test_lavish_request_control_has_structured_payload_and_is_hidden_on_plain_page(self) -> None:
         with tempfile.TemporaryDirectory() as temp:
@@ -232,6 +284,7 @@ Use the compact format for the first release.
             stub.chmod(0o755)
             env = os.environ.copy()
             env["PATH"] = str(bin_dir)
+            env["XDG_STATE_HOME"] = str(root / "state")
             lavish_result = subprocess.run(
                 [sys.executable, str(ROOT / "quarterdeck.py"), "render", "--lavish", "--home", str(home), "--output", str(lavish_base)],
                 text=True, capture_output=True, env=env,
@@ -242,17 +295,349 @@ Use the compact format for the first release.
                 json.loads(html.unescape(value))
                 for value in re.findall(r'data-lavish-request="([^"]+)"', page)
             ]
-            self.assertEqual(len(payloads), 5)
+            self.assertEqual(len(payloads), 11)
             self.assertEqual(payloads[0], {
-                "item_id": "amber-18",
-                "title": "Choose the Amber Kite import format",
+                "item_id": "fictional-firstmate/amber-18",
+                "title": "Amber Kite import review",
                 "kind": "report",
                 "home_label": "fictional-firstmate",
                 "source_path": "data/amber-18/report.md",
+                "report_id": "fictional-firstmate/amber-18",
             })
+            self.assertIn({
+                "item_id": "fictional-firstmate/amber-18",
+                "report_id": "fictional-firstmate/amber-18",
+                "title": "Amber Kite import review",
+                "kind": "report",
+                "home_label": "fictional-firstmate",
+                "source_path": "data/amber-18/report.md",
+            }, payloads)
             self.assertIn("backlog item", {payload["kind"] for payload in payloads})
             self.assertIn("fictional-firstmate", {payload["home_label"] for payload in payloads})
             self.assertIn("kestrel — Maintains the Willow Quay field guide.", {payload["home_label"] for payload in payloads})
+
+    def test_report_commands_read_and_track_review_state_by_content_fingerprint(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            home = self.make_home(root)
+            config_home = root / "config"
+            report_id = "fictional-firstmate/amber-18"
+
+            listed = self.run_cli(["reports", "list", "--home", str(home)], root, config_home)
+            self.assertEqual(listed.returncode, 0, listed.stderr)
+            self.assertIn(f"{report_id}\tneeds review\tAmber Kite import review", listed.stdout)
+
+            read = self.run_cli(
+                ["reports", "read", report_id, "--home", str(home)],
+                root, config_home,
+            )
+            self.assertEqual(read.returncode, 0, read.stderr)
+            self.assertIn("# Amber Kite import review", read.stdout)
+            page_path = Path(read.stdout.split("Readable HTML: ", 1)[1].strip())
+            self.assertEqual(
+                page_path,
+                root / "state" / "quarterdeck" / quarterdeck.source_page_filename(
+                    "report", home, home / "data" / "amber-18" / "report.md",
+                ),
+            )
+            self.assertTrue(page_path.is_file())
+            self.assertIn("<h1>Amber Kite import review</h1>", page_path.read_text(encoding="utf-8"))
+
+            marked = self.run_cli(["reports", "mark-reviewed", report_id, "--home", str(home)], root, config_home)
+            self.assertEqual(marked.returncode, 0, marked.stderr)
+            listed = self.run_cli(["reports", "list", "--home", str(home)], root, config_home)
+            self.assertIn(f"{report_id}\treviewed\tAmber Kite import review", listed.stdout)
+
+            state_path = root / "state" / "quarterdeck" / "review-state" / "marks.json"
+            state = json.loads(state_path.read_text(encoding="utf-8"))
+            report_path = home / "data" / "amber-18" / "report.md"
+            self.assertEqual(state["reviewed"][report_id], quarterdeck.hashlib.sha256(report_path.read_bytes()).hexdigest())
+            self.assertEqual(stat.S_IMODE(state_path.stat().st_mode), 0o600)
+            self.assertFalse(state_path.is_relative_to(home))
+            self.assertFalse(state_path.is_relative_to(ROOT))
+
+            output = root / "dashboard.html"
+            rendered = self.run_cli(["render", "--home", str(home), "--output", str(output)], root, config_home)
+            self.assertEqual(rendered.returncode, 0, rendered.stderr)
+            dashboard = output.read_text(encoding="utf-8")
+            self.assertIn("Reports needing review", dashboard)
+            self.assertNotIn("<h3>Amber Kite import review</h3>", dashboard)
+
+            report_path.write_text(report_path.read_text(encoding="utf-8") + "\nUpdated sample.\n", encoding="utf-8")
+            listed = self.run_cli(["reports", "list", "--home", str(home)], root, config_home)
+            self.assertIn(f"{report_id}\tneeds review\tAmber Kite import review", listed.stdout)
+
+            unmarked = self.run_cli(["reports", "unmark-reviewed", report_id, "--home", str(home)], root, config_home)
+            self.assertEqual(unmarked.returncode, 0, unmarked.stderr)
+            state = json.loads(state_path.read_text(encoding="utf-8"))
+            self.assertNotIn(report_id, state["reviewed"])
+
+    def test_report_id_collisions_are_listed_and_refused_for_resolution(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            first_home = self.make_home(root / "first")
+            second_home = self.make_home(root / "second")
+            config_home = root / "config"
+            config_home.mkdir()
+            config = config_home / "quarterdeck.json"
+            config.write_text(json.dumps({"homes": [
+                {"label": "Sample Bay", "path": str(first_home)},
+            ]}), encoding="utf-8")
+            report_id = "sample-bay/amber-18"
+
+            marked = self.run_cli(["reports", "mark-reviewed", report_id, "--config", str(config)], root, config_home)
+            self.assertEqual(marked.returncode, 0, marked.stderr)
+
+            config.write_text(json.dumps({"homes": [
+                {"label": "Sample Bay", "path": str(first_home)},
+                {"label": "sample-bay", "path": str(second_home)},
+            ]}), encoding="utf-8")
+
+            listed = self.run_cli(["reports", "list", "--config", str(config)], root, config_home)
+            self.assertEqual(listed.returncode, 0, listed.stderr)
+            self.assertEqual(listed.stdout.count(f"{report_id}\tID collision"), 2)
+
+            output = root / "dashboard.html"
+            rendered = self.run_cli(["render", "--config", str(config), "--output", str(output)], root, config_home)
+            self.assertEqual(rendered.returncode, 0, rendered.stderr)
+            dashboard = output.read_text(encoding="utf-8")
+            report_card = f'<p class="eyebrow">Scout report · Needs review · <code>{report_id}</code></p>'
+            self.assertEqual(dashboard.count(report_card), 2)
+
+            read = self.run_cli(["reports", "read", report_id, "--config", str(config)], root, config_home)
+            self.assertEqual(read.returncode, 2)
+            self.assertIn("report ID is ambiguous", read.stderr)
+
+            marked = self.run_cli(["reports", "mark-reviewed", report_id, "--config", str(config)], root, config_home)
+            self.assertEqual(marked.returncode, 2)
+            self.assertIn("report ID is ambiguous", marked.stderr)
+
+    def test_report_list_surfaces_failed_homes_and_resolution_fails_closed(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            home = self.make_home(root / "available")
+            config_home = root / "config"
+            config_home.mkdir()
+            config = config_home / "quarterdeck.json"
+            config.write_text(json.dumps({"homes": [
+                {"label": "Available Sample", "path": str(home)},
+                {"label": "Missing Sample", "path": str(root / "missing-firstmate")},
+            ]}), encoding="utf-8")
+            report_id = "available-sample/amber-18"
+
+            listed = self.run_cli(["reports", "list", "--config", str(config)], root, config_home)
+            self.assertEqual(listed.returncode, 0, listed.stderr)
+            self.assertIn(f"{report_id}\tneeds review", listed.stdout)
+            self.assertIn("Discovery error (Missing Sample):", listed.stdout)
+            self.assertIn("Firstmate home is not a directory", listed.stdout)
+
+            for action in ("read", "mark-reviewed", "unmark-reviewed"):
+                with self.subTest(action=action):
+                    result = self.run_cli(["reports", action, report_id, "--config", str(config)], root, config_home)
+                    self.assertEqual(result.returncode, 2)
+                    self.assertIn("cannot resolve report ID", result.stderr)
+                    self.assertIn("Missing Sample", result.stderr)
+
+    def test_unreadable_report_is_listed_and_blocks_ambiguous_id_resolution(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            first_home = self.make_home(root / "first")
+            second_home = self.make_home(root / "second")
+            unreadable_report = second_home / "data" / "amber-18" / "report.md"
+            unreadable_report.unlink()
+            unreadable_report.mkdir()
+            config_home = root / "config"
+            config_home.mkdir()
+            config = config_home / "quarterdeck.json"
+            config.write_text(json.dumps({"homes": [
+                {"label": "Sample Bay", "path": str(first_home)},
+                {"label": "sample-bay", "path": str(second_home)},
+            ]}), encoding="utf-8")
+            report_id = "sample-bay/amber-18"
+
+            listed = self.run_cli(["reports", "list", "--config", str(config)], root, config_home)
+            self.assertEqual(listed.returncode, 0, listed.stderr)
+            self.assertIn(f"{report_id}\tneeds review", listed.stdout)
+            self.assertIn("Discovery error (sample-bay):", listed.stdout)
+            self.assertIn("Could not read report", listed.stdout)
+
+            for action in ("read", "mark-reviewed", "unmark-reviewed"):
+                with self.subTest(action=action):
+                    result = self.run_cli(["reports", action, report_id, "--config", str(config)], root, config_home)
+                    self.assertEqual(result.returncode, 2)
+                    self.assertIn("cannot resolve report ID", result.stderr)
+                    self.assertIn("sample-bay", result.stderr)
+
+    def test_concurrent_review_mark_updates_preserve_both_marks(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            marks_path = Path(temp) / "review-state" / "marks.json"
+            first_loaded = threading.Event()
+            release_first = threading.Event()
+            second_started = threading.Event()
+            second_loaded = threading.Event()
+            errors: list[BaseException] = []
+            original_load = quarterdeck.load_review_marks
+
+            def controlled_load(path: Path) -> dict[str, str]:
+                marks = original_load(path)
+                thread_name = threading.current_thread().name
+                if thread_name == "first-mark":
+                    first_loaded.set()
+                    if not release_first.wait(timeout=5):
+                        raise TimeoutError("first mark update was not released")
+                elif thread_name == "second-mark":
+                    second_loaded.set()
+                return marks
+
+            def apply_mark(report_id: str, fingerprint: str, started: threading.Event | None = None) -> None:
+                if started is not None:
+                    started.set()
+                try:
+                    quarterdeck.update_review_mark(marks_path, report_id, fingerprint)
+                except BaseException as exc:
+                    errors.append(exc)
+
+            with patch.object(quarterdeck, "load_review_marks", side_effect=controlled_load):
+                first = threading.Thread(
+                    target=apply_mark, args=("sample/first", "a" * 64), name="first-mark",
+                )
+                second = threading.Thread(
+                    target=apply_mark, args=("sample/second", "b" * 64, second_started), name="second-mark",
+                )
+                first.start()
+                try:
+                    self.assertTrue(first_loaded.wait(timeout=3))
+                    second.start()
+                    self.assertTrue(second_started.wait(timeout=3))
+                    self.assertFalse(second_loaded.wait(timeout=0.5))
+                finally:
+                    release_first.set()
+                    first.join(timeout=3)
+                    if second.ident is not None:
+                        second.join(timeout=3)
+
+            self.assertFalse(first.is_alive())
+            self.assertFalse(second.is_alive())
+            self.assertEqual(errors, [])
+            marks = original_load(marks_path)
+            self.assertEqual(marks, {"sample/first": "a" * 64, "sample/second": "b" * 64})
+
+    def test_reports_read_retains_html_path_when_browser_open_fails(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            home = self.make_home(root)
+            stdout = io.StringIO()
+            stderr = io.StringIO()
+            environment = {
+                "HOME": str(root),
+                "XDG_CONFIG_HOME": str(root / "config"),
+                "XDG_STATE_HOME": str(root / "state"),
+            }
+
+            with patch.dict(os.environ, environment, clear=True):
+                with patch.object(quarterdeck.webbrowser, "open", return_value=False):
+                    with redirect_stdout(stdout), redirect_stderr(stderr):
+                        result = quarterdeck.main([
+                            "reports", "read", "fictional-firstmate/amber-18",
+                            "--home", str(home), "--open",
+                        ])
+
+            self.assertEqual(result, 2)
+            self.assertIn("Readable HTML:", stdout.getvalue())
+            output_path = Path(stdout.getvalue().split("Readable HTML: ", 1)[1].strip())
+            self.assertTrue(output_path.is_file())
+            self.assertIn("could not open report page in a browser", stderr.getvalue())
+
+    def test_reports_read_reports_browser_exception_and_retains_html_path(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            home = self.make_home(root)
+            stdout = io.StringIO()
+            stderr = io.StringIO()
+            environment = {
+                "HOME": str(root),
+                "XDG_CONFIG_HOME": str(root / "config"),
+                "XDG_STATE_HOME": str(root / "state"),
+            }
+
+            with patch.dict(os.environ, environment, clear=True):
+                with patch.object(quarterdeck.webbrowser, "open", side_effect=quarterdeck.webbrowser.Error("no browser registered")):
+                    with redirect_stdout(stdout), redirect_stderr(stderr):
+                        result = quarterdeck.main([
+                            "reports", "read", "fictional-firstmate/amber-18",
+                            "--home", str(home), "--open",
+                        ])
+
+            self.assertEqual(result, 2)
+            self.assertIn("Readable HTML:", stdout.getvalue())
+            output_path = Path(stdout.getvalue().split("Readable HTML: ", 1)[1].strip())
+            self.assertTrue(output_path.is_file())
+            self.assertIn("no browser registered", stderr.getvalue())
+
+    def test_review_state_inside_configured_data_directory_is_refused(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            home = self.make_home(root)
+            data_dir = root / "external-data"
+            (data_dir / "amber-18").mkdir(parents=True)
+            (data_dir / "backlog.md").write_text("# Work queue\n", encoding="utf-8")
+            (data_dir / "amber-18" / "report.md").write_text("# External report\n", encoding="utf-8")
+            config_home = root / "config"
+            config_home.mkdir()
+            config = config_home / "quarterdeck.json"
+            config.write_text(json.dumps({"homes": [
+                {"label": "External Sample", "path": str(home), "data_dir": str(data_dir)},
+            ]}), encoding="utf-8")
+            env = os.environ.copy()
+            env["HOME"] = str(root)
+            env["XDG_CONFIG_HOME"] = str(config_home)
+            env["XDG_STATE_HOME"] = str(data_dir)
+            env.pop("FM_HOME", None)
+            env.pop("FM_DATA_OVERRIDE", None)
+
+            result = subprocess.run(
+                [sys.executable, str(ROOT / "quarterdeck.py"), "reports", "mark-reviewed", "external-sample/amber-18", "--config", str(config)],
+                check=False, text=True, capture_output=True, env=env,
+            )
+
+            self.assertEqual(result.returncode, 2)
+            self.assertIn("review state must be outside", result.stderr)
+            self.assertFalse((data_dir / "quarterdeck" / "review-state").exists())
+
+    def test_long_distinct_home_labels_keep_distinct_report_ids(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            first_home = self.make_home(root / "first")
+            second_home = self.make_home(root / "second")
+            config_home = root / "config"
+            config_home.mkdir()
+            config = config_home / "quarterdeck.json"
+            config.write_text(json.dumps({"homes": [
+                {"label": "northstar-field-research-center-east", "path": str(first_home)},
+                {"label": "northstar-field-research-center-west", "path": str(second_home)},
+            ]}), encoding="utf-8")
+
+            listed = self.run_cli(["reports", "list", "--config", str(config)], root, config_home)
+            self.assertEqual(listed.returncode, 0, listed.stderr)
+            self.assertIn("northstar-field-research-center-east/amber-18\tneeds review", listed.stdout)
+            self.assertIn("northstar-field-research-center-west/amber-18\tneeds review", listed.stdout)
+
+    def test_review_state_inside_a_firstmate_home_is_refused(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            home = self.make_home(root)
+            env = os.environ.copy()
+            env["HOME"] = str(root)
+            env["XDG_CONFIG_HOME"] = str(root / "config")
+            env["XDG_STATE_HOME"] = str(home)
+            env.pop("FM_HOME", None)
+            result = subprocess.run(
+                [sys.executable, str(ROOT / "quarterdeck.py"), "reports", "mark-reviewed", "fictional-firstmate/amber-18", "--home", str(home)],
+                check=False, text=True, capture_output=True, env=env,
+            )
+            self.assertEqual(result.returncode, 2)
+            self.assertIn("review state must be outside", result.stderr)
+            self.assertFalse((home / "quarterdeck" / "review-state").exists())
 
     def test_rendered_report_markdown_escapes_html_and_formats_common_blocks(self) -> None:
         with tempfile.TemporaryDirectory() as temp:
@@ -497,7 +882,7 @@ Use the compact format for the first release.
             self.assertEqual(machine.returncode, 0, machine.stderr)
             index = json.loads(machine.stdout)
             commands = {entry["name"]: entry for entry in index["commands"]}
-            self.assertTrue({"install", "update", "add", "list", "remove", "render", "help"}.issubset(commands))
+            self.assertTrue({"install", "update", "add", "list", "remove", "render", "reports", "help"}.issubset(commands))
             self.assertIn("how-to/install.md", commands["install"]["docs"])
             self.assertIn("how-to/update.md", commands["update"]["docs"])
             self.assertIn("--lavish", commands["render"]["usage"])
@@ -505,8 +890,9 @@ Use the compact format for the first release.
             self.assertIn("explanation/attention-model.md", commands["render"]["docs"])
             self.assertIn("how-to/request-lavish-page.md", commands["render"]["docs"])
             self.assertIn("Lavish", commands["render"]["summary"])
+            self.assertIn("how-to/review-reports.md", commands["reports"]["docs"])
 
-            for command in ("install", "update", "add", "list", "remove", "render"):
+            for command in ("install", "update", "add", "list", "remove", "render", "reports"):
                 with self.subTest(command=command):
                     result = self.run_cli([command, "--help"], cli_home, config_home)
                     self.assertEqual(result.returncode, 0, result.stderr)
@@ -515,6 +901,13 @@ Use the compact format for the first release.
                     if command == "render":
                         self.assertIn("--lavish", result.stdout)
                         self.assertIn("--all", result.stdout)
+
+            for subcommand in ("list", "read", "mark-reviewed", "unmark-reviewed"):
+                result = self.run_cli(["reports", subcommand, "--help"], cli_home, config_home)
+                self.assertEqual(result.returncode, 0, result.stderr)
+                if subcommand == "read":
+                    self.assertIn("--open", result.stdout)
+                    self.assertNotIn("--output-dir", result.stdout)
 
     def test_installer_clones_updates_reuses_and_uninstalls_safely(self) -> None:
         with tempfile.TemporaryDirectory() as temp:

@@ -1,8 +1,22 @@
 # The attention model
 
 Quarterdeck's default page is a current review surface. It reads each selected
-home's backlog, reports, and secondmate route file directly. It does not run
-Firstmate scripts or commands.
+home's backlog, reports, and secondmate route file directly. It uses local
+review marks to determine which reports need review. It does not run Firstmate
+scripts or commands.
+
+## Reports needing review
+
+Every discovered `data/<task-id>/report.md` without a reviewed mark for its
+current bytes appears in a separate **Reports needing review** section on the
+default page. This section is independent of the backlog attention cards, so
+queued, finished, closed, and unlinked reports remain visible until reviewed.
+With `--all`, each report appears once in **All scout reports**, where its
+review state remains visible. Marking a report reviewed removes it from the
+default section; changing its bytes makes the mark stop matching and returns
+it to that section. See the [CLI reference](../reference/cli-and-config.md)
+for report commands and the [privacy and architecture guide](privacy-and-architecture.md)
+for how review marks are stored.
 
 ## What appears as a card
 
@@ -26,19 +40,21 @@ parent.
 
 ## What does not appear by default
 
-Queued, finished, closed, and unclassified records are not attention cards.
-A historical `hold_kind` or `hold_reason` does not keep a record
-visible after `held` is false. Reports appear only when their backlog
-record is still held for the captain or marked review-ready, so a report drops
-off when its item is answered or closed. A quiet line may give counts for
-queued and finished or closed records.
+Queued, finished, closed, and unclassified records are not backlog attention
+cards. A historical `hold_kind` or `hold_reason` does not keep a record visible
+after `held` is false. A report linked from a backlog card appears there only
+while its item is held for the captain or marked review-ready. Independently,
+any unreviewed report appears in the reports section. A quiet line may give
+counts for queued and finished or closed backlog records.
 
 Use `quarterdeck render --all` to restore an exhaustive view with every
-backlog record and report, including old and unlinked reports.
+backlog record and report, including reports that have already been reviewed.
+Each report appears once with its review state.
 
 ## Counts
 
-The page header counts match the cards in the four attention sections. In
-`--all` mode, two additional counts cover other backlog records and all
-scout reports. Per-home counts include that home's local secondmates only in
-their own panel; the page header totals all configured homes and secondmates.
+The page header counts match the cards in the four attention sections. A
+separate total counts reports needing review. In `--all` mode, two additional
+counts cover other backlog records and all scout reports. Per-home counts
+include that home's local secondmates only in their own panel; the page header
+totals all configured homes and secondmates.

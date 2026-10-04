@@ -28,19 +28,29 @@ selected home. Its default location is under
 custom output outside the repo and selected homes, and keep real config outside
 the repo as well. Quarterdeck refuses output inside its checkout or a selected
 home. The page uses inline CSS and makes no network requests. There is no
-daemon, token, or write-back path.
+daemon, token, or write-back path into a Firstmate home.
 
-Quarterdeck writes readable HTML copies of linked reports and the backlog
-beside the main page; the dependency-free Markdown renderer escapes source
-HTML. The default output location is outside the repo, and custom output and
-real config should stay outside it too.
+Quarterdeck writes readable HTML copies of linked reports, reports needing
+review, and the backlog beside the main page; the dependency-free Markdown
+renderer escapes source HTML. `quarterdeck reports read <id>` uses the same
+renderer. The [CLI reference](../reference/cli-and-config.md) documents its
+output path, report IDs, and collision handling.
+
+Reviewed marks are stored separately from rendered pages at
+`${XDG_STATE_HOME:-~/.local/state}/quarterdeck/review-state/marks.json`. Each
+mark stores the sha256 fingerprint of the report
+bytes. Before it reads or writes this state, Quarterdeck verifies the state
+directory is outside the repository checkout, all selected homes, and their
+configured data directories. The state file contains report IDs and
+fingerprints, not a copy of the report or Firstmate data.
 
 Lavish request controls are present only on `quarterdeck render --lavish`
-pages. They queue a structured prompt through Lavish's page API. Quarterdeck
-does not send the prompt, listen for requests, poll for a result, or create a
-Lavish page. An armed listener on that session must do that work and reply with
-the page link in the session conversation panel. Without an armed listener,
-the request has no effect.
+pages, including each report needing review. A report request carries its
+report ID, title, home label, and source path. Controls queue a structured
+prompt through Lavish's page API. Quarterdeck does not send the prompt, listen
+for requests, poll for a result, or create a Lavish page. An armed listener on
+that session must do that work and reply with the page link in the session
+conversation panel. Without an armed listener, the request has no effect.
 
 The repository ignores common output folders, image screenshots, and local
 configuration files. The staged-file privacy guard rejects generated HTML,
