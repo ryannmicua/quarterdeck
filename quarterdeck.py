@@ -13,6 +13,7 @@ import shutil
 import subprocess
 import sys
 import tempfile
+import webbrowser
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
@@ -55,6 +56,9 @@ class Report:
     path: Path
     recommendation: str | None
     markdown: str
+    fingerprint: str
+    report_id: str = ""
+    reviewed: bool = False
 
 
 @dataclass
@@ -144,7 +148,8 @@ def read_reports(data_dir: Path, warnings: list[str] | None = None) -> list[Repo
         return reports
     for report_path in sorted(data_dir.glob("*/report.md")):
         try:
-            source = report_path.read_text(encoding="utf-8", errors="replace")
+            raw_source = report_path.read_bytes()
+            source = raw_source.decode("utf-8", errors="replace")
         except OSError as exc:
             if warnings is not None:
                 warnings.append(f"Could not read report {report_path}: {exc}")
@@ -154,7 +159,10 @@ def read_reports(data_dir: Path, warnings: list[str] | None = None) -> list[Repo
              if (match := re.match(r"^\s{0,3}#{1,2}\s+(.+)$", line))),
             report_path.parent.name.replace("-", " ").replace("_", " "),
         )
-        reports.append(Report(title, report_path.resolve(), report_recommendation(source), source))
+        reports.append(Report(
+            title, report_path.resolve(), report_recommendation(source), source,
+            hashlib.sha256(raw_source).hexdigest(),
+        ))
     return reports
 
 
@@ -579,6 +587,7 @@ def write_source_pages(homes: list[HomeSnapshot], output_dir: Path, show_all: bo
                 record.report for record in snapshot.records
                 if record.report and (is_captain_held(record) or is_review_ready(record))
             }
+            linked_reports.update(report.path for report in snapshot.reports if not report.reviewed)
         for report in snapshot.reports:
             if report.path not in linked_reports:
                 continue
@@ -607,9 +616,10 @@ def request_payload(record: Record, snapshot: HomeSnapshot, category: str) -> di
     home = snapshot.spec.home or Path(".")
     report_request = category in {"held", "reviews"} and record.report is not None
     if report_request:
+        report = next((item for item in snapshot.reports if item.path == record.report), None)
         source = record.report_source or display_path(record.report, home)
-        item_id = value_for(record.fields, "id") or record.report.parent.name
-        title = record.title
+        item_id = report.report_id if report and report.report_id else report_reference(snapshot.spec.label, record.report.parent.name)
+        title = report.title if report else record.title
         kind = "report"
     else:
         source = value_for(record.fields, "source_path") or (
@@ -620,7 +630,10 @@ def request_payload(record: Record, snapshot: HomeSnapshot, category: str) -> di
         ).hexdigest()[:12]
         title = record.title
         kind = "backlog item"
-    return {"item_id": item_id, "title": title, "kind": kind, "home_label": snapshot.spec.label, "source_path": source}
+    payload = {"item_id": item_id, "title": title, "kind": kind, "home_label": snapshot.spec.label, "source_path": source}
+    if report_request:
+        payload["report_id"] = item_id
+    return payload
 
 
 def card(
@@ -658,7 +671,11 @@ def card(
     if show_report and record.report:
         report_name = source_page_filename("report", home, record.report)
         report_relative = display_path(record.report, home)
-        links.append(f'<a href="{html.escape(report_name, quote=True)}">Read report <span class="path">{html.escape(report_relative)}</span></a>')
+        report_id = report_reference(snapshot.spec.label, record.report.parent.name)
+        links.append(
+            f'<a href="{html.escape(report_name, quote=True)}">Read report '
+            f'<code>{html.escape(report_id)}</code> <span class="path">{html.escape(report_relative)}</span></a>'
+        )
     if snapshot.backlog_path:
         backlog_name = source_page_filename("backlog", home, snapshot.backlog_path)
         links.append(f'<a href="{html.escape(backlog_name, quote=True)}">Read backlog item</a>')
@@ -676,13 +693,23 @@ def report_card(report: Report, snapshot: HomeSnapshot, lavish: bool = False) ->
     recommendation = f'<p><strong>Recommendation:</strong> {html.escape(report.recommendation)}</p>' if report.recommendation else ""
     name = source_page_filename("report", home, report.path)
     relative = display_path(report.path, home)
+    review_label = "Reviewed" if report.reviewed else "Needs review"
     parts = [
-        f'<article class="card"{element_id}><p class="eyebrow">Scout report</p>',
+        f'<article class="card"{element_id}><p class="eyebrow">Scout report · {review_label} · '
+        f'<code>{html.escape(report.report_id)}</code></p>',
         f'<h3>{html.escape(report.title)}</h3>{recommendation}',
-        f'<p class="links"><a href="{html.escape(name, quote=True)}">Read report <span class="path">{html.escape(relative)}</span></a></p>',
+        f'<p class="links"><a href="{html.escape(name, quote=True)}">Read report '
+        f'<code>{html.escape(report.report_id)}</code> <span class="path">{html.escape(relative)}</span></a></p>',
     ]
     if lavish:
-        payload = {"item_id": report.path.parent.name, "title": report.title, "kind": "report", "home_label": snapshot.spec.label, "source_path": relative}
+        payload = {
+            "item_id": report.report_id,
+            "report_id": report.report_id,
+            "title": report.title,
+            "kind": "report",
+            "home_label": snapshot.spec.label,
+            "source_path": relative,
+        }
         parts.append(request_button(payload))
     parts.append("</article>")
     return "".join(parts)
@@ -730,11 +757,19 @@ def home_panel(snapshot: HomeSnapshot, lavish: bool = False, show_all: bool = Fa
             home_count_labels.extend([f"{counts[4]} other backlog items", f"{counts[5]} scout reports"])
         home_counts = "".join(f"<span>{html.escape(label)}</span>" for label in home_count_labels)
         body.append(f'<div class="home-counts">{home_counts}</div>')
+        needs_review = [report for report in snapshot.reports if not report.reviewed]
+        needs_review_cards = [report_card(report, snapshot, lavish) for report in needs_review]
         held_cards = [card(record, snapshot, "Held for captain", "held", lavish, True) for record in groups["held"]]
         review_cards = [card(record, snapshot, "Review-ready pull request", "reviews", lavish, True) for record in groups["reviews"]]
         in_flight_cards = [card(record, snapshot, "In-flight work", "in_flight", lavish, False) for record in groups["in_flight"]]
         blocked_cards = [card(record, snapshot, "Blocked for captain or external party", "blocked", lavish, False) for record in groups["blocked"]]
         body.extend([
+            section_html(
+                "Reports needing review",
+                "Reports without a reviewed mark for their current content.",
+                needs_review_cards,
+                "Every discovered report is marked reviewed.",
+            ),
             section_html("Held for the captain", "Unresolved captain holds, with the recorded reason and linked report.", held_cards, "Nothing is waiting for a captain answer."),
             section_html("Review-ready pull requests", "Open pull requests explicitly marked ready for review.", review_cards, "No review-ready pull requests are recorded."),
             section_html("In-flight work", "Tasks recorded as actively in progress.", in_flight_cards, "No work is currently in flight."),
@@ -781,21 +816,138 @@ def all_snapshots(snapshots: list[HomeSnapshot]) -> list[HomeSnapshot]:
     return result
 
 
+def report_reference(home_label: str, task_id: str) -> str:
+    """Build a readable report ID from its configured home label and task ID."""
+    label_slug = re.sub(r"[^a-z0-9]+", "-", home_label.casefold()).strip("-")
+    label_slug = label_slug[:24].rstrip("-") or "home"
+    return f"{label_slug}/{task_id}"
+
+
+def review_state_path() -> Path:
+    return default_output_dir() / "review-state" / "marks.json"
+
+
+def validate_review_state_location(snapshots: list[HomeSnapshot]) -> Path:
+    state_dir = review_state_path().parent.resolve()
+    roots = [Path(__file__).resolve().parent] + [
+        snapshot.spec.home.resolve()
+        for snapshot in all_snapshots(snapshots)
+        if snapshot.spec.home is not None
+    ]
+    for root in roots:
+        try:
+            state_dir.relative_to(root)
+        except ValueError:
+            continue
+        raise ValueError("review state must be outside the Quarterdeck checkout and all selected Firstmate homes")
+    return state_dir / "marks.json"
+
+
+def load_review_marks(path: Path) -> dict[str, str]:
+    if path.is_symlink():
+        raise ValueError(f"refusing symbolic-link review state: {path}")
+    if not path.exists():
+        return {}
+    try:
+        value = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as exc:
+        raise ValueError(f"could not read review state {path}: {exc}") from exc
+    if not isinstance(value, dict) or value.get("version") != 1 or not isinstance(value.get("reviewed"), dict):
+        raise ValueError(f"invalid review state format: {path}")
+    marks = value["reviewed"]
+    if any(not isinstance(key, str) or not isinstance(fingerprint, str)
+           or not re.fullmatch(r"[0-9a-f]{64}", fingerprint)
+           for key, fingerprint in marks.items()):
+        raise ValueError(f"invalid review state entry: {path}")
+    return dict(marks)
+
+
+def write_review_marks(path: Path, marks: dict[str, str]) -> None:
+    if path.is_symlink():
+        raise ValueError(f"refusing to replace symbolic-link review state: {path}")
+    path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
+    temporary_path: Path | None = None
+    try:
+        with tempfile.NamedTemporaryFile(
+            "w", encoding="utf-8", dir=path.parent,
+            prefix=f".{path.name}.", suffix=".tmp", delete=False,
+        ) as stream:
+            temporary_path = Path(stream.name)
+            json.dump({"version": 1, "reviewed": marks}, stream, indent=2, sort_keys=True)
+            stream.write("\n")
+        os.chmod(temporary_path, 0o600)
+        os.replace(temporary_path, path)
+    except OSError:
+        if temporary_path is not None:
+            temporary_path.unlink(missing_ok=True)
+        raise
+
+
+def apply_review_marks(snapshots: list[HomeSnapshot], marks: dict[str, str]) -> None:
+    for snapshot in all_snapshots(snapshots):
+        for report in snapshot.reports:
+            report.report_id = report_reference(snapshot.spec.label, report.path.parent.name)
+            report.reviewed = marks.get(report.report_id) == report.fingerprint
+
+
+def report_matches(snapshots: list[HomeSnapshot], requested_id: str) -> list[tuple[HomeSnapshot, Report]]:
+    return [
+        (snapshot, report)
+        for snapshot in all_snapshots(snapshots)
+        for report in snapshot.reports
+        if report.report_id == requested_id
+    ]
+
+
+def unique_report(snapshots: list[HomeSnapshot], requested_id: str) -> tuple[HomeSnapshot, Report]:
+    matches = report_matches(snapshots, requested_id)
+    if not matches:
+        raise ValueError(f"no report matches ID: {requested_id}")
+    if len(matches) > 1:
+        locations = ", ".join(
+            f'{snapshot.spec.label} ({display_path(report.path, snapshot.spec.home or report.path.parent)})'
+            for snapshot, report in matches
+        )
+        raise ValueError(f"report ID is ambiguous: {requested_id}; matching reports: {locations}")
+    return matches[0]
+
+
+def load_report_context(args: argparse.Namespace) -> tuple[list[HomeSnapshot], Path, dict[str, str]]:
+    if args.config is None:
+        configured_path = default_config_path()
+        args.config = configured_path if configured_path.is_file() else None
+    config = load_config(args.config)
+    specs, legacy_single_home = resolve_home_specs(args, config)
+    snapshots = [load_home_snapshot(spec, discover_secondmates=True) for spec in specs]
+    if legacy_single_home and snapshots[0].error:
+        raise ValueError(snapshots[0].error)
+    state_path = validate_review_state_location(snapshots)
+    marks = load_review_marks(state_path)
+    apply_review_marks(snapshots, marks)
+    return snapshots, state_path, marks
+
+
 def build_html(homes: list[HomeSnapshot], title: str, lavish: bool = False, show_all: bool = False) -> str:
     snapshots = all_snapshots(homes)
+    for snapshot in snapshots:
+        for report in snapshot.reports:
+            if not report.report_id:
+                report.report_id = report_reference(snapshot.spec.label, report.path.parent.name)
     counts = [sum(snapshot_counts(snapshot, show_all)[index] for snapshot in snapshots) for index in range(6 if show_all else 4)]
     metric_labels = ["Held for captain", "Review-ready PRs", "In-flight work", "Blocked for captain/external"]
     if show_all:
         metric_labels.extend(["Other backlog items", "Scout reports"])
+    counts.append(sum(not report.reviewed for snapshot in snapshots for report in snapshot.reports))
+    metric_labels.append("Reports needing review")
     timestamp = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
     metrics = "".join(
         f'<div class="metric"><b>{count}</b><span>{html.escape(label)}</span></div>'
         for count, label in zip(counts, metric_labels)
     )
     introductory_text = (
-        "Exhaustive snapshot of configured homes and their registered secondmates."
+        "Exhaustive snapshot of configured homes, reports needing review, and their registered secondmates."
         if show_all else
-        "A read-only view of unresolved captain holds, review-ready pull requests, in-flight work, and external blockers."
+        "A read-only view of reports needing review, unresolved captain holds, review-ready pull requests, in-flight work, and external blockers."
     )
     lavish_script = '''
   <script>
@@ -1083,6 +1235,7 @@ def remove_home(args: argparse.Namespace) -> int:
 
 COMMAND_DOCS = {
     "render": ["how-to/view-in-lavish.md", "how-to/request-lavish-page.md", "explanation/attention-model.md", "reference/cli-and-config.md", "explanation/privacy-and-architecture.md"],
+    "reports": ["how-to/review-reports.md", "reference/cli-and-config.md", "explanation/privacy-and-architecture.md"],
     "add": ["how-to/configure-multiple-homes.md", "reference/cli-and-config.md"],
     "list": ["how-to/configure-multiple-homes.md", "reference/cli-and-config.md"],
     "remove": ["how-to/configure-multiple-homes.md", "reference/cli-and-config.md"],
@@ -1177,6 +1330,87 @@ def resolve_home_specs(args: argparse.Namespace, config: dict[str, object]) -> t
         data_dir = Path(override).expanduser().resolve() if override else None
         return [HomeSpec(home.name or "Firstmate home", home, data_dir)], True
     raise ValueError("a Firstmate home is required; pass --home, set FM_HOME, or configure homes")
+
+
+def reports_list(args: argparse.Namespace) -> int:
+    try:
+        snapshots, _state_path, _marks = load_report_context(args)
+        reports = [
+            (snapshot, report)
+            for snapshot in all_snapshots(snapshots)
+            for report in snapshot.reports
+        ]
+        if not reports:
+            print("No reports found.")
+            return 0
+        identifiers: dict[str, int] = {}
+        for _snapshot, report in reports:
+            identifiers[report.report_id] = identifiers.get(report.report_id, 0) + 1
+        print("ID\tReview state\tTitle\tHome")
+        for snapshot, report in reports:
+            state = "ID collision" if identifiers[report.report_id] > 1 else (
+                "reviewed" if report.reviewed else "needs review"
+            )
+            print(f"{report.report_id}\t{state}\t{report.title}\t{snapshot.spec.label}")
+    except (OSError, ValueError) as exc:
+        print(f"quarterdeck: {exc}", file=sys.stderr)
+        return 2
+    return 0
+
+
+def reports_read(args: argparse.Namespace) -> int:
+    try:
+        snapshots, _state_path, _marks = load_report_context(args)
+        snapshot, report = unique_report(snapshots, args.report_id)
+        home = snapshot.spec.home or report.path.parent.parent.parent
+        output_dir = (args.output_dir.expanduser() if args.output_dir else default_output_dir()).resolve()
+        output_path = output_dir / source_page_filename("report", home, report.path)
+        validate_output_path(output_path, snapshots)
+        output_path.parent.mkdir(parents=True, exist_ok=True)
+        write_generated_page(
+            output_path,
+            source_page_html(report.title, display_path(report.path, home), report.markdown),
+        )
+        print(f"Report ID: {report.report_id}")
+        print(f"Title: {report.title}")
+        print(f"Source: {display_path(report.path, home)}")
+        print("\n--- Markdown ---")
+        sys.stdout.write(report.markdown)
+        if not report.markdown.endswith("\n"):
+            sys.stdout.write("\n")
+        print(f"\nReadable HTML: {output_path}")
+        if args.open:
+            webbrowser.open(output_path.as_uri())
+    except (OSError, ValueError) as exc:
+        print(f"quarterdeck: {exc}", file=sys.stderr)
+        return 2
+    return 0
+
+
+def reports_mark_reviewed(args: argparse.Namespace) -> int:
+    try:
+        snapshots, state_path, marks = load_report_context(args)
+        _snapshot, report = unique_report(snapshots, args.report_id)
+        marks[report.report_id] = report.fingerprint
+        write_review_marks(state_path, marks)
+    except (OSError, ValueError) as exc:
+        print(f"quarterdeck: {exc}", file=sys.stderr)
+        return 2
+    print(f"Marked {report.report_id} reviewed for its current content.")
+    return 0
+
+
+def reports_unmark_reviewed(args: argparse.Namespace) -> int:
+    try:
+        snapshots, state_path, marks = load_report_context(args)
+        _snapshot, report = unique_report(snapshots, args.report_id)
+        marks.pop(report.report_id, None)
+        write_review_marks(state_path, marks)
+    except (OSError, ValueError) as exc:
+        print(f"quarterdeck: {exc}", file=sys.stderr)
+        return 2
+    print(f"Removed the reviewed mark for {report.report_id}.")
+    return 0
 
 
 def validate_output_path(output_path: Path, homes: list[HomeSnapshot]) -> None:
@@ -1280,6 +1514,8 @@ def render(args: argparse.Namespace) -> int:
         if legacy_single_home and homes[0].error:
             print(f"quarterdeck: {homes[0].error}", file=sys.stderr)
             return 2
+        state_path = validate_review_state_location(homes)
+        apply_review_marks(homes, load_review_marks(state_path))
         configured_output = config.get("output_dir")
         output_dir = Path(configured_output).expanduser() if isinstance(configured_output, str) else default_output_dir()
         output_path = Path(args.output).expanduser() if args.output else output_dir / "index.html"
@@ -1336,6 +1572,49 @@ def make_parser() -> argparse.ArgumentParser:
     render_parser.add_argument("--all", action="store_true", help="show every backlog item and scout report, including queued and finished work")
     render_parser.add_argument("--lavish", action="store_true", help="write a separate Lavish-ready page and open it when lavish-axi is available")
     render_parser.set_defaults(handler=render)
+
+    reports_parser = subparsers.add_parser(
+        "reports", help="list, read, and track report reviews",
+        description="List reports by stable ID, read their Markdown and HTML page, or change their local review mark.",
+    )
+    command_parsers["reports"] = reports_parser
+    reports_subparsers = reports_parser.add_subparsers(dest="reports_command", required=True)
+
+    reports_list_parser = reports_subparsers.add_parser(
+        "list", help="list reports and their review state", description="List discovered reports and review state.",
+    )
+    reports_list_parser.add_argument("--home", help="use only this Firstmate home")
+    reports_list_parser.add_argument("--config", type=Path, help="optional JSON config file")
+    reports_list_parser.set_defaults(handler=reports_list)
+
+    reports_read_parser = reports_subparsers.add_parser(
+        "read", help="print a report and generate its readable HTML page",
+        description="Print report Markdown and generate a readable HTML copy in Quarterdeck's state directory.",
+    )
+    reports_read_parser.add_argument("report_id", help="stable report ID: <home-label-slug>/<task-id>")
+    reports_read_parser.add_argument("--home", help="use only this Firstmate home")
+    reports_read_parser.add_argument("--config", type=Path, help="optional JSON config file")
+    reports_read_parser.add_argument("--output-dir", type=Path, help="HTML output directory; defaults to Quarterdeck's state directory")
+    reports_read_parser.add_argument("--open", action="store_true", help="open the generated HTML page in a browser")
+    reports_read_parser.set_defaults(handler=reports_read)
+
+    reports_mark_parser = reports_subparsers.add_parser(
+        "mark-reviewed", help="mark a report reviewed for its current content",
+        description="Store the report's current content fingerprint in Quarterdeck's private state directory.",
+    )
+    reports_mark_parser.add_argument("report_id", help="stable report ID: <home-label-slug>/<task-id>")
+    reports_mark_parser.add_argument("--home", help="use only this Firstmate home")
+    reports_mark_parser.add_argument("--config", type=Path, help="optional JSON config file")
+    reports_mark_parser.set_defaults(handler=reports_mark_reviewed)
+
+    reports_unmark_parser = reports_subparsers.add_parser(
+        "unmark-reviewed", help="remove a report's reviewed mark",
+        description="Remove the local reviewed mark so the report needs review again.",
+    )
+    reports_unmark_parser.add_argument("report_id", help="stable report ID: <home-label-slug>/<task-id>")
+    reports_unmark_parser.add_argument("--home", help="use only this Firstmate home")
+    reports_unmark_parser.add_argument("--config", type=Path, help="optional JSON config file")
+    reports_unmark_parser.set_defaults(handler=reports_unmark_reviewed)
 
     add_parser = subparsers.add_parser("add", help="register a Firstmate home", description="Validate and register a Firstmate home.")
     command_parsers["add"] = add_parser

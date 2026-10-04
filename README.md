@@ -19,6 +19,8 @@ or runtime network dependency.
 
 - Primary review list for held items and recorded decisions.
 - Scout reports with an explicit recommendation when the report states one.
+- Stable report IDs, Markdown and readable HTML reading, and local review marks that reset when report contents change.
+- Dashboard section for reports needing review, including queued, finished, and unlinked reports.
 - In-flight tasks and pull requests marked ready for review.
 - Attention filtering, with `quarterdeck render --all` restoring queued, finished, closed, and historical items.
 - Combined pages for configured homes, with registered secondmates grouped
@@ -53,6 +55,10 @@ installation later, run `quarterdeck update`.
 For the first-render walkthrough, installation, update and refresh how-tos, and
 command reference, see the [tutorial](docs/tutorials/first-render.md),
 [how-to guides](docs/how-to/), and [CLI reference](docs/reference/cli-and-config.md).
+Use `quarterdeck reports list` to find a report ID, then run
+`quarterdeck reports read <report-id>` to print it and generate its readable
+page. See the [report review how-to](docs/how-to/review-reports.md) for review
+commands.
 
 ## How it relates to Firstmate
 

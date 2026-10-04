@@ -7,3 +7,4 @@
 - [Refresh on a schedule](schedule-refresh.md)
 - [View in Lavish](view-in-lavish.md)
 - [Request a Lavish page](request-lavish-page.md)
+- [Read and track report reviews](review-reports.md)

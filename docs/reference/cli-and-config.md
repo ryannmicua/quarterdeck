@@ -4,6 +4,10 @@
 
 ```text
 quarterdeck render [--home PATH] [--output PATH] [--config FILE] [--title TEXT] [--all] [--lavish]
+quarterdeck reports list [--home PATH] [--config FILE]
+quarterdeck reports read <report-id> [--home PATH] [--config FILE] [--output-dir PATH] [--open]
+quarterdeck reports mark-reviewed <report-id> [--home PATH] [--config FILE]
+quarterdeck reports unmark-reviewed <report-id> [--home PATH] [--config FILE]
 quarterdeck add <firstmate-home> [--label LABEL] [--config FILE]
 quarterdeck list [--config FILE]
 quarterdeck remove <label-or-path> [--config FILE]
@@ -49,6 +53,32 @@ hosts. A missing or unreadable home in a configured list gets a failure section;
 the other homes still render. The page links to readable HTML copies of
 selected reports and backlogs, generated beside the main page, and HTTPS links
 for GitHub pull requests.
+
+`reports list`, `reports read`, `reports mark-reviewed`, and
+`reports unmark-reviewed` use the selected homes in the config, or the single
+home from `--home` or `FM_HOME`. They also accept `--config FILE`. Report IDs
+have the exact form `<home-label-slug>/<task-id>`: the label slug is the
+case-folded label with each run of characters outside `a` through `z` and `0`
+through `9` replaced by `-`, then leading and trailing hyphens removed; the
+task ID is the report's immediate parent directory name unchanged. The slug is
+limited to its first 24 characters, then trailing hyphens are removed again.
+An empty slug becomes `home`. For example, `Maple Harbor` and `amber-18`
+produce `maple-harbor/amber-18`. A
+collision appears as `ID collision` in the list. Read and review commands
+refuse the ambiguous ID with matching homes and paths; use distinct home-label
+slugs to resolve it.
+
+`reports read` prints Markdown and writes the existing readable HTML format.
+The default HTML directory is the Quarterdeck state directory. Use
+`--output-dir PATH` to select another location outside the repository and all
+selected homes, and `--open` to open the generated page in a browser.
+`mark-reviewed` stores the current report's sha256 byte fingerprint;
+`unmark-reviewed` removes that mark. Review marks are stored separately from
+rendered pages at
+`${XDG_STATE_HOME:-~/.local/state}/quarterdeck/review-state/marks.json`.
+Quarterdeck refuses a state directory inside the checkout or any selected
+Firstmate home. A changed report no longer matches its saved fingerprint and
+returns to needs review.
 
 | Option | Meaning |
 | --- | --- |
@@ -115,17 +145,22 @@ or name it `.quarterdeck.json`, which is ignored by Git.
 The default attention view shows unresolved captain holds (held=yes,
 hold_kind=captain, and not closed), review-ready GitHub pull requests, in-flight
 work, and blocked items with a structured captain or external-party blocker.
-Held cards show their recorded hold reason. A report is linked only when its
-backlog item is held for the captain or marked review-ready; answered and closed
-items no longer surface their reports. Queued and finished work is omitted from
-cards. Use `--all` to restore the exhaustive view. Recommendations are shown
-only when a report explicitly labels one.
+Held cards show their recorded hold reason. A report is linked from a backlog
+card only when its item is held for the captain or marked review-ready; answered
+and closed items no longer surface reports from their cards. The separate
+**Reports needing review** section links every discovered report without a
+matching reviewed mark, including queued, finished, and unlinked reports.
+Queued and finished backlog items remain omitted from their cards. Use `--all`
+to restore the exhaustive backlog view. Recommendations are shown only when a
+report explicitly labels one.
 
 The page is regenerated on demand. `quarterdeck render --lavish` writes a separate
 Lavish-ready file beside the normal output (for example, `index.lavish.html`) and
 opens it with `lavish-axi` when that command is on `PATH`. It prints Lavish's
 session URL. Held, review-ready, and in-flight cards include a control that
-queues a structured page request in that Lavish session. Quarterdeck does not
+queues a structured page request in that Lavish session. Each report needing
+review also has the control, with its report ID, title, home label, and source
+path in the request. Quarterdeck does not
 send the queued prompt, listen, poll, or create the requested page; an armed
 listener must receive it and reply with the page link in the session
 conversation panel. Without Lavish, Quarterdeck prints a command hint and

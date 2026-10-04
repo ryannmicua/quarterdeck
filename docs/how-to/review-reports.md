@@ -1,0 +1,58 @@
+# Read and track report reviews
+
+Quarterdeck finds `data/<task-id>/report.md` files in each selected Firstmate
+home. List them with their review state:
+
+```sh
+quarterdeck reports list
+```
+
+When using a one-off home or a different config, pass `--home PATH` or
+`--config FILE`. The command uses the same configured homes as `quarterdeck
+render` by default.
+
+Each report ID has the form `<home-label-slug>/<task-id>`. The label slug is
+the home label case-folded, with each run of characters other than `a` through
+`z` or `0` through `9` replaced by `-`, and leading or trailing `-` removed.
+The slug is limited to its first 24 characters, with any trailing `-` removed
+again; if it becomes empty, it is `home`. The task ID is the report's immediate
+parent directory name, unchanged. For example, home label `Maple Harbor` and
+task ID `amber-18` produce
+`maple-harbor/amber-18`. Keep the label stable to keep the ID stable.
+
+If two discovered reports produce the same ID, `reports list` labels both
+`ID collision`. `reports read`, `mark-reviewed`, and `unmark-reviewed` refuse
+that ID and list the matching homes and paths. Give the homes distinct labels
+whose slugs differ, then retry. The command never picks one report arbitrarily.
+
+Read a report by ID. Quarterdeck prints its Markdown and writes a readable HTML
+copy in its state directory; the output names the generated page:
+
+```sh
+quarterdeck reports read maple-harbor/amber-18
+```
+
+Add `--open` to open that HTML page in a browser. Add `--output-dir PATH` to
+choose another output directory; it must remain outside the repository and all
+selected Firstmate homes.
+
+Mark or remove a reviewed mark:
+
+```sh
+quarterdeck reports mark-reviewed maple-harbor/amber-18
+quarterdeck reports unmark-reviewed maple-harbor/amber-18
+```
+
+The dashboard's **Reports needing review** section links to every discovered
+report that has no mark for its current contents, including reports that are
+not linked from an open backlog card. `quarterdeck render --lavish` adds the
+existing request control to each such report. It queues a prompt for a
+listener; Quarterdeck does not send it, listen, poll, or generate the requested
+page. See [Request a Lavish page](request-lavish-page.md).
+
+Review marks are stored at
+`${XDG_STATE_HOME:-~/.local/state}/quarterdeck/review-state/marks.json`. Each
+mark records a sha256 fingerprint of the report bytes. Editing a report makes
+it need review again. The state file is outside Firstmate homes and the
+Quarterdeck checkout; Quarterdeck refuses to use a state directory inside
+either location. No Firstmate file is changed.
