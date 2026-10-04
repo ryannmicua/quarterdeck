@@ -701,7 +701,7 @@ def report_card(report: Report, snapshot: HomeSnapshot, lavish: bool = False) ->
         f'<p class="links"><a href="{html.escape(name, quote=True)}">Read report '
         f'<code>{html.escape(report.report_id)}</code> <span class="path">{html.escape(relative)}</span></a></p>',
     ]
-    if lavish:
+    if lavish and not report.reviewed:
         payload = {
             "item_id": report.report_id,
             "report_id": report.report_id,

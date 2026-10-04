@@ -218,6 +218,51 @@ Use the compact format for the first release.
             self.assertEqual(page.count("<h3>Finished Finch report</h3>"), 1)
             self.assertEqual(page.count("<h3>Unlinked old report</h3>"), 1)
 
+    def test_all_lavish_request_control_is_limited_to_unreviewed_report_cards(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            home = self.make_home(root)
+            config_home = root / "config"
+            report_id = "fictional-firstmate/amber-18"
+
+            marked = self.run_cli(
+                ["reports", "mark-reviewed", report_id, "--home", str(home)],
+                root, config_home,
+            )
+            self.assertEqual(marked.returncode, 0, marked.stderr)
+
+            empty_bin = root / "empty-bin"
+            empty_bin.mkdir()
+            output = root / "dashboard.html"
+            env = os.environ.copy()
+            env["HOME"] = str(root)
+            env["XDG_CONFIG_HOME"] = str(config_home)
+            env["XDG_STATE_HOME"] = str(root / "state")
+            env["PATH"] = str(empty_bin)
+            env.pop("FM_HOME", None)
+            env.pop("FM_DATA_OVERRIDE", None)
+            rendered = subprocess.run(
+                [sys.executable, str(ROOT / "quarterdeck.py"), "render", "--all", "--lavish",
+                 "--home", str(home), "--output", str(output)],
+                check=False, text=True, capture_output=True, env=env,
+            )
+            self.assertEqual(rendered.returncode, 0, rendered.stderr)
+
+            page = output.with_name("dashboard.lavish.html").read_text(encoding="utf-8")
+            report_cards = re.findall(r'<article class="card" id="review-report-[^"]+">.*?</article>', page, re.DOTALL)
+            reviewed_card = next(card for card in report_cards if "<h3>Amber Kite import review</h3>" in card)
+            unreviewed_card = next(card for card in report_cards if "<h3>Unlinked old report</h3>" in card)
+            self.assertIn("Scout report · Reviewed", reviewed_card)
+            self.assertNotIn("data-lavish-request", reviewed_card)
+            self.assertIn("Scout report · Needs review", unreviewed_card)
+            self.assertIn("data-lavish-request", unreviewed_card)
+
+            payloads = [
+                json.loads(html.unescape(value))
+                for value in re.findall(r'data-lavish-request="([^"]+)"', page)
+            ]
+            self.assertTrue(any(payload.get("report_id") == report_id for payload in payloads))
+
     def test_lavish_request_control_has_structured_payload_and_is_hidden_on_plain_page(self) -> None:
         with tempfile.TemporaryDirectory() as temp:
             root = Path(temp)
