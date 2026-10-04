@@ -27,8 +27,8 @@ Open that file in a browser, or pass it to `lavish-axi`:
 lavish-axi ~/.local/state/quarterdeck/index.html
 ```
 
-The page groups held items first, followed by review-ready pull requests, scout
-reports, and active backlog items. A recommendation appears only when the
+See [The attention model](../explanation/attention-model.md) for which reports
+and backlog items appear on the page. A recommendation appears only when the
 associated report includes a `Recommendation` heading or field.
 
 ## Refresh

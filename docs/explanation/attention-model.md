@@ -1,9 +1,9 @@
 # The attention model
 
 Quarterdeck's default page is a current review surface. It reads each selected
-home's backlog, reports, and secondmate route file directly. It also compares
-each report's content fingerprint with Quarterdeck's private review marks. It
-does not run Firstmate scripts or commands.
+home's backlog, reports, and secondmate route file directly. It uses local
+review marks to determine which reports need review. It does not run Firstmate
+scripts or commands.
 
 ## Reports needing review
 
@@ -13,9 +13,10 @@ default page. This section is independent of the backlog attention cards, so
 queued, finished, closed, and unlinked reports remain visible until reviewed.
 With `--all`, each report appears once in **All scout reports**, where its
 review state remains visible. Marking a report reviewed removes it from the
-default section; editing it changes its sha256 fingerprint and returns it to
-that section. The same report IDs and state are available through
-`quarterdeck reports list` and the `quarterdeck reports` commands.
+default section; changing its bytes makes the mark stop matching and returns
+it to that section. See the [CLI reference](../reference/cli-and-config.md)
+for report commands and the [privacy and architecture guide](privacy-and-architecture.md)
+for how review marks are stored.
 
 ## What appears as a card
 
@@ -52,8 +53,8 @@ Each report appears once with its review state.
 
 ## Counts
 
-The page header counts match the cards in the four attention sections and
-includes a separate total for reports needing review. In `--all` mode, two
-additional counts cover other backlog records and all scout reports. Per-home
-counts include that home's local secondmates only in their own panel; the page
-header totals all configured homes and secondmates.
+The page header counts match the cards in the four attention sections. A
+separate total counts reports needing review. In `--all` mode, two additional
+counts cover other backlog records and all scout reports. Per-home counts
+include that home's local secondmates only in their own panel; the page header
+totals all configured homes and secondmates.

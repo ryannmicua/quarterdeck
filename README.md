@@ -19,8 +19,8 @@ or runtime network dependency.
 
 - Primary review list for held items and recorded decisions.
 - Scout reports with an explicit recommendation when the report states one.
-- Stable report IDs, Markdown and readable HTML reading, and local review marks that reset when report contents change.
-- Dashboard section for reports needing review, including queued, finished, and unlinked reports.
+- Stable report IDs, Markdown and readable HTML reading, and local review marks.
+- Reports needing review appear independently of backlog attention.
 - In-flight tasks and pull requests marked ready for review.
 - Attention filtering, with `quarterdeck render --all` restoring queued, finished, closed, and historical items.
 - Combined pages for configured homes, with registered secondmates grouped

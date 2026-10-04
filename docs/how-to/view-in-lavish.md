@@ -19,13 +19,6 @@ lavish-axi ~/.local/state/quarterdeck/index.lavish.html
 
 Each review card has a stable ID so annotations remain attached to a specific
 item. Use Lavish's annotation and queued feedback controls in its review page.
-Held, review-ready, and in-flight cards also have a **Request a Lavish page**
-control. Every report in the **Reports needing review** section has the same
-control on the default page. With `--all`, each report appears once in **All
-scout reports** with its review state; only reports needing review have the
-request control.
-Report requests include the report ID, title, home label, and source path. The
-control queues a structured prompt for a listener on that session; see
-[Request a Lavish page](request-lavish-page.md) for the complete flow and its
-listener requirement. The ordinary `index.html` remains available as a
-readable page that can be opened directly in a browser.
+For report and backlog page requests, see [Request a Lavish page](request-lavish-page.md).
+The ordinary `index.html` remains available as a readable page that can be
+opened directly in a browser.

@@ -33,22 +33,16 @@ daemon, token, or write-back path into a Firstmate home.
 Quarterdeck writes readable HTML copies of linked reports, reports needing
 review, and the backlog beside the main page; the dependency-free Markdown
 renderer escapes source HTML. `quarterdeck reports read <id>` uses the same
-renderer and writes its page in the Quarterdeck state directory by default.
-The default output location is outside the repo, and custom output and real
-config should stay outside it too.
+renderer. The [CLI reference](../reference/cli-and-config.md) documents its
+output path, report IDs, and collision handling.
 
-Report IDs combine a slug of the configured home label with the immediate
-task directory name. If two reports in selected homes have the same ID,
-Quarterdeck lists the collision and refuses to read or change review state by
-that ID. The operator can assign home labels with distinct slugs.
-
-Reviewed marks live only in
-`${XDG_STATE_HOME:-~/.local/state}/quarterdeck/review-state/marks.json`, apart
-from generated HTML. Each mark stores the sha256 fingerprint of the report
-bytes. A content edit therefore makes the report need review again. Before it
-reads or writes this state, Quarterdeck verifies the state directory is outside
-the repository checkout and all selected homes. The state file contains report
-IDs and fingerprints, not a copy of the report or Firstmate data.
+Reviewed marks are stored separately from rendered pages at
+`${XDG_STATE_HOME:-~/.local/state}/quarterdeck/review-state/marks.json`. Each
+mark stores the sha256 fingerprint of the report
+bytes. Before it reads or writes this state, Quarterdeck verifies the state
+directory is outside the repository checkout, all selected homes, and their
+configured data directories. The state file contains report IDs and
+fingerprints, not a copy of the report or Firstmate data.
 
 Lavish request controls are present only on `quarterdeck render --lavish`
 pages, including each report needing review. A report request carries its

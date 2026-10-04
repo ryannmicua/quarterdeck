@@ -70,14 +70,10 @@ refuse resolution while a selected local home is incomplete.
 
 `reports read` prints Markdown and writes the existing readable HTML format.
 The HTML page is written to the Quarterdeck state directory. Use `--open` to
-open the generated page in a browser.
-`mark-reviewed` stores the current report's sha256 byte fingerprint;
-`unmark-reviewed` removes that mark. Review marks are stored separately from
-rendered pages at
-`${XDG_STATE_HOME:-~/.local/state}/quarterdeck/review-state/marks.json`.
-Quarterdeck refuses a state directory inside the checkout or any selected
-Firstmate home. A changed report no longer matches its saved fingerprint and
-returns to needs review.
+open the generated page in a browser. `mark-reviewed` records the current
+report fingerprint; `unmark-reviewed` clears that mark. See [Privacy and architecture](../explanation/privacy-and-architecture.md)
+for review-state storage and [The attention model](../explanation/attention-model.md)
+for how marks affect the dashboard.
 
 | Option | Meaning |
 | --- | --- |
@@ -141,27 +137,14 @@ or name it `.quarterdeck.json`, which is ignored by Git.
 
 ## Data shown
 
-The default attention view shows unresolved captain holds (held=yes,
-hold_kind=captain, and not closed), review-ready GitHub pull requests, in-flight
-work, and blocked items with a structured captain or external-party blocker.
-Held cards show their recorded hold reason. A report is linked from a backlog
-card only when its item is held for the captain or marked review-ready; answered
-and closed items no longer surface reports from their cards. The default page's
-separate **Reports needing review** section links every discovered report
-without a matching reviewed mark, including queued, finished, and unlinked
-reports. With `--all`, each report appears once in **All scout reports** with
-its review state. Queued and finished backlog items remain omitted from their
-cards by default. Use `--all` to restore the exhaustive backlog view.
-Recommendations are shown only when a report explicitly labels one.
+Recommendations are shown only when a report explicitly labels one. See [The
+attention model](../explanation/attention-model.md) for dashboard inclusion and
+`--all` behavior.
 
-The page is regenerated on demand. `quarterdeck render --lavish` writes a separate
-Lavish-ready file beside the normal output (for example, `index.lavish.html`) and
-opens it with `lavish-axi` when that command is on `PATH`. It prints Lavish's
-session URL. Held, review-ready, and in-flight cards include a control that
-queues a structured page request in that Lavish session. Each report needing
-review also has the control, with its report ID, title, home label, and source
-path in the request. Quarterdeck does not
-send the queued prompt, listen, poll, or create the requested page; an armed
-listener must receive it and reply with the page link in the session
-conversation panel. Without Lavish, Quarterdeck prints a command hint and
-still succeeds.
+The page is regenerated on demand. `quarterdeck render --lavish` writes a
+separate Lavish-ready file beside the normal output (for example,
+`index.lavish.html`) and opens it with `lavish-axi` when that command is on
+`PATH`. It prints Lavish's session URL. Without Lavish, Quarterdeck prints a
+command hint and still succeeds. See [Request a Lavish page](../how-to/request-lavish-page.md)
+for the workflow and [Privacy and architecture](../explanation/privacy-and-architecture.md)
+for the request data and interaction boundary.
