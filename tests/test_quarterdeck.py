@@ -10,8 +10,10 @@ import subprocess
 import sys
 import tempfile
 import threading
+import time
 import unittest
 from contextlib import redirect_stderr, redirect_stdout
+from datetime import datetime, timezone
 from pathlib import Path
 from unittest.mock import patch
 
@@ -126,7 +128,8 @@ Use the compact format for the first release.
             output = root / "outside-output" / "index.html"
             result = self.run_cli(["render", "--home", str(home), "--output", str(output)], root, root / "config")
             self.assertEqual(result.returncode, 0, result.stderr)
-            page = output.read_text(encoding="utf-8")
+            full_page = output.read_text(encoding="utf-8")
+            page = full_page.split("Details by home", 1)[1]
             self.assertIn("Choose the Amber Kite import format", page)
             self.assertIn("Use the compact format for the first release.", page)
             self.assertIn("https://github.com/example/quarterdeck-demo/" + "pull/42", page)
@@ -160,7 +163,7 @@ Use the compact format for the first release.
                 metric = re.search(r'<div class="metric"><b>(\d+)</b><span>' + re.escape(label) + r"</span></div>", page)
                 self.assertIsNotNone(metric)
                 self.assertEqual(int(metric.group(1)), page.count(f'<p class="eyebrow">{badge}</p>'))
-            self.assertIn('name="quarterdeck-' + "generated" + '"', page)
+            self.assertIn('name="quarterdeck-' + "generated" + '"', full_page)
             self.assertNotIn("https://fonts.", page)
             report_pages = list(output.parent.glob("report-*.html"))
             self.assertEqual(len(report_pages), 6)
@@ -197,10 +200,12 @@ Use the compact format for the first release.
             self.assertIn("Request a Lavish page", page)
             self.assertRegex(page, r'<article class="card" id="review-report-[0-9a-f]{12}">')
             self.assertIn("Reports needing review", page)
-            self.assertEqual(page, quarterdeck.build_html(
-                [quarterdeck.load_home_snapshot(quarterdeck.HomeSpec(home.name, home), discover_secondmates=True)],
-                "Quarterdeck", lavish=True,
-            ))
+            homes = [quarterdeck.load_home_snapshot(quarterdeck.HomeSpec(home.name, home), discover_secondmates=True)]
+            expected = quarterdeck.build_html(
+                homes, "Quarterdeck", lavish=True, bearings=quarterdeck.build_bearings(homes),
+            )
+            stamp = re.compile(r"[Gg]enerated(?: at)? \d{4}-\d\d-\d\d \d\d:\d\d:\d\d UTC")
+            self.assertEqual(stamp.sub("", page), stamp.sub("", expected))
 
     def test_all_mode_restores_queued_finished_and_unlinked_reports(self) -> None:
         with tempfile.TemporaryDirectory() as temp:
@@ -209,7 +214,7 @@ Use the compact format for the first release.
             output = root / "outside-output" / "index.html"
             result = self.run_cli(["render", "--all", "--home", str(home), "--output", str(output)], root, root / "config")
             self.assertEqual(result.returncode, 0, result.stderr)
-            page = output.read_text(encoding="utf-8")
+            page = output.read_text(encoding="utf-8").split("Details by home", 1)[1]
             self.assertIn("Gather the Finch field notes", page)
             self.assertIn("File the old Finch notes", page)
             self.assertIn("Unlinked old report", page)
@@ -1006,6 +1011,286 @@ Use the compact format for the first release.
             quarterdeck.report_recommendation("## Recommendation\n\nChoose the north path."),
             "Choose the north path.",
         )
+
+
+PIER_PR = "https://github.com/example/pier-demo/" + "pull/7"
+BULLET_BACKLOG = """# Backlog
+
+## In flight
+
+- [ ] harbor-chart - Harbor chart: draw the tide tables (repo: harbor-demo) (kind: ship) (since 2026-09-30)
+  Drawing tides for the invented harbor.
+
+## Queued
+
+- [ ] kelp-survey - Kelp survey: map the invented reef data/kelp-survey/report.md blocked-by: harbor-chart (repo: reef-demo) (kind: ship) (since 2026-09-20) (hold: Waiting on the invented diver roster. Options: (a) survey now, (b) wait for spring. Recommendation: wait for spring (cheaper).) (hold-kind: captain)
+
+  Filed 2026-09-20T08:00:00Z. The reef survey needs a choice (see data/kelp-survey/report.md).
+
+  Second paragraph with the long body text that must stay on the page.
+- [ ] later-work - Later work: sort the invented buoys (repo: buoy-demo) (kind: ship) (since 2026-09-25)
+
+## Done
+
+- [x] pier-fix - Pier fix: patch the invented pier (repo: pier-demo) (kind: ship) (merged 2026-10-01 """ + PIER_PR + """)
+- [x] old-dock - Old dock: retire the invented dock (repo: dock-demo) (done 2026-08-01)
+"""
+
+SNAPSHOT_JSON = {
+    "schema": "fm-bearings.v1",
+    "home": "invented",
+    "generated": "2026-10-04T00:00:00Z",
+    "in_flight": [{"id": "harbor-chart", "kind": "ship", "state": "working", "repo": "harbor-demo",
+                   "name": "Harbor chart", "doing": "drawing tides"}],
+    "secondmates": [{"id": "kestrel", "state": "working", "doing": "mapping", "reason": "-"}],
+    "decisions_open": [{"id": "kelp-survey", "key": "kelp-survey", "verb": "captain-hold",
+                        "summary": "Kelp survey: map the invented reef (truncated sum", "owner": "(main)"}],
+    "landed": [{"id": "pier-fix", "what": "Pier fix: patch the invented pier", "artifact":
+                PIER_PR, "owner": "(main)"}],
+    "gates": [{"id": "later-work", "title": "Later work", "blocked_by": "harbor-chart",
+               "reason": "queued behind the chart", "owner": "(main)", "filed": "2026-09-25"}],
+    "reports": [], "recorded_prs": [],
+}
+
+
+class BearingsTests(unittest.TestCase):
+    def make_home(self, root: Path, snapshot_script: str | None = None) -> Path:
+        home = root / "invented-home"
+        (home / "data" / "kelp-survey").mkdir(parents=True)
+        (home / "data" / "backlog.md").write_text(BULLET_BACKLOG, encoding="utf-8")
+        (home / "data" / "kelp-survey" / "report.md").write_text(
+            "# Kelp survey report\n\n## Recommendation\n\nWait for spring.\n", encoding="utf-8")
+        if snapshot_script is not None:
+            script = home / "bin" / "fm-bearings-snapshot.sh"
+            script.parent.mkdir()
+            script.write_text(snapshot_script, encoding="utf-8")
+            script.chmod(0o755)
+        return home
+
+    def snapshots(self, home: Path) -> list:
+        homes = [quarterdeck.load_home_snapshot(quarterdeck.HomeSpec("invented", home), discover_secondmates=True)]
+        quarterdeck.apply_review_marks(homes, {})
+        return homes
+
+    def assert_four_sections(self, page: str) -> None:
+        order = [page.index(f'id="{key}"') for key in ("call", "landed", "underway", "charted")]
+        self.assertEqual(order, sorted(order))
+        for title in ("Captain&#x27;s Call", "Recently Landed", "Underway", "Charted Next",
+                      "Reports waiting on your review"):
+            self.assertIn(title, page)
+
+    def test_snapshot_path_classifies_fields_and_enriches_from_backlog(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            home = self.make_home(Path(temp), "#!/bin/sh\ncat <<'JSON'\n" + json.dumps(SNAPSHOT_JSON) + "\nJSON\n")
+            now = datetime(2026, 10, 4, tzinfo=timezone.utc)
+            bearings = quarterdeck.build_bearings(self.snapshots(home), now=now)
+            self.assertEqual(bearings.sources[0].mode, "snapshot")
+            self.assertEqual([i.item_id for i in bearings.call], ["kelp-survey"])
+            self.assertEqual([i.item_id for i in bearings.landed], ["pier-fix"])
+            self.assertEqual([i.title for i in bearings.underway], ["Harbor chart", "Secondmate kestrel"])
+            self.assertEqual([i.item_id for i in bearings.charted], ["later-work"])
+            page = quarterdeck.bearings_html(bearings)
+            self.assert_four_sections(page)
+            # The full backlog text replaces the snapshot's truncated summary.
+            self.assertIn("Waiting on the invented diver roster", page)
+            self.assertIn("Second paragraph with the long body text", page)
+            self.assertNotIn("truncated sum", page)
+            self.assertIn("(a) survey now, (b) wait for spring.", page)
+            self.assertIn("wait for spring (cheaper).", page)
+            self.assertIn("waiting 14 days", page)
+            self.assertIn("project reef-demo", page)
+            self.assertIn("Read report", page)
+            self.assertIn(f'href="{PIER_PR}">{PIER_PR}<', page)
+            self.assertIn("harbor-chart — queued behind the chart", page)
+            self.assertIn("Firstmate bearings snapshot", page)
+
+    def test_snapshot_script_receives_fm_home_and_json_flag(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            script = '#!/bin/sh\nprintf \'{"schema":"fm-bearings.v1","home":"%s","args":"%s"}\' "$FM_HOME" "$*"\n'
+            home = self.make_home(Path(temp), script)
+            data, reason = quarterdeck.run_bearings_snapshot(home)
+            self.assertEqual(reason, "")
+            self.assertEqual(data["home"], str(home))
+            self.assertEqual(data["args"], "--json")
+
+    def test_fallback_path_classifies_backlog_and_says_why(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            home = self.make_home(Path(temp))
+            now = datetime(2026, 10, 4, tzinfo=timezone.utc)
+            bearings = quarterdeck.build_bearings(self.snapshots(home), now=now)
+            self.assertEqual(bearings.sources[0].mode, "fallback")
+            self.assertEqual([i.item_id for i in bearings.call], ["kelp-survey"])
+            self.assertEqual([i.item_id for i in bearings.landed], ["pier-fix", "old-dock"])
+            self.assertEqual([i.item_id for i in bearings.underway], ["harbor-chart"])
+            self.assertEqual([i.item_id for i in bearings.charted], ["later-work"])
+            self.assertEqual(bearings.charted[0].waits_on, "queue order")
+            page = quarterdeck.bearings_html(bearings)
+            self.assert_four_sections(page)
+            self.assertIn("fallback", page)
+            self.assertIn("no executable bin/fm-bearings-snapshot.sh", page)
+            self.assertIn("waiting on the invented diver roster".lower(), page.lower())
+            self.assertIn("Second paragraph with the long body text", page)
+            self.assertIn("(a) survey now, (b) wait for spring.", page)
+            self.assertIn(PIER_PR, page)
+            self.assertIn("waiting 14 days", page)
+            self.assertIn("Kelp survey report", page)  # report is listed as needing review
+
+    def test_fallback_when_script_fails_or_times_out_or_prints_garbage(self) -> None:
+        cases = {
+            "exit": ("#!/bin/sh\nexit 3\n", "status 3"),
+            "garbage": ("#!/bin/sh\necho not json\n", "did not print JSON"),
+            "schema": ('#!/bin/sh\necho \'{"schema":"other"}\'\n', "unrecognized schema"),
+            "slow": ("#!/bin/sh\nsleep 5\n", "timed out"),
+        }
+        for name, (script, expected) in cases.items():
+            with self.subTest(name), tempfile.TemporaryDirectory() as temp:
+                home = self.make_home(Path(temp), script)
+                bearings = quarterdeck.build_bearings(
+                    self.snapshots(home), runner=lambda h: quarterdeck.run_bearings_snapshot(h, timeout=0.5))
+                self.assertEqual(bearings.sources[0].mode, "fallback")
+                self.assertIn(expected, bearings.sources[0].reason)
+                self.assertEqual([i.item_id for i in bearings.call], ["kelp-survey"])
+
+    def test_no_snapshot_option_skips_the_script(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            marker = Path(temp) / "ran"
+            home = self.make_home(Path(temp), f"#!/bin/sh\ntouch {marker}\n")
+            bearings = quarterdeck.build_bearings(self.snapshots(home), use_snapshot=False)
+            self.assertFalse(marker.exists())
+            self.assertIn("--no-snapshot", bearings.sources[0].reason)
+
+    def test_every_section_renders_an_empty_state(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            home = Path(temp) / "empty-home"
+            (home / "data").mkdir(parents=True)
+            (home / "data" / "backlog.md").write_text("# Backlog\n", encoding="utf-8")
+            page = quarterdeck.bearings_html(quarterdeck.build_bearings(self.snapshots(home)))
+            self.assertEqual(page.count('class="empty"'), 5)
+            self.assertIn("Nothing is waiting on a captain decision.", page)
+            self.assertIn("No reports are waiting on your review.", page)
+
+
+class ServeTests(unittest.TestCase):
+    def make_args(self, home: Path, **extra: object) -> object:
+        import argparse
+        values = dict(home=str(home), config=None, title=None, no_snapshot=True)
+        values.update(extra)
+        return argparse.Namespace(**values)
+
+    def start(self, cache: quarterdeck.SiteCache):
+        from http.server import ThreadingHTTPServer
+        server = ThreadingHTTPServer(("127.0.0.1", 0), quarterdeck.make_handler(cache))
+        thread = threading.Thread(target=server.serve_forever, daemon=True)
+        thread.start()
+        self.addCleanup(lambda: (server.shutdown(), server.server_close()))
+        return server.server_address[1]
+
+    def fetch(self, port: int, path: str, method: str = "GET"):
+        import http.client
+        connection = http.client.HTTPConnection("127.0.0.1", port, timeout=10)
+        connection.request(method, path)
+        response = connection.getresponse()
+        body = response.read().decode("utf-8")
+        connection.close()
+        return response.status, response.headers, body
+
+    def test_cache_reuses_render_until_ttl_then_rerenders(self) -> None:
+        calls: list[int] = []
+        clock = [100.0]
+        cache = quarterdeck.SiteCache(lambda: calls.append(1) or {"index.html": str(len(calls))}, 30, lambda: clock[0])
+        self.assertEqual(cache.get()["index.html"], "1")
+        clock[0] += 29
+        self.assertEqual(cache.get()["index.html"], "1")
+        clock[0] += 1
+        self.assertEqual(cache.get()["index.html"], "2")
+        self.assertEqual(len(calls), 2)
+
+    def test_server_renders_per_request_and_serves_linked_pages_read_only(self) -> None:
+        with tempfile.TemporaryDirectory() as temp, patch.dict(os.environ, {"XDG_STATE_HOME": str(Path(temp) / "state")}):
+            home = BearingsTests().make_home(Path(temp))
+            clock = [0.0]
+            cache = quarterdeck.SiteCache(
+                quarterdeck.site_builder(self.make_args(home), 60), 30, lambda: clock[0])
+            port = self.start(cache)
+            status, headers, body = self.fetch(port, "/")
+            self.assertEqual(status, 200)
+            self.assertIn("text/html", headers["Content-Type"])
+            self.assertIn("Kelp survey: map the invented reef", body)
+            self.assertIn("Generated at", body)
+            self.assertIn("}, 60000);", body)
+            links = re.findall(r'href="((?:item|report|backlog)-[0-9a-f]{12}\.html)"', body)
+            self.assertTrue(any(link.startswith("item-") for link in links))
+            self.assertTrue(any(link.startswith("report-") for link in links))
+            for link in set(links):
+                self.assertEqual(self.fetch(port, "/" + link)[0], 200, link)
+            # Edits show up only after the cache expires.
+            backlog = home / "data" / "backlog.md"
+            backlog.write_text(backlog.read_text(encoding="utf-8").replace("Later work: sort", "Renamed work: sort"),
+                               encoding="utf-8")
+            self.assertIn("Later work: sort", self.fetch(port, "/")[2])
+            clock[0] += 31
+            fresh = self.fetch(port, "/index.html?x=1")[2]
+            self.assertIn("Renamed work: sort", fresh)
+            self.assertNotIn("Later work: sort", fresh)
+            # Read only: nothing but GET, and only generated pages.
+            for method in ("POST", "PUT", "DELETE", "HEAD"):
+                self.assertEqual(self.fetch(port, "/", method)[0], 405, method)
+            self.assertEqual(self.fetch(port, "/../data/backlog.md")[0], 404)
+            self.assertEqual(self.fetch(port, "/item-000000000000.html")[0], 404)
+
+    def test_serve_listens_on_every_requested_address_on_one_port(self) -> None:
+        import socket
+        import urllib.request
+        with tempfile.TemporaryDirectory() as temp, patch.dict(os.environ, {"XDG_STATE_HOME": str(Path(temp) / "s")}):
+            home = BearingsTests().make_home(Path(temp))
+            with socket.socket() as probe:
+                probe.bind(("127.0.0.1", 0))
+                port = probe.getsockname()[1]
+            args = quarterdeck.make_parser().parse_args(
+                ["serve", "--home", str(home), "--no-snapshot", "--port", str(port),
+                 "--host", "127.0.0.1", "--bind", "127.0.0.2"])
+            self.assertEqual(quarterdeck.bind_hosts(args), ["127.0.0.1", "127.0.0.2"])
+            thread = threading.Thread(target=quarterdeck.serve, args=(args,), daemon=True)
+            with redirect_stdout(io.StringIO()):
+                thread.start()
+                for host in ("127.0.0.1", "127.0.0.2"):
+                    for _ in range(100):
+                        try:
+                            body = urllib.request.urlopen(f"http://{host}:{port}/", timeout=2).read().decode()
+                            break
+                        except OSError:
+                            time.sleep(0.1)
+                    else:
+                        self.fail(f"not listening on {host}")
+                    self.assertIn("Captain&#x27;s Call", body)
+
+    def test_server_reports_render_failure_without_crashing(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            cache = quarterdeck.SiteCache(lambda: (_ for _ in ()).throw(ValueError("broken home")), 30)
+            port = self.start(cache)
+            status, _headers, body = self.fetch(port, "/")
+            self.assertEqual(status, 500)
+            self.assertIn("broken home", body)
+
+    def test_serve_defaults_to_loopback_and_service_unit_runs_serve(self) -> None:
+        parser = quarterdeck.make_parser()
+        args = parser.parse_args(["serve"])
+        self.assertEqual((args.port, args.cache, args.refresh), (8765, 30, 60))
+        self.assertEqual(quarterdeck.bind_hosts(args), ["127.0.0.1"])
+        unit = quarterdeck.service_unit(parser.parse_args(["service", "--port", "9100"]))
+        self.assertIn('"serve" "--host" "127.0.0.1" "--port" "9100"', unit)
+        multi = quarterdeck.service_unit(parser.parse_args(["service", "--host", "127.0.0.1", "--bind", "::1"]))
+        self.assertIn('"--host" "127.0.0.1" "--host" "::1" "--port" "8765"', multi)
+        self.assertIn("WantedBy=default.target", unit)
+
+    def test_service_write_goes_to_user_unit_directory(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            env = {"XDG_CONFIG_HOME": str(Path(temp) / "config")}
+            with patch.dict(os.environ, env), redirect_stdout(io.StringIO()):
+                code = quarterdeck.main(["service", "--write"])
+            self.assertEqual(code, 0)
+            unit = Path(temp) / "config" / "systemd" / "user" / "quarterdeck.service"
+            self.assertIn("ExecStart=", unit.read_text(encoding="utf-8"))
 
 
 class PrivacyGuardTests(unittest.TestCase):

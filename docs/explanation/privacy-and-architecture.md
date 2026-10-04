@@ -16,9 +16,16 @@ parent. That secondmate has its own `data/backlog.md` and report files. A remote
 route is shown as unavailable: Quarterdeck does not use SSH or read another
 machine. This follows Firstmate's [secondmate route and home layout](https://github.com/kunchenguid/firstmate/blob/main/docs/configuration.md).
 
-Quarterdeck reads these files directly and does not invoke Firstmate scripts or
-commands. This keeps rendering within the read-only boundary even when an
-observational fleet command refreshes a cache as part of its own operation.
+Quarterdeck reads these files directly. The single exception is a home's own
+`bin/fm-bearings-snapshot.sh --json`, run with a short timeout so the page
+agrees with Firstmate's `/bearings`; that script may refresh a parent-side
+Firstmate cache as part of its own operation. `--no-snapshot` skips it, and the
+page falls back to parsing the backlog when it is absent, fails, or times out.
+No other Firstmate script is run and nothing is written to a home.
+
+`quarterdeck serve` adds an HTTP listener. It answers only `GET` for generated
+pages, has no write endpoints and no authentication, and binds 127.0.0.1 by
+default. Binding another address exposes real work data to that network.
 Each configured home is loaded independently. A missing or unreadable home
 shows its own error while other sections still render.
 

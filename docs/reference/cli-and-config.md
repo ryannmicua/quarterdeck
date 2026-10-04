@@ -3,7 +3,9 @@
 ## Command
 
 ```text
-quarterdeck render [--home PATH] [--output PATH] [--config FILE] [--title TEXT] [--all] [--lavish]
+quarterdeck render [--home PATH] [--output PATH] [--config FILE] [--title TEXT] [--all] [--lavish] [--no-snapshot]
+quarterdeck serve [--host ADDRESS ...] [--port N] [--cache SECONDS] [--refresh SECONDS] [--home PATH] [--config FILE] [--title TEXT] [--no-snapshot]
+quarterdeck service [--write] [--host ADDRESS ...] [--port N] [--home PATH] [--config FILE]
 quarterdeck reports list [--home PATH] [--config FILE]
 quarterdeck reports read <report-id> [--home PATH] [--config FILE] [--open]
 quarterdeck reports mark-reviewed <report-id> [--home PATH] [--config FILE]
@@ -83,6 +85,18 @@ for how marks affect the dashboard.
 | `--title TEXT` | Page title; overrides `page_title` in config. |
 | `--all` | Show every backlog item and report, including queued, finished, closed, and unlinked historical records. |
 | `--lavish` | Write a separate `*.lavish.html` review page with stable IDs on review cards, then open it with `lavish-axi` when available. Without Lavish, print a command hint and succeed. |
+
+| `--no-snapshot` | Do not run a home's `bin/fm-bearings-snapshot.sh`; classify from the backlog only. |
+
+`serve` re-renders the page and its readable pages from the selected homes on
+each request, reusing a render for `--cache` seconds (default 30), and serves
+them with `GET` only on each `--host`/`--bind` address (repeatable; default `127.0.0.1` only) and `--port` (default
+8765; `0` picks a free port). The served page reloads itself every `--refresh`
+seconds (default 60) and shows its generated-at time. `service` prints a
+systemd user unit that runs `serve` with the given options, or with `--write`
+writes it to `${XDG_CONFIG_HOME:-~/.config}/systemd/user/quarterdeck.service`;
+it never runs `systemctl`. A non-loopback host exposes work data without a
+login. See [Serve the always-current bearings page](../how-to/serve-the-page.md).
 
 `add`, `list`, and `remove` accept the same `--config FILE` option. `add` also
 accepts `--label LABEL`; `remove` takes one label or path.

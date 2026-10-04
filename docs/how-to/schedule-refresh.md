@@ -1,5 +1,8 @@
 # Refresh on a schedule
 
+For a page that is always current without scheduling, see
+[Serve the always-current bearings page](serve-the-page.md).
+
 Quarterdeck has no watcher or daemon. A user's cron job or systemd timer can
 run the normal `render` command when a recurring snapshot is useful.
 For a combined page, pass `--config` with the private config that lists the

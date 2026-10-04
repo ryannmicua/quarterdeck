@@ -5,18 +5,31 @@
 ## What it is
 
 Quarterdeck turns running Firstmate homes' backlogs and scout reports into one
-read-only HTML review page. Configure several homes to review them together;
+read-only HTML review page that leads with the same four sections as
+Firstmate's `/bearings` digest, plus the reports waiting on your review. Configure several homes to review them together;
 each home is grouped under a clear label, with its registered local secondmates
 under their parent. It shows unresolved captain holds, review-ready pull
 requests, in-flight work, and items blocked on the captain or an external
 party. Use `--all` to restore the exhaustive view.
 
-Render on demand, open the returned file in a browser, or hand it to
-`lavish-axi` as a local artifact. Quarterdeck has no daemon, agent, build step,
-or runtime network dependency.
+Render on demand, or run `quarterdeck serve` for a page that stays current on
+its own. Open the result in a browser, or hand a rendered file to `lavish-axi`
+as a local artifact. Quarterdeck has no agent, build step, or runtime network
+dependency.
 
 ## Features
 
+- Bearings-shaped page: Captain's Call, Recently Landed, Underway, and Charted
+  Next, each always rendered with an empty-state sentence, plus a prominent
+  "Reports waiting on your review" list.
+- Every Captain's Call item explains itself: full hold reason and task body,
+  options and recommendation, when it was filed and how long it has waited,
+  project, and a link to its report.
+- Uses Firstmate's own `bin/fm-bearings-snapshot.sh --json` when a home has it,
+  and says so when it falls back to parsing the backlog.
+- `quarterdeck serve` re-renders from your homes on each request (30-second
+  cache), reloads itself about every 60 seconds, binds 127.0.0.1 by default,
+  and is GET-only. `quarterdeck service` writes a systemd user unit for it.
 - Primary review list for held items and recorded decisions.
 - Scout reports with an explicit recommendation when the report states one.
 - Stable report IDs, Markdown and readable HTML reading, and local review marks.
@@ -64,8 +77,9 @@ commands.
 
 Firstmate runs the crew and stores its backlog and scout reports in a home.
 Quarterdeck reads those files and creates a convenient review surface alongside
-that workflow. It does not extend Firstmate or send commands to it. Regeneration
-happens only when `quarterdeck render` is run.
+that workflow. It does not extend Firstmate or send answers back to it.
+Regeneration happens when `quarterdeck render` runs or `quarterdeck serve`
+receives a page request.
 
 ## Privacy model
 
@@ -74,7 +88,9 @@ Quarterdeck writes it outside the repository under the user's state directory.
 It reads each configured Firstmate home's `data/backlog.md` and
 `data/<id>/report.md` files. It also reads the parent's optional
 `data/secondmates.md` registry and the listed local secondmate homes. It does
-not write to those homes or to the Quarterdeck checkout. Keep custom output
+not write to those homes or to the Quarterdeck checkout. The one command it may
+run in a home is that home's own `bin/fm-bearings-snapshot.sh --json`, which can
+refresh Firstmate's cache; `--no-snapshot` turns that off. Keep custom output
 paths outside both and real configs outside the repository too.
 
 The repo ignores common output folders, local config files, and screenshots.
@@ -87,12 +103,27 @@ use invented data.
 
 ### Does Quarterdeck keep refreshing in the background?
 
-No. Run `render` whenever a fresh page is useful. A cron or systemd timer can
-run that command on a schedule; see [scheduled refresh](docs/how-to/schedule-refresh.md).
+Yes, if you run `quarterdeck serve`: it re-renders from the homes on each page
+request and the open page reloads itself. `quarterdeck service` prints or writes
+a systemd user unit to keep it running; see
+[serve the page](docs/how-to/serve-the-page.md). Without `serve`, run `render`
+whenever a fresh page is useful, or schedule it; see
+[scheduled refresh](docs/how-to/schedule-refresh.md).
+
+### Is it safe to bind `serve` to my network?
+
+The default is 127.0.0.1. A non-loopback `--host` exposes your real work data
+to that network with no login. Keep the default unless you control the network.
+
+### Does it cost tokens?
+
+No. Nothing calls a model; it only reads files and, when present, runs a home's
+own deterministic `bin/fm-bearings-snapshot.sh`.
 
 ### Does it need credentials or contact a service?
 
-No. Rendering reads local files and writes a local HTML file. The page uses
+No. Rendering reads local files and writes a local HTML file; `serve` listens only
+on the address you give it. The page uses
 inline CSS and has no runtime network requests.
 
 ### How do I select several homes?
@@ -113,4 +144,4 @@ error if none is set.
 
 Possible future work: optional write-back, answer capture, listener or daemon,
 Firstmate extension binding, and hosted or authenticated views. These are out of
-scope today; Quarterdeck remains a local read-only renderer.
+scope today; Quarterdeck remains a local read-only view.
