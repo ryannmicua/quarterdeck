@@ -4,7 +4,7 @@
 
 ```text
 quarterdeck render [--home PATH] [--output PATH] [--config FILE] [--title TEXT] [--all] [--lavish] [--no-snapshot]
-quarterdeck serve [--host ADDRESS ...] [--port N] [--cache SECONDS] [--refresh SECONDS] [--home PATH] [--config FILE] [--title TEXT] [--no-snapshot]
+quarterdeck serve [--host ADDRESS ...] [--port N] [--home PATH] [--config FILE] [--title TEXT] [--no-snapshot]
 quarterdeck service [--write] [--host ADDRESS ...] [--port N] [--home PATH] [--config FILE]
 quarterdeck reports list [--home PATH] [--config FILE]
 quarterdeck reports read <report-id> [--home PATH] [--config FILE] [--open]
@@ -50,8 +50,10 @@ path and only unregisters the entry; it never changes Firstmate data.
 For each configured home, Quarterdeck reads `data/backlog.md` and immediate
 child `*/report.md` files. It also reads the parent's optional
 `data/secondmates.md` registry and renders each registered local secondmate
-under that parent. It does not run Firstmate commands or connect to remote
-hosts. A missing or unreadable home in a configured list gets a failure section;
+under that parent. It may run that home's
+`bin/fm-bearings-snapshot.sh --json` for the bearings view, unless
+`--no-snapshot` is set; no other Firstmate command runs, and Quarterdeck does
+not connect to remote hosts. A missing or unreadable home in a configured list gets a failure section;
 the other homes still render. The page links to readable HTML copies of
 selected reports and backlogs, generated beside the main page, and HTTPS links
 for GitHub pull requests.
@@ -89,10 +91,10 @@ for how marks affect the dashboard.
 | `--no-snapshot` | Do not run a home's `bin/fm-bearings-snapshot.sh`; classify from the backlog only. |
 
 `serve` re-renders the page and its readable pages from the selected homes on
-each request, reusing a render for `--cache` seconds (default 30), and serves
-them with `GET` only on each `--host`/`--bind` address (repeatable; default `127.0.0.1` only) and `--port` (default
-8765; `0` picks a free port). The served page reloads itself every `--refresh`
-seconds (default 60) and shows its generated-at time. `service` prints a
+each request, reusing a render for 30 seconds, and serves them with `GET` only
+on each repeatable `--host` address (default `127.0.0.1` only) and `--port`
+(default 8765; `0` picks a free port). The served page reloads itself every 60
+seconds and shows its generated-at time. `service` prints a
 systemd user unit that runs `serve` with the given options, or with `--write`
 writes it to `${XDG_CONFIG_HOME:-~/.config}/systemd/user/quarterdeck.service`;
 it never runs `systemctl`. A non-loopback host exposes work data without a

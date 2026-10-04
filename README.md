@@ -88,9 +88,10 @@ Quarterdeck writes it outside the repository under the user's state directory.
 It reads each configured Firstmate home's `data/backlog.md` and
 `data/<id>/report.md` files. It also reads the parent's optional
 `data/secondmates.md` registry and the listed local secondmate homes. It does
-not write to those homes or to the Quarterdeck checkout. The one command it may
-run in a home is that home's own `bin/fm-bearings-snapshot.sh --json`, which can
-refresh Firstmate's cache; `--no-snapshot` turns that off. Keep custom output
+does not otherwise write to those homes or to the Quarterdeck checkout. The one
+command it may run in a home is that home's own
+`bin/fm-bearings-snapshot.sh --json`, which can refresh Firstmate's cache;
+`--no-snapshot` turns that off. Keep custom output
 paths outside both and real configs outside the repository too.
 
 The repo ignores common output folders, local config files, and screenshots.

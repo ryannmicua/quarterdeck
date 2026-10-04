@@ -18,10 +18,8 @@ pages are cached for 30 seconds so rapid reloads stay cheap.
 
 | Option | Default | Meaning |
 | --- | --- | --- |
-| `--host ADDRESS` (alias `--bind`) | `127.0.0.1` only | Address to bind. Repeat it to listen on several addresses, all on the same port. |
+| `--host ADDRESS` | `127.0.0.1` only | Address to bind. Repeat it to listen on several addresses, all on the same port. |
 | `--port N` | `8765` | Port; `0` picks a free one. |
-| `--cache SECONDS` | `30` | How long a rendered page is reused. |
-| `--refresh SECONDS` | `60` | How often an open page reloads itself. |
 | `--home PATH`, `--config FILE` | configured homes | Same home selection as `render`. |
 | `--no-snapshot` | off | Skip the Firstmate snapshot script and always parse backlogs. |
 
@@ -52,7 +50,7 @@ systemctl --user daemon-reload
 systemctl --user enable --now quarterdeck.service
 ```
 
-`service` accepts the same `--host`/`--bind` (repeatable, default 127.0.0.1 only), `--port`, `--home` and `--config` options as `serve`, and it never runs
+`service` accepts the same `--host` (repeatable, default 127.0.0.1 only), `--port`, `--home` and `--config` options as `serve`, and it never runs
 `systemctl` itself. The unit it writes looks like:
 
 ```ini

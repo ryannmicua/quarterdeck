@@ -309,10 +309,31 @@ def field_is_set(value: str) -> bool:
     return value.strip().lower() not in FALSE_VALUES
 
 
+def is_closed_state(state: str) -> bool:
+    return normalized_state(state) in {
+        "done", "closed", "finished", "resolved", "complete", "completed", "archived", "cancelled", "canceled"
+    }
+
+
+def is_review_ready_state(review_flag: str, state: str) -> bool:
+    return normalized_state(review_flag) in {"true", "yes", "1", "on", "ready", "review_ready", "reviewready"} or normalized_state(state) in {
+        "review_ready", "reviewready", "ready_for_review", "open_for_review"
+    }
+
+
+def is_in_flight_state(state: str) -> bool:
+    return normalized_state(state) in {"in_flight", "inflight", "working", "active", "running", "in_progress"}
+
+
+def valid_pr_url(value: str) -> bool:
+    parsed = urlparse(value)
+    return parsed.scheme == "https" and parsed.netloc.lower() == "github.com" and bool(PR_URL_RE.search(value))
+
+
 def is_closed(record: Record) -> bool:
     if field_is_set(value_for(record.fields, "closed")):
         return True
-    return state_for(record) in {"done", "closed", "finished", "resolved", "complete", "completed", "archived", "cancelled", "canceled"}
+    return is_closed_state(state_for(record))
 
 
 def is_captain_held(record: Record) -> bool:
@@ -326,20 +347,15 @@ def is_captain_held(record: Record) -> bool:
 def is_review_ready(record: Record) -> bool:
     if is_closed(record) or not record.pr_url:
         return False
-    parsed_pr = urlparse(record.pr_url)
-    if parsed_pr.scheme != "https" or parsed_pr.netloc.lower() != "github.com" or not PR_URL_RE.search(record.pr_url):
+    if not valid_pr_url(record.pr_url):
         return False
-    review_flag = normalized_state(value_for(record.fields, "review_ready"))
-    state = state_for(record)
-    return review_flag in {"true", "yes", "1", "on", "ready", "review_ready", "reviewready"} or state in {
-        "review_ready", "reviewready", "ready_for_review", "open_for_review"
-    }
+    return is_review_ready_state(value_for(record.fields, "review_ready"), state_for(record))
 
 
 def is_in_flight(record: Record) -> bool:
     if is_closed(record):
         return False
-    return state_for(record) in {"in_flight", "inflight", "working", "active", "running", "in_progress"}
+    return is_in_flight_state(state_for(record))
 
 
 def is_waiting_on_captain_or_external(record: Record) -> bool:
@@ -1168,16 +1184,13 @@ def build_html(
 SNAPSHOT_SCRIPT = Path("bin") / "fm-bearings-snapshot.sh"
 SNAPSHOT_TIMEOUT_SECONDS = 15
 ITEM_ATTRIBUTE_RE = re.compile(
-    r"\((?P<key>repo|kind|since|hold-kind|hold|merged|done|until|hold-until|priority|pr)(?::\s*|\s+)", re.I
+    r"\((?P<key>repo|kind|since|hold-kind|hold|merged|done|closed|until|hold-until|priority|pr|state|status|review_ready)(?::\s*|\s+)", re.I
 )
 BULLET_ITEM_RE = re.compile(r"^-\s+\[(?P<mark>[ xX])\]\s+(?P<id>[A-Za-z0-9][\w.-]*)\s+-\s+(?P<rest>.*)$")
 REPORT_PATH_RE = re.compile(r"\bdata/([\w.-]+)/report\.md\b")
 DATE_RE = re.compile(r"\d{4}-\d{2}-\d{2}(?:[T ]\d{2}:\d{2}(?::\d{2})?(?:Z|[+-]\d{2}:?\d{2})?)?")
 OPTIONS_RE = re.compile(r"(?is)\boptions?\s*(?:\([^)]*\))?\s*:\s*(.+?)(?=\n\s*\n|\brecommend(?:ation|ed)?\s*:|\Z)")
 RECOMMENDATION_RE = re.compile(r"(?is)\brecommend(?:ation|ed)?\s*:\s*(.+?)(?=\n\s*\n|\boptions?\s*:|\Z)")
-CLOSED_STATES = {"done", "closed", "finished", "resolved", "complete", "completed", "archived", "cancelled", "canceled"}
-
-
 @dataclass
 class BacklogItem:
     id: str
@@ -1305,13 +1318,24 @@ def parse_bullet_item(header: re.Match[str], continuation: list[str], section: s
         report = REPORT_PATH_RE.search(body)
         report_dir = report.group(1) if report else ""
     pr = PR_URL_RE.search(raw)
+    state = normalized_state(attrs.get("state") or attrs.get("status") or section)
+    done = (
+        header.group("mark") in "xX"
+        or field_is_set(attrs.get("closed", ""))
+        or field_is_set(attrs.get("done", ""))
+        or is_closed_state(state)
+    )
+    if done:
+        state = "done"
+    pr_url = pr.group(0) if pr else ""
     return BacklogItem(
         id=header.group("id"), title=title, section=section,
-        state="done" if header.group("mark") in "xX" else normalized_state(section),
-        attrs=attrs, body=body, raw=raw, done=header.group("mark") in "xX" or section == "done",
+        state=state,
+        attrs=attrs, body=body, raw=raw, done=done,
         hold_reason=markdown_text(attrs.get("hold", "")), hold_kind=hold_kind,
         held="hold" in attrs or bool(hold_kind), blocked_by=blocked_by or attrs.get("blocked-by", ""),
-        report_dir=report_dir, pr_url=pr.group(0) if pr else "",
+        report_dir=report_dir, pr_url=pr_url,
+        review_ready=(not done and valid_pr_url(pr_url) and is_review_ready_state(attrs.get("review_ready", ""), state)),
     )
 
 
@@ -1430,7 +1454,7 @@ def run_bearings_snapshot(
     try:
         process = subprocess.Popen(
             [str(script), "--json"], cwd=home, env=env, stdin=subprocess.DEVNULL,
-            stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, start_new_session=True,
+            stdout=subprocess.PIPE, stderr=subprocess.PIPE, start_new_session=True,
         )
     except OSError as exc:
         return None, f"could not start the snapshot script: {exc}"
@@ -1446,11 +1470,38 @@ def run_bearings_snapshot(
     if process.returncode != 0:
         return None, f"the snapshot script exited with status {process.returncode}"
     try:
-        data = json.loads(stdout)
+        data = json.loads(stdout.decode("utf-8"))
+    except UnicodeDecodeError:
+        return None, "the snapshot script printed invalid UTF-8"
     except json.JSONDecodeError:
         return None, "the snapshot script did not print JSON"
-    if not isinstance(data, dict) or not str(data.get("schema", "")).startswith("fm-bearings"):
+    if not isinstance(data, dict) or data.get("schema") != "fm-bearings.v1":
         return None, "the snapshot script printed an unrecognized schema"
+    row_fields = {
+        "decisions_open": ("owner", "summary", "verb"),
+        "landed": ("owner", "id", "what", "artifact"),
+        "in_flight": ("id", "name", "repo", "state", "doing"),
+        "secondmates": ("id", "state", "doing", "reason"),
+        "gates": ("owner", "id", "title", "filed", "blocked_by", "reason"),
+    }
+    for name, fields in row_fields.items():
+        rows = data.get(name)
+        if not isinstance(rows, list):
+            return None, f"the snapshot field {name} is not an array"
+        for index, row in enumerate(rows):
+            if not isinstance(row, dict):
+                return None, f"the snapshot {name} row {index + 1} is not an object"
+            for field_name in fields:
+                if not isinstance(row.get(field_name), str):
+                    return None, f"the snapshot {name} row {index + 1} has an invalid {field_name}"
+            if name == "decisions_open":
+                for field_name in ("key", "id"):
+                    if field_name in row and not isinstance(row[field_name], str):
+                        return None, f"the snapshot {name} row {index + 1} has an invalid {field_name}"
+                if not any(isinstance(row.get(field_name), str) and row[field_name].strip() for field_name in ("key", "id")):
+                    return None, f"the snapshot {name} row {index + 1} has no key or id"
+            elif not row.get("id", "").strip():
+                return None, f"the snapshot {name} row {index + 1} has no id"
     return data, ""
 
 
@@ -1590,7 +1641,7 @@ class BearingsBuilder:
             elif (item.held and item.hold_kind == "captain") or item.review_ready:
                 bitem.status = "review" if item.review_ready and not item.held else "captain hold"
                 self.result.call.append(bitem)
-            elif item.section == "in flight" or item.state in {"in_flight", "inflight", "working", "active"}:
+            elif is_in_flight_state(item.state):
                 bitem.status = "in flight"
                 bitem.detail = item.hold_reason
                 self.result.underway.append(bitem)
@@ -1921,6 +1972,16 @@ DEFAULT_CACHE_SECONDS = 30
 DEFAULT_REFRESH_SECONDS = 60
 
 
+def port_number(value: str) -> int:
+    try:
+        port = int(value)
+    except ValueError as exc:
+        raise argparse.ArgumentTypeError("port must be an integer") from exc
+    if not 0 <= port <= 65535:
+        raise argparse.ArgumentTypeError("port must be between 0 and 65535")
+    return port
+
+
 class SiteCache:
     """Re-render the site from the homes on request, reusing the result for a short time."""
 
@@ -1942,13 +2003,15 @@ class SiteCache:
             return self.pages
 
 
-def site_builder(args: argparse.Namespace, refresh_seconds: int) -> Callable[[], dict[str, str]]:
+def site_builder(args: argparse.Namespace) -> Callable[[], dict[str, str]]:
     def build() -> dict[str, str]:
         config, homes, bearings = load_site(args)
         configured_title = config.get("page_title")
         title = args.title or (configured_title if isinstance(configured_title, str) else None) or DEFAULT_TITLE
         pages = source_pages(homes, show_all=False, bearings=bearings)
-        pages["index.html"] = build_html(homes, title, bearings=bearings, refresh_seconds=refresh_seconds)
+        pages["index.html"] = build_html(
+            homes, title, bearings=bearings, refresh_seconds=DEFAULT_REFRESH_SECONDS
+        )
         return pages
     return build
 
@@ -2022,7 +2085,7 @@ def make_server(host: str, port: int, handler: type[BaseHTTPRequestHandler]) -> 
 def serve(args: argparse.Namespace) -> int:
     servers: list[ThreadingHTTPServer] = []
     try:
-        cache = SiteCache(site_builder(args, args.refresh), ttl=args.cache)
+        cache = SiteCache(site_builder(args))
         cache.get()
         handler = make_handler(cache)
         port = args.port
@@ -2068,10 +2131,14 @@ def service_unit(args: argparse.Namespace) -> str:
     for host in bind_hosts(args):
         command += ["--host", host]
     command += ["--port", str(args.port)]
+    config_path = args.config.expanduser().resolve() if args.config else default_config_path()
+    config = load_config(config_path) if args.config or config_path.is_file() else {}
     if args.home:
         command += ["--home", str(Path(args.home).expanduser().resolve())]
-    if args.config:
-        command += ["--config", str(args.config.expanduser().resolve())]
+    elif "homes" not in config and os.environ.get("FM_HOME"):
+        command += ["--home", str(Path(os.environ["FM_HOME"]).expanduser().resolve())]
+    if args.config or config_path.is_file():
+        command += ["--config", str(config_path)]
     exec_start = " ".join(systemd_quote(part) for part in command)
     return (
         "[Unit]\nDescription=Quarterdeck read-only Firstmate bearings page\nAfter=network.target\n\n"
@@ -2087,7 +2154,10 @@ def service(args: argparse.Namespace) -> int:
         return 0
     try:
         config_home = Path(os.environ.get("XDG_CONFIG_HOME") or "~/.config").expanduser()
-        unit_path = (config_home / "systemd" / "user" / "quarterdeck.service").resolve()
+        unresolved_unit_path = config_home / "systemd" / "user" / "quarterdeck.service"
+        if unresolved_unit_path.is_symlink():
+            raise ValueError(f"refusing to replace symbolic-link unit: {unresolved_unit_path}")
+        unit_path = unresolved_unit_path.parent.resolve() / unresolved_unit_path.name
         checkout = Path(__file__).resolve().parent
         try:
             unit_path.relative_to(checkout)
@@ -2452,8 +2522,8 @@ def render(args: argparse.Namespace) -> int:
 
 
 def add_serve_options(parser: argparse.ArgumentParser) -> None:
-    parser.add_argument("--host", "--bind", dest="host", action="append", metavar="ADDRESS", help=f"address to bind; repeat to listen on several, all on the same port (default {DEFAULT_HOST} only; a non-loopback address exposes your work data without a login)")
-    parser.add_argument("--port", type=int, default=DEFAULT_PORT, help=f"port to listen on (default {DEFAULT_PORT}; 0 picks a free port)")
+    parser.add_argument("--host", action="append", metavar="ADDRESS", help=f"address to bind; repeat to listen on several, all on the same port (default {DEFAULT_HOST} only; a non-loopback address exposes your work data without a login)")
+    parser.add_argument("--port", type=port_number, default=DEFAULT_PORT, help=f"port to listen on (default {DEFAULT_PORT}; 0 picks a free port)")
     parser.add_argument("--home", help="serve this Firstmate home instead of configured homes or FM_HOME")
     parser.add_argument("--config", type=Path, help="optional JSON config file")
 
@@ -2482,8 +2552,6 @@ def make_parser() -> argparse.ArgumentParser:
     )
     command_parsers["serve"] = serve_parser
     add_serve_options(serve_parser)
-    serve_parser.add_argument("--cache", type=float, default=DEFAULT_CACHE_SECONDS, metavar="SECONDS", help=f"reuse a rendered page this long (default {DEFAULT_CACHE_SECONDS})")
-    serve_parser.add_argument("--refresh", type=int, default=DEFAULT_REFRESH_SECONDS, metavar="SECONDS", help=f"seconds before the open page reloads itself (default {DEFAULT_REFRESH_SECONDS})")
     serve_parser.add_argument("--title", help="override the page title")
     serve_parser.add_argument("--no-snapshot", action="store_true", help="skip the Firstmate bearings snapshot script and parse backlogs directly")
     serve_parser.set_defaults(handler=serve)

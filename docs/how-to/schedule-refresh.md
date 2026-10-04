@@ -3,8 +3,9 @@
 For a page that is always current without scheduling, see
 [Serve the always-current bearings page](serve-the-page.md).
 
-Quarterdeck has no watcher or daemon. A user's cron job or systemd timer can
-run the normal `render` command when a recurring snapshot is useful.
+Quarterdeck does not schedule rendered snapshots itself. A user's cron job or
+systemd timer can run the normal `render` command when a recurring snapshot is
+useful; use `serve` for the always-current page.
 For a combined page, pass `--config` with the private config that lists the
 homes instead of using `--home`.
 

@@ -21,7 +21,7 @@ Quarterdeck reads these files directly. The single exception is a home's own
 agrees with Firstmate's `/bearings`; that script may refresh a parent-side
 Firstmate cache as part of its own operation. `--no-snapshot` skips it, and the
 page falls back to parsing the backlog when it is absent, fails, or times out.
-No other Firstmate script is run and nothing is written to a home.
+No other Firstmate script is run; Quarterdeck itself writes nothing to a home.
 
 `quarterdeck serve` adds an HTTP listener. It answers only `GET` for generated
 pages, has no write endpoints and no authentication, and binds 127.0.0.1 by

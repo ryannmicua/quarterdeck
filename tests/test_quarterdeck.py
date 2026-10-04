@@ -1106,7 +1106,8 @@ class BearingsTests(unittest.TestCase):
 
     def test_snapshot_script_receives_fm_home_and_json_flag(self) -> None:
         with tempfile.TemporaryDirectory() as temp:
-            script = '#!/bin/sh\nprintf \'{"schema":"fm-bearings.v1","home":"%s","args":"%s"}\' "$FM_HOME" "$*"\n'
+            script = ('#!/bin/sh\nprintf \'{"schema":"fm-bearings.v1","home":"%s","args":"%s",'
+                      '"decisions_open":[],"landed":[],"in_flight":[],"secondmates":[],"gates":[]}\' "$FM_HOME" "$*"\n')
             home = self.make_home(Path(temp), script)
             data, reason = quarterdeck.run_bearings_snapshot(home)
             self.assertEqual(reason, "")
@@ -1141,6 +1142,7 @@ class BearingsTests(unittest.TestCase):
             "garbage": ("#!/bin/sh\necho not json\n", "did not print JSON"),
             "schema": ('#!/bin/sh\necho \'{"schema":"other"}\'\n', "unrecognized schema"),
             "slow": ("#!/bin/sh\nsleep 5\n", "timed out"),
+            "invalid utf-8": ("#!/bin/sh\nprintf '\\377'\n", "invalid UTF-8"),
         }
         for name, (script, expected) in cases.items():
             with self.subTest(name), tempfile.TemporaryDirectory() as temp:
@@ -1150,6 +1152,41 @@ class BearingsTests(unittest.TestCase):
                 self.assertEqual(bearings.sources[0].mode, "fallback")
                 self.assertIn(expected, bearings.sources[0].reason)
                 self.assertEqual([i.item_id for i in bearings.call], ["kelp-survey"])
+
+    def test_malformed_snapshot_shapes_fall_back_to_the_backlog(self) -> None:
+        malformed = [
+            ({**SNAPSHOT_JSON, "schema": "fm-bearings.future"}, "unrecognized schema"),
+            ({key: value for key, value in SNAPSHOT_JSON.items() if key != "decisions_open"}, "decisions_open is not an array"),
+            ({**SNAPSHOT_JSON, "in_flight": [{**SNAPSHOT_JSON["in_flight"][0], "repo": 3}]}, "invalid repo"),
+        ]
+        for payload, expected in malformed:
+            with self.subTest(expected=expected), tempfile.TemporaryDirectory() as temp:
+                script = "#!/bin/sh\nprintf '%s' '" + json.dumps(payload) + "'\n"
+                home = self.make_home(Path(temp), script)
+                bearings = quarterdeck.build_bearings(self.snapshots(home))
+                self.assertEqual(bearings.sources[0].mode, "fallback")
+                self.assertIn(expected, bearings.sources[0].reason)
+                self.assertEqual([item.item_id for item in bearings.call], ["kelp-survey"])
+
+    def test_bullet_fallback_uses_closed_review_and_live_states(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            home = self.make_home(Path(temp))
+            backlog = home / "data" / "backlog.md"
+            extra = """
+
+## More work
+- [ ] review-patch - Review the added patch (repo: patch-demo) (state: review_ready) (pr: https://github.com/example/quarterdeck-demo/pull/84)
+- [ ] running-task - Resume the running survey (state: running)
+- [ ] progress-task - Continue the active chart (status: in_progress)
+
+## Finished
+- [ ] finished-task - File the completed sample
+"""
+            backlog.write_text(backlog.read_text(encoding="utf-8") + extra, encoding="utf-8")
+            bearings = quarterdeck.build_bearings(self.snapshots(home))
+            self.assertIn("review-patch", [item.item_id for item in bearings.call])
+            self.assertTrue({"running-task", "progress-task"}.issubset({item.item_id for item in bearings.underway}))
+            self.assertIn("finished-task", [item.item_id for item in bearings.landed])
 
     def test_no_snapshot_option_skips_the_script(self) -> None:
         with tempfile.TemporaryDirectory() as temp:
@@ -1210,7 +1247,7 @@ class ServeTests(unittest.TestCase):
             home = BearingsTests().make_home(Path(temp))
             clock = [0.0]
             cache = quarterdeck.SiteCache(
-                quarterdeck.site_builder(self.make_args(home), 60), 30, lambda: clock[0])
+                quarterdeck.site_builder(self.make_args(home)), 30, lambda: clock[0])
             port = self.start(cache)
             status, headers, body = self.fetch(port, "/")
             self.assertEqual(status, 200)
@@ -1248,7 +1285,7 @@ class ServeTests(unittest.TestCase):
                 port = probe.getsockname()[1]
             args = quarterdeck.make_parser().parse_args(
                 ["serve", "--home", str(home), "--no-snapshot", "--port", str(port),
-                 "--host", "127.0.0.1", "--bind", "127.0.0.2"])
+                 "--host", "127.0.0.1", "--host", "127.0.0.2"])
             self.assertEqual(quarterdeck.bind_hosts(args), ["127.0.0.1", "127.0.0.2"])
             thread = threading.Thread(target=quarterdeck.serve, args=(args,), daemon=True)
             with redirect_stdout(io.StringIO()):
@@ -1273,15 +1310,81 @@ class ServeTests(unittest.TestCase):
             self.assertIn("broken home", body)
 
     def test_serve_defaults_to_loopback_and_service_unit_runs_serve(self) -> None:
+        import shlex
+        with tempfile.TemporaryDirectory() as temp, patch.dict(os.environ, {"XDG_CONFIG_HOME": temp}, clear=True):
+            parser = quarterdeck.make_parser()
+            args = parser.parse_args(["serve"])
+            self.assertEqual(args.port, 8765)
+            self.assertEqual(quarterdeck.bind_hosts(args), ["127.0.0.1"])
+            unit = quarterdeck.service_unit(parser.parse_args(["service", "--port", "9100"]))
+            command = shlex.split(next(line.removeprefix("ExecStart=") for line in unit.splitlines()
+                                       if line.startswith("ExecStart=")))
+            self.assertEqual(command[-4:], ["--host", "127.0.0.1", "--port", "9100"])
+            multi = quarterdeck.service_unit(parser.parse_args(
+                ["service", "--host", "127.0.0.1", "--host", "::1"]))
+            command = shlex.split(next(line.removeprefix("ExecStart=") for line in multi.splitlines()
+                                       if line.startswith("ExecStart=")))
+            self.assertEqual(command[-6:], ["--host", "127.0.0.1", "--host", "::1", "--port", "8765"])
+            self.assertIn("WantedBy=default.target", unit)
+
+    def test_service_unit_preserves_effective_home_and_custom_config(self) -> None:
+        import shlex
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            config_home = root / "shell-config"
+            config_home.mkdir()
+            home = root / "selected-home"
+            alternate_home = root / "shell-home"
+            config_path = config_home / "quarterdeck.json"
+            config_path.write_text(json.dumps({"homes": [{"path": str(home)}]}), encoding="utf-8")
+            env = {"XDG_CONFIG_HOME": str(config_home), "FM_HOME": str(alternate_home)}
+            with patch.dict(os.environ, env):
+                parser = quarterdeck.make_parser()
+                unit = quarterdeck.service_unit(parser.parse_args(["service"]))
+                command = shlex.split(next(line.removeprefix("ExecStart=") for line in unit.splitlines()
+                                           if line.startswith("ExecStart=")))
+                self.assertIn(["--config", str(config_path.resolve())], [command[index:index + 2]
+                              for index in range(len(command) - 1)])
+                self.assertNotIn(str(alternate_home.resolve()), command)
+
+                config_path.write_text(json.dumps({"page_title": "Selected"}), encoding="utf-8")
+                unit = quarterdeck.service_unit(parser.parse_args(["service"]))
+                command = shlex.split(next(line.removeprefix("ExecStart=") for line in unit.splitlines()
+                                           if line.startswith("ExecStart=")))
+                self.assertIn(["--home", str(alternate_home.resolve())], [command[index:index + 2]
+                              for index in range(len(command) - 1)])
+                self.assertIn(["--config", str(config_path.resolve())], [command[index:index + 2]
+                              for index in range(len(command) - 1)])
+
+    def test_server_options_reject_removed_aliases_and_invalid_ports(self) -> None:
         parser = quarterdeck.make_parser()
-        args = parser.parse_args(["serve"])
-        self.assertEqual((args.port, args.cache, args.refresh), (8765, 30, 60))
-        self.assertEqual(quarterdeck.bind_hosts(args), ["127.0.0.1"])
-        unit = quarterdeck.service_unit(parser.parse_args(["service", "--port", "9100"]))
-        self.assertIn('"serve" "--host" "127.0.0.1" "--port" "9100"', unit)
-        multi = quarterdeck.service_unit(parser.parse_args(["service", "--host", "127.0.0.1", "--bind", "::1"]))
-        self.assertIn('"--host" "127.0.0.1" "--host" "::1" "--port" "8765"', multi)
-        self.assertIn("WantedBy=default.target", unit)
+        with redirect_stderr(io.StringIO()), self.assertRaises(SystemExit):
+            parser.parse_args(["serve", "--bind", "127.0.0.1"])
+        with redirect_stderr(io.StringIO()), self.assertRaises(SystemExit):
+            parser.parse_args(["service", "--bind", "127.0.0.1"])
+        for command in ("serve", "service"):
+            for value in ("-1", "65536", "nan"):
+                with self.subTest(command=command, port=value), redirect_stderr(io.StringIO()), self.assertRaises(SystemExit):
+                    parser.parse_args([command, "--port", value])
+        with redirect_stderr(io.StringIO()), self.assertRaises(SystemExit):
+            parser.parse_args(["serve", "--cache", "-1"])
+        with redirect_stderr(io.StringIO()), self.assertRaises(SystemExit):
+            parser.parse_args(["serve", "--refresh", "-1"])
+
+    def test_service_write_refuses_a_symlink_unit_path(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            config_home = root / "config"
+            unit = config_home / "systemd" / "user" / "quarterdeck.service"
+            unit.parent.mkdir(parents=True)
+            target = root / "unrelated.txt"
+            target.write_text("preserve this file", encoding="utf-8")
+            unit.symlink_to(target)
+            with patch.dict(os.environ, {"XDG_CONFIG_HOME": str(config_home)}), redirect_stderr(io.StringIO()):
+                code = quarterdeck.main(["service", "--write"])
+            self.assertEqual(code, 2)
+            self.assertTrue(unit.is_symlink())
+            self.assertEqual(target.read_text(encoding="utf-8"), "preserve this file")
 
     def test_service_write_goes_to_user_unit_directory(self) -> None:
         with tempfile.TemporaryDirectory() as temp:
