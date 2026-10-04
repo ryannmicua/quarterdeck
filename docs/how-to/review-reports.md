@@ -23,9 +23,9 @@ If two discovered reports produce the same ID, `reports list` labels both
 `ID collision`. `reports read`, `mark-reviewed`, and `unmark-reviewed` refuse
 that ID and list the matching homes and paths. Give the homes distinct labels
 whose slugs differ, then retry. The command never picks one report arbitrarily.
-The list also reports home and secondmate registry errors.
-Report ID commands refuse resolution while a selected local home is incomplete,
-since it could contain another report with the same ID.
+The list also reports home, secondmate registry, and unreadable report-file
+errors. Report ID commands refuse resolution while a selected local home is
+incomplete, since it could contain another report with the same ID.
 
 Read a report by ID. Quarterdeck prints its Markdown and writes a readable HTML
 copy in its state directory; the output names the generated page:
@@ -54,6 +54,7 @@ the requested page. See [Request a Lavish page](request-lavish-page.md).
 Review marks are stored at
 `${XDG_STATE_HOME:-~/.local/state}/quarterdeck/review-state/marks.json`. Each
 mark records a sha256 fingerprint of the report bytes. Editing a report makes
-it need review again. The state file is outside Firstmate homes and the
-Quarterdeck checkout; Quarterdeck refuses to use a state directory inside
-either location. No Firstmate file is changed.
+it need review again. The state file is outside selected Firstmate homes, their
+configured data directories, and the Quarterdeck checkout; Quarterdeck refuses
+to use a state directory inside any of those locations. No Firstmate file is
+changed.

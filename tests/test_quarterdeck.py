@@ -428,7 +428,7 @@ Use the compact format for the first release.
             listed = self.run_cli(["reports", "list", "--config", str(config)], root, config_home)
             self.assertEqual(listed.returncode, 0, listed.stderr)
             self.assertIn(f"{report_id}\tneeds review", listed.stdout)
-            self.assertIn("Home error (Missing Sample):", listed.stdout)
+            self.assertIn("Discovery error (Missing Sample):", listed.stdout)
             self.assertIn("Firstmate home is not a directory", listed.stdout)
 
             for action in ("read", "mark-reviewed", "unmark-reviewed"):
@@ -437,6 +437,36 @@ Use the compact format for the first release.
                     self.assertEqual(result.returncode, 2)
                     self.assertIn("cannot resolve report ID", result.stderr)
                     self.assertIn("Missing Sample", result.stderr)
+
+    def test_unreadable_report_is_listed_and_blocks_ambiguous_id_resolution(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            first_home = self.make_home(root / "first")
+            second_home = self.make_home(root / "second")
+            unreadable_report = second_home / "data" / "amber-18" / "report.md"
+            unreadable_report.unlink()
+            unreadable_report.mkdir()
+            config_home = root / "config"
+            config_home.mkdir()
+            config = config_home / "quarterdeck.json"
+            config.write_text(json.dumps({"homes": [
+                {"label": "Sample Bay", "path": str(first_home)},
+                {"label": "sample-bay", "path": str(second_home)},
+            ]}), encoding="utf-8")
+            report_id = "sample-bay/amber-18"
+
+            listed = self.run_cli(["reports", "list", "--config", str(config)], root, config_home)
+            self.assertEqual(listed.returncode, 0, listed.stderr)
+            self.assertIn(f"{report_id}\tneeds review", listed.stdout)
+            self.assertIn("Discovery error (sample-bay):", listed.stdout)
+            self.assertIn("Could not read report", listed.stdout)
+
+            for action in ("read", "mark-reviewed", "unmark-reviewed"):
+                with self.subTest(action=action):
+                    result = self.run_cli(["reports", action, report_id, "--config", str(config)], root, config_home)
+                    self.assertEqual(result.returncode, 2)
+                    self.assertIn("cannot resolve report ID", result.stderr)
+                    self.assertIn("sample-bay", result.stderr)
 
     def test_concurrent_review_mark_updates_preserve_both_marks(self) -> None:
         with tempfile.TemporaryDirectory() as temp:
@@ -517,6 +547,62 @@ Use the compact format for the first release.
             output_path = Path(stdout.getvalue().split("Readable HTML: ", 1)[1].strip())
             self.assertTrue(output_path.is_file())
             self.assertIn("could not open report page in a browser", stderr.getvalue())
+
+    def test_reports_read_reports_browser_exception_and_retains_html_path(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            home = self.make_home(root)
+            stdout = io.StringIO()
+            stderr = io.StringIO()
+            environment = {
+                "HOME": str(root),
+                "XDG_CONFIG_HOME": str(root / "config"),
+                "XDG_STATE_HOME": str(root / "state"),
+            }
+
+            with patch.dict(os.environ, environment, clear=True):
+                with patch.object(quarterdeck.webbrowser, "open", side_effect=quarterdeck.webbrowser.Error("no browser registered")):
+                    with redirect_stdout(stdout), redirect_stderr(stderr):
+                        result = quarterdeck.main([
+                            "reports", "read", "fictional-firstmate/amber-18",
+                            "--home", str(home), "--open",
+                        ])
+
+            self.assertEqual(result, 2)
+            self.assertIn("Readable HTML:", stdout.getvalue())
+            output_path = Path(stdout.getvalue().split("Readable HTML: ", 1)[1].strip())
+            self.assertTrue(output_path.is_file())
+            self.assertIn("no browser registered", stderr.getvalue())
+
+    def test_review_state_inside_configured_data_directory_is_refused(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            home = self.make_home(root)
+            data_dir = root / "external-data"
+            (data_dir / "amber-18").mkdir(parents=True)
+            (data_dir / "backlog.md").write_text("# Work queue\n", encoding="utf-8")
+            (data_dir / "amber-18" / "report.md").write_text("# External report\n", encoding="utf-8")
+            config_home = root / "config"
+            config_home.mkdir()
+            config = config_home / "quarterdeck.json"
+            config.write_text(json.dumps({"homes": [
+                {"label": "External Sample", "path": str(home), "data_dir": str(data_dir)},
+            ]}), encoding="utf-8")
+            env = os.environ.copy()
+            env["HOME"] = str(root)
+            env["XDG_CONFIG_HOME"] = str(config_home)
+            env["XDG_STATE_HOME"] = str(data_dir)
+            env.pop("FM_HOME", None)
+            env.pop("FM_DATA_OVERRIDE", None)
+
+            result = subprocess.run(
+                [sys.executable, str(ROOT / "quarterdeck.py"), "reports", "mark-reviewed", "external-sample/amber-18", "--config", str(config)],
+                check=False, text=True, capture_output=True, env=env,
+            )
+
+            self.assertEqual(result.returncode, 2)
+            self.assertIn("review state must be outside", result.stderr)
+            self.assertFalse((data_dir / "quarterdeck" / "review-state").exists())
 
     def test_long_distinct_home_labels_keep_distinct_report_ids(self) -> None:
         with tempfile.TemporaryDirectory() as temp:

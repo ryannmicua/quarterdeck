@@ -832,17 +832,22 @@ def review_state_path() -> Path:
 
 def validate_review_state_location(snapshots: list[HomeSnapshot]) -> Path:
     state_dir = review_state_path().parent.resolve()
-    roots = [Path(__file__).resolve().parent] + [
-        snapshot.spec.home.resolve()
-        for snapshot in all_snapshots(snapshots)
-        if snapshot.spec.home is not None
-    ]
+    roots = [Path(__file__).resolve().parent]
+    for snapshot in all_snapshots(snapshots):
+        if snapshot.spec.remote_host is not None or snapshot.spec.home is None:
+            continue
+        roots.append(snapshot.spec.home.resolve())
+        data_dir = snapshot.spec.data_dir or snapshot.data_dir or (snapshot.spec.home / "data")
+        roots.append(data_dir.resolve())
     for root in roots:
         try:
             state_dir.relative_to(root)
         except ValueError:
             continue
-        raise ValueError("review state must be outside the Quarterdeck checkout and all selected Firstmate homes")
+        raise ValueError(
+            "review state must be outside the Quarterdeck checkout, selected Firstmate homes, "
+            "and their data directories"
+        )
     return state_dir / "marks.json"
 
 
@@ -936,6 +941,7 @@ def report_discovery_errors(snapshots: list[HomeSnapshot]) -> list[tuple[HomeSna
             errors.append((snapshot, f"home could not be read: {snapshot.error}"))
         if snapshot.registry_error:
             errors.append((snapshot, f"secondmate registry could not be read: {snapshot.registry_error}"))
+        errors.extend((snapshot, warning) for warning in snapshot.warnings)
     return errors
 
 
@@ -969,7 +975,7 @@ def unique_report(snapshots: list[HomeSnapshot], requested_id: str) -> tuple[Hom
     return matches[0]
 
 
-def load_report_context(args: argparse.Namespace) -> tuple[list[HomeSnapshot], Path, dict[str, str]]:
+def load_report_snapshots(args: argparse.Namespace) -> tuple[list[HomeSnapshot], Path]:
     if args.config is None:
         configured_path = default_config_path()
         args.config = configured_path if configured_path.is_file() else None
@@ -979,6 +985,11 @@ def load_report_context(args: argparse.Namespace) -> tuple[list[HomeSnapshot], P
     if legacy_single_home and snapshots[0].error:
         raise ValueError(snapshots[0].error)
     state_path = validate_review_state_location(snapshots)
+    return snapshots, state_path
+
+
+def load_report_context(args: argparse.Namespace) -> tuple[list[HomeSnapshot], Path, dict[str, str]]:
+    snapshots, state_path = load_report_snapshots(args)
     marks = load_review_marks(state_path)
     apply_review_marks(snapshots, marks)
     return snapshots, state_path, marks
@@ -1412,7 +1423,7 @@ def reports_list(args: argparse.Namespace) -> int:
                 )
                 print(f"{report.report_id}\t{state}\t{report.title}\t{snapshot.spec.label}")
         for snapshot, error in discovery_errors:
-            print(f"Home error ({snapshot.spec.label}): {error}")
+            print(f"Discovery error ({snapshot.spec.label}): {error}")
     except (OSError, ValueError) as exc:
         print(f"quarterdeck: {exc}", file=sys.stderr)
         return 2
@@ -1443,7 +1454,7 @@ def reports_read(args: argparse.Namespace) -> int:
         if args.open and not webbrowser.open(output_path.as_uri()):
             print("quarterdeck: could not open report page in a browser", file=sys.stderr)
             return 2
-    except (OSError, ValueError) as exc:
+    except (OSError, ValueError, webbrowser.Error) as exc:
         print(f"quarterdeck: {exc}", file=sys.stderr)
         return 2
     return 0
@@ -1451,7 +1462,8 @@ def reports_read(args: argparse.Namespace) -> int:
 
 def reports_mark_reviewed(args: argparse.Namespace) -> int:
     try:
-        snapshots, state_path, _marks = load_report_context(args)
+        snapshots, state_path = load_report_snapshots(args)
+        apply_review_marks(snapshots, {})
         _snapshot, report = unique_report(snapshots, args.report_id)
         update_review_mark(state_path, report.report_id, report.fingerprint)
     except (OSError, ValueError) as exc:
@@ -1463,7 +1475,8 @@ def reports_mark_reviewed(args: argparse.Namespace) -> int:
 
 def reports_unmark_reviewed(args: argparse.Namespace) -> int:
     try:
-        snapshots, state_path, _marks = load_report_context(args)
+        snapshots, state_path = load_report_snapshots(args)
+        apply_review_marks(snapshots, {})
         _snapshot, report = unique_report(snapshots, args.report_id)
         update_review_mark(state_path, report.report_id, None)
     except (OSError, ValueError) as exc:

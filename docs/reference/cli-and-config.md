@@ -64,9 +64,9 @@ task ID is the report's immediate parent directory name unchanged. The slug is
 uncapped. An empty slug becomes `home`. For example, `Maple Harbor` and `amber-18`
 produce `maple-harbor/amber-18`. A collision appears as `ID collision` in the
 list. Read and review commands refuse the ambiguous ID with matching homes and
-paths; use distinct home-label slugs to resolve it. The list reports home and
-secondmate registry errors; report ID commands refuse resolution while a
-selected local home is incomplete.
+paths; use distinct home-label slugs to resolve it. The list reports home,
+secondmate registry, and unreadable report-file errors; report ID commands
+refuse resolution while a selected local home is incomplete.
 
 `reports read` prints Markdown and writes the existing readable HTML format.
 The HTML page is written to the Quarterdeck state directory. Use `--open` to
