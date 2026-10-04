@@ -215,8 +215,8 @@ Use the compact format for the first release.
             self.assertRegex(page, r'<b>5</b><span>Other backlog items</span>')
             self.assertRegex(page, r'<b>6</b><span>Scout reports</span>')
             self.assertEqual(page.count('<p class="eyebrow">Other backlog item</p>'), 5)
-            self.assertEqual(page.count("<h3>Finished Finch report</h3>"), 2)
-            self.assertEqual(page.count("<h3>Unlinked old report</h3>"), 2)
+            self.assertEqual(page.count("<h3>Finished Finch report</h3>"), 1)
+            self.assertEqual(page.count("<h3>Unlinked old report</h3>"), 1)
 
     def test_lavish_request_control_has_structured_payload_and_is_hidden_on_plain_page(self) -> None:
         with tempfile.TemporaryDirectory() as temp:
@@ -279,14 +279,19 @@ Use the compact format for the first release.
             self.assertEqual(listed.returncode, 0, listed.stderr)
             self.assertIn(f"{report_id}\tneeds review\tAmber Kite import review", listed.stdout)
 
-            html_dir = root / "readable-pages"
             read = self.run_cli(
-                ["reports", "read", report_id, "--home", str(home), "--output-dir", str(html_dir)],
+                ["reports", "read", report_id, "--home", str(home)],
                 root, config_home,
             )
             self.assertEqual(read.returncode, 0, read.stderr)
             self.assertIn("# Amber Kite import review", read.stdout)
             page_path = Path(read.stdout.split("Readable HTML: ", 1)[1].strip())
+            self.assertEqual(
+                page_path,
+                root / "state" / "quarterdeck" / quarterdeck.source_page_filename(
+                    "report", home, home / "data" / "amber-18" / "report.md",
+                ),
+            )
             self.assertTrue(page_path.is_file())
             self.assertIn("<h1>Amber Kite import review</h1>", page_path.read_text(encoding="utf-8"))
 
@@ -344,6 +349,24 @@ Use the compact format for the first release.
             marked = self.run_cli(["reports", "mark-reviewed", report_id, "--config", str(config)], root, config_home)
             self.assertEqual(marked.returncode, 2)
             self.assertIn("report ID is ambiguous", marked.stderr)
+
+    def test_long_distinct_home_labels_keep_distinct_report_ids(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            first_home = self.make_home(root / "first")
+            second_home = self.make_home(root / "second")
+            config_home = root / "config"
+            config_home.mkdir()
+            config = config_home / "quarterdeck.json"
+            config.write_text(json.dumps({"homes": [
+                {"label": "northstar-field-research-center-east", "path": str(first_home)},
+                {"label": "northstar-field-research-center-west", "path": str(second_home)},
+            ]}), encoding="utf-8")
+
+            listed = self.run_cli(["reports", "list", "--config", str(config)], root, config_home)
+            self.assertEqual(listed.returncode, 0, listed.stderr)
+            self.assertIn("northstar-field-research-center-east/amber-18\tneeds review", listed.stdout)
+            self.assertIn("northstar-field-research-center-west/amber-18\tneeds review", listed.stdout)
 
     def test_review_state_inside_a_firstmate_home_is_refused(self) -> None:
         with tempfile.TemporaryDirectory() as temp:
@@ -628,6 +651,9 @@ Use the compact format for the first release.
             for subcommand in ("list", "read", "mark-reviewed", "unmark-reviewed"):
                 result = self.run_cli(["reports", subcommand, "--help"], cli_home, config_home)
                 self.assertEqual(result.returncode, 0, result.stderr)
+                if subcommand == "read":
+                    self.assertIn("--open", result.stdout)
+                    self.assertNotIn("--output-dir", result.stdout)
 
     def test_installer_clones_updates_reuses_and_uninstalls_safely(self) -> None:
         with tempfile.TemporaryDirectory() as temp:

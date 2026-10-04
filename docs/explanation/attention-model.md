@@ -8,13 +8,14 @@ does not run Firstmate scripts or commands.
 ## Reports needing review
 
 Every discovered `data/<task-id>/report.md` without a reviewed mark for its
-current bytes appears in a separate **Reports needing review** section. This
-section is independent of the backlog attention cards, so queued, finished,
-closed, and unlinked reports remain visible until they are reviewed. Marking a
-report reviewed hides it from this section; editing it changes its sha256
-fingerprint and returns it to the section. The same report IDs and state are
-available through `quarterdeck reports list` and the `quarterdeck reports`
-commands.
+current bytes appears in a separate **Reports needing review** section on the
+default page. This section is independent of the backlog attention cards, so
+queued, finished, closed, and unlinked reports remain visible until reviewed.
+With `--all`, each report appears once in **All scout reports**, where its
+review state remains visible. Marking a report reviewed removes it from the
+default section; editing it changes its sha256 fingerprint and returns it to
+that section. The same report IDs and state are available through
+`quarterdeck reports list` and the `quarterdeck reports` commands.
 
 ## What appears as a card
 
@@ -47,6 +48,7 @@ counts for queued and finished or closed backlog records.
 
 Use `quarterdeck render --all` to restore an exhaustive view with every
 backlog record and report, including reports that have already been reviewed.
+Each report appears once with its review state.
 
 ## Counts
 

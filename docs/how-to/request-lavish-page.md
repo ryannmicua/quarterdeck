@@ -8,7 +8,8 @@ review as its own Lavish page.
    `quarterdeck render --lavish`
 
 2. Open the printed session URL and find a held, review-ready, or in-flight
-   card, or a report in **Reports needing review**.
+   card, or a report needing review. With `--all`, all reports appear once in
+   **All scout reports** with their review state.
 3. Select **Request a Lavish page**. Quarterdeck queues a prompt containing the
    item ID, title, source kind, home label, and recorded source path. Report
    requests also include the stable report ID.

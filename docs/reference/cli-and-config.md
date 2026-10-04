@@ -5,7 +5,7 @@
 ```text
 quarterdeck render [--home PATH] [--output PATH] [--config FILE] [--title TEXT] [--all] [--lavish]
 quarterdeck reports list [--home PATH] [--config FILE]
-quarterdeck reports read <report-id> [--home PATH] [--config FILE] [--output-dir PATH] [--open]
+quarterdeck reports read <report-id> [--home PATH] [--config FILE] [--open]
 quarterdeck reports mark-reviewed <report-id> [--home PATH] [--config FILE]
 quarterdeck reports unmark-reviewed <report-id> [--home PATH] [--config FILE]
 quarterdeck add <firstmate-home> [--label LABEL] [--config FILE]
@@ -61,17 +61,15 @@ have the exact form `<home-label-slug>/<task-id>`: the label slug is the
 case-folded label with each run of characters outside `a` through `z` and `0`
 through `9` replaced by `-`, then leading and trailing hyphens removed; the
 task ID is the report's immediate parent directory name unchanged. The slug is
-limited to its first 24 characters, then trailing hyphens are removed again.
-An empty slug becomes `home`. For example, `Maple Harbor` and `amber-18`
+uncapped. An empty slug becomes `home`. For example, `Maple Harbor` and `amber-18`
 produce `maple-harbor/amber-18`. A
 collision appears as `ID collision` in the list. Read and review commands
 refuse the ambiguous ID with matching homes and paths; use distinct home-label
 slugs to resolve it.
 
 `reports read` prints Markdown and writes the existing readable HTML format.
-The default HTML directory is the Quarterdeck state directory. Use
-`--output-dir PATH` to select another location outside the repository and all
-selected homes, and `--open` to open the generated page in a browser.
+The HTML page is written to the Quarterdeck state directory. Use `--open` to
+open the generated page in a browser.
 `mark-reviewed` stores the current report's sha256 byte fingerprint;
 `unmark-reviewed` removes that mark. Review marks are stored separately from
 rendered pages at
@@ -147,12 +145,13 @@ hold_kind=captain, and not closed), review-ready GitHub pull requests, in-flight
 work, and blocked items with a structured captain or external-party blocker.
 Held cards show their recorded hold reason. A report is linked from a backlog
 card only when its item is held for the captain or marked review-ready; answered
-and closed items no longer surface reports from their cards. The separate
-**Reports needing review** section links every discovered report without a
-matching reviewed mark, including queued, finished, and unlinked reports.
-Queued and finished backlog items remain omitted from their cards. Use `--all`
-to restore the exhaustive backlog view. Recommendations are shown only when a
-report explicitly labels one.
+and closed items no longer surface reports from their cards. The default page's
+separate **Reports needing review** section links every discovered report
+without a matching reviewed mark, including queued, finished, and unlinked
+reports. With `--all`, each report appears once in **All scout reports** with
+its review state. Queued and finished backlog items remain omitted from their
+cards by default. Use `--all` to restore the exhaustive backlog view.
+Recommendations are shown only when a report explicitly labels one.
 
 The page is regenerated on demand. `quarterdeck render --lavish` writes a separate
 Lavish-ready file beside the normal output (for example, `index.lavish.html`) and

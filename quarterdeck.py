@@ -757,19 +757,20 @@ def home_panel(snapshot: HomeSnapshot, lavish: bool = False, show_all: bool = Fa
             home_count_labels.extend([f"{counts[4]} other backlog items", f"{counts[5]} scout reports"])
         home_counts = "".join(f"<span>{html.escape(label)}</span>" for label in home_count_labels)
         body.append(f'<div class="home-counts">{home_counts}</div>')
-        needs_review = [report for report in snapshot.reports if not report.reviewed]
-        needs_review_cards = [report_card(report, snapshot, lavish) for report in needs_review]
         held_cards = [card(record, snapshot, "Held for captain", "held", lavish, True) for record in groups["held"]]
         review_cards = [card(record, snapshot, "Review-ready pull request", "reviews", lavish, True) for record in groups["reviews"]]
         in_flight_cards = [card(record, snapshot, "In-flight work", "in_flight", lavish, False) for record in groups["in_flight"]]
         blocked_cards = [card(record, snapshot, "Blocked for captain or external party", "blocked", lavish, False) for record in groups["blocked"]]
-        body.extend([
-            section_html(
+        if not show_all:
+            needs_review = [report for report in snapshot.reports if not report.reviewed]
+            needs_review_cards = [report_card(report, snapshot, lavish) for report in needs_review]
+            body.append(section_html(
                 "Reports needing review",
                 "Reports without a reviewed mark for their current content.",
                 needs_review_cards,
                 "Every discovered report is marked reviewed.",
-            ),
+            ))
+        body.extend([
             section_html("Held for the captain", "Unresolved captain holds, with the recorded reason and linked report.", held_cards, "Nothing is waiting for a captain answer."),
             section_html("Review-ready pull requests", "Open pull requests explicitly marked ready for review.", review_cards, "No review-ready pull requests are recorded."),
             section_html("In-flight work", "Tasks recorded as actively in progress.", in_flight_cards, "No work is currently in flight."),
@@ -780,7 +781,7 @@ def home_panel(snapshot: HomeSnapshot, lavish: bool = False, show_all: bool = Fa
             report_cards = [report_card(report, snapshot, lavish) for report in snapshot.reports]
             body.extend([
                 section_html("Other backlog items", "Queued, finished, closed, and other records for an exhaustive view.", other_cards, "No other backlog items were found."),
-                section_html("All scout reports", "Every report found in this home's data directory.", report_cards, "No scout reports were found."),
+                section_html("All scout reports", "Every report found in this home's data directory, with its review state.", report_cards, "No scout reports were found."),
             ])
         else:
             summary = hidden_summary(snapshot, groups)
@@ -819,7 +820,7 @@ def all_snapshots(snapshots: list[HomeSnapshot]) -> list[HomeSnapshot]:
 def report_reference(home_label: str, task_id: str) -> str:
     """Build a readable report ID from its configured home label and task ID."""
     label_slug = re.sub(r"[^a-z0-9]+", "-", home_label.casefold()).strip("-")
-    label_slug = label_slug[:24].rstrip("-") or "home"
+    label_slug = label_slug or "home"
     return f"{label_slug}/{task_id}"
 
 
@@ -1363,7 +1364,7 @@ def reports_read(args: argparse.Namespace) -> int:
         snapshots, _state_path, _marks = load_report_context(args)
         snapshot, report = unique_report(snapshots, args.report_id)
         home = snapshot.spec.home or report.path.parent.parent.parent
-        output_dir = (args.output_dir.expanduser() if args.output_dir else default_output_dir()).resolve()
+        output_dir = default_output_dir().resolve()
         output_path = output_dir / source_page_filename("report", home, report.path)
         validate_output_path(output_path, snapshots)
         output_path.parent.mkdir(parents=True, exist_ok=True)
@@ -1594,7 +1595,6 @@ def make_parser() -> argparse.ArgumentParser:
     reports_read_parser.add_argument("report_id", help="stable report ID: <home-label-slug>/<task-id>")
     reports_read_parser.add_argument("--home", help="use only this Firstmate home")
     reports_read_parser.add_argument("--config", type=Path, help="optional JSON config file")
-    reports_read_parser.add_argument("--output-dir", type=Path, help="HTML output directory; defaults to Quarterdeck's state directory")
     reports_read_parser.add_argument("--open", action="store_true", help="open the generated HTML page in a browser")
     reports_read_parser.set_defaults(handler=reports_read)
 
