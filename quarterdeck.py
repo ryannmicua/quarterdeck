@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import argparse
+import fcntl
 import hashlib
 import html
 import json
@@ -14,7 +15,8 @@ import subprocess
 import sys
 import tempfile
 import webbrowser
-from collections.abc import Callable
+from collections.abc import Callable, Iterator
+from contextlib import contextmanager
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
@@ -884,6 +886,30 @@ def write_review_marks(path: Path, marks: dict[str, str]) -> None:
         raise
 
 
+@contextmanager
+def review_marks_lock(path: Path) -> Iterator[None]:
+    path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
+    lock_path = path.with_name(f"{path.name}.lock")
+    if lock_path.is_symlink():
+        raise ValueError(f"refusing symbolic-link review state lock: {lock_path}")
+    with lock_path.open("a") as stream:
+        fcntl.flock(stream.fileno(), fcntl.LOCK_EX)
+        try:
+            yield
+        finally:
+            fcntl.flock(stream.fileno(), fcntl.LOCK_UN)
+
+
+def update_review_mark(path: Path, report_id: str, fingerprint: str | None) -> None:
+    with review_marks_lock(path):
+        marks = load_review_marks(path)
+        if fingerprint is None:
+            marks.pop(report_id, None)
+        else:
+            marks[report_id] = fingerprint
+        write_review_marks(path, marks)
+
+
 def apply_review_marks(snapshots: list[HomeSnapshot], marks: dict[str, str]) -> None:
     snapshots = all_snapshots(snapshots)
     seen_report_ids: set[str] = set()
@@ -903,6 +929,16 @@ def apply_review_marks(snapshots: list[HomeSnapshot], marks: dict[str, str]) -> 
             )
 
 
+def report_discovery_errors(snapshots: list[HomeSnapshot]) -> list[tuple[HomeSnapshot, str]]:
+    errors: list[tuple[HomeSnapshot, str]] = []
+    for snapshot in all_snapshots(snapshots):
+        if snapshot.error:
+            errors.append((snapshot, f"home could not be read: {snapshot.error}"))
+        if snapshot.registry_error:
+            errors.append((snapshot, f"secondmate registry could not be read: {snapshot.registry_error}"))
+    return errors
+
+
 def report_matches(snapshots: list[HomeSnapshot], requested_id: str) -> list[tuple[HomeSnapshot, Report]]:
     return [
         (snapshot, report)
@@ -913,6 +949,14 @@ def report_matches(snapshots: list[HomeSnapshot], requested_id: str) -> list[tup
 
 
 def unique_report(snapshots: list[HomeSnapshot], requested_id: str) -> tuple[HomeSnapshot, Report]:
+    incomplete_local_homes = [
+        (snapshot, error)
+        for snapshot, error in report_discovery_errors(snapshots)
+        if snapshot.spec.remote_host is None
+    ]
+    if incomplete_local_homes:
+        details = "; ".join(f"{snapshot.spec.label}: {error}" for snapshot, error in incomplete_local_homes)
+        raise ValueError(f"cannot resolve report ID while selected local homes are incomplete: {details}")
     matches = report_matches(snapshots, requested_id)
     if not matches:
         raise ValueError(f"no report matches ID: {requested_id}")
@@ -1353,18 +1397,22 @@ def reports_list(args: argparse.Namespace) -> int:
             for snapshot in all_snapshots(snapshots)
             for report in snapshot.reports
         ]
-        if not reports:
+        discovery_errors = report_discovery_errors(snapshots)
+        if not reports and not discovery_errors:
             print("No reports found.")
             return 0
-        identifiers: dict[str, int] = {}
-        for _snapshot, report in reports:
-            identifiers[report.report_id] = identifiers.get(report.report_id, 0) + 1
-        print("ID\tReview state\tTitle\tHome")
-        for snapshot, report in reports:
-            state = "ID collision" if identifiers[report.report_id] > 1 else (
-                "reviewed" if report.reviewed else "needs review"
-            )
-            print(f"{report.report_id}\t{state}\t{report.title}\t{snapshot.spec.label}")
+        if reports:
+            identifiers: dict[str, int] = {}
+            for _snapshot, report in reports:
+                identifiers[report.report_id] = identifiers.get(report.report_id, 0) + 1
+            print("ID\tReview state\tTitle\tHome")
+            for snapshot, report in reports:
+                state = "ID collision" if identifiers[report.report_id] > 1 else (
+                    "reviewed" if report.reviewed else "needs review"
+                )
+                print(f"{report.report_id}\t{state}\t{report.title}\t{snapshot.spec.label}")
+        for snapshot, error in discovery_errors:
+            print(f"Home error ({snapshot.spec.label}): {error}")
     except (OSError, ValueError) as exc:
         print(f"quarterdeck: {exc}", file=sys.stderr)
         return 2
@@ -1392,8 +1440,9 @@ def reports_read(args: argparse.Namespace) -> int:
         if not report.markdown.endswith("\n"):
             sys.stdout.write("\n")
         print(f"\nReadable HTML: {output_path}")
-        if args.open:
-            webbrowser.open(output_path.as_uri())
+        if args.open and not webbrowser.open(output_path.as_uri()):
+            print("quarterdeck: could not open report page in a browser", file=sys.stderr)
+            return 2
     except (OSError, ValueError) as exc:
         print(f"quarterdeck: {exc}", file=sys.stderr)
         return 2
@@ -1402,10 +1451,9 @@ def reports_read(args: argparse.Namespace) -> int:
 
 def reports_mark_reviewed(args: argparse.Namespace) -> int:
     try:
-        snapshots, state_path, marks = load_report_context(args)
+        snapshots, state_path, _marks = load_report_context(args)
         _snapshot, report = unique_report(snapshots, args.report_id)
-        marks[report.report_id] = report.fingerprint
-        write_review_marks(state_path, marks)
+        update_review_mark(state_path, report.report_id, report.fingerprint)
     except (OSError, ValueError) as exc:
         print(f"quarterdeck: {exc}", file=sys.stderr)
         return 2
@@ -1415,10 +1463,9 @@ def reports_mark_reviewed(args: argparse.Namespace) -> int:
 
 def reports_unmark_reviewed(args: argparse.Namespace) -> int:
     try:
-        snapshots, state_path, marks = load_report_context(args)
+        snapshots, state_path, _marks = load_report_context(args)
         _snapshot, report = unique_report(snapshots, args.report_id)
-        marks.pop(report.report_id, None)
-        write_review_marks(state_path, marks)
+        update_review_mark(state_path, report.report_id, None)
     except (OSError, ValueError) as exc:
         print(f"quarterdeck: {exc}", file=sys.stderr)
         return 2

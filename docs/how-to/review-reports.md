@@ -23,6 +23,9 @@ If two discovered reports produce the same ID, `reports list` labels both
 `ID collision`. `reports read`, `mark-reviewed`, and `unmark-reviewed` refuse
 that ID and list the matching homes and paths. Give the homes distinct labels
 whose slugs differ, then retry. The command never picks one report arbitrarily.
+The list also reports home and secondmate registry errors.
+Report ID commands refuse resolution while a selected local home is incomplete,
+since it could contain another report with the same ID.
 
 Read a report by ID. Quarterdeck prints its Markdown and writes a readable HTML
 copy in its state directory; the output names the generated page:

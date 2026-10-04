@@ -2,13 +2,16 @@ from __future__ import annotations
 
 import json
 import html
+import io
 import os
 import re
 import stat
 import subprocess
 import sys
 import tempfile
+import threading
 import unittest
+from contextlib import redirect_stderr, redirect_stdout
 from pathlib import Path
 from unittest.mock import patch
 
@@ -408,6 +411,112 @@ Use the compact format for the first release.
             marked = self.run_cli(["reports", "mark-reviewed", report_id, "--config", str(config)], root, config_home)
             self.assertEqual(marked.returncode, 2)
             self.assertIn("report ID is ambiguous", marked.stderr)
+
+    def test_report_list_surfaces_failed_homes_and_resolution_fails_closed(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            home = self.make_home(root / "available")
+            config_home = root / "config"
+            config_home.mkdir()
+            config = config_home / "quarterdeck.json"
+            config.write_text(json.dumps({"homes": [
+                {"label": "Available Sample", "path": str(home)},
+                {"label": "Missing Sample", "path": str(root / "missing-firstmate")},
+            ]}), encoding="utf-8")
+            report_id = "available-sample/amber-18"
+
+            listed = self.run_cli(["reports", "list", "--config", str(config)], root, config_home)
+            self.assertEqual(listed.returncode, 0, listed.stderr)
+            self.assertIn(f"{report_id}\tneeds review", listed.stdout)
+            self.assertIn("Home error (Missing Sample):", listed.stdout)
+            self.assertIn("Firstmate home is not a directory", listed.stdout)
+
+            for action in ("read", "mark-reviewed", "unmark-reviewed"):
+                with self.subTest(action=action):
+                    result = self.run_cli(["reports", action, report_id, "--config", str(config)], root, config_home)
+                    self.assertEqual(result.returncode, 2)
+                    self.assertIn("cannot resolve report ID", result.stderr)
+                    self.assertIn("Missing Sample", result.stderr)
+
+    def test_concurrent_review_mark_updates_preserve_both_marks(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            marks_path = Path(temp) / "review-state" / "marks.json"
+            first_loaded = threading.Event()
+            release_first = threading.Event()
+            second_started = threading.Event()
+            second_loaded = threading.Event()
+            errors: list[BaseException] = []
+            original_load = quarterdeck.load_review_marks
+
+            def controlled_load(path: Path) -> dict[str, str]:
+                marks = original_load(path)
+                thread_name = threading.current_thread().name
+                if thread_name == "first-mark":
+                    first_loaded.set()
+                    if not release_first.wait(timeout=5):
+                        raise TimeoutError("first mark update was not released")
+                elif thread_name == "second-mark":
+                    second_loaded.set()
+                return marks
+
+            def apply_mark(report_id: str, fingerprint: str, started: threading.Event | None = None) -> None:
+                if started is not None:
+                    started.set()
+                try:
+                    quarterdeck.update_review_mark(marks_path, report_id, fingerprint)
+                except BaseException as exc:
+                    errors.append(exc)
+
+            with patch.object(quarterdeck, "load_review_marks", side_effect=controlled_load):
+                first = threading.Thread(
+                    target=apply_mark, args=("sample/first", "a" * 64), name="first-mark",
+                )
+                second = threading.Thread(
+                    target=apply_mark, args=("sample/second", "b" * 64, second_started), name="second-mark",
+                )
+                first.start()
+                try:
+                    self.assertTrue(first_loaded.wait(timeout=3))
+                    second.start()
+                    self.assertTrue(second_started.wait(timeout=3))
+                    self.assertFalse(second_loaded.wait(timeout=0.5))
+                finally:
+                    release_first.set()
+                    first.join(timeout=3)
+                    if second.ident is not None:
+                        second.join(timeout=3)
+
+            self.assertFalse(first.is_alive())
+            self.assertFalse(second.is_alive())
+            self.assertEqual(errors, [])
+            marks = original_load(marks_path)
+            self.assertEqual(marks, {"sample/first": "a" * 64, "sample/second": "b" * 64})
+
+    def test_reports_read_retains_html_path_when_browser_open_fails(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            home = self.make_home(root)
+            stdout = io.StringIO()
+            stderr = io.StringIO()
+            environment = {
+                "HOME": str(root),
+                "XDG_CONFIG_HOME": str(root / "config"),
+                "XDG_STATE_HOME": str(root / "state"),
+            }
+
+            with patch.dict(os.environ, environment, clear=True):
+                with patch.object(quarterdeck.webbrowser, "open", return_value=False):
+                    with redirect_stdout(stdout), redirect_stderr(stderr):
+                        result = quarterdeck.main([
+                            "reports", "read", "fictional-firstmate/amber-18",
+                            "--home", str(home), "--open",
+                        ])
+
+            self.assertEqual(result, 2)
+            self.assertIn("Readable HTML:", stdout.getvalue())
+            output_path = Path(stdout.getvalue().split("Readable HTML: ", 1)[1].strip())
+            self.assertTrue(output_path.is_file())
+            self.assertIn("could not open report page in a browser", stderr.getvalue())
 
     def test_long_distinct_home_labels_keep_distinct_report_ids(self) -> None:
         with tempfile.TemporaryDirectory() as temp:
