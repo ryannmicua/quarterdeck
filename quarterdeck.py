@@ -885,10 +885,22 @@ def write_review_marks(path: Path, marks: dict[str, str]) -> None:
 
 
 def apply_review_marks(snapshots: list[HomeSnapshot], marks: dict[str, str]) -> None:
-    for snapshot in all_snapshots(snapshots):
+    snapshots = all_snapshots(snapshots)
+    seen_report_ids: set[str] = set()
+    ambiguous_report_ids: set[str] = set()
+    for snapshot in snapshots:
         for report in snapshot.reports:
             report.report_id = report_reference(snapshot.spec.label, report.path.parent.name)
-            report.reviewed = marks.get(report.report_id) == report.fingerprint
+            if report.report_id in seen_report_ids:
+                ambiguous_report_ids.add(report.report_id)
+            else:
+                seen_report_ids.add(report.report_id)
+    for snapshot in snapshots:
+        for report in snapshot.reports:
+            report.reviewed = (
+                report.report_id not in ambiguous_report_ids
+                and marks.get(report.report_id) == report.fingerprint
+            )
 
 
 def report_matches(snapshots: list[HomeSnapshot], requested_id: str) -> list[tuple[HomeSnapshot, Report]]:

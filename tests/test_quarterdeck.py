@@ -379,13 +379,27 @@ Use the compact format for the first release.
             config = config_home / "quarterdeck.json"
             config.write_text(json.dumps({"homes": [
                 {"label": "Sample Bay", "path": str(first_home)},
-                {"label": "sample-bay", "path": str(second_home)},
             ]}), encoding="utf-8")
             report_id = "sample-bay/amber-18"
+
+            marked = self.run_cli(["reports", "mark-reviewed", report_id, "--config", str(config)], root, config_home)
+            self.assertEqual(marked.returncode, 0, marked.stderr)
+
+            config.write_text(json.dumps({"homes": [
+                {"label": "Sample Bay", "path": str(first_home)},
+                {"label": "sample-bay", "path": str(second_home)},
+            ]}), encoding="utf-8")
 
             listed = self.run_cli(["reports", "list", "--config", str(config)], root, config_home)
             self.assertEqual(listed.returncode, 0, listed.stderr)
             self.assertEqual(listed.stdout.count(f"{report_id}\tID collision"), 2)
+
+            output = root / "dashboard.html"
+            rendered = self.run_cli(["render", "--config", str(config), "--output", str(output)], root, config_home)
+            self.assertEqual(rendered.returncode, 0, rendered.stderr)
+            dashboard = output.read_text(encoding="utf-8")
+            report_card = f'<p class="eyebrow">Scout report · Needs review · <code>{report_id}</code></p>'
+            self.assertEqual(dashboard.count(report_card), 2)
 
             read = self.run_cli(["reports", "read", report_id, "--config", str(config)], root, config_home)
             self.assertEqual(read.returncode, 2)
