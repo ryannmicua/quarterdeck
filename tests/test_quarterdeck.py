@@ -1148,10 +1148,48 @@ class BearingsTests(unittest.TestCase):
             with self.subTest(name), tempfile.TemporaryDirectory() as temp:
                 home = self.make_home(Path(temp), script)
                 bearings = quarterdeck.build_bearings(
-                    self.snapshots(home), runner=lambda h: quarterdeck.run_bearings_snapshot(h, timeout=0.5))
+                    self.snapshots(home), runner=lambda h, data_dir: quarterdeck.run_bearings_snapshot(
+                        h, data_dir=data_dir, timeout=0.5))
                 self.assertEqual(bearings.sources[0].mode, "fallback")
                 self.assertIn(expected, bearings.sources[0].reason)
                 self.assertEqual([i.item_id for i in bearings.call], ["kelp-survey"])
+
+    def test_snapshot_allows_nullable_fields_and_uses_selected_data_dir(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            home = self.make_home(root)
+            data_dir = root / "archive" / "data"
+            data_dir.mkdir(parents=True)
+            (data_dir / "backlog.md").write_text(
+                (home / "data" / "backlog.md").read_text(encoding="utf-8"), encoding="utf-8")
+            payload = {
+                "schema": "fm-bearings.v1",
+                "decisions_open": [],
+                "landed": [],
+                "in_flight": [{"id": "archive-task", "name": "", "repo": None,
+                               "state": "working", "doing": ""}],
+                "secondmates": [],
+                "gates": [{"owner": "(main)", "id": "archive-gate", "title": "Archive gate",
+                           "filed": None, "blocked_by": "", "reason": ""}],
+            }
+            payload_script = (
+                f"#!{sys.executable}\n"
+                "import json, os\n"
+                f"payload = {payload!r}\n"
+                "payload['in_flight'][0]['name'] = os.environ['FM_DATA_OVERRIDE']\n"
+                "print(json.dumps(payload))\n"
+            )
+            script = home / "bin" / "fm-bearings-snapshot.sh"
+            script.parent.mkdir()
+            script.write_text(payload_script, encoding="utf-8")
+            script.chmod(0o755)
+            snapshot = quarterdeck.load_home_snapshot(
+                quarterdeck.HomeSpec("archive-home", home, data_dir=data_dir))
+            with patch.dict(os.environ, {"FM_DATA_OVERRIDE": str(root / "wrong-data")}):
+                bearings = quarterdeck.build_bearings([snapshot])
+            self.assertEqual(bearings.sources[0].mode, "snapshot")
+            self.assertEqual(bearings.underway[0].title, str(data_dir.resolve()))
+            self.assertEqual(bearings.charted[0].filed, "")
 
     def test_malformed_snapshot_shapes_fall_back_to_the_backlog(self) -> None:
         malformed = [
@@ -1337,24 +1375,39 @@ class ServeTests(unittest.TestCase):
             alternate_home = root / "shell-home"
             config_path = config_home / "quarterdeck.json"
             config_path.write_text(json.dumps({"homes": [{"path": str(home)}]}), encoding="utf-8")
-            env = {"XDG_CONFIG_HOME": str(config_home), "FM_HOME": str(alternate_home)}
+            data_override = root / "shell-data"
+            state_home = root / "shell-state"
+            env = {
+                "XDG_CONFIG_HOME": str(config_home),
+                "FM_HOME": str(alternate_home),
+                "FM_DATA_OVERRIDE": str(data_override),
+                "XDG_STATE_HOME": str(state_home),
+            }
             with patch.dict(os.environ, env):
                 parser = quarterdeck.make_parser()
                 unit = quarterdeck.service_unit(parser.parse_args(["service"]))
                 command = shlex.split(next(line.removeprefix("ExecStart=") for line in unit.splitlines()
                                            if line.startswith("ExecStart=")))
+                unit_environment = [shlex.split(line.split("=", 1)[1])[0] for line in unit.splitlines()
+                                    if line.startswith("Environment=")]
                 self.assertIn(["--config", str(config_path.resolve())], [command[index:index + 2]
                               for index in range(len(command) - 1)])
                 self.assertNotIn(str(alternate_home.resolve()), command)
+                self.assertNotIn(f"FM_DATA_OVERRIDE={data_override.resolve()}", unit_environment)
+                self.assertIn(f"XDG_STATE_HOME={state_home.resolve()}", unit_environment)
 
                 config_path.write_text(json.dumps({"page_title": "Selected"}), encoding="utf-8")
                 unit = quarterdeck.service_unit(parser.parse_args(["service"]))
                 command = shlex.split(next(line.removeprefix("ExecStart=") for line in unit.splitlines()
                                            if line.startswith("ExecStart=")))
+                unit_environment = [shlex.split(line.split("=", 1)[1])[0] for line in unit.splitlines()
+                                    if line.startswith("Environment=")]
                 self.assertIn(["--home", str(alternate_home.resolve())], [command[index:index + 2]
                               for index in range(len(command) - 1)])
                 self.assertIn(["--config", str(config_path.resolve())], [command[index:index + 2]
                               for index in range(len(command) - 1)])
+                self.assertIn(f"FM_DATA_OVERRIDE={data_override.resolve()}", unit_environment)
+                self.assertIn(f"XDG_STATE_HOME={state_home.resolve()}", unit_environment)
 
     def test_server_options_reject_removed_aliases_and_invalid_ports(self) -> None:
         parser = quarterdeck.make_parser()

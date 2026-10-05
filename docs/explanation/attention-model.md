@@ -2,10 +2,13 @@
 
 Quarterdeck's default page is a current review surface. It reads each selected
 home's backlog, reports, and secondmate route file directly. It uses local
-review marks to determine which reports need review. When enabled, it runs only
-that home's `bin/fm-bearings-snapshot.sh --json` to match Firstmate's bearings
-digest; the script may refresh Firstmate's cache. `--no-snapshot` disables it.
-No other Firstmate script or command is run.
+review marks to determine which reports need review. When enabled, Quarterdeck
+invokes that home's `bin/fm-bearings-snapshot.sh --json` to match Firstmate's
+bearings digest; the wrapper may refresh Firstmate's cache. `--no-snapshot`
+disables it. The wrapper may read registered remote secondmate ledgers through
+Firstmate's routes and cache; rows it returns appear in the bearings sections.
+Quarterdeck itself makes no network calls and invokes no other Firstmate script
+directly.
 
 ## Reports needing review
 

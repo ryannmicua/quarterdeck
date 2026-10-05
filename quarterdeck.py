@@ -1444,13 +1444,14 @@ def find_report(item: BacklogItem, snapshot: HomeSnapshot) -> Report | None:
 
 
 def run_bearings_snapshot(
-    home: Path, timeout: float = SNAPSHOT_TIMEOUT_SECONDS
+    home: Path, data_dir: Path | None = None, timeout: float = SNAPSHOT_TIMEOUT_SECONDS
 ) -> tuple[dict[str, object] | None, str]:
     """Run a home's own bearings snapshot; return (data, "") or (None, reason it cannot be used)."""
     script = home / SNAPSHOT_SCRIPT
     if not script.is_file() or not os.access(script, os.X_OK):
         return None, "no executable bin/fm-bearings-snapshot.sh in this home"
-    env = dict(os.environ, FM_HOME=str(home))
+    selected_data_dir = (data_dir or home / "data").expanduser().resolve()
+    env = dict(os.environ, FM_HOME=str(home), FM_DATA_OVERRIDE=str(selected_data_dir))
     try:
         process = subprocess.Popen(
             [str(script), "--json"], cwd=home, env=env, stdin=subprocess.DEVNULL,
@@ -1484,6 +1485,7 @@ def run_bearings_snapshot(
         "secondmates": ("id", "state", "doing", "reason"),
         "gates": ("owner", "id", "title", "filed", "blocked_by", "reason"),
     }
+    nullable_fields = {"in_flight": {"repo"}, "gates": {"filed"}}
     for name, fields in row_fields.items():
         rows = data.get(name)
         if not isinstance(rows, list):
@@ -1492,7 +1494,10 @@ def run_bearings_snapshot(
             if not isinstance(row, dict):
                 return None, f"the snapshot {name} row {index + 1} is not an object"
             for field_name in fields:
-                if not isinstance(row.get(field_name), str):
+                if field_name not in row:
+                    return None, f"the snapshot {name} row {index + 1} has no {field_name}"
+                value = row[field_name]
+                if not isinstance(value, str) and not (value is None and field_name in nullable_fields.get(name, set())):
                     return None, f"the snapshot {name} row {index + 1} has an invalid {field_name}"
             if name == "decisions_open":
                 for field_name in ("key", "id"):
@@ -1520,7 +1525,7 @@ def _blank(value: str) -> str:
 
 class BearingsBuilder:
     def __init__(self, homes: list[HomeSnapshot], now: datetime, use_snapshot: bool = True,
-                 runner: Callable[[Path], tuple[dict[str, object] | None, str]] = run_bearings_snapshot) -> None:
+                 runner: Callable[[Path, Path | None], tuple[dict[str, object] | None, str]] = run_bearings_snapshot) -> None:
         self.homes = homes
         self.now = now
         self.use_snapshot = use_snapshot
@@ -1655,7 +1660,7 @@ class BearingsBuilder:
         for snapshot in self.homes:
             data, reason = (None, "snapshot disabled with --no-snapshot")
             if self.use_snapshot and snapshot.spec.home is not None and not snapshot.spec.remote_host and not snapshot.error:
-                data, reason = self.runner(snapshot.spec.home)
+                data, reason = self.runner(snapshot.spec.home, snapshot.data_dir)
             elif snapshot.error:
                 reason = "home could not be read"
             if data is not None:
@@ -1674,7 +1679,7 @@ class BearingsBuilder:
 
 
 def build_bearings(homes: list[HomeSnapshot], now: datetime | None = None, use_snapshot: bool = True,
-                   runner: Callable[[Path], tuple[dict[str, object] | None, str]] = run_bearings_snapshot) -> Bearings:
+                   runner: Callable[[Path, Path | None], tuple[dict[str, object] | None, str]] = run_bearings_snapshot) -> Bearings:
     return BearingsBuilder(homes, now or datetime.now(timezone.utc), use_snapshot, runner).build()
 
 
@@ -2133,6 +2138,7 @@ def service_unit(args: argparse.Namespace) -> str:
     command += ["--port", str(args.port)]
     config_path = args.config.expanduser().resolve() if args.config else default_config_path()
     config = load_config(config_path) if args.config or config_path.is_file() else {}
+    single_home = bool(args.home) or ("homes" not in config and bool(os.environ.get("FM_HOME")))
     if args.home:
         command += ["--home", str(Path(args.home).expanduser().resolve())]
     elif "homes" not in config and os.environ.get("FM_HOME"):
@@ -2140,9 +2146,19 @@ def service_unit(args: argparse.Namespace) -> str:
     if args.config or config_path.is_file():
         command += ["--config", str(config_path)]
     exec_start = " ".join(systemd_quote(part) for part in command)
+    environment = []
+    if single_home and os.environ.get("FM_DATA_OVERRIDE"):
+        data_override = Path(os.environ["FM_DATA_OVERRIDE"]).expanduser().resolve()
+        environment.append("Environment=" + systemd_quote("FM_DATA_OVERRIDE=" + str(data_override)))
+    if os.environ.get("XDG_STATE_HOME"):
+        state_home = Path(os.environ["XDG_STATE_HOME"]).expanduser().resolve()
+        environment.append("Environment=" + systemd_quote("XDG_STATE_HOME=" + str(state_home)))
+    environment_lines = "\n".join(environment)
+    if environment_lines:
+        environment_lines += "\n"
     return (
         "[Unit]\nDescription=Quarterdeck read-only Firstmate bearings page\nAfter=network.target\n\n"
-        f"[Service]\nExecStart={exec_start}\nRestart=on-failure\nRestartSec=5\n\n"
+        f"[Service]\n{environment_lines}ExecStart={exec_start}\nRestart=on-failure\nRestartSec=5\n\n"
         "[Install]\nWantedBy=default.target\n"
     )
 
@@ -2423,7 +2439,7 @@ def load_home_snapshot(spec: HomeSpec, discover_secondmates: bool = False) -> Ho
     if spec.unavailable_reason:
         snapshot.error = spec.unavailable_reason
     elif spec.remote_host:
-        snapshot.error = f"This secondmate is on remote host {spec.remote_host}; Quarterdeck reads local files only."
+        snapshot.error = f"This secondmate is on remote host {spec.remote_host}; Quarterdeck does not read its files directly."
     elif spec.home is None:
         snapshot.error = "The registered route does not contain a local home path."
     else:

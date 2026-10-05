@@ -13,15 +13,20 @@ configured parent home, Quarterdeck also reads the optional
 `data/secondmates.md` route registry. Each local route's `home:` field points
 to another Firstmate home, which gets its own labeled section underneath the
 parent. That secondmate has its own `data/backlog.md` and report files. A remote
-route is shown as unavailable: Quarterdeck does not use SSH or read another
-machine. This follows Firstmate's [secondmate route and home layout](https://github.com/kunchenguid/firstmate/blob/main/docs/configuration.md).
+route is shown as unavailable as a separately loaded home. The parent's
+bearings snapshot may still include remote secondmate rows collected through
+Firstmate's routes and cache. Quarterdeck itself makes no network calls and
+does not use SSH. This follows Firstmate's [secondmate route and home layout](https://github.com/kunchenguid/firstmate/blob/main/docs/configuration.md).
 
 Quarterdeck reads these files directly. The single exception is a home's own
 `bin/fm-bearings-snapshot.sh --json`, run with a short timeout so the page
 agrees with Firstmate's `/bearings`; that script may refresh a parent-side
 Firstmate cache as part of its own operation. `--no-snapshot` skips it, and the
 page falls back to parsing the backlog when it is absent, fails, or times out.
-No other Firstmate script is run; Quarterdeck itself writes nothing to a home.
+The wrapper may also read registered remote secondmate ledgers through
+Firstmate's routes and show the returned rows. Quarterdeck invokes no other
+Firstmate script directly, makes no network calls itself, and writes nothing to
+a home.
 
 `quarterdeck serve` adds an HTTP listener. It answers only `GET` for generated
 pages, has no write endpoints and no authentication, and binds 127.0.0.1 by
@@ -34,8 +39,9 @@ selected home. Its default location is under
 `${XDG_STATE_HOME:-~/.local/state}/quarterdeck/`, outside the repo. Keep any
 custom output outside the repo and selected homes, and keep real config outside
 the repo as well. Quarterdeck refuses output inside its checkout or a selected
-home. The page uses inline CSS and makes no network requests. There is no
-daemon, token, or write-back path into a Firstmate home.
+home. The page uses inline CSS and makes no network requests. `serve` is an
+optional HTTP process that can run under the systemd user unit; Quarterdeck uses
+no model tokens and has no write-back path into a Firstmate home.
 
 Quarterdeck writes readable HTML copies of linked reports, reports needing
 review, and the backlog beside the main page; the dependency-free Markdown

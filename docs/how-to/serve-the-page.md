@@ -24,8 +24,9 @@ pages are cached for 30 seconds so rapid reloads stay cheap.
 | `--no-snapshot` | off | Skip the Firstmate snapshot script and always parse backlogs. |
 
 The server only answers `GET` for the main page and the generated report,
-backlog and backlog-item pages. It has no write endpoints and never changes
-Firstmate data.
+backlog and backlog-item pages. It has no write endpoints. When snapshots are
+enabled, Firstmate's wrapper may refresh its cache and read registered remote
+secondmate ledgers through its own routes; `--no-snapshot` skips that behavior.
 
 ## Where the sections come from
 

@@ -52,8 +52,11 @@ child `*/report.md` files. It also reads the parent's optional
 `data/secondmates.md` registry and renders each registered local secondmate
 under that parent. It may run that home's
 `bin/fm-bearings-snapshot.sh --json` for the bearings view, unless
-`--no-snapshot` is set; no other Firstmate command runs, and Quarterdeck does
-not connect to remote hosts. A missing or unreadable home in a configured list gets a failure section;
+`--no-snapshot` is set. Quarterdeck itself makes no network calls and invokes
+no other Firstmate script directly. The snapshot wrapper may read registered
+remote secondmate ledgers through Firstmate's routes and cache, and Quarterdeck
+shows the returned rows. A missing or unreadable home in a configured list
+gets a failure section;
 the other homes still render. The page links to readable HTML copies of
 selected reports and backlogs, generated beside the main page, and HTTPS links
 for GitHub pull requests.
@@ -142,8 +145,9 @@ Example:
 
 Local secondmates are discovered from one parser-compatible route per line in
 the parent's `data/secondmates.md`; each route's `home:` field points to a
-separate Firstmate home. Remote routes are listed with an unavailable message
-because Quarterdeck reads local files only. See [Configure multiple homes](../how-to/configure-multiple-homes.md)
+separate Firstmate home. Remote routes are listed as unavailable homes, though
+the parent's snapshot may return their aggregated records for the bearings
+sections. See [Configure multiple homes](../how-to/configure-multiple-homes.md)
 for setup steps and [Privacy and architecture](../explanation/privacy-and-architecture.md)
 for the read-only model.
 

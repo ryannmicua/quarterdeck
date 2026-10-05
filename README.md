@@ -14,8 +14,8 @@ party. Use `--all` to restore the exhaustive view.
 
 Render on demand, or run `quarterdeck serve` for a page that stays current on
 its own. Open the result in a browser, or hand a rendered file to `lavish-axi`
-as a local artifact. Quarterdeck has no agent, build step, or runtime network
-dependency.
+as a local artifact. Quarterdeck itself has no agent, build step, or runtime
+network dependency.
 
 ## Features
 
@@ -88,10 +88,12 @@ Quarterdeck writes it outside the repository under the user's state directory.
 It reads each configured Firstmate home's `data/backlog.md` and
 `data/<id>/report.md` files. It also reads the parent's optional
 `data/secondmates.md` registry and the listed local secondmate homes. It does
-does not otherwise write to those homes or to the Quarterdeck checkout. The one
+not otherwise write to those homes or to the Quarterdeck checkout. The one
 command it may run in a home is that home's own
-`bin/fm-bearings-snapshot.sh --json`, which can refresh Firstmate's cache;
-`--no-snapshot` turns that off. Keep custom output
+`bin/fm-bearings-snapshot.sh --json`. Quarterdeck itself makes no network calls,
+but Firstmate's snapshot may read registered remote secondmate ledgers through
+its routes and cache; those returned rows appear in the page. `--no-snapshot`
+uses the locally read files only. Keep custom output
 paths outside both and real configs outside the repository too.
 
 The repo ignores common output folders, local config files, and screenshots.
@@ -121,11 +123,12 @@ to that network with no login. Keep the default unless you control the network.
 No. Nothing calls a model; it only reads files and, when present, runs a home's
 own deterministic `bin/fm-bearings-snapshot.sh`.
 
-### Does it need credentials or contact a service?
+### Does it contact a service?
 
-No. Rendering reads local files and writes a local HTML file; `serve` listens only
-on the address you give it. The page uses
-inline CSS and has no runtime network requests.
+Quarterdeck itself makes no network calls, and the page has no runtime network
+requests. Its snapshot command may read registered remote secondmate ledgers
+through Firstmate's own routes and cache. Use `--no-snapshot` to skip that
+command and classify from locally read files only.
 
 ### How do I select several homes?
 
@@ -143,6 +146,6 @@ error if none is set.
 
 ## Roadmap
 
-Possible future work: optional write-back, answer capture, listener or daemon,
-Firstmate extension binding, and hosted or authenticated views. These are out of
-scope today; Quarterdeck remains a local read-only view.
+Possible future work: optional write-back, answer capture, Firstmate extension
+binding, and hosted or authenticated views. These are out of scope today;
+Quarterdeck remains a read-only view.

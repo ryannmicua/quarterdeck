@@ -78,5 +78,7 @@ local route with its `home:` path beneath the parent, reading that home's own
 not create or edit route entries. The registry format and home layout are
 described in [Firstmate configuration](https://github.com/kunchenguid/firstmate/blob/main/docs/configuration.md).
 
-Remote routes are included as sections that explain they cannot be read from
-the local machine. Quarterdeck does not connect to remote hosts.
+Remote routes appear as unavailable sections because Quarterdeck does not load
+those homes directly. The parent's bearings snapshot may still include remote
+secondmate rows collected through Firstmate's routes and cache; Quarterdeck
+itself makes no network calls. Use `--no-snapshot` to skip that snapshot.
