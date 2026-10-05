@@ -5,6 +5,7 @@ import html
 import io
 import os
 import re
+import shlex
 import stat
 import subprocess
 import sys
@@ -23,6 +24,36 @@ sys.path.insert(0, str(ROOT / "scripts"))
 
 import quarterdeck
 import privacy_guard
+
+
+def parse_systemd_unit(source: str) -> dict[str, dict[str, list[object]]]:
+    unit: dict[str, dict[str, list[object]]] = {}
+    section = ""
+    for line in source.splitlines():
+        line = line.strip()
+        if not line or line.startswith("#"):
+            continue
+        if line.startswith("[") and line.endswith("]"):
+            section = line[1:-1]
+            unit.setdefault(section, {})
+            continue
+        key, separator, value = line.partition("=")
+        if not separator or not section:
+            raise ValueError(f"invalid systemd directive: {line}")
+        if key == "ExecStart":
+            value = value.replace("$$", "$").replace("%%", "%")
+            parsed: object = shlex.split(value)
+        elif key == "Environment":
+            words = shlex.split(value.replace("%%", "%"))
+            if len(words) != 1:
+                raise ValueError(f"invalid systemd environment assignment: {line}")
+            parsed = words[0]
+        elif key == "WantedBy":
+            parsed = value.split()
+        else:
+            parsed = value
+        unit[section].setdefault(key, []).append(parsed)
+    return unit
 
 
 class QuarterdeckTests(unittest.TestCase):
@@ -1023,7 +1054,7 @@ BULLET_BACKLOG = """# Backlog
 
 ## Queued
 
-- [ ] kelp-survey - Kelp survey: map the invented reef data/kelp-survey/report.md blocked-by: harbor-chart (repo: reef-demo) (kind: ship) (since 2026-09-20) (hold: Waiting on the invented diver roster. Options: (a) survey now, (b) wait for spring. Recommendation: wait for spring (cheaper).) (hold-kind: captain)
+- [ ] kelp-survey - Kelp survey: map the invented reef data/kelp-survey/report.md blocked-by: harbor-chart (repo: reef-demo) (kind: ship) (since 2026-09-20) (held: yes) (hold: Waiting on the invented diver roster. Options: (a) survey now, (b) wait for spring. Recommendation: wait for spring (cheaper).) (hold-kind: captain)
 
   Filed 2026-09-20T08:00:00Z. The reef survey needs a choice (see data/kelp-survey/report.md).
 
@@ -1103,6 +1134,30 @@ class BearingsTests(unittest.TestCase):
             self.assertIn(f'href="{PIER_PR}">{PIER_PR}<', page)
             self.assertIn("harbor-chart — queued behind the chart", page)
             self.assertIn("Firstmate bearings snapshot", page)
+
+    def test_snapshot_secondmate_work_uses_registered_home_label(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            home = self.make_home(root)
+            child_home = root / "kestrel-home"
+            (child_home / "data").mkdir(parents=True)
+            (child_home / "data" / "backlog.md").write_text("# Secondmate backlog\n", encoding="utf-8")
+            (home / "data" / "secondmates.md").write_text(
+                f"- kestrel - Maintains the field guide (home: {child_home}; scope: Field guide)\n",
+                encoding="utf-8",
+            )
+            snapshots = self.snapshots(home)
+            child = next(child for child in snapshots[0].children if child.spec.route_id == "kestrel")
+            payload = {
+                **SNAPSHOT_JSON,
+                "in_flight": [{"id": "kestrel/kestrel-work", "name": "Willow Quay field guide",
+                               "repo": None, "state": "working", "doing": "mapping"}],
+            }
+            bearings = quarterdeck.build_bearings(
+                snapshots, runner=lambda _home, _data_dir: (payload, ""))
+            task = next(item for item in bearings.underway if item.item_id == "kestrel/kestrel-work")
+            self.assertEqual(task.title, "Willow Quay field guide")
+            self.assertEqual(task.owner, child.spec.label)
 
     def test_snapshot_script_receives_fm_home_and_json_flag(self) -> None:
         with tempfile.TemporaryDirectory() as temp:
@@ -1226,6 +1281,53 @@ class BearingsTests(unittest.TestCase):
             self.assertTrue({"running-task", "progress-task"}.issubset({item.item_id for item in bearings.underway}))
             self.assertIn("finished-task", [item.item_id for item in bearings.landed])
 
+    def test_bullet_fallback_requires_an_affirmative_hold_marker(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            home = self.make_home(Path(temp))
+            backlog = home / "data" / "backlog.md"
+            backlog.write_text(backlog.read_text(encoding="utf-8") + """
+
+## Hold markers
+- [ ] released-hold - A released sample (held: no) (hold: stale reason) (hold-kind: captain)
+- [ ] missing-hold - A queued sample (hold: -) (hold-kind: captain)
+- [ ] current-hold - A current sample (held: yes) (hold: choose a route) (hold-kind: captain)
+""", encoding="utf-8")
+            bearings = quarterdeck.build_bearings(self.snapshots(home))
+            self.assertEqual(
+                {item.item_id for item in bearings.call},
+                {"kelp-survey", "current-hold"},
+            )
+            self.assertTrue({"released-hold", "missing-hold"}.issubset(
+                {item.item_id for item in bearings.charted}
+            ))
+
+    def test_merged_state_and_date_are_done_in_bullet_and_table_records(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            home = self.make_home(Path(temp))
+            backlog = home / "data" / "backlog.md"
+            backlog.write_text(backlog.read_text(encoding="utf-8") + """
+
+## Merged bullets
+- [ ] merged-state-bullet - Merged from state (state: merged)
+- [ ] merged-date-bullet - Merged by date (state: working) (merged: 2026-10-02)
+
+## Merged table
+| ID | Task | State | Merged |
+| --- | --- | --- | --- |
+| merged-state-table | Merged table state | merged | - |
+| merged-date-table | Merged table date | working | 2026-10-03 |
+""", encoding="utf-8")
+            snapshot = self.snapshots(home)[0]
+            bearings = quarterdeck.build_bearings([snapshot], use_snapshot=False)
+            landed = {item.item_id: item for item in bearings.landed}
+            for item_id in (
+                "merged-state-bullet", "merged-date-bullet", "merged-state-table", "merged-date-table",
+            ):
+                self.assertIn(item_id, landed)
+                self.assertNotIn(item_id, {item.item_id for item in bearings.charted})
+            self.assertEqual(landed["merged-date-bullet"].filed, "2026-10-02")
+            self.assertEqual(landed["merged-date-table"].filed, "2026-10-03")
+
     def test_no_snapshot_option_skips_the_script(self) -> None:
         with tempfile.TemporaryDirectory() as temp:
             marker = Path(temp) / "ran"
@@ -1260,10 +1362,10 @@ class ServeTests(unittest.TestCase):
         self.addCleanup(lambda: (server.shutdown(), server.server_close()))
         return server.server_address[1]
 
-    def fetch(self, port: int, path: str, method: str = "GET"):
+    def fetch(self, port: int, path: str, method: str = "GET", headers: dict[str, str] | None = None):
         import http.client
         connection = http.client.HTTPConnection("127.0.0.1", port, timeout=10)
-        connection.request(method, path)
+        connection.request(method, path, headers=headers or {})
         response = connection.getresponse()
         body = response.read().decode("utf-8")
         connection.close()
@@ -1347,36 +1449,46 @@ class ServeTests(unittest.TestCase):
             self.assertEqual(status, 500)
             self.assertIn("broken home", body)
 
+    def test_loopback_server_rejects_nonlocal_host_on_all_pages(self) -> None:
+        cache = quarterdeck.SiteCache(
+            lambda: {"index.html": "private index", "report-secret.html": "private report"}, 30)
+        port = self.start(cache)
+        self.assertEqual(self.fetch(port, "/")[0], 200)
+        for host in ("localhost", "localhost.", "127.0.0.1", "[::1]"):
+            self.assertEqual(self.fetch(port, "/", headers={"Host": f"{host}:{port}"})[0], 200)
+        for path in ("/", "/report-secret.html"):
+            status, _headers, body = self.fetch(
+                port, path, headers={"Host": f"attacker.example:{port}"})
+            self.assertEqual(status, 403)
+            self.assertNotIn("private", body)
+
     def test_serve_defaults_to_loopback_and_service_unit_runs_serve(self) -> None:
-        import shlex
         with tempfile.TemporaryDirectory() as temp, patch.dict(os.environ, {"XDG_CONFIG_HOME": temp}, clear=True):
             parser = quarterdeck.make_parser()
             args = parser.parse_args(["serve"])
             self.assertEqual(args.port, 8765)
             self.assertEqual(quarterdeck.bind_hosts(args), ["127.0.0.1"])
             unit = quarterdeck.service_unit(parser.parse_args(["service", "--port", "9100"]))
-            command = shlex.split(next(line.removeprefix("ExecStart=") for line in unit.splitlines()
-                                       if line.startswith("ExecStart=")))
+            directives = parse_systemd_unit(unit)
+            command = directives["Service"]["ExecStart"][0]
             self.assertEqual(command[-4:], ["--host", "127.0.0.1", "--port", "9100"])
             multi = quarterdeck.service_unit(parser.parse_args(
                 ["service", "--host", "127.0.0.1", "--host", "::1"]))
-            command = shlex.split(next(line.removeprefix("ExecStart=") for line in multi.splitlines()
-                                       if line.startswith("ExecStart=")))
+            command = parse_systemd_unit(multi)["Service"]["ExecStart"][0]
             self.assertEqual(command[-6:], ["--host", "127.0.0.1", "--host", "::1", "--port", "8765"])
-            self.assertIn("WantedBy=default.target", unit)
+            self.assertEqual(directives["Install"]["WantedBy"][0], ["default.target"])
 
     def test_service_unit_preserves_effective_home_and_custom_config(self) -> None:
-        import shlex
         with tempfile.TemporaryDirectory() as temp:
             root = Path(temp)
-            config_home = root / "shell-config"
-            config_home.mkdir()
+            config_home = root / "${CONFIG}" / "shell-config"
+            config_home.mkdir(parents=True)
             home = root / "selected-home"
-            alternate_home = root / "shell-home"
+            alternate_home = root / "${USER}" / "shell-home"
             config_path = config_home / "quarterdeck.json"
             config_path.write_text(json.dumps({"homes": [{"path": str(home)}]}), encoding="utf-8")
-            data_override = root / "shell-data"
-            state_home = root / "shell-state"
+            data_override = root / "${DATA}" / "shell-data"
+            state_home = root / "${STATE}" / "shell-state"
             env = {
                 "XDG_CONFIG_HOME": str(config_home),
                 "FM_HOME": str(alternate_home),
@@ -1386,10 +1498,9 @@ class ServeTests(unittest.TestCase):
             with patch.dict(os.environ, env):
                 parser = quarterdeck.make_parser()
                 unit = quarterdeck.service_unit(parser.parse_args(["service"]))
-                command = shlex.split(next(line.removeprefix("ExecStart=") for line in unit.splitlines()
-                                           if line.startswith("ExecStart=")))
-                unit_environment = [shlex.split(line.split("=", 1)[1])[0] for line in unit.splitlines()
-                                    if line.startswith("Environment=")]
+                directives = parse_systemd_unit(unit)
+                command = directives["Service"]["ExecStart"][0]
+                unit_environment = directives["Service"]["Environment"]
                 self.assertIn(["--config", str(config_path.resolve())], [command[index:index + 2]
                               for index in range(len(command) - 1)])
                 self.assertNotIn(str(alternate_home.resolve()), command)
@@ -1397,17 +1508,33 @@ class ServeTests(unittest.TestCase):
                 self.assertIn(f"XDG_STATE_HOME={state_home.resolve()}", unit_environment)
 
                 config_path.write_text(json.dumps({"page_title": "Selected"}), encoding="utf-8")
-                unit = quarterdeck.service_unit(parser.parse_args(["service"]))
-                command = shlex.split(next(line.removeprefix("ExecStart=") for line in unit.splitlines()
-                                           if line.startswith("ExecStart=")))
-                unit_environment = [shlex.split(line.split("=", 1)[1])[0] for line in unit.splitlines()
-                                    if line.startswith("Environment=")]
+                with patch.object(quarterdeck.sys, "executable", str(root / "python${PYTHON}")):
+                    unit = quarterdeck.service_unit(parser.parse_args(["service"]))
+                directives = parse_systemd_unit(unit)
+                command = directives["Service"]["ExecStart"][0]
+                unit_environment = directives["Service"]["Environment"]
                 self.assertIn(["--home", str(alternate_home.resolve())], [command[index:index + 2]
                               for index in range(len(command) - 1)])
+                self.assertEqual(command[0], str(root / "python${PYTHON}"))
                 self.assertIn(["--config", str(config_path.resolve())], [command[index:index + 2]
                               for index in range(len(command) - 1)])
                 self.assertIn(f"FM_DATA_OVERRIDE={data_override.resolve()}", unit_environment)
                 self.assertIn(f"XDG_STATE_HOME={state_home.resolve()}", unit_environment)
+
+    def test_service_reports_config_errors_without_tracebacks(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            config_path = Path(temp) / "quarterdeck.json"
+            config_path.write_text('{"unsupported": true}', encoding="utf-8")
+            for write in (False, True):
+                args = ["service", "--config", str(config_path)]
+                if write:
+                    args.append("--write")
+                stderr = io.StringIO()
+                with redirect_stderr(stderr), redirect_stdout(io.StringIO()):
+                    result = quarterdeck.main(args)
+                self.assertEqual(result, 2)
+                self.assertIn("unsupported config key", stderr.getvalue())
+                self.assertNotIn("Traceback", stderr.getvalue())
 
     def test_server_options_reject_removed_aliases_and_invalid_ports(self) -> None:
         parser = quarterdeck.make_parser()
@@ -1446,7 +1573,10 @@ class ServeTests(unittest.TestCase):
                 code = quarterdeck.main(["service", "--write"])
             self.assertEqual(code, 0)
             unit = Path(temp) / "config" / "systemd" / "user" / "quarterdeck.service"
-            self.assertIn("ExecStart=", unit.read_text(encoding="utf-8"))
+            directives = parse_systemd_unit(unit.read_text(encoding="utf-8"))
+            self.assertEqual(len(directives["Service"]["ExecStart"]), 1)
+            self.assertEqual(directives["Service"]["ExecStart"][0][2], "serve")
+            self.assertEqual(directives["Install"]["WantedBy"][0], ["default.target"])
 
 
 class PrivacyGuardTests(unittest.TestCase):

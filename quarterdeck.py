@@ -39,7 +39,7 @@ ROUTE_HOST_RE = re.compile(r"(?:^|;\s*)host:\s*([^;]+)", re.I)
 MARKDOWN_LINK_RE = re.compile(r"\[([^\]]+)\]\(([^)]+)\)")
 FIELD_RE = re.compile(
     r"(?i)(captain_actionable|held|hold_bucket|hold_kind|hold_reason|hold_until|"
-    r"hold_set|state|status|closed|review_ready|pr_url|pr|report|report_path|"
+    r"hold_set|state|status|closed|merged|review_ready|pr_url|pr|report|report_path|"
     r"blocked|blocked_by|block_reason|blocked_reason|waiting_on|waiting_for|source_path|"
     r"recommendation)\s*[:=]\s*(.+?)(?=\s+(?:[a-z_]+)\s*[:=]|$)"
 )
@@ -311,7 +311,8 @@ def field_is_set(value: str) -> bool:
 
 def is_closed_state(state: str) -> bool:
     return normalized_state(state) in {
-        "done", "closed", "finished", "resolved", "complete", "completed", "archived", "cancelled", "canceled"
+        "done", "closed", "finished", "resolved", "complete", "completed", "archived", "cancelled", "canceled",
+        "merged",
     }
 
 
@@ -331,7 +332,7 @@ def valid_pr_url(value: str) -> bool:
 
 
 def is_closed(record: Record) -> bool:
-    if field_is_set(value_for(record.fields, "closed")):
+    if any(field_is_set(value_for(record.fields, name)) for name in ("closed", "merged")):
         return True
     return is_closed_state(state_for(record))
 
@@ -1184,7 +1185,7 @@ def build_html(
 SNAPSHOT_SCRIPT = Path("bin") / "fm-bearings-snapshot.sh"
 SNAPSHOT_TIMEOUT_SECONDS = 15
 ITEM_ATTRIBUTE_RE = re.compile(
-    r"\((?P<key>repo|kind|since|hold-kind|hold|merged|done|closed|until|hold-until|priority|pr|state|status|review_ready)(?::\s*|\s+)", re.I
+    r"\((?P<key>repo|kind|since|hold-kind|hold|held|merged|done|closed|until|hold-until|priority|pr|state|status|review_ready)(?::\s*|\s+)", re.I
 )
 BULLET_ITEM_RE = re.compile(r"^-\s+\[(?P<mark>[ xX])\]\s+(?P<id>[A-Za-z0-9][\w.-]*)\s+-\s+(?P<rest>.*)$")
 REPORT_PATH_RE = re.compile(r"\bdata/([\w.-]+)/report\.md\b")
@@ -1323,6 +1324,7 @@ def parse_bullet_item(header: re.Match[str], continuation: list[str], section: s
         header.group("mark") in "xX"
         or field_is_set(attrs.get("closed", ""))
         or field_is_set(attrs.get("done", ""))
+        or field_is_set(attrs.get("merged", ""))
         or is_closed_state(state)
     )
     if done:
@@ -1333,7 +1335,8 @@ def parse_bullet_item(header: re.Match[str], continuation: list[str], section: s
         state=state,
         attrs=attrs, body=body, raw=raw, done=done,
         hold_reason=markdown_text(attrs.get("hold", "")), hold_kind=hold_kind,
-        held="hold" in attrs or bool(hold_kind), blocked_by=blocked_by or attrs.get("blocked-by", ""),
+        held=attrs.get("held", "").strip().lower() in TRUE_VALUES,
+        blocked_by=blocked_by or attrs.get("blocked-by", ""),
         report_dir=report_dir, pr_url=pr_url,
         review_ready=(not done and valid_pr_url(pr_url) and is_review_ready_state(attrs.get("review_ready", ""), state)),
     )
@@ -1371,10 +1374,12 @@ def backlog_items(source: str, snapshot: HomeSnapshot) -> list[BacklogItem]:
             continue
         state = state_for(record)
         review_flag = is_review_ready(record)
+        merged_date = value_for(record.fields, "merged")
         item = BacklogItem(
             id=identifier, title=record.title, section=record.section, state=state,
             body=record.text if record.text != record.title else "", raw=record.text,
             done=is_closed(record),
+            attrs={"merged": merged_date} if merged_date else {},
             hold_reason=_blank(value_for(record.fields, "hold_reason")),
             hold_kind=normalized_state(_blank(value_for(record.fields, "hold_kind"))),
             held=value_for(record.fields, "held").lower() in TRUE_VALUES,
@@ -1570,6 +1575,13 @@ class BearingsBuilder:
             item.title, f"{snapshot.spec.label} · backlog item {item.id}", item.raw or item.title
         )
 
+    def in_flight_owner(self, snapshot: HomeSnapshot, item_id: str) -> str:
+        route_id, separator, _ = item_id.partition("/")
+        if not separator:
+            return snapshot.spec.label
+        child = next((child for child in snapshot.children if child.spec.route_id == route_id), None)
+        return child.spec.label if child else route_id
+
     # -- snapshot path --
     def from_snapshot(self, snapshot: HomeSnapshot, data: dict[str, object]) -> None:
         label = snapshot.spec.label
@@ -1605,8 +1617,9 @@ class BearingsBuilder:
                 )
             self.result.landed.append(bitem)
         for row in _rows(data, "in_flight"):
+            item_id = _text(row.get("id"))
             self.result.underway.append(BItem(
-                title=_text(row.get("name")) or _text(row.get("id")), owner=label, item_id=_text(row.get("id")),
+                title=_text(row.get("name")) or item_id, owner=self.in_flight_owner(snapshot, item_id), item_id=item_id,
                 project=_blank(_text(row.get("repo"))), status=_text(row.get("state")),
                 detail=_blank(_text(row.get("doing"))),
             ))
@@ -2036,6 +2049,11 @@ def make_handler(cache: SiteCache) -> type[BaseHTTPRequestHandler]:
             self.wfile.write(data)
 
         def do_GET(self) -> None:  # noqa: N802 - http.server naming
+            if is_loopback(str(self.server.server_address[0])) and not request_host_is_loopback(
+                self.headers.get("Host")
+            ):
+                self.send_text(403, "Host is not allowed\n")
+                return
             path = unquote(urlparse(self.path).path)
             name = "index.html" if path in {"/", "/index.html"} else path.lstrip("/")
             if "/" in name or not name.endswith(".html"):
@@ -2069,7 +2087,29 @@ def is_loopback(host: str) -> bool:
     if host == "localhost":
         return True
     try:
-        return ipaddress.ip_address(host).is_loopback
+        address = ipaddress.ip_address(host)
+        return address.is_loopback or bool(address.ipv4_mapped and address.ipv4_mapped.is_loopback)
+    except ValueError:
+        return False
+
+
+def request_host_is_loopback(value: str | None) -> bool:
+    if not value:
+        return False
+    try:
+        parsed = urlparse("//" + value.strip())
+        if parsed.username or parsed.password or parsed.path or parsed.query or parsed.fragment:
+            return False
+        port = parsed.port
+        if port is not None and not 1 <= port <= 65535:
+            return False
+        host = parsed.hostname
+        if not host:
+            return False
+        if host.rstrip(".").lower() == "localhost":
+            return True
+        address = ipaddress.ip_address(host)
+        return address.is_loopback or bool(address.ipv4_mapped and address.ipv4_mapped.is_loopback)
     except ValueError:
         return False
 
@@ -2127,7 +2167,9 @@ def serve(args: argparse.Namespace) -> int:
     return 0
 
 
-def systemd_quote(value: str) -> str:
+def systemd_quote(value: str, *, literal_dollars: bool = False) -> str:
+    if literal_dollars:
+        value = value.replace("$", "$$")
     return '"' + value.replace("\\", "\\\\").replace('"', '\\"').replace("%", "%%") + '"'
 
 
@@ -2145,7 +2187,7 @@ def service_unit(args: argparse.Namespace) -> str:
         command += ["--home", str(Path(os.environ["FM_HOME"]).expanduser().resolve())]
     if args.config or config_path.is_file():
         command += ["--config", str(config_path)]
-    exec_start = " ".join(systemd_quote(part) for part in command)
+    exec_start = " ".join(systemd_quote(part, literal_dollars=True) for part in command)
     environment = []
     if single_home and os.environ.get("FM_DATA_OVERRIDE"):
         data_override = Path(os.environ["FM_DATA_OVERRIDE"]).expanduser().resolve()
@@ -2164,11 +2206,11 @@ def service_unit(args: argparse.Namespace) -> str:
 
 
 def service(args: argparse.Namespace) -> int:
-    unit = service_unit(args)
-    if not args.write:
-        sys.stdout.write(unit)
-        return 0
     try:
+        unit = service_unit(args)
+        if not args.write:
+            sys.stdout.write(unit)
+            return 0
         config_home = Path(os.environ.get("XDG_CONFIG_HOME") or "~/.config").expanduser()
         unresolved_unit_path = config_home / "systemd" / "user" / "quarterdeck.service"
         if unresolved_unit_path.is_symlink():
