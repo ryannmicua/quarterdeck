@@ -2140,7 +2140,8 @@ def is_loopback(host: str) -> bool:
         return True
     try:
         address = ipaddress.ip_address(host)
-        return address.is_loopback or bool(address.ipv4_mapped and address.ipv4_mapped.is_loopback)
+        mapped_address = getattr(address, "ipv4_mapped", None)
+        return address.is_loopback or bool(mapped_address and mapped_address.is_loopback)
     except ValueError:
         return False
 
@@ -2161,7 +2162,8 @@ def request_host_is_loopback(value: str | None) -> bool:
         if host.rstrip(".").lower() == "localhost":
             return True
         address = ipaddress.ip_address(host)
-        return address.is_loopback or bool(address.ipv4_mapped and address.ipv4_mapped.is_loopback)
+        mapped_address = getattr(address, "ipv4_mapped", None)
+        return address.is_loopback or bool(mapped_address and mapped_address.is_loopback)
     except ValueError:
         return False
 

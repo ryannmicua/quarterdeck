@@ -1571,6 +1571,10 @@ class ServeTests(unittest.TestCase):
         self.assertEqual(ipv6.address_family, socket.AF_INET6)
         self.assertEqual(ipv4.address_family, socket.AF_INET)
 
+    def test_ipv4_wildcard_classification_does_not_require_ipv6_mapping(self) -> None:
+        self.assertFalse(quarterdeck.is_loopback("0.0.0.0"))
+        self.assertFalse(quarterdeck.request_host_is_loopback("0.0.0.0"))
+
     def test_server_reports_render_failure_without_crashing(self) -> None:
         with tempfile.TemporaryDirectory() as temp:
             cache = quarterdeck.SiteCache(lambda: (_ for _ in ()).throw(ValueError("broken home")), 30)
