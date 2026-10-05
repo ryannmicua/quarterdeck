@@ -40,8 +40,8 @@ selected home. Its default location is under
 custom output outside the repo and selected homes, and keep real config outside
 the repo as well. Quarterdeck refuses output inside its checkout or a selected
 home. The page uses inline CSS and makes no network requests. `serve` is an
-optional HTTP process that can run under the systemd user unit; Quarterdeck uses
-no model tokens and has no write-back path into a Firstmate home.
+optional HTTP process that can run under the systemd user unit; Quarterdeck has
+no write-back path into a Firstmate home.
 
 Quarterdeck writes readable HTML copies of linked reports, reports needing
 review, and the backlog beside the main page; the dependency-free Markdown

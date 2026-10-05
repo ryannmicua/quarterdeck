@@ -31,7 +31,7 @@ To refresh the combined view, use the config file:
 
 ## systemd timer example
 
-Create a user service at `~/.config/systemd/user/quarterdeck.service`:
+Create a user service at `~/.config/systemd/user/quarterdeck-render.service`:
 
 ```ini
 [Unit]
@@ -42,7 +42,7 @@ Type=oneshot
 ExecStart=%h/.local/bin/quarterdeck render --home /path/to/firstmate
 ```
 
-Then create `~/.config/systemd/user/quarterdeck.timer`:
+Then create `~/.config/systemd/user/quarterdeck-render.timer`:
 
 ```ini
 [Unit]
@@ -61,5 +61,5 @@ Enable it for the user:
 
 ```sh
 systemctl --user daemon-reload
-systemctl --user enable --now quarterdeck.timer
+systemctl --user enable --now quarterdeck-render.timer
 ```

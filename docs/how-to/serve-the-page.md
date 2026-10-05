@@ -21,7 +21,9 @@ pages are cached for 30 seconds so rapid reloads stay cheap.
 | --- | --- | --- |
 | `--host ADDRESS` | `127.0.0.1` only | Address to bind. Repeat it to listen on several addresses, all on the same port. |
 | `--port N` | `8765` | Port from 1 through 65535. |
-| `--home PATH`, `--config FILE` | configured homes | Same home selection as `render`. |
+| `--home PATH` | unset | Select one home, overriding configured homes and `FM_HOME`. |
+| `--config FILE` | private user config, if present | Select homes with the same rules as `render`. |
+| `--title TEXT` | configured title | Override the page title. |
 | `--no-snapshot` | off | Skip the Firstmate snapshot script and always parse backlogs. |
 
 The server only answers `GET` for the main page and the generated report,
@@ -33,13 +35,14 @@ secondmate ledgers through its own routes; `--no-snapshot` skips that behavior.
 
 When a home has an executable `bin/fm-bearings-snapshot.sh`, Quarterdeck runs it
 with `--json` and `FM_HOME` set, under a 15-second timeout, so the page and
-`/bearings` agree. The page then fills in each Captain's Call item from the
-home's backlog: the full hold reason and task body, options and recommendation
-where the text gives them, when it was filed and how long it has waited, the
-project, and a link to its report page. If the script is missing, fails or times
-out, Quarterdeck parses the backlog itself and the page's "Sources" line says
-the fallback was used and why. That script may refresh Firstmate's own cache as
-part of its normal operation; pass `--no-snapshot` to avoid running it.
+`/bearings` agree. For decisions with a matching local backlog item, the page
+adds hold context, task body, options and recommendation where present, filing
+date, project, and a report link. Remote decisions retain the snapshot summary
+and point to the secondmate home for full background. If the script is
+missing, fails or times out, Quarterdeck parses the backlog itself and the
+page's "Sources" line says the fallback was used and why. That script may
+refresh Firstmate's own cache as part of its normal operation; pass
+`--no-snapshot` to avoid running it.
 
 ## Run it in the background with systemd
 
@@ -47,7 +50,7 @@ Print a user unit, or write it:
 
 ```sh
 quarterdeck service            # print the unit
-quarterdeck service --write    # write ~/.config/systemd/user/quarterdeck.service
+quarterdeck service --write    # write ${XDG_CONFIG_HOME:-~/.config}/systemd/user/quarterdeck.service
 systemctl --user daemon-reload
 systemctl --user enable --now quarterdeck.service
 ```
