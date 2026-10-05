@@ -1278,6 +1278,7 @@ class Bearings:
     underway: list[BItem] = field(default_factory=list)
     charted: list[BItem] = field(default_factory=list)
     sources: list[HomeSource] = field(default_factory=list)
+    omissions: list[tuple[str, str, str]] = field(default_factory=list)
     reports: list[tuple[HomeSnapshot, Report]] = field(default_factory=list)
     generated: datetime = field(default_factory=lambda: datetime.now(timezone.utc))
     item_pages: dict[str, str] = field(default_factory=dict)
@@ -1522,6 +1523,15 @@ def run_bearings_snapshot(
                     return None, f"the snapshot {name} row {index + 1} has no key or id"
             elif not row.get("id", "").strip():
                 return None, f"the snapshot {name} row {index + 1} has no id"
+    omissions = data.get("omitted", [])
+    if not isinstance(omissions, list):
+        return None, "the snapshot field omitted is not an array"
+    for index, omission in enumerate(omissions):
+        if not isinstance(omission, dict):
+            return None, f"the snapshot omitted row {index + 1} is not an object"
+        if not all(isinstance(omission.get(field_name), str) and omission[field_name].strip()
+                   for field_name in ("surface", "reveal")):
+            return None, f"the snapshot omitted row {index + 1} has invalid details"
     return data, ""
 
 
@@ -1561,6 +1571,12 @@ class BearingsBuilder:
             setattr(target, "_items", items)
         return target, items.get(item_id)
 
+    def home_label(self, snapshot: HomeSnapshot, owner: str) -> str:
+        if not owner or owner == "(main)":
+            return snapshot.spec.label
+        child = next((child for child in snapshot.children if child.spec.route_id == owner), None)
+        return child.spec.label if child else owner
+
     def decorate(self, bitem: BItem, snapshot: HomeSnapshot, item: BacklogItem | None) -> None:
         if item is None:
             return
@@ -1587,24 +1603,24 @@ class BearingsBuilder:
 
     def in_flight_owner(self, snapshot: HomeSnapshot, item_id: str) -> str:
         route_id, separator, _ = item_id.partition("/")
-        if not separator:
-            return snapshot.spec.label
-        child = next((child for child in snapshot.children if child.spec.route_id == route_id), None)
-        return child.spec.label if child else route_id
+        return self.home_label(snapshot, route_id if separator else "(main)")
 
     # -- snapshot path --
     def from_snapshot(self, snapshot: HomeSnapshot, data: dict[str, object]) -> None:
-        label = snapshot.spec.label
         for row in _rows(data, "decisions_open"):
             owner = _text(row.get("owner"))
             key = _text(row.get("key")) or _text(row.get("id"))
             target, item = self.lookup(snapshot, owner, key)
             if item and is_cancelled_state(item.state):
                 continue
-            bitem = BItem(title=_text(row.get("summary")) or key, owner=owner if owner != "(main)" else label,
+            summary = _text(row.get("summary")) or key
+            bitem = BItem(title=summary, owner=self.home_label(snapshot, owner),
                           item_id=key, status=_text(row.get("verb")))
             if item is None:
-                bitem.detail = _text(row.get("summary"))
+                bitem.detail = (
+                    f"Full background lives in the secondmate home: {self.home_label(snapshot, owner)}."
+                    if owner and owner != "(main)" else summary
+                )
             self.decorate(bitem, target, item)
             self.result.call.append(bitem)
         for row in _rows(data, "landed"):
@@ -1614,7 +1630,7 @@ class BearingsBuilder:
             target, item = self.lookup(snapshot, owner, item_id)
             if item and is_cancelled_state(item.state):
                 continue
-            bitem = BItem(title=_text(row.get("what")) or item_id, owner=owner if owner != "(main)" else label,
+            bitem = BItem(title=_text(row.get("what")) or item_id, owner=self.home_label(snapshot, owner),
                           item_id=item_id, artifact=artifact)
             match = PR_URL_RE.search(artifact)
             if match:
@@ -1642,11 +1658,15 @@ class BearingsBuilder:
                 detail=_blank(_text(row.get("doing"))),
             ))
         for row in _rows(data, "secondmates"):
+            state = normalized_state(_text(row.get("state")))
+            if state in {"active_child_work", "captain_decision", "no_active_work"}:
+                continue
             doing = _blank(_text(row.get("doing")))
             reason = _blank(_text(row.get("reason")))
-            self.result.underway.append(BItem(
-                title=f"Secondmate {_text(row.get('id'))}", owner=label, item_id=_text(row.get("id")),
-                status=_text(row.get("state")), detail=" — ".join(part for part in (doing, reason) if part),
+            self.result.charted.append(BItem(
+                title=f"Secondmate {_text(row.get('id'))}", owner=self.home_label(snapshot, _text(row.get("id"))),
+                item_id=_text(row.get("id")), status=state or "unknown",
+                waits_on=" — ".join(part for part in (doing, reason) if part) or "status unavailable",
             ))
         for row in _rows(data, "gates"):
             owner = _text(row.get("owner"))
@@ -1655,7 +1675,7 @@ class BearingsBuilder:
             if item and is_cancelled_state(item.state):
                 continue
             waits = " — ".join(part for part in (_blank(_text(row.get("blocked_by"))), _blank(_text(row.get("reason")))) if part)
-            bitem = BItem(title=_text(row.get("title")) or item_id, owner=owner if owner != "(main)" else label,
+            bitem = BItem(title=_text(row.get("title")) or item_id, owner=self.home_label(snapshot, owner),
                           item_id=item_id, filed=_text(row.get("filed")), waits_on=waits or "queue order")
             self.decorate(bitem, target, item)
             if item and not bitem.waits_on:
@@ -1700,6 +1720,10 @@ class BearingsBuilder:
                 reason = "home could not be read"
             if data is not None:
                 self.result.sources.append(HomeSource(snapshot.spec.label, "snapshot"))
+                self.result.omissions.extend(
+                    (snapshot.spec.label, _text(row.get("surface")), _text(row.get("reveal")))
+                    for row in _rows(data, "omitted")
+                )
                 self.from_snapshot(snapshot, data)
             else:
                 self.result.sources.append(HomeSource(snapshot.spec.label, "fallback", reason))
@@ -1822,6 +1846,12 @@ def bearings_html(bearings: Bearings) -> str:
         else:
             notes.append(f"{html.escape(source.label)}: <strong>fallback</strong> — parsed from the backlog ({html.escape(source.reason)})")
     out.append('<p class="source-note">Sources — ' + "; ".join(notes) + ".</p>")
+    if bearings.omissions:
+        omitted_notes = "; ".join(
+            f"{html.escape(home)}: {html.escape(surface)} ({html.escape(reveal)})"
+            for home, surface, reveal in bearings.omissions
+        )
+        out.append('<p class="source-note"><strong>Snapshot omissions</strong> — ' + omitted_notes + ".</p>")
     return "".join(out)
 
 

@@ -1073,7 +1073,7 @@ SNAPSHOT_JSON = {
     "generated": "2026-10-04T00:00:00Z",
     "in_flight": [{"id": "harbor-chart", "kind": "ship", "state": "working", "repo": "harbor-demo",
                    "name": "Harbor chart", "doing": "drawing tides"}],
-    "secondmates": [{"id": "kestrel", "state": "working", "doing": "mapping", "reason": "-"}],
+    "secondmates": [{"id": "kestrel", "state": "no_active_work", "doing": "mapping", "reason": "-"}],
     "decisions_open": [{"id": "kelp-survey", "key": "kelp-survey", "verb": "captain-hold",
                         "summary": "Kelp survey: map the invented reef (truncated sum", "owner": "(main)"}],
     "landed": [{"id": "pier-fix", "what": "Pier fix: patch the invented pier", "artifact":
@@ -1118,7 +1118,7 @@ class BearingsTests(unittest.TestCase):
             self.assertEqual(bearings.sources[0].mode, "snapshot")
             self.assertEqual([i.item_id for i in bearings.call], ["kelp-survey"])
             self.assertEqual([i.item_id for i in bearings.landed], ["pier-fix"])
-            self.assertEqual([i.title for i in bearings.underway], ["Harbor chart", "Secondmate kestrel"])
+            self.assertEqual([i.title for i in bearings.underway], ["Harbor chart"])
             self.assertEqual([i.item_id for i in bearings.charted], ["later-work"])
             page = quarterdeck.bearings_html(bearings)
             self.assert_four_sections(page)
@@ -1150,14 +1150,75 @@ class BearingsTests(unittest.TestCase):
             child = next(child for child in snapshots[0].children if child.spec.route_id == "kestrel")
             payload = {
                 **SNAPSHOT_JSON,
+                "decisions_open": [{"owner": "kestrel", "key": "remote-decision",
+                                    "summary": "Approve the field guide", "verb": "review"}],
+                "landed": [{"owner": "kestrel", "id": "remote-landed", "what": "Field guide update",
+                            "artifact": "-"}],
                 "in_flight": [{"id": "kestrel/kestrel-work", "name": "Willow Quay field guide",
                                "repo": None, "state": "working", "doing": "mapping"}],
+                "gates": [{"owner": "kestrel", "id": "remote-gate", "title": "Wait for the field guide",
+                           "filed": None, "blocked_by": "field guide", "reason": "review pending"}],
             }
+            calls = []
             bearings = quarterdeck.build_bearings(
-                snapshots, runner=lambda _home, _data_dir: (payload, ""))
+                snapshots, runner=lambda selected_home, _data_dir: (calls.append(selected_home) or payload, ""))
             task = next(item for item in bearings.underway if item.item_id == "kestrel/kestrel-work")
             self.assertEqual(task.title, "Willow Quay field guide")
             self.assertEqual(task.owner, child.spec.label)
+            self.assertEqual(bearings.call[0].owner, child.spec.label)
+            self.assertEqual(bearings.call[0].title, "Approve the field guide")
+            self.assertEqual(bearings.call[0].detail,
+                             f"Full background lives in the secondmate home: {child.spec.label}.")
+            self.assertEqual(bearings.landed[0].owner, child.spec.label)
+            self.assertEqual(bearings.charted[-1].owner, child.spec.label)
+            self.assertEqual(calls, [home])
+
+    def test_secondmate_summaries_do_not_duplicate_live_work(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            home = self.make_home(Path(temp))
+            payload = {
+                **SNAPSHOT_JSON,
+                "decisions_open": [*SNAPSHOT_JSON["decisions_open"],
+                                    {"owner": "decision-route", "key": "decision-route/task",
+                                     "summary": "Resolve the route decision", "verb": "review"}],
+                "in_flight": [*SNAPSHOT_JSON["in_flight"],
+                              {"id": "kestrel/kestrel-task", "name": "Live child task", "repo": None,
+                               "state": "working", "doing": "moving buoys"}],
+                "secondmates": [
+                    {"id": "kestrel", "state": "active_child_work", "doing": "moving buoys", "reason": ""},
+                    {"id": "held-route", "state": "externally_held", "doing": "waiting for access",
+                     "reason": "owner approval"},
+                    {"id": "unknown-route", "state": "unrecognized", "doing": "status unavailable",
+                     "reason": ""},
+                    {"id": "idle-route", "state": "no_active_work", "doing": "", "reason": ""},
+                    {"id": "decision-route", "state": "captain_decision", "doing": "one decision",
+                     "reason": ""},
+                ],
+            }
+            bearings = quarterdeck.build_bearings(
+                self.snapshots(home), runner=lambda _home, _data_dir: (payload, ""))
+            self.assertEqual([item.item_id for item in bearings.underway], ["harbor-chart", "kestrel/kestrel-task"])
+            self.assertCountEqual([item.item_id for item in bearings.charted],
+                                  ["later-work", "held-route", "unknown-route"])
+            self.assertEqual([item.item_id for item in bearings.call], ["kelp-survey", "decision-route/task"])
+            all_ids = [item.item_id for items in (bearings.call, bearings.landed, bearings.underway, bearings.charted)
+                       for item in items]
+            self.assertEqual(len(all_ids), len(set(all_ids)))
+
+    def test_snapshot_omissions_are_visible_in_the_page(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            home = self.make_home(Path(temp))
+            payload = {
+                **SNAPSHOT_JSON,
+                "omitted": [{"surface": "landed rows", "reveal": "run bearings with <all>"}],
+            }
+            bearings = quarterdeck.build_bearings(
+                self.snapshots(home), runner=lambda _home, _data_dir: (payload, ""))
+            page = quarterdeck.bearings_html(bearings)
+            self.assertIn("Snapshot omissions", page)
+            self.assertIn("invented", page)
+            self.assertIn("landed rows", page)
+            self.assertIn("run bearings with &lt;all&gt;", page)
 
     def test_snapshot_script_receives_fm_home_and_json_flag(self) -> None:
         with tempfile.TemporaryDirectory() as temp:
@@ -1251,6 +1312,7 @@ class BearingsTests(unittest.TestCase):
             ({**SNAPSHOT_JSON, "schema": "fm-bearings.future"}, "unrecognized schema"),
             ({key: value for key, value in SNAPSHOT_JSON.items() if key != "decisions_open"}, "decisions_open is not an array"),
             ({**SNAPSHOT_JSON, "in_flight": [{**SNAPSHOT_JSON["in_flight"][0], "repo": 3}]}, "invalid repo"),
+            ({**SNAPSHOT_JSON, "omitted": [{"surface": 3, "reveal": "run with --all"}]}, "invalid details"),
         ]
         for payload, expected in malformed:
             with self.subTest(expected=expected), tempfile.TemporaryDirectory() as temp:
