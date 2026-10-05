@@ -93,11 +93,11 @@ for how marks affect the dashboard.
 
 | `--no-snapshot` | Do not run a home's `bin/fm-bearings-snapshot.sh`; classify from the backlog only. |
 
-`serve` re-renders the page and its readable pages from the selected homes on
-each request, reusing a render for 30 seconds, and serves them with `GET` only
+`serve` re-renders the page and its readable pages at startup and on the first
+request after its 30-second cache expires. It serves them with `GET` only
 on each repeatable `--host` address (default `127.0.0.1` only) and `--port`
-(default 8765; `0` picks a free port). The served page reloads itself every 60
-seconds and shows its generated-at time. `service` prints a
+(default 8765; valid ports are 1 through 65535). The served page reloads itself
+every 60 seconds and shows its generated-at time. `service` prints a
 systemd user unit that runs `serve` with the given options, or with `--write`
 writes it to `${XDG_CONFIG_HOME:-~/.config}/systemd/user/quarterdeck.service`;
 it never runs `systemctl`. A non-loopback host exposes work data without a

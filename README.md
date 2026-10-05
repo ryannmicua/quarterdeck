@@ -27,8 +27,9 @@ network dependency.
   project, and a link to its report.
 - Uses Firstmate's own `bin/fm-bearings-snapshot.sh --json` when a home has it,
   and says so when it falls back to parsing the backlog.
-- `quarterdeck serve` re-renders from your homes on each request (30-second
-  cache), reloads itself about every 60 seconds, binds 127.0.0.1 by default,
+- `quarterdeck serve` builds at startup and rebuilds on the first request after
+  its 30-second cache expires. It reloads itself about every 60 seconds, binds
+  127.0.0.1 by default,
   and is GET-only. `quarterdeck service` writes a systemd user unit for it.
 - Primary review list for held items and recorded decisions.
 - Scout reports with an explicit recommendation when the report states one.
@@ -79,7 +80,7 @@ Firstmate runs the crew and stores its backlog and scout reports in a home.
 Quarterdeck reads those files and creates a convenient review surface alongside
 that workflow. It does not extend Firstmate or send answers back to it.
 Regeneration happens when `quarterdeck render` runs or `quarterdeck serve`
-receives a page request.
+receives its first page request after the 30-second cache expires.
 
 ## Privacy model
 
@@ -106,8 +107,9 @@ use invented data.
 
 ### Does Quarterdeck keep refreshing in the background?
 
-Yes, if you run `quarterdeck serve`: it re-renders from the homes on each page
-request and the open page reloads itself. `quarterdeck service` prints or writes
+Yes, if you run `quarterdeck serve`: the first page request after the 30-second
+cache expires re-renders from the homes, and the open page reloads itself.
+`quarterdeck service` prints or writes
 a systemd user unit to keep it running; see
 [serve the page](docs/how-to/serve-the-page.md). Without `serve`, run `render`
 whenever a fresh page is useful, or schedule it; see

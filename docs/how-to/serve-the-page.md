@@ -1,7 +1,8 @@
 # Serve the always-current bearings page
 
-`quarterdeck serve` runs a small local web server. Each page request re-reads
-your Firstmate homes, so the page shows the same four sections as Firstmate's
+`quarterdeck serve` runs a small local web server. It reads your Firstmate homes
+at startup and again on the first page request after its 30-second cache expires,
+so the page shows the same four sections as Firstmate's
 `/bearings` digest (Captain's Call, Recently Landed, Underway, Charted Next)
 plus the reports waiting on your review. It costs no tokens and needs no
 Firstmate session.
@@ -19,7 +20,7 @@ pages are cached for 30 seconds so rapid reloads stay cheap.
 | Option | Default | Meaning |
 | --- | --- | --- |
 | `--host ADDRESS` | `127.0.0.1` only | Address to bind. Repeat it to listen on several addresses, all on the same port. |
-| `--port N` | `8765` | Port; `0` picks a free one. |
+| `--port N` | `8765` | Port from 1 through 65535. |
 | `--home PATH`, `--config FILE` | configured homes | Same home selection as `render`. |
 | `--no-snapshot` | off | Skip the Firstmate snapshot script and always parse backlogs. |
 

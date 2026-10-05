@@ -1310,12 +1310,14 @@ class BearingsTests(unittest.TestCase):
 ## Merged bullets
 - [ ] merged-state-bullet - Merged from state (state: merged)
 - [ ] merged-date-bullet - Merged by date (state: working) (merged: 2026-10-02)
+- [ ] merged-none-bullet - Not merged (state: working) (merged: (none))
 
 ## Merged table
 | ID | Task | State | Merged |
 | --- | --- | --- | --- |
 | merged-state-table | Merged table state | merged | - |
 | merged-date-table | Merged table date | working | 2026-10-03 |
+| merged-none-table | Not merged table | working | (none) |
 """, encoding="utf-8")
             snapshot = self.snapshots(home)[0]
             bearings = quarterdeck.build_bearings([snapshot], use_snapshot=False)
@@ -1325,6 +1327,9 @@ class BearingsTests(unittest.TestCase):
             ):
                 self.assertIn(item_id, landed)
                 self.assertNotIn(item_id, {item.item_id for item in bearings.charted})
+            for item_id in ("merged-none-bullet", "merged-none-table"):
+                self.assertNotIn(item_id, landed)
+                self.assertIn(item_id, {item.item_id for item in bearings.underway})
             self.assertEqual(landed["merged-date-bullet"].filed, "2026-10-02")
             self.assertEqual(landed["merged-date-table"].filed, "2026-10-03")
 
@@ -1441,6 +1446,22 @@ class ServeTests(unittest.TestCase):
                         self.fail(f"not listening on {host}")
                     self.assertIn("Captain&#x27;s Call", body)
 
+    def test_ipv6_wildcard_and_ipv4_wildcard_can_share_a_port(self) -> None:
+        import socket
+        handler = quarterdeck.make_handler(quarterdeck.SiteCache(lambda: {"index.html": "ok"}))
+        try:
+            ipv6 = quarterdeck.make_server("::", 0, handler)
+        except OSError as exc:
+            self.skipTest(f"IPv6 wildcard binding is unavailable: {exc}")
+        self.addCleanup(ipv6.server_close)
+        try:
+            ipv4 = quarterdeck.make_server("0.0.0.0", ipv6.server_address[1], handler)
+        except OSError as exc:
+            self.fail(f"IPv4 wildcard could not share the IPv6 listener port: {exc}")
+        self.addCleanup(ipv4.server_close)
+        self.assertEqual(ipv6.address_family, socket.AF_INET6)
+        self.assertEqual(ipv4.address_family, socket.AF_INET)
+
     def test_server_reports_render_failure_without_crashing(self) -> None:
         with tempfile.TemporaryDirectory() as temp:
             cache = quarterdeck.SiteCache(lambda: (_ for _ in ()).throw(ValueError("broken home")), 30)
@@ -1543,13 +1564,31 @@ class ServeTests(unittest.TestCase):
         with redirect_stderr(io.StringIO()), self.assertRaises(SystemExit):
             parser.parse_args(["service", "--bind", "127.0.0.1"])
         for command in ("serve", "service"):
-            for value in ("-1", "65536", "nan"):
+            for value in ("-1", "0", "65536", "nan"):
                 with self.subTest(command=command, port=value), redirect_stderr(io.StringIO()), self.assertRaises(SystemExit):
                     parser.parse_args([command, "--port", value])
         with redirect_stderr(io.StringIO()), self.assertRaises(SystemExit):
             parser.parse_args(["serve", "--cache", "-1"])
         with redirect_stderr(io.StringIO()), self.assertRaises(SystemExit):
             parser.parse_args(["serve", "--refresh", "-1"])
+
+    def test_service_rejects_control_characters_in_serialized_values(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            config_home = str(Path(temp) / "config")
+            cases = [
+                (["service", "--host", "127.0.0.1\nRestart=no"], {}),
+                (["service", "--home", "/tmp/home\nRestart=no"], {}),
+                (["service", "--home", "/tmp/home"], {"FM_DATA_OVERRIDE": "/tmp/data\nRestart=no"}),
+                (["service", "--home", "/tmp/home"], {"XDG_STATE_HOME": "/tmp/state\nRestart=no"}),
+            ]
+            for args, environment in cases:
+                env = {"HOME": temp, "XDG_CONFIG_HOME": config_home, **environment}
+                with self.subTest(args=args, environment=environment), patch.dict(os.environ, env, clear=True), \
+                        redirect_stdout(io.StringIO()) as stdout, redirect_stderr(io.StringIO()) as stderr:
+                    result = quarterdeck.main(args)
+                self.assertEqual(result, 2)
+                self.assertEqual(stdout.getvalue(), "")
+                self.assertIn("cannot contain control characters", stderr.getvalue())
 
     def test_service_write_refuses_a_symlink_unit_path(self) -> None:
         with tempfile.TemporaryDirectory() as temp:

@@ -18,6 +18,7 @@ import sys
 import tempfile
 import threading
 import time
+import unicodedata
 import webbrowser
 from collections.abc import Callable, Iterator
 from contextlib import contextmanager
@@ -293,7 +294,7 @@ def parse_backlog(source: str, data_dir: Path, reports: list[Report]) -> list[Re
     return records
 
 
-FALSE_VALUES = {"", "-", "none", "null", "false", "no", "0", "off"}
+FALSE_VALUES = {"", "-", "none", "(none)", "null", "false", "no", "0", "off"}
 TRUE_VALUES = {"true", "yes", "1", "on"}
 
 
@@ -1995,8 +1996,8 @@ def port_number(value: str) -> int:
         port = int(value)
     except ValueError as exc:
         raise argparse.ArgumentTypeError("port must be an integer") from exc
-    if not 0 <= port <= 65535:
-        raise argparse.ArgumentTypeError("port must be between 0 and 65535")
+    if not 1 <= port <= 65535:
+        raise argparse.ArgumentTypeError("port must be between 1 and 65535")
     return port
 
 
@@ -2124,6 +2125,11 @@ def make_server(host: str, port: int, handler: type[BaseHTTPRequestHandler]) -> 
         address_family = socket.AF_INET6 if ":" in host else socket.AF_INET
         daemon_threads = True
 
+        def server_bind(self) -> None:
+            if self.address_family == socket.AF_INET6:
+                self.socket.setsockopt(socket.IPPROTO_IPV6, socket.IPV6_V6ONLY, 1)
+            super().server_bind()
+
     return Server((host, port), handler)
 
 
@@ -2136,7 +2142,7 @@ def serve(args: argparse.Namespace) -> int:
         port = args.port
         for host in bind_hosts(args):
             server = make_server(host, port, handler)
-            port = server.server_address[1]  # a port of 0 picks one; reuse it for every address
+            port = server.server_address[1]
             servers.append(server)
     except (OSError, ValueError) as exc:
         for server in servers:
@@ -2168,6 +2174,8 @@ def serve(args: argparse.Namespace) -> int:
 
 
 def systemd_quote(value: str, *, literal_dollars: bool = False) -> str:
+    if any(unicodedata.category(character) == "Cc" for character in value):
+        raise ValueError("systemd values cannot contain control characters")
     if literal_dollars:
         value = value.replace("$", "$$")
     return '"' + value.replace("\\", "\\\\").replace('"', '\\"').replace("%", "%%") + '"'
@@ -2581,7 +2589,7 @@ def render(args: argparse.Namespace) -> int:
 
 def add_serve_options(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--host", action="append", metavar="ADDRESS", help=f"address to bind; repeat to listen on several, all on the same port (default {DEFAULT_HOST} only; a non-loopback address exposes your work data without a login)")
-    parser.add_argument("--port", type=port_number, default=DEFAULT_PORT, help=f"port to listen on (default {DEFAULT_PORT}; 0 picks a free port)")
+    parser.add_argument("--port", type=port_number, default=DEFAULT_PORT, help=f"port to listen on (default {DEFAULT_PORT})")
     parser.add_argument("--home", help="serve this Firstmate home instead of configured homes or FM_HOME")
     parser.add_argument("--config", type=Path, help="optional JSON config file")
 
