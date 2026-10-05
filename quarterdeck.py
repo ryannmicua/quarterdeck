@@ -310,10 +310,13 @@ def field_is_set(value: str) -> bool:
     return value.strip().lower() not in FALSE_VALUES
 
 
+def is_cancelled_state(state: str) -> bool:
+    return normalized_state(state) in {"cancelled", "canceled"}
+
+
 def is_closed_state(state: str) -> bool:
     return normalized_state(state) in {
-        "done", "closed", "finished", "resolved", "complete", "completed", "archived", "cancelled", "canceled",
-        "merged",
+        "done", "closed", "finished", "resolved", "complete", "completed", "archived", "merged",
     }
 
 
@@ -333,6 +336,8 @@ def valid_pr_url(value: str) -> bool:
 
 
 def is_closed(record: Record) -> bool:
+    if is_cancelled_state(state_for(record)):
+        return False
     if any(field_is_set(value_for(record.fields, name)) for name in ("closed", "merged")):
         return True
     return is_closed_state(state_for(record))
@@ -386,7 +391,7 @@ def attention_groups(snapshot: HomeSnapshot, show_all: bool = False) -> dict[str
 
     def take(name: str, predicate: Callable[[Record], bool]) -> None:
         for record in snapshot.records:
-            if id(record) not in assigned and predicate(record):
+            if id(record) not in assigned and not is_cancelled_state(state_for(record)) and predicate(record):
                 groups[name].append(record)
                 assigned.add(id(record))
 
@@ -395,7 +400,10 @@ def attention_groups(snapshot: HomeSnapshot, show_all: bool = False) -> dict[str
     take("in_flight", is_in_flight)
     take("blocked", is_waiting_on_captain_or_external)
     if show_all:
-        groups["other"] = [record for record in snapshot.records if id(record) not in assigned]
+        groups["other"] = [
+            record for record in snapshot.records
+            if id(record) not in assigned and not is_cancelled_state(state_for(record))
+        ]
     return groups
 
 
@@ -409,7 +417,10 @@ def snapshot_counts(snapshot: HomeSnapshot, show_all: bool = False) -> tuple[int
 
 def hidden_summary(snapshot: HomeSnapshot, groups: dict[str, list[Record]]) -> str | None:
     visible = {id(record) for name in ("held", "reviews", "in_flight", "blocked") for record in groups[name]}
-    hidden = [record for record in snapshot.records if id(record) not in visible]
+    hidden = [
+        record for record in snapshot.records
+        if id(record) not in visible and not is_cancelled_state(state_for(record))
+    ]
     closed = sum(is_closed(record) for record in hidden)
     queued = sum(not is_closed(record) and state_for(record) == "queued" for record in hidden)
     other_blocked = sum(
@@ -1197,7 +1208,6 @@ RECOMMENDATION_RE = re.compile(r"(?is)\brecommend(?:ation|ed)?\s*:\s*(.+?)(?=\n\
 class BacklogItem:
     id: str
     title: str
-    section: str = ""
     state: str = ""
     attrs: dict[str, str] = field(default_factory=dict)
     body: str = ""
@@ -1252,7 +1262,6 @@ class BItem:
     waits_on: str = ""
     status: str = ""
     detail: str = ""
-    review: bool = False
 
 
 @dataclass
@@ -1321,7 +1330,7 @@ def parse_bullet_item(header: re.Match[str], continuation: list[str], section: s
         report_dir = report.group(1) if report else ""
     pr = PR_URL_RE.search(raw)
     state = normalized_state(attrs.get("state") or attrs.get("status") or section)
-    done = (
+    done = not is_cancelled_state(state) and (
         header.group("mark") in "xX"
         or field_is_set(attrs.get("closed", ""))
         or field_is_set(attrs.get("done", ""))
@@ -1332,7 +1341,7 @@ def parse_bullet_item(header: re.Match[str], continuation: list[str], section: s
         state = "done"
     pr_url = pr.group(0) if pr else ""
     return BacklogItem(
-        id=header.group("id"), title=title, section=section,
+        id=header.group("id"), title=title,
         state=state,
         attrs=attrs, body=body, raw=raw, done=done,
         hold_reason=markdown_text(attrs.get("hold", "")), hold_kind=hold_kind,
@@ -1377,7 +1386,7 @@ def backlog_items(source: str, snapshot: HomeSnapshot) -> list[BacklogItem]:
         review_flag = is_review_ready(record)
         merged_date = value_for(record.fields, "merged")
         item = BacklogItem(
-            id=identifier, title=record.title, section=record.section, state=state,
+            id=identifier, title=record.title, state=state,
             body=record.text if record.text != record.title else "", raw=record.text,
             done=is_closed(record),
             attrs={"merged": merged_date} if merged_date else {},
@@ -1590,6 +1599,8 @@ class BearingsBuilder:
             owner = _text(row.get("owner"))
             key = _text(row.get("key")) or _text(row.get("id"))
             target, item = self.lookup(snapshot, owner, key)
+            if item and is_cancelled_state(item.state):
+                continue
             bitem = BItem(title=_text(row.get("summary")) or key, owner=owner if owner != "(main)" else label,
                           item_id=key, status=_text(row.get("verb")))
             if item is None:
@@ -1601,6 +1612,8 @@ class BearingsBuilder:
             artifact = _blank(_text(row.get("artifact")))
             item_id = _text(row.get("id"))
             target, item = self.lookup(snapshot, owner, item_id)
+            if item and is_cancelled_state(item.state):
+                continue
             bitem = BItem(title=_text(row.get("what")) or item_id, owner=owner if owner != "(main)" else label,
                           item_id=item_id, artifact=artifact)
             match = PR_URL_RE.search(artifact)
@@ -1619,6 +1632,10 @@ class BearingsBuilder:
             self.result.landed.append(bitem)
         for row in _rows(data, "in_flight"):
             item_id = _text(row.get("id"))
+            owner = item_id.partition("/")[0] if "/" in item_id else "(main)"
+            _, item = self.lookup(snapshot, owner, item_id.split("/")[-1])
+            if is_cancelled_state(_text(row.get("state"))) or (item and is_cancelled_state(item.state)):
+                continue
             self.result.underway.append(BItem(
                 title=_text(row.get("name")) or item_id, owner=self.in_flight_owner(snapshot, item_id), item_id=item_id,
                 project=_blank(_text(row.get("repo"))), status=_text(row.get("state")),
@@ -1635,6 +1652,8 @@ class BearingsBuilder:
             owner = _text(row.get("owner"))
             item_id = _text(row.get("id")).split("/")[-1]
             target, item = self.lookup(snapshot, owner, item_id)
+            if item and is_cancelled_state(item.state):
+                continue
             waits = " — ".join(part for part in (_blank(_text(row.get("blocked_by"))), _blank(_text(row.get("reason")))) if part)
             bitem = BItem(title=_text(row.get("title")) or item_id, owner=owner if owner != "(main)" else label,
                           item_id=item_id, filed=_text(row.get("filed")), waits_on=waits or "queue order")
@@ -1651,6 +1670,8 @@ class BearingsBuilder:
         items = backlog_items(snapshot.backlog_markdown, snapshot)
         landed: list[tuple[str, BItem]] = []
         for item in items:
+            if is_cancelled_state(item.state):
+                continue
             bitem = BItem(title=item.title, owner=label, item_id=item.id, project=item.project, filed=item.filed)
             self.decorate(bitem, snapshot, item)
             if item.done:

@@ -1333,6 +1333,53 @@ class BearingsTests(unittest.TestCase):
             self.assertEqual(landed["merged-date-bullet"].filed, "2026-10-02")
             self.assertEqual(landed["merged-date-table"].filed, "2026-10-03")
 
+    def test_cancelled_tasks_are_omitted_from_all_bearings_sections(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            home = self.make_home(Path(temp))
+            backlog = home / "data" / "backlog.md"
+            backlog.write_text(backlog.read_text(encoding="utf-8") + f"""
+
+## Cancelled tasks
+- [ ] cancelled-review - Cancelled review task (state: cancelled) (held: yes) (hold-kind: captain) (review_ready: yes) (pr: {PIER_PR})
+- [x] canceled-checked - Canceled checked task (state: canceled) (merged: 2026-10-02)
+- [ ] cancelled-live - Cancelled active task (state: cancelled)
+- [ ] canceled-gate - Canceled queued task (state: canceled)
+
+## Cancelled table
+| ID | Task | State | Closed | Blocked by |
+| --- | --- | --- | --- | --- |
+| canceled-table | Canceled table task | canceled | 2026-10-03 | captain |
+""", encoding="utf-8")
+            snapshot = self.snapshots(home)[0]
+            cancelled_ids = {"cancelled-review", "canceled-checked", "cancelled-live", "canceled-gate", "canceled-table"}
+            groups = quarterdeck.attention_groups(snapshot, show_all=True)
+            grouped_ids = {
+                quarterdeck.value_for(record.fields, "id")
+                for records in groups.values() for record in records
+            }
+            self.assertTrue(cancelled_ids.isdisjoint(grouped_ids))
+
+            fallback = quarterdeck.build_bearings([snapshot], use_snapshot=False)
+            for section in (fallback.call, fallback.landed, fallback.underway, fallback.charted):
+                self.assertTrue(cancelled_ids.isdisjoint(item.item_id for item in section))
+
+            payload = {
+                **SNAPSHOT_JSON,
+                "decisions_open": [{"owner": "(main)", "key": "cancelled-review", "id": "cancelled-review",
+                                    "summary": "Cancelled review task", "verb": "captain-hold"}],
+                "landed": [{"owner": "(main)", "id": "canceled-table", "what": "Canceled table task",
+                            "artifact": "-"}],
+                "in_flight": [{"id": "cancelled-live", "name": "Cancelled active task", "repo": None,
+                               "state": "working", "doing": "-"}],
+                "gates": [{"owner": "(main)", "id": "canceled-gate", "title": "Canceled queued task",
+                           "filed": None, "blocked_by": "-", "reason": "-"}],
+            }
+            snapshot_result = quarterdeck.build_bearings(
+                [snapshot], runner=lambda _home, _data_dir: (payload, ""))
+            for section in (snapshot_result.call, snapshot_result.landed, snapshot_result.underway,
+                            snapshot_result.charted):
+                self.assertTrue(cancelled_ids.isdisjoint(item.item_id for item in section))
+
     def test_no_snapshot_option_skips_the_script(self) -> None:
         with tempfile.TemporaryDirectory() as temp:
             marker = Path(temp) / "ran"
