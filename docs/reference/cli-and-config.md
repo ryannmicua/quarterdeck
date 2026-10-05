@@ -3,7 +3,9 @@
 ## Command
 
 ```text
-quarterdeck render [--home PATH] [--output PATH] [--config FILE] [--title TEXT] [--all] [--lavish]
+quarterdeck render [--home PATH] [--output PATH] [--config FILE] [--title TEXT] [--all] [--lavish] [--no-snapshot]
+quarterdeck serve [--host ADDRESS ...] [--port N] [--home PATH] [--config FILE] [--title TEXT] [--no-snapshot]
+quarterdeck service [--write] [--host ADDRESS ...] [--port N] [--home PATH] [--config FILE]
 quarterdeck reports list [--home PATH] [--config FILE]
 quarterdeck reports read <report-id> [--home PATH] [--config FILE] [--open]
 quarterdeck reports mark-reviewed <report-id> [--home PATH] [--config FILE]
@@ -48,8 +50,13 @@ path and only unregisters the entry; it never changes Firstmate data.
 For each configured home, Quarterdeck reads `data/backlog.md` and immediate
 child `*/report.md` files. It also reads the parent's optional
 `data/secondmates.md` registry and renders each registered local secondmate
-under that parent. It does not run Firstmate commands or connect to remote
-hosts. A missing or unreadable home in a configured list gets a failure section;
+under that parent. It may run that home's
+`bin/fm-bearings-snapshot.sh --json` for the bearings view, unless
+`--no-snapshot` is set. Quarterdeck itself makes no network calls and invokes
+no other Firstmate script directly. The snapshot wrapper may read registered
+remote secondmate ledgers through Firstmate's routes and cache, and Quarterdeck
+shows the returned rows. A missing or unreadable home in a configured list
+gets a failure section;
 the other homes still render. The page links to readable HTML copies of
 selected reports and backlogs, generated beside the main page, and HTTPS links
 for GitHub pull requests.
@@ -83,6 +90,18 @@ for how marks affect the dashboard.
 | `--title TEXT` | Page title; overrides `page_title` in config. |
 | `--all` | Show every backlog item and report, including queued, finished, closed, and unlinked historical records. |
 | `--lavish` | Write a separate `*.lavish.html` review page with stable IDs on review cards, then open it with `lavish-axi` when available. Without Lavish, print a command hint and succeed. |
+
+| `--no-snapshot` | Do not run a home's `bin/fm-bearings-snapshot.sh`; classify from the backlog only. |
+
+`serve` re-renders the page and its readable pages at startup and on the first
+request after its 30-second cache expires. It serves them with `GET` only
+on each repeatable `--host` address (default `127.0.0.1` only) and `--port`
+(default 8765; valid ports are 1 through 65535). The served page reloads itself
+every 60 seconds and shows its generated-at time. `service` prints a
+systemd user unit that runs `serve` with the given options, or with `--write`
+writes it to `${XDG_CONFIG_HOME:-~/.config}/systemd/user/quarterdeck.service`;
+it never runs `systemctl`. A non-loopback host exposes work data without a
+login. See [Serve the always-current bearings page](../how-to/serve-the-page.md).
 
 `add`, `list`, and `remove` accept the same `--config FILE` option. `add` also
 accepts `--label LABEL`; `remove` takes one label or path.
@@ -126,8 +145,9 @@ Example:
 
 Local secondmates are discovered from one parser-compatible route per line in
 the parent's `data/secondmates.md`; each route's `home:` field points to a
-separate Firstmate home. Remote routes are listed with an unavailable message
-because Quarterdeck reads local files only. See [Configure multiple homes](../how-to/configure-multiple-homes.md)
+separate Firstmate home. Remote routes are listed as unavailable homes, though
+the parent's snapshot may return their aggregated records for the bearings
+sections. See [Configure multiple homes](../how-to/configure-multiple-homes.md)
 for setup steps and [Privacy and architecture](../explanation/privacy-and-architecture.md)
 for the read-only model.
 

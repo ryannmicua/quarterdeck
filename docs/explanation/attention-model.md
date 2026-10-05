@@ -1,9 +1,9 @@
 # The attention model
 
-Quarterdeck's default page is a current review surface. It reads each selected
-home's backlog, reports, and secondmate route file directly. It uses local
-review marks to determine which reports need review. It does not run Firstmate
-scripts or commands.
+Quarterdeck's default page is a current review surface. It uses local review
+marks to determine which reports need review. The files it reads, optional
+Firstmate snapshot, and read boundary are described in
+[privacy and architecture](privacy-and-architecture.md).
 
 ## Reports needing review
 

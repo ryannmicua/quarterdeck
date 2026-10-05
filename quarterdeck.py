@@ -6,21 +6,27 @@ from __future__ import annotations
 import argparse
 import fcntl
 import hashlib
+import ipaddress
 import html
 import json
 import os
 import re
 import shutil
+import socket
 import subprocess
 import sys
 import tempfile
+import threading
+import time
+import unicodedata
 import webbrowser
 from collections.abc import Callable, Iterator
 from contextlib import contextmanager
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
-from urllib.parse import urlparse
+from urllib.parse import unquote, urlparse
 
 
 DEFAULT_TITLE = "Quarterdeck"
@@ -34,7 +40,7 @@ ROUTE_HOST_RE = re.compile(r"(?:^|;\s*)host:\s*([^;]+)", re.I)
 MARKDOWN_LINK_RE = re.compile(r"\[([^\]]+)\]\(([^)]+)\)")
 FIELD_RE = re.compile(
     r"(?i)(captain_actionable|held|hold_bucket|hold_kind|hold_reason|hold_until|"
-    r"hold_set|state|status|closed|review_ready|pr_url|pr|report|report_path|"
+    r"hold_set|state|status|closed|merged|review_ready|pr_url|pr|report|report_path|"
     r"blocked|blocked_by|block_reason|blocked_reason|waiting_on|waiting_for|source_path|"
     r"recommendation)\s*[:=]\s*(.+?)(?=\s+(?:[a-z_]+)\s*[:=]|$)"
 )
@@ -288,7 +294,7 @@ def parse_backlog(source: str, data_dir: Path, reports: list[Report]) -> list[Re
     return records
 
 
-FALSE_VALUES = {"", "-", "none", "null", "false", "no", "0", "off"}
+FALSE_VALUES = {"", "-", "none", "(none)", "null", "false", "no", "0", "off"}
 TRUE_VALUES = {"true", "yes", "1", "on"}
 
 
@@ -304,10 +310,37 @@ def field_is_set(value: str) -> bool:
     return value.strip().lower() not in FALSE_VALUES
 
 
+def is_cancelled_state(state: str) -> bool:
+    return normalized_state(state) in {"cancelled", "canceled"}
+
+
+def is_closed_state(state: str) -> bool:
+    return normalized_state(state) in {
+        "done", "closed", "finished", "resolved", "complete", "completed", "archived", "merged",
+    }
+
+
+def is_review_ready_state(review_flag: str, state: str) -> bool:
+    return normalized_state(review_flag) in {"true", "yes", "1", "on", "ready", "review_ready", "reviewready"} or normalized_state(state) in {
+        "review_ready", "reviewready", "ready_for_review", "open_for_review"
+    }
+
+
+def is_in_flight_state(state: str) -> bool:
+    return normalized_state(state) in {"in_flight", "inflight", "working", "active", "running", "in_progress"}
+
+
+def valid_pr_url(value: str) -> bool:
+    parsed = urlparse(value)
+    return parsed.scheme == "https" and parsed.netloc.lower() == "github.com" and bool(PR_URL_RE.search(value))
+
+
 def is_closed(record: Record) -> bool:
-    if field_is_set(value_for(record.fields, "closed")):
+    if is_cancelled_state(state_for(record)):
+        return False
+    if any(field_is_set(value_for(record.fields, name)) for name in ("closed", "merged")):
         return True
-    return state_for(record) in {"done", "closed", "finished", "resolved", "complete", "completed", "archived", "cancelled", "canceled"}
+    return is_closed_state(state_for(record))
 
 
 def is_captain_held(record: Record) -> bool:
@@ -321,20 +354,15 @@ def is_captain_held(record: Record) -> bool:
 def is_review_ready(record: Record) -> bool:
     if is_closed(record) or not record.pr_url:
         return False
-    parsed_pr = urlparse(record.pr_url)
-    if parsed_pr.scheme != "https" or parsed_pr.netloc.lower() != "github.com" or not PR_URL_RE.search(record.pr_url):
+    if not valid_pr_url(record.pr_url):
         return False
-    review_flag = normalized_state(value_for(record.fields, "review_ready"))
-    state = state_for(record)
-    return review_flag in {"true", "yes", "1", "on", "ready", "review_ready", "reviewready"} or state in {
-        "review_ready", "reviewready", "ready_for_review", "open_for_review"
-    }
+    return is_review_ready_state(value_for(record.fields, "review_ready"), state_for(record))
 
 
 def is_in_flight(record: Record) -> bool:
     if is_closed(record):
         return False
-    return state_for(record) in {"in_flight", "inflight", "working", "active", "running", "in_progress"}
+    return is_in_flight_state(state_for(record))
 
 
 def is_waiting_on_captain_or_external(record: Record) -> bool:
@@ -363,7 +391,7 @@ def attention_groups(snapshot: HomeSnapshot, show_all: bool = False) -> dict[str
 
     def take(name: str, predicate: Callable[[Record], bool]) -> None:
         for record in snapshot.records:
-            if id(record) not in assigned and predicate(record):
+            if id(record) not in assigned and not is_cancelled_state(state_for(record)) and predicate(record):
                 groups[name].append(record)
                 assigned.add(id(record))
 
@@ -372,7 +400,10 @@ def attention_groups(snapshot: HomeSnapshot, show_all: bool = False) -> dict[str
     take("in_flight", is_in_flight)
     take("blocked", is_waiting_on_captain_or_external)
     if show_all:
-        groups["other"] = [record for record in snapshot.records if id(record) not in assigned]
+        groups["other"] = [
+            record for record in snapshot.records
+            if id(record) not in assigned and not is_cancelled_state(state_for(record))
+        ]
     return groups
 
 
@@ -386,7 +417,10 @@ def snapshot_counts(snapshot: HomeSnapshot, show_all: bool = False) -> tuple[int
 
 def hidden_summary(snapshot: HomeSnapshot, groups: dict[str, list[Record]]) -> str | None:
     visible = {id(record) for name in ("held", "reviews", "in_flight", "blocked") for record in groups[name]}
-    hidden = [record for record in snapshot.records if id(record) not in visible]
+    hidden = [
+        record for record in snapshot.records
+        if id(record) not in visible and not is_cancelled_state(state_for(record))
+    ]
     closed = sum(is_closed(record) for record in hidden)
     queued = sum(not is_closed(record) and state_for(record) == "queued" for record in hidden)
     other_blocked = sum(
@@ -571,17 +605,16 @@ def write_generated_page(path: Path, content: str) -> None:
         raise
 
 
-def write_source_pages(homes: list[HomeSnapshot], output_dir: Path, show_all: bool = False) -> None:
+def source_pages(homes: list[HomeSnapshot], show_all: bool = False, bearings: Bearings | None = None) -> dict[str, str]:
+    """Build every readable report, backlog and backlog-item page, keyed by file name."""
+    pages: dict[str, str] = {}
     for snapshot in all_snapshots(homes):
         if snapshot.spec.home is None:
             continue
         if snapshot.backlog_path and snapshot.backlog_markdown is not None:
             name = source_page_filename("backlog", snapshot.spec.home, snapshot.backlog_path)
             snapshot_path = display_path(snapshot.backlog_path, snapshot.spec.home)
-            write_generated_page(
-                output_dir / name,
-                source_page_html(f"{snapshot.spec.label} backlog", snapshot_path, snapshot.backlog_markdown),
-            )
+            pages[name] = source_page_html(f"{snapshot.spec.label} backlog", snapshot_path, snapshot.backlog_markdown)
         if show_all:
             linked_reports = {report.path for report in snapshot.reports}
         else:
@@ -590,14 +623,23 @@ def write_source_pages(homes: list[HomeSnapshot], output_dir: Path, show_all: bo
                 if record.report and (is_captain_held(record) or is_review_ready(record))
             }
             linked_reports.update(report.path for report in snapshot.reports if not report.reviewed)
+        if bearings is not None:
+            linked_reports.update(bearings.linked_reports)
         for report in snapshot.reports:
             if report.path not in linked_reports:
                 continue
             name = source_page_filename("report", snapshot.spec.home, report.path)
-            write_generated_page(
-                output_dir / name,
-                source_page_html(report.title, display_path(report.path, snapshot.spec.home), report.markdown),
-            )
+            pages[name] = source_page_html(report.title, display_path(report.path, snapshot.spec.home), report.markdown)
+    if bearings is not None:
+        pages.update(bearings.item_pages)
+    return pages
+
+
+def write_source_pages(
+    homes: list[HomeSnapshot], output_dir: Path, show_all: bool = False, bearings: Bearings | None = None
+) -> None:
+    for name, content in source_pages(homes, show_all, bearings).items():
+        write_generated_page(output_dir / name, content)
 
 
 def review_element_id(kind: str, home: Path, identity: str) -> str:
@@ -995,7 +1037,10 @@ def load_report_context(args: argparse.Namespace) -> tuple[list[HomeSnapshot], P
     return snapshots, state_path, marks
 
 
-def build_html(homes: list[HomeSnapshot], title: str, lavish: bool = False, show_all: bool = False) -> str:
+def build_html(
+    homes: list[HomeSnapshot], title: str, lavish: bool = False, show_all: bool = False,
+    bearings: Bearings | None = None, refresh_seconds: int | None = None,
+) -> str:
     snapshots = all_snapshots(homes)
     for snapshot in snapshots:
         for report in snapshot.reports:
@@ -1007,7 +1052,19 @@ def build_html(homes: list[HomeSnapshot], title: str, lavish: bool = False, show
         metric_labels.extend(["Other backlog items", "Scout reports"])
     counts.append(sum(not report.reviewed for snapshot in snapshots for report in snapshot.reports))
     metric_labels.append("Reports needing review")
-    timestamp = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
+    generated = bearings.generated if bearings else datetime.now(timezone.utc)
+    timestamp = generated.strftime("%Y-%m-%d %H:%M:%S UTC")
+    bearings_block = bearings_html(bearings) if bearings else ""
+    refresh_script = (
+        f"""
+  <script>
+    setTimeout(function reload() {{
+      if (document.querySelector("details[open]")) {{ setTimeout(reload, 15000); return; }}
+      location.reload();
+    }}, {int(refresh_seconds) * 1000});
+  </script>""" if refresh_seconds else ""
+    )
+    refresh_note = f" · reloads every {int(refresh_seconds)} seconds" if refresh_seconds else ""
     metrics = "".join(
         f'<div class="metric"><b>{count}</b><span>{html.escape(label)}</span></div>'
         for count, label in zip(counts, metric_labels)
@@ -1096,6 +1153,18 @@ def build_html(homes: list[HomeSnapshot], title: str, lavish: bool = False, show
     .secondmates {{ margin: 1.7rem 0 0; padding-left: 1rem; border-left: 3px solid var(--line); }}
     .secondmates > h3 {{ margin: 0 0 .8rem; color: var(--navy); font: 700 1.2rem Georgia, serif; }}
     .secondmates .home {{ margin: 1rem 0; background: var(--paper); }}
+    .jump {{ display: flex; flex-wrap: wrap; gap: .5rem; margin: 0 0 1.5rem; }}
+    .jump a {{ border: 1px solid var(--line); background: var(--paper); border-radius: 999px; padding: .3rem .8rem; text-decoration: none; }}
+    .jump b {{ color: var(--gold); }}
+    .dashboard-section h2 {{ margin: 0; color: var(--navy); font: 700 1.5rem Georgia, serif; }}
+    .reviews {{ border: 2px solid var(--gold); border-radius: 14px; padding: 1rem; background: #fff8e9; }}
+    .detail-heading {{ margin: 3rem 0 1rem; color: var(--navy); font: 700 1.5rem Georgia, serif; }}
+    .when {{ color: var(--muted); font-size: .88rem; }}
+    .bearing details {{ margin: .6rem 0; }}
+    .bearing summary {{ cursor: pointer; color: var(--sea); font-weight: 650; }}
+    .bearing .body {{ border-left: 3px solid var(--line); padding-left: .8rem; overflow-wrap: anywhere; }}
+    .generated, .source-note {{ color: #d8c49b; font-size: .85rem; }}
+    .source-note {{ color: var(--muted); }}
     footer {{ border-top: 1px solid var(--line); margin-top: 3rem; padding-top: 1rem; color: var(--muted); font-size: .85rem; }}
     @media (max-width: 640px) {{ .summary {{ grid-template-columns: repeat(2, 1fr); }} }}
     @media print {{ body {{ background: #fff; }} header {{ padding: 1.2rem; }} main {{ width: 100%; margin: 1rem 0; }} .card {{ break-inside: avoid; }} }}
@@ -1106,18 +1175,684 @@ def build_html(homes: list[HomeSnapshot], title: str, lavish: bool = False, show
     <div class="kicker">Firstmate · local review</div>
     <h1>⚓ {html.escape(title)}</h1>
     <p>{html.escape(introductory_text)}</p>
+    <p class="generated">Generated at {timestamp}{refresh_note}</p>
   </header>
   <main>
+    {bearings_block}
+    <h2 class="detail-heading">Details by home</h2>
     <div class="summary" aria-label="Review counts">
       {metrics}
     </div>
     {''.join(home_panel(home, lavish, show_all) for home in homes)}
-    <footer>Read-only snapshot · refreshed {timestamp} · source files open as readable pages beside this one.</footer>
+    <footer>Read-only snapshot · generated {timestamp} · source files open as readable pages beside this one.</footer>
   </main>
-  {lavish_script}
+  {lavish_script}{refresh_script}
 </body>
 </html>
 '''
+
+
+# --- Bearings view -----------------------------------------------------------
+
+SNAPSHOT_SCRIPT = Path("bin") / "fm-bearings-snapshot.sh"
+SNAPSHOT_TIMEOUT_SECONDS = 15
+ITEM_ATTRIBUTE_RE = re.compile(
+    r"\((?P<key>repo|kind|since|hold-kind|hold|held|merged|done|closed|until|hold-until|priority|pr|state|status|review_ready)(?::\s*|\s+)", re.I
+)
+BULLET_ITEM_RE = re.compile(r"^-\s+\[(?P<mark>[ xX])\]\s+(?P<id>[A-Za-z0-9][\w.-]*)\s+-\s+(?P<rest>.*)$")
+REPORT_PATH_RE = re.compile(r"\bdata/([\w.-]+)/report\.md\b")
+DATE_RE = re.compile(r"\d{4}-\d{2}-\d{2}(?:[T ]\d{2}:\d{2}(?::\d{2})?(?:Z|[+-]\d{2}:?\d{2})?)?")
+OPTIONS_RE = re.compile(r"(?is)\boptions?\s*(?:\([^)]*\))?\s*:\s*(.+?)(?=\n\s*\n|\brecommend(?:ation|ed)?\s*:|\Z)")
+RECOMMENDATION_RE = re.compile(r"(?is)\brecommend(?:ation|ed)?\s*:\s*(.+?)(?=\n\s*\n|\boptions?\s*:|\Z)")
+@dataclass
+class BacklogItem:
+    id: str
+    title: str
+    state: str = ""
+    attrs: dict[str, str] = field(default_factory=dict)
+    body: str = ""
+    raw: str = ""
+    done: bool = False
+    hold_reason: str = ""
+    hold_kind: str = ""
+    held: bool = False
+    blocked_by: str = ""
+    report_dir: str = ""
+    pr_url: str = ""
+    review_ready: bool = False
+
+    @property
+    def project(self) -> str:
+        return self.attrs.get("repo", "")
+
+    @property
+    def filed(self) -> str:
+        for key in ("since",):
+            if self.attrs.get(key):
+                return self.attrs[key]
+        match = DATE_RE.search(self.body)
+        return match.group(0) if match else ""
+
+    @property
+    def closed_on(self) -> str:
+        for key in ("merged", "done"):
+            match = DATE_RE.search(self.attrs.get(key, ""))
+            if match:
+                return match.group(0)
+        return ""
+
+
+@dataclass
+class BItem:
+    """One row of a bearings section, whichever source produced it."""
+    title: str
+    owner: str = ""
+    item_id: str = ""
+    project: str = ""
+    filed: str = ""
+    hold_reason: str = ""
+    body: str = ""
+    options: str = ""
+    recommendation: str = ""
+    report_page: str = ""
+    report_label: str = ""
+    item_page: str = ""
+    pr_url: str = ""
+    artifact: str = ""
+    waits_on: str = ""
+    status: str = ""
+    detail: str = ""
+
+
+@dataclass
+class HomeSource:
+    label: str
+    mode: str  # "snapshot" or "fallback"
+    reason: str = ""
+
+
+@dataclass
+class Bearings:
+    call: list[BItem] = field(default_factory=list)
+    landed: list[BItem] = field(default_factory=list)
+    underway: list[BItem] = field(default_factory=list)
+    charted: list[BItem] = field(default_factory=list)
+    sources: list[HomeSource] = field(default_factory=list)
+    omissions: list[tuple[str, str, str]] = field(default_factory=list)
+    reports: list[tuple[HomeSnapshot, Report]] = field(default_factory=list)
+    generated: datetime = field(default_factory=lambda: datetime.now(timezone.utc))
+    item_pages: dict[str, str] = field(default_factory=dict)
+    linked_reports: set[Path] = field(default_factory=set)
+
+
+def balanced_close(text: str, start: int) -> int:
+    depth = 0
+    for index in range(start, len(text)):
+        if text[index] == "(":
+            depth += 1
+        elif text[index] == ")":
+            depth -= 1
+            if depth == 0:
+                return index
+    return len(text)
+
+
+def parse_bullet_item(header: re.Match[str], continuation: list[str], section: str) -> BacklogItem:
+    rest = header.group("rest")
+    attrs: dict[str, str] = {}
+    first_attr = len(rest)
+    position = 0
+    while True:
+        match = ITEM_ATTRIBUTE_RE.search(rest, position)
+        if not match:
+            break
+        close = balanced_close(rest, match.start())
+        key = match.group("key").lower()
+        attrs.setdefault(key, rest[match.end():close].strip())
+        first_attr = min(first_attr, match.start())
+        position = close + 1
+    title_part = rest[:first_attr]
+    blocked_by = ""
+    blocker = re.search(r"\bblocked-by:\s*(\S+)", title_part)
+    if blocker:
+        blocked_by = blocker.group(1)
+        title_part = title_part.replace(blocker.group(0), " ")
+    report_dir = ""
+    report = REPORT_PATH_RE.search(title_part)
+    if report:
+        report_dir = report.group(1)
+        title_part = title_part.replace(report.group(0), " ")
+    title = markdown_text(re.sub(r"\s+", " ", title_part).strip(" -·")) or header.group("id")
+    body = "\n".join(line[2:] if line.startswith("  ") else line.lstrip() for line in continuation).strip()
+    raw = header.group(0) + ("\n" + "\n".join(continuation) if continuation else "")
+    hold_kind = normalized_state(attrs.get("hold-kind", ""))
+    if not report_dir:
+        report = REPORT_PATH_RE.search(body)
+        report_dir = report.group(1) if report else ""
+    pr = PR_URL_RE.search(raw)
+    state = normalized_state(attrs.get("state") or attrs.get("status") or section)
+    done = not is_cancelled_state(state) and (
+        header.group("mark") in "xX"
+        or field_is_set(attrs.get("closed", ""))
+        or field_is_set(attrs.get("done", ""))
+        or field_is_set(attrs.get("merged", ""))
+        or is_closed_state(state)
+    )
+    if done:
+        state = "done"
+    pr_url = pr.group(0) if pr else ""
+    return BacklogItem(
+        id=header.group("id"), title=title,
+        state=state,
+        attrs=attrs, body=body, raw=raw, done=done,
+        hold_reason=markdown_text(attrs.get("hold", "")), hold_kind=hold_kind,
+        held=attrs.get("held", "").strip().lower() in TRUE_VALUES,
+        blocked_by=blocked_by or attrs.get("blocked-by", ""),
+        report_dir=report_dir, pr_url=pr_url,
+        review_ready=(not done and valid_pr_url(pr_url) and is_review_ready_state(attrs.get("review_ready", ""), state)),
+    )
+
+
+def backlog_items(source: str, snapshot: HomeSnapshot) -> list[BacklogItem]:
+    """Read Firstmate's bullet backlog format, plus table rows the attention view already understands."""
+    items: list[BacklogItem] = []
+    lines = source.splitlines()
+    section = ""
+    index = 0
+    while index < len(lines):
+        line = lines[index]
+        heading = re.match(r"^\s{0,3}#{1,6}\s+(.+?)\s*#*\s*$", line)
+        if heading:
+            section = heading_section(heading.group(1))
+            index += 1
+            continue
+        bullet = BULLET_ITEM_RE.match(line)
+        if bullet:
+            index += 1
+            continuation: list[str] = []
+            while index < len(lines) and (not lines[index].strip() or lines[index][:1].isspace()):
+                continuation.append(lines[index])
+                index += 1
+            while continuation and not continuation[-1].strip():
+                continuation.pop()
+            items.append(parse_bullet_item(bullet, continuation, section))
+            continue
+        index += 1
+    seen = {item.id for item in items}
+    for record in snapshot.records:
+        identifier = value_for(record.fields, "id")
+        if not identifier or identifier in seen:
+            continue
+        state = state_for(record)
+        review_flag = is_review_ready(record)
+        merged_date = value_for(record.fields, "merged")
+        item = BacklogItem(
+            id=identifier, title=record.title, state=state,
+            body=record.text if record.text != record.title else "", raw=record.text,
+            done=is_closed(record),
+            attrs={"merged": merged_date} if merged_date else {},
+            hold_reason=_blank(value_for(record.fields, "hold_reason")),
+            hold_kind=normalized_state(_blank(value_for(record.fields, "hold_kind"))),
+            held=value_for(record.fields, "held").lower() in TRUE_VALUES,
+            blocked_by=_blank(value_for(record.fields, "blocked_by", "waiting_on", "waiting_for")),
+            report_dir=record.report.parent.name if record.report else "",
+            pr_url=record.pr_url or "", review_ready=review_flag,
+        )
+        closed = value_for(record.fields, "closed")
+        if field_is_set(closed):
+            item.attrs["done"] = closed
+        reason = _blank(value_for(record.fields, "blocked_reason", "block_reason"))
+        if reason and not item.hold_reason:
+            item.hold_reason = reason
+        items.append(item)
+    return items
+
+
+def parse_when(value: str) -> datetime | None:
+    match = DATE_RE.search(value or "")
+    if not match:
+        return None
+    text = match.group(0).replace("Z", "+00:00").replace(" ", "T")
+    try:
+        parsed = datetime.fromisoformat(text)
+    except ValueError:
+        return None
+    return parsed if parsed.tzinfo else parsed.replace(tzinfo=timezone.utc)
+
+
+def waited_text(filed: str, now: datetime) -> str:
+    then = parse_when(filed)
+    if then is None:
+        return ""
+    seconds = max(0, int((now - then).total_seconds()))
+    days, hours = seconds // 86400, seconds // 3600
+    if days >= 1:
+        return f"{days} day{'s' if days != 1 else ''}"
+    if hours >= 1:
+        return f"{hours} hour{'s' if hours != 1 else ''}"
+    return "under an hour"
+
+
+def options_and_recommendation(*texts: str) -> tuple[str, str]:
+    options = recommendation = ""
+    for text in texts:
+        if not text:
+            continue
+        if not options and (match := OPTIONS_RE.search(text)):
+            options = markdown_text(re.sub(r"\s+", " ", match.group(1))).strip()
+        if not recommendation and (match := RECOMMENDATION_RE.search(text)):
+            recommendation = markdown_text(re.sub(r"\s+", " ", match.group(1))).strip()
+    return options, recommendation
+
+
+def item_page_filename(home: Path | None, owner: str, item_id: str) -> str:
+    digest = hashlib.sha256(f"{home}\0{owner}\0{item_id}".encode("utf-8")).hexdigest()[:12]
+    return f"item-{digest}.html"
+
+
+def find_report(item: BacklogItem, snapshot: HomeSnapshot) -> Report | None:
+    candidates = [name for name in (item.report_dir, item.id) if name]
+    for name in candidates:
+        for report in snapshot.reports:
+            if report.path.parent.name == name:
+                return report
+    return None
+
+
+def run_bearings_snapshot(
+    home: Path, data_dir: Path | None = None, timeout: float = SNAPSHOT_TIMEOUT_SECONDS
+) -> tuple[dict[str, object] | None, str]:
+    """Run a home's own bearings snapshot; return (data, "") or (None, reason it cannot be used)."""
+    script = home / SNAPSHOT_SCRIPT
+    if not script.is_file() or not os.access(script, os.X_OK):
+        return None, "no executable bin/fm-bearings-snapshot.sh in this home"
+    selected_data_dir = (data_dir or home / "data").expanduser().resolve()
+    env = dict(os.environ, FM_HOME=str(home), FM_DATA_OVERRIDE=str(selected_data_dir))
+    try:
+        process = subprocess.Popen(
+            [str(script), "--json"], cwd=home, env=env, stdin=subprocess.DEVNULL,
+            stdout=subprocess.PIPE, stderr=subprocess.PIPE, start_new_session=True,
+        )
+    except OSError as exc:
+        return None, f"could not start the snapshot script: {exc}"
+    try:
+        stdout, _stderr = process.communicate(timeout=timeout)
+    except subprocess.TimeoutExpired:
+        try:
+            os.killpg(process.pid, 9)
+        except OSError:
+            process.kill()
+        process.communicate()
+        return None, f"the snapshot script timed out after {timeout:g} seconds"
+    if process.returncode != 0:
+        return None, f"the snapshot script exited with status {process.returncode}"
+    try:
+        data = json.loads(stdout.decode("utf-8"))
+    except UnicodeDecodeError:
+        return None, "the snapshot script printed invalid UTF-8"
+    except json.JSONDecodeError:
+        return None, "the snapshot script did not print JSON"
+    if not isinstance(data, dict) or data.get("schema") != "fm-bearings.v1":
+        return None, "the snapshot script printed an unrecognized schema"
+    row_fields = {
+        "decisions_open": ("owner", "summary", "verb"),
+        "landed": ("owner", "id", "what", "artifact"),
+        "in_flight": ("id", "name", "repo", "state", "doing"),
+        "secondmates": ("id", "state", "doing", "reason"),
+        "gates": ("owner", "id", "title", "filed", "blocked_by", "reason"),
+    }
+    nullable_fields = {"in_flight": {"repo"}, "gates": {"filed"}}
+    for name, fields in row_fields.items():
+        rows = data.get(name)
+        if not isinstance(rows, list):
+            return None, f"the snapshot field {name} is not an array"
+        for index, row in enumerate(rows):
+            if not isinstance(row, dict):
+                return None, f"the snapshot {name} row {index + 1} is not an object"
+            for field_name in fields:
+                if field_name not in row:
+                    return None, f"the snapshot {name} row {index + 1} has no {field_name}"
+                value = row[field_name]
+                if not isinstance(value, str) and not (value is None and field_name in nullable_fields.get(name, set())):
+                    return None, f"the snapshot {name} row {index + 1} has an invalid {field_name}"
+            if name == "decisions_open":
+                for field_name in ("key", "id"):
+                    if field_name in row and not isinstance(row[field_name], str):
+                        return None, f"the snapshot {name} row {index + 1} has an invalid {field_name}"
+                if not any(isinstance(row.get(field_name), str) and row[field_name].strip() for field_name in ("key", "id")):
+                    return None, f"the snapshot {name} row {index + 1} has no key or id"
+            elif not row.get("id", "").strip():
+                return None, f"the snapshot {name} row {index + 1} has no id"
+    omissions = data.get("omitted", [])
+    if not isinstance(omissions, list):
+        return None, "the snapshot field omitted is not an array"
+    for index, omission in enumerate(omissions):
+        if not isinstance(omission, dict):
+            return None, f"the snapshot omitted row {index + 1} is not an object"
+        if not all(isinstance(omission.get(field_name), str) and omission[field_name].strip()
+                   for field_name in ("surface", "reveal")):
+            return None, f"the snapshot omitted row {index + 1} has invalid details"
+    return data, ""
+
+
+def _text(value: object) -> str:
+    return value if isinstance(value, str) else ("" if value is None else str(value))
+
+
+def _rows(data: dict[str, object], key: str) -> list[dict[str, object]]:
+    rows = data.get(key)
+    return [row for row in rows if isinstance(row, dict)] if isinstance(rows, list) else []
+
+
+def _blank(value: str) -> str:
+    return "" if value.strip() in {"", "-", "(none)"} else value.strip()
+
+
+class BearingsBuilder:
+    def __init__(self, homes: list[HomeSnapshot], now: datetime, use_snapshot: bool = True,
+                 runner: Callable[[Path, Path | None], tuple[dict[str, object] | None, str]] = run_bearings_snapshot) -> None:
+        self.homes = homes
+        self.now = now
+        self.use_snapshot = use_snapshot
+        self.runner = runner
+        self.result = Bearings(generated=now)
+
+    # -- shared helpers --
+    def lookup(self, snapshot: HomeSnapshot, owner: str, item_id: str) -> tuple[HomeSnapshot, BacklogItem | None]:
+        """Find the backlog entry for an id, using the secondmate's home when the owner is one."""
+        target = snapshot
+        if owner and owner != "(main)":
+            target = next((child for child in snapshot.children if child.spec.route_id == owner), snapshot)
+        if target.error or target.backlog_markdown is None:
+            return target, None
+        items = getattr(target, "_items", None)
+        if items is None:
+            items = {item.id: item for item in backlog_items(target.backlog_markdown, target)}
+            setattr(target, "_items", items)
+        return target, items.get(item_id)
+
+    def home_label(self, snapshot: HomeSnapshot, owner: str) -> str:
+        if not owner or owner == "(main)":
+            return snapshot.spec.label
+        child = next((child for child in snapshot.children if child.spec.route_id == owner), None)
+        return child.spec.label if child else owner
+
+    def decorate(self, bitem: BItem, snapshot: HomeSnapshot, item: BacklogItem | None) -> None:
+        if item is None:
+            return
+        home = snapshot.spec.home or Path(".")
+        bitem.title = item.title or bitem.title
+        bitem.project = item.project or bitem.project
+        bitem.filed = bitem.filed or item.filed
+        bitem.hold_reason = item.hold_reason
+        bitem.body = item.body
+        bitem.pr_url = bitem.pr_url or (item.pr_url if PR_URL_RE.fullmatch(item.pr_url or "") else "")
+        report = find_report(item, snapshot)
+        options, recommendation = options_and_recommendation(item.hold_reason, item.body)
+        bitem.options = options
+        bitem.recommendation = recommendation or (report.recommendation if report and report.recommendation else "")
+        if report:
+            bitem.report_page = source_page_filename("report", home, report.path)
+            bitem.report_label = report_reference(snapshot.spec.label, report.path.parent.name)
+            self.result.linked_reports.add(report.path)
+        name = item_page_filename(snapshot.spec.home, snapshot.spec.label, item.id)
+        bitem.item_page = name
+        self.result.item_pages[name] = source_page_html(
+            item.title, f"{snapshot.spec.label} · backlog item {item.id}", item.raw or item.title
+        )
+
+    def in_flight_owner(self, snapshot: HomeSnapshot, item_id: str) -> str:
+        route_id, separator, _ = item_id.partition("/")
+        return self.home_label(snapshot, route_id if separator else "(main)")
+
+    # -- snapshot path --
+    def from_snapshot(self, snapshot: HomeSnapshot, data: dict[str, object]) -> None:
+        for row in _rows(data, "decisions_open"):
+            owner = _text(row.get("owner"))
+            key = _text(row.get("key")) or _text(row.get("id"))
+            target, item = self.lookup(snapshot, owner, key)
+            if item and is_cancelled_state(item.state):
+                continue
+            summary = _text(row.get("summary")) or key
+            bitem = BItem(title=summary, owner=self.home_label(snapshot, owner),
+                          item_id=key, status=_text(row.get("verb")))
+            if item is None:
+                bitem.detail = (
+                    f"Full background lives in the secondmate home: {self.home_label(snapshot, owner)}."
+                    if owner and owner != "(main)" else summary
+                )
+            self.decorate(bitem, target, item)
+            self.result.call.append(bitem)
+        for row in _rows(data, "landed"):
+            owner = _text(row.get("owner"))
+            artifact = _blank(_text(row.get("artifact")))
+            item_id = _text(row.get("id"))
+            target, item = self.lookup(snapshot, owner, item_id)
+            if item and is_cancelled_state(item.state):
+                continue
+            bitem = BItem(title=_text(row.get("what")) or item_id, owner=self.home_label(snapshot, owner),
+                          item_id=item_id, artifact=artifact)
+            match = PR_URL_RE.search(artifact)
+            if match:
+                bitem.pr_url = match.group(0)
+            elif item and item.pr_url:
+                bitem.pr_url = item.pr_url
+            if item:
+                bitem.title = item.title
+                bitem.project = item.project
+                bitem.filed = item.closed_on
+                bitem.item_page = item_page_filename(target.spec.home, target.spec.label, item.id)
+                self.result.item_pages[bitem.item_page] = source_page_html(
+                    item.title, f"{target.spec.label} · backlog item {item.id}", item.raw or item.title
+                )
+            self.result.landed.append(bitem)
+        for row in _rows(data, "in_flight"):
+            item_id = _text(row.get("id"))
+            owner = item_id.partition("/")[0] if "/" in item_id else "(main)"
+            _, item = self.lookup(snapshot, owner, item_id.split("/")[-1])
+            if is_cancelled_state(_text(row.get("state"))) or (item and is_cancelled_state(item.state)):
+                continue
+            self.result.underway.append(BItem(
+                title=_text(row.get("name")) or item_id, owner=self.in_flight_owner(snapshot, item_id), item_id=item_id,
+                project=_blank(_text(row.get("repo"))), status=_text(row.get("state")),
+                detail=_blank(_text(row.get("doing"))),
+            ))
+        for row in _rows(data, "secondmates"):
+            state = normalized_state(_text(row.get("state")))
+            if state in {"active_child_work", "captain_decision", "no_active_work"}:
+                continue
+            doing = _blank(_text(row.get("doing")))
+            reason = _blank(_text(row.get("reason")))
+            self.result.charted.append(BItem(
+                title=f"Secondmate {_text(row.get('id'))}", owner=self.home_label(snapshot, _text(row.get("id"))),
+                item_id=_text(row.get("id")), status=state or "unknown",
+                waits_on=" — ".join(part for part in (doing, reason) if part) or "status unavailable",
+            ))
+        for row in _rows(data, "gates"):
+            owner = _text(row.get("owner"))
+            item_id = _text(row.get("id")).split("/")[-1]
+            target, item = self.lookup(snapshot, owner, item_id)
+            if item and is_cancelled_state(item.state):
+                continue
+            waits = " — ".join(part for part in (_blank(_text(row.get("blocked_by"))), _blank(_text(row.get("reason")))) if part)
+            bitem = BItem(title=_text(row.get("title")) or item_id, owner=self.home_label(snapshot, owner),
+                          item_id=item_id, filed=_text(row.get("filed")), waits_on=waits or "queue order")
+            self.decorate(bitem, target, item)
+            if item and not bitem.waits_on:
+                bitem.waits_on = item.blocked_by or "queue order"
+            self.result.charted.append(bitem)
+
+    # -- fallback path --
+    def from_backlog(self, snapshot: HomeSnapshot) -> None:
+        if snapshot.error or snapshot.backlog_markdown is None:
+            return
+        label = snapshot.spec.label
+        items = backlog_items(snapshot.backlog_markdown, snapshot)
+        landed: list[tuple[str, BItem]] = []
+        for item in items:
+            if is_cancelled_state(item.state):
+                continue
+            bitem = BItem(title=item.title, owner=label, item_id=item.id, project=item.project, filed=item.filed)
+            self.decorate(bitem, snapshot, item)
+            if item.done:
+                bitem.filed = item.closed_on
+                bitem.pr_url = item.pr_url if PR_URL_RE.fullmatch(item.pr_url or "") else bitem.pr_url
+                landed.append((item.closed_on, bitem))
+            elif (item.held and item.hold_kind == "captain") or item.review_ready:
+                bitem.status = "review" if item.review_ready and not item.held else "captain hold"
+                self.result.call.append(bitem)
+            elif is_in_flight_state(item.state):
+                bitem.status = "in flight"
+                bitem.detail = item.hold_reason
+                self.result.underway.append(bitem)
+            else:
+                bitem.waits_on = item.blocked_by or item.hold_reason or "queue order"
+                self.result.charted.append(bitem)
+        landed.sort(key=lambda pair: pair[0], reverse=True)
+        self.result.landed.extend(bitem for _when, bitem in landed[:8])
+
+    def build(self) -> Bearings:
+        for snapshot in self.homes:
+            data, reason = (None, "snapshot disabled with --no-snapshot")
+            if self.use_snapshot and snapshot.spec.home is not None and not snapshot.spec.remote_host and not snapshot.error:
+                data, reason = self.runner(snapshot.spec.home, snapshot.data_dir)
+            elif snapshot.error:
+                reason = "home could not be read"
+            if data is not None:
+                self.result.sources.append(HomeSource(snapshot.spec.label, "snapshot"))
+                self.result.omissions.extend(
+                    (snapshot.spec.label, _text(row.get("surface")), _text(row.get("reveal")))
+                    for row in _rows(data, "omitted")
+                )
+                self.from_snapshot(snapshot, data)
+            else:
+                self.result.sources.append(HomeSource(snapshot.spec.label, "fallback", reason))
+                for member in [snapshot] + all_snapshots(snapshot.children):
+                    self.from_backlog(member)
+        self.result.call.sort(key=lambda item: parse_when(item.filed) or datetime.max.replace(tzinfo=timezone.utc))
+        self.result.reports = [
+            (snapshot, report)
+            for snapshot in all_snapshots(self.homes) for report in snapshot.reports if not report.reviewed
+        ]
+        return self.result
+
+
+def build_bearings(homes: list[HomeSnapshot], now: datetime | None = None, use_snapshot: bool = True,
+                   runner: Callable[[Path, Path | None], tuple[dict[str, object] | None, str]] = run_bearings_snapshot) -> Bearings:
+    return BearingsBuilder(homes, now or datetime.now(timezone.utc), use_snapshot, runner).build()
+
+
+def bearings_item_html(item: BItem, now: datetime, section: str) -> str:
+    chips: list[str] = []
+    if item.owner:
+        chips.append(html.escape(item.owner))
+    if item.project:
+        chips.append("project " + html.escape(item.project))
+    if item.status:
+        chips.append(html.escape(item.status))
+    parts = [f'<article class="card bearing"><p class="eyebrow">{" · ".join(chips)}</p>',
+             f"<h3>{html.escape(item.title)}</h3>"]
+    when = []
+    if item.filed:
+        waited = waited_text(item.filed, now)
+        label = "Landed" if section == "landed" else "Filed"
+        when.append(f"{label} {html.escape(item.filed[:16].replace('T', ' '))}")
+        if waited and section != "landed":
+            when.append(f"waiting {html.escape(waited)}")
+    elif section == "call":
+        when.append("Filed date not recorded")
+    if when:
+        parts.append(f'<p class="when">{" · ".join(when)}</p>')
+    if item.hold_reason:
+        parts.append(f'<p class="reason"><strong>Why it is held:</strong> {markdown_inline(item.hold_reason)}</p>')
+    if item.waits_on:
+        parts.append(f'<p class="reason"><strong>Waits on:</strong> {markdown_inline(item.waits_on)}</p>')
+    if item.detail:
+        parts.append(f"<p>{html.escape(item.detail)}</p>")
+    if item.options:
+        parts.append(f'<p><strong>Options:</strong> {markdown_inline(item.options)}</p>')
+    if item.recommendation:
+        parts.append(f'<p><strong>Recommendation:</strong> {markdown_inline(item.recommendation)}</p>')
+    if item.body:
+        parts.append(f'<details><summary>Full task description</summary><div class="body">{render_markdown(item.body)}</div></details>')
+    links: list[str] = []
+    if item.pr_url:
+        links.append(f'<a href="{html.escape(item.pr_url, quote=True)}">{html.escape(item.pr_url)}</a>')
+    elif item.artifact:
+        parsed = urlparse(item.artifact)
+        if parsed.scheme == "https" and parsed.netloc:
+            links.append(f'<a href="{html.escape(item.artifact, quote=True)}">{html.escape(item.artifact)}</a>')
+        else:
+            links.append(html.escape(item.artifact))
+    if item.report_page:
+        links.append(f'<a href="{html.escape(item.report_page, quote=True)}">Read report <code>{html.escape(item.report_label)}</code></a>')
+    if item.item_page:
+        links.append(f'<a href="{html.escape(item.item_page, quote=True)}">Read backlog item</a>')
+    if links:
+        parts.append('<p class="links">' + " · ".join(links) + "</p>")
+    parts.append("</article>")
+    return "".join(parts)
+
+
+def bearings_html(bearings: Bearings) -> str:
+    now = bearings.generated
+    sections = [
+        ("call", "Captain's Call", "Decisions and reviews waiting on you, with everything needed to answer.",
+         bearings.call, "Nothing is waiting on a captain decision."),
+        ("landed", "Recently Landed", "Merged pull requests and finished work.",
+         bearings.landed, "Nothing has landed recently."),
+        ("underway", "Underway", "Work that is live right now.", bearings.underway, "Nothing is underway."),
+        ("charted", "Charted Next", "Queued or gated work, and what each item waits on.",
+         bearings.charted, "Nothing is queued or gated."),
+    ]
+    review_cards = []
+    for snapshot, report in bearings.reports:
+        home = snapshot.spec.home or Path(".")
+        page = source_page_filename("report", home, report.path)
+        recommendation = (
+            f'<p><strong>Recommendation:</strong> {html.escape(report.recommendation)}</p>' if report.recommendation else ""
+        )
+        review_cards.append(
+            f'<article class="card"><p class="eyebrow">{html.escape(snapshot.spec.label)} · <code>{html.escape(report.report_id)}</code></p>'
+            f'<h3>{html.escape(report.title)}</h3>{recommendation}'
+            f'<p class="links"><a href="{html.escape(page, quote=True)}">Read report</a> · '
+            f'<span class="path">after reading: quarterdeck reports mark-reviewed {html.escape(report.report_id)}</span></p></article>'
+        )
+    nav = "".join(
+        f'<a href="#{key}">{html.escape(title)} <b>{len(items)}</b></a>' for key, title, _d, items, _e in sections
+    )
+    nav = f'<a href="#reviews">Reports to review <b>{len(review_cards)}</b></a>' + nav
+    out = [f'<nav class="jump" aria-label="Sections">{nav}</nav>']
+    out.append(
+        '<div class="dashboard-section reviews" id="reviews"><div class="section-head"><div><h2>Reports waiting on your review</h2>'
+        '<p>Reports whose review state is “needs review”.</p></div>'
+        f'<span class="count">{len(review_cards)}</span></div><div class="cards">'
+        + ("".join(review_cards) or '<p class="empty">No reports are waiting on your review.</p>')
+        + "</div></div>"
+    )
+    for key, title, description, items, empty in sections:
+        cards = "".join(bearings_item_html(item, now, key) for item in items)
+        if not cards:
+            cards = f'<p class="empty">{html.escape(empty)}</p>'
+        out.append(
+            f'<div class="dashboard-section" id="{key}"><div class="section-head"><div><h2>{html.escape(title)}</h2>'
+            f'<p>{html.escape(description)}</p></div><span class="count">{len(items)}</span></div>'
+            f'<div class="cards">{cards}</div></div>'
+        )
+    notes = []
+    for source in bearings.sources:
+        if source.mode == "snapshot":
+            notes.append(f"{html.escape(source.label)}: Firstmate bearings snapshot")
+        else:
+            notes.append(f"{html.escape(source.label)}: <strong>fallback</strong> — parsed from the backlog ({html.escape(source.reason)})")
+    out.append('<p class="source-note">Sources — ' + "; ".join(notes) + ".</p>")
+    if bearings.omissions:
+        omitted_notes = "; ".join(
+            f"{html.escape(home)}: {html.escape(surface)} ({html.escape(reveal)})"
+            for home, surface, reveal in bearings.omissions
+        )
+        out.append('<p class="source-note"><strong>Snapshot omissions</strong> — ' + omitted_notes + ".</p>")
+    return "".join(out)
 
 
 def load_config(path: Path | None) -> dict[str, object]:
@@ -1301,9 +2036,277 @@ def remove_home(args: argparse.Namespace) -> int:
     return 0
 
 
+DEFAULT_HOST = "127.0.0.1"
+DEFAULT_PORT = 8765
+DEFAULT_CACHE_SECONDS = 30
+DEFAULT_REFRESH_SECONDS = 60
+
+
+def port_number(value: str) -> int:
+    try:
+        port = int(value)
+    except ValueError as exc:
+        raise argparse.ArgumentTypeError("port must be an integer") from exc
+    if not 1 <= port <= 65535:
+        raise argparse.ArgumentTypeError("port must be between 1 and 65535")
+    return port
+
+
+class SiteCache:
+    """Re-render the site from the homes on request, reusing the result for a short time."""
+
+    def __init__(self, build: Callable[[], dict[str, str]], ttl: float = DEFAULT_CACHE_SECONDS,
+                 clock: Callable[[], float] = time.monotonic) -> None:
+        self.build = build
+        self.ttl = ttl
+        self.clock = clock
+        self.lock = threading.Lock()
+        self.built_at: float | None = None
+        self.pages: dict[str, str] = {}
+
+    def get(self) -> dict[str, str]:
+        with self.lock:
+            now = self.clock()
+            if self.built_at is None or now - self.built_at >= self.ttl:
+                self.pages = self.build()
+                self.built_at = now
+            return self.pages
+
+
+def site_builder(args: argparse.Namespace) -> Callable[[], dict[str, str]]:
+    def build() -> dict[str, str]:
+        config, homes, bearings = load_site(args)
+        configured_title = config.get("page_title")
+        title = args.title or (configured_title if isinstance(configured_title, str) else None) or DEFAULT_TITLE
+        pages = source_pages(homes, show_all=False, bearings=bearings)
+        pages["index.html"] = build_html(
+            homes, title, bearings=bearings, refresh_seconds=DEFAULT_REFRESH_SECONDS
+        )
+        return pages
+    return build
+
+
+def make_handler(cache: SiteCache) -> type[BaseHTTPRequestHandler]:
+    class Handler(BaseHTTPRequestHandler):
+        server_version = "Quarterdeck"
+
+        def send_text(self, status: int, body: str, content_type: str = "text/plain; charset=utf-8") -> None:
+            data = body.encode("utf-8")
+            self.send_response(status)
+            self.send_header("Content-Type", content_type)
+            self.send_header("Content-Length", str(len(data)))
+            self.send_header("Cache-Control", "no-store")
+            self.send_header("X-Content-Type-Options", "nosniff")
+            self.end_headers()
+            self.wfile.write(data)
+
+        def do_GET(self) -> None:  # noqa: N802 - http.server naming
+            if is_loopback(str(self.server.server_address[0])) and not request_host_is_loopback(
+                self.headers.get("Host")
+            ):
+                self.send_text(403, "Host is not allowed\n")
+                return
+            path = unquote(urlparse(self.path).path)
+            name = "index.html" if path in {"/", "/index.html"} else path.lstrip("/")
+            if "/" in name or not name.endswith(".html"):
+                self.send_text(404, "Not found\n")
+                return
+            try:
+                pages = cache.get()
+            except (OSError, ValueError) as exc:
+                self.send_text(500, f"Quarterdeck could not render: {exc}\n")
+                return
+            if name not in pages:
+                self.send_text(404, "Not found\n")
+                return
+            self.send_text(200, pages[name], "text/html; charset=utf-8")
+
+        def refuse(self) -> None:
+            self.send_response(405)
+            self.send_header("Allow", "GET")
+            self.send_header("Content-Length", "0")
+            self.end_headers()
+
+        do_POST = do_PUT = do_DELETE = do_PATCH = do_HEAD = do_OPTIONS = refuse
+
+        def log_message(self, format: str, *args: object) -> None:  # noqa: A002
+            sys.stderr.write("quarterdeck: %s - %s\n" % (self.address_string(), format % args))
+
+    return Handler
+
+
+def is_loopback(host: str) -> bool:
+    if host == "localhost":
+        return True
+    try:
+        address = ipaddress.ip_address(host)
+        mapped_address = getattr(address, "ipv4_mapped", None)
+        return address.is_loopback or bool(mapped_address and mapped_address.is_loopback)
+    except ValueError:
+        return False
+
+
+def request_host_is_loopback(value: str | None) -> bool:
+    if not value:
+        return False
+    try:
+        parsed = urlparse("//" + value.strip())
+        if parsed.username or parsed.password or parsed.path or parsed.query or parsed.fragment:
+            return False
+        port = parsed.port
+        if port is not None and not 1 <= port <= 65535:
+            return False
+        host = parsed.hostname
+        if not host:
+            return False
+        if host.rstrip(".").lower() == "localhost":
+            return True
+        address = ipaddress.ip_address(host)
+        mapped_address = getattr(address, "ipv4_mapped", None)
+        return address.is_loopback or bool(mapped_address and mapped_address.is_loopback)
+    except ValueError:
+        return False
+
+
+def bind_hosts(args: argparse.Namespace) -> list[str]:
+    hosts = list(dict.fromkeys(args.host or [DEFAULT_HOST]))
+    return hosts
+
+
+def make_server(host: str, port: int, handler: type[BaseHTTPRequestHandler]) -> ThreadingHTTPServer:
+    class Server(ThreadingHTTPServer):
+        address_family = socket.AF_INET6 if ":" in host else socket.AF_INET
+        daemon_threads = True
+
+        def server_bind(self) -> None:
+            if self.address_family == socket.AF_INET6:
+                self.socket.setsockopt(socket.IPPROTO_IPV6, socket.IPV6_V6ONLY, 1)
+            super().server_bind()
+
+    return Server((host, port), handler)
+
+
+def serve(args: argparse.Namespace) -> int:
+    servers: list[ThreadingHTTPServer] = []
+    try:
+        cache = SiteCache(site_builder(args))
+        cache.get()
+        handler = make_handler(cache)
+        port = args.port
+        for host in bind_hosts(args):
+            server = make_server(host, port, handler)
+            port = server.server_address[1]
+            servers.append(server)
+    except (OSError, ValueError) as exc:
+        for server in servers:
+            server.server_close()
+        print(f"quarterdeck: {exc}", file=sys.stderr)
+        return 2
+    for server in servers:
+        host = str(server.server_address[0])
+        shown = f"[{host}]" if ":" in host else host
+        print(f"Serving Quarterdeck at http://{shown}:{port}/ (read-only; Ctrl+C to stop)", flush=True)
+    exposed = [host for host in bind_hosts(args) if not is_loopback(host)]
+    if exposed:
+        print(
+            f"quarterdeck: warning: {', '.join(exposed)} is not a loopback address; anyone who can reach this "
+            "port can read your Firstmate work data, and there is no login.", file=sys.stderr, flush=True,
+        )
+    threads = [threading.Thread(target=server.serve_forever, daemon=True) for server in servers[1:]]
+    for thread in threads:
+        thread.start()
+    try:
+        servers[0].serve_forever()
+    except KeyboardInterrupt:
+        pass
+    finally:
+        for server in servers:
+            server.shutdown() if server is not servers[0] else None
+            server.server_close()
+    return 0
+
+
+def systemd_quote(value: str, *, literal_dollars: bool = False) -> str:
+    if any(unicodedata.category(character) == "Cc" for character in value):
+        raise ValueError("systemd values cannot contain control characters")
+    if literal_dollars:
+        value = value.replace("$", "$$")
+    return '"' + value.replace("\\", "\\\\").replace('"', '\\"').replace("%", "%%") + '"'
+
+
+def service_unit(args: argparse.Namespace) -> str:
+    command = [sys.executable, str(Path(__file__).resolve()), "serve"]
+    for host in bind_hosts(args):
+        command += ["--host", host]
+    command += ["--port", str(args.port)]
+    config_path = args.config.expanduser().resolve() if args.config else default_config_path()
+    config = load_config(config_path) if args.config or config_path.is_file() else {}
+    single_home = bool(args.home) or ("homes" not in config and bool(os.environ.get("FM_HOME")))
+    if args.home:
+        command += ["--home", str(Path(args.home).expanduser().resolve())]
+    elif "homes" not in config and os.environ.get("FM_HOME"):
+        command += ["--home", str(Path(os.environ["FM_HOME"]).expanduser().resolve())]
+    if args.config or config_path.is_file():
+        command += ["--config", str(config_path)]
+    exec_start = " ".join(systemd_quote(part, literal_dollars=True) for part in command)
+    environment = []
+    if single_home and os.environ.get("FM_DATA_OVERRIDE"):
+        data_override = Path(os.environ["FM_DATA_OVERRIDE"]).expanduser().resolve()
+        environment.append("Environment=" + systemd_quote("FM_DATA_OVERRIDE=" + str(data_override)))
+    if os.environ.get("XDG_STATE_HOME"):
+        state_home = Path(os.environ["XDG_STATE_HOME"]).expanduser().resolve()
+        environment.append("Environment=" + systemd_quote("XDG_STATE_HOME=" + str(state_home)))
+    environment_lines = "\n".join(environment)
+    if environment_lines:
+        environment_lines += "\n"
+    return (
+        "[Unit]\nDescription=Quarterdeck read-only Firstmate bearings page\nAfter=network.target\n\n"
+        f"[Service]\n{environment_lines}ExecStart={exec_start}\nRestart=on-failure\nRestartSec=5\n\n"
+        "[Install]\nWantedBy=default.target\n"
+    )
+
+
+def service(args: argparse.Namespace) -> int:
+    try:
+        unit = service_unit(args)
+        if not args.write:
+            sys.stdout.write(unit)
+            return 0
+        config_home = Path(os.environ.get("XDG_CONFIG_HOME") or "~/.config").expanduser()
+        unresolved_unit_path = config_home / "systemd" / "user" / "quarterdeck.service"
+        if unresolved_unit_path.is_symlink():
+            raise ValueError(f"refusing to replace symbolic-link unit: {unresolved_unit_path}")
+        unit_path = unresolved_unit_path.parent.resolve() / unresolved_unit_path.name
+        checkout = Path(__file__).resolve().parent
+        try:
+            unit_path.relative_to(checkout)
+        except ValueError:
+            pass
+        else:
+            raise ValueError("the unit file must be outside the Quarterdeck checkout")
+        if unit_path.is_symlink():
+            raise ValueError(f"refusing to replace symbolic-link unit: {unit_path}")
+        unit_path.parent.mkdir(parents=True, exist_ok=True)
+        write_generated_page(unit_path, unit)
+    except (OSError, ValueError) as exc:
+        print(f"quarterdeck: {exc}", file=sys.stderr)
+        return 2
+    print(f"Wrote {unit_path}")
+    print("Start it with: systemctl --user daemon-reload && systemctl --user enable --now quarterdeck.service")
+    exposed = [host for host in bind_hosts(args) if not is_loopback(host)]
+    if exposed:
+        print(
+            f"quarterdeck: warning: {', '.join(exposed)} is not a loopback address; anyone who can reach the "
+            "port can read your Firstmate work data, and there is no login.", file=sys.stderr,
+        )
+    return 0
+
+
 COMMAND_DOCS = {
-    "render": ["how-to/view-in-lavish.md", "how-to/request-lavish-page.md", "explanation/attention-model.md", "reference/cli-and-config.md", "explanation/privacy-and-architecture.md"],
+    "render": ["how-to/serve-the-page.md", "how-to/view-in-lavish.md", "how-to/request-lavish-page.md", "explanation/attention-model.md", "reference/cli-and-config.md", "explanation/privacy-and-architecture.md"],
     "reports": ["how-to/review-reports.md", "reference/cli-and-config.md", "explanation/privacy-and-architecture.md"],
+    "serve": ["how-to/serve-the-page.md", "reference/cli-and-config.md", "explanation/privacy-and-architecture.md"],
+    "service": ["how-to/serve-the-page.md", "reference/cli-and-config.md"],
     "add": ["how-to/configure-multiple-homes.md", "reference/cli-and-config.md"],
     "list": ["how-to/configure-multiple-homes.md", "reference/cli-and-config.md"],
     "remove": ["how-to/configure-multiple-homes.md", "reference/cli-and-config.md"],
@@ -1539,7 +2542,7 @@ def load_home_snapshot(spec: HomeSpec, discover_secondmates: bool = False) -> Ho
     if spec.unavailable_reason:
         snapshot.error = spec.unavailable_reason
     elif spec.remote_host:
-        snapshot.error = f"This secondmate is on remote host {spec.remote_host}; Quarterdeck reads local files only."
+        snapshot.error = f"This secondmate is on remote host {spec.remote_host}; Quarterdeck does not read its files directly."
     elif spec.home is None:
         snapshot.error = "The registered route does not contain a local home path."
     else:
@@ -1576,19 +2579,25 @@ def load_home_snapshot(spec: HomeSpec, discover_secondmates: bool = False) -> Ho
     return snapshot
 
 
+def load_site(args: argparse.Namespace) -> tuple[dict[str, object], list[HomeSnapshot], Bearings]:
+    """Read the configured homes and review marks, then classify them into bearings."""
+    if args.config is None:
+        default_path = default_config_path()
+        args.config = default_path if default_path.is_file() else None
+    config = load_config(args.config)
+    specs, legacy_single_home = resolve_home_specs(args, config)
+    homes = [load_home_snapshot(spec, discover_secondmates=True) for spec in specs]
+    if legacy_single_home and homes[0].error:
+        raise ValueError(homes[0].error)
+    state_path = validate_review_state_location(homes)
+    apply_review_marks(homes, load_review_marks(state_path))
+    bearings = build_bearings(homes, use_snapshot=not getattr(args, "no_snapshot", False))
+    return config, homes, bearings
+
+
 def render(args: argparse.Namespace) -> int:
     try:
-        if args.config is None:
-            default_path = default_config_path()
-            args.config = default_path if default_path.is_file() else None
-        config = load_config(args.config)
-        specs, legacy_single_home = resolve_home_specs(args, config)
-        homes = [load_home_snapshot(spec, discover_secondmates=True) for spec in specs]
-        if legacy_single_home and homes[0].error:
-            print(f"quarterdeck: {homes[0].error}", file=sys.stderr)
-            return 2
-        state_path = validate_review_state_location(homes)
-        apply_review_marks(homes, load_review_marks(state_path))
+        config, homes, bearings = load_site(args)
         configured_output = config.get("output_dir")
         output_dir = Path(configured_output).expanduser() if isinstance(configured_output, str) else default_output_dir()
         output_path = Path(args.output).expanduser() if args.output else output_dir / "index.html"
@@ -1599,8 +2608,10 @@ def render(args: argparse.Namespace) -> int:
         output_path = output_path.resolve()
         validate_output_path(output_path, homes)
         output_path.parent.mkdir(parents=True, exist_ok=True)
-        write_source_pages(homes, output_path.parent, show_all=args.all)
-        write_generated_page(output_path, build_html(homes, title, lavish=args.lavish, show_all=args.all))
+        write_source_pages(homes, output_path.parent, show_all=args.all, bearings=bearings)
+        write_generated_page(
+            output_path, build_html(homes, title, lavish=args.lavish, show_all=args.all, bearings=bearings)
+        )
     except (OSError, ValueError) as exc:
         print(f"quarterdeck: {exc}", file=sys.stderr)
         return 2
@@ -1629,6 +2640,13 @@ def render(args: argparse.Namespace) -> int:
     return 0
 
 
+def add_serve_options(parser: argparse.ArgumentParser) -> None:
+    parser.add_argument("--host", action="append", metavar="ADDRESS", help=f"address to bind; repeat to listen on several, all on the same port (default {DEFAULT_HOST} only; a non-loopback address exposes your work data without a login)")
+    parser.add_argument("--port", type=port_number, default=DEFAULT_PORT, help=f"port to listen on (default {DEFAULT_PORT})")
+    parser.add_argument("--home", help="serve this Firstmate home instead of configured homes or FM_HOME")
+    parser.add_argument("--config", type=Path, help="optional JSON config file")
+
+
 def make_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="quarterdeck", description="Render and manage a read-only Firstmate review page.")
     subparsers = parser.add_subparsers(dest="command", required=True)
@@ -1644,7 +2662,27 @@ def make_parser() -> argparse.ArgumentParser:
     render_parser.add_argument("--title", help="override the page title")
     render_parser.add_argument("--all", action="store_true", help="show every backlog item and scout report, including queued and finished work")
     render_parser.add_argument("--lavish", action="store_true", help="write a separate Lavish-ready page and open it when lavish-axi is available")
+    render_parser.add_argument("--no-snapshot", action="store_true", help="skip the Firstmate bearings snapshot script and parse backlogs directly")
     render_parser.set_defaults(handler=render)
+
+    serve_parser = subparsers.add_parser(
+        "serve", help="serve the always-current bearings page over HTTP",
+        description="Serve the bearings page and its readable report and backlog pages, re-rendered from the homes on request. Read-only: GET only, no write endpoints, no login. Binds loopback by default.",
+    )
+    command_parsers["serve"] = serve_parser
+    add_serve_options(serve_parser)
+    serve_parser.add_argument("--title", help="override the page title")
+    serve_parser.add_argument("--no-snapshot", action="store_true", help="skip the Firstmate bearings snapshot script and parse backlogs directly")
+    serve_parser.set_defaults(handler=serve)
+
+    service_parser = subparsers.add_parser(
+        "service", help="print or write a systemd user unit that runs serve",
+        description="Print a systemd user unit for 'quarterdeck serve', or write it to ~/.config/systemd/user/quarterdeck.service with --write. It never runs systemctl.",
+    )
+    command_parsers["service"] = service_parser
+    add_serve_options(service_parser)
+    service_parser.add_argument("--write", action="store_true", help="write the unit file instead of printing it")
+    service_parser.set_defaults(handler=service)
 
     reports_parser = subparsers.add_parser(
         "reports", help="list, read, and track report reviews",

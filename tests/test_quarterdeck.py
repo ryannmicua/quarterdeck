@@ -5,13 +5,16 @@ import html
 import io
 import os
 import re
+import shlex
 import stat
 import subprocess
 import sys
 import tempfile
 import threading
+import time
 import unittest
 from contextlib import redirect_stderr, redirect_stdout
+from datetime import datetime, timezone
 from pathlib import Path
 from unittest.mock import patch
 
@@ -21,6 +24,36 @@ sys.path.insert(0, str(ROOT / "scripts"))
 
 import quarterdeck
 import privacy_guard
+
+
+def parse_systemd_unit(source: str) -> dict[str, dict[str, list[object]]]:
+    unit: dict[str, dict[str, list[object]]] = {}
+    section = ""
+    for line in source.splitlines():
+        line = line.strip()
+        if not line or line.startswith("#"):
+            continue
+        if line.startswith("[") and line.endswith("]"):
+            section = line[1:-1]
+            unit.setdefault(section, {})
+            continue
+        key, separator, value = line.partition("=")
+        if not separator or not section:
+            raise ValueError(f"invalid systemd directive: {line}")
+        if key == "ExecStart":
+            value = value.replace("$$", "$").replace("%%", "%")
+            parsed: object = shlex.split(value)
+        elif key == "Environment":
+            words = shlex.split(value.replace("%%", "%"))
+            if len(words) != 1:
+                raise ValueError(f"invalid systemd environment assignment: {line}")
+            parsed = words[0]
+        elif key == "WantedBy":
+            parsed = value.split()
+        else:
+            parsed = value
+        unit[section].setdefault(key, []).append(parsed)
+    return unit
 
 
 class QuarterdeckTests(unittest.TestCase):
@@ -126,7 +159,8 @@ Use the compact format for the first release.
             output = root / "outside-output" / "index.html"
             result = self.run_cli(["render", "--home", str(home), "--output", str(output)], root, root / "config")
             self.assertEqual(result.returncode, 0, result.stderr)
-            page = output.read_text(encoding="utf-8")
+            full_page = output.read_text(encoding="utf-8")
+            page = full_page.split("Details by home", 1)[1]
             self.assertIn("Choose the Amber Kite import format", page)
             self.assertIn("Use the compact format for the first release.", page)
             self.assertIn("https://github.com/example/quarterdeck-demo/" + "pull/42", page)
@@ -160,7 +194,7 @@ Use the compact format for the first release.
                 metric = re.search(r'<div class="metric"><b>(\d+)</b><span>' + re.escape(label) + r"</span></div>", page)
                 self.assertIsNotNone(metric)
                 self.assertEqual(int(metric.group(1)), page.count(f'<p class="eyebrow">{badge}</p>'))
-            self.assertIn('name="quarterdeck-' + "generated" + '"', page)
+            self.assertIn('name="quarterdeck-' + "generated" + '"', full_page)
             self.assertNotIn("https://fonts.", page)
             report_pages = list(output.parent.glob("report-*.html"))
             self.assertEqual(len(report_pages), 6)
@@ -197,10 +231,12 @@ Use the compact format for the first release.
             self.assertIn("Request a Lavish page", page)
             self.assertRegex(page, r'<article class="card" id="review-report-[0-9a-f]{12}">')
             self.assertIn("Reports needing review", page)
-            self.assertEqual(page, quarterdeck.build_html(
-                [quarterdeck.load_home_snapshot(quarterdeck.HomeSpec(home.name, home), discover_secondmates=True)],
-                "Quarterdeck", lavish=True,
-            ))
+            homes = [quarterdeck.load_home_snapshot(quarterdeck.HomeSpec(home.name, home), discover_secondmates=True)]
+            expected = quarterdeck.build_html(
+                homes, "Quarterdeck", lavish=True, bearings=quarterdeck.build_bearings(homes),
+            )
+            stamp = re.compile(r"[Gg]enerated(?: at)? \d{4}-\d\d-\d\d \d\d:\d\d:\d\d UTC")
+            self.assertEqual(stamp.sub("", page), stamp.sub("", expected))
 
     def test_all_mode_restores_queued_finished_and_unlinked_reports(self) -> None:
         with tempfile.TemporaryDirectory() as temp:
@@ -209,7 +245,7 @@ Use the compact format for the first release.
             output = root / "outside-output" / "index.html"
             result = self.run_cli(["render", "--all", "--home", str(home), "--output", str(output)], root, root / "config")
             self.assertEqual(result.returncode, 0, result.stderr)
-            page = output.read_text(encoding="utf-8")
+            page = output.read_text(encoding="utf-8").split("Details by home", 1)[1]
             self.assertIn("Gather the Finch field notes", page)
             self.assertIn("File the old Finch notes", page)
             self.assertIn("Unlinked old report", page)
@@ -1006,6 +1042,693 @@ Use the compact format for the first release.
             quarterdeck.report_recommendation("## Recommendation\n\nChoose the north path."),
             "Choose the north path.",
         )
+
+
+PIER_PR = "https://github.com/example/pier-demo/" + "pull/7"
+BULLET_BACKLOG = """# Backlog
+
+## In flight
+
+- [ ] harbor-chart - Harbor chart: draw the tide tables (repo: harbor-demo) (kind: ship) (since 2026-09-30)
+  Drawing tides for the invented harbor.
+
+## Queued
+
+- [ ] kelp-survey - Kelp survey: map the invented reef data/kelp-survey/report.md blocked-by: harbor-chart (repo: reef-demo) (kind: ship) (since 2026-09-20) (held: yes) (hold: Waiting on the invented diver roster. Options: (a) survey now, (b) wait for spring. Recommendation: wait for spring (cheaper).) (hold-kind: captain)
+
+  Filed 2026-09-20T08:00:00Z. The reef survey needs a choice (see data/kelp-survey/report.md).
+
+  Second paragraph with the long body text that must stay on the page.
+- [ ] later-work - Later work: sort the invented buoys (repo: buoy-demo) (kind: ship) (since 2026-09-25)
+
+## Done
+
+- [x] pier-fix - Pier fix: patch the invented pier (repo: pier-demo) (kind: ship) (merged 2026-10-01 """ + PIER_PR + """)
+- [x] old-dock - Old dock: retire the invented dock (repo: dock-demo) (done 2026-08-01)
+"""
+
+SNAPSHOT_JSON = {
+    "schema": "fm-bearings.v1",
+    "home": "invented",
+    "generated": "2026-10-04T00:00:00Z",
+    "in_flight": [{"id": "harbor-chart", "kind": "ship", "state": "working", "repo": "harbor-demo",
+                   "name": "Harbor chart", "doing": "drawing tides"}],
+    "secondmates": [{"id": "kestrel", "state": "no_active_work", "doing": "mapping", "reason": "-"}],
+    "decisions_open": [{"id": "kelp-survey", "key": "kelp-survey", "verb": "captain-hold",
+                        "summary": "Kelp survey: map the invented reef (truncated sum", "owner": "(main)"}],
+    "landed": [{"id": "pier-fix", "what": "Pier fix: patch the invented pier", "artifact":
+                PIER_PR, "owner": "(main)"}],
+    "gates": [{"id": "later-work", "title": "Later work", "blocked_by": "harbor-chart",
+               "reason": "queued behind the chart", "owner": "(main)", "filed": "2026-09-25"}],
+    "reports": [], "recorded_prs": [],
+}
+
+
+class BearingsTests(unittest.TestCase):
+    def make_home(self, root: Path, snapshot_script: str | None = None) -> Path:
+        home = root / "invented-home"
+        (home / "data" / "kelp-survey").mkdir(parents=True)
+        (home / "data" / "backlog.md").write_text(BULLET_BACKLOG, encoding="utf-8")
+        (home / "data" / "kelp-survey" / "report.md").write_text(
+            "# Kelp survey report\n\n## Recommendation\n\nWait for spring.\n", encoding="utf-8")
+        if snapshot_script is not None:
+            script = home / "bin" / "fm-bearings-snapshot.sh"
+            script.parent.mkdir()
+            script.write_text(snapshot_script, encoding="utf-8")
+            script.chmod(0o755)
+        return home
+
+    def snapshots(self, home: Path) -> list:
+        homes = [quarterdeck.load_home_snapshot(quarterdeck.HomeSpec("invented", home), discover_secondmates=True)]
+        quarterdeck.apply_review_marks(homes, {})
+        return homes
+
+    def assert_four_sections(self, page: str) -> None:
+        order = [page.index(f'id="{key}"') for key in ("call", "landed", "underway", "charted")]
+        self.assertEqual(order, sorted(order))
+        for title in ("Captain&#x27;s Call", "Recently Landed", "Underway", "Charted Next",
+                      "Reports waiting on your review"):
+            self.assertIn(title, page)
+
+    def test_snapshot_path_classifies_fields_and_enriches_from_backlog(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            home = self.make_home(Path(temp), "#!/bin/sh\ncat <<'JSON'\n" + json.dumps(SNAPSHOT_JSON) + "\nJSON\n")
+            now = datetime(2026, 10, 4, tzinfo=timezone.utc)
+            bearings = quarterdeck.build_bearings(self.snapshots(home), now=now)
+            self.assertEqual(bearings.sources[0].mode, "snapshot")
+            self.assertEqual([i.item_id for i in bearings.call], ["kelp-survey"])
+            self.assertEqual([i.item_id for i in bearings.landed], ["pier-fix"])
+            self.assertEqual([i.title for i in bearings.underway], ["Harbor chart"])
+            self.assertEqual([i.item_id for i in bearings.charted], ["later-work"])
+            page = quarterdeck.bearings_html(bearings)
+            self.assert_four_sections(page)
+            # The full backlog text replaces the snapshot's truncated summary.
+            self.assertIn("Waiting on the invented diver roster", page)
+            self.assertIn("Second paragraph with the long body text", page)
+            self.assertNotIn("truncated sum", page)
+            self.assertIn("(a) survey now, (b) wait for spring.", page)
+            self.assertIn("wait for spring (cheaper).", page)
+            self.assertIn("waiting 14 days", page)
+            self.assertIn("project reef-demo", page)
+            self.assertIn("Read report", page)
+            self.assertIn(f'href="{PIER_PR}">{PIER_PR}<', page)
+            self.assertIn("harbor-chart — queued behind the chart", page)
+            self.assertIn("Firstmate bearings snapshot", page)
+
+    def test_snapshot_secondmate_work_uses_registered_home_label(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            home = self.make_home(root)
+            child_home = root / "kestrel-home"
+            (child_home / "data").mkdir(parents=True)
+            (child_home / "data" / "backlog.md").write_text("# Secondmate backlog\n", encoding="utf-8")
+            (home / "data" / "secondmates.md").write_text(
+                f"- kestrel - Maintains the field guide (home: {child_home}; scope: Field guide)\n",
+                encoding="utf-8",
+            )
+            snapshots = self.snapshots(home)
+            child = next(child for child in snapshots[0].children if child.spec.route_id == "kestrel")
+            payload = {
+                **SNAPSHOT_JSON,
+                "decisions_open": [{"owner": "kestrel", "key": "remote-decision",
+                                    "summary": "Approve the field guide", "verb": "review"}],
+                "landed": [{"owner": "kestrel", "id": "remote-landed", "what": "Field guide update",
+                            "artifact": "-"}],
+                "in_flight": [{"id": "kestrel/kestrel-work", "name": "Willow Quay field guide",
+                               "repo": None, "state": "working", "doing": "mapping"}],
+                "gates": [{"owner": "kestrel", "id": "remote-gate", "title": "Wait for the field guide",
+                           "filed": None, "blocked_by": "field guide", "reason": "review pending"}],
+            }
+            calls = []
+            bearings = quarterdeck.build_bearings(
+                snapshots, runner=lambda selected_home, _data_dir: (calls.append(selected_home) or payload, ""))
+            task = next(item for item in bearings.underway if item.item_id == "kestrel/kestrel-work")
+            self.assertEqual(task.title, "Willow Quay field guide")
+            self.assertEqual(task.owner, child.spec.label)
+            self.assertEqual(bearings.call[0].owner, child.spec.label)
+            self.assertEqual(bearings.call[0].title, "Approve the field guide")
+            self.assertEqual(bearings.call[0].detail,
+                             f"Full background lives in the secondmate home: {child.spec.label}.")
+            self.assertEqual(bearings.landed[0].owner, child.spec.label)
+            self.assertEqual(bearings.charted[-1].owner, child.spec.label)
+            self.assertEqual(calls, [home])
+
+    def test_secondmate_summaries_do_not_duplicate_live_work(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            home = self.make_home(Path(temp))
+            payload = {
+                **SNAPSHOT_JSON,
+                "decisions_open": [*SNAPSHOT_JSON["decisions_open"],
+                                    {"owner": "decision-route", "key": "decision-route/task",
+                                     "summary": "Resolve the route decision", "verb": "review"}],
+                "in_flight": [*SNAPSHOT_JSON["in_flight"],
+                              {"id": "kestrel/kestrel-task", "name": "Live child task", "repo": None,
+                               "state": "working", "doing": "moving buoys"}],
+                "secondmates": [
+                    {"id": "kestrel", "state": "active_child_work", "doing": "moving buoys", "reason": ""},
+                    {"id": "held-route", "state": "externally_held", "doing": "waiting for access",
+                     "reason": "owner approval"},
+                    {"id": "unknown-route", "state": "unrecognized", "doing": "status unavailable",
+                     "reason": ""},
+                    {"id": "idle-route", "state": "no_active_work", "doing": "", "reason": ""},
+                    {"id": "decision-route", "state": "captain_decision", "doing": "one decision",
+                     "reason": ""},
+                ],
+            }
+            bearings = quarterdeck.build_bearings(
+                self.snapshots(home), runner=lambda _home, _data_dir: (payload, ""))
+            self.assertEqual([item.item_id for item in bearings.underway], ["harbor-chart", "kestrel/kestrel-task"])
+            self.assertCountEqual([item.item_id for item in bearings.charted],
+                                  ["later-work", "held-route", "unknown-route"])
+            self.assertEqual([item.item_id for item in bearings.call], ["kelp-survey", "decision-route/task"])
+            all_ids = [item.item_id for items in (bearings.call, bearings.landed, bearings.underway, bearings.charted)
+                       for item in items]
+            self.assertEqual(len(all_ids), len(set(all_ids)))
+
+    def test_snapshot_omissions_are_visible_in_the_page(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            home = self.make_home(Path(temp))
+            payload = {
+                **SNAPSHOT_JSON,
+                "omitted": [{"surface": "landed rows", "reveal": "run bearings with <all>"}],
+            }
+            bearings = quarterdeck.build_bearings(
+                self.snapshots(home), runner=lambda _home, _data_dir: (payload, ""))
+            page = quarterdeck.bearings_html(bearings)
+            self.assertIn("Snapshot omissions", page)
+            self.assertIn("invented", page)
+            self.assertIn("landed rows", page)
+            self.assertIn("run bearings with &lt;all&gt;", page)
+
+    def test_snapshot_script_receives_fm_home_and_json_flag(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            script = ('#!/bin/sh\nprintf \'{"schema":"fm-bearings.v1","home":"%s","args":"%s",'
+                      '"decisions_open":[],"landed":[],"in_flight":[],"secondmates":[],"gates":[]}\' "$FM_HOME" "$*"\n')
+            home = self.make_home(Path(temp), script)
+            data, reason = quarterdeck.run_bearings_snapshot(home)
+            self.assertEqual(reason, "")
+            self.assertEqual(data["home"], str(home))
+            self.assertEqual(data["args"], "--json")
+
+    def test_fallback_path_classifies_backlog_and_says_why(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            home = self.make_home(Path(temp))
+            now = datetime(2026, 10, 4, tzinfo=timezone.utc)
+            bearings = quarterdeck.build_bearings(self.snapshots(home), now=now)
+            self.assertEqual(bearings.sources[0].mode, "fallback")
+            self.assertEqual([i.item_id for i in bearings.call], ["kelp-survey"])
+            self.assertEqual([i.item_id for i in bearings.landed], ["pier-fix", "old-dock"])
+            self.assertEqual([i.item_id for i in bearings.underway], ["harbor-chart"])
+            self.assertEqual([i.item_id for i in bearings.charted], ["later-work"])
+            self.assertEqual(bearings.charted[0].waits_on, "queue order")
+            page = quarterdeck.bearings_html(bearings)
+            self.assert_four_sections(page)
+            self.assertIn("fallback", page)
+            self.assertIn("no executable bin/fm-bearings-snapshot.sh", page)
+            self.assertIn("waiting on the invented diver roster".lower(), page.lower())
+            self.assertIn("Second paragraph with the long body text", page)
+            self.assertIn("(a) survey now, (b) wait for spring.", page)
+            self.assertIn(PIER_PR, page)
+            self.assertIn("waiting 14 days", page)
+            self.assertIn("Kelp survey report", page)  # report is listed as needing review
+
+    def test_fallback_when_script_fails_or_times_out_or_prints_garbage(self) -> None:
+        cases = {
+            "exit": ("#!/bin/sh\nexit 3\n", "status 3"),
+            "garbage": ("#!/bin/sh\necho not json\n", "did not print JSON"),
+            "schema": ('#!/bin/sh\necho \'{"schema":"other"}\'\n', "unrecognized schema"),
+            "slow": ("#!/bin/sh\nsleep 5\n", "timed out"),
+            "invalid utf-8": ("#!/bin/sh\nprintf '\\377'\n", "invalid UTF-8"),
+        }
+        for name, (script, expected) in cases.items():
+            with self.subTest(name), tempfile.TemporaryDirectory() as temp:
+                home = self.make_home(Path(temp), script)
+                bearings = quarterdeck.build_bearings(
+                    self.snapshots(home), runner=lambda h, data_dir: quarterdeck.run_bearings_snapshot(
+                        h, data_dir=data_dir, timeout=0.5))
+                self.assertEqual(bearings.sources[0].mode, "fallback")
+                self.assertIn(expected, bearings.sources[0].reason)
+                self.assertEqual([i.item_id for i in bearings.call], ["kelp-survey"])
+
+    def test_snapshot_allows_nullable_fields_and_uses_selected_data_dir(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            home = self.make_home(root)
+            data_dir = root / "archive" / "data"
+            data_dir.mkdir(parents=True)
+            (data_dir / "backlog.md").write_text(
+                (home / "data" / "backlog.md").read_text(encoding="utf-8"), encoding="utf-8")
+            payload = {
+                "schema": "fm-bearings.v1",
+                "decisions_open": [],
+                "landed": [],
+                "in_flight": [{"id": "archive-task", "name": "", "repo": None,
+                               "state": "working", "doing": ""}],
+                "secondmates": [],
+                "gates": [{"owner": "(main)", "id": "archive-gate", "title": "Archive gate",
+                           "filed": None, "blocked_by": "", "reason": ""}],
+            }
+            payload_script = (
+                f"#!{sys.executable}\n"
+                "import json, os\n"
+                f"payload = {payload!r}\n"
+                "payload['in_flight'][0]['name'] = os.environ['FM_DATA_OVERRIDE']\n"
+                "print(json.dumps(payload))\n"
+            )
+            script = home / "bin" / "fm-bearings-snapshot.sh"
+            script.parent.mkdir()
+            script.write_text(payload_script, encoding="utf-8")
+            script.chmod(0o755)
+            snapshot = quarterdeck.load_home_snapshot(
+                quarterdeck.HomeSpec("archive-home", home, data_dir=data_dir))
+            with patch.dict(os.environ, {"FM_DATA_OVERRIDE": str(root / "wrong-data")}):
+                bearings = quarterdeck.build_bearings([snapshot])
+            self.assertEqual(bearings.sources[0].mode, "snapshot")
+            self.assertEqual(bearings.underway[0].title, str(data_dir.resolve()))
+            self.assertEqual(bearings.charted[0].filed, "")
+
+    def test_malformed_snapshot_shapes_fall_back_to_the_backlog(self) -> None:
+        malformed = [
+            ({**SNAPSHOT_JSON, "schema": "fm-bearings.future"}, "unrecognized schema"),
+            ({key: value for key, value in SNAPSHOT_JSON.items() if key != "decisions_open"}, "decisions_open is not an array"),
+            ({**SNAPSHOT_JSON, "in_flight": [{**SNAPSHOT_JSON["in_flight"][0], "repo": 3}]}, "invalid repo"),
+            ({**SNAPSHOT_JSON, "omitted": [{"surface": 3, "reveal": "run with --all"}]}, "invalid details"),
+        ]
+        for payload, expected in malformed:
+            with self.subTest(expected=expected), tempfile.TemporaryDirectory() as temp:
+                script = "#!/bin/sh\nprintf '%s' '" + json.dumps(payload) + "'\n"
+                home = self.make_home(Path(temp), script)
+                bearings = quarterdeck.build_bearings(self.snapshots(home))
+                self.assertEqual(bearings.sources[0].mode, "fallback")
+                self.assertIn(expected, bearings.sources[0].reason)
+                self.assertEqual([item.item_id for item in bearings.call], ["kelp-survey"])
+
+    def test_bullet_fallback_uses_closed_review_and_live_states(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            home = self.make_home(Path(temp))
+            backlog = home / "data" / "backlog.md"
+            extra = """
+
+## More work
+- [ ] review-patch - Review the added patch (repo: patch-demo) (state: review_ready) (pr: https://github.com/example/quarterdeck-demo/pull/84)
+- [ ] running-task - Resume the running survey (state: running)
+- [ ] progress-task - Continue the active chart (status: in_progress)
+
+## Finished
+- [ ] finished-task - File the completed sample
+"""
+            backlog.write_text(backlog.read_text(encoding="utf-8") + extra, encoding="utf-8")
+            bearings = quarterdeck.build_bearings(self.snapshots(home))
+            self.assertIn("review-patch", [item.item_id for item in bearings.call])
+            self.assertTrue({"running-task", "progress-task"}.issubset({item.item_id for item in bearings.underway}))
+            self.assertIn("finished-task", [item.item_id for item in bearings.landed])
+
+    def test_bullet_fallback_requires_an_affirmative_hold_marker(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            home = self.make_home(Path(temp))
+            backlog = home / "data" / "backlog.md"
+            backlog.write_text(backlog.read_text(encoding="utf-8") + """
+
+## Hold markers
+- [ ] released-hold - A released sample (held: no) (hold: stale reason) (hold-kind: captain)
+- [ ] missing-hold - A queued sample (hold: -) (hold-kind: captain)
+- [ ] current-hold - A current sample (held: yes) (hold: choose a route) (hold-kind: captain)
+""", encoding="utf-8")
+            bearings = quarterdeck.build_bearings(self.snapshots(home))
+            self.assertEqual(
+                {item.item_id for item in bearings.call},
+                {"kelp-survey", "current-hold"},
+            )
+            self.assertTrue({"released-hold", "missing-hold"}.issubset(
+                {item.item_id for item in bearings.charted}
+            ))
+
+    def test_merged_state_and_date_are_done_in_bullet_and_table_records(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            home = self.make_home(Path(temp))
+            backlog = home / "data" / "backlog.md"
+            backlog.write_text(backlog.read_text(encoding="utf-8") + """
+
+## Merged bullets
+- [ ] merged-state-bullet - Merged from state (state: merged)
+- [ ] merged-date-bullet - Merged by date (state: working) (merged: 2026-10-02)
+- [ ] merged-none-bullet - Not merged (state: working) (merged: (none))
+
+## Merged table
+| ID | Task | State | Merged |
+| --- | --- | --- | --- |
+| merged-state-table | Merged table state | merged | - |
+| merged-date-table | Merged table date | working | 2026-10-03 |
+| merged-none-table | Not merged table | working | (none) |
+""", encoding="utf-8")
+            snapshot = self.snapshots(home)[0]
+            bearings = quarterdeck.build_bearings([snapshot], use_snapshot=False)
+            landed = {item.item_id: item for item in bearings.landed}
+            for item_id in (
+                "merged-state-bullet", "merged-date-bullet", "merged-state-table", "merged-date-table",
+            ):
+                self.assertIn(item_id, landed)
+                self.assertNotIn(item_id, {item.item_id for item in bearings.charted})
+            for item_id in ("merged-none-bullet", "merged-none-table"):
+                self.assertNotIn(item_id, landed)
+                self.assertIn(item_id, {item.item_id for item in bearings.underway})
+            self.assertEqual(landed["merged-date-bullet"].filed, "2026-10-02")
+            self.assertEqual(landed["merged-date-table"].filed, "2026-10-03")
+
+    def test_cancelled_tasks_are_omitted_from_all_bearings_sections(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            home = self.make_home(Path(temp))
+            backlog = home / "data" / "backlog.md"
+            backlog.write_text(backlog.read_text(encoding="utf-8") + f"""
+
+## Cancelled tasks
+- [ ] cancelled-review - Cancelled review task (state: cancelled) (held: yes) (hold-kind: captain) (review_ready: yes) (pr: {PIER_PR})
+- [x] canceled-checked - Canceled checked task (state: canceled) (merged: 2026-10-02)
+- [ ] cancelled-live - Cancelled active task (state: cancelled)
+- [ ] canceled-gate - Canceled queued task (state: canceled)
+
+## Cancelled table
+| ID | Task | State | Closed | Blocked by |
+| --- | --- | --- | --- | --- |
+| canceled-table | Canceled table task | canceled | 2026-10-03 | captain |
+""", encoding="utf-8")
+            snapshot = self.snapshots(home)[0]
+            cancelled_ids = {"cancelled-review", "canceled-checked", "cancelled-live", "canceled-gate", "canceled-table"}
+            groups = quarterdeck.attention_groups(snapshot, show_all=True)
+            grouped_ids = {
+                quarterdeck.value_for(record.fields, "id")
+                for records in groups.values() for record in records
+            }
+            self.assertTrue(cancelled_ids.isdisjoint(grouped_ids))
+
+            fallback = quarterdeck.build_bearings([snapshot], use_snapshot=False)
+            for section in (fallback.call, fallback.landed, fallback.underway, fallback.charted):
+                self.assertTrue(cancelled_ids.isdisjoint(item.item_id for item in section))
+
+            payload = {
+                **SNAPSHOT_JSON,
+                "decisions_open": [{"owner": "(main)", "key": "cancelled-review", "id": "cancelled-review",
+                                    "summary": "Cancelled review task", "verb": "captain-hold"}],
+                "landed": [{"owner": "(main)", "id": "canceled-table", "what": "Canceled table task",
+                            "artifact": "-"}],
+                "in_flight": [{"id": "cancelled-live", "name": "Cancelled active task", "repo": None,
+                               "state": "working", "doing": "-"}],
+                "gates": [{"owner": "(main)", "id": "canceled-gate", "title": "Canceled queued task",
+                           "filed": None, "blocked_by": "-", "reason": "-"}],
+            }
+            snapshot_result = quarterdeck.build_bearings(
+                [snapshot], runner=lambda _home, _data_dir: (payload, ""))
+            for section in (snapshot_result.call, snapshot_result.landed, snapshot_result.underway,
+                            snapshot_result.charted):
+                self.assertTrue(cancelled_ids.isdisjoint(item.item_id for item in section))
+
+    def test_no_snapshot_option_skips_the_script(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            marker = Path(temp) / "ran"
+            home = self.make_home(Path(temp), f"#!/bin/sh\ntouch {marker}\n")
+            bearings = quarterdeck.build_bearings(self.snapshots(home), use_snapshot=False)
+            self.assertFalse(marker.exists())
+            self.assertIn("--no-snapshot", bearings.sources[0].reason)
+
+    def test_every_section_renders_an_empty_state(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            home = Path(temp) / "empty-home"
+            (home / "data").mkdir(parents=True)
+            (home / "data" / "backlog.md").write_text("# Backlog\n", encoding="utf-8")
+            page = quarterdeck.bearings_html(quarterdeck.build_bearings(self.snapshots(home)))
+            self.assertEqual(page.count('class="empty"'), 5)
+            self.assertIn("Nothing is waiting on a captain decision.", page)
+            self.assertIn("No reports are waiting on your review.", page)
+
+
+class ServeTests(unittest.TestCase):
+    def make_args(self, home: Path, **extra: object) -> object:
+        import argparse
+        values = dict(home=str(home), config=None, title=None, no_snapshot=True)
+        values.update(extra)
+        return argparse.Namespace(**values)
+
+    def start(self, cache: quarterdeck.SiteCache):
+        from http.server import ThreadingHTTPServer
+        server = ThreadingHTTPServer(("127.0.0.1", 0), quarterdeck.make_handler(cache))
+        thread = threading.Thread(target=server.serve_forever, daemon=True)
+        thread.start()
+        self.addCleanup(lambda: (server.shutdown(), server.server_close()))
+        return server.server_address[1]
+
+    def fetch(self, port: int, path: str, method: str = "GET", headers: dict[str, str] | None = None):
+        import http.client
+        connection = http.client.HTTPConnection("127.0.0.1", port, timeout=10)
+        connection.request(method, path, headers=headers or {})
+        response = connection.getresponse()
+        body = response.read().decode("utf-8")
+        connection.close()
+        return response.status, response.headers, body
+
+    def test_cache_reuses_render_until_ttl_then_rerenders(self) -> None:
+        calls: list[int] = []
+        clock = [100.0]
+        cache = quarterdeck.SiteCache(lambda: calls.append(1) or {"index.html": str(len(calls))}, 30, lambda: clock[0])
+        self.assertEqual(cache.get()["index.html"], "1")
+        clock[0] += 29
+        self.assertEqual(cache.get()["index.html"], "1")
+        clock[0] += 1
+        self.assertEqual(cache.get()["index.html"], "2")
+        self.assertEqual(len(calls), 2)
+
+    def test_server_renders_per_request_and_serves_linked_pages_read_only(self) -> None:
+        with tempfile.TemporaryDirectory() as temp, patch.dict(os.environ, {"XDG_STATE_HOME": str(Path(temp) / "state")}):
+            home = BearingsTests().make_home(Path(temp))
+            clock = [0.0]
+            cache = quarterdeck.SiteCache(
+                quarterdeck.site_builder(self.make_args(home)), 30, lambda: clock[0])
+            port = self.start(cache)
+            status, headers, body = self.fetch(port, "/")
+            self.assertEqual(status, 200)
+            self.assertIn("text/html", headers["Content-Type"])
+            self.assertIn("Kelp survey: map the invented reef", body)
+            self.assertIn("Generated at", body)
+            self.assertIn("}, 60000);", body)
+            links = re.findall(r'href="((?:item|report|backlog)-[0-9a-f]{12}\.html)"', body)
+            self.assertTrue(any(link.startswith("item-") for link in links))
+            self.assertTrue(any(link.startswith("report-") for link in links))
+            for link in set(links):
+                self.assertEqual(self.fetch(port, "/" + link)[0], 200, link)
+            # Edits show up only after the cache expires.
+            backlog = home / "data" / "backlog.md"
+            backlog.write_text(backlog.read_text(encoding="utf-8").replace("Later work: sort", "Renamed work: sort"),
+                               encoding="utf-8")
+            self.assertIn("Later work: sort", self.fetch(port, "/")[2])
+            clock[0] += 31
+            fresh = self.fetch(port, "/index.html?x=1")[2]
+            self.assertIn("Renamed work: sort", fresh)
+            self.assertNotIn("Later work: sort", fresh)
+            # Read only: nothing but GET, and only generated pages.
+            for method in ("POST", "PUT", "DELETE", "HEAD"):
+                self.assertEqual(self.fetch(port, "/", method)[0], 405, method)
+            self.assertEqual(self.fetch(port, "/../data/backlog.md")[0], 404)
+            self.assertEqual(self.fetch(port, "/item-000000000000.html")[0], 404)
+
+    def test_serve_listens_on_every_requested_address_on_one_port(self) -> None:
+        import socket
+        import urllib.request
+        with tempfile.TemporaryDirectory() as temp, patch.dict(os.environ, {"XDG_STATE_HOME": str(Path(temp) / "s")}):
+            home = BearingsTests().make_home(Path(temp))
+            with socket.socket() as probe:
+                probe.bind(("127.0.0.1", 0))
+                port = probe.getsockname()[1]
+            args = quarterdeck.make_parser().parse_args(
+                ["serve", "--home", str(home), "--no-snapshot", "--port", str(port),
+                 "--host", "127.0.0.1", "--host", "127.0.0.2"])
+            self.assertEqual(quarterdeck.bind_hosts(args), ["127.0.0.1", "127.0.0.2"])
+            thread = threading.Thread(target=quarterdeck.serve, args=(args,), daemon=True)
+            with redirect_stdout(io.StringIO()):
+                thread.start()
+                for host in ("127.0.0.1", "127.0.0.2"):
+                    for _ in range(100):
+                        try:
+                            body = urllib.request.urlopen(f"http://{host}:{port}/", timeout=2).read().decode()
+                            break
+                        except OSError:
+                            time.sleep(0.1)
+                    else:
+                        self.fail(f"not listening on {host}")
+                    self.assertIn("Captain&#x27;s Call", body)
+
+    def test_ipv6_wildcard_and_ipv4_wildcard_can_share_a_port(self) -> None:
+        import socket
+        handler = quarterdeck.make_handler(quarterdeck.SiteCache(lambda: {"index.html": "ok"}))
+        try:
+            ipv6 = quarterdeck.make_server("::", 0, handler)
+        except OSError as exc:
+            self.skipTest(f"IPv6 wildcard binding is unavailable: {exc}")
+        self.addCleanup(ipv6.server_close)
+        try:
+            ipv4 = quarterdeck.make_server("0.0.0.0", ipv6.server_address[1], handler)
+        except OSError as exc:
+            self.fail(f"IPv4 wildcard could not share the IPv6 listener port: {exc}")
+        self.addCleanup(ipv4.server_close)
+        self.assertEqual(ipv6.address_family, socket.AF_INET6)
+        self.assertEqual(ipv4.address_family, socket.AF_INET)
+
+    def test_ipv4_wildcard_classification_does_not_require_ipv6_mapping(self) -> None:
+        self.assertFalse(quarterdeck.is_loopback("0.0.0.0"))
+        self.assertFalse(quarterdeck.request_host_is_loopback("0.0.0.0"))
+
+    def test_server_reports_render_failure_without_crashing(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            cache = quarterdeck.SiteCache(lambda: (_ for _ in ()).throw(ValueError("broken home")), 30)
+            port = self.start(cache)
+            status, _headers, body = self.fetch(port, "/")
+            self.assertEqual(status, 500)
+            self.assertIn("broken home", body)
+
+    def test_loopback_server_rejects_nonlocal_host_on_all_pages(self) -> None:
+        cache = quarterdeck.SiteCache(
+            lambda: {"index.html": "private index", "report-secret.html": "private report"}, 30)
+        port = self.start(cache)
+        self.assertEqual(self.fetch(port, "/")[0], 200)
+        for host in ("localhost", "localhost.", "127.0.0.1", "[::1]"):
+            self.assertEqual(self.fetch(port, "/", headers={"Host": f"{host}:{port}"})[0], 200)
+        for path in ("/", "/report-secret.html"):
+            status, _headers, body = self.fetch(
+                port, path, headers={"Host": f"attacker.example:{port}"})
+            self.assertEqual(status, 403)
+            self.assertNotIn("private", body)
+
+    def test_serve_defaults_to_loopback_and_service_unit_runs_serve(self) -> None:
+        with tempfile.TemporaryDirectory() as temp, patch.dict(os.environ, {"XDG_CONFIG_HOME": temp}, clear=True):
+            parser = quarterdeck.make_parser()
+            args = parser.parse_args(["serve"])
+            self.assertEqual(args.port, 8765)
+            self.assertEqual(quarterdeck.bind_hosts(args), ["127.0.0.1"])
+            unit = quarterdeck.service_unit(parser.parse_args(["service", "--port", "9100"]))
+            directives = parse_systemd_unit(unit)
+            command = directives["Service"]["ExecStart"][0]
+            self.assertEqual(command[-4:], ["--host", "127.0.0.1", "--port", "9100"])
+            multi = quarterdeck.service_unit(parser.parse_args(
+                ["service", "--host", "127.0.0.1", "--host", "::1"]))
+            command = parse_systemd_unit(multi)["Service"]["ExecStart"][0]
+            self.assertEqual(command[-6:], ["--host", "127.0.0.1", "--host", "::1", "--port", "8765"])
+            self.assertEqual(directives["Install"]["WantedBy"][0], ["default.target"])
+
+    def test_service_unit_preserves_effective_home_and_custom_config(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            config_home = root / "${CONFIG}" / "shell-config"
+            config_home.mkdir(parents=True)
+            home = root / "selected-home"
+            alternate_home = root / "${USER}" / "shell-home"
+            config_path = config_home / "quarterdeck.json"
+            config_path.write_text(json.dumps({"homes": [{"path": str(home)}]}), encoding="utf-8")
+            data_override = root / "${DATA}" / "shell-data"
+            state_home = root / "${STATE}" / "shell-state"
+            env = {
+                "XDG_CONFIG_HOME": str(config_home),
+                "FM_HOME": str(alternate_home),
+                "FM_DATA_OVERRIDE": str(data_override),
+                "XDG_STATE_HOME": str(state_home),
+            }
+            with patch.dict(os.environ, env):
+                parser = quarterdeck.make_parser()
+                unit = quarterdeck.service_unit(parser.parse_args(["service"]))
+                directives = parse_systemd_unit(unit)
+                command = directives["Service"]["ExecStart"][0]
+                unit_environment = directives["Service"]["Environment"]
+                self.assertIn(["--config", str(config_path.resolve())], [command[index:index + 2]
+                              for index in range(len(command) - 1)])
+                self.assertNotIn(str(alternate_home.resolve()), command)
+                self.assertNotIn(f"FM_DATA_OVERRIDE={data_override.resolve()}", unit_environment)
+                self.assertIn(f"XDG_STATE_HOME={state_home.resolve()}", unit_environment)
+
+                config_path.write_text(json.dumps({"page_title": "Selected"}), encoding="utf-8")
+                with patch.object(quarterdeck.sys, "executable", str(root / "python${PYTHON}")):
+                    unit = quarterdeck.service_unit(parser.parse_args(["service"]))
+                directives = parse_systemd_unit(unit)
+                command = directives["Service"]["ExecStart"][0]
+                unit_environment = directives["Service"]["Environment"]
+                self.assertIn(["--home", str(alternate_home.resolve())], [command[index:index + 2]
+                              for index in range(len(command) - 1)])
+                self.assertEqual(command[0], str(root / "python${PYTHON}"))
+                self.assertIn(["--config", str(config_path.resolve())], [command[index:index + 2]
+                              for index in range(len(command) - 1)])
+                self.assertIn(f"FM_DATA_OVERRIDE={data_override.resolve()}", unit_environment)
+                self.assertIn(f"XDG_STATE_HOME={state_home.resolve()}", unit_environment)
+
+    def test_service_reports_config_errors_without_tracebacks(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            config_path = Path(temp) / "quarterdeck.json"
+            config_path.write_text('{"unsupported": true}', encoding="utf-8")
+            for write in (False, True):
+                args = ["service", "--config", str(config_path)]
+                if write:
+                    args.append("--write")
+                stderr = io.StringIO()
+                with redirect_stderr(stderr), redirect_stdout(io.StringIO()):
+                    result = quarterdeck.main(args)
+                self.assertEqual(result, 2)
+                self.assertIn("unsupported config key", stderr.getvalue())
+                self.assertNotIn("Traceback", stderr.getvalue())
+
+    def test_server_options_reject_removed_aliases_and_invalid_ports(self) -> None:
+        parser = quarterdeck.make_parser()
+        with redirect_stderr(io.StringIO()), self.assertRaises(SystemExit):
+            parser.parse_args(["serve", "--bind", "127.0.0.1"])
+        with redirect_stderr(io.StringIO()), self.assertRaises(SystemExit):
+            parser.parse_args(["service", "--bind", "127.0.0.1"])
+        for command in ("serve", "service"):
+            for value in ("-1", "0", "65536", "nan"):
+                with self.subTest(command=command, port=value), redirect_stderr(io.StringIO()), self.assertRaises(SystemExit):
+                    parser.parse_args([command, "--port", value])
+        with redirect_stderr(io.StringIO()), self.assertRaises(SystemExit):
+            parser.parse_args(["serve", "--cache", "-1"])
+        with redirect_stderr(io.StringIO()), self.assertRaises(SystemExit):
+            parser.parse_args(["serve", "--refresh", "-1"])
+
+    def test_service_rejects_control_characters_in_serialized_values(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            config_home = str(Path(temp) / "config")
+            cases = [
+                (["service", "--host", "127.0.0.1\nRestart=no"], {}),
+                (["service", "--home", "/tmp/home\nRestart=no"], {}),
+                (["service", "--home", "/tmp/home"], {"FM_DATA_OVERRIDE": "/tmp/data\nRestart=no"}),
+                (["service", "--home", "/tmp/home"], {"XDG_STATE_HOME": "/tmp/state\nRestart=no"}),
+            ]
+            for args, environment in cases:
+                env = {"HOME": temp, "XDG_CONFIG_HOME": config_home, **environment}
+                with self.subTest(args=args, environment=environment), patch.dict(os.environ, env, clear=True), \
+                        redirect_stdout(io.StringIO()) as stdout, redirect_stderr(io.StringIO()) as stderr:
+                    result = quarterdeck.main(args)
+                self.assertEqual(result, 2)
+                self.assertEqual(stdout.getvalue(), "")
+                self.assertIn("cannot contain control characters", stderr.getvalue())
+
+    def test_service_write_refuses_a_symlink_unit_path(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            config_home = root / "config"
+            unit = config_home / "systemd" / "user" / "quarterdeck.service"
+            unit.parent.mkdir(parents=True)
+            target = root / "unrelated.txt"
+            target.write_text("preserve this file", encoding="utf-8")
+            unit.symlink_to(target)
+            with patch.dict(os.environ, {"XDG_CONFIG_HOME": str(config_home)}), redirect_stderr(io.StringIO()):
+                code = quarterdeck.main(["service", "--write"])
+            self.assertEqual(code, 2)
+            self.assertTrue(unit.is_symlink())
+            self.assertEqual(target.read_text(encoding="utf-8"), "preserve this file")
+
+    def test_service_write_goes_to_user_unit_directory(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            env = {"XDG_CONFIG_HOME": str(Path(temp) / "config")}
+            with patch.dict(os.environ, env), redirect_stdout(io.StringIO()):
+                code = quarterdeck.main(["service", "--write"])
+            self.assertEqual(code, 0)
+            unit = Path(temp) / "config" / "systemd" / "user" / "quarterdeck.service"
+            directives = parse_systemd_unit(unit.read_text(encoding="utf-8"))
+            self.assertEqual(len(directives["Service"]["ExecStart"]), 1)
+            self.assertEqual(directives["Service"]["ExecStart"][0][2], "serve")
+            self.assertEqual(directives["Install"]["WantedBy"][0], ["default.target"])
 
 
 class PrivacyGuardTests(unittest.TestCase):

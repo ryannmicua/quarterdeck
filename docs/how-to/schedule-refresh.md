@@ -1,7 +1,11 @@
 # Refresh on a schedule
 
-Quarterdeck has no watcher or daemon. A user's cron job or systemd timer can
-run the normal `render` command when a recurring snapshot is useful.
+For a page that is always current without scheduling, see
+[Serve the always-current bearings page](serve-the-page.md).
+
+Quarterdeck does not schedule rendered snapshots itself. A user's cron job or
+systemd timer can run the normal `render` command when a recurring snapshot is
+useful; use `serve` for the always-current page.
 For a combined page, pass `--config` with the private config that lists the
 homes instead of using `--home`.
 
@@ -27,7 +31,7 @@ To refresh the combined view, use the config file:
 
 ## systemd timer example
 
-Create a user service at `~/.config/systemd/user/quarterdeck.service`:
+Create a user service at `~/.config/systemd/user/quarterdeck-render.service`:
 
 ```ini
 [Unit]
@@ -38,7 +42,7 @@ Type=oneshot
 ExecStart=%h/.local/bin/quarterdeck render --home /path/to/firstmate
 ```
 
-Then create `~/.config/systemd/user/quarterdeck.timer`:
+Then create `~/.config/systemd/user/quarterdeck-render.timer`:
 
 ```ini
 [Unit]
@@ -57,5 +61,5 @@ Enable it for the user:
 
 ```sh
 systemctl --user daemon-reload
-systemctl --user enable --now quarterdeck.timer
+systemctl --user enable --now quarterdeck-render.timer
 ```

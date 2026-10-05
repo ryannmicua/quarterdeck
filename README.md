@@ -5,18 +5,30 @@
 ## What it is
 
 Quarterdeck turns running Firstmate homes' backlogs and scout reports into one
-read-only HTML review page. Configure several homes to review them together;
+read-only HTML review page that leads with the same four sections as
+Firstmate's `/bearings` digest, plus the reports waiting on your review. Configure several homes to review them together;
 each home is grouped under a clear label, with its registered local secondmates
 under their parent. It shows unresolved captain holds, review-ready pull
 requests, in-flight work, and items blocked on the captain or an external
-party. Use `--all` to restore the exhaustive view.
+party. Run `quarterdeck render --all` to restore the exhaustive view.
 
-Render on demand, open the returned file in a browser, or hand it to
-`lavish-axi` as a local artifact. Quarterdeck has no daemon, agent, build step,
-or runtime network dependency.
+Render on demand, or run `quarterdeck serve` for a page that stays current on
+its own. Open the result in a browser, or hand a rendered file to `lavish-axi`
+as a local artifact. Quarterdeck itself has no agent or build step.
 
 ## Features
 
+- Bearings-shaped page: Captain's Call, Recently Landed, Underway, and Charted
+  Next, each always rendered with an empty-state sentence, plus a prominent
+  "Reports waiting on your review" list.
+- Captain's Call cards include local hold context, options, and recommendations
+  when available. Remote decisions show the snapshot summary and point to their
+  secondmate home for the full background.
+- Uses Firstmate's own `bin/fm-bearings-snapshot.sh --json` when a home has it,
+  and says so when it falls back to parsing the backlog.
+- `quarterdeck serve` serves the page over HTTP. `quarterdeck service` can
+  print or write a systemd user unit; see the
+  [serving guide](docs/how-to/serve-the-page.md).
 - Primary review list for held items and recorded decisions.
 - Scout reports with an explicit recommendation when the report states one.
 - Stable report IDs, Markdown and readable HTML reading, and local review marks.
@@ -28,7 +40,7 @@ or runtime network dependency.
 - Inline-styled review page with readable local report and backlog pages.
 - Optional `quarterdeck render --lavish` creates and opens an annotation-ready Lavish review page.
 - Lavish request controls queue a report or backlog-item page request for an armed session listener.
-- Python 3 standard library only; no tokens and no write-back to Firstmate.
+- Python 3 standard library only.
 - Generated pages default to the user's state directory outside the repo.
 
 ## Quick Start: Make Ready to Sail
@@ -64,18 +76,19 @@ commands.
 
 Firstmate runs the crew and stores its backlog and scout reports in a home.
 Quarterdeck reads those files and creates a convenient review surface alongside
-that workflow. It does not extend Firstmate or send commands to it. Regeneration
-happens only when `quarterdeck render` is run.
+that workflow. It does not extend Firstmate or send answers back to it.
+Regeneration happens when `quarterdeck render` runs or `quarterdeck serve`
+receives its first page request after the 30-second cache expires.
 
 ## Privacy model
 
 The page can contain real task names, recommendations, and paths. By default,
 Quarterdeck writes it outside the repository under the user's state directory.
-It reads each configured Firstmate home's `data/backlog.md` and
-`data/<id>/report.md` files. It also reads the parent's optional
-`data/secondmates.md` registry and the listed local secondmate homes. It does
-not write to those homes or to the Quarterdeck checkout. Keep custom output
-paths outside both and real configs outside the repository too.
+Keep custom output paths outside the repository and selected homes, and keep
+real configs outside the repository. See
+[privacy and architecture](docs/explanation/privacy-and-architecture.md) for
+the files Quarterdeck reads, its optional Firstmate snapshot, and the local-only
+mode.
 
 The repo ignores common output folders, local config files, and screenshots.
 Run `python3 scripts/privacy_guard.py --staged` before committing; it rejects
@@ -87,13 +100,28 @@ use invented data.
 
 ### Does Quarterdeck keep refreshing in the background?
 
-No. Run `render` whenever a fresh page is useful. A cron or systemd timer can
-run that command on a schedule; see [scheduled refresh](docs/how-to/schedule-refresh.md).
+Yes. `quarterdeck serve` refreshes the page while it is open. See the
+[serving guide](docs/how-to/serve-the-page.md) for cache timing and systemd
+setup. Without `serve`, run `render` whenever a fresh page is useful, or
+schedule it; see
+[scheduled refresh](docs/how-to/schedule-refresh.md).
 
-### Does it need credentials or contact a service?
+### Is it safe to bind `serve` to my network?
 
-No. Rendering reads local files and writes a local HTML file. The page uses
-inline CSS and has no runtime network requests.
+The default is 127.0.0.1. A non-loopback `--host` exposes your real work data
+to that network with no login. Keep the default unless you control the network.
+
+### Does it cost tokens?
+
+No. Quarterdeck does not call a model. See
+[privacy and architecture](docs/explanation/privacy-and-architecture.md) for
+the optional snapshot's data access.
+
+### Does it contact a service?
+
+See [privacy and architecture](docs/explanation/privacy-and-architecture.md)
+for Quarterdeck's network behavior, optional snapshot, and the `--no-snapshot`
+mode.
 
 ### How do I select several homes?
 
@@ -111,6 +139,6 @@ error if none is set.
 
 ## Roadmap
 
-Possible future work: optional write-back, answer capture, listener or daemon,
-Firstmate extension binding, and hosted or authenticated views. These are out of
-scope today; Quarterdeck remains a local read-only renderer.
+Possible future work: optional write-back, answer capture, Firstmate extension
+binding, and hosted or authenticated views. These are out of scope today;
+Quarterdeck remains a read-only view.
