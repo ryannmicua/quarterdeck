@@ -17,16 +17,9 @@ Open `http://127.0.0.1:8765/`. The page shows a "Generated at" time and reloads
 itself every 60 seconds (it waits while you have a details block open). Rendered
 pages are cached for 30 seconds so rapid reloads stay cheap.
 
-To see the URL from the installed systemd user service, run
-`quarterdeck url`. It prints one URL per configured bind address, including
-bracketed IPv6 addresses. It reads the installed unit's settings and does not
-check whether the service is running. If no installed service is found, it
-labels the shown URL as the default: a plain `quarterdeck serve` listens there.
-A foreground serve started with custom `--host` or `--port` is not detected and
-serves wherever those flags point. Use `quarterdeck url --json` for
-machine-readable output; its `source` is `default` when no unit is installed,
-and its `note` explains that case. JSON also includes raw configured addresses
-in `hosts`; scoped IPv6 zone separators are encoded as `%25` in `urls`.
+To see the serving address, run `quarterdeck url`. See the
+[CLI reference](../reference/cli-and-config.md) for how it determines the
+address and for its JSON output.
 
 | Option | Default | Meaning |
 | --- | --- | --- |
