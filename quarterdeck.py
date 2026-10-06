@@ -2307,13 +2307,13 @@ def configured_service_addresses() -> tuple[list[str], int, str]:
     """Return addresses from the installed unit, or serve's default bind settings."""
     unit_path = Path(os.environ.get("XDG_CONFIG_HOME") or "~/.config").expanduser() / "systemd/user/quarterdeck.service"
     if not unit_path.is_file():
-        return [DEFAULT_HOST], DEFAULT_PORT, "default serve settings (no installed service unit)"
+        return [DEFAULT_HOST], DEFAULT_PORT, "default"
     source = unit_path.read_text(encoding="utf-8")
     match = re.search(r"(?m)^ExecStart=(.*)$", source)
     if not match:
         raise ValueError(f"installed service unit has no ExecStart: {unit_path}")
     try:
-        command = shlex.split(match.group(1))
+        command = shlex.split(match.group(1).replace("%%", "%"))
     except ValueError as exc:
         raise ValueError(f"could not read installed service unit: {exc}") from exc
     try:
@@ -2347,13 +2347,24 @@ def url(args: argparse.Namespace) -> int:
         return 2
     addresses = [f"http://[{host}]:{port}/" if ":" in host else f"http://{host}:{port}/" for host in hosts]
     if args.as_json:
-        print(json.dumps({"urls": addresses, "source": source}, indent=2))
+        result = {"urls": addresses, "source": source}
+        if source == "default":
+            result["note"] = (
+                "No installed Quarterdeck service was found. A plain `quarterdeck serve` listens on the default "
+                "address shown. A foreground serve started with custom --host/--port is not detected and serves "
+                "wherever those flags point."
+            )
+        print(json.dumps(result, indent=2))
     else:
         for address in addresses:
             print(address)
-        print(f"Source: {source}")
-        if source.startswith("default"):
+        if source == "default":
+            print("Source: default serve settings (no installed Quarterdeck service was found).")
+            print("A plain `quarterdeck serve` listens on the default address shown.")
+            print("A foreground serve started with custom --host/--port is not detected and serves wherever those flags point.")
             print("Run `quarterdeck serve` to start the page, or `quarterdeck service` to configure a systemd user service.")
+        else:
+            print(f"Source: {source}")
     return 0
 
 
@@ -2742,7 +2753,10 @@ def make_parser() -> argparse.ArgumentParser:
 
     url_parser = subparsers.add_parser(
         "url", help="show the URL for the configured serve addresses",
-        description="Show the URL or URLs from the installed systemd user service, or Quarterdeck's default serve address when no unit is installed.",
+        description=(
+            "Show URLs configured in the installed systemd user unit, or Quarterdeck's default serve address when "
+            "no unit is installed. Does not detect foreground serves or whether a service is running."
+        ),
     )
     command_parsers["url"] = url_parser
     url_parser.add_argument("--json", dest="as_json", action="store_true", help="print URLs and their source as JSON")

@@ -1680,19 +1680,40 @@ class ServeTests(unittest.TestCase):
                 with redirect_stdout(output):
                     self.assertEqual(quarterdeck.main(["url"]), 0)
                 self.assertIn("http://127.0.0.1:8765/", output.getvalue())
+                self.assertIn("no installed Quarterdeck service was found", output.getvalue())
+                self.assertIn("A plain `quarterdeck serve` listens on the default address shown", output.getvalue())
+                self.assertIn("custom --host/--port is not detected", output.getvalue())
                 self.assertIn("quarterdeck serve", output.getvalue())
 
-                unit_path.parent.mkdir(parents=True)
-                unit_path.write_text(quarterdeck.service_unit(
-                    quarterdeck.make_parser().parse_args(
-                        ["service", "--host", "127.0.0.1", "--host", "::1", "--port", "9100"]
-                    )
-                ), encoding="utf-8")
                 output = io.StringIO()
                 with redirect_stdout(output):
                     self.assertEqual(quarterdeck.main(["url", "--json"]), 0)
                 result = json.loads(output.getvalue())
-                self.assertEqual(result["urls"], ["http://127.0.0.1:9100/", "http://[::1]:9100/"])
+                self.assertEqual(result["source"], "default")
+                self.assertIn("No installed Quarterdeck service was found", result["note"])
+                self.assertIn("custom --host/--port is not detected", result["note"])
+
+                unit_path.parent.mkdir(parents=True)
+                unit_path.write_text(quarterdeck.service_unit(
+                    quarterdeck.make_parser().parse_args(
+                        [
+                            "service", "--host", "127.0.0.1", "--host", "::1",
+                            "--host", "fe80::1%eth0", "--port", "9100",
+                        ]
+                    )
+                ), encoding="utf-8")
+                output = io.StringIO()
+                with redirect_stdout(output):
+                    self.assertEqual(quarterdeck.main(["url"]), 0)
+                self.assertIn("http://[fe80::1%eth0]:9100/", output.getvalue())
+
+                output = io.StringIO()
+                with redirect_stdout(output):
+                    self.assertEqual(quarterdeck.main(["url", "--json"]), 0)
+                result = json.loads(output.getvalue())
+                self.assertEqual(result["urls"], [
+                    "http://127.0.0.1:9100/", "http://[::1]:9100/", "http://[fe80::1%eth0]:9100/",
+                ])
                 self.assertIn("quarterdeck.service", result["source"])
 
     def test_url_is_discoverable_through_command_index(self) -> None:

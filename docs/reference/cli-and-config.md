@@ -102,10 +102,14 @@ every 60 seconds and shows its generated-at time. `service` prints a
 systemd user unit that runs `serve` with the given options, or with `--write`
 writes it to `${XDG_CONFIG_HOME:-~/.config}/systemd/user/quarterdeck.service`;
 it never runs `systemctl`. A non-loopback host exposes work data without a
-login. `url` prints the installed user service's URL or URLs; if no unit is
-installed, it prints the default `serve` address and points to `serve` and
-`service`. IPv6 URLs use brackets. Add `--json` for a machine-readable object
-containing `urls` and `source`. See [Serve the always-current bearings page](../how-to/serve-the-page.md).
+login. `url` prints the address or addresses configured in the installed user
+service; it does not check whether the service is running. If no unit is
+installed, it labels the default `serve` address shown, which a plain
+`quarterdeck serve` uses. A foreground serve started with custom `--host` or
+`--port` is not detected and serves wherever those flags point. IPv6 URLs use
+brackets. Add `--json` for an object containing `urls` and `source`; when no
+unit is installed, `source` is `default` and `note` explains the fallback. See
+[Serve the always-current bearings page](../how-to/serve-the-page.md).
 
 `add`, `list`, and `remove` accept the same `--config FILE` option. `add` also
 accepts `--label LABEL`; `remove` takes one label or path.
