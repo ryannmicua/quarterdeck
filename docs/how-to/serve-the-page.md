@@ -25,7 +25,8 @@ labels the shown URL as the default: a plain `quarterdeck serve` listens there.
 A foreground serve started with custom `--host` or `--port` is not detected and
 serves wherever those flags point. Use `quarterdeck url --json` for
 machine-readable output; its `source` is `default` when no unit is installed,
-and its `note` explains that case.
+and its `note` explains that case. JSON also includes raw configured addresses
+in `hosts`; scoped IPv6 zone separators are encoded as `%25` in `urls`.
 
 | Option | Default | Meaning |
 | --- | --- | --- |

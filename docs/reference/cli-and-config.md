@@ -107,8 +107,9 @@ service; it does not check whether the service is running. If no unit is
 installed, it labels the default `serve` address shown, which a plain
 `quarterdeck serve` uses. A foreground serve started with custom `--host` or
 `--port` is not detected and serves wherever those flags point. IPv6 URLs use
-brackets. Add `--json` for an object containing `urls` and `source`; when no
-unit is installed, `source` is `default` and `note` explains the fallback. See
+brackets, and scoped IPv6 zone separators use `%25` in URLs. Add `--json` for
+an object containing `urls`, raw configured `hosts`, and `source`; when no unit
+is installed, `source` is `default` and `note` explains the fallback. See
 [Serve the always-current bearings page](../how-to/serve-the-page.md).
 
 `add`, `list`, and `remove` accept the same `--config FILE` option. `add` also

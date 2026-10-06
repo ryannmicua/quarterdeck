@@ -1705,15 +1705,16 @@ class ServeTests(unittest.TestCase):
                 output = io.StringIO()
                 with redirect_stdout(output):
                     self.assertEqual(quarterdeck.main(["url"]), 0)
-                self.assertIn("http://[fe80::1%eth0]:9100/", output.getvalue())
+                self.assertIn("http://[fe80::1%25eth0]:9100/", output.getvalue())
 
                 output = io.StringIO()
                 with redirect_stdout(output):
                     self.assertEqual(quarterdeck.main(["url", "--json"]), 0)
                 result = json.loads(output.getvalue())
                 self.assertEqual(result["urls"], [
-                    "http://127.0.0.1:9100/", "http://[::1]:9100/", "http://[fe80::1%eth0]:9100/",
+                    "http://127.0.0.1:9100/", "http://[::1]:9100/", "http://[fe80::1%25eth0]:9100/",
                 ])
+                self.assertEqual(result["hosts"], ["127.0.0.1", "::1", "fe80::1%eth0"])
                 self.assertIn("quarterdeck.service", result["source"])
 
     def test_url_is_discoverable_through_command_index(self) -> None:

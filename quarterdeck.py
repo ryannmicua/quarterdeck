@@ -2345,9 +2345,12 @@ def url(args: argparse.Namespace) -> int:
     except (OSError, ValueError) as exc:
         print(f"quarterdeck: {exc}", file=sys.stderr)
         return 2
-    addresses = [f"http://[{host}]:{port}/" if ":" in host else f"http://{host}:{port}/" for host in hosts]
+    addresses = [
+        f"http://[{host.replace('%', '%25', 1)}]:{port}/" if ":" in host else f"http://{host}:{port}/"
+        for host in hosts
+    ]
     if args.as_json:
-        result = {"urls": addresses, "source": source}
+        result = {"urls": addresses, "hosts": hosts, "source": source}
         if source == "default":
             result["note"] = (
                 "No installed Quarterdeck service was found. A plain `quarterdeck serve` listens on the default "
