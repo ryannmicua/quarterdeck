@@ -6,6 +6,7 @@
 quarterdeck render [--home PATH] [--output PATH] [--config FILE] [--title TEXT] [--all] [--lavish] [--no-snapshot]
 quarterdeck serve [--host ADDRESS ...] [--port N] [--home PATH] [--config FILE] [--title TEXT] [--no-snapshot]
 quarterdeck service [--write] [--host ADDRESS ...] [--port N] [--home PATH] [--config FILE]
+quarterdeck url [--json]
 quarterdeck reports list [--home PATH] [--config FILE]
 quarterdeck reports read <report-id> [--home PATH] [--config FILE] [--open]
 quarterdeck reports mark-reviewed <report-id> [--home PATH] [--config FILE]
@@ -101,7 +102,10 @@ every 60 seconds and shows its generated-at time. `service` prints a
 systemd user unit that runs `serve` with the given options, or with `--write`
 writes it to `${XDG_CONFIG_HOME:-~/.config}/systemd/user/quarterdeck.service`;
 it never runs `systemctl`. A non-loopback host exposes work data without a
-login. See [Serve the always-current bearings page](../how-to/serve-the-page.md).
+login. `url` prints the installed user service's URL or URLs; if no unit is
+installed, it prints the default `serve` address and points to `serve` and
+`service`. IPv6 URLs use brackets. Add `--json` for a machine-readable object
+containing `urls` and `source`. See [Serve the always-current bearings page](../how-to/serve-the-page.md).
 
 `add`, `list`, and `remove` accept the same `--config FILE` option. `add` also
 accepts `--label LABEL`; `remove` takes one label or path.

@@ -17,6 +17,12 @@ Open `http://127.0.0.1:8765/`. The page shows a "Generated at" time and reloads
 itself every 60 seconds (it waits while you have a details block open). Rendered
 pages are cached for 30 seconds so rapid reloads stay cheap.
 
+To see the URL from the installed systemd user service, run
+`quarterdeck url`. It prints one URL per configured bind address, including
+bracketed IPv6 addresses. Before installing a service, it shows the default
+`serve` URL and suggests `quarterdeck serve` or `quarterdeck service`. Use
+`quarterdeck url --json` for machine-readable output.
+
 | Option | Default | Meaning |
 | --- | --- | --- |
 | `--host ADDRESS` | `127.0.0.1` only | Address to bind. Repeat it to listen on several addresses, all on the same port. |

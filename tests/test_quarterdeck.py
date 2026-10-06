@@ -1670,6 +1670,39 @@ class ServeTests(unittest.TestCase):
                 self.assertIn("unsupported config key", stderr.getvalue())
                 self.assertNotIn("Traceback", stderr.getvalue())
 
+    def test_url_reports_installed_service_addresses_and_default_guidance(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            config_home = Path(temp) / "config"
+            unit_path = config_home / "systemd" / "user" / "quarterdeck.service"
+            env = {"XDG_CONFIG_HOME": str(config_home), "HOME": temp}
+            with patch.dict(os.environ, env, clear=True):
+                output = io.StringIO()
+                with redirect_stdout(output):
+                    self.assertEqual(quarterdeck.main(["url"]), 0)
+                self.assertIn("http://127.0.0.1:8765/", output.getvalue())
+                self.assertIn("quarterdeck serve", output.getvalue())
+
+                unit_path.parent.mkdir(parents=True)
+                unit_path.write_text(quarterdeck.service_unit(
+                    quarterdeck.make_parser().parse_args(
+                        ["service", "--host", "127.0.0.1", "--host", "::1", "--port", "9100"]
+                    )
+                ), encoding="utf-8")
+                output = io.StringIO()
+                with redirect_stdout(output):
+                    self.assertEqual(quarterdeck.main(["url", "--json"]), 0)
+                result = json.loads(output.getvalue())
+                self.assertEqual(result["urls"], ["http://127.0.0.1:9100/", "http://[::1]:9100/"])
+                self.assertIn("quarterdeck.service", result["source"])
+
+    def test_url_is_discoverable_through_command_index(self) -> None:
+        output = io.StringIO()
+        with redirect_stdout(output):
+            self.assertEqual(quarterdeck.main(["help", "--json"]), 0)
+        index = json.loads(output.getvalue())
+        command = next(item for item in index["commands"] if item["name"] == "url")
+        self.assertIn("how-to/serve-the-page.md", command["docs"])
+
     def test_server_options_reject_removed_aliases_and_invalid_ports(self) -> None:
         parser = quarterdeck.make_parser()
         with redirect_stderr(io.StringIO()), self.assertRaises(SystemExit):

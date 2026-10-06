@@ -11,6 +11,7 @@ import html
 import json
 import os
 import re
+import shlex
 import shutil
 import socket
 import subprocess
@@ -2302,11 +2303,66 @@ def service(args: argparse.Namespace) -> int:
     return 0
 
 
+def configured_service_addresses() -> tuple[list[str], int, str]:
+    """Return addresses from the installed unit, or serve's default bind settings."""
+    unit_path = Path(os.environ.get("XDG_CONFIG_HOME") or "~/.config").expanduser() / "systemd/user/quarterdeck.service"
+    if not unit_path.is_file():
+        return [DEFAULT_HOST], DEFAULT_PORT, "default serve settings (no installed service unit)"
+    source = unit_path.read_text(encoding="utf-8")
+    match = re.search(r"(?m)^ExecStart=(.*)$", source)
+    if not match:
+        raise ValueError(f"installed service unit has no ExecStart: {unit_path}")
+    try:
+        command = shlex.split(match.group(1))
+    except ValueError as exc:
+        raise ValueError(f"could not read installed service unit: {exc}") from exc
+    try:
+        serve_index = command.index("serve")
+    except ValueError as exc:
+        raise ValueError("installed service unit does not run quarterdeck serve") from exc
+    hosts = []
+    port = DEFAULT_PORT
+    index = serve_index + 1
+    while index < len(command):
+        if command[index] in {"--host", "--port"} and index + 1 < len(command):
+            option, value = command[index], command[index + 1]
+            if option == "--host":
+                hosts.append(value)
+            else:
+                try:
+                    port = port_number(value)
+                except argparse.ArgumentTypeError as exc:
+                    raise ValueError(f"installed service unit has an invalid port: {value}") from exc
+            index += 2
+        else:
+            index += 1
+    return list(dict.fromkeys(hosts or [DEFAULT_HOST])), port, f"installed service unit {unit_path}"
+
+
+def url(args: argparse.Namespace) -> int:
+    try:
+        hosts, port, source = configured_service_addresses()
+    except (OSError, ValueError) as exc:
+        print(f"quarterdeck: {exc}", file=sys.stderr)
+        return 2
+    addresses = [f"http://[{host}]:{port}/" if ":" in host else f"http://{host}:{port}/" for host in hosts]
+    if args.as_json:
+        print(json.dumps({"urls": addresses, "source": source}, indent=2))
+    else:
+        for address in addresses:
+            print(address)
+        print(f"Source: {source}")
+        if source.startswith("default"):
+            print("Run `quarterdeck serve` to start the page, or `quarterdeck service` to configure a systemd user service.")
+    return 0
+
+
 COMMAND_DOCS = {
     "render": ["how-to/serve-the-page.md", "how-to/view-in-lavish.md", "how-to/request-lavish-page.md", "explanation/attention-model.md", "reference/cli-and-config.md", "explanation/privacy-and-architecture.md"],
     "reports": ["how-to/review-reports.md", "reference/cli-and-config.md", "explanation/privacy-and-architecture.md"],
     "serve": ["how-to/serve-the-page.md", "reference/cli-and-config.md", "explanation/privacy-and-architecture.md"],
     "service": ["how-to/serve-the-page.md", "reference/cli-and-config.md"],
+    "url": ["how-to/serve-the-page.md", "reference/cli-and-config.md"],
     "add": ["how-to/configure-multiple-homes.md", "reference/cli-and-config.md"],
     "list": ["how-to/configure-multiple-homes.md", "reference/cli-and-config.md"],
     "remove": ["how-to/configure-multiple-homes.md", "reference/cli-and-config.md"],
@@ -2683,6 +2739,14 @@ def make_parser() -> argparse.ArgumentParser:
     add_serve_options(service_parser)
     service_parser.add_argument("--write", action="store_true", help="write the unit file instead of printing it")
     service_parser.set_defaults(handler=service)
+
+    url_parser = subparsers.add_parser(
+        "url", help="show the URL for the configured serve addresses",
+        description="Show the URL or URLs from the installed systemd user service, or Quarterdeck's default serve address when no unit is installed.",
+    )
+    command_parsers["url"] = url_parser
+    url_parser.add_argument("--json", dest="as_json", action="store_true", help="print URLs and their source as JSON")
+    url_parser.set_defaults(handler=url)
 
     reports_parser = subparsers.add_parser(
         "reports", help="list, read, and track report reviews",
