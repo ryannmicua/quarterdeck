@@ -117,8 +117,10 @@ schedule it; see
 
 The default is 127.0.0.1. A non-loopback `--host` exposes your real work data
 to that network with no login. Keep the default unless you control the network.
-With `--allow-marks`, anyone who can load the page can also mark reports
-reviewed, so use it only on loopback or a network you control.
+With `--allow-marks`, readers can see the mark buttons, but only readers with
+the key from Quarterdeck's local state directory can use them. The key is a
+write credential; do not share it. See the
+[serving guide](docs/how-to/serve-the-page.md#mark-reports-reviewed-from-the-page).
 
 ### Does it cost tokens?
 

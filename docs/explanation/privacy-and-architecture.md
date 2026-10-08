@@ -37,16 +37,20 @@ Binding another address exposes real work data to that network.
 `quarterdeck serve --allow-marks` adds exactly one write endpoint,
 `POST /api/reports/review`, which marks or unmarks one known report ID as
 reviewed. It runs the same code, storage, fingerprint and lock as `quarterdeck
-reports mark-reviewed` and `unmark-reviewed`, and writes only the review-marks
-file in the state directory; it never writes into a Firstmate home. A request
-must carry the secret from `review-state/mark-token` (generated with mode 0600
-if absent) in an `X-Quarterdeck-Token` header, be `application/json`, come from
-the page's own origin (cross-origin `Origin` or `Sec-Fetch-Site` values are
-refused), and name an existing, unambiguous report. Every other route and
-method stays refused. The token is embedded in the served page, so it is not a
-login: anyone who can load the page can mark reports. It stops other websites
-from marking reports through your browser, not other people on a network you
-exposed. The static `render` output never contains the buttons or the token.
+reports mark-reviewed` and `unmark-reviewed`. On startup, it creates or reads
+`review-state/mark-token` in Quarterdeck's state directory; each accepted
+request writes only the review-marks file there, never a Firstmate home. A request
+must carry the key from `review-state/mark-token` (generated with mode 0600
+if absent) in an `X-Quarterdeck-Token` header, include the fingerprint shown on
+the page, be `application/json`, come from the page's own origin (cross-origin
+`Origin` or `Sec-Fetch-Site` values are refused), and name an existing,
+unambiguous report whose content has not changed since the page loaded. Every
+other route and method stays refused. The key is not embedded in the served
+page: the browser prompts for it on the first mark click and keeps it in that
+browser's local storage when available. Anyone who has the key can mark reports;
+readers without it can view the page and buttons but cannot change review state.
+The key is a write credential, not a login or a limit on who can read the page.
+The static `render` output never contains the buttons or the key.
 Each configured home is loaded independently. A missing or unreadable home
 shows its own error while other sections still render.
 

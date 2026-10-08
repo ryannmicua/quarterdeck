@@ -985,30 +985,34 @@ def load_or_create_mark_token(state_path: Path) -> str:
     return token
 
 
-def set_report_mark(args: argparse.Namespace, report_id: str, reviewed: bool) -> Report:
+def set_report_mark(
+    args: argparse.Namespace, report_id: str, reviewed: bool, expected_fingerprint: str | None = None,
+) -> Report:
     """Mark or unmark one report by ID; shared by the CLI and the served page's buttons."""
     snapshots, state_path = load_report_snapshots(args)
     apply_review_marks(snapshots, {})
     _snapshot, report = unique_report(snapshots, report_id)
+    if expected_fingerprint is not None and report.fingerprint != expected_fingerprint:
+        raise ValueError("report changed since the page was loaded; reload before marking")
     update_review_mark(state_path, report.report_id, report.fingerprint if reviewed else None)
     return report
 
 
-def apply_review_marks(snapshots: list[HomeSnapshot], marks: dict[str, str]) -> None:
-    snapshots = all_snapshots(snapshots)
-    seen_report_ids: set[str] = set()
-    ambiguous_report_ids: set[str] = set()
-    for snapshot in snapshots:
+def assign_report_ids(snapshots: list[HomeSnapshot]) -> set[str]:
+    counts: dict[str, int] = {}
+    for snapshot in all_snapshots(snapshots):
         for report in snapshot.reports:
             report.report_id = report_reference(snapshot.spec.label, report.path.parent.name)
-            if report.report_id in seen_report_ids:
-                ambiguous_report_ids.add(report.report_id)
-            else:
-                seen_report_ids.add(report.report_id)
-    for snapshot in snapshots:
+            counts[report.report_id] = counts.get(report.report_id, 0) + 1
+    return {report_id for report_id, count in counts.items() if count > 1}
+
+
+def apply_review_marks(snapshots: list[HomeSnapshot], marks: dict[str, str]) -> None:
+    ambiguous_ids = assign_report_ids(snapshots)
+    for snapshot in all_snapshots(snapshots):
         for report in snapshot.reports:
             report.reviewed = (
-                report.report_id not in ambiguous_report_ids
+                report.report_id not in ambiguous_ids
                 and marks.get(report.report_id) == report.fingerprint
             )
 
@@ -1076,13 +1080,10 @@ def load_report_context(args: argparse.Namespace) -> tuple[list[HomeSnapshot], P
 
 def build_html(
     homes: list[HomeSnapshot], title: str, lavish: bool = False, show_all: bool = False,
-    bearings: Bearings | None = None, refresh_seconds: int | None = None, mark_token: str | None = None,
+    bearings: Bearings | None = None, refresh_seconds: int | None = None, allow_marks: bool = False,
 ) -> str:
     snapshots = all_snapshots(homes)
-    for snapshot in snapshots:
-        for report in snapshot.reports:
-            if not report.report_id:
-                report.report_id = report_reference(snapshot.spec.label, report.path.parent.name)
+    ambiguous_ids = assign_report_ids(homes)
     counts = [sum(snapshot_counts(snapshot, show_all)[index] for snapshot in snapshots) for index in range(6 if show_all else 4)]
     metric_labels = ["Held for captain", "Review-ready PRs", "In-flight work", "Blocked for captain/external"]
     if show_all:
@@ -1095,29 +1096,48 @@ def build_html(
     board_block = board_html(board, generated) if board else ""
     board_status = board_status_html(board, generated) if board else ""
     bearings_block = bearings_html(
-        bearings, collapse_reviews=board is not None, can_mark=mark_token is not None
+        bearings, collapse_reviews=board is not None, can_mark=allow_marks, ambiguous_ids=ambiguous_ids
     ) if bearings else ""
-    reviewed_block = reviewed_reports_html(homes) if mark_token is not None else ""
-    mark_meta = (
-        f'\n  <meta name="quarterdeck-mark-token" content="{html.escape(mark_token, quote=True)}">'
-        if mark_token is not None else ""
-    )
+    reviewed_block = reviewed_reports_html(homes, ambiguous_ids) if allow_marks else ""
     mark_script = f"""
   <script>
+    const MARK_TOKEN_KEY = "quarterdeck-mark-token";
+    const MARK_KEY_PROMPT = "Enter the key from Quarterdeck's local state file review-state/mark-token.";
+    function askForMarkToken(message = MARK_KEY_PROMPT) {{
+      const token = (window.prompt(message) || "").trim();
+      if (!token) throw new Error("Mark refused. Enter the Quarterdeck key to continue.");
+      try {{ window.localStorage.setItem(MARK_TOKEN_KEY, token); }} catch (_) {{}}
+      return token;
+    }}
+    function storedMarkToken() {{
+      try {{ return window.localStorage.getItem(MARK_TOKEN_KEY) || ""; }} catch (_) {{ return ""; }}
+    }}
     document.addEventListener("click", async (event) => {{
       const button = event.target.closest("[data-mark-report]");
       if (!button || button.disabled) return;
       const status = button.parentElement.querySelector(".request-status");
-      const token = document.querySelector('meta[name="quarterdeck-mark-token"]').content;
       button.disabled = true;
       if (status) status.textContent = "Saving…";
       try {{
-        const response = await fetch("{MARK_ENDPOINT}", {{
-          method: "POST",
-          headers: {{"Content-Type": "application/json", "X-Quarterdeck-Token": token}},
-          body: JSON.stringify({{report_id: button.dataset.markReport, action: button.dataset.markAction}}),
-        }});
-        if (!response.ok) throw new Error((await response.text()).trim() || response.statusText);
+        let token = storedMarkToken() || askForMarkToken();
+        for (let attempt = 0; attempt < 2; attempt++) {{
+          const response = await fetch("{MARK_ENDPOINT}", {{
+            method: "POST",
+            headers: {{"Content-Type": "application/json", "X-Quarterdeck-Token": token}},
+            body: JSON.stringify({{
+              report_id: button.dataset.markReport,
+              fingerprint: button.dataset.markFingerprint,
+              action: button.dataset.markAction
+            }}),
+          }});
+          if (response.status === 403 && attempt === 0) {{
+            try {{ window.localStorage.removeItem(MARK_TOKEN_KEY); }} catch (_) {{}}
+            token = askForMarkToken("Quarterdeck refused that key. " + MARK_KEY_PROMPT);
+            continue;
+          }}
+          if (!response.ok) throw new Error((await response.text()).trim() || response.statusText);
+          break;
+        }}
         try {{
           const openKeys = Array.from(
             document.querySelectorAll("details[open]"), detail => detail.dataset.refreshKey || detail.id
@@ -1130,7 +1150,7 @@ def build_html(
         if (status) status.textContent = "Could not save: " + error.message;
       }}
     }});
-  </script>""" if mark_token is not None else ""
+  </script>""" if allow_marks else ""
     refresh_script = (
         f"""
   <script>
@@ -1160,7 +1180,7 @@ def build_html(
     }})();
   </script>""" if refresh_seconds else ""
     )
-    footer_label = "Read-only snapshot except report review marks" if mark_token is not None else "Read-only snapshot"
+    footer_label = "Read-only snapshot except report review marks" if allow_marks else "Read-only snapshot"
     refresh_note = f" · reloads every {int(refresh_seconds)} seconds" if refresh_seconds else ""
     metrics = "".join(
         f'<div class="metric"><b>{count}</b><span>{html.escape(label)}</span></div>'
@@ -1200,7 +1220,7 @@ def build_html(
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <meta name="quarterdeck-{'gen' + 'erated'}" content="read-only review page">{mark_meta}
+  <meta name="quarterdeck-{'gen' + 'erated'}" content="read-only review page">
   <title>{html.escape(title)} · Firstmate review</title>
   <style>
     :root {{ color-scheme: light dark; --navy: #17324d; --sea: #176b69; --sand: #f3eddf; --paper: #fffdf8; --ink: #20303d; --muted: #657482; --line: #d8d3c8; --gold: #c98635; --head: #17324d; --soft: #ffffff70; --warn-bg: #fff8e9; --warn-ink: #624313; --fail-bg: #fff2ee; --fail-ink: #6f251b; --chip: #e6f1ee; }}
@@ -1948,17 +1968,24 @@ def bearings_item_html(item: BItem, now: datetime, section: str) -> str:
 MARK_ENDPOINT = "/api/reports/review"
 
 
-def mark_button(report_id: str, action: str) -> str:
+def mark_button(report_id: str, action: str, fingerprint: str, ambiguous: bool) -> str:
     label = "Mark reviewed" if action == "mark" else "Unmark"
+    if ambiguous:
+        return (
+            '<div class="request-row">'
+            f'<button class="request-lavish" type="button" disabled>{label}</button>'
+            '<span class="request-status">ID is shared by multiple homes; marking is disabled.</span></div>'
+        )
     return (
         '<div class="request-row">'
         f'<button class="request-lavish" type="button" data-mark-report="{html.escape(report_id, quote=True)}" '
+        f'data-mark-fingerprint="{html.escape(fingerprint, quote=True)}" '
         f'data-mark-action="{action}">{label}</button>'
         '<span class="request-status" aria-live="polite"></span></div>'
     )
 
 
-def reviewed_reports_html(homes: list[HomeSnapshot]) -> str:
+def reviewed_reports_html(homes: list[HomeSnapshot], ambiguous_ids: set[str]) -> str:
     cards = []
     for snapshot in all_snapshots(homes):
         for report in snapshot.reports:
@@ -1970,7 +1997,7 @@ def reviewed_reports_html(homes: list[HomeSnapshot]) -> str:
                 f'<article class="card"><p class="eyebrow">{html.escape(snapshot.spec.label)} · '
                 f'<code>{html.escape(report.report_id)}</code></p><h3>{html.escape(report.title)}</h3>'
                 f'<p class="links"><a href="{html.escape(page, quote=True)}">Read report</a></p>'
-                f'{mark_button(report.report_id, "unmark")}</article>'
+                f'{mark_button(report.report_id, "unmark", report.fingerprint, report.report_id in ambiguous_ids)}</article>'
             )
     content = "".join(cards) or '<p class="empty">No reports are marked reviewed.</p>'
     return (
@@ -1981,7 +2008,11 @@ def reviewed_reports_html(homes: list[HomeSnapshot]) -> str:
     )
 
 
-def bearings_html(bearings: Bearings, collapse_reviews: bool = False, can_mark: bool = False) -> str:
+def bearings_html(
+    bearings: Bearings, collapse_reviews: bool = False, can_mark: bool = False,
+    ambiguous_ids: set[str] | None = None,
+) -> str:
+    ambiguous_ids = ambiguous_ids or set()
     now = bearings.generated
     sections = [
         ("call", "Captain's Call", "Decisions and reviews waiting on you, with everything needed to answer.",
@@ -2000,7 +2031,9 @@ def bearings_html(bearings: Bearings, collapse_reviews: bool = False, can_mark: 
             f'<p><strong>Recommendation:</strong> {html.escape(report.recommendation)}</p>' if report.recommendation else ""
         )
         if can_mark:
-            tail = f'</p>{mark_button(report.report_id, "mark")}'
+            tail = f'</p>{mark_button(report.report_id, "mark", report.fingerprint, report.report_id in ambiguous_ids)}'
+        elif report.report_id in ambiguous_ids:
+            tail = ' · <span class="path">ID is shared by multiple homes; narrow the selection before marking.</span></p>'
         else:
             tail = (
                 f' · <span class="path">after reading: quarterdeck reports mark-reviewed '
@@ -2638,14 +2671,14 @@ class SiteCache:
             return self.pages
 
 
-def site_builder(args: argparse.Namespace, mark_token: str | None = None) -> Callable[[], dict[str, str]]:
+def site_builder(args: argparse.Namespace, allow_marks: bool = False) -> Callable[[], dict[str, str]]:
     def build() -> dict[str, str]:
         config, homes, bearings = load_site(args)
         configured_title = config.get("page_title")
         title = args.title or (configured_title if isinstance(configured_title, str) else None) or DEFAULT_TITLE
         pages = source_pages(homes, show_all=False, bearings=bearings)
         pages["index.html"] = build_html(
-            homes, title, bearings=bearings, refresh_seconds=DEFAULT_REFRESH_SECONDS, mark_token=mark_token
+            homes, title, bearings=bearings, refresh_seconds=DEFAULT_REFRESH_SECONDS, allow_marks=allow_marks
         )
         return pages
     return build
@@ -2656,11 +2689,9 @@ MARK_BODY_LIMIT = 4096
 
 def make_handler(
     cache: SiteCache, mark_token: str | None = None,
-    set_mark: Callable[[str, bool], Report] | None = None,
+    set_mark: Callable[[str, bool, str], Report] | None = None,
 ) -> type[BaseHTTPRequestHandler]:
     """Build the request handler; POST is refused unless both mark_token and set_mark are given."""
-    marks_enabled = mark_token is not None and set_mark is not None
-
     class Handler(BaseHTTPRequestHandler):
         server_version = "Quarterdeck"
 
@@ -2716,7 +2747,7 @@ def make_handler(
             return None
 
         def do_POST(self) -> None:  # noqa: N802 - http.server naming
-            if not marks_enabled or urlparse(self.path).path != MARK_ENDPOINT:
+            if mark_token is None or set_mark is None or urlparse(self.path).path != MARK_ENDPOINT:
                 self.refuse()
                 return
             problem = self.mark_request_problem()
@@ -2728,15 +2759,18 @@ def make_handler(
                 if not 0 < length <= MARK_BODY_LIMIT:
                     raise ValueError
                 body = json.loads(self.rfile.read(length).decode("utf-8"))
-                if (not isinstance(body, dict) or set(body) != {"report_id", "action"}
-                        or not isinstance(body["report_id"], str) or body["action"] not in {"mark", "unmark"}):
+                if (not isinstance(body, dict) or set(body) != {"report_id", "fingerprint", "action"}
+                        or not isinstance(body["report_id"], str) or not isinstance(body["action"], str)
+                        or not isinstance(body["fingerprint"], str)
+                        or not re.fullmatch(r"[0-9a-f]{64}", body["fingerprint"])
+                        or body["action"] not in {"mark", "unmark"}):
                     raise ValueError
             except (ValueError, UnicodeDecodeError):
-                self.send_text(400, "Expected JSON {\"report_id\": ..., \"action\": \"mark\" | \"unmark\"}\n")
+                self.send_text(400, "Expected JSON {\"report_id\": ..., \"fingerprint\": ..., \"action\": \"mark\" | \"unmark\"}\n")
                 return
             reviewed = body["action"] == "mark"
             try:
-                report = set_mark(body["report_id"], reviewed)  # type: ignore[misc]
+                report = set_mark(body["report_id"], reviewed, body["fingerprint"])
             except ValueError as exc:
                 self.send_text(404 if str(exc).startswith("no report matches") else 409, f"{exc}\n")
                 return
@@ -2818,11 +2852,13 @@ def serve(args: argparse.Namespace) -> int:
     servers: list[ThreadingHTTPServer] = []
     try:
         mark_token: str | None = None
-        set_mark: Callable[[str, bool], Report] | None = None
+        set_mark: Callable[[str, bool, str], Report] | None = None
         if getattr(args, "allow_marks", False):
             mark_token = load_or_create_mark_token(load_report_snapshots(args)[1])
-            set_mark = lambda report_id, reviewed: set_report_mark(args, report_id, reviewed)  # noqa: E731
-        cache = SiteCache(site_builder(args, mark_token))
+            set_mark = lambda report_id, reviewed, fingerprint: set_report_mark(  # noqa: E731
+                args, report_id, reviewed, fingerprint
+            )
+        cache = SiteCache(site_builder(args, getattr(args, "allow_marks", False)))
         cache.get()
         handler = make_handler(cache, mark_token, set_mark)
         port = args.port
@@ -3347,7 +3383,7 @@ def render(args: argparse.Namespace) -> int:
 def add_serve_options(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--host", action="append", metavar="ADDRESS", help=f"address to bind; repeat to listen on several, all on the same port (default {DEFAULT_HOST} only; a non-loopback address exposes your work data without a login)")
     parser.add_argument("--port", type=port_number, default=DEFAULT_PORT, help=f"port to listen on (default {DEFAULT_PORT})")
-    parser.add_argument("--allow-marks", action="store_true", help="let the served page mark and unmark reports as reviewed; needs a secret token generated in the state directory (default: read-only)")
+    parser.add_argument("--allow-marks", action="store_true", help="enable report marks; the browser prompts for a secret key from the state directory (default: read-only)")
     parser.add_argument("--home", help="serve this Firstmate home instead of configured homes or FM_HOME")
     parser.add_argument("--config", type=Path, help="optional JSON config file")
 
@@ -3372,7 +3408,7 @@ def make_parser() -> argparse.ArgumentParser:
 
     serve_parser = subparsers.add_parser(
         "serve", help="serve the always-current bearings page over HTTP",
-        description="Serve the bearings page and its readable report and backlog pages, re-rendered from the homes on request. Read-only by default: GET only, no login. With --allow-marks the only write is a token-protected request to mark or unmark a known report as reviewed. Binds loopback by default.",
+        description="Serve the bearings page and its readable report and backlog pages, re-rendered from the homes on request. Read-only by default: GET only, no login. With --allow-marks the only write is a key-protected request to mark or unmark a known report as reviewed. Binds loopback by default.",
     )
     command_parsers["serve"] = serve_parser
     add_serve_options(serve_parser)
