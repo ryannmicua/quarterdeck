@@ -5,7 +5,8 @@
 ## What it is
 
 Quarterdeck turns running Firstmate homes' backlogs and scout reports into one
-read-only HTML review page. When any selected home or registered secondmate has
+local HTML review page. Serving is read-only by default; report review marks are
+available as an opt-in. When any selected home or registered secondmate has
 a captain board, the grouped list leads the page; otherwise the page leads with
 the four sections from Firstmate's `/bearings` digest. Reports waiting on your
 review also appear. Configure several homes to review them together; each home

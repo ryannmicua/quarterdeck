@@ -95,14 +95,17 @@ for how marks affect the dashboard.
 | `--no-snapshot` | Do not run a home's `bin/fm-bearings-snapshot.sh`; classify from the backlog only. |
 
 `serve` re-renders the page and its readable pages at startup and on the first
-request after its 30-second cache expires. It serves them with `GET` only
+request after its 30-second cache expires. It serves them with `GET` by default
 on each repeatable `--host` address (default `127.0.0.1` only) and `--port`
-(default 8765; valid ports are 1 through 65535). The served page reloads itself
-every 60 seconds and shows its generated-at time. `service` prints a
-systemd user unit that runs `serve` with the given options, or with `--write`
-writes it to `${XDG_CONFIG_HOME:-~/.config}/systemd/user/quarterdeck.service`;
-it never runs `systemctl`. A non-loopback host exposes work data without a
-login. `url` prints the address or addresses configured in the installed user
+(default 8765; valid ports are 1 through 65535). `--allow-marks` enables the
+key-protected report review request described in the
+[serving guide](../how-to/serve-the-page.md); all other writes remain refused.
+The served page reloads itself every 60 seconds and shows its generated-at
+time. `service` prints a systemd user unit that runs `serve` with the given
+options, or with `--write` writes it to
+`${XDG_CONFIG_HOME:-~/.config}/systemd/user/quarterdeck.service`; it never runs
+`systemctl`. A non-loopback host exposes work data without a login. `url`
+prints the address or addresses configured in the installed user
 service; it does not check whether the service is running. If no unit is
 installed, it labels the default `serve` address shown, which a plain
 `quarterdeck serve` uses. A foreground serve started with custom `--host` or

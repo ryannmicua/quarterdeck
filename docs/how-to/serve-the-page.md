@@ -102,8 +102,10 @@ systemctl --user daemon-reload
 systemctl --user enable --now quarterdeck.service
 ```
 
-`service` accepts the same `--host` (repeatable, default 127.0.0.1 only), `--port`, `--home` and `--config` options as `serve`, and it never runs
-`systemctl` itself. The unit it writes looks like:
+`service` accepts the same `--host` (repeatable, default 127.0.0.1 only),
+`--port`, `--home` and `--config` options as `serve`, plus `--allow-marks` to
+enable report review marks in the unit. It never runs `systemctl` itself. The
+unit it writes looks like:
 
 ```ini
 [Unit]
