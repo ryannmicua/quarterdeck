@@ -56,6 +56,10 @@ board file, Quarterdeck omits the captain board section.
   unknown task counts as settled. Items without a `task` are invalid and skipped
   with a visible warning. If the backlog cannot be read, the item remains visible
   with a prominent warning. The page says how many items it hid.
+- On bullet backlog entries, `hold-kind: captain` with a meaningful `hold`
+  value counts as a captain hold when `held` is absent. If `held` is present,
+  its value takes precedence, so a false value prevents stale hold text from
+  keeping the item visible.
 - **Not yet sorted.** Open backlog items waiting on the captain that no board
   item references are listed last with their raw hold note, so nothing is lost.
   When the board file is present but unreadable, every such item appears here.
