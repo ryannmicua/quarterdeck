@@ -1418,7 +1418,10 @@ def parse_bullet_item(header: re.Match[str], continuation: list[str], section: s
         state=state,
         attrs=attrs, body=body, raw=raw, done=done,
         hold_reason=markdown_text(attrs.get("hold", "")), hold_kind=hold_kind,
-        held=attrs.get("held", "").strip().lower() in TRUE_VALUES,
+        held=(
+            attrs["held"].strip().lower() in TRUE_VALUES if "held" in attrs
+            else field_is_set(attrs.get("hold", ""))
+        ),
         blocked_by=blocked_by,
         report_dir=report_dir, pr_url=pr_url,
         review_ready=(not done and valid_pr_url(pr_url) and is_review_ready_state(attrs.get("review_ready", ""), state)),

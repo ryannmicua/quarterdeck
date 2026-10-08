@@ -1442,6 +1442,26 @@ globalThis.setTimeout = callback => callback();
             page = quarterdeck.build_html(homes, "Q", bearings=quarterdeck.build_bearings(homes, now=self.NOW, use_snapshot=False))
             self.assertNotIn("<script>x</script>", page)
 
+    def test_tasks_axi_hold_shape_without_held_flag_is_still_waiting_on_captain(self) -> None:
+        # tasks-axi writes (hold: reason) (hold-kind: captain) and no (held: yes).
+        with tempfile.TemporaryDirectory() as temp:
+            home = self.make_home(Path(temp), [board_item(id="reef-item", task="reef-approval", links=[])])
+            (home / "data" / "backlog.md").write_text(
+                "# Backlog\n\n## Queued\n\n"
+                "- [ ] reef-approval - Approve the reef plan (repo: reef-demo) (kind: captain) (since 2026-10-07) "
+                "(hold: Plan needs captain word) (hold-kind: captain)\n"
+                "- [ ] reef-unboarded - Pick a buoy (kind: captain) (hold: Red or green) (hold-kind: captain)\n"
+                "- [ ] reef-vendor - Await vendor quote (hold: Vendor owes a quote) (hold-kind: external)\n"
+                "- [ ] reef-placeholder - No real hold (hold: -) (hold-kind: captain)\n",
+                encoding="utf-8",
+            )
+            homes, view = self.view(home)
+            self.assertEqual(view.hidden, 0)
+            self.assertEqual(self.titles(view, "merge"), ["Pier merge"])
+            self.assertEqual([entry.item.id for entry in view.unsorted], ["reef-unboarded"])
+            bearings = quarterdeck.build_bearings(homes, now=self.NOW, use_snapshot=False)
+            self.assertEqual({item.item_id for item in bearings.call}, {"reef-approval", "reef-unboarded"})
+
     def test_unsorted_covers_unboarded_roots_and_secondmates(self) -> None:
         with tempfile.TemporaryDirectory() as temp:
             root = Path(temp)
