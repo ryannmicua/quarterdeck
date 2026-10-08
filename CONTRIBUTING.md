@@ -4,6 +4,8 @@ Quarterdeck is a small, dependency-free Python tool. Keep changes focused and
 stdlib-only, and keep all fixtures fictional. Never add real Firstmate backlog
 entries, reports, paths, screenshots, hostnames, or project names.
 
+Quarterdeck has no CI; validation relies on the local no-mistakes pipeline.
+
 Before opening a pull request, run:
 
 ```sh
