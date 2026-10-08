@@ -23,7 +23,7 @@ import unicodedata
 import webbrowser
 from collections.abc import Callable, Iterator
 from contextlib import contextmanager
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from datetime import datetime, timezone
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
@@ -1995,17 +1995,20 @@ def parse_captain_board(source: str, path: Path) -> CaptainBoard:
         if group not in BOARD_GROUP_KEYS:
             problems.append(f"group {group!r} is not one of {', '.join(BOARD_GROUP_KEYS)}")
         title, ask = _board_text(raw.get("title")), _board_text(raw.get("ask"))
+        task = _board_text(raw.get("task"))
         if not title:
             problems.append("title is missing")
         if not ask:
             problems.append("ask is missing")
+        if not task:
+            problems.append("task is missing")
         if problems:
             board.warnings.append(f"{where} was skipped: {'; '.join(problems)}.")
             continue
-        assert identifier and title and ask
+        assert identifier and title and ask and task
         seen.add(identifier)
         optional: dict[str, str] = {}
-        for key in ("detail", "topic", "task"):
+        for key in ("detail", "topic"):
             value = raw.get(key)
             if value is None:
                 continue
@@ -2023,12 +2026,16 @@ def parse_captain_board(source: str, path: Path) -> CaptainBoard:
         for link in raw_links or []:
             label = _board_text(link.get("label")) if isinstance(link, dict) else None
             url = _board_text(link.get("url")) if isinstance(link, dict) else None
-            if not label or not url or urlparse(url).scheme not in {"http", "https"} or not urlparse(url).netloc:
+            try:
+                parsed_url = urlparse(url) if url else None
+            except ValueError:
+                parsed_url = None
+            if not label or not url or parsed_url is None or parsed_url.scheme not in {"http", "https"} or not parsed_url.netloc:
                 board.warnings.append(f"{where}: a link needs a label and an http(s) url and was ignored.")
                 continue
             links.append((label, url))
         board.items.append(BoardItem(
-            id=identifier, group=str(group), title=title, ask=ask, links=links, **optional,
+            id=identifier, group=str(group), title=title, ask=ask, task=task, links=links, **optional,
         ))
     return board
 
@@ -2068,7 +2075,8 @@ def unsorted_note(item: BacklogItem) -> str:
 
 def board_view(homes: list[HomeSnapshot]) -> BoardView | None:
     """Merge the homes' boards, drop settled items, and add backlog items the boards miss."""
-    boarded = [home for home in homes if home.board is not None]
+    snapshots = all_snapshots(homes)
+    boarded = [home for home in snapshots if home.board is not None]
     if not boarded:
         return None
     view = BoardView({key: [] for key in BOARD_GROUP_KEYS}, [], 0, [], [])
@@ -2096,29 +2104,34 @@ def board_view(homes: list[HomeSnapshot]) -> BoardView | None:
         if home.error:
             view.warnings.append(f"{label}: the backlog could not be read, so board items were not cross-checked.")
         for item in board.items:
-            if item.task and not home.error:
+            if not home.error:
                 target, task_id = home, item.task
                 route, separator, rest = item.task.partition("/")
                 child = next((c for c in home.children if separator and c.spec.route_id == route), None)
                 if child is not None:
                     target, task_id = child, rest
-                if not target.error:
+                if target.error:
+                    view.warnings.append(
+                        f"{label}: {item.id} references {item.task}, but that backlog could not be read; the item was not cross-checked."
+                    )
+                else:
                     referenced.add((id(target), task_id))
                     backlog_item = items_of(target).get(task_id)
                     if backlog_item is None or not needs_captain(backlog_item):
                         view.hidden += 1
                         continue
+                    if item.group == "merge" and not item.links and PR_URL_RE.fullmatch(backlog_item.pr_url or ""):
+                        item = replace(item, links=[("Pull request", backlog_item.pr_url)])
             view.groups[item.group].append(BoardEntry(item, label))
-    for home in boarded:
-        for snapshot in all_snapshots([home]):
-            for backlog_item in items_of(snapshot).values():
-                if (id(snapshot), backlog_item.id) in referenced or not needs_captain(backlog_item):
-                    continue
-                links = [("Pull request", backlog_item.pr_url)] if PR_URL_RE.fullmatch(backlog_item.pr_url or "") else []
-                view.unsorted.append(BoardEntry(BoardItem(
-                    id=backlog_item.id, group="unsorted", title=backlog_item.title, ask=unsorted_note(backlog_item),
-                    detail=f"Backlog item `{backlog_item.id}`", task=backlog_item.id, links=links,
-                ), snapshot.spec.label))
+    for snapshot in snapshots:
+        for backlog_item in items_of(snapshot).values():
+            if (id(snapshot), backlog_item.id) in referenced or not needs_captain(backlog_item):
+                continue
+            links = [("Pull request", backlog_item.pr_url)] if PR_URL_RE.fullmatch(backlog_item.pr_url or "") else []
+            view.unsorted.append(BoardEntry(BoardItem(
+                id=backlog_item.id, group="unsorted", title=backlog_item.title, ask=unsorted_note(backlog_item),
+                detail=f"Backlog item `{backlog_item.id}`", task=backlog_item.id, links=links,
+            ), snapshot.spec.label))
     view.multiple_homes = len({entry.home for entries in view.groups.values() for entry in entries} | {e.home for e in view.unsorted}) > 1
     number = 0
     for key in BOARD_GROUP_KEYS:
@@ -2161,7 +2174,16 @@ def board_entry_html(entry: BoardEntry, show_home: bool) -> str:
         f'<p class="board-ask">{html.escape(item.ask)}</p>',
     ]
     if item.detail:
-        parts.append(f'<div class="body">{render_markdown(item.detail)}</div>')
+        detail_warning = ""
+        try:
+            detail = render_markdown(item.detail)
+        except ValueError:
+            detail_warning = (
+                f'<div class="warning"><p>{html.escape(BOARD_FILENAME)} item {html.escape(item.id)}: '
+                "detail contains a malformed Markdown URL and was shown as text.</p></div>"
+            )
+            detail = html.escape(item.detail)
+        parts.append(f'{detail_warning}<div class="body">{detail}</div>')
     if item.links:
         links = "".join(
             f'<li><a href="{html.escape(url, quote=True)}">{html.escape(label)}</a> '

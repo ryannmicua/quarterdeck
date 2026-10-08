@@ -7,8 +7,8 @@ reads the file, and never writes it.
 ## Location
 
 `<firstmate home>/data/captain-board.json`, read for each configured home (or
-that home's `data_dir`). If the file is absent, the page behaves exactly as it
-did before the board existed.
+that home's `data_dir`). If no configured home or registered secondmate has a
+board file, the page behaves exactly as it did before the board existed.
 
 ## Schema (version 1)
 
@@ -41,7 +41,7 @@ did before the board existed.
 | `items[].ask` | yes | One plain-language line: what is wanted from the captain. |
 | `items[].detail` | no | Short Markdown shown when the item is opened. |
 | `items[].topic` | no | Sub-heading that groups `decide` items. |
-| `items[].task` | no | Backlog task id used for the cross-check. A `route/id` form names a registered secondmate's task. |
+| `items[].task` | yes | Backlog task id used for the cross-check. A `route/id` form names a registered secondmate's task. |
 | `items[].links` | no | List of `{label, url}`; only `http` and `https` URLs are kept. Use it for the pull request or a Lavish page. |
 
 ## What the page does with it
@@ -50,11 +50,11 @@ did before the board existed.
   Decisions (sub-grouped by `topic`), Questions to forward, Reviews at your
   leisure. Empty groups are omitted. Items are numbered in display order so the
   captain can say a number; tapping an item opens its ask, detail and links.
-- **Cross-check.** An item with a `task` is hidden unless the live backlog still
-  shows that task open and waiting on the captain: a captain hold, a
+- **Cross-check.** Every item must name a `task` and is hidden unless the live
+  backlog still shows that task open and waiting on the captain: a captain hold, a
   review-ready pull request, or blocked on the captain. A closed, cancelled,
-  released, or unknown task counts as settled. Items without a `task` always
-  show. The page says how many items it hid.
+  released, or unknown task counts as settled. Items without a `task` are
+  invalid and skipped with a visible warning. The page says how many items it hid.
 - **Not yet sorted.** Open backlog items waiting on the captain that no board
   item references are listed last with their raw hold note, so nothing is lost.
   When the board file is present but unreadable, every such item appears here.
@@ -62,8 +62,8 @@ did before the board existed.
   flags the board as possibly out of date when the backlog file changed after
   `updated_at` (or `updated_at` is missing or invalid).
 - **Malformed input.** Valid items still render. A bad file, version, timestamp,
-  item, or link produces a visible warning naming the problem; the page never
-  fails because of the board.
+  item, link, or detail URL produces a visible warning naming the problem;
+  malformed detail is shown as text and the page never fails because of the board.
 - The reports-to-review list moves below the board in a collapsed section.
   The page reloads itself as before and waits while an item or section is open.
 

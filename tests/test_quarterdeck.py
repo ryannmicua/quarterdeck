@@ -1163,14 +1163,17 @@ class CaptainBoardTests(unittest.TestCase):
                 board_item(id="bad-group", group="shout"),
                 board_item(id="no-ask", ask=""),
                 board_item(id="pier-merge"),
+                board_item(id="missing-task", task=None),
                 board_item(id="odd-link", links=[{"label": "x", "url": "javascript:alert(1)"}], detail=7),
+                board_item(id="bad-url", links=[{"label": "x", "url": "http://["}]),
             ],
         }), Path("x"))
-        self.assertEqual([item.id for item in board.items], ["pier-merge", "odd-link"])
+        self.assertEqual([item.id for item in board.items], ["pier-merge", "odd-link", "bad-url"])
         self.assertEqual(board.items[1].links, [])
+        self.assertEqual(board.items[2].links, [])
         self.assertIsNone(board.updated_at)
         text = "\n".join(board.warnings)
-        for fragment in ("updated_at", "item 2", "bad-group", "no-ask", "duplicate", "odd-link"):
+        for fragment in ("updated_at", "item 2", "bad-group", "no-ask", "task", "duplicate", "odd-link", "bad-url"):
             self.assertIn(fragment, text)
 
     def test_malformed_board_renders_warning_and_keeps_unsorted(self) -> None:
@@ -1188,7 +1191,7 @@ class CaptainBoardTests(unittest.TestCase):
                 board_item(id="dock", title="Dock merge", task="dock-fix"),
                 board_item(id="gone", title="Gone merge", task="no-such-task"),
                 board_item(id="waiting", title="Vendor wait", task="waiting-work", group="forward"),
-                board_item(id="note", title="Just a note", group="read", task=None),
+                board_item(id="note", title="Just a note", group="read", task="kelp-hold"),
                 board_item(id="kelp", title="Kelp date", group="decide", task="kelp-hold"),
             ])
             homes, view = self.view(home)
@@ -1211,12 +1214,12 @@ class CaptainBoardTests(unittest.TestCase):
     def test_group_order_numbers_topics_and_links(self) -> None:
         with tempfile.TemporaryDirectory() as temp:
             home = self.make_home(Path(temp), [
-                board_item(id="r", group="read", title="Read one", task=None),
-                board_item(id="f", group="forward", title="Forward one", task=None),
-                board_item(id="d1", group="decide", title="Decide A1", topic="Alpha", task=None),
-                board_item(id="d2", group="decide", title="Decide B1", topic="Beta", task=None),
-                board_item(id="d3", group="decide", title="Decide A2", topic="Alpha", task=None),
-                board_item(id="a", group="approve", title="Approve one", task=None, detail="More **context**."),
+                board_item(id="r", group="read", title="Read one", task="kelp-hold"),
+                board_item(id="f", group="forward", title="Forward one", task="kelp-hold"),
+                board_item(id="d1", group="decide", title="Decide A1", topic="Alpha", task="kelp-hold"),
+                board_item(id="d2", group="decide", title="Decide B1", topic="Beta", task="kelp-hold"),
+                board_item(id="d3", group="decide", title="Decide A2", topic="Alpha", task="kelp-hold"),
+                board_item(id="a", group="approve", title="Approve one", task="kelp-hold", detail="More **context**."),
                 board_item(id="m"),
             ])
             homes, view = self.view(home)
@@ -1250,10 +1253,74 @@ class CaptainBoardTests(unittest.TestCase):
 
     def test_board_text_is_escaped(self) -> None:
         with tempfile.TemporaryDirectory() as temp:
-            home = self.make_home(Path(temp), [board_item(title="<script>x</script>", task=None)])
+            home = self.make_home(Path(temp), [board_item(title="<script>x</script>", task="kelp-hold")])
             homes, _ = self.view(home)
             page = quarterdeck.build_html(homes, "Q", bearings=quarterdeck.build_bearings(homes, now=self.NOW, use_snapshot=False))
             self.assertNotIn("<script>x</script>", page)
+
+    def test_unsorted_covers_unboarded_roots_and_secondmates(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            board_home, other_home = root / "A", root / "B"
+            child_home, child_board_home = root / "B-child", root / "B-board-child"
+
+            def write_held(home: Path, task_id: str, title: str) -> None:
+                data = home / "data"
+                data.mkdir(parents=True)
+                (data / "backlog.md").write_text(
+                    f"# Backlog\n\n## Queued\n\n- [ ] {task_id} - {title} (held: yes) (hold: Raw note: {title}.) (hold-kind: captain)\n",
+                    encoding="utf-8",
+                )
+
+            write_held(board_home, "anchor", "Anchor task")
+            (board_home / "data" / "captain-board.json").write_text(
+                json.dumps({"version": 1, "updated_at": "2026-10-08T10:00:00Z", "items": [board_item(task="anchor", links=[])]}),
+                encoding="utf-8",
+            )
+            write_held(other_home, "root-hold", "Unboarded root hold")
+            write_held(child_home, "child-hold", "Unboarded child hold")
+            write_held(child_board_home, "child-anchor", "Child board task")
+            (child_board_home / "data" / "captain-board.json").write_text(
+                json.dumps({"version": 1, "updated_at": "2026-10-08T10:00:00Z", "items": [
+                    board_item(id="child-board-item", title="Child merge", task="child-anchor", links=[])
+                ]}),
+                encoding="utf-8",
+            )
+            (other_home / "data" / "secondmates.md").write_text(
+                f"- wren - Keeps the field guide (home: {child_home}; scope: Field guide)\n"
+                f"- lark - Keeps the chart (home: {child_board_home}; scope: Chart)\n",
+                encoding="utf-8",
+            )
+            homes = [
+                quarterdeck.load_home_snapshot(quarterdeck.HomeSpec("A", board_home), discover_secondmates=True),
+                quarterdeck.load_home_snapshot(quarterdeck.HomeSpec("B", other_home), discover_secondmates=True),
+            ]
+            view = quarterdeck.board_view(homes)
+            self.assertIsNotNone(view)
+            assert view is not None
+            self.assertEqual([entry.item.title for entry in view.groups["merge"]], ["Pier merge", "Child merge"])
+            self.assertEqual(
+                [entry.item.title for entry in view.unsorted],
+                ["Unboarded root hold", "Unboarded child hold"],
+            )
+
+    def test_merge_uses_backlog_pr_when_board_has_no_links(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            home = self.make_home(Path(temp), [board_item(id="fallback", links=[])])
+            homes, view = self.view(home)
+            self.assertIsNotNone(view)
+            fallback = next(entry for entry in view.groups["merge"] if entry.item.id == "fallback")
+            self.assertEqual(fallback.item.links, [("Pull request", PIER_PR)])
+            page = quarterdeck.build_html(homes, "Q", bearings=quarterdeck.build_bearings(homes, now=self.NOW, use_snapshot=False))
+            self.assertIn(f'<a href="{PIER_PR}">Pull request</a>', page)
+
+    def test_malformed_detail_markdown_warns_and_renders_as_text(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            home = self.make_home(Path(temp), [board_item(detail="Malformed [link](http://[)")])
+            homes, _ = self.view(home)
+            page = quarterdeck.build_html(homes, "Q", bearings=quarterdeck.build_bearings(homes, now=self.NOW, use_snapshot=False))
+            self.assertIn("detail contains a malformed Markdown URL", page)
+            self.assertIn("Malformed [link](http://[)", page)
 
 
 class BearingsTests(unittest.TestCase):
