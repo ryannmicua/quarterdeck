@@ -1274,6 +1274,27 @@ class CaptainBoardTests(unittest.TestCase):
             self.assertEqual(view.groups["merge"], [])
             self.assertEqual(view.unsorted, [])
 
+    def test_bullet_blocker_fields_survive_attributes_for_board_coverage(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            home = self.make_home(Path(temp), [board_item(task="board-blocked-task")])
+            (home / "data" / "backlog.md").write_text(
+                "# Backlog\n\n## Queued\n\n"
+                "- [ ] board-blocked-task - Board blocker (state: blocked) (blocked_by: captain)\n"
+                "- [ ] hyphen-blocked-task - Hyphen blocker (state: blocked) (blocked-by: captain)\n"
+                "- [ ] waiting-on-task - Waiting on blocker (state: blocked) (waiting_on: captain)\n"
+                "- [ ] waiting-for-task - Waiting for blocker (state: blocked) (waiting_for: captain)\n"
+                "- [ ] trailing-blocked-task - Trailing blocker (state: blocked) blocked-by: captain\n",
+                encoding="utf-8",
+            )
+            homes, view = self.view(home)
+            self.assertIsNotNone(view)
+            assert view is not None
+            self.assertEqual(self.titles(view, "merge"), ["Pier merge"])
+            self.assertEqual(
+                [entry.item.id for entry in view.unsorted],
+                ["hyphen-blocked-task", "waiting-on-task", "waiting-for-task", "trailing-blocked-task"],
+            )
+
     def test_group_order_numbers_topics_and_links(self) -> None:
         with tempfile.TemporaryDirectory() as temp:
             home = self.make_home(Path(temp), [

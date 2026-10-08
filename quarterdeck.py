@@ -1248,7 +1248,8 @@ def build_html(
 SNAPSHOT_SCRIPT = Path("bin") / "fm-bearings-snapshot.sh"
 SNAPSHOT_TIMEOUT_SECONDS = 15
 ITEM_ATTRIBUTE_RE = re.compile(
-    r"\((?P<key>repo|kind|since|hold-kind|hold|held|merged|done|closed|until|hold-until|priority|pr|state|status|review_ready)(?::\s*|\s+)", re.I
+    r"\((?P<key>repo|kind|since|hold-kind|hold|held|merged|done|closed|until|hold-until|priority|pr|"
+    r"state|status|review_ready|blocked[-_]by|waiting[-_](?:on|for))(?::\s*|\s+)", re.I
 )
 BULLET_ITEM_RE = re.compile(r"^-\s+\[(?P<mark>[ xX])\]\s+(?P<id>[A-Za-z0-9][\w.-]*)\s+-\s+(?P<rest>.*)$")
 REPORT_PATH_RE = re.compile(r"\bdata/([\w.-]+)/report\.md\b")
@@ -1351,6 +1352,7 @@ def balanced_close(text: str, start: int) -> int:
 def parse_bullet_item(header: re.Match[str], continuation: list[str], section: str) -> BacklogItem:
     rest = header.group("rest")
     attrs: dict[str, str] = {}
+    attribute_spans: list[tuple[int, int]] = []
     first_attr = len(rest)
     position = 0
     while True:
@@ -1360,13 +1362,27 @@ def parse_bullet_item(header: re.Match[str], continuation: list[str], section: s
         close = balanced_close(rest, match.start())
         key = match.group("key").lower()
         attrs.setdefault(key, rest[match.end():close].strip())
+        attribute_spans.append((match.start(), close + 1))
         first_attr = min(first_attr, match.start())
         position = close + 1
     title_part = rest[:first_attr]
-    blocked_by = ""
-    blocker = re.search(r"\bblocked-by:\s*(\S+)", title_part)
+    unstructured_parts: list[str] = []
+    segment_start = 0
+    for start, end in attribute_spans:
+        unstructured_parts.append(rest[segment_start:start])
+        segment_start = end
+    unstructured_parts.append(rest[segment_start:])
+    unstructured_text = " ".join(unstructured_parts)
+    blocker = re.search(r"\b(?:blocked[-_]by|waiting[-_](?:on|for)):\s*(\S+)", unstructured_text, re.I)
+    blocked_by = blocker.group(1) if blocker else next(
+        (
+            attrs[key]
+            for key in ("blocked_by", "blocked-by", "waiting_on", "waiting-on", "waiting_for", "waiting-for")
+            if attrs.get(key)
+        ),
+        "",
+    )
     if blocker:
-        blocked_by = blocker.group(1)
         title_part = title_part.replace(blocker.group(0), " ")
     report_dir = ""
     report = REPORT_PATH_RE.search(title_part)
@@ -1398,7 +1414,7 @@ def parse_bullet_item(header: re.Match[str], continuation: list[str], section: s
         attrs=attrs, body=body, raw=raw, done=done,
         hold_reason=markdown_text(attrs.get("hold", "")), hold_kind=hold_kind,
         held=attrs.get("held", "").strip().lower() in TRUE_VALUES,
-        blocked_by=blocked_by or attrs.get("blocked-by", ""),
+        blocked_by=blocked_by,
         report_dir=report_dir, pr_url=pr_url,
         review_ready=(not done and valid_pr_url(pr_url) and is_review_ready_state(attrs.get("review_ready", ""), state)),
     )
