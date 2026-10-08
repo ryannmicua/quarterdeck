@@ -32,11 +32,36 @@ address and for its JSON output.
 | `--config FILE` | private user config, if present | Select homes with the same rules as `render`. |
 | `--title TEXT` | configured title | Override the page title. |
 | `--no-snapshot` | off | Skip the Firstmate snapshot script and always parse backlogs. |
+| `--allow-marks` | off | Enable the "Mark reviewed" and "Unmark" buttons for reports. |
 
-The server only answers `GET` for the main page and the generated report,
-backlog and backlog-item pages. It has no write endpoints. When snapshots are
+By default the server only answers `GET` for the main page and the generated
+report, backlog and backlog-item pages. It has no write endpoints. With
+`--allow-marks` it also accepts one token-protected `POST` that marks or
+unmarks a known report (see below); everything else is still refused. When snapshots are
 enabled, Firstmate's wrapper may refresh its cache and read registered remote
 secondmate ledgers through its own routes; `--no-snapshot` skips that behavior.
+
+## Mark reports reviewed from the page
+
+```sh
+quarterdeck serve --allow-marks
+```
+
+The page then shows "Mark reviewed" on each report waiting for review, and a
+collapsed "Reviewed reports" section with "Unmark". Each click calls the same
+code as `quarterdeck reports mark-reviewed` / `unmark-reviewed`, stores the
+same content fingerprint in the same marks file, and reloads the page. A report
+that changes afterwards returns to "needs review".
+
+The page embeds a secret token that every mark request must present. It is
+generated on first use in `review-state/mark-token` under the Quarterdeck state
+directory (mode 0600); delete the file to rotate it and restart `serve`.
+Requests from other websites, with a wrong or missing token, for unknown or
+ambiguous report IDs, or using any other method or path are refused. The token
+is not a login: anyone who can open the page can use the buttons, so keep
+`--host` on loopback unless you trust the network. `quarterdeck service
+--allow-marks` writes the flag into the systemd unit. Backlog and board items
+cannot be marked.
 
 ## Where the sections come from
 

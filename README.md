@@ -23,6 +23,10 @@ as a local artifact. Quarterdeck itself has no agent or build step.
   decide, forward, read), cross-checked against the live backlog, with anything
   unlisted under "Not yet sorted". See the
   [board file reference](docs/reference/captain-board.md).
+- Review buttons: start `quarterdeck serve --allow-marks` and use "Mark
+  reviewed" and "Unmark" on the served page. They run the same code as
+  `quarterdeck reports mark-reviewed` and `unmark-reviewed`; off by default.
+  See the [serving guide](docs/how-to/serve-the-page.md#mark-reports-reviewed-from-the-page).
 - Bearings-shaped page: Captain's Call, Recently Landed, Underway, and Charted
   Next, each always rendered with an empty-state sentence.
 - Captain's Call cards include local hold context, options, and recommendations
@@ -113,6 +117,8 @@ schedule it; see
 
 The default is 127.0.0.1. A non-loopback `--host` exposes your real work data
 to that network with no login. Keep the default unless you control the network.
+With `--allow-marks`, anyone who can load the page can also mark reports
+reviewed, so use it only on loopback or a network you control.
 
 ### Does it cost tokens?
 
@@ -142,6 +148,7 @@ error if none is set.
 
 ## Roadmap
 
-Possible future work: optional write-back, answer capture, Firstmate extension
+Possible future work: marking backlog and board items as seen, an agent-driven
+marking path, multi-user review history, write-back to homes, answer capture, Firstmate extension
 binding, and hosted or authenticated views. These are out of scope today;
-Quarterdeck remains a read-only view.
+apart from the opt-in report review marks, Quarterdeck remains a read-only view.

@@ -4,8 +4,8 @@
 
 ```text
 quarterdeck render [--home PATH] [--output PATH] [--config FILE] [--title TEXT] [--all] [--lavish] [--no-snapshot]
-quarterdeck serve [--host ADDRESS ...] [--port N] [--home PATH] [--config FILE] [--title TEXT] [--no-snapshot]
-quarterdeck service [--write] [--host ADDRESS ...] [--port N] [--home PATH] [--config FILE]
+quarterdeck serve [--host ADDRESS ...] [--port N] [--home PATH] [--config FILE] [--title TEXT] [--no-snapshot] [--allow-marks]
+quarterdeck service [--write] [--allow-marks] [--host ADDRESS ...] [--port N] [--home PATH] [--config FILE]
 quarterdeck url [--json]
 quarterdeck reports list [--home PATH] [--config FILE]
 quarterdeck reports read <report-id> [--home PATH] [--config FILE] [--open]

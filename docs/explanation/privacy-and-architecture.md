@@ -30,9 +30,23 @@ Firstmate's routes and show the returned rows. Quarterdeck invokes no other
 Firstmate script directly, makes no network calls itself, and writes nothing to
 a home.
 
-`quarterdeck serve` adds an HTTP listener. It answers only `GET` for generated
-pages, has no write endpoints and no authentication, and binds 127.0.0.1 by
-default. Binding another address exposes real work data to that network.
+`quarterdeck serve` adds an HTTP listener. By default it answers only `GET` for
+generated pages, has no write endpoints and no login, and binds 127.0.0.1.
+Binding another address exposes real work data to that network.
+
+`quarterdeck serve --allow-marks` adds exactly one write endpoint,
+`POST /api/reports/review`, which marks or unmarks one known report ID as
+reviewed. It runs the same code, storage, fingerprint and lock as `quarterdeck
+reports mark-reviewed` and `unmark-reviewed`, and writes only the review-marks
+file in the state directory; it never writes into a Firstmate home. A request
+must carry the secret from `review-state/mark-token` (generated with mode 0600
+if absent) in an `X-Quarterdeck-Token` header, be `application/json`, come from
+the page's own origin (cross-origin `Origin` or `Sec-Fetch-Site` values are
+refused), and name an existing, unambiguous report. Every other route and
+method stays refused. The token is embedded in the served page, so it is not a
+login: anyone who can load the page can mark reports. It stops other websites
+from marking reports through your browser, not other people on a network you
+exposed. The static `render` output never contains the buttons or the token.
 Each configured home is loaded independently. A missing or unreadable home
 shows its own error while other sections still render.
 
@@ -43,7 +57,8 @@ custom output outside the repo and selected homes, and keep real config outside
 the repo as well. Quarterdeck refuses output inside its checkout or a selected
 home. The page uses inline CSS and makes no network requests. `serve` is an
 optional HTTP process that can run under the systemd user unit; Quarterdeck has
-no write-back path into a Firstmate home.
+no write-back path into a Firstmate home; the opt-in report marks above write only
+Quarterdeck's own state directory.
 
 Quarterdeck writes readable HTML copies of linked reports, reports needing
 review, and the backlog beside the main page; the dependency-free Markdown
