@@ -8,7 +8,7 @@ reads the file, and never writes it.
 
 `<firstmate home>/data/captain-board.json`, read for each configured home (or
 that home's `data_dir`). If no configured home or registered secondmate has a
-board file, the page behaves exactly as it did before the board existed.
+board file, Quarterdeck omits the captain board section.
 
 ## Schema (version 1)
 
