@@ -1279,10 +1279,10 @@ class CaptainBoardTests(unittest.TestCase):
             home = self.make_home(Path(temp), [board_item(task="board-blocked-task")])
             (home / "data" / "backlog.md").write_text(
                 "# Backlog\n\n## Queued\n\n"
-                "- [ ] board-blocked-task - Board blocker (state: blocked) (blocked_by: captain)\n"
+                "- [ ] board-blocked-task - Board blocker (state: blocked) (blocked_by: internal-task) (waiting_on: captain)\n"
                 "- [ ] hyphen-blocked-task - Hyphen blocker (state: blocked) (blocked-by: captain)\n"
                 "- [ ] waiting-on-task - Waiting on blocker (state: blocked) (waiting_on: captain)\n"
-                "- [ ] waiting-for-task - Waiting for blocker (state: blocked) (waiting_for: captain)\n"
+                "- [ ] waiting-for-task - Waiting for blocker (state: blocked) (blocked_by: internal-task) (waiting_for: captain)\n"
                 "- [ ] trailing-blocked-task - Trailing blocker (state: blocked) blocked-by: captain\n",
                 encoding="utf-8",
             )
@@ -1294,6 +1294,23 @@ class CaptainBoardTests(unittest.TestCase):
                 [entry.item.id for entry in view.unsorted],
                 ["hyphen-blocked-task", "waiting-on-task", "waiting-for-task", "trailing-blocked-task"],
             )
+
+    def test_record_blocker_target_prioritizes_waiting_fields(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            home = self.make_home(Path(temp), [board_item(task="table-board-task")])
+            (home / "data" / "backlog.md").write_text(
+                "# Backlog\n\n## Queued\n\n"
+                "| id | title | state | held | hold_kind | blocked_by | waiting_on | waiting_for |\n"
+                "| --- | --- | --- | --- | --- | --- | --- | --- |\n"
+                "| table-board-task | Board table blocker | blocked | yes | captain | internal-task | captain | |\n"
+                "| table-unlisted-task | Unlisted table blocker | blocked | yes | captain | internal-task | | captain |\n",
+                encoding="utf-8",
+            )
+            homes, view = self.view(home)
+            self.assertIsNotNone(view)
+            assert view is not None
+            self.assertEqual(self.titles(view, "merge"), ["Pier merge"])
+            self.assertEqual([entry.item.id for entry in view.unsorted], ["table-unlisted-task"])
 
     def test_group_order_numbers_topics_and_links(self) -> None:
         with tempfile.TemporaryDirectory() as temp:

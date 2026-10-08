@@ -1251,6 +1251,9 @@ ITEM_ATTRIBUTE_RE = re.compile(
     r"\((?P<key>repo|kind|since|hold-kind|hold|held|merged|done|closed|until|hold-until|priority|pr|"
     r"state|status|review_ready|blocked[-_]by|waiting[-_](?:on|for))(?::\s*|\s+)", re.I
 )
+BLOCKER_FIELD_RE = re.compile(
+    r"\b(?P<key>blocked[-_]by|waiting[-_](?:on|for)):\s*(?P<value>\S+)", re.I
+)
 BULLET_ITEM_RE = re.compile(r"^-\s+\[(?P<mark>[ xX])\]\s+(?P<id>[A-Za-z0-9][\w.-]*)\s+-\s+(?P<rest>.*)$")
 REPORT_PATH_RE = re.compile(r"\bdata/([\w.-]+)/report\.md\b")
 DATE_RE = re.compile(r"\d{4}-\d{2}-\d{2}(?:[T ]\d{2}:\d{2}(?::\d{2})?(?:Z|[+-]\d{2}:?\d{2})?)?")
@@ -1373,17 +1376,19 @@ def parse_bullet_item(header: re.Match[str], continuation: list[str], section: s
         segment_start = end
     unstructured_parts.append(rest[segment_start:])
     unstructured_text = " ".join(unstructured_parts)
-    blocker = re.search(r"\b(?:blocked[-_]by|waiting[-_](?:on|for)):\s*(\S+)", unstructured_text, re.I)
-    blocked_by = blocker.group(1) if blocker else next(
-        (
-            attrs[key]
-            for key in ("blocked_by", "blocked-by", "waiting_on", "waiting-on", "waiting_for", "waiting-for")
-            if attrs.get(key)
-        ),
+    blocker_values: dict[str, str] = {}
+    for blocker in BLOCKER_FIELD_RE.finditer(unstructured_text):
+        key = blocker.group("key").lower().replace("-", "_")
+        blocker_values.setdefault(key, blocker.group("value"))
+    for key, value in attrs.items():
+        normalized_key = key.replace("-", "_")
+        if normalized_key in {"blocked_by", "waiting_on", "waiting_for"} and value:
+            blocker_values.setdefault(normalized_key, value)
+    blocked_by = next(
+        (blocker_values[key] for key in ("waiting_on", "waiting_for", "blocked_by") if blocker_values.get(key)),
         "",
     )
-    if blocker:
-        title_part = title_part.replace(blocker.group(0), " ")
+    title_part = BLOCKER_FIELD_RE.sub(" ", title_part)
     report_dir = ""
     report = REPORT_PATH_RE.search(title_part)
     if report:
@@ -1461,7 +1466,7 @@ def backlog_items(source: str, snapshot: HomeSnapshot) -> list[BacklogItem]:
             hold_reason=_blank(value_for(record.fields, "hold_reason")),
             hold_kind=normalized_state(_blank(value_for(record.fields, "hold_kind"))),
             held=value_for(record.fields, "held").lower() in TRUE_VALUES,
-            blocked_by=_blank(value_for(record.fields, "blocked_by", "waiting_on", "waiting_for")),
+            blocked_by=_blank(value_for(record.fields, "waiting_on", "waiting_for", "blocked_by")),
             report_dir=record.report.parent.name if record.report else "",
             pr_url=record.pr_url or "", review_ready=review_flag,
         )
