@@ -2234,6 +2234,40 @@ class ServeTests(unittest.TestCase):
             self.assertEqual(page.count(disabled), len(bearings.reports))
             self.assertEqual(page.count("ID is shared by multiple homes; marking is disabled."), len(bearings.reports))
 
+    def test_incomplete_local_report_discovery_disables_mark_and_unmark(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            readable_home = BearingsTests().make_home(root / "readable")
+            (readable_home / "data" / "later-report").mkdir()
+            (readable_home / "data" / "later-report" / "report.md").write_text(
+                "# Later report\n\nStill needs review.\n", encoding="utf-8"
+            )
+            incomplete_home = BearingsTests().make_home(root / "incomplete")
+            (incomplete_home / "data" / "backlog.md").unlink()
+            homes = [
+                quarterdeck.load_home_snapshot(quarterdeck.HomeSpec("Readable", readable_home)),
+                quarterdeck.load_home_snapshot(quarterdeck.HomeSpec("Incomplete", incomplete_home)),
+            ]
+            quarterdeck.assign_report_ids(homes)
+            reviewed_report = homes[0].reports[0]
+            quarterdeck.apply_review_marks(
+                homes, {reviewed_report.report_id: reviewed_report.fingerprint}
+            )
+            bearings = quarterdeck.build_bearings(homes, use_snapshot=False)
+            page = quarterdeck.build_html(homes, "T", bearings=bearings, allow_marks=True)
+            self.assertIn('button class="request-lavish" type="button" disabled>Mark reviewed</button>', page)
+            self.assertIn('button class="request-lavish" type="button" disabled>Unmark</button>', page)
+            self.assertNotIn("data-mark-report=", page)
+            self.assertEqual(
+                page.count("Review changes are disabled while a selected local home is incomplete."), 2
+            )
+
+            static_page = quarterdeck.build_html(homes, "T", bearings=bearings)
+            self.assertNotIn("after reading: quarterdeck reports mark-reviewed", static_page)
+            self.assertIn(
+                "Review changes are disabled while a selected local home is incomplete.", static_page
+            )
+
     def test_server_reports_render_failure_without_crashing(self) -> None:
         with tempfile.TemporaryDirectory() as temp:
             cache = quarterdeck.SiteCache(lambda: (_ for _ in ()).throw(ValueError("broken home")), 30)

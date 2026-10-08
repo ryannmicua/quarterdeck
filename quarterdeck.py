@@ -1028,6 +1028,14 @@ def report_discovery_errors(snapshots: list[HomeSnapshot]) -> list[tuple[HomeSna
     return errors
 
 
+def local_report_resolution_errors(snapshots: list[HomeSnapshot]) -> list[tuple[HomeSnapshot, str]]:
+    return [
+        (snapshot, error)
+        for snapshot, error in report_discovery_errors(snapshots)
+        if snapshot.spec.remote_host is None
+    ]
+
+
 def report_matches(snapshots: list[HomeSnapshot], requested_id: str) -> list[tuple[HomeSnapshot, Report]]:
     return [
         (snapshot, report)
@@ -1038,11 +1046,7 @@ def report_matches(snapshots: list[HomeSnapshot], requested_id: str) -> list[tup
 
 
 def unique_report(snapshots: list[HomeSnapshot], requested_id: str) -> tuple[HomeSnapshot, Report]:
-    incomplete_local_homes = [
-        (snapshot, error)
-        for snapshot, error in report_discovery_errors(snapshots)
-        if snapshot.spec.remote_host is None
-    ]
+    incomplete_local_homes = local_report_resolution_errors(snapshots)
     if incomplete_local_homes:
         details = "; ".join(f"{snapshot.spec.label}: {error}" for snapshot, error in incomplete_local_homes)
         raise ValueError(f"cannot resolve report ID while selected local homes are incomplete: {details}")
@@ -1084,6 +1088,7 @@ def build_html(
 ) -> str:
     snapshots = all_snapshots(homes)
     ambiguous_ids = assign_report_ids(homes)
+    report_resolution_incomplete = bool(local_report_resolution_errors(homes))
     counts = [sum(snapshot_counts(snapshot, show_all)[index] for snapshot in snapshots) for index in range(6 if show_all else 4)]
     metric_labels = ["Held for captain", "Review-ready PRs", "In-flight work", "Blocked for captain/external"]
     if show_all:
@@ -1096,9 +1101,10 @@ def build_html(
     board_block = board_html(board, generated) if board else ""
     board_status = board_status_html(board, generated) if board else ""
     bearings_block = bearings_html(
-        bearings, collapse_reviews=board is not None, can_mark=allow_marks, ambiguous_ids=ambiguous_ids
+        bearings, collapse_reviews=board is not None, can_mark=allow_marks, ambiguous_ids=ambiguous_ids,
+        report_resolution_incomplete=report_resolution_incomplete,
     ) if bearings else ""
-    reviewed_block = reviewed_reports_html(homes, ambiguous_ids) if allow_marks else ""
+    reviewed_block = reviewed_reports_html(homes, ambiguous_ids, report_resolution_incomplete) if allow_marks else ""
     mark_script = f"""
   <script>
     const MARK_TOKEN_KEY = "quarterdeck-mark-token";
@@ -1968,13 +1974,23 @@ def bearings_item_html(item: BItem, now: datetime, section: str) -> str:
 MARK_ENDPOINT = "/api/reports/review"
 
 
-def mark_button(report_id: str, action: str, fingerprint: str, ambiguous: bool) -> str:
+def report_mark_unavailable_reason(
+    report_id: str, ambiguous_ids: set[str], report_resolution_incomplete: bool,
+) -> str | None:
+    if report_resolution_incomplete:
+        return "Review changes are disabled while a selected local home is incomplete."
+    if report_id in ambiguous_ids:
+        return "ID is shared by multiple homes; marking is disabled."
+    return None
+
+
+def mark_button(report_id: str, action: str, fingerprint: str, unavailable_reason: str | None) -> str:
     label = "Mark reviewed" if action == "mark" else "Unmark"
-    if ambiguous:
+    if unavailable_reason:
         return (
             '<div class="request-row">'
             f'<button class="request-lavish" type="button" disabled>{label}</button>'
-            '<span class="request-status">ID is shared by multiple homes; marking is disabled.</span></div>'
+            f'<span class="request-status">{html.escape(unavailable_reason)}</span></div>'
         )
     return (
         '<div class="request-row">'
@@ -1985,7 +2001,9 @@ def mark_button(report_id: str, action: str, fingerprint: str, ambiguous: bool) 
     )
 
 
-def reviewed_reports_html(homes: list[HomeSnapshot], ambiguous_ids: set[str]) -> str:
+def reviewed_reports_html(
+    homes: list[HomeSnapshot], ambiguous_ids: set[str], report_resolution_incomplete: bool,
+) -> str:
     cards = []
     for snapshot in all_snapshots(homes):
         for report in snapshot.reports:
@@ -1997,7 +2015,7 @@ def reviewed_reports_html(homes: list[HomeSnapshot], ambiguous_ids: set[str]) ->
                 f'<article class="card"><p class="eyebrow">{html.escape(snapshot.spec.label)} · '
                 f'<code>{html.escape(report.report_id)}</code></p><h3>{html.escape(report.title)}</h3>'
                 f'<p class="links"><a href="{html.escape(page, quote=True)}">Read report</a></p>'
-                f'{mark_button(report.report_id, "unmark", report.fingerprint, report.report_id in ambiguous_ids)}</article>'
+                f'{mark_button(report.report_id, "unmark", report.fingerprint, report_mark_unavailable_reason(report.report_id, ambiguous_ids, report_resolution_incomplete))}</article>'
             )
     content = "".join(cards) or '<p class="empty">No reports are marked reviewed.</p>'
     return (
@@ -2011,6 +2029,7 @@ def reviewed_reports_html(homes: list[HomeSnapshot], ambiguous_ids: set[str]) ->
 def bearings_html(
     bearings: Bearings, collapse_reviews: bool = False, can_mark: bool = False,
     ambiguous_ids: set[str] | None = None,
+    report_resolution_incomplete: bool = False,
 ) -> str:
     ambiguous_ids = ambiguous_ids or set()
     now = bearings.generated
@@ -2031,7 +2050,12 @@ def bearings_html(
             f'<p><strong>Recommendation:</strong> {html.escape(report.recommendation)}</p>' if report.recommendation else ""
         )
         if can_mark:
-            tail = f'</p>{mark_button(report.report_id, "mark", report.fingerprint, report.report_id in ambiguous_ids)}'
+            unavailable_reason = report_mark_unavailable_reason(
+                report.report_id, ambiguous_ids, report_resolution_incomplete
+            )
+            tail = f'</p>{mark_button(report.report_id, "mark", report.fingerprint, unavailable_reason)}'
+        elif report_resolution_incomplete:
+            tail = ' · <span class="path">Review changes are disabled while a selected local home is incomplete.</span></p>'
         elif report.report_id in ambiguous_ids:
             tail = ' · <span class="path">ID is shared by multiple homes; narrow the selection before marking.</span></p>'
         else:
