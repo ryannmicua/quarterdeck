@@ -6,11 +6,13 @@ from __future__ import annotations
 import argparse
 import fcntl
 import hashlib
+import hmac
 import ipaddress
 import html
 import json
 import os
 import re
+import secrets
 import shlex
 import shutil
 import socket
@@ -960,21 +962,57 @@ def update_review_mark(path: Path, report_id: str, fingerprint: str | None) -> N
         write_review_marks(path, marks)
 
 
-def apply_review_marks(snapshots: list[HomeSnapshot], marks: dict[str, str]) -> None:
-    snapshots = all_snapshots(snapshots)
-    seen_report_ids: set[str] = set()
-    ambiguous_report_ids: set[str] = set()
-    for snapshot in snapshots:
+MARK_TOKEN_MIN_LENGTH = 32
+
+
+def load_or_create_mark_token(state_path: Path) -> str:
+    """Return the secret that served mark requests must present, creating it beside the marks file."""
+    token_path = state_path.with_name("mark-token")
+    if token_path.is_symlink():
+        raise ValueError(f"refusing symbolic-link mark token: {token_path}")
+    token_path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
+    if not token_path.exists():
+        try:
+            descriptor = os.open(token_path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+        except FileExistsError:
+            pass
+        else:
+            with os.fdopen(descriptor, "w", encoding="utf-8") as stream:
+                stream.write(secrets.token_urlsafe(32) + "\n")
+    token = token_path.read_text(encoding="utf-8").strip()
+    if len(token) < MARK_TOKEN_MIN_LENGTH:
+        raise ValueError(f"invalid mark token in {token_path}; delete it to generate a new one")
+    return token
+
+
+def set_report_mark(
+    args: argparse.Namespace, report_id: str, reviewed: bool, expected_fingerprint: str | None = None,
+) -> Report:
+    """Mark or unmark one report by ID; shared by the CLI and the served page's buttons."""
+    snapshots, state_path = load_report_snapshots(args)
+    apply_review_marks(snapshots, {})
+    _snapshot, report = unique_report(snapshots, report_id)
+    if expected_fingerprint is not None and report.fingerprint != expected_fingerprint:
+        raise ValueError("report changed since the page was loaded; reload before marking")
+    update_review_mark(state_path, report.report_id, report.fingerprint if reviewed else None)
+    return report
+
+
+def assign_report_ids(snapshots: list[HomeSnapshot]) -> set[str]:
+    counts: dict[str, int] = {}
+    for snapshot in all_snapshots(snapshots):
         for report in snapshot.reports:
             report.report_id = report_reference(snapshot.spec.label, report.path.parent.name)
-            if report.report_id in seen_report_ids:
-                ambiguous_report_ids.add(report.report_id)
-            else:
-                seen_report_ids.add(report.report_id)
-    for snapshot in snapshots:
+            counts[report.report_id] = counts.get(report.report_id, 0) + 1
+    return {report_id for report_id, count in counts.items() if count > 1}
+
+
+def apply_review_marks(snapshots: list[HomeSnapshot], marks: dict[str, str]) -> None:
+    ambiguous_ids = assign_report_ids(snapshots)
+    for snapshot in all_snapshots(snapshots):
         for report in snapshot.reports:
             report.reviewed = (
-                report.report_id not in ambiguous_report_ids
+                report.report_id not in ambiguous_ids
                 and marks.get(report.report_id) == report.fingerprint
             )
 
@@ -990,6 +1028,14 @@ def report_discovery_errors(snapshots: list[HomeSnapshot]) -> list[tuple[HomeSna
     return errors
 
 
+def local_report_resolution_errors(snapshots: list[HomeSnapshot]) -> list[tuple[HomeSnapshot, str]]:
+    return [
+        (snapshot, error)
+        for snapshot, error in report_discovery_errors(snapshots)
+        if snapshot.spec.remote_host is None
+    ]
+
+
 def report_matches(snapshots: list[HomeSnapshot], requested_id: str) -> list[tuple[HomeSnapshot, Report]]:
     return [
         (snapshot, report)
@@ -1000,11 +1046,7 @@ def report_matches(snapshots: list[HomeSnapshot], requested_id: str) -> list[tup
 
 
 def unique_report(snapshots: list[HomeSnapshot], requested_id: str) -> tuple[HomeSnapshot, Report]:
-    incomplete_local_homes = [
-        (snapshot, error)
-        for snapshot, error in report_discovery_errors(snapshots)
-        if snapshot.spec.remote_host is None
-    ]
+    incomplete_local_homes = local_report_resolution_errors(snapshots)
     if incomplete_local_homes:
         details = "; ".join(f"{snapshot.spec.label}: {error}" for snapshot, error in incomplete_local_homes)
         raise ValueError(f"cannot resolve report ID while selected local homes are incomplete: {details}")
@@ -1020,6 +1062,14 @@ def unique_report(snapshots: list[HomeSnapshot], requested_id: str) -> tuple[Hom
     return matches[0]
 
 
+def legacy_home_load_error(snapshots: list[HomeSnapshot], legacy_single_home: bool) -> str | None:
+    if not legacy_single_home or not snapshots or not snapshots[0].error:
+        return None
+    if any(snapshot.board is not None for snapshot in all_snapshots(snapshots)):
+        return None
+    return snapshots[0].error
+
+
 def load_report_snapshots(args: argparse.Namespace) -> tuple[list[HomeSnapshot], Path]:
     if args.config is None:
         configured_path = default_config_path()
@@ -1027,8 +1077,9 @@ def load_report_snapshots(args: argparse.Namespace) -> tuple[list[HomeSnapshot],
     config = load_config(args.config)
     specs, legacy_single_home = resolve_home_specs(args, config)
     snapshots = [load_home_snapshot(spec, discover_secondmates=True) for spec in specs]
-    if legacy_single_home and snapshots[0].error:
-        raise ValueError(snapshots[0].error)
+    load_error = legacy_home_load_error(snapshots, legacy_single_home)
+    if load_error:
+        raise ValueError(load_error)
     state_path = validate_review_state_location(snapshots)
     return snapshots, state_path
 
@@ -1042,13 +1093,11 @@ def load_report_context(args: argparse.Namespace) -> tuple[list[HomeSnapshot], P
 
 def build_html(
     homes: list[HomeSnapshot], title: str, lavish: bool = False, show_all: bool = False,
-    bearings: Bearings | None = None, refresh_seconds: int | None = None,
+    bearings: Bearings | None = None, refresh_seconds: int | None = None, allow_marks: bool = False,
 ) -> str:
     snapshots = all_snapshots(homes)
-    for snapshot in snapshots:
-        for report in snapshot.reports:
-            if not report.report_id:
-                report.report_id = report_reference(snapshot.spec.label, report.path.parent.name)
+    ambiguous_ids = assign_report_ids(homes)
+    report_resolution_incomplete = bool(local_report_resolution_errors(homes))
     counts = [sum(snapshot_counts(snapshot, show_all)[index] for snapshot in snapshots) for index in range(6 if show_all else 4)]
     metric_labels = ["Held for captain", "Review-ready PRs", "In-flight work", "Blocked for captain/external"]
     if show_all:
@@ -1060,7 +1109,57 @@ def build_html(
     board = board_view(homes)
     board_block = board_html(board, generated) if board else ""
     board_status = board_status_html(board, generated) if board else ""
-    bearings_block = bearings_html(bearings, collapse_reviews=board is not None) if bearings else ""
+    bearings_block = bearings_html(
+        bearings, collapse_reviews=board is not None, can_mark=allow_marks, ambiguous_ids=ambiguous_ids,
+        report_resolution_incomplete=report_resolution_incomplete,
+    ) if bearings else ""
+    reviewed_block = reviewed_reports_html(homes, ambiguous_ids, report_resolution_incomplete) if allow_marks else ""
+    mark_script = f"""
+  <script>
+    const MARK_TOKEN_KEY = "quarterdeck-mark-token";
+    const MARK_KEY_PROMPT = "Enter the key from Quarterdeck's local state file review-state/mark-token.";
+    function askForMarkToken(message = MARK_KEY_PROMPT) {{
+      const token = (window.prompt(message) || "").trim();
+      if (!token) throw new Error("Mark refused. Enter the Quarterdeck key to continue.");
+      try {{ window.localStorage.setItem(MARK_TOKEN_KEY, token); }} catch (_) {{}}
+      return token;
+    }}
+    function storedMarkToken() {{
+      try {{ return window.localStorage.getItem(MARK_TOKEN_KEY) || ""; }} catch (_) {{ return ""; }}
+    }}
+    document.addEventListener("click", async (event) => {{
+      const button = event.target.closest("[data-mark-report]");
+      if (!button || button.disabled) return;
+      const status = button.parentElement.querySelector(".request-status");
+      button.disabled = true;
+      if (status) status.textContent = "Saving…";
+      try {{
+        let token = storedMarkToken() || askForMarkToken();
+        for (let attempt = 0; attempt < 2; attempt++) {{
+          const response = await fetch("{MARK_ENDPOINT}", {{
+            method: "POST",
+            headers: {{"Content-Type": "application/json", "X-Quarterdeck-Token": token}},
+            body: JSON.stringify({{
+              report_id: button.dataset.markReport,
+              fingerprint: button.dataset.markFingerprint,
+              action: button.dataset.markAction
+            }}),
+          }});
+          if (response.status === 403 && attempt === 0) {{
+            try {{ window.localStorage.removeItem(MARK_TOKEN_KEY); }} catch (_) {{}}
+            token = askForMarkToken("Quarterdeck refused that key. " + MARK_KEY_PROMPT);
+            continue;
+          }}
+          if (!response.ok) throw new Error((await response.text()).trim() || response.statusText);
+          break;
+        }}
+        location.reload();
+      }} catch (error) {{
+        button.disabled = false;
+        if (status) status.textContent = "Could not save: " + error.message;
+      }}
+    }});
+  </script>""" if allow_marks else ""
     refresh_script = (
         f"""
   <script>
@@ -1090,6 +1189,7 @@ def build_html(
     }})();
   </script>""" if refresh_seconds else ""
     )
+    footer_label = "Read-only snapshot except report review marks" if allow_marks else "Read-only snapshot"
     refresh_note = f" · reloads every {int(refresh_seconds)} seconds" if refresh_seconds else ""
     metrics = "".join(
         f'<div class="metric"><b>{count}</b><span>{html.escape(label)}</span></div>'
@@ -1230,14 +1330,15 @@ def build_html(
   <main>
     {board_block}
     {bearings_block}
+    {reviewed_block}
     <h2 class="detail-heading">Details by home</h2>
     <div class="summary" aria-label="Review counts">
       {metrics}
     </div>
     {''.join(home_panel(home, lavish, show_all) for home in homes)}
-    <footer>Read-only snapshot · generated {timestamp} · source files open as readable pages beside this one.</footer>
+    <footer>{footer_label} · generated {timestamp} · source files open as readable pages beside this one.</footer>
   </main>
-  {lavish_script}{refresh_script}
+  {lavish_script}{refresh_script}{mark_script}
 </body>
 </html>
 '''
@@ -1873,7 +1974,67 @@ def bearings_item_html(item: BItem, now: datetime, section: str) -> str:
     return "".join(parts)
 
 
-def bearings_html(bearings: Bearings, collapse_reviews: bool = False) -> str:
+MARK_ENDPOINT = "/api/reports/review"
+
+
+def report_mark_unavailable_reason(
+    report_id: str, ambiguous_ids: set[str], report_resolution_incomplete: bool,
+) -> str | None:
+    if report_resolution_incomplete:
+        return "Review changes are disabled while a selected local home is incomplete."
+    if report_id in ambiguous_ids:
+        return "ID is shared by multiple homes; marking is disabled."
+    return None
+
+
+def mark_button(report_id: str, action: str, fingerprint: str, unavailable_reason: str | None) -> str:
+    label = "Mark reviewed" if action == "mark" else "Unmark"
+    if unavailable_reason:
+        return (
+            '<div class="request-row">'
+            f'<button class="request-lavish" type="button" disabled>{label}</button>'
+            f'<span class="request-status">{html.escape(unavailable_reason)}</span></div>'
+        )
+    return (
+        '<div class="request-row">'
+        f'<button class="request-lavish" type="button" data-mark-report="{html.escape(report_id, quote=True)}" '
+        f'data-mark-fingerprint="{html.escape(fingerprint, quote=True)}" '
+        f'data-mark-action="{action}">{label}</button>'
+        '<span class="request-status" aria-live="polite"></span></div>'
+    )
+
+
+def reviewed_reports_html(
+    homes: list[HomeSnapshot], ambiguous_ids: set[str], report_resolution_incomplete: bool,
+) -> str:
+    cards = []
+    for snapshot in all_snapshots(homes):
+        for report in snapshot.reports:
+            if not report.reviewed:
+                continue
+            home = snapshot.spec.home or Path(".")
+            page = source_page_filename("report", home, report.path)
+            cards.append(
+                f'<article class="card"><p class="eyebrow">{html.escape(snapshot.spec.label)} · '
+                f'<code>{html.escape(report.report_id)}</code></p><h3>{html.escape(report.title)}</h3>'
+                f'<p class="links"><a href="{html.escape(page, quote=True)}">Read report</a></p>'
+                f'{mark_button(report.report_id, "unmark", report.fingerprint, report_mark_unavailable_reason(report.report_id, ambiguous_ids, report_resolution_incomplete))}</article>'
+            )
+    content = "".join(cards) or '<p class="empty">No reports are marked reviewed.</p>'
+    return (
+        '<details class="dashboard-section" id="reviewed"><summary><h2>Reviewed reports</h2>'
+        f'<span class="count">{len(cards)}</span></summary>'
+        '<p>Unmark a report to return it to “needs review”. A report that changes after you review it returns on its own.</p>'
+        f'<div class="cards">{content}</div></details>'
+    )
+
+
+def bearings_html(
+    bearings: Bearings, collapse_reviews: bool = False, can_mark: bool = False,
+    ambiguous_ids: set[str] | None = None,
+    report_resolution_incomplete: bool = False,
+) -> str:
+    ambiguous_ids = ambiguous_ids or set()
     now = bearings.generated
     sections = [
         ("call", "Captain's Call", "Decisions and reviews waiting on you, with everything needed to answer.",
@@ -1891,11 +2052,24 @@ def bearings_html(bearings: Bearings, collapse_reviews: bool = False) -> str:
         recommendation = (
             f'<p><strong>Recommendation:</strong> {html.escape(report.recommendation)}</p>' if report.recommendation else ""
         )
+        if can_mark:
+            unavailable_reason = report_mark_unavailable_reason(
+                report.report_id, ambiguous_ids, report_resolution_incomplete
+            )
+            tail = f'</p>{mark_button(report.report_id, "mark", report.fingerprint, unavailable_reason)}'
+        elif report_resolution_incomplete:
+            tail = ' · <span class="path">Review changes are disabled while a selected local home is incomplete.</span></p>'
+        elif report.report_id in ambiguous_ids:
+            tail = ' · <span class="path">ID is shared by multiple homes; narrow the selection before marking.</span></p>'
+        else:
+            tail = (
+                f' · <span class="path">after reading: quarterdeck reports mark-reviewed '
+                f'{html.escape(report.report_id)}</span></p>'
+            )
         review_cards.append(
             f'<article class="card"><p class="eyebrow">{html.escape(snapshot.spec.label)} · <code>{html.escape(report.report_id)}</code></p>'
             f'<h3>{html.escape(report.title)}</h3>{recommendation}'
-            f'<p class="links"><a href="{html.escape(page, quote=True)}">Read report</a> · '
-            f'<span class="path">after reading: quarterdeck reports mark-reviewed {html.escape(report.report_id)}</span></p></article>'
+            f'<p class="links"><a href="{html.escape(page, quote=True)}">Read report</a>{tail}</article>'
         )
     nav = "".join(
         f'<a href="#{key}">{html.escape(title)} <b>{len(items)}</b></a>' for key, title, _d, items, _e in sections
@@ -2511,6 +2685,10 @@ class SiteCache:
         self.built_at: float | None = None
         self.pages: dict[str, str] = {}
 
+    def invalidate(self) -> None:
+        with self.lock:
+            self.built_at = None
+
     def get(self) -> dict[str, str]:
         with self.lock:
             now = self.clock()
@@ -2520,20 +2698,27 @@ class SiteCache:
             return self.pages
 
 
-def site_builder(args: argparse.Namespace) -> Callable[[], dict[str, str]]:
+def site_builder(args: argparse.Namespace, allow_marks: bool = False) -> Callable[[], dict[str, str]]:
     def build() -> dict[str, str]:
         config, homes, bearings = load_site(args)
         configured_title = config.get("page_title")
         title = args.title or (configured_title if isinstance(configured_title, str) else None) or DEFAULT_TITLE
         pages = source_pages(homes, show_all=False, bearings=bearings)
         pages["index.html"] = build_html(
-            homes, title, bearings=bearings, refresh_seconds=DEFAULT_REFRESH_SECONDS
+            homes, title, bearings=bearings, refresh_seconds=DEFAULT_REFRESH_SECONDS, allow_marks=allow_marks
         )
         return pages
     return build
 
 
-def make_handler(cache: SiteCache) -> type[BaseHTTPRequestHandler]:
+MARK_BODY_LIMIT = 4096
+
+
+def make_handler(
+    cache: SiteCache, mark_token: str | None = None,
+    set_mark: Callable[[str, bool, str], Report] | None = None,
+) -> type[BaseHTTPRequestHandler]:
+    """Build the request handler; POST is refused unless both mark_token and set_mark are given."""
     class Handler(BaseHTTPRequestHandler):
         server_version = "Quarterdeck"
 
@@ -2548,9 +2733,7 @@ def make_handler(cache: SiteCache) -> type[BaseHTTPRequestHandler]:
             self.wfile.write(data)
 
         def do_GET(self) -> None:  # noqa: N802 - http.server naming
-            if is_loopback(str(self.server.server_address[0])) and not request_host_is_loopback(
-                self.headers.get("Host")
-            ):
+            if not self.host_allowed():
                 self.send_text(403, "Host is not allowed\n")
                 return
             path = unquote(urlparse(self.path).path)
@@ -2568,13 +2751,72 @@ def make_handler(cache: SiteCache) -> type[BaseHTTPRequestHandler]:
                 return
             self.send_text(200, pages[name], "text/html; charset=utf-8")
 
+        def host_allowed(self) -> bool:
+            return not (is_loopback(str(self.server.server_address[0])) and not request_host_is_loopback(
+                self.headers.get("Host")
+            ))
+
+        def mark_request_problem(self) -> tuple[int, str] | None:
+            """Return a refusal for a mark request that is cross-site, mistyped, or lacks the token."""
+            if not self.host_allowed():
+                return 403, "Host is not allowed\n"
+            origin = self.headers.get("Origin")
+            if origin is not None and (urlparse(origin).netloc != (self.headers.get("Host") or "")):
+                return 403, "Cross-origin requests are not allowed\n"
+            if self.headers.get("Sec-Fetch-Site") not in {None, "same-origin"}:
+                return 403, "Cross-site requests are not allowed\n"
+            content_type = (self.headers.get("Content-Type") or "").split(";")[0].strip().lower()
+            if content_type != "application/json":
+                return 415, "Content-Type must be application/json\n"
+            presented = self.headers.get("X-Quarterdeck-Token") or ""
+            if not hmac.compare_digest(presented.encode("utf-8"), str(mark_token).encode("utf-8")):
+                return 403, "Missing or wrong mark token\n"
+            return None
+
+        def do_POST(self) -> None:  # noqa: N802 - http.server naming
+            if mark_token is None or set_mark is None or urlparse(self.path).path != MARK_ENDPOINT:
+                self.refuse()
+                return
+            problem = self.mark_request_problem()
+            if problem:
+                self.send_text(*problem)
+                return
+            try:
+                length = int(self.headers.get("Content-Length") or "")
+                if not 0 < length <= MARK_BODY_LIMIT:
+                    raise ValueError
+                body = json.loads(self.rfile.read(length).decode("utf-8"))
+                if (not isinstance(body, dict) or set(body) != {"report_id", "fingerprint", "action"}
+                        or not isinstance(body["report_id"], str) or not isinstance(body["action"], str)
+                        or not isinstance(body["fingerprint"], str)
+                        or not re.fullmatch(r"[0-9a-f]{64}", body["fingerprint"])
+                        or body["action"] not in {"mark", "unmark"}):
+                    raise ValueError
+            except (ValueError, UnicodeDecodeError):
+                self.send_text(400, "Expected JSON {\"report_id\": ..., \"fingerprint\": ..., \"action\": \"mark\" | \"unmark\"}\n")
+                return
+            reviewed = body["action"] == "mark"
+            try:
+                report = set_mark(body["report_id"], reviewed, body["fingerprint"])
+            except ValueError as exc:
+                self.send_text(404 if str(exc).startswith("no report matches") else 409, f"{exc}\n")
+                return
+            except OSError as exc:
+                self.send_text(500, f"Quarterdeck could not save the mark: {exc}\n")
+                return
+            cache.invalidate()
+            self.send_text(
+                200, json.dumps({"report_id": report.report_id, "reviewed": reviewed}) + "\n",
+                "application/json; charset=utf-8",
+            )
+
         def refuse(self) -> None:
             self.send_response(405)
             self.send_header("Allow", "GET")
             self.send_header("Content-Length", "0")
             self.end_headers()
 
-        do_POST = do_PUT = do_DELETE = do_PATCH = do_HEAD = do_OPTIONS = refuse
+        do_PUT = do_DELETE = do_PATCH = do_HEAD = do_OPTIONS = refuse
 
         def log_message(self, format: str, *args: object) -> None:  # noqa: A002
             sys.stderr.write("quarterdeck: %s - %s\n" % (self.address_string(), format % args))
@@ -2636,9 +2878,16 @@ def make_server(host: str, port: int, handler: type[BaseHTTPRequestHandler]) -> 
 def serve(args: argparse.Namespace) -> int:
     servers: list[ThreadingHTTPServer] = []
     try:
-        cache = SiteCache(site_builder(args))
+        mark_token: str | None = None
+        set_mark: Callable[[str, bool, str], Report] | None = None
+        if getattr(args, "allow_marks", False):
+            mark_token = load_or_create_mark_token(load_report_snapshots(args)[1])
+            set_mark = lambda report_id, reviewed, fingerprint: set_report_mark(  # noqa: E731
+                args, report_id, reviewed, fingerprint
+            )
+        cache = SiteCache(site_builder(args, getattr(args, "allow_marks", False)))
         cache.get()
-        handler = make_handler(cache)
+        handler = make_handler(cache, mark_token, set_mark)
         port = args.port
         for host in bind_hosts(args):
             server = make_server(host, port, handler)
@@ -2652,7 +2901,8 @@ def serve(args: argparse.Namespace) -> int:
     for server in servers:
         host = str(server.server_address[0])
         shown = f"[{host}]" if ":" in host else host
-        print(f"Serving Quarterdeck at http://{shown}:{port}/ (read-only; Ctrl+C to stop)", flush=True)
+        access = "report review marks enabled" if getattr(args, "allow_marks", False) else "read-only"
+        print(f"Serving Quarterdeck at http://{shown}:{port}/ ({access}; Ctrl+C to stop)", flush=True)
     exposed = [host for host in bind_hosts(args) if not is_loopback(host)]
     if exposed:
         print(
@@ -2686,6 +2936,8 @@ def service_unit(args: argparse.Namespace) -> str:
     for host in bind_hosts(args):
         command += ["--host", host]
     command += ["--port", str(args.port)]
+    if getattr(args, "allow_marks", False):
+        command.append("--allow-marks")
     config_path = args.config.expanduser().resolve() if args.config else default_config_path()
     config = load_config(config_path) if args.config or config_path.is_file() else {}
     single_home = bool(args.home) or ("homes" not in config and bool(os.environ.get("FM_HOME")))
@@ -2981,10 +3233,7 @@ def reports_read(args: argparse.Namespace) -> int:
 
 def reports_mark_reviewed(args: argparse.Namespace) -> int:
     try:
-        snapshots, state_path = load_report_snapshots(args)
-        apply_review_marks(snapshots, {})
-        _snapshot, report = unique_report(snapshots, args.report_id)
-        update_review_mark(state_path, report.report_id, report.fingerprint)
+        report = set_report_mark(args, args.report_id, True)
     except (OSError, ValueError) as exc:
         print(f"quarterdeck: {exc}", file=sys.stderr)
         return 2
@@ -2994,10 +3243,7 @@ def reports_mark_reviewed(args: argparse.Namespace) -> int:
 
 def reports_unmark_reviewed(args: argparse.Namespace) -> int:
     try:
-        snapshots, state_path = load_report_snapshots(args)
-        apply_review_marks(snapshots, {})
-        _snapshot, report = unique_report(snapshots, args.report_id)
-        update_review_mark(state_path, report.report_id, None)
+        report = set_report_mark(args, args.report_id, False)
     except (OSError, ValueError) as exc:
         print(f"quarterdeck: {exc}", file=sys.stderr)
         return 2
@@ -3106,10 +3352,9 @@ def load_site(args: argparse.Namespace) -> tuple[dict[str, object], list[HomeSna
     config = load_config(args.config)
     specs, legacy_single_home = resolve_home_specs(args, config)
     homes = [load_home_snapshot(spec, discover_secondmates=True) for spec in specs]
-    if legacy_single_home and homes[0].error and not any(
-        snapshot.board is not None for snapshot in all_snapshots(homes)
-    ):
-        raise ValueError(homes[0].error)
+    load_error = legacy_home_load_error(homes, legacy_single_home)
+    if load_error:
+        raise ValueError(load_error)
     state_path = validate_review_state_location(homes)
     apply_review_marks(homes, load_review_marks(state_path))
     bearings = build_bearings(homes, use_snapshot=not getattr(args, "no_snapshot", False))
@@ -3164,6 +3409,7 @@ def render(args: argparse.Namespace) -> int:
 def add_serve_options(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--host", action="append", metavar="ADDRESS", help=f"address to bind; repeat to listen on several, all on the same port (default {DEFAULT_HOST} only; a non-loopback address exposes your work data without a login)")
     parser.add_argument("--port", type=port_number, default=DEFAULT_PORT, help=f"port to listen on (default {DEFAULT_PORT})")
+    parser.add_argument("--allow-marks", action="store_true", help="enable report marks; the browser prompts for a secret key from the state directory (default: read-only)")
     parser.add_argument("--home", help="serve this Firstmate home instead of configured homes or FM_HOME")
     parser.add_argument("--config", type=Path, help="optional JSON config file")
 
@@ -3188,7 +3434,7 @@ def make_parser() -> argparse.ArgumentParser:
 
     serve_parser = subparsers.add_parser(
         "serve", help="serve the always-current bearings page over HTTP",
-        description="Serve the bearings page and its readable report and backlog pages, re-rendered from the homes on request. Read-only: GET only, no write endpoints, no login. Binds loopback by default.",
+        description="Serve the bearings page and its readable report and backlog pages, re-rendered from the homes on request. Read-only by default: GET only, no login. With --allow-marks the only write is a key-protected request to mark or unmark a known report as reviewed. Binds loopback by default.",
     )
     command_parsers["serve"] = serve_parser
     add_serve_options(serve_parser)

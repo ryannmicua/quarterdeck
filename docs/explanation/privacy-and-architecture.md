@@ -30,9 +30,31 @@ Firstmate's routes and show the returned rows. Quarterdeck invokes no other
 Firstmate script directly, makes no network calls itself, and writes nothing to
 a home.
 
-`quarterdeck serve` adds an HTTP listener. It answers only `GET` for generated
-pages, has no write endpoints and no authentication, and binds 127.0.0.1 by
-default. Binding another address exposes real work data to that network.
+`quarterdeck serve` adds an HTTP listener. By default it answers only `GET` for
+generated pages, has no write endpoints and no login, and binds 127.0.0.1.
+Binding another address exposes real work data to that network.
+
+`quarterdeck serve --allow-marks` adds exactly one write endpoint,
+`POST /api/reports/review`, which marks or unmarks one known report ID as
+reviewed. It runs the same code, storage, fingerprint and lock as `quarterdeck
+reports mark-reviewed` and `unmark-reviewed`. On startup, it creates or reads
+`review-state/mark-token` in Quarterdeck's state directory; each accepted
+request writes only the review-marks file there, never a Firstmate home. A request
+must carry the key from `review-state/mark-token` (generated with mode 0600
+if absent) in an `X-Quarterdeck-Token` header, include the fingerprint shown on
+the page, be `application/json`, come from the page's own origin (cross-origin
+`Origin` or `Sec-Fetch-Site` values are refused), and name an existing,
+unambiguous report whose content has not changed since the page loaded. Every
+other route and method stays refused. The key is not embedded in the served
+page: the browser prompts for it on the first mark click and keeps it in that
+browser's local storage when available. Anyone who has the key can mark reports;
+readers without it can view the page and buttons but cannot change review state.
+The key is a write credential, not a login or a limit on who can read the page.
+On a non-loopback bind, the key travels unencrypted over plain HTTP, so someone
+observing that network could replay it to change review marks only; it grants no
+other write access. Use marks only on a trusted network or behind a TLS reverse
+proxy, and rotate the key if exposed.
+The static `render` output never contains the buttons or the key.
 Each configured home is loaded independently. A missing or unreadable home
 shows its own error while other sections still render.
 
@@ -43,7 +65,8 @@ custom output outside the repo and selected homes, and keep real config outside
 the repo as well. Quarterdeck refuses output inside its checkout or a selected
 home. The page uses inline CSS and makes no network requests. `serve` is an
 optional HTTP process that can run under the systemd user unit; Quarterdeck has
-no write-back path into a Firstmate home.
+no write-back path into a Firstmate home; the opt-in report marks above write only
+Quarterdeck's own state directory.
 
 Quarterdeck writes readable HTML copies of linked reports, reports needing
 review, and the backlog beside the main page; the dependency-free Markdown

@@ -30,6 +30,14 @@ quarterdeck reports mark-reviewed maple-harbor/amber-18
 quarterdeck reports unmark-reviewed maple-harbor/amber-18
 ```
 
+## Mark reports from the served page
+
+If you use `quarterdeck serve`, start it with `--allow-marks` to get a "Mark
+reviewed" button on each report waiting for review and an "Unmark" button under
+"Reviewed reports". The buttons use the same code and marks file as the
+commands above, and the page updates after each click. See
+[Mark reports reviewed from the page](serve-the-page.md#mark-reports-reviewed-from-the-page).
+
 For dashboard placement and Lavish request behavior, see the [attention model](../explanation/attention-model.md)
 and [Request a Lavish page](request-lavish-page.md).
 

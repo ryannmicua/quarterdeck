@@ -32,11 +32,51 @@ address and for its JSON output.
 | `--config FILE` | private user config, if present | Select homes with the same rules as `render`. |
 | `--title TEXT` | configured title | Override the page title. |
 | `--no-snapshot` | off | Skip the Firstmate snapshot script and always parse backlogs. |
+| `--allow-marks` | off | Enable the "Mark reviewed" and "Unmark" buttons for reports. |
 
-The server only answers `GET` for the main page and the generated report,
-backlog and backlog-item pages. It has no write endpoints. When snapshots are
-enabled, Firstmate's wrapper may refresh its cache and read registered remote
-secondmate ledgers through its own routes; `--no-snapshot` skips that behavior.
+By default the server only answers `GET` for the main page and the generated
+report, backlog and backlog-item pages. It has no write endpoints. With
+`--allow-marks` it also accepts one key-protected `POST` that marks or
+unmarks a known report (see below); everything else is still refused. When
+snapshots are enabled, Firstmate's wrapper may refresh its cache and read
+registered remote secondmate ledgers through its own routes; `--no-snapshot`
+skips that behavior.
+
+## Mark reports reviewed from the page
+
+```sh
+quarterdeck serve --allow-marks
+```
+
+The page then shows "Mark reviewed" on each report waiting for review, and a
+collapsed "Reviewed reports" section with "Unmark". Each click calls the same
+code as `quarterdeck reports mark-reviewed` / `unmark-reviewed`, stores the
+same content fingerprint in the same marks file, and reloads the page. A report
+that changes afterwards returns to "needs review".
+
+The page does not contain the secret key. On the first click, the browser asks
+for the key from `review-state/mark-token` in Quarterdeck's local state
+directory and stores it in that browser's local storage when available. By
+default, read it with:
+
+```sh
+cat "${XDG_STATE_HOME:-$HOME/.local/state}/quarterdeck/review-state/mark-token"
+```
+
+The file is created on first use with mode 0600. Delete it and restart `serve`
+to rotate the key. A wrong key is refused and the browser asks again. Readers
+without the key can still view the page and buttons, but cannot change review
+state; anyone with the key can mark or unmark reports. The key is a write
+credential, not a login for the page, so keep it private. Requests from other
+websites, for unknown or ambiguous report IDs, for reports that changed since
+the page loaded, or using any other method or path are refused. `quarterdeck
+service --allow-marks` writes the flag into the systemd unit. Backlog and board
+items cannot be marked.
+
+When you bind to a non-loopback address, the key travels unencrypted over plain
+HTTP. Someone observing that network could replay it to change review marks
+only; it grants no other write access. Use marks only on a trusted network or
+put the server behind a TLS reverse proxy, and rotate the key if it is exposed.
 
 ## Where the sections come from
 
@@ -62,8 +102,10 @@ systemctl --user daemon-reload
 systemctl --user enable --now quarterdeck.service
 ```
 
-`service` accepts the same `--host` (repeatable, default 127.0.0.1 only), `--port`, `--home` and `--config` options as `serve`, and it never runs
-`systemctl` itself. The unit it writes looks like:
+`service` accepts the same `--host` (repeatable, default 127.0.0.1 only),
+`--port`, `--home` and `--config` options as `serve`, plus `--allow-marks` to
+enable report review marks in the unit. It never runs `systemctl` itself. The
+unit it writes looks like:
 
 ```ini
 [Unit]
