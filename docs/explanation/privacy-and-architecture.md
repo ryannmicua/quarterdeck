@@ -50,6 +50,10 @@ page: the browser prompts for it on the first mark click and keeps it in that
 browser's local storage when available. Anyone who has the key can mark reports;
 readers without it can view the page and buttons but cannot change review state.
 The key is a write credential, not a login or a limit on who can read the page.
+On a non-loopback bind, the key travels unencrypted over plain HTTP, so someone
+observing that network could replay it to change review marks only; it grants no
+other write access. Use marks only on a trusted network or behind a TLS reverse
+proxy, and rotate the key if exposed.
 The static `render` output never contains the buttons or the key.
 Each configured home is loaded independently. A missing or unreadable home
 shows its own error while other sections still render.

@@ -1062,6 +1062,14 @@ def unique_report(snapshots: list[HomeSnapshot], requested_id: str) -> tuple[Hom
     return matches[0]
 
 
+def legacy_home_load_error(snapshots: list[HomeSnapshot], legacy_single_home: bool) -> str | None:
+    if not legacy_single_home or not snapshots or not snapshots[0].error:
+        return None
+    if any(snapshot.board is not None for snapshot in all_snapshots(snapshots)):
+        return None
+    return snapshots[0].error
+
+
 def load_report_snapshots(args: argparse.Namespace) -> tuple[list[HomeSnapshot], Path]:
     if args.config is None:
         configured_path = default_config_path()
@@ -1069,8 +1077,9 @@ def load_report_snapshots(args: argparse.Namespace) -> tuple[list[HomeSnapshot],
     config = load_config(args.config)
     specs, legacy_single_home = resolve_home_specs(args, config)
     snapshots = [load_home_snapshot(spec, discover_secondmates=True) for spec in specs]
-    if legacy_single_home and snapshots[0].error:
-        raise ValueError(snapshots[0].error)
+    load_error = legacy_home_load_error(snapshots, legacy_single_home)
+    if load_error:
+        raise ValueError(load_error)
     state_path = validate_review_state_location(snapshots)
     return snapshots, state_path
 
@@ -1144,12 +1153,6 @@ def build_html(
           if (!response.ok) throw new Error((await response.text()).trim() || response.statusText);
           break;
         }}
-        try {{
-          const openKeys = Array.from(
-            document.querySelectorAll("details[open]"), detail => detail.dataset.refreshKey || detail.id
-          ).filter(Boolean);
-          sessionStorage.setItem("quarterdeck-open-details", JSON.stringify(openKeys));
-        }} catch (_) {{}}
         location.reload();
       }} catch (error) {{
         button.disabled = false;
@@ -3349,10 +3352,9 @@ def load_site(args: argparse.Namespace) -> tuple[dict[str, object], list[HomeSna
     config = load_config(args.config)
     specs, legacy_single_home = resolve_home_specs(args, config)
     homes = [load_home_snapshot(spec, discover_secondmates=True) for spec in specs]
-    if legacy_single_home and homes[0].error and not any(
-        snapshot.board is not None for snapshot in all_snapshots(homes)
-    ):
-        raise ValueError(homes[0].error)
+    load_error = legacy_home_load_error(homes, legacy_single_home)
+    if load_error:
+        raise ValueError(load_error)
     state_path = validate_review_state_location(homes)
     apply_review_marks(homes, load_review_marks(state_path))
     bearings = build_bearings(homes, use_snapshot=not getattr(args, "no_snapshot", False))

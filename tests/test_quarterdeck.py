@@ -2217,6 +2217,27 @@ class ServeTests(unittest.TestCase):
             command = parse_systemd_unit(quarterdeck.service_unit(args))["Service"]["ExecStart"][0]
             self.assertIn("--allow-marks", command)
 
+    def test_allow_marks_preflight_accepts_board_when_backlog_is_missing(self) -> None:
+        with tempfile.TemporaryDirectory() as temp, patch.dict(
+            os.environ, {"XDG_STATE_HOME": str(Path(temp) / "state")}
+        ):
+            home = CaptainBoardTests().make_home(
+                Path(temp), [board_item(id="unverified", title="Unverified board item")]
+            )
+            (home / "data" / "backlog.md").unlink()
+            args = quarterdeck.make_parser().parse_args(
+                ["serve", "--home", str(home), "--no-snapshot", "--allow-marks"]
+            )
+
+            snapshots, state_path = quarterdeck.load_report_snapshots(args)
+            self.assertIsNotNone(snapshots[0].error)
+            self.assertIsNotNone(snapshots[0].board)
+            quarterdeck.load_or_create_mark_token(state_path)
+            page = quarterdeck.site_builder(args, True)()["index.html"]
+
+            self.assertIn("Unverified board item", page)
+            self.assertIn("Could not check board items", page)
+
     def test_ambiguous_report_ids_render_disabled_mark_buttons(self) -> None:
         with tempfile.TemporaryDirectory() as temp:
             root = Path(temp)

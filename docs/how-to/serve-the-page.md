@@ -73,6 +73,11 @@ the page loaded, or using any other method or path are refused. `quarterdeck
 service --allow-marks` writes the flag into the systemd unit. Backlog and board
 items cannot be marked.
 
+When you bind to a non-loopback address, the key travels unencrypted over plain
+HTTP. Someone observing that network could replay it to change review marks
+only; it grants no other write access. Use marks only on a trusted network or
+put the server behind a TLS reverse proxy, and rotate the key if it is exposed.
+
 ## Where the sections come from
 
 When a home has an executable `bin/fm-bearings-snapshot.sh`, Quarterdeck runs it
