@@ -2163,6 +2163,8 @@ def board_view(homes: list[HomeSnapshot]) -> BoardView | None:
 def board_age_text(updated: datetime | None, now: datetime) -> str:
     if updated is None:
         return "at an unknown time"
+    if updated > now:
+        return f"{waited_text(now.isoformat(), updated)} ahead (clock skew)"
     if (now - updated).total_seconds() < 120:
         return "just now"
     return f"{waited_text(updated.isoformat(), now)} ago"
@@ -3049,7 +3051,9 @@ def load_site(args: argparse.Namespace) -> tuple[dict[str, object], list[HomeSna
     config = load_config(args.config)
     specs, legacy_single_home = resolve_home_specs(args, config)
     homes = [load_home_snapshot(spec, discover_secondmates=True) for spec in specs]
-    if legacy_single_home and homes[0].error:
+    if legacy_single_home and homes[0].error and not any(
+        snapshot.board is not None for snapshot in all_snapshots(homes)
+    ):
         raise ValueError(homes[0].error)
     state_path = validate_review_state_location(homes)
     apply_review_marks(homes, load_review_marks(state_path))

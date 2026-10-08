@@ -798,6 +798,41 @@ Use the compact format for the first release.
             result = quarterdeck.main(["render"])
         self.assertEqual(result, 2)
 
+    def test_unreadable_single_home_uses_secondmate_board_only_when_present(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            home = self.make_home(root)
+            (home / "data" / "backlog.md").unlink()
+            secondmate = root / "fictional-secondmate"
+            (secondmate / "data" / "captain-board.json").write_text(json.dumps({
+                "version": 1,
+                "updated_at": "2026-10-08T10:00:00Z",
+                "items": [{
+                    "id": "secondmate-approval",
+                    "group": "approve",
+                    "title": "Secondmate approval",
+                    "ask": "Approve the field guide handover.",
+                    "task": "kestrel-hold",
+                }],
+            }), encoding="utf-8")
+            output = root / "outside-output" / "index.html"
+            result = self.run_cli(
+                ["render", "--home", str(home), "--no-snapshot", "--output", str(output)],
+                root, root / "config",
+            )
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertIn("Secondmate approval", output.read_text(encoding="utf-8"))
+
+            (secondmate / "data" / "captain-board.json").unlink()
+            no_board_output = root / "outside-output" / "without-board.html"
+            failed = self.run_cli(
+                ["render", "--home", str(home), "--no-snapshot", "--output", str(no_board_output)],
+                root, root / "config",
+            )
+            self.assertEqual(failed.returncode, 2)
+            self.assertIn("backlog not found", failed.stderr)
+            self.assertFalse(no_board_output.exists())
+
     def test_render_refuses_output_inside_a_selected_home(self) -> None:
         with tempfile.TemporaryDirectory() as temp:
             root = Path(temp)
@@ -1259,6 +1294,17 @@ class CaptainBoardTests(unittest.TestCase):
                 self.assertEqual(bool(view.status[0][2]), stale)
                 self.assertEqual("Board may be out of date" in page, stale)
                 self.assertIn("Board updated", page)
+
+    def test_future_board_timestamp_reports_clock_skew(self) -> None:
+        recent_past = datetime.fromtimestamp(self.NOW.timestamp() - 60, timezone.utc)
+        near_future = datetime.fromtimestamp(self.NOW.timestamp() + 60, timezone.utc)
+        later_future = datetime.fromtimestamp(self.NOW.timestamp() + 180, timezone.utc)
+        self.assertEqual(quarterdeck.board_age_text(recent_past, self.NOW), "just now")
+        for future in (near_future, later_future):
+            label = quarterdeck.board_age_text(future, self.NOW)
+            self.assertIn("clock skew", label)
+            self.assertIn("ahead", label)
+            self.assertNotIn("ago", label)
 
     def test_board_text_is_escaped(self) -> None:
         with tempfile.TemporaryDirectory() as temp:
