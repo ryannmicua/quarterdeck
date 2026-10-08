@@ -5,12 +5,12 @@
 ## What it is
 
 Quarterdeck turns running Firstmate homes' backlogs and scout reports into one
-read-only HTML review page that leads with the same four sections as
-Firstmate's `/bearings` digest, plus the reports waiting on your review. Configure several homes to review them together;
-each home is grouped under a clear label, with its registered local secondmates
-under their parent. It shows unresolved captain holds, review-ready pull
-requests, in-flight work, and items blocked on the captain or an external
-party. Run `quarterdeck render --all` to restore the exhaustive view.
+read-only HTML review page. When any selected home or registered secondmate has
+a captain board, the grouped list leads the page; otherwise the page leads with
+the four sections from Firstmate's `/bearings` digest. Reports waiting on your
+review also appear. Configure several homes to review them together; each home
+is grouped under a clear label, with its registered local secondmates under
+their parent. Run `quarterdeck render --all` to restore the exhaustive view.
 
 Render on demand, or run `quarterdeck serve` for a page that stays current on
 its own. Open the result in a browser, or hand a rendered file to `lavish-axi`
@@ -18,9 +18,13 @@ as a local artifact. Quarterdeck itself has no agent or build step.
 
 ## Features
 
+- Captain board: when a home has `data/captain-board.json`, the page leads with
+  a grouped, numbered, phone-friendly "waiting on you" list (merge, approve,
+  decide, forward, read), cross-checked against the live backlog, with anything
+  unlisted under "Not yet sorted". See the
+  [board file reference](docs/reference/captain-board.md).
 - Bearings-shaped page: Captain's Call, Recently Landed, Underway, and Charted
-  Next, each always rendered with an empty-state sentence, plus a prominent
-  "Reports waiting on your review" list.
+  Next, each always rendered with an empty-state sentence.
 - Captain's Call cards include local hold context, options, and recommendations
   when available. Remote decisions show the snapshot summary and point to their
   secondmate home for the full background.
@@ -29,7 +33,6 @@ as a local artifact. Quarterdeck itself has no agent or build step.
 - `quarterdeck serve` serves the page over HTTP. `quarterdeck service` can
   print or write a systemd user unit; see the
   [serving guide](docs/how-to/serve-the-page.md).
-- Primary review list for held items and recorded decisions.
 - Scout reports with an explicit recommendation when the report states one.
 - Stable report IDs, Markdown and readable HTML reading, and local review marks.
 - Reports needing review appear independently of backlog attention.

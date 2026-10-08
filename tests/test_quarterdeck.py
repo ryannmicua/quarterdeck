@@ -6,6 +6,7 @@ import io
 import os
 import re
 import shlex
+import shutil
 import stat
 import subprocess
 import sys
@@ -798,6 +799,41 @@ Use the compact format for the first release.
             result = quarterdeck.main(["render"])
         self.assertEqual(result, 2)
 
+    def test_unreadable_single_home_uses_secondmate_board_only_when_present(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            home = self.make_home(root)
+            (home / "data" / "backlog.md").unlink()
+            secondmate = root / "fictional-secondmate"
+            (secondmate / "data" / "captain-board.json").write_text(json.dumps({
+                "version": 1,
+                "updated_at": "2026-10-08T10:00:00Z",
+                "items": [{
+                    "id": "secondmate-approval",
+                    "group": "approve",
+                    "title": "Secondmate approval",
+                    "ask": "Approve the field guide handover.",
+                    "task": "kestrel-hold",
+                }],
+            }), encoding="utf-8")
+            output = root / "outside-output" / "index.html"
+            result = self.run_cli(
+                ["render", "--home", str(home), "--no-snapshot", "--output", str(output)],
+                root, root / "config",
+            )
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertIn("Secondmate approval", output.read_text(encoding="utf-8"))
+
+            (secondmate / "data" / "captain-board.json").unlink()
+            no_board_output = root / "outside-output" / "without-board.html"
+            failed = self.run_cli(
+                ["render", "--home", str(home), "--no-snapshot", "--output", str(no_board_output)],
+                root, root / "config",
+            )
+            self.assertEqual(failed.returncode, 2)
+            self.assertIn("backlog not found", failed.stderr)
+            self.assertFalse(no_board_output.exists())
+
     def test_render_refuses_output_inside_a_selected_home(self) -> None:
         with tempfile.TemporaryDirectory() as temp:
             root = Path(temp)
@@ -1082,6 +1118,449 @@ SNAPSHOT_JSON = {
                "reason": "queued behind the chart", "owner": "(main)", "filed": "2026-09-25"}],
     "reports": [], "recorded_prs": [],
 }
+
+
+BOARD_BACKLOG = """# Backlog
+
+## Queued
+
+- [ ] kelp-hold - Kelp hold: pick a survey date (repo: reef-demo) (held: yes) (hold: Raw note: choose spring or autumn.) (hold-kind: captain)
+- [ ] reef-hold - Reef hold: choose the buoy colour (repo: reef-demo) (held: yes) (hold: Raw note: red or green.) (hold-kind: captain)
+- [ ] pier-pr - Pier patch (repo: pier-demo) (state: review_ready) (review_ready: yes) (pr """ + PIER_PR + """)
+- [ ] waiting-work - Waiting work (repo: pier-demo) (held: yes) (hold: Raw note: waits on a vendor.) (hold-kind: external)
+
+## Done
+
+- [x] dock-fix - Dock fix: patch the invented dock (repo: dock-demo) (merged 2026-10-01)
+"""
+
+
+def board_item(**overrides: object) -> dict[str, object]:
+    item: dict[str, object] = {"id": "pier-merge", "group": "merge", "title": "Pier merge",
+                               "ask": "Merge the pier patch when you are ready.", "task": "pier-pr",
+                               "links": [{"label": "Pier PR", "url": PIER_PR}]}
+    item.update(overrides)
+    return item
+
+
+class CaptainBoardTests(unittest.TestCase):
+    NOW = datetime(2026, 10, 8, 12, 0, tzinfo=timezone.utc)
+
+    def make_home(self, root: Path, items: object = None, raw: str | None = None, **board: object) -> Path:
+        home = root / "invented-home"
+        (home / "data").mkdir(parents=True)
+        (home / "data" / "backlog.md").write_text(BOARD_BACKLOG, encoding="utf-8")
+        if raw is not None:
+            (home / "data" / "captain-board.json").write_text(raw, encoding="utf-8")
+        elif items is not None:
+            payload = {"version": 1, "updated_at": "2099-01-01T00:00:00Z", "items": items}
+            payload.update(board)
+            (home / "data" / "captain-board.json").write_text(json.dumps(payload), encoding="utf-8")
+        return home
+
+    def view(self, home: Path):
+        homes = [quarterdeck.load_home_snapshot(quarterdeck.HomeSpec("invented", home), discover_secondmates=True)]
+        return homes, quarterdeck.board_view(homes)
+
+    def titles(self, view, group: str) -> list[str]:
+        return [entry.item.title for entry in view.groups[group]]
+
+    def test_absent_board_leaves_page_unchanged(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            homes, view = self.view(self.make_home(Path(temp)))
+            self.assertIsNone(view)
+            page = quarterdeck.build_html(homes, "Q", bearings=quarterdeck.build_bearings(homes, now=self.NOW, use_snapshot=False))
+            self.assertNotIn('id="board"', page)
+            self.assertNotIn("Not yet sorted", page)
+            self.assertNotIn("<details class=\"dashboard-section reviews\"", page)
+            self.assertIn('<div class="dashboard-section reviews" id="reviews">', page)
+
+    def test_valid_board_parses_every_field(self) -> None:
+        board = quarterdeck.parse_captain_board(json.dumps({
+            "version": 1, "updated_at": "2026-10-08T10:00:00Z",
+            "items": [board_item(detail="Short *detail*.", topic="Harbor", task="pier-pr")],
+        }), Path("x"))
+        self.assertEqual(board.warnings, [])
+        self.assertEqual(board.updated_at, datetime(2026, 10, 8, 10, tzinfo=timezone.utc))
+        item = board.items[0]
+        self.assertEqual((item.id, item.group, item.title, item.topic, item.task), ("pier-merge", "merge", "Pier merge", "Harbor", "pier-pr"))
+        self.assertEqual(item.links, [("Pier PR", PIER_PR)])
+
+    def test_malformed_input_warns_without_crashing(self) -> None:
+        for source in ("{not json", "[]", '{"version": 1, "updated_at": "2026-10-08T00:00:00Z"}'):
+            board = quarterdeck.parse_captain_board(source, Path("x"))
+            self.assertEqual(board.items, [])
+            self.assertTrue(board.warnings)
+        board = quarterdeck.parse_captain_board(json.dumps({
+            "version": 1, "updated_at": "yesterday",
+            "items": [
+                board_item(),
+                "nope",
+                board_item(id="bad-group", group="shout"),
+                board_item(id="no-ask", ask=""),
+                board_item(id="pier-merge"),
+                board_item(id="missing-task", task=None),
+                board_item(id="odd-link", links=[{"label": "x", "url": "javascript:alert(1)"}], detail=7),
+                board_item(id="bad-url", links=[{"label": "x", "url": "http://["}]),
+            ],
+        }), Path("x"))
+        self.assertEqual([item.id for item in board.items], ["pier-merge", "odd-link", "bad-url"])
+        self.assertEqual(board.items[1].links, [])
+        self.assertEqual(board.items[2].links, [])
+        self.assertIsNone(board.updated_at)
+        text = "\n".join(board.warnings)
+        for fragment in ("updated_at", "item 2", "bad-group", "no-ask", "task", "duplicate", "odd-link", "bad-url"):
+            self.assertIn(fragment, text)
+
+    def test_unsupported_versions_skip_items(self) -> None:
+        for version in (2, True, 1.0):
+            board = quarterdeck.parse_captain_board(json.dumps({
+                "version": version, "items": [board_item()],
+            }), Path("x"))
+            self.assertFalse(board.supported)
+            self.assertEqual(board.items, [])
+            self.assertIn(f"unsupported version {version!r}", " ".join(board.warnings))
+
+    def test_malformed_board_renders_warning_and_keeps_unsorted(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            homes, view = self.view(self.make_home(Path(temp), raw="{broken"))
+            page = quarterdeck.build_html(homes, "Q", bearings=quarterdeck.build_bearings(homes, now=self.NOW, use_snapshot=False))
+            self.assertIn("not valid JSON", page)
+            self.assertEqual(len(view.unsorted), 3)
+            self.assertIn("Raw note: choose spring or autumn.", page)
+
+    def test_cross_check_hides_settled_and_lists_unsorted(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            home = self.make_home(Path(temp), [
+                board_item(),
+                board_item(id="dock", title="Dock merge", task="dock-fix"),
+                board_item(id="gone", title="Gone merge", task="no-such-task"),
+                board_item(id="waiting", title="Vendor wait", task="waiting-work", group="forward"),
+                board_item(id="note", title="Just a note", group="read", task="kelp-hold"),
+                board_item(id="kelp", title="Kelp date", group="decide", task="kelp-hold"),
+            ])
+            homes, view = self.view(home)
+            self.assertEqual(self.titles(view, "merge"), ["Pier merge"])
+            self.assertEqual(self.titles(view, "forward"), [])
+            self.assertEqual(self.titles(view, "read"), ["Just a note"])
+            self.assertEqual(view.hidden, 3)
+            self.assertEqual([entry.item.id for entry in view.unsorted], ["reef-hold"])
+            self.assertEqual(view.unsorted[0].item.ask, "Raw note: red or green.")
+            page = quarterdeck.build_html(homes, "Q", bearings=quarterdeck.build_bearings(homes, now=self.NOW, use_snapshot=False))
+            self.assertNotIn("Dock merge", page)
+            self.assertNotIn("Gone merge", page)
+            self.assertNotIn("Vendor wait", page)
+            self.assertIn("Not yet sorted", page)
+            self.assertIn("Raw note: red or green.", page)
+            board_section = page[page.index('id="board"'):page.index('id="reviews"')]
+            self.assertNotIn("Raw note: waits on a vendor.", board_section)
+            self.assertNotIn("Dock fix", board_section)
+
+    def test_released_holds_are_settled_in_board_and_unsorted_groups(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            home = self.make_home(Path(temp), [board_item(
+                id="released-board-item", title="Released board item", task="released-board-task",
+            )])
+            (home / "data" / "backlog.md").write_text(
+                "# Backlog\n\n## Queued\n\n"
+                "- [ ] released-board-task - Released board task (state: released) (held: yes) (hold-kind: captain)\n"
+                "- [ ] released-unlisted-task - Released unlisted task (state: released) (held: yes) (hold-kind: captain)\n",
+                encoding="utf-8",
+            )
+            homes, view = self.view(home)
+            self.assertIsNotNone(view)
+            assert view is not None
+            self.assertEqual(view.hidden, 1)
+            self.assertEqual(view.groups["merge"], [])
+            self.assertEqual(view.unsorted, [])
+
+    def test_bullet_blocker_fields_survive_attributes_for_board_coverage(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            home = self.make_home(Path(temp), [board_item(task="board-blocked-task")])
+            (home / "data" / "backlog.md").write_text(
+                "# Backlog\n\n## Queued\n\n"
+                "- [ ] board-blocked-task - Board blocker (state: blocked) (blocked_by: internal-task) (waiting_on: captain)\n"
+                "- [ ] hyphen-blocked-task - Hyphen blocker (state: blocked) (blocked-by: captain)\n"
+                "- [ ] waiting-on-task - Waiting on blocker (state: blocked) (waiting_on: captain)\n"
+                "- [ ] waiting-for-task - Waiting for blocker (state: blocked) (blocked_by: internal-task) (waiting_for: captain)\n"
+                "- [ ] trailing-blocked-task - Trailing blocker (state: blocked) blocked-by: captain\n",
+                encoding="utf-8",
+            )
+            homes, view = self.view(home)
+            self.assertIsNotNone(view)
+            assert view is not None
+            self.assertEqual(self.titles(view, "merge"), ["Pier merge"])
+            self.assertEqual(
+                [entry.item.id for entry in view.unsorted],
+                ["hyphen-blocked-task", "waiting-on-task", "waiting-for-task", "trailing-blocked-task"],
+            )
+
+    def test_record_blocker_target_prioritizes_waiting_fields(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            home = self.make_home(Path(temp), [board_item(task="table-board-task")])
+            (home / "data" / "backlog.md").write_text(
+                "# Backlog\n\n## Queued\n\n"
+                "| id | title | state | held | hold_kind | blocked_by | waiting_on | waiting_for |\n"
+                "| --- | --- | --- | --- | --- | --- | --- | --- |\n"
+                "| table-board-task | Board table blocker | blocked | yes | captain | internal-task | captain | |\n"
+                "| table-unlisted-task | Unlisted table blocker | blocked | yes | captain | internal-task | | captain |\n",
+                encoding="utf-8",
+            )
+            homes, view = self.view(home)
+            self.assertIsNotNone(view)
+            assert view is not None
+            self.assertEqual(self.titles(view, "merge"), ["Pier merge"])
+            self.assertEqual([entry.item.id for entry in view.unsorted], ["table-unlisted-task"])
+
+    def test_group_order_numbers_topics_and_links(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            home = self.make_home(Path(temp), [
+                board_item(id="r", group="read", title="Read one", task="kelp-hold"),
+                board_item(id="f", group="forward", title="Forward one", task="kelp-hold"),
+                board_item(id="d1", group="decide", title="Decide A1", topic="Alpha", task="kelp-hold"),
+                board_item(id="d2", group="decide", title="Decide B1", topic="Beta", task="kelp-hold"),
+                board_item(id="d3", group="decide", title="Decide A2", topic="Alpha", task="kelp-hold"),
+                board_item(id="a", group="approve", title="Approve one", task="kelp-hold", detail="More **context**."),
+                board_item(id="m"),
+            ])
+            homes, view = self.view(home)
+            page = quarterdeck.build_html(homes, "Q", bearings=quarterdeck.build_bearings(homes, now=self.NOW, use_snapshot=False))
+            order = [page.index(f'id="board-{key}"') for key in ("merge", "approve", "decide", "forward", "read", "unsorted")]
+            self.assertEqual(order, sorted(order))
+            self.assertLess(page.index('id="board"'), page.index('id="reviews"'))
+            self.assertEqual([e.item.title for e in view.groups["decide"]], ["Decide A1", "Decide A2", "Decide B1"])
+            numbers = [(e.number, e.item.title) for key in quarterdeck.BOARD_GROUP_KEYS for e in view.groups[key]]
+            self.assertEqual([n for n, _ in numbers], list(range(1, 8)))
+            self.assertEqual(numbers[0][1], "Pier merge")
+            self.assertIn('<h3 class="board-topic">Alpha</h3>', page)
+            self.assertIn(f'<a href="{PIER_PR}">Pier PR</a>', page)
+            for entry in [*(entry for group in view.groups.values() for entry in group), *view.unsorted]:
+                self.assertIn(
+                    f'data-refresh-key="{html.escape(entry.refresh_key, quote=True)}"', page,
+                )
+            self.assertIn("<strong>context</strong>", page)
+            self.assertNotIn("<details class=\"dashboard-section reviews\" id=\"reviews\" open", page)
+            self.assertIn('<details class="dashboard-section reviews" id="reviews">', page)
+            self.assertIn('width=device-width', page)
+
+    def test_board_age_and_stale_flag(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            home = self.make_home(Path(temp), [board_item()], updated_at="2026-10-08T09:00:00Z")
+            backlog = home / "data" / "backlog.md"
+            for when, stale in (("2026-10-08T08:00:00Z", False), ("2026-10-08T10:00:00Z", True)):
+                stamp = datetime.fromisoformat(when.replace("Z", "+00:00")).timestamp()
+                os.utime(backlog, (stamp, stamp))
+                homes, view = self.view(home)
+                page = quarterdeck.build_html(homes, "Q", bearings=quarterdeck.build_bearings(homes, now=self.NOW, use_snapshot=False))
+                self.assertEqual(bool(view.status[0][2]), stale)
+                self.assertEqual("Board may be out of date" in page, stale)
+                self.assertIn("Board updated", page)
+
+    def test_future_board_timestamp_reports_clock_skew(self) -> None:
+        recent_past = datetime.fromtimestamp(self.NOW.timestamp() - 60, timezone.utc)
+        near_future = datetime.fromtimestamp(self.NOW.timestamp() + 60, timezone.utc)
+        later_future = datetime.fromtimestamp(self.NOW.timestamp() + 180, timezone.utc)
+        self.assertEqual(quarterdeck.board_age_text(recent_past, self.NOW), "just now")
+        for future in (near_future, later_future):
+            label = quarterdeck.board_age_text(future, self.NOW)
+            self.assertIn("clock skew", label)
+            self.assertIn("ahead", label)
+            self.assertNotIn("ago", label)
+
+    def test_refresh_restores_open_disclosures_and_continues_on_storage_failure(self) -> None:
+        node = shutil.which("node")
+        if node is None:
+            self.skipTest("Node.js is not available to execute the generated refresh script")
+        page = quarterdeck.build_html([], "Q", refresh_seconds=30)
+        refresh_script = re.findall(r"<script>(.*?)</script>", page, flags=re.S)[-1]
+        harness = r"""
+const storageKey = "quarterdeck-open-details";
+const details = [
+  { id: "item-9", dataset: { refreshKey: "/home/data/captain-board.json:merge" }, open: false },
+  { id: "reviews", dataset: {}, open: false },
+  { id: "", dataset: { refreshKey: "bearing:backlog-task-1.html" }, open: false }
+];
+const values = new Map([[storageKey, JSON.stringify([
+  "/home/data/captain-board.json:merge", "reviews", "bearing:backlog-task-1.html"
+])]]);
+let reloaded = false;
+globalThis.document = {
+  querySelectorAll(selector) {
+    if (selector === "details") return details;
+    if (selector === "details[open]") return details.filter(detail => detail.open);
+    throw new Error("unexpected selector " + selector);
+  }
+};
+globalThis.sessionStorage = {
+  getItem(key) { return values.get(key) || null; },
+  setItem(key, value) { values.set(key, value); },
+  removeItem(key) { values.delete(key); }
+};
+globalThis.location = { reload() { reloaded = true; } };
+globalThis.setTimeout = (callback, delay) => {
+  if (delay !== 30000) throw new Error("refresh cadence changed");
+  callback();
+};
+"""
+        verify = r"""
+if (!details.every(detail => detail.open)) throw new Error("open disclosures were not restored");
+if (!reloaded) throw new Error("page did not reload");
+const saved = JSON.parse(values.get(storageKey));
+if (saved.length !== 3) throw new Error("open disclosures were not saved");
+"""
+        result = subprocess.run(
+            [node, "-e", harness + refresh_script + verify],
+            text=True, capture_output=True, check=False,
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
+
+        no_storage = r"""
+let reloaded = false;
+globalThis.document = { querySelectorAll() { return []; } };
+globalThis.sessionStorage = new Proxy({}, { get() { throw new Error("storage unavailable"); } });
+globalThis.location = { reload() { reloaded = true; } };
+globalThis.setTimeout = callback => callback();
+"""
+        unavailable_verify = "if (!reloaded) throw new Error('reload stopped when storage was unavailable');"
+        result = subprocess.run(
+            [node, "-e", no_storage + refresh_script + unavailable_verify],
+            text=True, capture_output=True, check=False,
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
+
+    def test_bearing_task_details_have_stable_refresh_keys(self) -> None:
+        item = quarterdeck.BItem(
+            title="Example task", owner="home", item_id="task-1", body="Task details.",
+        )
+        rendered = quarterdeck.bearings_item_html(item, self.NOW, "call")
+        self.assertIn('data-refresh-key="bearing:home:task-1"', rendered)
+
+    def test_board_text_is_escaped(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            home = self.make_home(Path(temp), [board_item(title="<script>x</script>", task="kelp-hold")])
+            homes, _ = self.view(home)
+            page = quarterdeck.build_html(homes, "Q", bearings=quarterdeck.build_bearings(homes, now=self.NOW, use_snapshot=False))
+            self.assertNotIn("<script>x</script>", page)
+
+    def test_unsorted_covers_unboarded_roots_and_secondmates(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            board_home, other_home = root / "A", root / "B"
+            child_home, child_board_home = root / "B-child", root / "B-board-child"
+
+            def write_held(home: Path, task_id: str, title: str) -> None:
+                data = home / "data"
+                data.mkdir(parents=True)
+                (data / "backlog.md").write_text(
+                    f"# Backlog\n\n## Queued\n\n- [ ] {task_id} - {title} (held: yes) (hold: Raw note: {title}.) (hold-kind: captain)\n",
+                    encoding="utf-8",
+                )
+
+            write_held(board_home, "anchor", "Anchor task")
+            (board_home / "data" / "captain-board.json").write_text(
+                json.dumps({"version": 1, "updated_at": "2026-10-08T10:00:00Z", "items": [board_item(task="anchor", links=[])]}),
+                encoding="utf-8",
+            )
+            write_held(other_home, "root-hold", "Unboarded root hold")
+            write_held(child_home, "child-hold", "Unboarded child hold")
+            write_held(child_board_home, "child-anchor", "Child board task")
+            (child_board_home / "data" / "captain-board.json").write_text(
+                json.dumps({"version": 1, "updated_at": "2026-10-08T10:00:00Z", "items": [
+                    board_item(id="child-board-item", title="Child merge", task="child-anchor", links=[])
+                ]}),
+                encoding="utf-8",
+            )
+            (other_home / "data" / "secondmates.md").write_text(
+                f"- wren - Keeps the field guide (home: {child_home}; scope: Field guide)\n"
+                f"- lark - Keeps the chart (home: {child_board_home}; scope: Chart)\n",
+                encoding="utf-8",
+            )
+            homes = [
+                quarterdeck.load_home_snapshot(quarterdeck.HomeSpec("A", board_home), discover_secondmates=True),
+                quarterdeck.load_home_snapshot(quarterdeck.HomeSpec("B", other_home), discover_secondmates=True),
+            ]
+            view = quarterdeck.board_view(homes)
+            self.assertIsNotNone(view)
+            assert view is not None
+            self.assertEqual([entry.item.title for entry in view.groups["merge"]], ["Pier merge", "Child merge"])
+            self.assertEqual(
+                [entry.item.title for entry in view.unsorted],
+                ["Unboarded root hold", "Unboarded child hold"],
+            )
+
+    def test_merge_keeps_backlog_pr_with_only_lavish_link(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            lavish_url = "https://example.com/lavish/review"
+            home = self.make_home(Path(temp), [board_item(
+                id="fallback", links=[{"label": "Review page", "url": lavish_url}],
+            )])
+            homes, view = self.view(home)
+            self.assertIsNotNone(view)
+            fallback = next(entry for entry in view.groups["merge"] if entry.item.id == "fallback")
+            self.assertEqual(fallback.item.links, [("Review page", lavish_url), ("Pull request", PIER_PR)])
+            page = quarterdeck.build_html(homes, "Q", bearings=quarterdeck.build_bearings(homes, now=self.NOW, use_snapshot=False))
+            self.assertIn(f'<a href="{lavish_url}">Review page</a>', page)
+            self.assertIn(f'<a href="{PIER_PR}">Pull request</a>', page)
+
+    def test_unreadable_backlogs_keep_board_items_with_warning(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            home = self.make_home(Path(temp), [board_item(id="unverified", title="Unverified item")])
+            (home / "data" / "backlog.md").unlink()
+            homes = [quarterdeck.load_home_snapshot(quarterdeck.HomeSpec("root", home), discover_secondmates=True)]
+            view = quarterdeck.board_view(homes)
+            self.assertIsNotNone(view)
+            self.assertEqual([entry.item.title for entry in view.groups["merge"]], ["Unverified item"])
+            page = quarterdeck.build_html(homes, "Q")
+            self.assertIn('class="warning"', page)
+            self.assertIn("Could not check board items for root", page)
+            self.assertIn("the backlog could not be read", page)
+            self.assertIn("Unverified item", page)
+
+        with tempfile.TemporaryDirectory() as temp:
+            child = Path(temp) / "child"
+            home = self.make_home(Path(temp), [board_item(
+                id="remote", title="Secondmate item", task="wren/remote-task",
+            )])
+            (child / "data").mkdir(parents=True)
+            (home / "data" / "secondmates.md").write_text(
+                f"- wren - Keeps the guide (home: {child}; scope: Guide)\n", encoding="utf-8",
+            )
+            homes = [quarterdeck.load_home_snapshot(quarterdeck.HomeSpec("root", home), discover_secondmates=True)]
+            view = quarterdeck.board_view(homes)
+            self.assertIsNotNone(view)
+            self.assertEqual([entry.item.title for entry in view.groups["merge"]], ["Secondmate item"])
+            page = quarterdeck.build_html(homes, "Q")
+            self.assertIn('class="warning"', page)
+            self.assertIn("Could not check remote", page)
+            self.assertIn("backlog could not be read", page)
+            self.assertIn("the item remains visible", page)
+
+    def test_unsupported_board_shows_warning_and_unsorted_holds(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            raw = json.dumps({
+                "version": 2,
+                "updated_at": "2026-10-08T10:00:00Z",
+                "items": [board_item(title="Unsupported board item")],
+            })
+            homes, view = self.view(self.make_home(Path(temp), raw=raw))
+            self.assertIsNotNone(view)
+            assert view is not None
+            self.assertEqual(view.status, [])
+            self.assertEqual(view.groups["merge"], [])
+            self.assertIn("kelp-hold", [entry.item.id for entry in view.unsorted])
+            self.assertIn("reef-hold", [entry.item.id for entry in view.unsorted])
+            page = quarterdeck.build_html(homes, "Q")
+            self.assertIn("unsupported version 2", page)
+            self.assertNotIn("Unsupported board item", page)
+            self.assertIn("Not yet sorted", page)
+
+    def test_malformed_detail_markdown_warns_and_renders_as_text(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            home = self.make_home(Path(temp), [board_item(detail="Malformed [link](http://[)")])
+            homes, _ = self.view(home)
+            page = quarterdeck.build_html(homes, "Q", bearings=quarterdeck.build_bearings(homes, now=self.NOW, use_snapshot=False))
+            self.assertIn("detail contains a malformed Markdown URL", page)
+            self.assertIn("Malformed [link](http://[)", page)
 
 
 class BearingsTests(unittest.TestCase):

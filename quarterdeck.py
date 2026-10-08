@@ -23,7 +23,7 @@ import unicodedata
 import webbrowser
 from collections.abc import Callable, Iterator
 from contextlib import contextmanager
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from datetime import datetime, timezone
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
@@ -93,6 +93,8 @@ class HomeSnapshot:
     error: str | None = None
     registry_error: str | None = None
     children: list[HomeSnapshot] = field(default_factory=list)
+    board: CaptainBoard | None = None
+    backlog_changed: datetime | None = None
 
 
 def markdown_text(value: str) -> str:
@@ -317,7 +319,7 @@ def is_cancelled_state(state: str) -> bool:
 
 def is_closed_state(state: str) -> bool:
     return normalized_state(state) in {
-        "done", "closed", "finished", "resolved", "complete", "completed", "archived", "merged",
+        "done", "closed", "finished", "resolved", "complete", "completed", "archived", "merged", "released",
     }
 
 
@@ -1055,14 +1057,37 @@ def build_html(
     metric_labels.append("Reports needing review")
     generated = bearings.generated if bearings else datetime.now(timezone.utc)
     timestamp = generated.strftime("%Y-%m-%d %H:%M:%S UTC")
-    bearings_block = bearings_html(bearings) if bearings else ""
+    board = board_view(homes)
+    board_block = board_html(board, generated) if board else ""
+    board_status = board_status_html(board, generated) if board else ""
+    bearings_block = bearings_html(bearings, collapse_reviews=board is not None) if bearings else ""
     refresh_script = (
         f"""
   <script>
-    setTimeout(function reload() {{
-      if (document.querySelector("details[open]")) {{ setTimeout(reload, 15000); return; }}
-      location.reload();
-    }}, {int(refresh_seconds) * 1000});
+    (function() {{
+      const storageKey = "quarterdeck-open-details";
+      try {{
+        const openKeys = JSON.parse(sessionStorage.getItem(storageKey) || "[]");
+        if (Array.isArray(openKeys)) {{
+          const open = new Set(openKeys);
+          for (const detail of document.querySelectorAll("details")) {{
+            const key = detail.dataset.refreshKey || detail.id;
+            if (key && open.has(key)) detail.open = true;
+          }}
+        }}
+        sessionStorage.removeItem(storageKey);
+      }} catch (_) {{}}
+      setTimeout(function() {{
+        try {{
+          const openKeys = Array.from(
+            document.querySelectorAll("details[open]"),
+            detail => detail.dataset.refreshKey || detail.id
+          ).filter(Boolean);
+          sessionStorage.setItem(storageKey, JSON.stringify(openKeys));
+        }} catch (_) {{}}
+        location.reload();
+      }}, {int(refresh_seconds) * 1000});
+    }})();
   </script>""" if refresh_seconds else ""
     )
     refresh_note = f" · reloads every {int(refresh_seconds)} seconds" if refresh_seconds else ""
@@ -1107,10 +1132,10 @@ def build_html(
   <meta name="quarterdeck-{'gen' + 'erated'}" content="read-only review page">
   <title>{html.escape(title)} · Firstmate review</title>
   <style>
-    :root {{ color-scheme: light; --navy: #17324d; --sea: #176b69; --sand: #f3eddf; --paper: #fffdf8; --ink: #20303d; --muted: #657482; --line: #d8d3c8; --gold: #c98635; }}
+    :root {{ color-scheme: light dark; --navy: #17324d; --sea: #176b69; --sand: #f3eddf; --paper: #fffdf8; --ink: #20303d; --muted: #657482; --line: #d8d3c8; --gold: #c98635; --head: #17324d; --soft: #ffffff70; --warn-bg: #fff8e9; --warn-ink: #624313; --fail-bg: #fff2ee; --fail-ink: #6f251b; --chip: #e6f1ee; }}
     * {{ box-sizing: border-box; }}
     body {{ margin: 0; background: var(--sand); color: var(--ink); font: 16px/1.55 system-ui, -apple-system, Segoe UI, sans-serif; }}
-    header {{ background: var(--navy); color: #fffdf8; padding: clamp(2rem, 7vw, 5rem) max(1.2rem, calc((100vw - 1080px) / 2)); border-bottom: 5px solid var(--gold); }}
+    header {{ background: var(--head); color: #fffdf8; padding: clamp(2rem, 7vw, 5rem) max(1.2rem, calc((100vw - 1080px) / 2)); border-bottom: 5px solid var(--gold); }}
     .kicker {{ color: #d8c49b; text-transform: uppercase; letter-spacing: .14em; font-size: .76rem; font-weight: 700; }}
     h1 {{ margin: .25rem 0 .35rem; font: 700 clamp(2.5rem, 7vw, 4.6rem)/1 Georgia, serif; letter-spacing: -.04em; }}
     header p {{ max-width: 46rem; margin: .7rem 0 0; color: #e4e8e8; }}
@@ -1119,7 +1144,7 @@ def build_html(
     .metric {{ background: var(--paper); border: 1px solid var(--line); border-radius: 12px; padding: 1rem 1.1rem; }}
     .metric b {{ display: block; color: var(--sea); font: 700 1.8rem Georgia, serif; }}
     .metric span {{ color: var(--muted); font-size: .9rem; }}
-    .home {{ margin: 2rem 0 2.5rem; padding: 1.2rem; background: #ffffff70; border: 1px solid var(--line); border-radius: 16px; }}
+    .home {{ margin: 2rem 0 2.5rem; padding: 1.2rem; background: var(--soft); border: 1px solid var(--line); border-radius: 16px; }}
     .home-head {{ display: flex; justify-content: space-between; gap: 1rem; margin-bottom: 1rem; }}
     .home h2 {{ margin: 0; color: var(--navy); font: 700 1.8rem Georgia, serif; overflow-wrap: anywhere; }}
     .home-role {{ margin: 0 0 .25rem; color: var(--sea); font-size: .73rem; text-transform: uppercase; letter-spacing: .09em; font-weight: 700; }}
@@ -1138,7 +1163,7 @@ def build_html(
     .eyebrow {{ color: var(--muted); font-size: .73rem; text-transform: uppercase; letter-spacing: .09em; font-weight: 700; }}
     .links {{ margin-top: .8rem !important; font-size: .9rem; }}
     .request-row {{ display: flex; flex-wrap: wrap; align-items: center; gap: .65rem; margin-top: .8rem; }}
-    .request-lavish {{ border: 1px solid var(--sea); border-radius: 7px; background: #e6f1ee; color: #124f4c; padding: .45rem .7rem; font: inherit; font-size: .86rem; font-weight: 700; cursor: pointer; }}
+    .request-lavish {{ border: 1px solid var(--sea); border-radius: 7px; background: var(--chip); color: var(--ink); padding: .45rem .7rem; font: inherit; font-size: .86rem; font-weight: 700; cursor: pointer; }}
     .request-lavish:focus-visible {{ outline: 3px solid var(--gold); outline-offset: 2px; }}
     .request-lavish:disabled {{ opacity: .7; cursor: default; }}
     .request-status {{ color: var(--muted); font-size: .82rem; }}
@@ -1146,10 +1171,10 @@ def build_html(
     a {{ color: var(--sea); font-weight: 650; }}
     a:focus-visible {{ outline: 3px solid var(--gold); outline-offset: 3px; }}
     .path {{ color: var(--muted); font-weight: 400; overflow-wrap: anywhere; }}
-    .empty {{ background: #ffffff80; border: 1px dashed var(--line); border-radius: 10px; color: var(--muted); padding: 1rem; }}
+    .empty {{ background: var(--soft); border: 1px dashed var(--line); border-radius: 10px; color: var(--muted); padding: 1rem; }}
     .failure, .warning {{ margin: 1rem 0; border-radius: 10px; padding: 1rem; }}
-    .failure {{ border: 1px solid #b8503c; background: #fff2ee; color: #6f251b; }}
-    .warning {{ border: 1px solid #c98635; background: #fff8e9; color: #624313; }}
+    .failure {{ border: 1px solid #b8503c; background: var(--fail-bg); color: var(--fail-ink); }}
+    .warning {{ border: 1px solid #c98635; background: var(--warn-bg); color: var(--warn-ink); }}
     .failure p, .warning p {{ margin: .35rem 0 0; overflow-wrap: anywhere; }}
     .secondmates {{ margin: 1.7rem 0 0; padding-left: 1rem; border-left: 3px solid var(--line); }}
     .secondmates > h3 {{ margin: 0 0 .8rem; color: var(--navy); font: 700 1.2rem Georgia, serif; }}
@@ -1158,7 +1183,7 @@ def build_html(
     .jump a {{ border: 1px solid var(--line); background: var(--paper); border-radius: 999px; padding: .3rem .8rem; text-decoration: none; }}
     .jump b {{ color: var(--gold); }}
     .dashboard-section h2 {{ margin: 0; color: var(--navy); font: 700 1.5rem Georgia, serif; }}
-    .reviews {{ border: 2px solid var(--gold); border-radius: 14px; padding: 1rem; background: #fff8e9; }}
+    .reviews {{ border: 2px solid var(--gold); border-radius: 14px; padding: 1rem; background: var(--warn-bg); }}
     .detail-heading {{ margin: 3rem 0 1rem; color: var(--navy); font: 700 1.5rem Georgia, serif; }}
     .when {{ color: var(--muted); font-size: .88rem; }}
     .bearing details {{ margin: .6rem 0; }}
@@ -1167,6 +1192,29 @@ def build_html(
     .generated, .source-note {{ color: #d8c49b; font-size: .85rem; }}
     .source-note {{ color: var(--muted); }}
     footer {{ border-top: 1px solid var(--line); margin-top: 3rem; padding-top: 1rem; color: var(--muted); font-size: .85rem; }}
+    .board {{ margin-bottom: 1rem; }}
+    .board-item {{ background: var(--paper); border: 1px solid var(--line); border-left: 4px solid var(--sea); border-radius: 12px; margin: .6rem 0; }}
+    .board-item summary {{ display: flex; gap: .8rem; align-items: flex-start; min-height: 3rem; padding: .8rem 1rem; cursor: pointer; list-style: none; }}
+    .board-item summary::-webkit-details-marker {{ display: none; }}
+    .board-item summary:focus-visible {{ outline: 3px solid var(--gold); outline-offset: 2px; }}
+    .board-num {{ flex: none; min-width: 2.2rem; height: 2.2rem; border-radius: 999px; background: var(--sea); color: #fff; font: 700 1.1rem/2.2rem Georgia, serif; text-align: center; }}
+    .board-text {{ display: block; min-width: 0; }}
+    .board-title {{ display: block; color: var(--navy); font: 700 1.2rem/1.3 Georgia, serif; overflow-wrap: anywhere; }}
+    .board-home {{ display: inline-block; margin-top: .15rem; color: var(--muted); font-size: .75rem; text-transform: uppercase; letter-spacing: .08em; }}
+    .board-line {{ display: block; margin-top: .2rem; overflow-wrap: anywhere; }}
+    .board-body {{ border-top: 1px solid var(--line); padding: .3rem 1rem 1rem; overflow-wrap: anywhere; }}
+    .board-links {{ margin: .5rem 0 0; padding-left: 1.1rem; }}
+    .board-links li {{ margin: .6rem 0; }}
+    .board-links a {{ display: inline-block; min-height: 2.75rem; line-height: 2.75rem; }}
+    .board-links .path {{ display: block; margin-top: -.5rem; font-size: .8rem; }}
+    .board-topic {{ margin: 1.2rem 0 .2rem; color: var(--sea); font-size: 1rem; text-transform: uppercase; letter-spacing: .08em; }}
+    .stale {{ color: #ffd48a; }}
+    details.reviews > summary {{ display: flex; justify-content: space-between; gap: 1rem; align-items: center; min-height: 3rem; cursor: pointer; list-style: none; }}
+    details.reviews > summary h2 {{ display: inline; }}
+    @media (prefers-color-scheme: dark) {{
+      :root {{ --navy: #a9cdee; --sea: #5fc2b9; --sand: #11181f; --paper: #1a242d; --ink: #e3e8ec; --muted: #9aa8b3; --line: #33434f; --gold: #e0a24e; --head: #0d2438; --soft: #ffffff10; --warn-bg: #2d2412; --warn-ink: #f0d9a8; --fail-bg: #331b17; --fail-ink: #f3c4bb; --chip: #1f3a37; }}
+      .board-num {{ color: #0b1a18; }}
+    }}
     @media (max-width: 640px) {{ .summary {{ grid-template-columns: repeat(2, 1fr); }} }}
     @media print {{ body {{ background: #fff; }} header {{ padding: 1.2rem; }} main {{ width: 100%; margin: 1rem 0; }} .card {{ break-inside: avoid; }} }}
   </style>
@@ -1177,8 +1225,10 @@ def build_html(
     <h1>⚓ {html.escape(title)}</h1>
     <p>{html.escape(introductory_text)}</p>
     <p class="generated">Generated at {timestamp}{refresh_note}</p>
+    {board_status}
   </header>
   <main>
+    {board_block}
     {bearings_block}
     <h2 class="detail-heading">Details by home</h2>
     <div class="summary" aria-label="Review counts">
@@ -1198,7 +1248,11 @@ def build_html(
 SNAPSHOT_SCRIPT = Path("bin") / "fm-bearings-snapshot.sh"
 SNAPSHOT_TIMEOUT_SECONDS = 15
 ITEM_ATTRIBUTE_RE = re.compile(
-    r"\((?P<key>repo|kind|since|hold-kind|hold|held|merged|done|closed|until|hold-until|priority|pr|state|status|review_ready)(?::\s*|\s+)", re.I
+    r"\((?P<key>repo|kind|since|hold-kind|hold|held|merged|done|closed|until|hold-until|priority|pr|"
+    r"state|status|review_ready|blocked[-_]by|waiting[-_](?:on|for))(?::\s*|\s+)", re.I
+)
+BLOCKER_FIELD_RE = re.compile(
+    r"\b(?P<key>blocked[-_]by|waiting[-_](?:on|for)):\s*(?P<value>\S+)", re.I
 )
 BULLET_ITEM_RE = re.compile(r"^-\s+\[(?P<mark>[ xX])\]\s+(?P<id>[A-Za-z0-9][\w.-]*)\s+-\s+(?P<rest>.*)$")
 REPORT_PATH_RE = re.compile(r"\bdata/([\w.-]+)/report\.md\b")
@@ -1301,6 +1355,7 @@ def balanced_close(text: str, start: int) -> int:
 def parse_bullet_item(header: re.Match[str], continuation: list[str], section: str) -> BacklogItem:
     rest = header.group("rest")
     attrs: dict[str, str] = {}
+    attribute_spans: list[tuple[int, int]] = []
     first_attr = len(rest)
     position = 0
     while True:
@@ -1310,14 +1365,30 @@ def parse_bullet_item(header: re.Match[str], continuation: list[str], section: s
         close = balanced_close(rest, match.start())
         key = match.group("key").lower()
         attrs.setdefault(key, rest[match.end():close].strip())
+        attribute_spans.append((match.start(), close + 1))
         first_attr = min(first_attr, match.start())
         position = close + 1
     title_part = rest[:first_attr]
-    blocked_by = ""
-    blocker = re.search(r"\bblocked-by:\s*(\S+)", title_part)
-    if blocker:
-        blocked_by = blocker.group(1)
-        title_part = title_part.replace(blocker.group(0), " ")
+    unstructured_parts: list[str] = []
+    segment_start = 0
+    for start, end in attribute_spans:
+        unstructured_parts.append(rest[segment_start:start])
+        segment_start = end
+    unstructured_parts.append(rest[segment_start:])
+    unstructured_text = " ".join(unstructured_parts)
+    blocker_values: dict[str, str] = {}
+    for blocker in BLOCKER_FIELD_RE.finditer(unstructured_text):
+        key = blocker.group("key").lower().replace("-", "_")
+        blocker_values.setdefault(key, blocker.group("value"))
+    for key, value in attrs.items():
+        normalized_key = key.replace("-", "_")
+        if normalized_key in {"blocked_by", "waiting_on", "waiting_for"} and value:
+            blocker_values.setdefault(normalized_key, value)
+    blocked_by = next(
+        (blocker_values[key] for key in ("waiting_on", "waiting_for", "blocked_by") if blocker_values.get(key)),
+        "",
+    )
+    title_part = BLOCKER_FIELD_RE.sub(" ", title_part)
     report_dir = ""
     report = REPORT_PATH_RE.search(title_part)
     if report:
@@ -1348,7 +1419,7 @@ def parse_bullet_item(header: re.Match[str], continuation: list[str], section: s
         attrs=attrs, body=body, raw=raw, done=done,
         hold_reason=markdown_text(attrs.get("hold", "")), hold_kind=hold_kind,
         held=attrs.get("held", "").strip().lower() in TRUE_VALUES,
-        blocked_by=blocked_by or attrs.get("blocked-by", ""),
+        blocked_by=blocked_by,
         report_dir=report_dir, pr_url=pr_url,
         review_ready=(not done and valid_pr_url(pr_url) and is_review_ready_state(attrs.get("review_ready", ""), state)),
     )
@@ -1395,7 +1466,7 @@ def backlog_items(source: str, snapshot: HomeSnapshot) -> list[BacklogItem]:
             hold_reason=_blank(value_for(record.fields, "hold_reason")),
             hold_kind=normalized_state(_blank(value_for(record.fields, "hold_kind"))),
             held=value_for(record.fields, "held").lower() in TRUE_VALUES,
-            blocked_by=_blank(value_for(record.fields, "blocked_by", "waiting_on", "waiting_for")),
+            blocked_by=_blank(value_for(record.fields, "waiting_on", "waiting_for", "blocked_by")),
             report_dir=record.report.parent.name if record.report else "",
             pr_url=record.pr_url or "", review_ready=review_flag,
         )
@@ -1775,7 +1846,11 @@ def bearings_item_html(item: BItem, now: datetime, section: str) -> str:
     if item.recommendation:
         parts.append(f'<p><strong>Recommendation:</strong> {markdown_inline(item.recommendation)}</p>')
     if item.body:
-        parts.append(f'<details><summary>Full task description</summary><div class="body">{render_markdown(item.body)}</div></details>')
+        detail_key = item.item_page or f"{item.owner}:{item.item_id or item.title}"
+        parts.append(
+            f'<details data-refresh-key="{html.escape("bearing:" + detail_key, quote=True)}">'
+            f'<summary>Full task description</summary><div class="body">{render_markdown(item.body)}</div></details>'
+        )
     links: list[str] = []
     if item.pr_url:
         links.append(f'<a href="{html.escape(item.pr_url, quote=True)}">{html.escape(item.pr_url)}</a>')
@@ -1795,7 +1870,7 @@ def bearings_item_html(item: BItem, now: datetime, section: str) -> str:
     return "".join(parts)
 
 
-def bearings_html(bearings: Bearings) -> str:
+def bearings_html(bearings: Bearings, collapse_reviews: bool = False) -> str:
     now = bearings.generated
     sections = [
         ("call", "Captain's Call", "Decisions and reviews waiting on you, with everything needed to answer.",
@@ -1824,13 +1899,19 @@ def bearings_html(bearings: Bearings) -> str:
     )
     nav = f'<a href="#reviews">Reports to review <b>{len(review_cards)}</b></a>' + nav
     out = [f'<nav class="jump" aria-label="Sections">{nav}</nav>']
-    out.append(
-        '<div class="dashboard-section reviews" id="reviews"><div class="section-head"><div><h2>Reports waiting on your review</h2>'
-        '<p>Reports whose review state is “needs review”.</p></div>'
-        f'<span class="count">{len(review_cards)}</span></div><div class="cards">'
-        + ("".join(review_cards) or '<p class="empty">No reports are waiting on your review.</p>')
-        + "</div></div>"
-    )
+    reviews_cards = "".join(review_cards) or '<p class="empty">No reports are waiting on your review.</p>'
+    if collapse_reviews:
+        out.append(
+            '<details class="dashboard-section reviews" id="reviews"><summary><h2>Reports waiting on your review</h2>'
+            f'<span class="count">{len(review_cards)}</span></summary>'
+            f'<p>Reports whose review state is “needs review”.</p><div class="cards">{reviews_cards}</div></details>'
+        )
+    else:
+        out.append(
+            '<div class="dashboard-section reviews" id="reviews"><div class="section-head"><div><h2>Reports waiting on your review</h2>'
+            '<p>Reports whose review state is “needs review”.</p></div>'
+            f'<span class="count">{len(review_cards)}</span></div><div class="cards">{reviews_cards}</div></div>'
+        )
     for key, title, description, items, empty in sections:
         cards = "".join(bearings_item_html(item, now, key) for item in items)
         if not cards:
@@ -1853,6 +1934,368 @@ def bearings_html(bearings: Bearings) -> str:
             for home, surface, reveal in bearings.omissions
         )
         out.append('<p class="source-note"><strong>Snapshot omissions</strong> — ' + omitted_notes + ".</p>")
+    return "".join(out)
+
+
+# --- Captain board -----------------------------------------------------------
+
+BOARD_FILENAME = "captain-board.json"
+BOARD_VERSION = 1
+BOARD_GROUPS = (
+    ("merge", "Ready to merge", "Pull requests ready for your word."),
+    ("approve", "Approvals and handovers", "Things waiting for your approval or a handover."),
+    ("decide", "Decisions", "Choices only you can make."),
+    ("forward", "Questions to forward", "Questions to pass on to other people."),
+    ("read", "Reviews at your leisure", "Reading you can do when you have time."),
+)
+BOARD_GROUP_KEYS = tuple(key for key, _title, _description in BOARD_GROUPS)
+UNSORTED_TITLE = "Not yet sorted"
+UNSORTED_DESCRIPTION = "Waiting on you in the backlog, but not on the board yet. Raw note shown."
+OTHER_TOPIC = "Other decisions"
+
+
+@dataclass
+class BoardItem:
+    id: str
+    group: str
+    title: str
+    ask: str
+    detail: str = ""
+    topic: str = ""
+    task: str = ""
+    links: list[tuple[str, str]] = field(default_factory=list)
+
+
+@dataclass
+class CaptainBoard:
+    path: Path
+    updated_at: datetime | None = None
+    items: list[BoardItem] = field(default_factory=list)
+    warnings: list[str] = field(default_factory=list)
+    supported: bool = True
+
+
+@dataclass
+class BoardEntry:
+    item: BoardItem
+    home: str
+    number: int = 0
+    refresh_key: str = ""
+
+
+@dataclass
+class BoardView:
+    groups: dict[str, list[BoardEntry]]
+    unsorted: list[BoardEntry]
+    hidden: int
+    warnings: list[str]
+    status: list[tuple[str, datetime | None, str]]  # (home label, updated_at, stale reason)
+    multiple_homes: bool = False
+
+
+def _board_text(value: object) -> str | None:
+    return value.strip() if isinstance(value, str) and value.strip() else None
+
+
+def parse_captain_board(source: str, path: Path) -> CaptainBoard:
+    """Parse the board file, keeping every valid item and warning about the rest."""
+    board = CaptainBoard(path)
+    name = BOARD_FILENAME
+    try:
+        data = json.loads(source)
+    except ValueError as exc:
+        board.warnings.append(f"{name} is not valid JSON ({exc}); no board items could be read.")
+        return board
+    if not isinstance(data, dict):
+        board.warnings.append(f"{name} must contain a JSON object; no board items could be read.")
+        return board
+    version = data.get("version")
+    if type(version) is not int or version != BOARD_VERSION:
+        board.supported = False
+        board.warnings.append(f"{name} has unsupported version {version!r}; expected {BOARD_VERSION}; board items were skipped.")
+        return board
+    updated = data.get("updated_at")
+    if isinstance(updated, str):
+        try:
+            parsed = datetime.fromisoformat(updated.strip().replace("Z", "+00:00"))
+            board.updated_at = parsed if parsed.tzinfo else parsed.replace(tzinfo=timezone.utc)
+        except ValueError:
+            pass
+    if board.updated_at is None:
+        board.warnings.append(f"{name} has a missing or invalid updated_at (expected ISO 8601), so its age is unknown.")
+    items = data.get("items")
+    if not isinstance(items, list):
+        board.warnings.append(f"{name} needs an items list; no board items could be read.")
+        return board
+    seen: set[str] = set()
+    for index, raw in enumerate(items, start=1):
+        where = f"{name} item {index}"
+        if not isinstance(raw, dict):
+            board.warnings.append(f"{where} is not an object and was skipped.")
+            continue
+        identifier = _board_text(raw.get("id"))
+        if identifier:
+            where = f"{name} item {index} ({identifier})"
+        problems = []
+        if not identifier:
+            problems.append("id is missing")
+        elif identifier in seen:
+            problems.append("id is a duplicate")
+        group = raw.get("group")
+        if group not in BOARD_GROUP_KEYS:
+            problems.append(f"group {group!r} is not one of {', '.join(BOARD_GROUP_KEYS)}")
+        title, ask = _board_text(raw.get("title")), _board_text(raw.get("ask"))
+        task = _board_text(raw.get("task"))
+        if not title:
+            problems.append("title is missing")
+        if not ask:
+            problems.append("ask is missing")
+        if not task:
+            problems.append("task is missing")
+        if problems:
+            board.warnings.append(f"{where} was skipped: {'; '.join(problems)}.")
+            continue
+        assert identifier and title and ask and task
+        seen.add(identifier)
+        optional: dict[str, str] = {}
+        for key in ("detail", "topic"):
+            value = raw.get(key)
+            if value is None:
+                continue
+            text = _board_text(value)
+            if text is None:
+                if not isinstance(value, str):
+                    board.warnings.append(f"{where}: {key} must be a string and was ignored.")
+                continue
+            optional[key] = text
+        links: list[tuple[str, str]] = []
+        raw_links = raw.get("links")
+        if raw_links is not None and not isinstance(raw_links, list):
+            board.warnings.append(f"{where}: links must be a list and was ignored.")
+            raw_links = []
+        for link in raw_links or []:
+            label = _board_text(link.get("label")) if isinstance(link, dict) else None
+            url = _board_text(link.get("url")) if isinstance(link, dict) else None
+            try:
+                parsed_url = urlparse(url) if url else None
+            except ValueError:
+                parsed_url = None
+            if not label or not url or parsed_url is None or parsed_url.scheme not in {"http", "https"} or not parsed_url.netloc:
+                board.warnings.append(f"{where}: a link needs a label and an http(s) url and was ignored.")
+                continue
+            links.append((label, url))
+        board.items.append(BoardItem(
+            id=identifier, group=str(group), title=title, ask=ask, task=task, links=links, **optional,
+        ))
+    return board
+
+
+def read_captain_board(data_dir: Path) -> CaptainBoard | None:
+    """Read <data>/captain-board.json; an absent file means there is no board."""
+    path = data_dir / BOARD_FILENAME
+    try:
+        source = path.read_text(encoding="utf-8")
+    except FileNotFoundError:
+        return None
+    except (OSError, UnicodeDecodeError) as exc:
+        board = CaptainBoard(path)
+        board.warnings.append(f"{BOARD_FILENAME} could not be read ({exc.__class__.__name__}); no board items could be shown.")
+        return board
+    return parse_captain_board(source, path)
+
+
+def needs_captain(item: BacklogItem) -> bool:
+    """True while the backlog still shows the item open and waiting on the captain."""
+    if item.done or is_cancelled_state(item.state):
+        return False
+    return (
+        (item.held and item.hold_kind == "captain")
+        or item.review_ready
+        or normalized_state(item.blocked_by) == "captain"
+    )
+
+
+def unsorted_note(item: BacklogItem) -> str:
+    if item.hold_reason:
+        return item.hold_reason
+    if item.review_ready:
+        return "Review-ready pull request"
+    return f"Blocked, waiting on {item.blocked_by}" if item.blocked_by else "Waiting on the captain"
+
+
+def board_view(homes: list[HomeSnapshot]) -> BoardView | None:
+    """Merge the homes' boards, drop settled items, and add backlog items the boards miss."""
+    snapshots = all_snapshots(homes)
+    boarded = [home for home in snapshots if home.board is not None]
+    if not boarded:
+        return None
+    view = BoardView({key: [] for key in BOARD_GROUP_KEYS}, [], 0, [], [])
+    cache: dict[int, dict[str, BacklogItem]] = {}
+
+    def items_of(snapshot: HomeSnapshot) -> dict[str, BacklogItem]:
+        if id(snapshot) not in cache:
+            cache[id(snapshot)] = {
+                item.id: item for item in backlog_items(snapshot.backlog_markdown or "", snapshot)
+            } if snapshot.backlog_markdown is not None and not snapshot.error else {}
+        return cache[id(snapshot)]
+
+    referenced: set[tuple[int, str]] = set()
+    for home in boarded:
+        board = home.board
+        assert board is not None
+        label = home.spec.label
+        view.warnings.extend(f"{label}: {warning}" for warning in board.warnings)
+        if not board.supported:
+            continue
+        stale = ""
+        if board.updated_at is None:
+            stale = "its update time is unknown"
+        elif home.backlog_changed and board.updated_at < home.backlog_changed:
+            stale = "the backlog changed after the board was last updated"
+        view.status.append((label, board.updated_at, stale))
+        if home.error:
+            view.warnings.append(f"Could not check board items for {label}: the backlog could not be read.")
+        for item in board.items:
+            if not home.error:
+                target, task_id = home, item.task
+                route, separator, rest = item.task.partition("/")
+                child = next((c for c in home.children if separator and c.spec.route_id == route), None)
+                if child is not None:
+                    target, task_id = child, rest
+                if target.error:
+                    view.warnings.append(
+                        f"Could not check {item.id}: the backlog could not be read for {target.spec.label}; the item remains visible."
+                    )
+                else:
+                    referenced.add((id(target), task_id))
+                    backlog_item = items_of(target).get(task_id)
+                    if backlog_item is None or not needs_captain(backlog_item):
+                        view.hidden += 1
+                        continue
+                    pr_url = backlog_item.pr_url
+                    if (
+                        item.group == "merge"
+                        and PR_URL_RE.fullmatch(pr_url or "")
+                        and not any(url == pr_url for _link_label, url in item.links)
+                    ):
+                        item = replace(item, links=[*item.links, ("Pull request", pr_url)])
+            view.groups[item.group].append(BoardEntry(
+                item, label, refresh_key=f"{board.path}:{item.id}",
+            ))
+    for snapshot in snapshots:
+        for backlog_item in items_of(snapshot).values():
+            if (id(snapshot), backlog_item.id) in referenced or not needs_captain(backlog_item):
+                continue
+            links = [("Pull request", backlog_item.pr_url)] if PR_URL_RE.fullmatch(backlog_item.pr_url or "") else []
+            view.unsorted.append(BoardEntry(
+                BoardItem(
+                    id=backlog_item.id, group="unsorted", title=backlog_item.title, ask=unsorted_note(backlog_item),
+                    detail=f"Backlog item `{backlog_item.id}`", task=backlog_item.id, links=links,
+                ), snapshot.spec.label,
+                refresh_key=f"{snapshot.backlog_path}:{backlog_item.id}",
+            ))
+    view.multiple_homes = len({entry.home for entries in view.groups.values() for entry in entries} | {e.home for e in view.unsorted}) > 1
+    number = 0
+    for key in BOARD_GROUP_KEYS:
+        entries = view.groups[key]
+        if key == "decide":
+            topics = list(dict.fromkeys(entry.item.topic for entry in entries if entry.item.topic))
+            order = {topic: index for index, topic in enumerate(topics)}
+            entries.sort(key=lambda entry: order.get(entry.item.topic, len(topics)))
+        for entry in entries:
+            number += 1
+            entry.number = number
+    for entry in view.unsorted:
+        number += 1
+        entry.number = number
+    return view
+
+
+def board_age_text(updated: datetime | None, now: datetime) -> str:
+    if updated is None:
+        return "at an unknown time"
+    if updated > now:
+        return f"{waited_text(now.isoformat(), updated)} ahead (clock skew)"
+    if (now - updated).total_seconds() < 120:
+        return "just now"
+    return f"{waited_text(updated.isoformat(), now)} ago"
+
+
+def board_status_html(view: BoardView, now: datetime) -> str:
+    lines = []
+    for label, updated, stale in view.status:
+        prefix = f"{html.escape(label)}: " if len(view.status) > 1 else ""
+        stamp = f" ({updated.astimezone(timezone.utc).strftime('%Y-%m-%d %H:%M UTC')})" if updated else ""
+        flag = f' <strong class="stale">⚠ Board may be out of date: {html.escape(stale)}.</strong>' if stale else ""
+        lines.append(f'<p class="generated">{prefix}Board updated {html.escape(board_age_text(updated, now))}{stamp}{flag}</p>')
+    return "".join(lines)
+
+
+def board_entry_html(entry: BoardEntry, show_home: bool) -> str:
+    item = entry.item
+    home = f'<span class="board-home">{html.escape(entry.home)}</span>' if show_home else ""
+    parts = [
+        f'<p class="board-ask">{html.escape(item.ask)}</p>',
+    ]
+    if item.detail:
+        detail_warning = ""
+        try:
+            detail = render_markdown(item.detail)
+        except ValueError:
+            detail_warning = (
+                f'<div class="warning"><p>{html.escape(BOARD_FILENAME)} item {html.escape(item.id)}: '
+                "detail contains a malformed Markdown URL and was shown as text.</p></div>"
+            )
+            detail = html.escape(item.detail)
+        parts.append(f'{detail_warning}<div class="body">{detail}</div>')
+    if item.links:
+        links = "".join(
+            f'<li><a href="{html.escape(url, quote=True)}">{html.escape(label)}</a> '
+            f'<span class="path">{html.escape(url)}</span></li>'
+            for label, url in item.links
+        )
+        parts.append(f'<ul class="board-links">{links}</ul>')
+    return (
+        f'<details class="board-item" id="item-{entry.number}" '
+        f'data-refresh-key="{html.escape(entry.refresh_key, quote=True)}"><summary>'
+        f'<span class="board-num" aria-label="Number {entry.number}">{entry.number}</span>'
+        f'<span class="board-text"><span class="board-title">{html.escape(item.title)}</span>{home}'
+        f'<span class="board-line">{html.escape(item.ask)}</span></span></summary>'
+        f'<div class="board-body">{"".join(parts)}</div></details>'
+    )
+
+
+def board_html(view: BoardView, now: datetime) -> str:
+    out = ['<section class="board" id="board" aria-label="Waiting on you">']
+    out.extend(f'<div class="warning"><p>{html.escape(warning)}</p></div>' for warning in view.warnings)
+    if view.hidden:
+        out.append(f'<p class="source-note">{view.hidden} board item{"s" if view.hidden != 1 else ""} already settled in the backlog and hidden.</p>')
+    shown = 0
+    sections = [(key, title, description, view.groups[key]) for key, title, description in BOARD_GROUPS]
+    sections.append(("unsorted", UNSORTED_TITLE, UNSORTED_DESCRIPTION, view.unsorted))
+    for key, title, description, entries in sections:
+        if not entries:
+            continue
+        shown += len(entries)
+        body = []
+        if key == "decide" and any(entry.item.topic for entry in entries):
+            current: object = object()
+            for entry in entries:
+                topic = entry.item.topic or OTHER_TOPIC
+                if topic != current:
+                    body.append(f'<h3 class="board-topic">{html.escape(topic)}</h3>')
+                    current = topic
+                body.append(board_entry_html(entry, view.multiple_homes))
+        else:
+            body.extend(board_entry_html(entry, view.multiple_homes) for entry in entries)
+        out.append(
+            f'<div class="dashboard-section board-group" id="board-{key}"><div class="section-head"><div>'
+            f'<h2>{html.escape(title)}</h2><p>{html.escape(description)}</p></div>'
+            f'<span class="count">{len(entries)}</span></div>{"".join(body)}</div>'
+        )
+    if not shown:
+        out.append('<p class="empty">Nothing is waiting on you right now.</p>')
+    out.append("</section>")
     return "".join(out)
 
 
@@ -2626,11 +3069,14 @@ def load_home_snapshot(spec: HomeSpec, discover_secondmates: bool = False) -> Ho
                 raise FileNotFoundError(f"backlog not found: {backlog_path}")
             source = backlog_path.read_text(encoding="utf-8", errors="replace")
             snapshot.backlog_path = backlog_path.resolve()
+            snapshot.backlog_changed = datetime.fromtimestamp(backlog_path.stat().st_mtime, timezone.utc)
             snapshot.backlog_markdown = source
             snapshot.reports = read_reports(data_dir, snapshot.warnings)
             snapshot.records = parse_backlog(source, data_dir, snapshot.reports)
         except (OSError, ValueError) as exc:
             snapshot.error = str(exc)
+        if snapshot.data_dir is not None:
+            snapshot.board = read_captain_board(snapshot.data_dir)
 
     if discover_secondmates and spec.home is not None and not spec.remote_host:
         registry_path = spec.home / "data" / "secondmates.md"
@@ -2657,7 +3103,9 @@ def load_site(args: argparse.Namespace) -> tuple[dict[str, object], list[HomeSna
     config = load_config(args.config)
     specs, legacy_single_home = resolve_home_specs(args, config)
     homes = [load_home_snapshot(spec, discover_secondmates=True) for spec in specs]
-    if legacy_single_home and homes[0].error:
+    if legacy_single_home and homes[0].error and not any(
+        snapshot.board is not None for snapshot in all_snapshots(homes)
+    ):
         raise ValueError(homes[0].error)
     state_path = validate_review_state_location(homes)
     apply_review_marks(homes, load_review_marks(state_path))

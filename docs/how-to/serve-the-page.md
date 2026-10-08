@@ -1,11 +1,13 @@
-# Serve the always-current bearings page
+# Serve the always-current review page
 
 `quarterdeck serve` runs a small local web server. It reads your Firstmate homes
-at startup and again on the first page request after its 30-second cache expires,
-so the page shows the same four sections as Firstmate's
-`/bearings` digest (Captain's Call, Recently Landed, Underway, Charted Next)
-plus the reports waiting on your review. It costs no tokens and needs no
-Firstmate session.
+at startup and again on the first page request after its 30-second cache expires.
+When any selected home or registered secondmate has a captain board, the grouped
+list leads the page; otherwise it starts with the four sections from Firstmate's
+`/bearings` digest (Captain's Call, Recently Landed, Underway, Charted Next).
+Reports waiting on your review also appear. See the
+[captain board reference](../reference/captain-board.md) for its file and display
+rules. Serving costs no tokens and needs no Firstmate session.
 
 ## Run it
 
@@ -14,8 +16,9 @@ quarterdeck serve
 ```
 
 Open `http://127.0.0.1:8765/`. The page shows a "Generated at" time and reloads
-itself every 60 seconds (it waits while you have a details block open). Rendered
-pages are cached for 30 seconds so rapid reloads stay cheap.
+itself every 60 seconds, restoring open items and sections after each refresh
+when browser session storage is available. Rendered pages are cached for 30
+seconds so rapid reloads stay cheap.
 
 To see the serving address, run `quarterdeck url`. See the
 [CLI reference](../reference/cli-and-config.md) for how it determines the
