@@ -319,7 +319,7 @@ def is_cancelled_state(state: str) -> bool:
 
 def is_closed_state(state: str) -> bool:
     return normalized_state(state) in {
-        "done", "closed", "finished", "resolved", "complete", "completed", "archived", "merged",
+        "done", "closed", "finished", "resolved", "complete", "completed", "archived", "merged", "released",
     }
 
 

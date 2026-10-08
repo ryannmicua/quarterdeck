@@ -1256,6 +1256,24 @@ class CaptainBoardTests(unittest.TestCase):
             self.assertNotIn("Raw note: waits on a vendor.", board_section)
             self.assertNotIn("Dock fix", board_section)
 
+    def test_released_holds_are_settled_in_board_and_unsorted_groups(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            home = self.make_home(Path(temp), [board_item(
+                id="released-board-item", title="Released board item", task="released-board-task",
+            )])
+            (home / "data" / "backlog.md").write_text(
+                "# Backlog\n\n## Queued\n\n"
+                "- [ ] released-board-task - Released board task (state: released) (held: yes) (hold-kind: captain)\n"
+                "- [ ] released-unlisted-task - Released unlisted task (state: released) (held: yes) (hold-kind: captain)\n",
+                encoding="utf-8",
+            )
+            homes, view = self.view(home)
+            self.assertIsNotNone(view)
+            assert view is not None
+            self.assertEqual(view.hidden, 1)
+            self.assertEqual(view.groups["merge"], [])
+            self.assertEqual(view.unsorted, [])
+
     def test_group_order_numbers_topics_and_links(self) -> None:
         with tempfile.TemporaryDirectory() as temp:
             home = self.make_home(Path(temp), [

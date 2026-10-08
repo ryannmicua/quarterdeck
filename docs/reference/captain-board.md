@@ -69,7 +69,8 @@ board file, the page behaves exactly as it did before the board existed.
   version; captain-gated backlog items from that home still appear under
   “Not yet sorted.”
 - The reports-to-review list moves below the board in a collapsed section.
-  The page reloads itself as before and waits while an item or section is open.
+  The page reloads on its regular schedule and restores open items and sections
+  after each refresh when browser session storage is available.
 
 The page is laid out for a 375px phone and follows the system light or dark
 setting. Quarterdeck makes no network calls to verify pull requests; settled
