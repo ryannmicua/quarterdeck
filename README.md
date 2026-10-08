@@ -18,6 +18,11 @@ as a local artifact. Quarterdeck itself has no agent or build step.
 
 ## Features
 
+- Captain board: when a home has `data/captain-board.json`, the page leads with
+  a grouped, numbered, phone-friendly "waiting on you" list (merge, approve,
+  decide, forward, read), cross-checked against the live backlog, with anything
+  unlisted under "Not yet sorted". See the
+  [board file reference](docs/reference/captain-board.md).
 - Bearings-shaped page: Captain's Call, Recently Landed, Underway, and Charted
   Next, each always rendered with an empty-state sentence, plus a prominent
   "Reports waiting on your review" list.

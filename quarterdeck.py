@@ -93,6 +93,8 @@ class HomeSnapshot:
     error: str | None = None
     registry_error: str | None = None
     children: list[HomeSnapshot] = field(default_factory=list)
+    board: CaptainBoard | None = None
+    backlog_changed: datetime | None = None
 
 
 def markdown_text(value: str) -> str:
@@ -1055,7 +1057,10 @@ def build_html(
     metric_labels.append("Reports needing review")
     generated = bearings.generated if bearings else datetime.now(timezone.utc)
     timestamp = generated.strftime("%Y-%m-%d %H:%M:%S UTC")
-    bearings_block = bearings_html(bearings) if bearings else ""
+    board = board_view(homes)
+    board_block = board_html(board, generated) if board else ""
+    board_status = board_status_html(board, generated) if board else ""
+    bearings_block = bearings_html(bearings, collapse_reviews=board is not None) if bearings else ""
     refresh_script = (
         f"""
   <script>
@@ -1107,10 +1112,10 @@ def build_html(
   <meta name="quarterdeck-{'gen' + 'erated'}" content="read-only review page">
   <title>{html.escape(title)} · Firstmate review</title>
   <style>
-    :root {{ color-scheme: light; --navy: #17324d; --sea: #176b69; --sand: #f3eddf; --paper: #fffdf8; --ink: #20303d; --muted: #657482; --line: #d8d3c8; --gold: #c98635; }}
+    :root {{ color-scheme: light dark; --navy: #17324d; --sea: #176b69; --sand: #f3eddf; --paper: #fffdf8; --ink: #20303d; --muted: #657482; --line: #d8d3c8; --gold: #c98635; --head: #17324d; --soft: #ffffff70; --warn-bg: #fff8e9; --warn-ink: #624313; --fail-bg: #fff2ee; --fail-ink: #6f251b; --chip: #e6f1ee; }}
     * {{ box-sizing: border-box; }}
     body {{ margin: 0; background: var(--sand); color: var(--ink); font: 16px/1.55 system-ui, -apple-system, Segoe UI, sans-serif; }}
-    header {{ background: var(--navy); color: #fffdf8; padding: clamp(2rem, 7vw, 5rem) max(1.2rem, calc((100vw - 1080px) / 2)); border-bottom: 5px solid var(--gold); }}
+    header {{ background: var(--head); color: #fffdf8; padding: clamp(2rem, 7vw, 5rem) max(1.2rem, calc((100vw - 1080px) / 2)); border-bottom: 5px solid var(--gold); }}
     .kicker {{ color: #d8c49b; text-transform: uppercase; letter-spacing: .14em; font-size: .76rem; font-weight: 700; }}
     h1 {{ margin: .25rem 0 .35rem; font: 700 clamp(2.5rem, 7vw, 4.6rem)/1 Georgia, serif; letter-spacing: -.04em; }}
     header p {{ max-width: 46rem; margin: .7rem 0 0; color: #e4e8e8; }}
@@ -1119,7 +1124,7 @@ def build_html(
     .metric {{ background: var(--paper); border: 1px solid var(--line); border-radius: 12px; padding: 1rem 1.1rem; }}
     .metric b {{ display: block; color: var(--sea); font: 700 1.8rem Georgia, serif; }}
     .metric span {{ color: var(--muted); font-size: .9rem; }}
-    .home {{ margin: 2rem 0 2.5rem; padding: 1.2rem; background: #ffffff70; border: 1px solid var(--line); border-radius: 16px; }}
+    .home {{ margin: 2rem 0 2.5rem; padding: 1.2rem; background: var(--soft); border: 1px solid var(--line); border-radius: 16px; }}
     .home-head {{ display: flex; justify-content: space-between; gap: 1rem; margin-bottom: 1rem; }}
     .home h2 {{ margin: 0; color: var(--navy); font: 700 1.8rem Georgia, serif; overflow-wrap: anywhere; }}
     .home-role {{ margin: 0 0 .25rem; color: var(--sea); font-size: .73rem; text-transform: uppercase; letter-spacing: .09em; font-weight: 700; }}
@@ -1138,7 +1143,7 @@ def build_html(
     .eyebrow {{ color: var(--muted); font-size: .73rem; text-transform: uppercase; letter-spacing: .09em; font-weight: 700; }}
     .links {{ margin-top: .8rem !important; font-size: .9rem; }}
     .request-row {{ display: flex; flex-wrap: wrap; align-items: center; gap: .65rem; margin-top: .8rem; }}
-    .request-lavish {{ border: 1px solid var(--sea); border-radius: 7px; background: #e6f1ee; color: #124f4c; padding: .45rem .7rem; font: inherit; font-size: .86rem; font-weight: 700; cursor: pointer; }}
+    .request-lavish {{ border: 1px solid var(--sea); border-radius: 7px; background: var(--chip); color: var(--ink); padding: .45rem .7rem; font: inherit; font-size: .86rem; font-weight: 700; cursor: pointer; }}
     .request-lavish:focus-visible {{ outline: 3px solid var(--gold); outline-offset: 2px; }}
     .request-lavish:disabled {{ opacity: .7; cursor: default; }}
     .request-status {{ color: var(--muted); font-size: .82rem; }}
@@ -1146,10 +1151,10 @@ def build_html(
     a {{ color: var(--sea); font-weight: 650; }}
     a:focus-visible {{ outline: 3px solid var(--gold); outline-offset: 3px; }}
     .path {{ color: var(--muted); font-weight: 400; overflow-wrap: anywhere; }}
-    .empty {{ background: #ffffff80; border: 1px dashed var(--line); border-radius: 10px; color: var(--muted); padding: 1rem; }}
+    .empty {{ background: var(--soft); border: 1px dashed var(--line); border-radius: 10px; color: var(--muted); padding: 1rem; }}
     .failure, .warning {{ margin: 1rem 0; border-radius: 10px; padding: 1rem; }}
-    .failure {{ border: 1px solid #b8503c; background: #fff2ee; color: #6f251b; }}
-    .warning {{ border: 1px solid #c98635; background: #fff8e9; color: #624313; }}
+    .failure {{ border: 1px solid #b8503c; background: var(--fail-bg); color: var(--fail-ink); }}
+    .warning {{ border: 1px solid #c98635; background: var(--warn-bg); color: var(--warn-ink); }}
     .failure p, .warning p {{ margin: .35rem 0 0; overflow-wrap: anywhere; }}
     .secondmates {{ margin: 1.7rem 0 0; padding-left: 1rem; border-left: 3px solid var(--line); }}
     .secondmates > h3 {{ margin: 0 0 .8rem; color: var(--navy); font: 700 1.2rem Georgia, serif; }}
@@ -1158,7 +1163,7 @@ def build_html(
     .jump a {{ border: 1px solid var(--line); background: var(--paper); border-radius: 999px; padding: .3rem .8rem; text-decoration: none; }}
     .jump b {{ color: var(--gold); }}
     .dashboard-section h2 {{ margin: 0; color: var(--navy); font: 700 1.5rem Georgia, serif; }}
-    .reviews {{ border: 2px solid var(--gold); border-radius: 14px; padding: 1rem; background: #fff8e9; }}
+    .reviews {{ border: 2px solid var(--gold); border-radius: 14px; padding: 1rem; background: var(--warn-bg); }}
     .detail-heading {{ margin: 3rem 0 1rem; color: var(--navy); font: 700 1.5rem Georgia, serif; }}
     .when {{ color: var(--muted); font-size: .88rem; }}
     .bearing details {{ margin: .6rem 0; }}
@@ -1167,6 +1172,29 @@ def build_html(
     .generated, .source-note {{ color: #d8c49b; font-size: .85rem; }}
     .source-note {{ color: var(--muted); }}
     footer {{ border-top: 1px solid var(--line); margin-top: 3rem; padding-top: 1rem; color: var(--muted); font-size: .85rem; }}
+    .board {{ margin-bottom: 1rem; }}
+    .board-item {{ background: var(--paper); border: 1px solid var(--line); border-left: 4px solid var(--sea); border-radius: 12px; margin: .6rem 0; }}
+    .board-item summary {{ display: flex; gap: .8rem; align-items: flex-start; min-height: 3rem; padding: .8rem 1rem; cursor: pointer; list-style: none; }}
+    .board-item summary::-webkit-details-marker {{ display: none; }}
+    .board-item summary:focus-visible {{ outline: 3px solid var(--gold); outline-offset: 2px; }}
+    .board-num {{ flex: none; min-width: 2.2rem; height: 2.2rem; border-radius: 999px; background: var(--sea); color: #fff; font: 700 1.1rem/2.2rem Georgia, serif; text-align: center; }}
+    .board-text {{ display: block; min-width: 0; }}
+    .board-title {{ display: block; color: var(--navy); font: 700 1.2rem/1.3 Georgia, serif; overflow-wrap: anywhere; }}
+    .board-home {{ display: inline-block; margin-top: .15rem; color: var(--muted); font-size: .75rem; text-transform: uppercase; letter-spacing: .08em; }}
+    .board-line {{ display: block; margin-top: .2rem; overflow-wrap: anywhere; }}
+    .board-body {{ border-top: 1px solid var(--line); padding: .3rem 1rem 1rem; overflow-wrap: anywhere; }}
+    .board-links {{ margin: .5rem 0 0; padding-left: 1.1rem; }}
+    .board-links li {{ margin: .6rem 0; }}
+    .board-links a {{ display: inline-block; min-height: 2.75rem; line-height: 2.75rem; }}
+    .board-links .path {{ display: block; margin-top: -.5rem; font-size: .8rem; }}
+    .board-topic {{ margin: 1.2rem 0 .2rem; color: var(--sea); font-size: 1rem; text-transform: uppercase; letter-spacing: .08em; }}
+    .stale {{ color: #ffd48a; }}
+    details.reviews > summary {{ display: flex; justify-content: space-between; gap: 1rem; align-items: center; min-height: 3rem; cursor: pointer; list-style: none; }}
+    details.reviews > summary h2 {{ display: inline; }}
+    @media (prefers-color-scheme: dark) {{
+      :root {{ --navy: #a9cdee; --sea: #5fc2b9; --sand: #11181f; --paper: #1a242d; --ink: #e3e8ec; --muted: #9aa8b3; --line: #33434f; --gold: #e0a24e; --head: #0d2438; --soft: #ffffff10; --warn-bg: #2d2412; --warn-ink: #f0d9a8; --fail-bg: #331b17; --fail-ink: #f3c4bb; --chip: #1f3a37; }}
+      .board-num {{ color: #0b1a18; }}
+    }}
     @media (max-width: 640px) {{ .summary {{ grid-template-columns: repeat(2, 1fr); }} }}
     @media print {{ body {{ background: #fff; }} header {{ padding: 1.2rem; }} main {{ width: 100%; margin: 1rem 0; }} .card {{ break-inside: avoid; }} }}
   </style>
@@ -1177,8 +1205,10 @@ def build_html(
     <h1>⚓ {html.escape(title)}</h1>
     <p>{html.escape(introductory_text)}</p>
     <p class="generated">Generated at {timestamp}{refresh_note}</p>
+    {board_status}
   </header>
   <main>
+    {board_block}
     {bearings_block}
     <h2 class="detail-heading">Details by home</h2>
     <div class="summary" aria-label="Review counts">
@@ -1795,7 +1825,7 @@ def bearings_item_html(item: BItem, now: datetime, section: str) -> str:
     return "".join(parts)
 
 
-def bearings_html(bearings: Bearings) -> str:
+def bearings_html(bearings: Bearings, collapse_reviews: bool = False) -> str:
     now = bearings.generated
     sections = [
         ("call", "Captain's Call", "Decisions and reviews waiting on you, with everything needed to answer.",
@@ -1824,13 +1854,19 @@ def bearings_html(bearings: Bearings) -> str:
     )
     nav = f'<a href="#reviews">Reports to review <b>{len(review_cards)}</b></a>' + nav
     out = [f'<nav class="jump" aria-label="Sections">{nav}</nav>']
-    out.append(
-        '<div class="dashboard-section reviews" id="reviews"><div class="section-head"><div><h2>Reports waiting on your review</h2>'
-        '<p>Reports whose review state is “needs review”.</p></div>'
-        f'<span class="count">{len(review_cards)}</span></div><div class="cards">'
-        + ("".join(review_cards) or '<p class="empty">No reports are waiting on your review.</p>')
-        + "</div></div>"
-    )
+    reviews_cards = "".join(review_cards) or '<p class="empty">No reports are waiting on your review.</p>'
+    if collapse_reviews:
+        out.append(
+            '<details class="dashboard-section reviews" id="reviews"><summary><h2>Reports waiting on your review</h2>'
+            f'<span class="count">{len(review_cards)}</span></summary>'
+            f'<p>Reports whose review state is “needs review”.</p><div class="cards">{reviews_cards}</div></details>'
+        )
+    else:
+        out.append(
+            '<div class="dashboard-section reviews" id="reviews"><div class="section-head"><div><h2>Reports waiting on your review</h2>'
+            '<p>Reports whose review state is “needs review”.</p></div>'
+            f'<span class="count">{len(review_cards)}</span></div><div class="cards">{reviews_cards}</div></div>'
+        )
     for key, title, description, items, empty in sections:
         cards = "".join(bearings_item_html(item, now, key) for item in items)
         if not cards:
@@ -1853,6 +1889,326 @@ def bearings_html(bearings: Bearings) -> str:
             for home, surface, reveal in bearings.omissions
         )
         out.append('<p class="source-note"><strong>Snapshot omissions</strong> — ' + omitted_notes + ".</p>")
+    return "".join(out)
+
+
+# --- Captain board -----------------------------------------------------------
+
+BOARD_FILENAME = "captain-board.json"
+BOARD_VERSION = 1
+BOARD_GROUPS = (
+    ("merge", "Ready to merge", "Pull requests ready for your word."),
+    ("approve", "Approvals and handovers", "Things waiting for your approval or a handover."),
+    ("decide", "Decisions", "Choices only you can make."),
+    ("forward", "Questions to forward", "Questions to pass on to other people."),
+    ("read", "Reviews at your leisure", "Reading you can do when you have time."),
+)
+BOARD_GROUP_KEYS = tuple(key for key, _title, _description in BOARD_GROUPS)
+UNSORTED_TITLE = "Not yet sorted"
+UNSORTED_DESCRIPTION = "Waiting on you in the backlog, but not on the board yet. Raw note shown."
+OTHER_TOPIC = "Other decisions"
+
+
+@dataclass
+class BoardItem:
+    id: str
+    group: str
+    title: str
+    ask: str
+    detail: str = ""
+    topic: str = ""
+    task: str = ""
+    links: list[tuple[str, str]] = field(default_factory=list)
+
+
+@dataclass
+class CaptainBoard:
+    path: Path
+    updated_at: datetime | None = None
+    items: list[BoardItem] = field(default_factory=list)
+    warnings: list[str] = field(default_factory=list)
+
+
+@dataclass
+class BoardEntry:
+    item: BoardItem
+    home: str
+    number: int = 0
+
+
+@dataclass
+class BoardView:
+    groups: dict[str, list[BoardEntry]]
+    unsorted: list[BoardEntry]
+    hidden: int
+    warnings: list[str]
+    status: list[tuple[str, datetime | None, str]]  # (home label, updated_at, stale reason)
+    multiple_homes: bool = False
+
+
+def _board_text(value: object) -> str | None:
+    return value.strip() if isinstance(value, str) and value.strip() else None
+
+
+def parse_captain_board(source: str, path: Path) -> CaptainBoard:
+    """Parse the board file, keeping every valid item and warning about the rest."""
+    board = CaptainBoard(path)
+    name = BOARD_FILENAME
+    try:
+        data = json.loads(source)
+    except ValueError as exc:
+        board.warnings.append(f"{name} is not valid JSON ({exc}); no board items could be read.")
+        return board
+    if not isinstance(data, dict):
+        board.warnings.append(f"{name} must contain a JSON object; no board items could be read.")
+        return board
+    if data.get("version") != BOARD_VERSION:
+        board.warnings.append(f"{name} has version {data.get('version')!r}, expected {BOARD_VERSION}; reading it anyway.")
+    updated = data.get("updated_at")
+    if isinstance(updated, str):
+        try:
+            parsed = datetime.fromisoformat(updated.strip().replace("Z", "+00:00"))
+            board.updated_at = parsed if parsed.tzinfo else parsed.replace(tzinfo=timezone.utc)
+        except ValueError:
+            pass
+    if board.updated_at is None:
+        board.warnings.append(f"{name} has a missing or invalid updated_at (expected ISO 8601), so its age is unknown.")
+    items = data.get("items")
+    if not isinstance(items, list):
+        board.warnings.append(f"{name} needs an items list; no board items could be read.")
+        return board
+    seen: set[str] = set()
+    for index, raw in enumerate(items, start=1):
+        where = f"{name} item {index}"
+        if not isinstance(raw, dict):
+            board.warnings.append(f"{where} is not an object and was skipped.")
+            continue
+        identifier = _board_text(raw.get("id"))
+        if identifier:
+            where = f"{name} item {index} ({identifier})"
+        problems = []
+        if not identifier:
+            problems.append("id is missing")
+        elif identifier in seen:
+            problems.append("id is a duplicate")
+        group = raw.get("group")
+        if group not in BOARD_GROUP_KEYS:
+            problems.append(f"group {group!r} is not one of {', '.join(BOARD_GROUP_KEYS)}")
+        title, ask = _board_text(raw.get("title")), _board_text(raw.get("ask"))
+        if not title:
+            problems.append("title is missing")
+        if not ask:
+            problems.append("ask is missing")
+        if problems:
+            board.warnings.append(f"{where} was skipped: {'; '.join(problems)}.")
+            continue
+        assert identifier and title and ask
+        seen.add(identifier)
+        optional: dict[str, str] = {}
+        for key in ("detail", "topic", "task"):
+            value = raw.get(key)
+            if value is None:
+                continue
+            text = _board_text(value)
+            if text is None:
+                if not isinstance(value, str):
+                    board.warnings.append(f"{where}: {key} must be a string and was ignored.")
+                continue
+            optional[key] = text
+        links: list[tuple[str, str]] = []
+        raw_links = raw.get("links")
+        if raw_links is not None and not isinstance(raw_links, list):
+            board.warnings.append(f"{where}: links must be a list and was ignored.")
+            raw_links = []
+        for link in raw_links or []:
+            label = _board_text(link.get("label")) if isinstance(link, dict) else None
+            url = _board_text(link.get("url")) if isinstance(link, dict) else None
+            if not label or not url or urlparse(url).scheme not in {"http", "https"} or not urlparse(url).netloc:
+                board.warnings.append(f"{where}: a link needs a label and an http(s) url and was ignored.")
+                continue
+            links.append((label, url))
+        board.items.append(BoardItem(
+            id=identifier, group=str(group), title=title, ask=ask, links=links, **optional,
+        ))
+    return board
+
+
+def read_captain_board(data_dir: Path) -> CaptainBoard | None:
+    """Read <data>/captain-board.json; an absent file means there is no board."""
+    path = data_dir / BOARD_FILENAME
+    try:
+        source = path.read_text(encoding="utf-8")
+    except FileNotFoundError:
+        return None
+    except (OSError, UnicodeDecodeError) as exc:
+        board = CaptainBoard(path)
+        board.warnings.append(f"{BOARD_FILENAME} could not be read ({exc.__class__.__name__}); no board items could be shown.")
+        return board
+    return parse_captain_board(source, path)
+
+
+def needs_captain(item: BacklogItem) -> bool:
+    """True while the backlog still shows the item open and waiting on the captain."""
+    if item.done or is_cancelled_state(item.state):
+        return False
+    return (
+        (item.held and item.hold_kind == "captain")
+        or item.review_ready
+        or normalized_state(item.blocked_by) == "captain"
+    )
+
+
+def unsorted_note(item: BacklogItem) -> str:
+    if item.hold_reason:
+        return item.hold_reason
+    if item.review_ready:
+        return "Review-ready pull request"
+    return f"Blocked, waiting on {item.blocked_by}" if item.blocked_by else "Waiting on the captain"
+
+
+def board_view(homes: list[HomeSnapshot]) -> BoardView | None:
+    """Merge the homes' boards, drop settled items, and add backlog items the boards miss."""
+    boarded = [home for home in homes if home.board is not None]
+    if not boarded:
+        return None
+    view = BoardView({key: [] for key in BOARD_GROUP_KEYS}, [], 0, [], [])
+    cache: dict[int, dict[str, BacklogItem]] = {}
+
+    def items_of(snapshot: HomeSnapshot) -> dict[str, BacklogItem]:
+        if id(snapshot) not in cache:
+            cache[id(snapshot)] = {
+                item.id: item for item in backlog_items(snapshot.backlog_markdown or "", snapshot)
+            } if snapshot.backlog_markdown is not None and not snapshot.error else {}
+        return cache[id(snapshot)]
+
+    referenced: set[tuple[int, str]] = set()
+    for home in boarded:
+        board = home.board
+        assert board is not None
+        label = home.spec.label
+        view.warnings.extend(f"{label}: {warning}" for warning in board.warnings)
+        stale = ""
+        if board.updated_at is None:
+            stale = "its update time is unknown"
+        elif home.backlog_changed and board.updated_at < home.backlog_changed:
+            stale = "the backlog changed after the board was last updated"
+        view.status.append((label, board.updated_at, stale))
+        if home.error:
+            view.warnings.append(f"{label}: the backlog could not be read, so board items were not cross-checked.")
+        for item in board.items:
+            if item.task and not home.error:
+                target, task_id = home, item.task
+                route, separator, rest = item.task.partition("/")
+                child = next((c for c in home.children if separator and c.spec.route_id == route), None)
+                if child is not None:
+                    target, task_id = child, rest
+                if not target.error:
+                    referenced.add((id(target), task_id))
+                    backlog_item = items_of(target).get(task_id)
+                    if backlog_item is None or not needs_captain(backlog_item):
+                        view.hidden += 1
+                        continue
+            view.groups[item.group].append(BoardEntry(item, label))
+    for home in boarded:
+        for snapshot in all_snapshots([home]):
+            for backlog_item in items_of(snapshot).values():
+                if (id(snapshot), backlog_item.id) in referenced or not needs_captain(backlog_item):
+                    continue
+                links = [("Pull request", backlog_item.pr_url)] if PR_URL_RE.fullmatch(backlog_item.pr_url or "") else []
+                view.unsorted.append(BoardEntry(BoardItem(
+                    id=backlog_item.id, group="unsorted", title=backlog_item.title, ask=unsorted_note(backlog_item),
+                    detail=f"Backlog item `{backlog_item.id}`", task=backlog_item.id, links=links,
+                ), snapshot.spec.label))
+    view.multiple_homes = len({entry.home for entries in view.groups.values() for entry in entries} | {e.home for e in view.unsorted}) > 1
+    number = 0
+    for key in BOARD_GROUP_KEYS:
+        entries = view.groups[key]
+        if key == "decide":
+            topics = list(dict.fromkeys(entry.item.topic for entry in entries if entry.item.topic))
+            order = {topic: index for index, topic in enumerate(topics)}
+            entries.sort(key=lambda entry: order.get(entry.item.topic, len(topics)))
+        for entry in entries:
+            number += 1
+            entry.number = number
+    for entry in view.unsorted:
+        number += 1
+        entry.number = number
+    return view
+
+
+def board_age_text(updated: datetime | None, now: datetime) -> str:
+    if updated is None:
+        return "at an unknown time"
+    if (now - updated).total_seconds() < 120:
+        return "just now"
+    return f"{waited_text(updated.isoformat(), now)} ago"
+
+
+def board_status_html(view: BoardView, now: datetime) -> str:
+    lines = []
+    for label, updated, stale in view.status:
+        prefix = f"{html.escape(label)}: " if len(view.status) > 1 else ""
+        stamp = f" ({updated.astimezone(timezone.utc).strftime('%Y-%m-%d %H:%M UTC')})" if updated else ""
+        flag = f' <strong class="stale">⚠ Board may be out of date: {html.escape(stale)}.</strong>' if stale else ""
+        lines.append(f'<p class="generated">{prefix}Board updated {html.escape(board_age_text(updated, now))}{stamp}{flag}</p>')
+    return "".join(lines)
+
+
+def board_entry_html(entry: BoardEntry, show_home: bool) -> str:
+    item = entry.item
+    home = f'<span class="board-home">{html.escape(entry.home)}</span>' if show_home else ""
+    parts = [
+        f'<p class="board-ask">{html.escape(item.ask)}</p>',
+    ]
+    if item.detail:
+        parts.append(f'<div class="body">{render_markdown(item.detail)}</div>')
+    if item.links:
+        links = "".join(
+            f'<li><a href="{html.escape(url, quote=True)}">{html.escape(label)}</a> '
+            f'<span class="path">{html.escape(url)}</span></li>'
+            for label, url in item.links
+        )
+        parts.append(f'<ul class="board-links">{links}</ul>')
+    return (
+        f'<details class="board-item" id="item-{entry.number}"><summary>'
+        f'<span class="board-num" aria-label="Number {entry.number}">{entry.number}</span>'
+        f'<span class="board-text"><span class="board-title">{html.escape(item.title)}</span>{home}'
+        f'<span class="board-line">{html.escape(item.ask)}</span></span></summary>'
+        f'<div class="board-body">{"".join(parts)}</div></details>'
+    )
+
+
+def board_html(view: BoardView, now: datetime) -> str:
+    out = ['<section class="board" id="board" aria-label="Waiting on you">']
+    out.extend(f'<div class="warning"><p>{html.escape(warning)}</p></div>' for warning in view.warnings)
+    if view.hidden:
+        out.append(f'<p class="source-note">{view.hidden} board item{"s" if view.hidden != 1 else ""} already settled in the backlog and hidden.</p>')
+    shown = 0
+    sections = [(key, title, description, view.groups[key]) for key, title, description in BOARD_GROUPS]
+    sections.append(("unsorted", UNSORTED_TITLE, UNSORTED_DESCRIPTION, view.unsorted))
+    for key, title, description, entries in sections:
+        if not entries:
+            continue
+        shown += len(entries)
+        body = []
+        if key == "decide" and any(entry.item.topic for entry in entries):
+            current: object = object()
+            for entry in entries:
+                topic = entry.item.topic or OTHER_TOPIC
+                if topic != current:
+                    body.append(f'<h3 class="board-topic">{html.escape(topic)}</h3>')
+                    current = topic
+                body.append(board_entry_html(entry, view.multiple_homes))
+        else:
+            body.extend(board_entry_html(entry, view.multiple_homes) for entry in entries)
+        out.append(
+            f'<div class="dashboard-section board-group" id="board-{key}"><div class="section-head"><div>'
+            f'<h2>{html.escape(title)}</h2><p>{html.escape(description)}</p></div>'
+            f'<span class="count">{len(entries)}</span></div>{"".join(body)}</div>'
+        )
+    if not shown:
+        out.append('<p class="empty">Nothing is waiting on you right now.</p>')
+    out.append("</section>")
     return "".join(out)
 
 
@@ -2626,11 +2982,14 @@ def load_home_snapshot(spec: HomeSpec, discover_secondmates: bool = False) -> Ho
                 raise FileNotFoundError(f"backlog not found: {backlog_path}")
             source = backlog_path.read_text(encoding="utf-8", errors="replace")
             snapshot.backlog_path = backlog_path.resolve()
+            snapshot.backlog_changed = datetime.fromtimestamp(backlog_path.stat().st_mtime, timezone.utc)
             snapshot.backlog_markdown = source
             snapshot.reports = read_reports(data_dir, snapshot.warnings)
             snapshot.records = parse_backlog(source, data_dir, snapshot.reports)
         except (OSError, ValueError) as exc:
             snapshot.error = str(exc)
+        if snapshot.data_dir is not None:
+            snapshot.board = read_captain_board(snapshot.data_dir)
 
     if discover_secondmates and spec.home is not None and not spec.remote_host:
         registry_path = spec.home / "data" / "secondmates.md"

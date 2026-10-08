@@ -8,7 +8,9 @@ directory and adds a labeled section to one self-contained page.
 single-home invocation. In a home list, each entry may set its own `data_dir`;
 otherwise that home's `data/` directory is used.
 
-The inputs are `data/backlog.md` and `data/<id>/report.md` files. For each
+The inputs are `data/backlog.md`, `data/<id>/report.md` files, and the optional
+`data/captain-board.json` board (see the
+[board file reference](../reference/captain-board.md)). For each
 configured parent home, Quarterdeck also reads the optional
 `data/secondmates.md` route registry. Each local route's `home:` field points
 to another Firstmate home, which gets its own labeled section underneath the
