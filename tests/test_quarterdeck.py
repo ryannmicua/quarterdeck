@@ -6,6 +6,7 @@ import io
 import os
 import re
 import shlex
+import shutil
 import stat
 import subprocess
 import sys
@@ -1277,6 +1278,10 @@ class CaptainBoardTests(unittest.TestCase):
             self.assertEqual(numbers[0][1], "Pier merge")
             self.assertIn('<h3 class="board-topic">Alpha</h3>', page)
             self.assertIn(f'<a href="{PIER_PR}">Pier PR</a>', page)
+            for entry in [*(entry for group in view.groups.values() for entry in group), *view.unsorted]:
+                self.assertIn(
+                    f'data-refresh-key="{html.escape(entry.refresh_key, quote=True)}"', page,
+                )
             self.assertIn("<strong>context</strong>", page)
             self.assertNotIn("<details class=\"dashboard-section reviews\" id=\"reviews\" open", page)
             self.assertIn('<details class="dashboard-section reviews" id="reviews">', page)
@@ -1305,6 +1310,74 @@ class CaptainBoardTests(unittest.TestCase):
             self.assertIn("clock skew", label)
             self.assertIn("ahead", label)
             self.assertNotIn("ago", label)
+
+    def test_refresh_restores_open_disclosures_and_continues_on_storage_failure(self) -> None:
+        node = shutil.which("node")
+        if node is None:
+            self.skipTest("Node.js is not available to execute the generated refresh script")
+        page = quarterdeck.build_html([], "Q", refresh_seconds=30)
+        refresh_script = re.findall(r"<script>(.*?)</script>", page, flags=re.S)[-1]
+        harness = r"""
+const storageKey = "quarterdeck-open-details";
+const details = [
+  { id: "item-9", dataset: { refreshKey: "/home/data/captain-board.json:merge" }, open: false },
+  { id: "reviews", dataset: {}, open: false },
+  { id: "", dataset: { refreshKey: "bearing:backlog-task-1.html" }, open: false }
+];
+const values = new Map([[storageKey, JSON.stringify([
+  "/home/data/captain-board.json:merge", "reviews", "bearing:backlog-task-1.html"
+])]]);
+let reloaded = false;
+globalThis.document = {
+  querySelectorAll(selector) {
+    if (selector === "details") return details;
+    if (selector === "details[open]") return details.filter(detail => detail.open);
+    throw new Error("unexpected selector " + selector);
+  }
+};
+globalThis.sessionStorage = {
+  getItem(key) { return values.get(key) || null; },
+  setItem(key, value) { values.set(key, value); },
+  removeItem(key) { values.delete(key); }
+};
+globalThis.location = { reload() { reloaded = true; } };
+globalThis.setTimeout = (callback, delay) => {
+  if (delay !== 30000) throw new Error("refresh cadence changed");
+  callback();
+};
+"""
+        verify = r"""
+if (!details.every(detail => detail.open)) throw new Error("open disclosures were not restored");
+if (!reloaded) throw new Error("page did not reload");
+const saved = JSON.parse(values.get(storageKey));
+if (saved.length !== 3) throw new Error("open disclosures were not saved");
+"""
+        result = subprocess.run(
+            [node, "-e", harness + refresh_script + verify],
+            text=True, capture_output=True, check=False,
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
+
+        no_storage = r"""
+let reloaded = false;
+globalThis.document = { querySelectorAll() { return []; } };
+globalThis.sessionStorage = new Proxy({}, { get() { throw new Error("storage unavailable"); } });
+globalThis.location = { reload() { reloaded = true; } };
+globalThis.setTimeout = callback => callback();
+"""
+        unavailable_verify = "if (!reloaded) throw new Error('reload stopped when storage was unavailable');"
+        result = subprocess.run(
+            [node, "-e", no_storage + refresh_script + unavailable_verify],
+            text=True, capture_output=True, check=False,
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
+
+    def test_bearing_task_details_have_stable_refresh_keys(self) -> None:
+        item = quarterdeck.BItem(
+            title="Example task", owner="home", item_id="task-1", body="Task details.",
+        )
+        rendered = quarterdeck.bearings_item_html(item, self.NOW, "call")
+        self.assertIn('data-refresh-key="bearing:home:task-1"', rendered)
 
     def test_board_text_is_escaped(self) -> None:
         with tempfile.TemporaryDirectory() as temp:

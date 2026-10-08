@@ -1064,10 +1064,30 @@ def build_html(
     refresh_script = (
         f"""
   <script>
-    setTimeout(function reload() {{
-      if (document.querySelector("details[open]")) {{ setTimeout(reload, 15000); return; }}
-      location.reload();
-    }}, {int(refresh_seconds) * 1000});
+    (function() {{
+      const storageKey = "quarterdeck-open-details";
+      try {{
+        const openKeys = JSON.parse(sessionStorage.getItem(storageKey) || "[]");
+        if (Array.isArray(openKeys)) {{
+          const open = new Set(openKeys);
+          for (const detail of document.querySelectorAll("details")) {{
+            const key = detail.dataset.refreshKey || detail.id;
+            if (key && open.has(key)) detail.open = true;
+          }}
+        }}
+        sessionStorage.removeItem(storageKey);
+      }} catch (_) {{}}
+      setTimeout(function() {{
+        try {{
+          const openKeys = Array.from(
+            document.querySelectorAll("details[open]"),
+            detail => detail.dataset.refreshKey || detail.id
+          ).filter(Boolean);
+          sessionStorage.setItem(storageKey, JSON.stringify(openKeys));
+        }} catch (_) {{}}
+        location.reload();
+      }}, {int(refresh_seconds) * 1000});
+    }})();
   </script>""" if refresh_seconds else ""
     )
     refresh_note = f" · reloads every {int(refresh_seconds)} seconds" if refresh_seconds else ""
@@ -1805,7 +1825,11 @@ def bearings_item_html(item: BItem, now: datetime, section: str) -> str:
     if item.recommendation:
         parts.append(f'<p><strong>Recommendation:</strong> {markdown_inline(item.recommendation)}</p>')
     if item.body:
-        parts.append(f'<details><summary>Full task description</summary><div class="body">{render_markdown(item.body)}</div></details>')
+        detail_key = item.item_page or f"{item.owner}:{item.item_id or item.title}"
+        parts.append(
+            f'<details data-refresh-key="{html.escape("bearing:" + detail_key, quote=True)}">'
+            f'<summary>Full task description</summary><div class="body">{render_markdown(item.body)}</div></details>'
+        )
     links: list[str] = []
     if item.pr_url:
         links.append(f'<a href="{html.escape(item.pr_url, quote=True)}">{html.escape(item.pr_url)}</a>')
@@ -1935,6 +1959,7 @@ class BoardEntry:
     item: BoardItem
     home: str
     number: int = 0
+    refresh_key: str = ""
 
 
 @dataclass
@@ -2133,16 +2158,21 @@ def board_view(homes: list[HomeSnapshot]) -> BoardView | None:
                         and not any(url == pr_url for _link_label, url in item.links)
                     ):
                         item = replace(item, links=[*item.links, ("Pull request", pr_url)])
-            view.groups[item.group].append(BoardEntry(item, label))
+            view.groups[item.group].append(BoardEntry(
+                item, label, refresh_key=f"{board.path}:{item.id}",
+            ))
     for snapshot in snapshots:
         for backlog_item in items_of(snapshot).values():
             if (id(snapshot), backlog_item.id) in referenced or not needs_captain(backlog_item):
                 continue
             links = [("Pull request", backlog_item.pr_url)] if PR_URL_RE.fullmatch(backlog_item.pr_url or "") else []
-            view.unsorted.append(BoardEntry(BoardItem(
-                id=backlog_item.id, group="unsorted", title=backlog_item.title, ask=unsorted_note(backlog_item),
-                detail=f"Backlog item `{backlog_item.id}`", task=backlog_item.id, links=links,
-            ), snapshot.spec.label))
+            view.unsorted.append(BoardEntry(
+                BoardItem(
+                    id=backlog_item.id, group="unsorted", title=backlog_item.title, ask=unsorted_note(backlog_item),
+                    detail=f"Backlog item `{backlog_item.id}`", task=backlog_item.id, links=links,
+                ), snapshot.spec.label,
+                refresh_key=f"{snapshot.backlog_path}:{backlog_item.id}",
+            ))
     view.multiple_homes = len({entry.home for entries in view.groups.values() for entry in entries} | {e.home for e in view.unsorted}) > 1
     number = 0
     for key in BOARD_GROUP_KEYS:
@@ -2205,7 +2235,8 @@ def board_entry_html(entry: BoardEntry, show_home: bool) -> str:
         )
         parts.append(f'<ul class="board-links">{links}</ul>')
     return (
-        f'<details class="board-item" id="item-{entry.number}"><summary>'
+        f'<details class="board-item" id="item-{entry.number}" '
+        f'data-refresh-key="{html.escape(entry.refresh_key, quote=True)}"><summary>'
         f'<span class="board-num" aria-label="Number {entry.number}">{entry.number}</span>'
         f'<span class="board-text"><span class="board-title">{html.escape(item.title)}</span>{home}'
         f'<span class="board-line">{html.escape(item.ask)}</span></span></summary>'
