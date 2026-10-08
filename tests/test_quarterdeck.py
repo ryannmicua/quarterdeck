@@ -1176,6 +1176,15 @@ class CaptainBoardTests(unittest.TestCase):
         for fragment in ("updated_at", "item 2", "bad-group", "no-ask", "task", "duplicate", "odd-link", "bad-url"):
             self.assertIn(fragment, text)
 
+    def test_unsupported_versions_skip_items(self) -> None:
+        for version in (2, True, 1.0):
+            board = quarterdeck.parse_captain_board(json.dumps({
+                "version": version, "items": [board_item()],
+            }), Path("x"))
+            self.assertFalse(board.supported)
+            self.assertEqual(board.items, [])
+            self.assertIn(f"unsupported version {version!r}", " ".join(board.warnings))
+
     def test_malformed_board_renders_warning_and_keeps_unsorted(self) -> None:
         with tempfile.TemporaryDirectory() as temp:
             homes, view = self.view(self.make_home(Path(temp), raw="{broken"))
@@ -1304,15 +1313,71 @@ class CaptainBoardTests(unittest.TestCase):
                 ["Unboarded root hold", "Unboarded child hold"],
             )
 
-    def test_merge_uses_backlog_pr_when_board_has_no_links(self) -> None:
+    def test_merge_keeps_backlog_pr_with_only_lavish_link(self) -> None:
         with tempfile.TemporaryDirectory() as temp:
-            home = self.make_home(Path(temp), [board_item(id="fallback", links=[])])
+            lavish_url = "https://example.com/lavish/review"
+            home = self.make_home(Path(temp), [board_item(
+                id="fallback", links=[{"label": "Review page", "url": lavish_url}],
+            )])
             homes, view = self.view(home)
             self.assertIsNotNone(view)
             fallback = next(entry for entry in view.groups["merge"] if entry.item.id == "fallback")
-            self.assertEqual(fallback.item.links, [("Pull request", PIER_PR)])
+            self.assertEqual(fallback.item.links, [("Review page", lavish_url), ("Pull request", PIER_PR)])
             page = quarterdeck.build_html(homes, "Q", bearings=quarterdeck.build_bearings(homes, now=self.NOW, use_snapshot=False))
+            self.assertIn(f'<a href="{lavish_url}">Review page</a>', page)
             self.assertIn(f'<a href="{PIER_PR}">Pull request</a>', page)
+
+    def test_unreadable_backlogs_keep_board_items_with_warning(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            home = self.make_home(Path(temp), [board_item(id="unverified", title="Unverified item")])
+            (home / "data" / "backlog.md").unlink()
+            homes = [quarterdeck.load_home_snapshot(quarterdeck.HomeSpec("root", home), discover_secondmates=True)]
+            view = quarterdeck.board_view(homes)
+            self.assertIsNotNone(view)
+            self.assertEqual([entry.item.title for entry in view.groups["merge"]], ["Unverified item"])
+            page = quarterdeck.build_html(homes, "Q")
+            self.assertIn('class="warning"', page)
+            self.assertIn("Could not check board items for root", page)
+            self.assertIn("the backlog could not be read", page)
+            self.assertIn("Unverified item", page)
+
+        with tempfile.TemporaryDirectory() as temp:
+            child = Path(temp) / "child"
+            home = self.make_home(Path(temp), [board_item(
+                id="remote", title="Secondmate item", task="wren/remote-task",
+            )])
+            (child / "data").mkdir(parents=True)
+            (home / "data" / "secondmates.md").write_text(
+                f"- wren - Keeps the guide (home: {child}; scope: Guide)\n", encoding="utf-8",
+            )
+            homes = [quarterdeck.load_home_snapshot(quarterdeck.HomeSpec("root", home), discover_secondmates=True)]
+            view = quarterdeck.board_view(homes)
+            self.assertIsNotNone(view)
+            self.assertEqual([entry.item.title for entry in view.groups["merge"]], ["Secondmate item"])
+            page = quarterdeck.build_html(homes, "Q")
+            self.assertIn('class="warning"', page)
+            self.assertIn("Could not check remote", page)
+            self.assertIn("backlog could not be read", page)
+            self.assertIn("the item remains visible", page)
+
+    def test_unsupported_board_shows_warning_and_unsorted_holds(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            raw = json.dumps({
+                "version": 2,
+                "updated_at": "2026-10-08T10:00:00Z",
+                "items": [board_item(title="Unsupported board item")],
+            })
+            homes, view = self.view(self.make_home(Path(temp), raw=raw))
+            self.assertIsNotNone(view)
+            assert view is not None
+            self.assertEqual(view.status, [])
+            self.assertEqual(view.groups["merge"], [])
+            self.assertIn("kelp-hold", [entry.item.id for entry in view.unsorted])
+            self.assertIn("reef-hold", [entry.item.id for entry in view.unsorted])
+            page = quarterdeck.build_html(homes, "Q")
+            self.assertIn("unsupported version 2", page)
+            self.assertNotIn("Unsupported board item", page)
+            self.assertIn("Not yet sorted", page)
 
     def test_malformed_detail_markdown_warns_and_renders_as_text(self) -> None:
         with tempfile.TemporaryDirectory() as temp:

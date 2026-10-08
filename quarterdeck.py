@@ -1927,6 +1927,7 @@ class CaptainBoard:
     updated_at: datetime | None = None
     items: list[BoardItem] = field(default_factory=list)
     warnings: list[str] = field(default_factory=list)
+    supported: bool = True
 
 
 @dataclass
@@ -1962,8 +1963,11 @@ def parse_captain_board(source: str, path: Path) -> CaptainBoard:
     if not isinstance(data, dict):
         board.warnings.append(f"{name} must contain a JSON object; no board items could be read.")
         return board
-    if data.get("version") != BOARD_VERSION:
-        board.warnings.append(f"{name} has version {data.get('version')!r}, expected {BOARD_VERSION}; reading it anyway.")
+    version = data.get("version")
+    if type(version) is not int or version != BOARD_VERSION:
+        board.supported = False
+        board.warnings.append(f"{name} has unsupported version {version!r}; expected {BOARD_VERSION}; board items were skipped.")
+        return board
     updated = data.get("updated_at")
     if isinstance(updated, str):
         try:
@@ -2095,6 +2099,8 @@ def board_view(homes: list[HomeSnapshot]) -> BoardView | None:
         assert board is not None
         label = home.spec.label
         view.warnings.extend(f"{label}: {warning}" for warning in board.warnings)
+        if not board.supported:
+            continue
         stale = ""
         if board.updated_at is None:
             stale = "its update time is unknown"
@@ -2102,7 +2108,7 @@ def board_view(homes: list[HomeSnapshot]) -> BoardView | None:
             stale = "the backlog changed after the board was last updated"
         view.status.append((label, board.updated_at, stale))
         if home.error:
-            view.warnings.append(f"{label}: the backlog could not be read, so board items were not cross-checked.")
+            view.warnings.append(f"Could not check board items for {label}: the backlog could not be read.")
         for item in board.items:
             if not home.error:
                 target, task_id = home, item.task
@@ -2112,7 +2118,7 @@ def board_view(homes: list[HomeSnapshot]) -> BoardView | None:
                     target, task_id = child, rest
                 if target.error:
                     view.warnings.append(
-                        f"{label}: {item.id} references {item.task}, but that backlog could not be read; the item was not cross-checked."
+                        f"Could not check {item.id}: the backlog could not be read for {target.spec.label}; the item remains visible."
                     )
                 else:
                     referenced.add((id(target), task_id))
@@ -2120,8 +2126,13 @@ def board_view(homes: list[HomeSnapshot]) -> BoardView | None:
                     if backlog_item is None or not needs_captain(backlog_item):
                         view.hidden += 1
                         continue
-                    if item.group == "merge" and not item.links and PR_URL_RE.fullmatch(backlog_item.pr_url or ""):
-                        item = replace(item, links=[("Pull request", backlog_item.pr_url)])
+                    pr_url = backlog_item.pr_url
+                    if (
+                        item.group == "merge"
+                        and PR_URL_RE.fullmatch(pr_url or "")
+                        and not any(url == pr_url for _link_label, url in item.links)
+                    ):
+                        item = replace(item, links=[*item.links, ("Pull request", pr_url)])
             view.groups[item.group].append(BoardEntry(item, label))
     for snapshot in snapshots:
         for backlog_item in items_of(snapshot).values():

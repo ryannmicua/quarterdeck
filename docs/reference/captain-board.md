@@ -33,7 +33,7 @@ board file, the page behaves exactly as it did before the board existed.
 
 | Field | Required | Meaning |
 | --- | --- | --- |
-| `version` | yes | Must be `1`. Another value shows a warning; the file is still read. |
+| `version` | yes | Must be integer `1`. Another value shows a warning and skips the board items. |
 | `updated_at` | yes | ISO 8601 UTC time of the last write. Drives the age and stale flag. |
 | `items[].id` | yes | Stable slug, unique within the file. |
 | `items[].group` | yes | `merge`, `approve`, `decide`, `forward`, or `read`. |
@@ -42,7 +42,7 @@ board file, the page behaves exactly as it did before the board existed.
 | `items[].detail` | no | Short Markdown shown when the item is opened. |
 | `items[].topic` | no | Sub-heading that groups `decide` items. |
 | `items[].task` | yes | Backlog task id used for the cross-check. A `route/id` form names a registered secondmate's task. |
-| `items[].links` | no | List of `{label, url}`; only `http` and `https` URLs are kept. Use it for the pull request or a Lavish page. |
+| `items[].links` | no | List of `{label, url}`; only `http` and `https` URLs are kept. Use it for the pull request or a Lavish page. A merge item's backlog PR link is added if no board link already points to it. |
 
 ## What the page does with it
 
@@ -50,20 +50,24 @@ board file, the page behaves exactly as it did before the board existed.
   Decisions (sub-grouped by `topic`), Questions to forward, Reviews at your
   leisure. Empty groups are omitted. Items are numbered in display order so the
   captain can say a number; tapping an item opens its ask, detail and links.
-- **Cross-check.** Every item must name a `task` and is hidden unless the live
-  backlog still shows that task open and waiting on the captain: a captain hold, a
-  review-ready pull request, or blocked on the captain. A closed, cancelled,
-  released, or unknown task counts as settled. Items without a `task` are
-  invalid and skipped with a visible warning. The page says how many items it hid.
+- **Cross-check.** Every item must name a `task`. A matching readable backlog
+  item remains visible while it needs the captain: a captain hold, a review-ready
+  pull request, or blocked on the captain. A closed, cancelled, released, or
+  unknown task counts as settled. Items without a `task` are invalid and skipped
+  with a visible warning. If the backlog cannot be read, the item remains visible
+  with a prominent warning. The page says how many items it hid.
 - **Not yet sorted.** Open backlog items waiting on the captain that no board
   item references are listed last with their raw hold note, so nothing is lost.
   When the board file is present but unreadable, every such item appears here.
 - **Age and staleness.** The header shows how long ago `updated_at` was, and
   flags the board as possibly out of date when the backlog file changed after
   `updated_at` (or `updated_at` is missing or invalid).
-- **Malformed input.** Valid items still render. A bad file, version, timestamp,
-  item, link, or detail URL produces a visible warning naming the problem;
+- **Malformed input.** Valid items still render. A bad file, timestamp, item,
+  link, or detail URL produces a visible warning naming the problem;
   malformed detail is shown as text and the page never fails because of the board.
+- **Unsupported version.** Board items are skipped with a warning naming the
+  version; captain-gated backlog items from that home still appear under
+  “Not yet sorted.”
 - The reports-to-review list moves below the board in a collapsed section.
   The page reloads itself as before and waits while an item or section is open.
 
