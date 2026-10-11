@@ -2387,7 +2387,7 @@ DESK_LIMIT = 5
 GROUP_RANK = {key: index for index, key in enumerate((*BOARD_GROUP_KEYS, "unsorted"))}
 GROUP_SHORT = {"merge": "Merge", "approve": "Approve", "decide": "Decide", "forward": "Forward", "read": "Read", "unsorted": UNSORTED_TITLE}
 CAPTAIN_NOTE_RE = re.compile(r"\bCaptain (\d{4}-\d{2}-\d{2})\b")
-HOLD_SET_RE = re.compile(r"\bCaptain hold set:\s*(\d{4}-\d{2}-\d{2}T[\d:]+(?:Z|[+-]\d{2}:?\d{2})?)")
+HOLD_SET_RE = re.compile(r"\bCaptain hold set:\s*(\d{4}-\d{2}-\d{2}[T ][^\s]+)")
 DEFERRED_HOLD_RE = re.compile(r"(?i)\b(?:deferred|parked)\b")
 HOLD_DEPENDENCY_RE = re.compile(r"(?i)\b(?:(?:waits|waiting)\s+(?:on|for)|after)\s+(\S+)")
 
@@ -2403,15 +2403,15 @@ def backlog_recency(item: BacklogItem, now: datetime, task_ids: Set[str]) -> tup
         if when.date() <= now.date():
             times.append(when)
     for match in HOLD_SET_RE.finditer(item.raw):
-        when = parse_when(match.group(1))
+        when = parse_board_time(match.group(1))
         if when is not None and when <= now:
             times.append(when)
     for key in ("hold-set", "hold_set"):
-        when = parse_when(item.attrs.get(key, ""))
+        when = parse_board_time(item.attrs.get(key, ""))
         if when is not None and when <= now:
             times.append(when)
     for key in ("hold-until", "hold_until", "until"):
-        until = parse_when(item.attrs.get(key, ""))
+        until = parse_board_time(item.attrs.get(key, ""))
         if until is not None and until > now:
             deferred = f"deferred until {until.date().isoformat()}"
             break

@@ -1536,6 +1536,51 @@ class CaptainBoardTests(unittest.TestCase):
                 self.assertEqual(entries["unlisted-ask"].band, child_band)
                 self.assertEqual(entries["parent-ask"].band, "parked" if dependency_home == "parent" else "desk")
 
+    def test_full_iso_hold_timestamps_determine_recency_and_deferral(self) -> None:
+        now = datetime(2026, 10, 10, 4, tzinfo=timezone.utc)
+        hold_set_cases = [
+            ("2026-10-08T08:00:00.500+08:00", datetime(2026, 10, 8, 0, 0, 0, 500000, tzinfo=timezone.utc), "week"),
+            ("2026-10-08T00:00:00.500-08:00", datetime(2026, 10, 8, 8, 0, 0, 500000, tzinfo=timezone.utc), "desk"),
+            ("2026-10-08T08:00:00.500Z", datetime(2026, 10, 8, 8, 0, 0, 500000, tzinfo=timezone.utc), "desk"),
+            ("2026-10-10T04:00:00.500Z", None, "parked"),
+            ("2026-10-08T08:00:00.500+0800", datetime(2026, 10, 8, 0, 0, 0, 500000, tzinfo=timezone.utc), "week"),
+            ("2026-10-08 08:00:00.500+08:00", datetime(2026, 10, 8, 0, 0, 0, 500000, tzinfo=timezone.utc), "week"),
+        ]
+        hold_until_cases = [
+            ("2026-10-10T08:00:00.500+08:00", now, "desk"),
+            ("2026-10-09T22:00:00.500-08:00", now, "parked"),
+            ("2026-10-10T04:00:00.500Z", now, "parked"),
+        ]
+        for field, cases, formats in (("hold-set", hold_set_cases, ("body", "bullet", "table")),
+                                      ("hold-until", hold_until_cases, ("bullet", "table"))):
+            for value, touched, band in cases:
+                for source_format in formats:
+                    for boarded in (False, True):
+                        with self.subTest(field=field, value=value, source_format=source_format, boarded=boarded), tempfile.TemporaryDirectory() as temp:
+                            home = self.make_home(Path(temp), [board_item(task="chart-ask")] if boarded else [])
+                            if source_format == "table":
+                                backlog = (
+                                    f"| id | title | held | hold_kind | {field.replace('-', '_')} |\n"
+                                    "| --- | --- | --- | --- | --- |\n"
+                                    f"| chart-ask | Chart ask | yes | captain | {value} |\n"
+                                )
+                                if field == "hold-until":
+                                    backlog = backlog.replace("hold_until |", "hold_until | hold_set |").replace(
+                                        "| --- | --- | --- | --- | --- |", "| --- | --- | --- | --- | --- | --- |"
+                                    ).replace(f"| {value} |", f"| {value} | {now.isoformat()} |")
+                            else:
+                                backlog = "- [ ] chart-ask - Chart ask (held: yes) (hold-kind: captain)"
+                                backlog += f" ({field}: {value})\n" if source_format == "bullet" else f"\n  Captain hold set: {value}\n"
+                                if field == "hold-until":
+                                    backlog += f"  Captain hold set: {now.isoformat()}\n"
+                            (home / "data" / "backlog.md").write_text("# Backlog\n\n## Queued\n\n" + backlog, encoding="utf-8")
+                            homes, _ = self.view(home)
+                            view = quarterdeck.board_view(homes, now)
+                            assert view is not None
+                            entry = next(e for entries in view.bands.values() for e in entries if e.item.task == "chart-ask")
+                            self.assertEqual((entry.touched, entry.band), (touched, band))
+                            self.assertEqual(bool(entry.deferred), field == "hold-until" and band == "parked")
+
     def test_project_metadata_survives_backlog_conversion(self) -> None:
         for table in (False, True):
             for boarded in (False, True):
