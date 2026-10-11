@@ -1365,7 +1365,7 @@ def build_html(
 SNAPSHOT_SCRIPT = Path("bin") / "fm-bearings-snapshot.sh"
 SNAPSHOT_TIMEOUT_SECONDS = 15
 ITEM_ATTRIBUTE_RE = re.compile(
-    r"\((?P<key>repo|kind|since|hold-kind|hold|held|merged|done|closed|until|hold-until|priority|pr|"
+    r"\((?P<key>repo|kind|since|hold-kind|hold|held|merged|done|closed|until|hold[-_]until|hold[-_]set|priority|pr|"
     r"state|status|review_ready|blocked[-_]by|waiting[-_](?:on|for))(?::\s*|\s+)", re.I
 )
 BLOCKER_FIELD_RE = re.compile(
@@ -1599,7 +1599,11 @@ def backlog_items(source: str, snapshot: HomeSnapshot) -> list[BacklogItem]:
             id=identifier, title=record.title, state=state,
             body=record.text if record.text != record.title else "", raw=record.text,
             done=is_closed(record),
-            attrs={"merged": merged_date} if merged_date else {},
+            attrs={key: value for key, value in {
+                "merged": merged_date,
+                "hold-until": value_for(record.fields, "hold_until", "hold-until", "until"),
+                "hold-set": value_for(record.fields, "hold_set", "hold-set"),
+            }.items() if value},
             hold_reason=decode_hold_reason(_blank(value_for(record.fields, "hold_reason"))),
             hold_kind=normalized_state(_blank(value_for(record.fields, "hold_kind"))),
             held=value_for(record.fields, "held").lower() in TRUE_VALUES,
@@ -2384,7 +2388,8 @@ GROUP_SHORT = {"merge": "Merge", "approve": "Approve", "decide": "Decide", "forw
 CAPTAIN_NOTE_RE = re.compile(r"\bCaptain (\d{4}-\d{2}-\d{2})\b")
 HOLD_SET_RE = re.compile(r"\bCaptain hold set:\s*(\d{4}-\d{2}-\d{2}T[\d:]+(?:Z|[+-]\d{2}:?\d{2})?)")
 DEFERRED_HOLD_RE = re.compile(
-    r"(?i)\b(?:defer(?:red|s)?|parked)\b|\b(?:waits?|waiting)\s+(?:on|for)\s+[a-z0-9]+(?:-[a-z0-9]+)+\b"
+    r"(?i)\b(?:waits?|waiting)\s+(?:on|for)\s+"
+    r"(?!(?:captain|you|your|me|my|us|our)\b)[a-z0-9][\w.-]*\b"
 )
 
 
@@ -2396,15 +2401,17 @@ def backlog_recency(item: BacklogItem, now: datetime) -> tuple[datetime | None, 
         when = parse_when(match.group(1))
         if when is None:
             continue
-        if when.date() > now.date():
-            deferred = deferred or f"check-in dated {match.group(1)}"
-        else:
+        if when.date() <= now.date():
             times.append(when)
     for match in HOLD_SET_RE.finditer(item.raw):
         when = parse_when(match.group(1))
         if when is not None and when <= now:
             times.append(when)
-    for key in ("hold-until", "until"):
+    for key in ("hold-set", "hold_set"):
+        when = parse_when(item.attrs.get(key, ""))
+        if when is not None and when <= now:
+            times.append(when)
+    for key in ("hold-until", "hold_until", "until"):
         until = parse_when(item.attrs.get(key, ""))
         if until is not None and until > now:
             deferred = f"deferred until {until.date().isoformat()}"
@@ -2431,7 +2438,7 @@ def rank_entry(entry: BoardEntry, backlog_item: BacklogItem | None, now: datetim
         entry.band = "week"
     else:
         entry.band = "parked"
-        entry.sweep = age is None or age > SWEEP_DAYS * 86400
+        entry.sweep = age is not None and age > SWEEP_DAYS * 86400
 
 
 def band_entries(entries: list[BoardEntry]) -> dict[str, list[BoardEntry]]:
@@ -2748,10 +2755,13 @@ def write_board_document(path: Path, data: dict[str, object], now: datetime) -> 
 
 
 def board_items_for(items: list[object], task: str, item_id: str | None) -> list[dict[str, object]]:
-    if item_id:
-        return [raw for raw in items if isinstance(raw, dict) and raw.get("id") == item_id]
-    matches = [raw for raw in items if isinstance(raw, dict) and raw.get("task") == task]
-    return matches or [raw for raw in items if isinstance(raw, dict) and raw.get("id") == task]
+    matches = [
+        raw for raw in items if isinstance(raw, dict)
+        and (raw.get("id") == item_id if item_id else raw.get("task") == task)
+    ]
+    if any(not _board_text(raw.get("id")) for raw in matches):
+        raise ValueError("matched board item has a missing or invalid id; fix it before writing")
+    return matches
 
 
 def touched_value(args: argparse.Namespace, now: datetime) -> str | None:

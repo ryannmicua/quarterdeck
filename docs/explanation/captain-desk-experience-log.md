@@ -53,14 +53,15 @@ Recency bands, documented in the
   five, then "+N more you touched recently".
 - **This week**: touched within 7 days, collapsed, counts per group.
 - **Parked**: older, never touched, or deferred, collapsed, counts per group,
-  with a "keep, defer or drop?" prompt for items untouched for over 14 days.
+  with a "keep, defer or drop?" prompt for items with a known touched time
+  over 14 days ago.
 - Within a band: merge, approve, decide, forward, read, then items not yet on
   the board; newest touched first.
 
 `touched` is the newest of the board's `touched_at`, the latest past captain
 note date, and the hold-set time. Deferral comes from a future `hold-until`
-date, a future-dated captain note (a planned check-in), or a hold note that
-says deferred, parked, or waiting on another task.
+date or a hold note that says it waits on other work. Future Captain-note
+dates are ignored and do not defer an item.
 
 ## What was built (phases 1 and 2)
 

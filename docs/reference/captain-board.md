@@ -67,14 +67,13 @@ touched   = newest of: touched_at,
                        the latest "Captain YYYY-MM-DD" note in the backlog item (future dates ignored),
                        the backlog item's "Captain hold set: <ISO time>"
 deferred  = the backlog item has (hold-until: <date>) in the future,
-            or a "Captain <date>" note dated after today (a planned check-in),
-            or its hold says deferred, parked, or waits on <other-task-id>
+            or its hold says it waits on <other-task-id>
 
 On your desk : touched within 48 hours and not deferred   open, at most 5, then "+N more you touched recently"
 This week    : touched within 7 days and not deferred     collapsed, counts per group
 Parked       : older, never touched, or deferred          collapsed, counts per group
 Within a band: merge > approve > decide > forward > read > not yet sorted, then newest touched first
-Weekly sweep : Parked items untouched for over 14 days (or never) get a "keep, defer or drop?" chip,
+Weekly sweep : Parked items with a known touched time over 14 days ago get a "keep, defer or drop?" chip,
                and the Parked section leads with one line counting them
 ```
 

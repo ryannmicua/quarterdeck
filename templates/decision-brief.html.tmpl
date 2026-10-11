@@ -36,7 +36,7 @@ h1, h2 { font-family: var(--display); font-weight: 600; margin: 0; line-height: 
 h1 { font-size: clamp(1.8rem, 6vw, 2.4rem); } h2 { font-size: 1.35rem; }
 h3 { margin: 0; font-size: 1rem; }
 p { margin: 0; max-width: 65ch; }
-a { color: var(--accent); font-weight: 600; }
+a { color: var(--accent); font-weight: 600; display: inline-flex; align-items: center; min-width: 44px; min-height: 44px; }
 a:focus-visible, button:focus-visible { outline: 3px solid var(--accent); outline-offset: 2px; }
 section { display: flex; flex-direction: column; gap: 14px; }
 .eyebrow { font: 600 .74rem var(--mono); letter-spacing: .08em; text-transform: uppercase; color: var(--muted); }
@@ -59,10 +59,12 @@ section { display: flex; flex-direction: column; gap: 14px; }
 .step.new { border-color: var(--accent); background: var(--accent-soft); }
 .step.removed { border-color: var(--bad); border-style: solid; }
 .arrow { align-self: center; color: var(--muted); font-size: 1.3rem; }
-.arrow.later { opacity: .6; }
+.arrow.later { font-size: 0; width: 32px; border-top: 2px dashed var(--muted); position: relative; }
+.arrow.later::after { content: ""; position: absolute; right: 0; top: -5px; width: 8px; height: 8px; border-top: 2px solid var(--muted); border-right: 2px solid var(--muted); transform: rotate(45deg); }
 .legend { display: flex; flex-wrap: wrap; gap: 16px; font-size: .85rem; color: var(--muted); margin-top: 12px; }
 .legend span { display: inline-flex; gap: 6px; align-items: center; }
 .sw { width: 16px; height: 10px; border-radius: 3px; display: inline-block; border: 1.5px solid var(--line); }
+.sw.later { height: 0; border: 0; border-top: 2px dashed var(--muted); border-radius: 0; }
 .sw.new { border-color: var(--accent); background: var(--accent-soft); } .sw.removed { border-color: var(--bad); }
 /* Ship vs. wait: if-shipped cells left, if-not-shipped cells right. */
 .board { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; }
@@ -84,6 +86,7 @@ footer { font-size: .9rem; color: var(--muted); display: flex; flex-direction: c
   .cell.wait { order: 1; }
   .flow { flex-direction: column; }
   .arrow { transform: rotate(90deg); }
+  .arrow.later { margin: 16px 0; }
 }
 @media print { .answer { position: static; } }
 </style>
@@ -121,7 +124,7 @@ footer { font-size: .9rem; color: var(--muted); display: flex; flex-direction: c
 
   <!-- 2. How it works: one flow, left to right, at most 6 boxes, plain labels.
        .step.new = added by this change, plain .step = already in place, .step.removed = removed,
-       .arrow.later = conditional or later. The aria-label sentence doubles as the spoken summary. -->
+       .arrow.later = a dashed connection for later work. The aria-label sentence doubles as the spoken summary. -->
   <section>
     <span class="eyebrow">How it works</span>
     <h2>{{FLOW_HEADING}}</h2>
@@ -137,6 +140,7 @@ footer { font-size: .9rem; color: var(--muted); display: flex; flex-direction: c
         <span><span class="sw new"></span>added by this change</span>
         <span><span class="sw"></span>already in place</span>
         <span><span class="sw removed"></span>removed</span>
+        <span><span class="sw later"></span>later (dashed)</span>
       </div>
     </div>
   </section>

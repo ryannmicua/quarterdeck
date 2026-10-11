@@ -1341,7 +1341,7 @@ class CaptainBoardTests(unittest.TestCase):
             self.assertEqual(bands["desk"], ["Pier merge", "Approve one", "Decide one", "Read one"])
             self.assertEqual(bands["week"], ["Week one"])
             self.assertEqual(bands["parked"][:2], ["Old one", "Parked one"])
-            self.assertEqual([e.item.title for e in view.bands["parked"] if e.sweep], ["Old one", "Reef hold: choose the buoy colour"])
+            self.assertEqual([e.item.title for e in view.bands["parked"] if e.sweep], ["Old one"])
             numbers = [e.number for key in quarterdeck.BOARD_BAND_KEYS for e in view.bands[key]]
             self.assertEqual(numbers, list(range(1, len(numbers) + 1)))
             page = self.page(homes)
@@ -1350,7 +1350,7 @@ class CaptainBoardTests(unittest.TestCase):
             self.assertIn('<details class="dashboard-section board-band" id="board-week" data-refresh-key="board-band:week">', page)
             self.assertIn('<details class="dashboard-section board-band" id="board-parked" data-refresh-key="board-band:parked">', page)
             self.assertIn("1 forward · 1 read · 1 not yet sorted.", page)
-            self.assertIn("Weekly sweep: 2 parked items untouched for over 14 days. Keep, defer or drop?", page)
+            self.assertIn("Weekly sweep: 1 parked item untouched for over 14 days. Keep, defer or drop?", page)
             self.assertIn('<span class="rec-label">Recommend</span> Approve</span>', page)
             self.assertIn('<a class="brief-link" href="https://example.com/brief/approve">Open brief</a>', page)
             self.assertIn('<span class="chip">harbor-demo</span>', page)
@@ -1420,17 +1420,17 @@ class CaptainBoardTests(unittest.TestCase):
             self.assertEqual(entries["hold-set-task"].band, "desk")
             self.assertEqual(entries["week-task"].band, "week")
             for task, reason in (("until-task", "deferred until 2026-10-20"),
-                                 ("future-task", "check-in dated 2026-10-19"),
                                  ("waits-task", "deferred by its hold note")):
                 self.assertEqual((entries[task].band, entries[task].deferred), ("parked", reason))
                 self.assertFalse(entries[task].sweep)
             self.assertEqual(entries["future-task"].touched, datetime(2026, 10, 8, tzinfo=timezone.utc))
-            self.assertEqual((entries["silent-task"].band, entries["silent-task"].sweep), ("parked", True))
+            self.assertEqual((entries["future-task"].band, entries["future-task"].deferred), ("desk", ""))
+            self.assertEqual((entries["silent-task"].band, entries["silent-task"].sweep), ("parked", False))
             self.assertIn("touched time unknown", self.page(homes))
 
     def test_encoded_hold_reasons_are_decoded_for_display_and_deferral(self) -> None:
-        encoded = "fm-hold-v1:" + base64.b64encode("Deferred (until the chart lands).".encode()).decode()
-        self.assertEqual(quarterdeck.decode_hold_reason(encoded), "Deferred (until the chart lands).")
+        encoded = "fm-hold-v1:" + base64.b64encode("Waits on chart to land.".encode()).decode()
+        self.assertEqual(quarterdeck.decode_hold_reason(encoded), "Waits on chart to land.")
         for raw in ("fm-hold-v1:not base64!", "fm-hold-v1:" + base64.b64encode(b"\xff\xfe").decode(), "plain note"):
             self.assertEqual(quarterdeck.decode_hold_reason(raw), raw)
         with tempfile.TemporaryDirectory() as temp:
@@ -1445,9 +1445,44 @@ class CaptainBoardTests(unittest.TestCase):
             view = quarterdeck.board_view(homes, self.NOW)
             assert view is not None
             entry = view.unsorted[0]
-            self.assertEqual(entry.item.ask, "Deferred (until the chart lands).")
+            self.assertEqual(entry.item.ask, "Waits on chart to land.")
             self.assertEqual((entry.band, entry.deferred), ("parked", "deferred by its hold note"))
             self.assertNotIn("fm-hold-v1:", self.page(homes))
+
+    def test_hold_timing_and_dependencies_across_backlog_formats(self) -> None:
+        cases = [
+            ("hold-until", "2026-10-20", "pick", "parked", datetime(2026, 10, 8, tzinfo=timezone.utc)),
+            ("hold-set", "2026-10-08T08:00:00Z", "pick", "desk", datetime(2026, 10, 8, 8, tzinfo=timezone.utc)),
+            *[("hold-set", "2026-10-08T08:00:00Z", f"waits on {identifier} to land", "parked",
+               datetime(2026, 10, 8, 8, tzinfo=timezone.utc))
+              for identifier in ("chart", "harbor-chart", "harbor_chart", "harbor.chart")],
+            ("hold-set", "2026-10-08T08:00:00Z", "waits on captain to choose", "desk",
+             datetime(2026, 10, 8, 8, tzinfo=timezone.utc)),
+            ("hold-set", "2026-10-08T08:00:00Z", "parked label to approve", "desk",
+             datetime(2026, 10, 8, 8, tzinfo=timezone.utc)),
+        ]
+        for field, value, reason, band, touched in cases:
+            for table in (False, True):
+                for boarded in (False, True):
+                    with self.subTest(field=field, reason=reason, table=table, boarded=boarded), tempfile.TemporaryDirectory() as temp:
+                        home = self.make_home(Path(temp), [board_item(task="chart-ask")] if boarded else [])
+                        title = "Chart ask Captain 2026-10-08" if field == "hold-until" else "Chart ask"
+                        if table:
+                            backlog = (
+                                f"| id | title | held | hold_kind | hold_reason | {field.replace('-', '_')} |\n"
+                                "| --- | --- | --- | --- | --- | --- |\n"
+                                f"| chart-ask | {title} | yes | captain | {reason} | {value} |\n"
+                            )
+                        else:
+                            backlog = f"- [ ] chart-ask - {title} (held: yes) (hold-kind: captain) (hold: {reason}) ({field}: {value})\n"
+                        (home / "data" / "backlog.md").write_text("# Backlog\n\n## Queued\n\n" + backlog, encoding="utf-8")
+                        homes, _ = self.view(home)
+                        view = quarterdeck.board_view(homes, self.NOW)
+                        assert view is not None
+                        entry = next(e for entries in view.bands.values() for e in entries if e.item.task == "chart-ask")
+                        self.assertEqual((entry.band, entry.touched), (band, touched))
+                        if field == "hold-until":
+                            self.assertEqual(entry.deferred, "deferred until 2026-10-20")
 
     def test_new_optional_fields_parse_and_warn(self) -> None:
         board = quarterdeck.parse_captain_board(json.dumps({
@@ -1800,6 +1835,33 @@ class BoardWriterTests(unittest.TestCase):
         code, _, _ = self.cli("upsert", "pier-pr", "--id", "two", "--ask", "Second.")
         self.assertEqual(code, 0)
         self.assertEqual([item["ask"] for item in self.data()["items"]][1], "Second.")
+
+    def test_task_commands_do_not_alias_board_ids(self) -> None:
+        original = json.dumps({"version": 1, "items": [board_item(id="dock-fix", task="reef-fix")]})
+        for args, expected in ((('touch', 'dock-fix'), 1), (('remove', 'dock-fix'), 0),
+                               (('upsert', 'dock-fix', '--ask', 'New ask'), 2)):
+            with self.subTest(args=args):
+                self.board.write_text(original, encoding="utf-8")
+                self.assertEqual(self.cli(*args)[0], expected)
+                self.assertEqual(self.board.read_text(encoding="utf-8"), original)
+        self.assertEqual(self.cli("upsert", "reef-fix", "--id", "dock-fix", "--ask", "Updated ask")[0], 0)
+        self.assertEqual(self.data()["items"][0]["ask"], "Updated ask")
+        self.assertEqual(self.cli("remove", "reef-fix", "--id", "dock-fix")[0], 0)
+        self.assertEqual(self.data()["items"], [])
+
+    def test_matched_items_without_ids_are_rejected_before_writing(self) -> None:
+        for invalid_id in (None, "", "   ", 7):
+            for command in ("touch", "upsert", "remove"):
+                with self.subTest(invalid_id=invalid_id, command=command):
+                    item = {"task": "dock-fix"}
+                    if invalid_id is not None:
+                        item["id"] = invalid_id
+                    original = json.dumps({"version": 1, "items": [board_item(task="dock-fix"), item]})
+                    self.board.write_text(original, encoding="utf-8")
+                    code, _, err = self.cli(command, "dock-fix")
+                    self.assertEqual(code, 2)
+                    self.assertIn("invalid id", err)
+                    self.assertEqual(self.board.read_text(encoding="utf-8"), original)
 
     def test_touch_keeps_the_newer_time_and_reports_missing(self) -> None:
         self.board.write_text(json.dumps({"version": 1, "items": [

@@ -16,9 +16,11 @@ quarterdeck board upsert dock-fix --group merge --title "Dock merge" \
   --brief-url https://example.com/brief/dock --recommendation "Merge"
 ```
 
-A new item needs `--group`, `--title` and `--ask`. The item id defaults to the
-task id; pass `--id` when one task has more than one item. Running `upsert`
-again updates only the options you pass, so this adds a brief later:
+A new item needs `--group`, `--title` and `--ask`. Its id defaults to the task
+id. Commands match the task field only; use explicit `--id` with `upsert` or
+`remove` to select a board item id. `touch` updates every item for the task.
+Running `upsert` again updates only the options you pass, so this adds a brief
+later:
 
 ```sh
 quarterdeck board upsert dock-fix --brief-url https://example.com/brief/dock --recommendation "Merge"

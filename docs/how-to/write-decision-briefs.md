@@ -8,8 +8,8 @@ board then shows the recommendation chip and an **Open brief** button.
 
 The template is [`templates/decision-brief.html.tmpl`](../../templates/decision-brief.html.tmpl).
 It is plain HTML and CSS with no scripts or external requests. It follows the
-system light or dark setting, uses one column below 700px, and keeps tap
-targets at least 44px tall.
+system light or dark setting, uses one column below 700px, and keeps
+link tap targets at least 44px wide and tall.
 
 ## Sections
 
@@ -41,7 +41,8 @@ in section 5 or the footer.
 - One flow per brief, left to right, at most six boxes, plain-language labels.
   Each box has a bold step name and a muted detail line.
 - `.step.new` marks what this change adds, a plain `.step` is already in place,
-  `.step.removed` is removed, and `.arrow.later` is conditional or later.
+  `.step.removed` is removed, and `.arrow.later` draws a dashed connection
+  for later work.
   Keep the legend.
 - Write the `aria-label` as one sentence that says the whole flow. It doubles
   as the spoken summary.
