@@ -51,7 +51,7 @@ board file, Quarterdeck omits the captain board section.
 | `items[].topic` | no | Topic label shown as a chip. |
 | `items[].task` | yes | Backlog task id used for the cross-check. A `route/id` form names a registered secondmate's task. |
 | `items[].links` | no | List of `{label, url}`; only `http` and `https` URLs are kept. Use it for the pull request or a Lavish page. A merge item's backlog PR link is added if no board link already points to it. |
-| `items[].touched_at` | no | ISO 8601 time (UTC recommended; no zone means UTC) the captain last engaged with the item or its project: discussed it, answered, commented on its brief, or asked about it. Drives the ranking below. |
+| `items[].touched_at` | no | ISO 8601 time (UTC recommended; no zone means UTC) Firstmate raised the ask or the captain last engaged with the item or its project: discussed it, answered, commented on its brief, or asked about it. Defines conversation recency and drives the ranking below. |
 | `items[].project` | no | Project name shown as a chip. Defaults to the backlog item's `repo`. |
 | `items[].brief` | no | `{url, recommendation}`. `url` is an http(s) link to the [decision brief](../how-to/write-decision-briefs.md), shown as an **Open brief** button; `recommendation` is one short line shown as a chip. Either may be omitted. |
 
@@ -69,6 +69,7 @@ it holds what was raised or discussed in the current session, and items from
 earlier sessions drop to "This week" or "Parked" until they are touched again.
 
 ```text
+conversation = the board item's touched_at; backlog dates do not establish conversation activity
 touched   = newest of: touched_at,
                        the latest "Captain YYYY-MM-DD" note in the backlog item (future dates ignored),
                        the backlog item's "Captain hold set: <ISO time>"
@@ -82,11 +83,12 @@ deferred  = the backlog item has (hold-until: <date>) in the future,
 
 session      = from the operator record: last message L and session start S (see "Sessions" below)
                the newest record across all shown homes is used, because the operator is one person
-On your desk : with a session: touched at or after S (2 minutes' grace) and not deferred   open, no cap
+On your desk : with a session: conversation at or after S and not deferred   open, no cap
                without one:    touched within 48 hours and not deferred     open, at most 5, then "+N more you touched recently"
 This week    : not on the desk, touched within 7 days and not deferred     collapsed, counts per group
 Parked       : older, never touched, or deferred          collapsed, counts per group
-Within a band: merge > approve > decide > forward > read > not yet sorted, then newest touched first
+Within a band: merge > approve > decide > forward > read > not yet sorted, then newest first
+               session desk uses conversation time; other bands and the legacy desk use touched
 Weekly sweep : Parked items with a known touched time over 14 days ago get a "keep, defer or drop?" chip,
                and the Parked section leads with one line counting them
 ```
@@ -101,11 +103,11 @@ still in that session.
 
 **Active session** (last message 4 hours ago or less). The desk is headed
 "On your desk" and grouped by when each item was raised or engaged
-(its touched time), newest group first:
+(its explicit board conversation time), newest group first:
 
-| Group heading | Touched time |
+| Group heading | Board conversation time |
 | --- | --- |
-| Open items from your last message | at or after the last message (2 minutes' grace) |
+| Open items from your last message | at or after the last message |
 | Still waiting on you from N minutes ago | under 1 hour ago; N is the newest item's age |
 | Open items from an hour ago | 1 to 2 hours ago |
 | Open items from this evening / this afternoon / this morning | earlier today: from 17:00, from 12:00, before 12:00 |
@@ -118,7 +120,7 @@ session bounds the desk, so it is not capped at five.
 
 **Idle** (last message more than 4 hours ago). The page reads like a
 `/bearings` catch-up: the desk is headed "Open items from our last session"
-with every not-deferred item touched since that session began, ungrouped,
+with every not-deferred item with a board conversation touch at or after that session began, ungrouped,
 and "This week" starts open. Parked stays collapsed. The next recorded
 message starts a new session, so items from the last session leave the desk
 until they are touched again.
@@ -130,7 +132,7 @@ Captain-directed asks such as "Waiting on the captain to approve" or "Waiting
 for approval from the captain" do not establish a task dependency.
 
 - Each item shows its group, project, topic, home (when several homes show),
-  how long ago it was touched, any deferral reason, the brief recommendation
+  how long ago it was touched (conversation time on the session desk), any deferral reason, the brief recommendation
   chip, and an **Open brief** button. Tapping an item opens its ask, detail
   and links; nothing is shown only on hover.
 - Items are numbered in display order. Numbers change as the order changes, so

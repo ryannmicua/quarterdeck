@@ -20,9 +20,8 @@ is waiting by that time: asks raised or touched after it are "from your last
 message", earlier ones are "still waiting on you from N minutes ago", and so
 on. A message more than four hours after the previous one starts a new
 session, and the desk then holds only what is raised or touched in it. Pass
-`--new-session` when a new Firstmate chat starts sooner than that, or
-`--at ISO` to record an earlier message; an earlier time never moves the last
-message back. Without these calls the page keeps the 48-hour desk; see the
+`--new-session` when a new Firstmate chat starts sooner than that.
+The command records the current time. Without these calls the page keeps the 48-hour desk; see the
 [board file reference](../reference/captain-board.md#sessions).
 
 So that the desk shows every question Firstmate asks in a session, put each
@@ -55,7 +54,8 @@ the item's links.
 
 `upsert` leaves `touched_at` alone unless you pass `--touch` (now) or
 `--touched-at ISO`, because a new ask is not the captain's attention. Until
-it is touched, backlog dates supply the ranking; see the
+it is touched, backlog dates rank it in the other bands or the legacy desk;
+they never put it on a session desk. See the
 [board file reference](../reference/captain-board.md#what-the-page-does-with-it).
 Pass `--touch` when Firstmate raises the ask in its conversation with the
 captain, so it appears on that session's desk.

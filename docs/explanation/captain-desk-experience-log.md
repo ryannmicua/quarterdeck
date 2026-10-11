@@ -103,8 +103,9 @@ what to focus on next. The page should behave the same way.
   `--new-session` when it knows a new chat started sooner. The same 4 hours is
   the idle threshold, so the "last session" the idle view shows is exactly the
   session the next message would close.
-- **Group boundaries:** last message (with 2 minutes' grace for touches
-  recorded just before the message), under an hour, 1 to 2 hours, then
+- **Conversation boundaries:** only explicit board touches at or after the
+  session start belong to its desk. Group those touches by the exact last
+  message boundary, under an hour, 1 to 2 hours, then
   calendar parts of today in local time (morning before 12:00, afternoon
   before 17:00, evening after), yesterday, and earlier. Clock words like
   "this morning" are what the captain used, so they follow the local clock
@@ -183,7 +184,9 @@ Implementation decisions in this change:
   board's schema is Quarterdeck's, the file is Firstmate's, and the command
   runs only when Firstmate calls it. `render` and `serve` stay read-only.
 - **`upsert` does not mark an item touched by default.** A new ask is not the
-  captain's attention; until it is touched, backlog dates supply the ranking.
+  captain's attention; until it is touched, backlog dates supply the ranking
+  for other bands and the legacy desk. A session desk requires an explicit
+  conversation touch.
 - **Unsorted backlog items are ranked, not listed last.**
 
 ## Recommendation beyond the ask

@@ -3050,12 +3050,6 @@ def board_active(args: argparse.Namespace) -> int:
     """Record an operator message; a gap longer than SESSION_IDLE (or --new-session) starts a new session."""
     now = datetime.now(timezone.utc)
     try:
-        at = now
-        if args.at:
-            parsed = parse_board_time(args.at)
-            if parsed is None:
-                raise ValueError(f"not an ISO 8601 time: {args.at}")
-            at = parsed
         path = board_file_path(args)
         with board_lock(path):
             data = load_board_document(path)
@@ -3063,11 +3057,11 @@ def board_active(args: argparse.Namespace) -> int:
             assert isinstance(operator, dict)
             previous = parse_board_time(operator.get("last_active_at"))
             started = parse_board_time(operator.get("session_started_at"))
-            new_session = args.new_session or previous is None or started is None or at - previous > SESSION_IDLE
-            if previous is None or at > previous:
-                operator["last_active_at"] = board_time_text(at)
+            new_session = args.new_session or previous is None or started is None or now - previous > SESSION_IDLE
+            if previous is None or now > previous:
+                operator["last_active_at"] = board_time_text(now)
             if new_session:
-                operator["session_started_at"] = board_time_text(at)
+                operator["session_started_at"] = board_time_text(now)
             data["operator"] = operator
             write_board_document(path, data, now)
     except (OSError, ValueError) as exc:
@@ -4224,10 +4218,9 @@ def make_parser() -> argparse.ArgumentParser:
         description=(
             "Record the operator's latest message, which groups the desk by session. A gap of more than "
             f"{int(SESSION_IDLE.total_seconds() // 3600)} hours since the previous message, or --new-session, "
-            "starts a new session. An earlier --at never moves the last message back."
+            "starts a new session."
         ),
     )
-    active_parser.add_argument("--at", metavar="ISO", help="message time (default now)")
     active_parser.add_argument("--new-session", action="store_true", help="start a new session at this message")
     board_target(active_parser)
     active_parser.set_defaults(handler=board_active)

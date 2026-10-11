@@ -2215,38 +2215,54 @@ class BoardWriterTests(unittest.TestCase):
     def test_active_records_messages_and_session_starts(self) -> None:
         self.board.write_text(json.dumps({"version": 1, "updated_at": "2026-10-01T00:00:00Z", "items": [board_item()]}),
                               encoding="utf-8")
-        self.assertEqual(self.cli("active", "--at", "2026-10-08T09:00:00Z")[0], 0)
+        with patch("quarterdeck.datetime", wraps=datetime) as clock:
+            clock.now.return_value = datetime(2026, 10, 8, 9, tzinfo=timezone.utc)
+            self.assertEqual(self.cli("active")[0], 0)
         self.assertEqual(self.data()["operator"], {
             "last_active_at": "2026-10-08T09:00:00Z", "session_started_at": "2026-10-08T09:00:00Z",
         })
         self.assertEqual(self.data()["items"], [board_item()])
-        self.cli("active", "--at", "2026-10-08T12:30:00Z")  # within the idle gap: same session
+        with patch("quarterdeck.datetime", wraps=datetime) as clock:
+            clock.now.return_value = datetime(2026, 10, 8, 12, 30, tzinfo=timezone.utc)
+            self.assertEqual(self.cli("active")[0], 0)
         self.assertEqual(self.data()["operator"]["session_started_at"], "2026-10-08T09:00:00Z")
-        self.cli("active", "--at", "2026-10-08T11:00:00Z")  # an earlier message never moves the last one back
         self.assertEqual(self.data()["operator"]["last_active_at"], "2026-10-08T12:30:00Z")
-        code, out, _ = self.cli("active", "--at", "2026-10-08T16:31:00Z")  # gap over four hours: new session
+        with patch("quarterdeck.datetime", wraps=datetime) as clock:
+            clock.now.return_value = datetime(2026, 10, 8, 16, 31, tzinfo=timezone.utc)
+            code, out, _ = self.cli("active")
         self.assertEqual(code, 0)
         self.assertIn("session started 2026-10-08T16:31:00Z", out)
         self.assertEqual(self.data()["operator"], {
             "last_active_at": "2026-10-08T16:31:00Z", "session_started_at": "2026-10-08T16:31:00Z",
         })
-        self.cli("active", "--at", "2026-10-08T16:40:00Z", "--new-session")
+        with patch("quarterdeck.datetime", wraps=datetime) as clock:
+            clock.now.return_value = datetime(2026, 10, 8, 16, 40, tzinfo=timezone.utc)
+            self.assertEqual(self.cli("active", "--new-session")[0], 0)
         self.assertEqual(self.data()["operator"]["session_started_at"], "2026-10-08T16:40:00Z")
         board = quarterdeck.parse_captain_board(self.board.read_text(encoding="utf-8"), self.board)
         self.assertEqual(board.warnings, [])
         self.assertEqual(board.last_active_at, datetime(2026, 10, 8, 16, 40, tzinfo=timezone.utc))
 
-    def test_active_defaults_to_now_and_rejects_bad_times(self) -> None:
-        code, _, err = self.cli("active", "--at", "soon")
-        self.assertEqual(code, 2)
-        self.assertIn("not an ISO 8601 time", err)
-        self.assertFalse(self.board.exists())
+    def test_active_records_current_time(self) -> None:
         before = datetime.now(timezone.utc).replace(microsecond=0)
         self.assertEqual(self.cli("active")[0], 0)
         recorded = quarterdeck.parse_board_time(self.data()["operator"]["last_active_at"])
         assert recorded is not None
         self.assertGreaterEqual(recorded, before)
         self.assertEqual(self.data()["items"], [])
+
+    def test_active_rejects_historical_message_replay_without_writing(self) -> None:
+        original = json.dumps({
+            "version": 1, "items": [board_item(touched_at="2026-10-08T09:30:00Z")],
+            "operator": {"last_active_at": "2026-10-08T11:00:00Z",
+                         "session_started_at": "2026-10-08T10:00:00Z"},
+        })
+        self.board.write_text(original, encoding="utf-8")
+        for options in ((), ("--new-session",)):
+            with self.subTest(options=options), self.assertRaises(SystemExit) as raised:
+                self.cli("active", *options, "--at", "2026-10-08T09:00:00Z")
+            self.assertEqual(raised.exception.code, 2)
+            self.assertEqual(self.board.read_text(encoding="utf-8"), original)
 
     def test_refuses_to_overwrite_unreadable_or_unsupported_board(self) -> None:
         for raw in ("{broken", json.dumps({"version": 2, "items": []}), json.dumps({"version": 1})):
