@@ -28,7 +28,7 @@ import webbrowser
 from collections.abc import Callable, Iterator, Set
 from contextlib import contextmanager
 from dataclasses import dataclass, field, replace
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import unquote, urlparse
@@ -1323,6 +1323,7 @@ def build_html(
     details.board-band[open] > summary h2::before {{ content: "▾ "; }}
     details.board-band > summary:focus-visible, .board-more > summary:focus-visible {{ outline: 3px solid var(--gold); outline-offset: 2px; }}
     .board-more > summary {{ display: flex; align-items: center; min-height: 44px; padding: 0 1rem; cursor: pointer; list-style: none; color: var(--sea); font-weight: 700; border: 1px dashed var(--line); border-radius: 12px; }}
+    .desk-group {{ margin: .9rem 0 .4rem; font-size: .95rem; color: var(--sea); }}
     .sweep {{ margin: .2rem 0 .6rem; padding: .6rem .8rem; border: 1px solid var(--gold); border-radius: 10px; background: var(--warn-bg); color: var(--warn-ink); }}
     .stale {{ color: #ffd48a; }}
     details.reviews > summary {{ display: flex; justify-content: space-between; gap: 1rem; align-items: center; min-height: 3rem; cursor: pointer; list-style: none; }}
@@ -2191,6 +2192,8 @@ class CaptainBoard:
     items: list[BoardItem] = field(default_factory=list)
     warnings: list[str] = field(default_factory=list)
     supported: bool = True
+    last_active_at: datetime | None = None
+    session_started_at: datetime | None = None
 
 
 @dataclass
@@ -2206,6 +2209,14 @@ class BoardEntry:
 
 
 @dataclass
+class DeskSession:
+    """The operator's current (or, when idle, last) session with Firstmate, from `quarterdeck board active`."""
+    last_active: datetime
+    started: datetime
+    idle: bool
+
+
+@dataclass
 class BoardView:
     groups: dict[str, list[BoardEntry]]
     unsorted: list[BoardEntry]
@@ -2214,6 +2225,8 @@ class BoardView:
     status: list[tuple[str, datetime | None, str]]  # (home label, updated_at, stale reason)
     multiple_homes: bool = False
     bands: dict[str, list[BoardEntry]] = field(default_factory=dict)
+    session: DeskSession | None = None
+    desk_groups: list[tuple[str, list[BoardEntry]]] = field(default_factory=list)  # (heading, entries)
 
 
 def _board_text(value: object) -> str | None:
@@ -2263,6 +2276,20 @@ def parse_captain_board(source: str, path: Path) -> CaptainBoard:
     board.updated_at = parse_board_time(data.get("updated_at"))
     if board.updated_at is None:
         board.warnings.append(f"{name} has a missing or invalid updated_at (expected ISO 8601), so its age is unknown.")
+    operator = data.get("operator")
+    if operator is not None:
+        last = parse_board_time(operator.get("last_active_at")) if isinstance(operator, dict) else None
+        if last is None:
+            board.warnings.append(
+                f"{name} operator needs an ISO 8601 last_active_at and was ignored; the desk uses the 48-hour rule."
+            )
+        else:
+            assert isinstance(operator, dict)
+            started = parse_board_time(operator.get("session_started_at"))
+            if started is None and operator.get("session_started_at") is not None:
+                board.warnings.append(f"{name} operator session_started_at must be an ISO 8601 time and was ignored.")
+            board.last_active_at = last
+            board.session_started_at = min(started, last) if started else last
     items = data.get("items")
     if not isinstance(items, list):
         board.warnings.append(f"{name} needs an items list; no board items could be read.")
@@ -2392,6 +2419,8 @@ DESK_HOURS = 48
 WEEK_DAYS = 7
 SWEEP_DAYS = 14
 DESK_LIMIT = 5
+SESSION_IDLE = timedelta(hours=4)  # a longer gap between operator messages ends the session
+LAST_MESSAGE_GRACE = timedelta(minutes=2)  # touches just before a recorded message still belong to it
 GROUP_RANK = {key: index for index, key in enumerate((*BOARD_GROUP_KEYS, "unsorted"))}
 GROUP_SHORT = {"merge": "Merge", "approve": "Approve", "decide": "Decide", "forward": "Forward", "read": "Read", "unsorted": UNSORTED_TITLE}
 CAPTAIN_NOTE_RE = re.compile(r"\bCaptain (\d{4}-\d{2}-\d{2})\b")
@@ -2444,8 +2473,15 @@ def backlog_recency(item: BacklogItem, now: datetime, task_ids: Set[str]) -> tup
     return (max(times) if times else None), deferred
 
 
-def rank_entry(entry: BoardEntry, backlog_item: BacklogItem | None, now: datetime, task_ids: Set[str]) -> None:
-    """Set the entry's touched time, deferral, band, and sweep flag from the board and backlog."""
+def rank_entry(
+    entry: BoardEntry, backlog_item: BacklogItem | None, now: datetime, task_ids: Set[str],
+    session: DeskSession | None = None,
+) -> None:
+    """Set the entry's touched time, deferral, band, and sweep flag from the board and backlog.
+
+    With a recorded operator session the desk holds what was raised or engaged in that session;
+    without one it falls back to the 48-hour rule.
+    """
     times = [entry.item.touched_at] if entry.item.touched_at else []
     if backlog_item is not None:
         fallback, entry.deferred = backlog_recency(backlog_item, now, task_ids)
@@ -2455,13 +2491,66 @@ def rank_entry(entry: BoardEntry, backlog_item: BacklogItem | None, now: datetim
             entry.item = replace(entry.item, project=backlog_item.project)
     entry.touched = min(max(times), now) if times else None
     age = (now - entry.touched).total_seconds() if entry.touched else None
-    if age is not None and not entry.deferred and age <= DESK_HOURS * 3600:
+    if session is not None:
+        on_desk = entry.touched is not None and entry.touched >= session.started - LAST_MESSAGE_GRACE
+    else:
+        on_desk = age is not None and age <= DESK_HOURS * 3600
+    if on_desk and not entry.deferred:
         entry.band = "desk"
     elif age is not None and not entry.deferred and age <= WEEK_DAYS * 86400:
         entry.band = "week"
     else:
         entry.band = "parked"
         entry.sweep = age is not None and age > SWEEP_DAYS * 86400
+
+
+def desk_session(boards: list[CaptainBoard], now: datetime) -> DeskSession | None:
+    """The newest operator activity any board records; the operator is one person across homes."""
+    recorded = [board for board in boards if board.supported and board.last_active_at is not None]
+    if not recorded:
+        return None
+    board = max(recorded, key=lambda b: b.last_active_at)  # type: ignore[arg-type,return-value]
+    assert board.last_active_at is not None and board.session_started_at is not None
+    last = min(board.last_active_at, now)
+    return DeskSession(last, min(board.session_started_at, last), now - last > SESSION_IDLE)
+
+
+def desk_bucket(touched: datetime, session: DeskSession, now: datetime) -> tuple[int, str]:
+    """Rank and heading for a desk item, by when it was raised relative to the operator's messages."""
+    if touched >= session.last_active - LAST_MESSAGE_GRACE:
+        return 0, "Open items from your last message"
+    age = now - touched
+    if age < timedelta(hours=1):
+        return 1, ""  # "Still waiting on you from N minutes ago", worded from the group's newest item
+    if age < timedelta(hours=2):
+        return 2, "Open items from an hour ago"
+    local_touched, local_now = touched.astimezone(), now.astimezone()
+    days = (local_now.date() - local_touched.date()).days
+    if days <= 0:
+        hour = local_touched.hour
+        part, rank = ("morning", 5) if hour < 12 else ("afternoon", 4) if hour < 17 else ("evening", 3)
+        return rank, f"Open items from this {part}"
+    if days == 1:
+        return 6, "Open items from yesterday"
+    return 7, "Open items from earlier this session"
+
+
+def desk_groups(entries: list[BoardEntry], session: DeskSession | None, now: datetime) -> list[tuple[str, list[BoardEntry]]]:
+    """Split the desk band into headed groups: one for the 48-hour rule or an idle session, else by message recency."""
+    if session is None or session.idle:
+        return [("", entries)] if entries else []
+    buckets: dict[tuple[int, str], list[BoardEntry]] = {}
+    for entry in entries:
+        assert entry.touched is not None
+        buckets.setdefault(desk_bucket(entry.touched, session, now), []).append(entry)
+    groups = []
+    for (_rank, heading), members in sorted(buckets.items()):
+        if not heading:
+            newest = max(e.touched for e in members if e.touched is not None)
+            minutes = max(1, int((now - newest).total_seconds() // 60))
+            heading = f"Still waiting on you from {minutes} minute{'s' if minutes != 1 else ''} ago"
+        groups.append((heading, members))
+    return groups
 
 
 def band_entries(entries: list[BoardEntry]) -> dict[str, list[BoardEntry]]:
@@ -2482,6 +2571,7 @@ def board_view(homes: list[HomeSnapshot], now: datetime | None = None) -> BoardV
     if not boarded:
         return None
     view = BoardView({key: [] for key in BOARD_GROUP_KEYS}, [], 0, [], [])
+    view.session = session = desk_session([home.board for home in boarded if home.board is not None], now)
     cache: dict[int, dict[str, BacklogItem]] = {}
 
     def items_of(snapshot: HomeSnapshot) -> dict[str, BacklogItem]:
@@ -2533,7 +2623,7 @@ def board_view(homes: list[HomeSnapshot], now: datetime | None = None) -> BoardV
                     ):
                         item = replace(item, links=[*item.links, ("Pull request", pr_url)])
             entry = BoardEntry(item, label, refresh_key=f"{board.path}:{item.id}")
-            rank_entry(entry, backlog_item, now, items_of(target).keys())
+            rank_entry(entry, backlog_item, now, items_of(target).keys(), session)
             view.groups[item.group].append(entry)
     for snapshot in snapshots:
         for backlog_item in items_of(snapshot).values():
@@ -2547,10 +2637,12 @@ def board_view(homes: list[HomeSnapshot], now: datetime | None = None) -> BoardV
                 ), snapshot.spec.label,
                 refresh_key=f"{snapshot.backlog_path}:{backlog_item.id}",
             )
-            rank_entry(entry, backlog_item, now, items_of(snapshot).keys())
+            rank_entry(entry, backlog_item, now, items_of(snapshot).keys(), session)
             view.unsorted.append(entry)
     view.multiple_homes = len({entry.home for entries in view.groups.values() for entry in entries} | {e.home for e in view.unsorted}) > 1
     view.bands = band_entries([*(e for key in BOARD_GROUP_KEYS for e in view.groups[key]), *view.unsorted])
+    view.desk_groups = desk_groups(view.bands["desk"], session, now)
+    view.bands["desk"] = [entry for _heading, entries in view.desk_groups for entry in entries]
     number = 0
     for band in BOARD_BAND_KEYS:
         for entry in view.bands[band]:
@@ -2651,6 +2743,36 @@ def band_counts(entries: list[BoardEntry]) -> str:
     )
 
 
+def session_desk_html(view: BoardView, now: datetime, show_home: bool) -> str:
+    """The desk for a recorded operator session: grouped by message recency, or the last session when idle."""
+    session = view.session
+    assert session is not None
+    entries = view.bands["desk"]
+    if session.idle:
+        title = "Open items from our last session"
+        description = (
+            f"Your last message to Firstmate was {elapsed_text(session.last_active, now)} ago. "
+            "Everything else still open follows."
+        )
+        empty = "Nothing from our last session is still waiting on you. Earlier work is below."
+    else:
+        title = "On your desk"
+        description = f"Raised or discussed in this session with Firstmate, which began {elapsed_text(session.started, now)} ago."
+        empty = "Nothing from this session is waiting on you. Earlier work is below."
+    head = (
+        f'<div class="section-head"><div><h2>{html.escape(title)}</h2><p>{html.escape(description)}</p></div>'
+        f'<span class="count">{len(entries)}</span></div>'
+    )
+    body = []
+    for heading, members in view.desk_groups:
+        if heading:
+            body.append(f'<h3 class="desk-group">{html.escape(heading)}</h3>')
+        body.extend(board_entry_html(entry, show_home, now) for entry in members)
+    if not entries:
+        body.append(f'<p class="empty">{html.escape(empty)}</p>')
+    return f'<div class="dashboard-section board-band" id="board-desk">{head}{"".join(body)}</div>'
+
+
 def board_html(view: BoardView, now: datetime, show_all: bool = False) -> str:
     out = ['<section class="board" id="board" aria-label="Waiting on you">']
     out.extend(f'<div class="warning"><p>{html.escape(warning)}</p></div>' for warning in view.warnings)
@@ -2669,6 +2791,9 @@ def board_html(view: BoardView, now: datetime, show_all: bool = False) -> str:
             f'<p>{html.escape(description)}{" " + html.escape(counts) + "." if counts and key != "desk" else ""}</p></div>'
             f'<span class="count">{len(entries)}</span></div>'
         )
+        if key == "desk" and view.session is not None:
+            out.append(session_desk_html(view, now, show_home))
+            continue
         if key == "desk":
             shown = entries if show_all else entries[:DESK_LIMIT]
             more = [] if show_all else entries[DESK_LIMIT:]
@@ -2690,9 +2815,11 @@ def board_html(view: BoardView, now: datetime, show_all: bool = False) -> str:
             f'<p class="sweep">Weekly sweep: {sweep} parked item{"s" if sweep != 1 else ""} untouched for over '
             f"{SWEEP_DAYS} days. Keep, defer or drop?</p>"
         ) if sweep else ""
+        # After a long idle gap the page reads like a catch-up digest, so This week starts open.
+        start_open = show_all or (key == "week" and view.session is not None and view.session.idle)
         out.append(
             f'<details class="dashboard-section board-band" id="board-{key}" data-refresh-key="board-band:{key}"'
-            f'{" open" if show_all else ""}><summary>{head}</summary>{sweep_line}'
+            f'{" open" if start_open else ""}><summary>{head}</summary>{sweep_line}'
             f'{"".join(board_entry_html(entry, show_home, now) for entry in entries)}</details>'
         )
     out.append("</section>")
@@ -2914,6 +3041,37 @@ def board_touch(args: argparse.Namespace) -> int:
         print(f"quarterdeck: {exc}", file=sys.stderr)
         return 2
     print(f"touched {', '.join(str(raw['id']) for raw in matches)} at {stamp}")
+    return 0
+
+
+def board_active(args: argparse.Namespace) -> int:
+    """Record an operator message; a gap longer than SESSION_IDLE (or --new-session) starts a new session."""
+    now = datetime.now(timezone.utc)
+    try:
+        at = now
+        if args.at:
+            parsed = parse_board_time(args.at)
+            if parsed is None:
+                raise ValueError(f"not an ISO 8601 time: {args.at}")
+            at = parsed
+        path = board_file_path(args)
+        with board_lock(path):
+            data = load_board_document(path)
+            operator = data.get("operator") if isinstance(data.get("operator"), dict) else {}
+            assert isinstance(operator, dict)
+            previous = parse_board_time(operator.get("last_active_at"))
+            started = parse_board_time(operator.get("session_started_at"))
+            new_session = args.new_session or previous is None or started is None or at - previous > SESSION_IDLE
+            if previous is None or at > previous:
+                operator["last_active_at"] = board_time_text(at)
+            if new_session:
+                operator["session_started_at"] = board_time_text(at)
+            data["operator"] = operator
+            write_board_document(path, data, now)
+    except (OSError, ValueError) as exc:
+        print(f"quarterdeck: {exc}", file=sys.stderr)
+        return 2
+    print(f"operator active at {operator['last_active_at']}; session started {operator['session_started_at']}")
     return 0
 
 
@@ -4010,7 +4168,7 @@ def make_parser() -> argparse.ArgumentParser:
     remove_parser.set_defaults(handler=remove_home)
 
     board_parser = subparsers.add_parser(
-        "board", help="add, touch, remove, or list captain board items",
+        "board", help="add, touch, remove, or list captain board items, or record operator activity",
         description=(
             "Keep a home's captain board current by task id. Writes only <data>/captain-board.json, atomically "
             "and under a lock, and refuses to overwrite a board it cannot read. render and serve stay read-only."
@@ -4058,6 +4216,19 @@ def make_parser() -> argparse.ArgumentParser:
     touch_parser.add_argument("--at", metavar="ISO", help="engagement time (default now)")
     board_target(touch_parser)
     touch_parser.set_defaults(handler=board_touch)
+
+    active_parser = board_subparsers.add_parser(
+        "active", help="record that the operator sent a message now",
+        description=(
+            "Record the operator's latest message, which groups the desk by session. A gap of more than "
+            f"{int(SESSION_IDLE.total_seconds() // 3600)} hours since the previous message, or --new-session, "
+            "starts a new session. An earlier --at never moves the last message back."
+        ),
+    )
+    active_parser.add_argument("--at", metavar="ISO", help="message time (default now)")
+    active_parser.add_argument("--new-session", action="store_true", help="start a new session at this message")
+    board_target(active_parser)
+    active_parser.set_defaults(handler=board_active)
 
     board_remove_parser = board_subparsers.add_parser(
         "remove", help="remove the items for a task",

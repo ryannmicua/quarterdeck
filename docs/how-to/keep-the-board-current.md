@@ -3,8 +3,31 @@
 The board only helps when it matches what the captain is working on. Hand-edited
 JSON went stale, so Quarterdeck ships a small writer that Firstmate calls on
 each change. `upsert`, `touch`, and `remove` take the backlog task id;
-`list` reads the board. See the [CLI reference](../reference/cli-and-config.md)
+`active` records operator messages; `list` reads the board. See the [CLI reference](../reference/cli-and-config.md)
 for command syntax and home selection.
+
+## When the captain sends a message
+
+Run this first, before any `touch` or `upsert` for that turn, each time the
+captain sends Firstmate a message or comments on a watched brief:
+
+```sh
+quarterdeck board active
+```
+
+It records the message time as `operator.last_active_at`. The desk groups what
+is waiting by that time: asks raised or touched after it are "from your last
+message", earlier ones are "still waiting on you from N minutes ago", and so
+on. A message more than four hours after the previous one starts a new
+session, and the desk then holds only what is raised or touched in it. Pass
+`--new-session` when a new Firstmate chat starts sooner than that, or
+`--at ISO` to record an earlier message; an earlier time never moves the last
+message back. Without these calls the page keeps the 48-hour desk; see the
+[board file reference](../reference/captain-board.md#sessions).
+
+So that the desk shows every question Firstmate asks in a session, put each
+ask on the board in the same turn with `upsert ... --touch`, and `touch` items
+the captain picks from `/bearings` so they return to the desk.
 
 ## When something starts waiting on the captain
 
@@ -34,6 +57,8 @@ the item's links.
 `--touched-at ISO`, because a new ask is not the captain's attention. Until
 it is touched, backlog dates supply the ranking; see the
 [board file reference](../reference/captain-board.md#what-the-page-does-with-it).
+Pass `--touch` when Firstmate raises the ask in its conversation with the
+captain, so it appears on that session's desk.
 
 ## When the captain engages with it
 

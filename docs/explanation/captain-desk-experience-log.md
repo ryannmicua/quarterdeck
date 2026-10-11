@@ -68,6 +68,57 @@ owns the timestamp fallbacks, deferral rules, ordering, and weekly sweep.
   ([Keep the captain board current](../how-to/keep-the-board-current.md)).
 - Decoding of Firstmate's encoded hold notes for display and deferral.
 
+## Session-scoped desk (2026-10-11)
+
+**What went wrong with the 48-hour desk.** The desk still did not match the
+conversation. Items from yesterday's session crowded it, while a question
+Firstmate had asked minutes earlier in chat was missing until it was put on
+the board. The captain likes that, within a session, work they do not bring up
+fades from attention; `/bearings` then resurfaces everything so they can choose
+what to focus on next. The page should behave the same way.
+
+**What changed.**
+
+- A new, smallest-possible signal: `quarterdeck board active` records each
+  operator message in the board file (`operator.last_active_at`, plus the
+  session's first message in `session_started_at`). It writes only the board
+  file, like the other writer commands; Quarterdeck still reads no chat
+  transcripts and nothing outside the home.
+- With that record, the desk holds what was raised or engaged in the current
+  session, grouped by when relative to the captain's messages: "Open items from
+  your last message", "Still waiting on you from N minutes ago", "from an hour
+  ago", "from this morning" (or afternoon, evening), "from yesterday". Items
+  from earlier sessions drop to "This week" or "Parked"; nothing is lost.
+- After 4 hours with no message the page turns into a bearings-style view:
+  "Open items from our last session", then the rest with "This week" open.
+- Boards without the record keep the 48-hour rule, so nothing changes until
+  Firstmate starts calling `board active`.
+
+**Choices and why.**
+
+- **Session boundary: a gap of more than 4 hours between messages**, or an
+  explicit `--new-session`. Quarterdeck cannot see when a chat starts, so the
+  gap is the signal; 4 hours keeps a lunch break or a long meeting inside one
+  session while an overnight or half-day break ends it. Firstmate passes
+  `--new-session` when it knows a new chat started sooner. The same 4 hours is
+  the idle threshold, so the "last session" the idle view shows is exactly the
+  session the next message would close.
+- **Group boundaries:** last message (with 2 minutes' grace for touches
+  recorded just before the message), under an hour, 1 to 2 hours, then
+  calendar parts of today in local time (morning before 12:00, afternoon
+  before 17:00, evening after), yesterday, and earlier. Clock words like
+  "this morning" are what the captain used, so they follow the local clock
+  rather than a fixed number of hours.
+- **No five-item cap on a session desk.** The cap existed because 48 hours
+  gathered too much; a session already bounds the desk, and capping would
+  hide asks from the latest message.
+- **One operator across homes.** The newest record among the shown homes'
+  boards defines the session for every item.
+
+**Still depends on Firstmate.** The desk is only as current as the
+`board active`, `upsert --touch` and `touch` calls Firstmate makes; see
+[Keep the captain board current](../how-to/keep-the-board-current.md#when-the-captain-sends-a-message).
+
 ## Results
 
 - **First dry run (backlog fallbacks only, no `touched_at` written yet).** On
@@ -121,6 +172,11 @@ Accepted on 2026-10-11, as recommended by the scout report:
 7. **Tap-to-answer.** Pilot on one merge brief.
 8. **Large touch display.** Not now.
 
+Accepted on 2026-10-11, superseding decision 3: when operator activity is
+recorded, "On your desk" is the current session with Firstmate, grouped by
+message recency (see "Session-scoped desk" above); the 48-hour rule remains
+the fallback for boards without that record.
+
 Implementation decisions in this change:
 
 - **The writer lives in Quarterdeck and writes only the board file.** The
@@ -155,8 +211,12 @@ built here.
 - **Automatic touches and board writes from Firstmate's hold helpers** (see
   the recommendation above).
 - **Backfill** `brief` and `project` on existing board items.
-- **Measure** desk accuracy after a week of `touched_at` writes and adjust the
-  48-hour and 7-day windows if needed.
+- **Measure** desk accuracy after a week of `touched_at` and `board active`
+  writes, and adjust the 4-hour session gap, the group boundaries, and the
+  7-day window if needed.
+- **Firstmate calls** `quarterdeck board active` on each operator message and
+  `upsert --touch` for each ask it raises; that is a Firstmate change, outside
+  this repository.
 - A wall-display view was deferred with decision 8.
 - The "Details by home" cards below the board show raw backlog lines and can
   overflow a phone's width when a line holds a long unbroken string, such as

@@ -15,7 +15,7 @@ import tempfile
 import threading
 import time
 import unittest
-from contextlib import redirect_stderr, redirect_stdout
+from contextlib import contextmanager, redirect_stderr, redirect_stdout
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from unittest.mock import patch
@@ -1387,6 +1387,130 @@ class CaptainBoardTests(unittest.TestCase):
             homes, _ = self.view(self.make_home(Path(temp), [board_item(touched_at=self.ago(days=3))]))
             self.assertIn("Nothing touched in the last 2 days.", self.page(homes))
 
+    @contextmanager
+    def local_zone(self, zone: str):
+        try:
+            with patch.dict(os.environ, {"TZ": zone}):
+                time.tzset()
+                yield
+        finally:
+            time.tzset()
+
+    def operator(self, last: str, started: str) -> dict[str, object]:
+        return {"operator": {"last_active_at": last, "session_started_at": started}}
+
+    def test_session_desk_groups_by_message_recency(self) -> None:
+        with tempfile.TemporaryDirectory() as temp, self.local_zone("UTC"):
+            home = self.make_home(Path(temp), [
+                board_item(id="y", group="decide", title="Yesterday one", task="kelp-hold", touched_at=self.ago(hours=15)),
+                board_item(id="h", group="decide", title="Hour one", task="kelp-hold", touched_at=self.ago(minutes=80)),
+                board_item(id="f", group="read", title="Fresh one", task="kelp-hold", touched_at=self.ago(minutes=3)),
+                board_item(id="b", group="decide", title="Before session", task="kelp-hold", touched_at=self.ago(hours=17)),
+                board_item(id="n", group="decide", title="Minutes one", task="kelp-hold", touched_at=self.ago(minutes=20)),
+                board_item(id="o", group="decide", title="Morning one", task="kelp-hold", touched_at=self.ago(hours=4)),
+                board_item(id="m", touched_at=self.ago(minutes=6)),
+            ], **self.operator(self.ago(minutes=5), self.ago(hours=16)))
+            homes, _ = self.view(home)
+            view = quarterdeck.board_view(homes, self.NOW)
+            assert view is not None and view.session is not None
+            self.assertFalse(view.session.idle)
+            self.assertEqual(
+                [(heading, [e.item.title for e in entries]) for heading, entries in view.desk_groups],
+                [
+                    ("Open items from your last message", ["Pier merge", "Fresh one"]),
+                    ("Still waiting on you from 20 minutes ago", ["Minutes one"]),
+                    ("Open items from an hour ago", ["Hour one"]),
+                    ("Open items from this morning", ["Morning one"]),
+                    ("Open items from yesterday", ["Yesterday one"]),
+                ],
+            )
+            self.assertEqual([e.item.title for e in view.bands["week"]], ["Before session"])
+            numbers = [e.number for key in quarterdeck.BOARD_BAND_KEYS for e in view.bands[key]]
+            self.assertEqual(numbers, list(range(1, len(numbers) + 1)))
+            self.assertEqual([e.item.title for e in view.bands["desk"]][:2], ["Pier merge", "Fresh one"])
+            page = self.page(homes)
+            desk = page[page.index('id="board-desk"'):page.index('id="board-week"')]
+            self.assertIn("Raised or discussed in this session with Firstmate, which began 16 hours ago.", desk)
+            headings = [desk.index(f'<h3 class="desk-group">{heading}</h3>') for heading, _ in view.desk_groups]
+            self.assertEqual(headings, sorted(headings))
+            self.assertNotIn("more you touched recently", desk)
+            self.assertIn('id="board-week" data-refresh-key="board-band:week">', page)
+
+    def test_day_parts_follow_local_time(self) -> None:
+        session = quarterdeck.DeskSession(self.NOW, self.NOW - timedelta(days=3), False)
+        with self.local_zone("Asia/Manila"):  # NOW is 20:00 local
+            self.assertEqual(quarterdeck.desk_bucket(self.NOW - timedelta(hours=3), session, self.NOW)[1],
+                             "Open items from this evening")
+            self.assertEqual(quarterdeck.desk_bucket(self.NOW - timedelta(hours=5), session, self.NOW)[1],
+                             "Open items from this afternoon")
+            self.assertEqual(quarterdeck.desk_bucket(self.NOW - timedelta(hours=13), session, self.NOW)[1],
+                             "Open items from this morning")
+            self.assertEqual(quarterdeck.desk_bucket(self.NOW - timedelta(hours=21), session, self.NOW)[1],
+                             "Open items from yesterday")
+            self.assertEqual(quarterdeck.desk_bucket(self.NOW - timedelta(hours=50), session, self.NOW)[1],
+                             "Open items from earlier this session")
+
+    def test_idle_desk_leads_with_last_session_then_everything_else(self) -> None:
+        with tempfile.TemporaryDirectory() as temp, self.local_zone("UTC"):
+            home = self.make_home(Path(temp), [
+                board_item(id="s", group="decide", title="Session one", task="kelp-hold", touched_at=self.ago(hours=7)),
+                board_item(id="m", touched_at=self.ago(hours=5)),
+                board_item(id="w", group="decide", title="Earlier one", task="kelp-hold", touched_at=self.ago(hours=9)),
+            ], **self.operator(self.ago(hours=6), self.ago(hours=8)))
+            homes, _ = self.view(home)
+            view = quarterdeck.board_view(homes, self.NOW)
+            assert view is not None and view.session is not None
+            self.assertTrue(view.session.idle)
+            self.assertEqual([e.item.title for e in view.bands["desk"]], ["Pier merge", "Session one"])
+            self.assertEqual([e.item.title for e in view.bands["week"]], ["Earlier one"])
+            page = self.page(homes)
+            self.assertIn("<h2>Open items from our last session</h2>", page)
+            self.assertIn("Your last message to Firstmate was 6 hours ago.", page)
+            self.assertNotIn('class="desk-group"', page)
+            self.assertIn('id="board-week" data-refresh-key="board-band:week" open>', page)
+            self.assertIn('id="board-parked" data-refresh-key="board-band:parked">', page)
+
+    def test_new_session_leaves_earlier_work_off_the_desk(self) -> None:
+        with tempfile.TemporaryDirectory() as temp, self.local_zone("UTC"):
+            home = self.make_home(Path(temp), [board_item(touched_at=self.ago(hours=20))],
+                                  **self.operator(self.ago(minutes=1), self.ago(minutes=1)))
+            homes, _ = self.view(home)
+            view = quarterdeck.board_view(homes, self.NOW)
+            assert view is not None
+            self.assertEqual(view.bands["desk"], [])
+            self.assertEqual([e.item.title for e in view.bands["week"]], ["Pier merge"])
+            self.assertIn("Nothing from this session is waiting on you. Earlier work is below.", self.page(homes))
+
+    def test_newest_operator_activity_across_homes_wins(self) -> None:
+        older = quarterdeck.CaptainBoard(Path("a"), last_active_at=self.NOW - timedelta(hours=9),
+                                         session_started_at=self.NOW - timedelta(hours=10))
+        newer = quarterdeck.CaptainBoard(Path("b"), last_active_at=self.NOW + timedelta(hours=1),
+                                         session_started_at=self.NOW - timedelta(hours=1))
+        session = quarterdeck.desk_session([older, newer, quarterdeck.CaptainBoard(Path("c"))], self.NOW)
+        self.assertEqual(session, quarterdeck.DeskSession(self.NOW, self.NOW - timedelta(hours=1), False))
+        self.assertIsNone(quarterdeck.desk_session([quarterdeck.CaptainBoard(Path("c"))], self.NOW))
+
+    def test_invalid_operator_record_warns_and_uses_48_hour_rule(self) -> None:
+        for operator in ("soon", {"last_active_at": "soon"}, {}):
+            board = quarterdeck.parse_captain_board(
+                json.dumps({"version": 1, "updated_at": "2026-10-08T00:00:00Z", "items": [], "operator": operator}), Path("b"),
+            )
+            self.assertIsNone(board.last_active_at, operator)
+            self.assertTrue(any("operator needs an ISO 8601 last_active_at" in w for w in board.warnings), operator)
+        board = quarterdeck.parse_captain_board(json.dumps({
+            "version": 1, "updated_at": "2026-10-08T00:00:00Z", "items": [],
+            "operator": {"last_active_at": "2026-10-08T10:00:00Z", "session_started_at": "later"},
+        }), Path("b"))
+        self.assertEqual(board.session_started_at, board.last_active_at)
+        self.assertTrue(any("session_started_at must be an ISO 8601 time" in w for w in board.warnings))
+        with tempfile.TemporaryDirectory() as temp:
+            home = self.make_home(Path(temp), [board_item(touched_at=self.ago(hours=20))], operator="soon")
+            homes, _ = self.view(home)
+            view = quarterdeck.board_view(homes, self.NOW)
+            assert view is not None
+            self.assertIsNone(view.session)
+            self.assertEqual([e.item.title for e in view.bands["desk"]], ["Pier merge"])
+
     def test_backlog_fallbacks_for_touched_time_deferral_and_project(self) -> None:
         with tempfile.TemporaryDirectory() as temp:
             home = self.make_home(Path(temp), [
@@ -2044,10 +2168,46 @@ class BoardWriterTests(unittest.TestCase):
             self.assertTrue(err, args)
             self.assertFalse(self.board.exists(), args)
 
+    def test_active_records_messages_and_session_starts(self) -> None:
+        self.board.write_text(json.dumps({"version": 1, "updated_at": "2026-10-01T00:00:00Z", "items": [board_item()]}),
+                              encoding="utf-8")
+        self.assertEqual(self.cli("active", "--at", "2026-10-08T09:00:00Z")[0], 0)
+        self.assertEqual(self.data()["operator"], {
+            "last_active_at": "2026-10-08T09:00:00Z", "session_started_at": "2026-10-08T09:00:00Z",
+        })
+        self.assertEqual(self.data()["items"], [board_item()])
+        self.cli("active", "--at", "2026-10-08T12:30:00Z")  # within the idle gap: same session
+        self.assertEqual(self.data()["operator"]["session_started_at"], "2026-10-08T09:00:00Z")
+        self.cli("active", "--at", "2026-10-08T11:00:00Z")  # an earlier message never moves the last one back
+        self.assertEqual(self.data()["operator"]["last_active_at"], "2026-10-08T12:30:00Z")
+        code, out, _ = self.cli("active", "--at", "2026-10-08T16:31:00Z")  # gap over four hours: new session
+        self.assertEqual(code, 0)
+        self.assertIn("session started 2026-10-08T16:31:00Z", out)
+        self.assertEqual(self.data()["operator"], {
+            "last_active_at": "2026-10-08T16:31:00Z", "session_started_at": "2026-10-08T16:31:00Z",
+        })
+        self.cli("active", "--at", "2026-10-08T16:40:00Z", "--new-session")
+        self.assertEqual(self.data()["operator"]["session_started_at"], "2026-10-08T16:40:00Z")
+        board = quarterdeck.parse_captain_board(self.board.read_text(encoding="utf-8"), self.board)
+        self.assertEqual(board.warnings, [])
+        self.assertEqual(board.last_active_at, datetime(2026, 10, 8, 16, 40, tzinfo=timezone.utc))
+
+    def test_active_defaults_to_now_and_rejects_bad_times(self) -> None:
+        code, _, err = self.cli("active", "--at", "soon")
+        self.assertEqual(code, 2)
+        self.assertIn("not an ISO 8601 time", err)
+        self.assertFalse(self.board.exists())
+        before = datetime.now(timezone.utc).replace(microsecond=0)
+        self.assertEqual(self.cli("active")[0], 0)
+        recorded = quarterdeck.parse_board_time(self.data()["operator"]["last_active_at"])
+        assert recorded is not None
+        self.assertGreaterEqual(recorded, before)
+        self.assertEqual(self.data()["items"], [])
+
     def test_refuses_to_overwrite_unreadable_or_unsupported_board(self) -> None:
         for raw in ("{broken", json.dumps({"version": 2, "items": []}), json.dumps({"version": 1})):
             self.board.write_text(raw, encoding="utf-8")
-            for args in (("upsert", "x", "--group", "read", "--title", "t", "--ask", "a"), ("touch", "x"), ("remove", "x")):
+            for args in (("upsert", "x", "--group", "read", "--title", "t", "--ask", "a"), ("touch", "x"), ("remove", "x"), ("active",)):
                 code, _, err = self.cli(*args)
                 self.assertEqual(code, 2, (raw, args))
                 self.assertIn("quarterdeck:", err)
