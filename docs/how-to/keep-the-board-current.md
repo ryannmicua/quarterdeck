@@ -21,7 +21,8 @@ message", earlier ones are "still waiting on you from N minutes ago", and so
 on. A message more than four hours after the previous one starts a new
 session, and the desk then holds only what is raised or touched in it. Pass
 `--new-session` when a new Firstmate chat starts sooner than that.
-The command records the current time. Without these calls the page keeps the 48-hour desk; see the
+The command records the current time. Until operator activity is first
+recorded, the page keeps the legacy desk; see the
 [board file reference](../reference/captain-board.md#sessions).
 
 So that the desk shows every question Firstmate asks in a session, put each

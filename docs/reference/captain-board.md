@@ -108,11 +108,11 @@ still in that session.
 | Group heading | Board conversation time |
 | --- | --- |
 | Open items from your last message | at or after the last message |
-| Still waiting on you from N minutes ago | under 1 hour ago; N is the newest item's age |
-| Open items from an hour ago | 1 to 2 hours ago |
-| Open items from this evening / this afternoon / this morning | earlier today: from 17:00, from 12:00, before 12:00 |
-| Open items from yesterday | the previous calendar day |
-| Open items from earlier this session | before yesterday, in a session that spans days |
+| Still waiting on you from N minutes ago | before the last message and under 1 hour ago; N is the newest item's age |
+| Open items from an hour ago | before the last message and 1 hour to under 2 hours ago |
+| Open items from this evening / this afternoon / this morning | before the last message, at least 2 hours ago, and earlier today: from 17:00, from 12:00, before 12:00 |
+| Open items from yesterday | before the last message, at least 2 hours ago, and on the previous calendar day |
+| Open items from earlier this session | before the last message, at least 2 hours ago, and before yesterday, in a session that spans days |
 
 "Today" and the parts of the day use the local time zone of the machine
 running Quarterdeck. Within a group, items keep the band order above. A
@@ -160,8 +160,10 @@ for approval from the captain" do not establish a task dependency.
 - **Not yet sorted.** Open backlog items waiting on the captain that no board
   item references are ranked into the same bands from their backlog dates,
   marked "Not yet sorted" and shown with their decoded hold note, so nothing is
-  lost and a missing board entry still reaches the desk. When the board file
-  is present but unreadable, every such item appears this way.
+  lost. Without a board conversation touch they stay in "This week" or
+  "Parked" when operator activity is recorded; they can reach the desk only
+  under the legacy 48-hour rule. When the board file is present but unreadable,
+  every such item appears this way.
 - **Age and staleness.** The header shows how long ago `updated_at` was, and
   flags the board as possibly out of date when the backlog file changed after
   `updated_at` (or `updated_at` is missing or invalid).
