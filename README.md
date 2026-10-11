@@ -7,7 +7,8 @@
 Quarterdeck turns running Firstmate homes' backlogs and scout reports into one
 local HTML review page. Serving is read-only by default; report review marks are
 available as an opt-in. When any selected home or registered secondmate has
-a captain board, the recency-ranked "On your desk" list leads the page; otherwise the page leads with
+a captain board, the "On your desk" list of what is waiting on you in your
+current session with Firstmate leads the page; otherwise the page leads with
 the four sections from Firstmate's `/bearings` digest. Reports waiting on your
 review also appear. Configure several homes to review them together; each home
 is grouped under a clear label, with its registered local secondmates under
@@ -20,14 +21,17 @@ as a local artifact. Quarterdeck itself has no agent or build step.
 ## Features
 
 - Captain board: when a home has `data/captain-board.json`, the page leads with
-  what the captain touched in the last two days ("On your desk", at most five),
-  then collapsed "This week" and "Parked" sections with counts per group. Items
+  what was raised or discussed in the captain's current session with Firstmate,
+  grouped from "Open items from your last message" back to "from yesterday";
+  after a long idle gap it leads with "Open items from our last session" instead.
+  Boards with no recorded operator activity use the earlier rule: what the
+  captain touched in the last two days, at most five. Then come collapsed "This week" and "Parked" sections with counts per group. Items
   are cross-checked against the live backlog and can carry a decision-brief link
   and recommendation chip. Backlog items missing from the board still appear,
   marked "Not yet sorted". See the
   [board file reference](docs/reference/captain-board.md).
-- Board writer: `quarterdeck board upsert|touch|remove <task-id>` and
-  `quarterdeck board list` let Firstmate keep the board current without
+- Board writer: `quarterdeck board upsert|touch|remove <task-id>`,
+  `quarterdeck board active` and `quarterdeck board list` let Firstmate keep the board current without
   hand-editing JSON; the writer changes only
   the board file. See [Keep the captain board current](docs/how-to/keep-the-board-current.md).
 - Decision briefs: a touch-friendly, theme-aware

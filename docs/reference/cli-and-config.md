@@ -14,6 +14,7 @@ quarterdeck reports unmark-reviewed <report-id> [--home PATH] [--config FILE]
 quarterdeck board upsert <task-id> [--id ID] [--group GROUP] [--title TEXT] [--ask TEXT] [--detail TEXT] [--topic TEXT] [--project TEXT] [--brief-url URL] [--recommendation TEXT] [--link LABEL=URL ...] [--touch] [--touched-at ISO] [--home PATH] [--data-dir PATH]
 quarterdeck board touch <task-id> [--at ISO] [--home PATH] [--data-dir PATH]
 quarterdeck board remove <task-id> [--id ID] [--home PATH] [--data-dir PATH]
+quarterdeck board active [--new-session] [--home PATH] [--data-dir PATH]
 quarterdeck board list [--json] [--home PATH] [--data-dir PATH]
 quarterdeck add <firstmate-home> [--label LABEL] [--config FILE]
 quarterdeck list [--config FILE]
@@ -124,7 +125,9 @@ is installed, `source` is `default` and `note` explains the fallback. See
 requires `--home` or `FM_HOME`, and uses `FM_DATA_OVERRIDE` when set, then
 `<home>/data`. The data directory must already exist. It does not read the
 config's home list. `upsert` adds or updates an item, `touch` records the captain's
-engagement time, `remove` deletes the task's items, and `list` prints them.
+engagement time, `remove` deletes the task's items, `active` records an operator
+message (starting a new session after a gap of more than four hours, or with
+`--new-session`), and `list` prints them.
 Writes are atomic and locked; an unreadable or unsupported board is refused
 rather than overwritten. If both `--touch` and `--touched-at` are supplied,
 the explicit timestamp takes precedence. Exit status is 0 on success, 1 when
