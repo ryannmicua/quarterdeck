@@ -1609,7 +1609,7 @@ def backlog_items(source: str, snapshot: HomeSnapshot) -> list[BacklogItem]:
                 "hold-until": value_for(record.fields, "hold_until", "hold-until", "until"),
                 "hold-set": value_for(record.fields, "hold_set", "hold-set"),
             }.items() if value},
-            hold_reason=decode_hold_reason(_blank(value_for(record.fields, "hold_reason"))),
+            hold_reason=markdown_text(decode_hold_reason(_blank(value_for(record.fields, "hold_reason")))),
             hold_kind=normalized_state(_blank(value_for(record.fields, "hold_kind"))),
             held=value_for(record.fields, "held").lower() in TRUE_VALUES,
             blocked_by=_blank(value_for(record.fields, "waiting_on", "waiting_for", "blocked_by")),
@@ -1621,7 +1621,7 @@ def backlog_items(source: str, snapshot: HomeSnapshot) -> list[BacklogItem]:
             item.attrs["done"] = closed
         reason = _blank(value_for(record.fields, "blocked_reason", "block_reason"))
         if reason and not item.hold_reason:
-            item.hold_reason = reason
+            item.hold_reason = markdown_text(decode_hold_reason(reason))
         items.append(item)
     return items
 
@@ -2397,7 +2397,7 @@ GROUP_SHORT = {"merge": "Merge", "approve": "Approve", "decide": "Decide", "forw
 CAPTAIN_NOTE_RE = re.compile(r"\bCaptain (\d{4}-\d{2}-\d{2})\b")
 HOLD_SET_RE = re.compile(r"\bCaptain hold set:\s*(\d{4}-\d{2}-\d{2}[T ][^\s]+)")
 DEFERRED_HOLD_RE = re.compile(
-    r"(?i)\b(?:deferred\s+until|hold\s+off\b[^\n.!?;]*?\buntil|(?:waits?|waiting)\s+until)\s+\S"
+    r"(?i)\b(?:deferred\s+until|hold\s+off\b[^\n!?;]*?\buntil|(?:waits?|waiting)\s+until)\s+\S"
 )
 HOLD_DEPENDENCY_RE = re.compile(r"(?i)\b(?:(?:waits|waiting)\s+(?:on|for)|after)\s+(\S+)")
 

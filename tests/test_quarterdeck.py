@@ -1476,7 +1476,8 @@ class CaptainBoardTests(unittest.TestCase):
             ("hold-set", "2026-10-08T08:00:00Z", reason, "parked",
              datetime(2026, 10, 8, 8, tzinfo=timezone.utc))
             for reason in ("Deferred until later", "Deferred until the chart work settles",
-                           "Hold off releasing until the chart work settles", "waits until the chart work settles",
+                           "Hold off releasing until the chart work settles", "Hold off v1.2 until the chart work settles",
+                           "waits until the chart work settles", "Waits on `chart` to land",
                            "after chart.", "waiting for chart,",
                            "waiting on unknown-task; after harbor.chart!")
         ]
@@ -1666,6 +1667,29 @@ class CaptainBoardTests(unittest.TestCase):
                 view = quarterdeck.board_view(homes, self.NOW)
                 assert view is not None
                 self.assertEqual(view.unsorted[0].band, "parked")
+
+    def test_table_hold_reason_fields_normalize_decoded_markdown(self) -> None:
+        reason = "Waits on `chart` to land"
+        encoded = "fm-hold-v1:" + base64.b64encode(reason.encode()).decode()
+        for field in ("hold_reason", "blocked_reason", "block_reason"):
+            for value in (reason, encoded):
+                for boarded in (False, True):
+                    with self.subTest(field=field, value=value, boarded=boarded), tempfile.TemporaryDirectory() as temp:
+                        home = self.make_home(Path(temp), [board_item(task="chart-ask")] if boarded else [])
+                        (home / "data" / "backlog.md").write_text(
+                            "# Backlog\n\n## Queued\n\n"
+                            f"| id | title | held | hold_kind | hold_set | {field} |\n"
+                            "| --- | --- | --- | --- | --- | --- |\n"
+                            f"| chart-ask | Chart ask | yes | captain | 2026-10-08T08:00:00Z | {value} |\n"
+                            "| chart | Dependency | no | | | |\n", encoding="utf-8",
+                        )
+                        homes, _ = self.view(home)
+                        self.assertEqual(quarterdeck.backlog_items(homes[0].backlog_markdown, homes[0])[0].hold_reason,
+                                         "Waits on chart to land")
+                        view = quarterdeck.board_view(homes, self.NOW)
+                        assert view is not None
+                        entry = next(e for entries in view.bands.values() for e in entries if e.item.task == "chart-ask")
+                        self.assertEqual((entry.band, entry.deferred), ("parked", "deferred by its hold note"))
 
     def test_project_metadata_survives_backlog_conversion(self) -> None:
         for table in (False, True):
