@@ -1417,8 +1417,8 @@ class CaptainBoardTests(unittest.TestCase):
             self.assertEqual(
                 [(heading, [e.item.title for e in entries]) for heading, entries in view.desk_groups],
                 [
-                    ("Open items from your last message", ["Pier merge", "Fresh one"]),
-                    ("Still waiting on you from 20 minutes ago", ["Minutes one"]),
+                    ("Open items from your last message", ["Fresh one"]),
+                    ("Still waiting on you from 6 minutes ago", ["Pier merge", "Minutes one"]),
                     ("Open items from an hour ago", ["Hour one"]),
                     ("Open items from this morning", ["Morning one"]),
                     ("Open items from yesterday", ["Yesterday one"]),
@@ -1427,7 +1427,7 @@ class CaptainBoardTests(unittest.TestCase):
             self.assertEqual([e.item.title for e in view.bands["week"]], ["Before session"])
             numbers = [e.number for key in quarterdeck.BOARD_BAND_KEYS for e in view.bands[key]]
             self.assertEqual(numbers, list(range(1, len(numbers) + 1)))
-            self.assertEqual([e.item.title for e in view.bands["desk"]][:2], ["Pier merge", "Fresh one"])
+            self.assertEqual([e.item.title for e in view.bands["desk"]][:2], ["Fresh one", "Pier merge"])
             page = self.page(homes)
             desk = page[page.index('id="board-desk"'):page.index('id="board-week"')]
             self.assertIn("Raised or discussed in this session with Firstmate, which began 16 hours ago.", desk)
@@ -1480,6 +1480,50 @@ class CaptainBoardTests(unittest.TestCase):
             self.assertEqual(view.bands["desk"], [])
             self.assertEqual([e.item.title for e in view.bands["week"]], ["Pier merge"])
             self.assertIn("Nothing from this session is waiting on you. Earlier work is below.", self.page(homes))
+
+    def test_session_desk_uses_conversation_touches_not_backlog_recency(self) -> None:
+        for idle in (False, True):
+            with self.subTest(idle=idle), tempfile.TemporaryDirectory() as temp, self.local_zone("UTC"):
+                home = self.make_home(Path(temp), [
+                    board_item(id="old", task="kelp-hold", touched_at=self.ago(hours=10)),
+                    board_item(id="untouched", group="decide", task="reef-hold"),
+                    board_item(id="discussed", group="read", touched_at=self.ago(hours=7)),
+                ], **self.operator(self.ago(hours=6) if idle else self.ago(minutes=5), self.ago(hours=8)))
+                (home / "data" / "backlog.md").write_text(
+                    BOARD_BACKLOG.replace(
+                        "(hold-kind: captain)", f"(hold-kind: captain) (hold-set: {self.ago(minutes=1)})",
+                    ).replace("(review_ready: yes)", f"(review_ready: yes) (hold-set: {self.ago(minutes=1)})")
+                    + "\n## Queued\n\n"
+                    "- [ ] new-hold - New hold (held: yes) (hold: pick) (hold-kind: captain)\n"
+                    f"  Captain hold set: {self.ago(minutes=1)}\n",
+                    encoding="utf-8",
+                )
+                homes, _ = self.view(home)
+                view = quarterdeck.board_view(homes, self.NOW)
+                assert view is not None
+                self.assertEqual([e.item.id for e in view.bands["desk"]], ["discussed"])
+                self.assertEqual(view.bands["desk"][0].touched, quarterdeck.parse_board_time(self.ago(hours=7)))
+                self.assertEqual({e.item.id for e in view.bands["week"]}, {"old", "untouched", "new-hold"})
+                self.assertTrue(all(e.touched == quarterdeck.parse_board_time(self.ago(minutes=1))
+                                    for e in view.bands["week"]))
+                self.assertEqual(view.desk_groups[0][0], "" if idle else "Open items from this morning")
+
+    def test_session_and_message_boundaries_are_exact(self) -> None:
+        with tempfile.TemporaryDirectory() as temp, self.local_zone("UTC"):
+            home = self.make_home(Path(temp), [
+                board_item(id="before-session", touched_at=self.ago(minutes=31)),
+                board_item(id="at-session", touched_at=self.ago(minutes=30)),
+                board_item(id="before-message", touched_at=self.ago(minutes=6)),
+                board_item(id="at-message", touched_at=self.ago(minutes=5)),
+            ], **self.operator(self.ago(minutes=5), self.ago(minutes=30)))
+            homes, _ = self.view(home)
+            view = quarterdeck.board_view(homes, self.NOW)
+            assert view is not None
+            self.assertEqual([(heading, [e.item.id for e in entries]) for heading, entries in view.desk_groups], [
+                ("Open items from your last message", ["at-message"]),
+                ("Still waiting on you from 6 minutes ago", ["before-message", "at-session"]),
+            ])
+            self.assertEqual([e.item.id for e in view.bands["week"]], ["before-session"])
 
     def test_newest_operator_activity_across_homes_wins(self) -> None:
         older = quarterdeck.CaptainBoard(Path("a"), last_active_at=self.NOW - timedelta(hours=9),

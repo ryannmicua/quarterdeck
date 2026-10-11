@@ -2420,7 +2420,6 @@ WEEK_DAYS = 7
 SWEEP_DAYS = 14
 DESK_LIMIT = 5
 SESSION_IDLE = timedelta(hours=4)  # a longer gap between operator messages ends the session
-LAST_MESSAGE_GRACE = timedelta(minutes=2)  # touches just before a recorded message still belong to it
 GROUP_RANK = {key: index for index, key in enumerate((*BOARD_GROUP_KEYS, "unsorted"))}
 GROUP_SHORT = {"merge": "Merge", "approve": "Approve", "decide": "Decide", "forward": "Forward", "read": "Read", "unsorted": UNSORTED_TITLE}
 CAPTAIN_NOTE_RE = re.compile(r"\bCaptain (\d{4}-\d{2}-\d{2})\b")
@@ -2492,11 +2491,14 @@ def rank_entry(
     entry.touched = min(max(times), now) if times else None
     age = (now - entry.touched).total_seconds() if entry.touched else None
     if session is not None:
-        on_desk = entry.touched is not None and entry.touched >= session.started - LAST_MESSAGE_GRACE
+        conversation_touch = min(entry.item.touched_at, now) if entry.item.touched_at else None
+        on_desk = conversation_touch is not None and conversation_touch >= session.started
     else:
         on_desk = age is not None and age <= DESK_HOURS * 3600
     if on_desk and not entry.deferred:
         entry.band = "desk"
+        if session is not None:
+            entry.touched = conversation_touch
     elif age is not None and not entry.deferred and age <= WEEK_DAYS * 86400:
         entry.band = "week"
     else:
@@ -2517,7 +2519,7 @@ def desk_session(boards: list[CaptainBoard], now: datetime) -> DeskSession | Non
 
 def desk_bucket(touched: datetime, session: DeskSession, now: datetime) -> tuple[int, str]:
     """Rank and heading for a desk item, by when it was raised relative to the operator's messages."""
-    if touched >= session.last_active - LAST_MESSAGE_GRACE:
+    if touched >= session.last_active:
         return 0, "Open items from your last message"
     age = now - touched
     if age < timedelta(hours=1):
