@@ -1407,7 +1407,8 @@ class CaptainBoardTests(unittest.TestCase):
                 "  Captain 2026-10-08: agreed. Captain 2026-10-19: check-in.\n"
                 "- [ ] waits-task - Waits (held: yes) (hold: waits on harbor-chart to land) (hold-kind: captain)\n"
                 "  Captain 2026-10-08: noted.\n"
-                "- [ ] silent-task - Silent (held: yes) (hold: pick) (hold-kind: captain)\n",
+                "- [ ] silent-task - Silent (held: yes) (hold: pick) (hold-kind: captain)\n"
+                "- [ ] harbor-chart - Chart dependency\n",
                 encoding="utf-8",
             )
             homes, _ = self.view(home)
@@ -1438,7 +1439,8 @@ class CaptainBoardTests(unittest.TestCase):
             (home / "data" / "backlog.md").write_text(
                 "# Backlog\n\n## Queued\n\n"
                 f"- [ ] coded-task - Coded (held: yes) (hold: {encoded}) (hold-kind: captain)\n"
-                "  Captain 2026-10-08: asked.\n",
+                "  Captain 2026-10-08: asked.\n"
+                "- [ ] chart - Chart dependency\n",
                 encoding="utf-8",
             )
             homes, _ = self.view(home)
@@ -1461,11 +1463,19 @@ class CaptainBoardTests(unittest.TestCase):
             *[("hold-set", "2026-10-08T08:00:00Z", reason, "desk",
                datetime(2026, 10, 8, 8, tzinfo=timezone.utc))
               for reason in ("Waiting on the captain to approve", "waiting for the captain's decision",
-                             "waits on your approval", "waiting for a captain to choose", "waiting on me")],
-            ("hold-set", "2026-10-08T08:00:00Z", "waiting on the chart to land", "parked",
+                             "waits on your approval", "waiting for a captain to choose", "waiting on me",
+                             "Waiting for approval from the captain", "waits on unknown-task to land",
+                             "after chart-ask", "waiting on chart-ask", "waiting on Chart")],
+            ("hold-set", "2026-10-08T08:00:00Z", "waiting on the chart to land", "desk",
              datetime(2026, 10, 8, 8, tzinfo=timezone.utc)),
-            ("hold-set", "2026-10-08T08:00:00Z", "parked label to approve", "desk",
+            ("hold-set", "2026-10-08T08:00:00Z", "parked label to approve", "parked",
              datetime(2026, 10, 8, 8, tzinfo=timezone.utc)),
+        ]
+        cases += [
+            ("hold-set", "2026-10-08T08:00:00Z", reason, "parked",
+             datetime(2026, 10, 8, 8, tzinfo=timezone.utc))
+            for reason in ("Deferred until later", "after chart.", "waiting for chart,",
+                           "waiting on unknown-task; after harbor.chart!")
         ]
         cases += [
             (field, value, "fm-hold-v1:" + base64.b64encode(reason.encode()).decode(), band, touched)
@@ -1485,6 +1495,11 @@ class CaptainBoardTests(unittest.TestCase):
                             )
                         else:
                             backlog = f"- [ ] chart-ask - {title} (held: yes) (hold-kind: captain) (hold: {reason}) ({field}: {value})\n"
+                        backlog += "".join(
+                            f"| {identifier} | Dependency | no | | | |\n" if table
+                            else f"- [ ] {identifier} - Dependency\n"
+                            for identifier in ("chart", "harbor-chart", "harbor_chart", "harbor.chart")
+                        )
                         (home / "data" / "backlog.md").write_text("# Backlog\n\n## Queued\n\n" + backlog, encoding="utf-8")
                         homes, _ = self.view(home)
                         view = quarterdeck.board_view(homes, self.NOW)
@@ -1493,6 +1508,33 @@ class CaptainBoardTests(unittest.TestCase):
                         self.assertEqual((entry.band, entry.touched), (band, touched))
                         if field == "hold-until":
                             self.assertEqual(entry.deferred, "deferred until 2026-10-20")
+
+    def test_dependencies_stay_within_target_home_for_routed_and_unsorted_items(self) -> None:
+        for dependency_home in ("parent", "child"):
+            with self.subTest(dependency_home=dependency_home), tempfile.TemporaryDirectory() as temp:
+                home = self.make_home(Path(temp), [board_item(task="wren/chart-ask")])
+                child = self.make_home(Path(temp) / "child-root")
+                (home / "data" / "secondmates.md").write_text(
+                    f"- wren - Keeps the guide (home: {child}; scope: Guide)\n", encoding="utf-8",
+                )
+                dependency = "- [x] chart - Chart dependency\n"
+                for target, identifiers in ((home, ("parent-ask",)), (child, ("chart-ask", "unlisted-ask"))):
+                    backlog = "# Backlog\n\n## Queued\n\n" + "".join(
+                        f"- [ ] {identifier} - Chart ask (held: yes) (hold-kind: captain) "
+                        "(hold: waits on chart to land) (hold-set: 2026-10-08T08:00:00Z)\n"
+                        for identifier in identifiers
+                    )
+                    if target == (home if dependency_home == "parent" else child):
+                        backlog += dependency
+                    (target / "data" / "backlog.md").write_text(backlog, encoding="utf-8")
+                homes, _ = self.view(home)
+                view = quarterdeck.board_view(homes, self.NOW)
+                assert view is not None
+                entries = {e.item.task: e for band in view.bands.values() for e in band}
+                child_band = "parked" if dependency_home == "child" else "desk"
+                self.assertEqual(entries["wren/chart-ask"].band, child_band)
+                self.assertEqual(entries["unlisted-ask"].band, child_band)
+                self.assertEqual(entries["parent-ask"].band, "parked" if dependency_home == "parent" else "desk")
 
     def test_project_metadata_survives_backlog_conversion(self) -> None:
         for table in (False, True):

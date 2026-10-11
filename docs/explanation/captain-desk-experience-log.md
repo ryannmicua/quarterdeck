@@ -60,8 +60,12 @@ Recency bands, documented in the
 
 `touched` is the newest of the board's `touched_at`, the latest past captain
 note date, and the hold-set time. Deferral comes from a future `hold-until`
-date or a hold note that says it waits on other work. Future Captain-note
-dates are ignored and do not defer an item.
+date, explicit "deferred" or "parked" wording, or a hold note whose
+"waits/waiting on|for <token>" or "after <token>" names a different task in the
+same home's backlog. Trailing punctuation is stripped and task IDs are
+compared exactly. Unknown tokens and captain-directed asks such as "Waiting
+for approval from the captain" do not establish a dependency. Future
+Captain-note dates are ignored and do not defer an item.
 
 ## What was built (phases 1 and 2)
 

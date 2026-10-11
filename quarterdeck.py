@@ -25,7 +25,7 @@ import threading
 import time
 import unicodedata
 import webbrowser
-from collections.abc import Callable, Iterator
+from collections.abc import Callable, Iterator, Set
 from contextlib import contextmanager
 from dataclasses import dataclass, field, replace
 from datetime import datetime, timezone
@@ -2388,14 +2388,11 @@ GROUP_RANK = {key: index for index, key in enumerate((*BOARD_GROUP_KEYS, "unsort
 GROUP_SHORT = {"merge": "Merge", "approve": "Approve", "decide": "Decide", "forward": "Forward", "read": "Read", "unsorted": UNSORTED_TITLE}
 CAPTAIN_NOTE_RE = re.compile(r"\bCaptain (\d{4}-\d{2}-\d{2})\b")
 HOLD_SET_RE = re.compile(r"\bCaptain hold set:\s*(\d{4}-\d{2}-\d{2}T[\d:]+(?:Z|[+-]\d{2}:?\d{2})?)")
-DEFERRED_HOLD_RE = re.compile(
-    r"(?i)\b(?:waits?|waiting)\s+(?:on|for)\s+"
-    r"(?!(?:(?:the|a|an)\s+)?(?:captain|you|your|me|my|us|our)\b)"
-    r"(?:(?:the|a|an)\s+)?[a-z0-9][\w.-]*\b"
-)
+DEFERRED_HOLD_RE = re.compile(r"(?i)\b(?:deferred|parked)\b")
+HOLD_DEPENDENCY_RE = re.compile(r"(?i)\b(?:(?:waits|waiting)\s+(?:on|for)|after)\s+(\S+)")
 
 
-def backlog_recency(item: BacklogItem, now: datetime) -> tuple[datetime | None, str]:
+def backlog_recency(item: BacklogItem, now: datetime, task_ids: Set[str]) -> tuple[datetime | None, str]:
     """Latest captain-dated note or hold-set time from the backlog, and why the item is deferred, if it is."""
     times: list[datetime] = []
     deferred = ""
@@ -2418,16 +2415,23 @@ def backlog_recency(item: BacklogItem, now: datetime) -> tuple[datetime | None, 
         if until is not None and until > now:
             deferred = f"deferred until {until.date().isoformat()}"
             break
-    if not deferred and DEFERRED_HOLD_RE.search(item.hold_reason):
+    if not deferred and (
+        DEFERRED_HOLD_RE.search(item.hold_reason)
+        or any(
+            token != item.id and token in task_ids
+            for match in HOLD_DEPENDENCY_RE.finditer(item.hold_reason)
+            for token in [match.group(1).rstrip(".,;:!?)]}\"'`")]
+        )
+    ):
         deferred = "deferred by its hold note"
     return (max(times) if times else None), deferred
 
 
-def rank_entry(entry: BoardEntry, backlog_item: BacklogItem | None, now: datetime) -> None:
+def rank_entry(entry: BoardEntry, backlog_item: BacklogItem | None, now: datetime, task_ids: Set[str]) -> None:
     """Set the entry's touched time, deferral, band, and sweep flag from the board and backlog."""
     times = [entry.item.touched_at] if entry.item.touched_at else []
     if backlog_item is not None:
-        fallback, entry.deferred = backlog_recency(backlog_item, now)
+        fallback, entry.deferred = backlog_recency(backlog_item, now, task_ids)
         if fallback is not None:
             times.append(fallback)
         if not entry.item.project and backlog_item.project:
@@ -2488,8 +2492,8 @@ def board_view(homes: list[HomeSnapshot], now: datetime | None = None) -> BoardV
             view.warnings.append(f"Could not check board items for {label}: the backlog could not be read.")
         for item in board.items:
             backlog_item: BacklogItem | None = None
+            target, task_id = home, item.task
             if not home.error:
-                target, task_id = home, item.task
                 route, separator, rest = item.task.partition("/")
                 child = next((c for c in home.children if separator and c.spec.route_id == route), None)
                 if child is not None:
@@ -2512,7 +2516,7 @@ def board_view(homes: list[HomeSnapshot], now: datetime | None = None) -> BoardV
                     ):
                         item = replace(item, links=[*item.links, ("Pull request", pr_url)])
             entry = BoardEntry(item, label, refresh_key=f"{board.path}:{item.id}")
-            rank_entry(entry, backlog_item, now)
+            rank_entry(entry, backlog_item, now, items_of(target).keys())
             view.groups[item.group].append(entry)
     for snapshot in snapshots:
         for backlog_item in items_of(snapshot).values():
@@ -2526,7 +2530,7 @@ def board_view(homes: list[HomeSnapshot], now: datetime | None = None) -> BoardV
                 ), snapshot.spec.label,
                 refresh_key=f"{snapshot.backlog_path}:{backlog_item.id}",
             )
-            rank_entry(entry, backlog_item, now)
+            rank_entry(entry, backlog_item, now, items_of(snapshot).keys())
             view.unsorted.append(entry)
     view.multiple_homes = len({entry.home for entries in view.groups.values() for entry in entries} | {e.home for e in view.unsorted}) > 1
     view.bands = band_entries([*(e for key in BOARD_GROUP_KEYS for e in view.groups[key]), *view.unsorted])
