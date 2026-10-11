@@ -11,6 +11,10 @@ quarterdeck reports list [--home PATH] [--config FILE]
 quarterdeck reports read <report-id> [--home PATH] [--config FILE] [--open]
 quarterdeck reports mark-reviewed <report-id> [--home PATH] [--config FILE]
 quarterdeck reports unmark-reviewed <report-id> [--home PATH] [--config FILE]
+quarterdeck board upsert <task-id> [--id ID] [--group GROUP] [--title TEXT] [--ask TEXT] [--detail TEXT] [--topic TEXT] [--project TEXT] [--brief-url URL] [--recommendation TEXT] [--link LABEL=URL ...] [--touch | --touched-at ISO] [--home PATH] [--data-dir PATH]
+quarterdeck board touch <task-id> [--at ISO] [--home PATH] [--data-dir PATH]
+quarterdeck board remove <task-id> [--id ID] [--home PATH] [--data-dir PATH]
+quarterdeck board list [--json] [--home PATH] [--data-dir PATH]
 quarterdeck add <firstmate-home> [--label LABEL] [--config FILE]
 quarterdeck list [--config FILE]
 quarterdeck remove <label-or-path> [--config FILE]
@@ -114,6 +118,16 @@ brackets, and scoped IPv6 zone separators use `%25` in URLs. Add `--json` for
 an object containing `urls`, raw configured `hosts`, and `source`; when no unit
 is installed, `source` is `default` and `note` explains the fallback. See
 [Serve the always-current bearings page](../how-to/serve-the-page.md).
+
+`board` edits one home's `<data>/captain-board.json` by task id and writes
+nothing else. It uses `--home`, then `FM_HOME`; `--data-dir` or
+`FM_DATA_OVERRIDE` replaces `<home>/data`. It does not read the config's home
+list. `upsert` adds or updates an item, `touch` records the captain's
+engagement time, `remove` deletes the task's items, and `list` prints them.
+Writes are atomic and locked; an unreadable or unsupported board is refused
+rather than overwritten. Exit status is 0 on success, 1 when `touch` finds no
+item, and 2 for invalid input or an unwritable board. See
+[Keep the captain board current](../how-to/keep-the-board-current.md).
 
 `add`, `list`, and `remove` accept the same `--config FILE` option. `add` also
 accepts `--label LABEL`; `remove` takes one label or path.

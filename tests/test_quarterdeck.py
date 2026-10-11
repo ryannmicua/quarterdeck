@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import base64
 import json
 import html
 import io
@@ -15,7 +16,7 @@ import threading
 import time
 import unittest
 from contextlib import redirect_stderr, redirect_stdout
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from unittest.mock import patch
 
@@ -1312,36 +1313,160 @@ class CaptainBoardTests(unittest.TestCase):
             self.assertEqual(self.titles(view, "merge"), ["Pier merge"])
             self.assertEqual([entry.item.id for entry in view.unsorted], ["table-unlisted-task"])
 
-    def test_group_order_numbers_topics_and_links(self) -> None:
+    def ago(self, **delta: float) -> str:
+        return (self.NOW - timedelta(**delta)).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+    def page(self, homes, show_all: bool = False) -> str:
+        return quarterdeck.build_html(
+            homes, "Q", show_all=show_all, bearings=quarterdeck.build_bearings(homes, now=self.NOW, use_snapshot=False),
+        )
+
+    def test_recency_bands_order_numbers_chips_and_links(self) -> None:
         with tempfile.TemporaryDirectory() as temp:
             home = self.make_home(Path(temp), [
-                board_item(id="r", group="read", title="Read one", task="kelp-hold"),
-                board_item(id="f", group="forward", title="Forward one", task="kelp-hold"),
-                board_item(id="d1", group="decide", title="Decide A1", topic="Alpha", task="kelp-hold"),
-                board_item(id="d2", group="decide", title="Decide B1", topic="Beta", task="kelp-hold"),
-                board_item(id="d3", group="decide", title="Decide A2", topic="Alpha", task="kelp-hold"),
-                board_item(id="a", group="approve", title="Approve one", task="kelp-hold", detail="More **context**."),
-                board_item(id="m"),
+                board_item(id="r", group="read", title="Read one", task="kelp-hold", touched_at=self.ago(hours=2)),
+                board_item(id="d", group="decide", title="Decide one", task="kelp-hold", topic="Alpha", touched_at=self.ago(hours=30)),
+                board_item(id="a", group="approve", title="Approve one", task="kelp-hold", detail="More **context**.",
+                           touched_at=self.ago(hours=10), project="harbor-demo",
+                           brief={"url": "https://example.com/brief/approve", "recommendation": "Approve"}),
+                board_item(id="m", touched_at=self.ago(hours=1)),
+                board_item(id="w", group="decide", title="Week one", task="kelp-hold", touched_at=self.ago(days=3)),
+                board_item(id="p", group="read", title="Parked one", task="kelp-hold", touched_at=self.ago(days=10)),
+                board_item(id="o", group="forward", title="Old one", task="kelp-hold", touched_at=self.ago(days=20)),
             ])
-            homes, view = self.view(home)
-            page = quarterdeck.build_html(homes, "Q", bearings=quarterdeck.build_bearings(homes, now=self.NOW, use_snapshot=False))
-            order = [page.index(f'id="board-{key}"') for key in ("merge", "approve", "decide", "forward", "read", "unsorted")]
+            homes, _ = self.view(home)
+            view = quarterdeck.board_view(homes, self.NOW)
+            assert view is not None
+            bands = {key: [e.item.title for e in entries] for key, entries in view.bands.items()}
+            self.assertEqual(bands["desk"], ["Pier merge", "Approve one", "Decide one", "Read one"])
+            self.assertEqual(bands["week"], ["Week one"])
+            self.assertEqual(bands["parked"][:2], ["Old one", "Parked one"])
+            self.assertEqual([e.item.title for e in view.bands["parked"] if e.sweep], ["Old one", "Reef hold: choose the buoy colour"])
+            numbers = [e.number for key in quarterdeck.BOARD_BAND_KEYS for e in view.bands[key]]
+            self.assertEqual(numbers, list(range(1, len(numbers) + 1)))
+            page = self.page(homes)
+            order = [page.index(f'id="board-{key}"') for key in ("desk", "week", "parked")]
             self.assertEqual(order, sorted(order))
-            self.assertLess(page.index('id="board"'), page.index('id="reviews"'))
-            self.assertEqual([e.item.title for e in view.groups["decide"]], ["Decide A1", "Decide A2", "Decide B1"])
-            numbers = [(e.number, e.item.title) for key in quarterdeck.BOARD_GROUP_KEYS for e in view.groups[key]]
-            self.assertEqual([n for n, _ in numbers], list(range(1, 8)))
-            self.assertEqual(numbers[0][1], "Pier merge")
-            self.assertIn('<h3 class="board-topic">Alpha</h3>', page)
+            self.assertIn('<details class="dashboard-section board-band" id="board-week" data-refresh-key="board-band:week">', page)
+            self.assertIn('<details class="dashboard-section board-band" id="board-parked" data-refresh-key="board-band:parked">', page)
+            self.assertIn("1 forward · 1 read · 1 not yet sorted.", page)
+            self.assertIn("Weekly sweep: 2 parked items untouched for over 14 days. Keep, defer or drop?", page)
+            self.assertIn('<span class="rec-label">Recommend</span> Approve</span>', page)
+            self.assertIn('<a class="brief-link" href="https://example.com/brief/approve">Open brief</a>', page)
+            self.assertIn('<span class="chip">harbor-demo</span>', page)
+            self.assertIn('<span class="chip">Alpha</span>', page)
+            self.assertIn("touched 2 hours ago", page)
             self.assertIn(f'<a href="{PIER_PR}">Pier PR</a>', page)
+            self.assertIn("Not yet sorted", page)
             for entry in [*(entry for group in view.groups.values() for entry in group), *view.unsorted]:
-                self.assertIn(
-                    f'data-refresh-key="{html.escape(entry.refresh_key, quote=True)}"', page,
-                )
+                self.assertIn(f'data-refresh-key="{html.escape(entry.refresh_key, quote=True)}"', page)
             self.assertIn("<strong>context</strong>", page)
-            self.assertNotIn("<details class=\"dashboard-section reviews\" id=\"reviews\" open", page)
+            self.assertLess(page.index('id="board"'), page.index('id="reviews"'))
             self.assertIn('<details class="dashboard-section reviews" id="reviews">', page)
             self.assertIn('width=device-width', page)
+            everything = self.page(homes, show_all=True)
+            self.assertIn('id="board-week" data-refresh-key="board-band:week" open>', everything)
+            self.assertIn('id="board-parked" data-refresh-key="board-band:parked" open>', everything)
+
+    def test_desk_shows_five_then_more_and_all_shows_everything(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            home = self.make_home(Path(temp), [
+                board_item(id=f"d{index}", group="decide", title=f"Desk {index}", task="kelp-hold",
+                           touched_at=self.ago(hours=index)) for index in range(1, 8)
+            ])
+            homes, _ = self.view(home)
+            page = self.page(homes)
+            desk = page[page.index('id="board-desk"'):page.index('id="board-parked"')]
+            more = desk.index("+2 more you touched recently")
+            self.assertLess(desk.index("Desk 5"), more)
+            self.assertGreater(desk.index("Desk 6"), more)
+            self.assertNotIn("more you touched recently", self.page(homes, show_all=True))
+
+    def test_empty_desk_says_so(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            homes, _ = self.view(self.make_home(Path(temp), [board_item(touched_at=self.ago(days=3))]))
+            self.assertIn("Nothing touched in the last 2 days.", self.page(homes))
+
+    def test_backlog_fallbacks_for_touched_time_deferral_and_project(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            home = self.make_home(Path(temp), [
+                board_item(id="noted", group="decide", title="Noted", task="noted-task"),
+                board_item(id="newer", group="decide", title="Newer", task="hold-set-task", touched_at=self.ago(hours=3)),
+            ])
+            (home / "data" / "backlog.md").write_text(
+                "# Backlog\n\n## Queued\n\n"
+                "- [ ] noted-task - Noted (repo: reef-demo) (held: yes) (hold: pick one) (hold-kind: captain)\n"
+                "  Captain 2026-09-30: first. Captain 2026-10-07: later.\n"
+                "- [ ] hold-set-task - Hold set (held: yes) (hold: pick) (hold-kind: captain)\n"
+                "  Captain hold set: 2026-10-04T08:00:00Z\n"
+                "- [ ] week-task - Week (held: yes) (hold: pick) (hold-kind: captain)\n"
+                "  Captain hold set: 2026-10-04T08:00:00Z\n"
+                "- [ ] until-task - Until (held: yes) (hold: later) (hold-kind: captain) (hold-until: 2026-10-20)\n"
+                "  Captain 2026-10-08: asked to wait.\n"
+                "- [ ] future-task - Future (held: yes) (hold: check in) (hold-kind: captain)\n"
+                "  Captain 2026-10-08: agreed. Captain 2026-10-19: check-in.\n"
+                "- [ ] waits-task - Waits (held: yes) (hold: waits on harbor-chart to land) (hold-kind: captain)\n"
+                "  Captain 2026-10-08: noted.\n"
+                "- [ ] silent-task - Silent (held: yes) (hold: pick) (hold-kind: captain)\n",
+                encoding="utf-8",
+            )
+            homes, _ = self.view(home)
+            view = quarterdeck.board_view(homes, self.NOW)
+            assert view is not None
+            entries = {e.item.task: e for key in quarterdeck.BOARD_BAND_KEYS for e in view.bands[key]}
+            self.assertEqual(entries["noted-task"].touched, datetime(2026, 10, 7, tzinfo=timezone.utc))
+            self.assertEqual(entries["noted-task"].band, "desk")
+            self.assertEqual(entries["noted-task"].item.project, "reef-demo")
+            self.assertEqual(entries["hold-set-task"].band, "desk")
+            self.assertEqual(entries["week-task"].band, "week")
+            for task, reason in (("until-task", "deferred until 2026-10-20"),
+                                 ("future-task", "check-in dated 2026-10-19"),
+                                 ("waits-task", "deferred by its hold note")):
+                self.assertEqual((entries[task].band, entries[task].deferred), ("parked", reason))
+                self.assertFalse(entries[task].sweep)
+            self.assertEqual(entries["future-task"].touched, datetime(2026, 10, 8, tzinfo=timezone.utc))
+            self.assertEqual((entries["silent-task"].band, entries["silent-task"].sweep), ("parked", True))
+            self.assertIn("touched time unknown", self.page(homes))
+
+    def test_encoded_hold_reasons_are_decoded_for_display_and_deferral(self) -> None:
+        encoded = "fm-hold-v1:" + base64.b64encode("Deferred (until the chart lands).".encode()).decode()
+        self.assertEqual(quarterdeck.decode_hold_reason(encoded), "Deferred (until the chart lands).")
+        for raw in ("fm-hold-v1:not base64!", "fm-hold-v1:" + base64.b64encode(b"\xff\xfe").decode(), "plain note"):
+            self.assertEqual(quarterdeck.decode_hold_reason(raw), raw)
+        with tempfile.TemporaryDirectory() as temp:
+            home = self.make_home(Path(temp), [])
+            (home / "data" / "backlog.md").write_text(
+                "# Backlog\n\n## Queued\n\n"
+                f"- [ ] coded-task - Coded (held: yes) (hold: {encoded}) (hold-kind: captain)\n"
+                "  Captain 2026-10-08: asked.\n",
+                encoding="utf-8",
+            )
+            homes, _ = self.view(home)
+            view = quarterdeck.board_view(homes, self.NOW)
+            assert view is not None
+            entry = view.unsorted[0]
+            self.assertEqual(entry.item.ask, "Deferred (until the chart lands).")
+            self.assertEqual((entry.band, entry.deferred), ("parked", "deferred by its hold note"))
+            self.assertNotIn("fm-hold-v1:", self.page(homes))
+
+    def test_new_optional_fields_parse_and_warn(self) -> None:
+        board = quarterdeck.parse_captain_board(json.dumps({
+            "version": 1, "updated_at": "2026-10-08T10:00:00Z",
+            "items": [
+                board_item(touched_at="2026-10-08T09:00:00Z", project="pier-demo",
+                           brief={"url": "https://example.com/brief", "recommendation": "Merge"}, extra="kept"),
+                board_item(id="bad", touched_at="soon", brief={"url": "ftp://x", "recommendation": 3}),
+                board_item(id="worse", brief="https://example.com"),
+            ],
+        }), Path("x"))
+        first, bad, worse = board.items
+        self.assertEqual(first.touched_at, datetime(2026, 10, 8, 9, tzinfo=timezone.utc))
+        self.assertEqual((first.project, first.brief_url, first.recommendation), ("pier-demo", "https://example.com/brief", "Merge"))
+        self.assertEqual((bad.touched_at, bad.brief_url, bad.recommendation), (None, "", ""))
+        self.assertEqual(worse.brief_url, "")
+        text = "\n".join(board.warnings)
+        for fragment in ("(bad): touched_at", "(bad): brief url", "(bad): brief recommendation", "(worse): brief must be"):
+            self.assertIn(fragment, text)
 
     def test_board_age_and_stale_flag(self) -> None:
         with tempfile.TemporaryDirectory() as temp:
@@ -1581,6 +1706,144 @@ globalThis.setTimeout = callback => callback();
             page = quarterdeck.build_html(homes, "Q", bearings=quarterdeck.build_bearings(homes, now=self.NOW, use_snapshot=False))
             self.assertIn("detail contains a malformed Markdown URL", page)
             self.assertIn("Malformed [link](http://[)", page)
+
+
+class BoardWriterTests(unittest.TestCase):
+    def setUp(self) -> None:
+        self.temp = tempfile.TemporaryDirectory()
+        self.home = Path(self.temp.name) / "invented-home"
+        (self.home / "data").mkdir(parents=True)
+        self.board = self.home / "data" / "captain-board.json"
+
+    def tearDown(self) -> None:
+        self.temp.cleanup()
+
+    def cli(self, *args: str) -> tuple[int, str, str]:
+        stdout, stderr = io.StringIO(), io.StringIO()
+        with redirect_stdout(stdout), redirect_stderr(stderr), patch.dict(os.environ, {}, clear=False):
+            os.environ.pop("FM_HOME", None)
+            os.environ.pop("FM_DATA_OVERRIDE", None)
+            code = quarterdeck.main(["board", *args, "--home", str(self.home)])
+        return code, stdout.getvalue(), stderr.getvalue()
+
+    def data(self) -> dict[str, object]:
+        return json.loads(self.board.read_text(encoding="utf-8"))
+
+    def test_upsert_creates_updates_and_clears_fields(self) -> None:
+        code, out, _ = self.cli(
+            "upsert", "reef-hold", "--group", "decide", "--title", "Reef buoy", "--ask", "Pick red or green.",
+            "--project", "reef-demo", "--brief-url", "https://example.com/brief", "--recommendation", "Choose red",
+            "--link", "Brief=https://example.com/brief", "--topic", "Reef",
+        )
+        self.assertEqual(code, 0)
+        self.assertIn("added reef-hold", out)
+        item = self.data()["items"][0]
+        self.assertEqual(item["brief"], {"url": "https://example.com/brief", "recommendation": "Choose red"})
+        self.assertNotIn("touched_at", item)
+        self.assertEqual(self.data()["version"], 1)
+        self.assertIsNotNone(quarterdeck.parse_board_time(self.data()["updated_at"]))
+        code, out, _ = self.cli("upsert", "reef-hold", "--topic", "", "--recommendation", "", "--touch")
+        self.assertEqual(code, 0)
+        self.assertIn("updated reef-hold", out)
+        item = self.data()["items"][0]
+        self.assertNotIn("topic", item)
+        self.assertEqual(item["brief"], {"url": "https://example.com/brief"})
+        self.assertIsNotNone(quarterdeck.parse_board_time(item["touched_at"]))
+        board = quarterdeck.parse_captain_board(self.board.read_text(encoding="utf-8"), self.board)
+        self.assertEqual(board.warnings, [])
+        self.assertEqual(board.items[0].project, "reef-demo")
+
+    def test_upsert_preserves_unknown_keys_and_other_items(self) -> None:
+        self.board.write_text(json.dumps({
+            "version": 1, "updated_at": "2026-10-01T00:00:00Z", "note": "keep me",
+            "items": [board_item(extra="kept"), board_item(id="other", task="other-task")],
+        }), encoding="utf-8")
+        code, _, _ = self.cli("upsert", "pier-pr", "--ask", "Merge it now.", "--touched-at", "2026-10-08T09:30:00+08:00")
+        self.assertEqual(code, 0)
+        data = self.data()
+        self.assertEqual(data["note"], "keep me")
+        self.assertEqual(data["items"][0]["extra"], "kept")
+        self.assertEqual(data["items"][0]["ask"], "Merge it now.")
+        self.assertEqual(data["items"][0]["touched_at"], "2026-10-08T01:30:00Z")
+        self.assertEqual(data["items"][1]["id"], "other")
+
+    def test_upsert_refuses_invalid_input_without_writing(self) -> None:
+        cases = [
+            ("upsert", "new-task", "--title", "No group", "--ask", "x"),
+            ("upsert", "new-task", "--group", "shout", "--title", "t", "--ask", "a"),
+            ("upsert", "new-task", "--group", "read", "--title", "t", "--ask", "a", "--brief-url", "javascript:alert(1)"),
+            ("upsert", "new-task", "--group", "read", "--title", "t", "--ask", "a", "--link", "nolabel"),
+            ("upsert", "new-task", "--group", "read", "--title", "t", "--ask", "a", "--touched-at", "soon"),
+        ]
+        for args in cases:
+            code, _, err = self.cli(*args)
+            self.assertEqual(code, 2, args)
+            self.assertTrue(err, args)
+            self.assertFalse(self.board.exists(), args)
+
+    def test_refuses_to_overwrite_unreadable_or_unsupported_board(self) -> None:
+        for raw in ("{broken", json.dumps({"version": 2, "items": []}), json.dumps({"version": 1})):
+            self.board.write_text(raw, encoding="utf-8")
+            for args in (("upsert", "x", "--group", "read", "--title", "t", "--ask", "a"), ("touch", "x"), ("remove", "x")):
+                code, _, err = self.cli(*args)
+                self.assertEqual(code, 2, (raw, args))
+                self.assertIn("quarterdeck:", err)
+                self.assertEqual(self.board.read_text(encoding="utf-8"), raw)
+
+    def test_ambiguous_task_needs_id(self) -> None:
+        self.board.write_text(json.dumps({"version": 1, "items": [
+            board_item(id="one"), board_item(id="two"),
+        ]}), encoding="utf-8")
+        code, _, err = self.cli("upsert", "pier-pr", "--ask", "x")
+        self.assertEqual(code, 2)
+        self.assertIn("--id", err)
+        code, _, _ = self.cli("upsert", "pier-pr", "--id", "two", "--ask", "Second.")
+        self.assertEqual(code, 0)
+        self.assertEqual([item["ask"] for item in self.data()["items"]][1], "Second.")
+
+    def test_touch_keeps_the_newer_time_and_reports_missing(self) -> None:
+        self.board.write_text(json.dumps({"version": 1, "items": [
+            board_item(touched_at="2026-10-08T00:00:00Z"), board_item(id="other", task="other-task"),
+        ]}), encoding="utf-8")
+        self.assertEqual(self.cli("touch", "pier-pr", "--at", "2026-10-01T00:00:00Z")[0], 0)
+        self.assertEqual(self.data()["items"][0]["touched_at"], "2026-10-08T00:00:00Z")
+        self.assertEqual(self.cli("touch", "pier-pr", "--at", "2026-10-09T00:00:00Z")[0], 0)
+        self.assertEqual(self.data()["items"][0]["touched_at"], "2026-10-09T00:00:00Z")
+        self.assertNotIn("touched_at", self.data()["items"][1])
+        code, _, err = self.cli("touch", "no-such-task")
+        self.assertEqual(code, 1)
+        self.assertIn("board upsert", err)
+
+    def test_remove_is_idempotent_and_writes_only_the_board(self) -> None:
+        self.assertEqual(self.cli("remove", "pier-pr")[0], 0)
+        self.assertFalse(self.board.exists())
+        self.board.write_text(json.dumps({"version": 1, "items": [board_item(), board_item(id="other", task="other-task")]}), encoding="utf-8")
+        code, out, _ = self.cli("remove", "pier-pr")
+        self.assertEqual(code, 0)
+        self.assertIn("removed pier-merge", out)
+        self.assertEqual([item["id"] for item in self.data()["items"]], ["other"])
+        self.assertEqual(self.cli("remove", "pier-pr")[0], 0)
+        self.assertEqual(sorted(path.name for path in (self.home / "data").iterdir()), ["captain-board.json"])
+
+    def test_list_prints_items_and_json(self) -> None:
+        self.cli("upsert", "reef-hold", "--group", "decide", "--title", "Reef buoy", "--ask", "Pick.", "--touched-at", "2026-10-08T00:00:00Z")
+        code, out, _ = self.cli("list")
+        self.assertEqual(code, 0)
+        self.assertEqual(out.strip(), "reef-hold\treef-hold\tdecide\t2026-10-08T00:00:00Z\tReef buoy")
+        code, out, _ = self.cli("list", "--json")
+        self.assertEqual(json.loads(out)["items"][0]["id"], "reef-hold")
+
+    def test_refuses_symlinked_board_and_missing_home(self) -> None:
+        target = Path(self.temp.name) / "elsewhere.json"
+        target.write_text(json.dumps({"version": 1, "items": []}), encoding="utf-8")
+        self.board.symlink_to(target)
+        code, _, err = self.cli("touch", "x")
+        self.assertEqual(code, 2)
+        self.assertIn("symbolic-link", err)
+        stderr = io.StringIO()
+        with redirect_stderr(stderr), patch.dict(os.environ, {"FM_HOME": ""}):
+            self.assertEqual(quarterdeck.main(["board", "list"]), 2)
+        self.assertIn("Firstmate home is required", stderr.getvalue())
 
 
 class BearingsTests(unittest.TestCase):

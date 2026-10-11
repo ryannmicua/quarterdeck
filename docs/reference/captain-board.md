@@ -1,8 +1,10 @@
 # Captain board file
 
-The captain board is a small JSON file that Firstmate writes whenever
-something starts or stops needing the captain. Quarterdeck owns this schema,
-reads the file, and never writes it.
+The captain board is a small JSON file that Firstmate keeps current whenever
+something starts or stops needing the captain, or the captain engages with it.
+Quarterdeck owns this schema. `render` and `serve` only read the file; the
+explicit [`quarterdeck board`](../how-to/keep-the-board-current.md) command is
+the supported way to write it.
 
 ## Location
 
@@ -25,7 +27,10 @@ board file, Quarterdeck omits the captain board section.
       "detail": "Checks are green. Short **Markdown** is allowed.",
       "topic": "Harbor",
       "task": "dock-fix",
-      "links": [{"label": "Pull request", "url": "https://example.com/pull/1"}]
+      "links": [{"label": "Pull request", "url": "https://example.com/pull/1"}],
+      "touched_at": "2026-10-08T09:30:00Z",
+      "project": "dock-demo",
+      "brief": {"url": "https://example.com/brief/dock", "recommendation": "Merge"}
     }
   ]
 }
@@ -43,13 +48,48 @@ board file, Quarterdeck omits the captain board section.
 | `items[].topic` | no | Sub-heading that groups `decide` items. |
 | `items[].task` | yes | Backlog task id used for the cross-check. A `route/id` form names a registered secondmate's task. |
 | `items[].links` | no | List of `{label, url}`; only `http` and `https` URLs are kept. Use it for the pull request or a Lavish page. A merge item's backlog PR link is added if no board link already points to it. |
+| `items[].touched_at` | no | ISO 8601 time (UTC recommended; no zone means UTC) the captain last engaged with the item or its project: discussed it, answered, commented on its brief, or asked about it. Drives the ranking below. |
+| `items[].project` | no | Project name shown as a chip. Defaults to the backlog item's `repo`. |
+| `items[].brief` | no | `{url, recommendation}`. `url` is an http(s) link to the [decision brief](../how-to/write-decision-briefs.md), shown as an **Open brief** button; `recommendation` is one short line shown as a chip. Either may be omitted. |
+
+These three fields were added without changing the version: older boards
+without them still parse, and readers that predate them ignore them. An
+invalid value shows a warning and is ignored; the item still renders. Other
+unknown keys are ignored by the page and kept by `quarterdeck board`.
 
 ## What the page does with it
 
-- Leads with the groups in order: Ready to merge, Approvals and handovers,
-  Decisions (sub-grouped by `topic`), Questions to forward, Reviews at your
-  leisure. Empty groups are omitted. Items are numbered in display order so the
-  captain can say a number; tapping an item opens its ask, detail and links.
+The board leads the page, ranked by what the captain touched recently rather
+than by group, so what they are working on comes first.
+
+```text
+touched   = newest of: touched_at,
+                       the latest "Captain YYYY-MM-DD" note in the backlog item (future dates ignored),
+                       the backlog item's "Captain hold set: <ISO time>"
+deferred  = the backlog item has (hold-until: <date>) in the future,
+            or a "Captain <date>" note dated after today (a planned check-in),
+            or its hold says deferred, parked, or waits on <other-task-id>
+
+On your desk : touched within 48 hours and not deferred   open, at most 5, then "+N more you touched recently"
+This week    : touched within 7 days and not deferred     collapsed, counts per group
+Parked       : older, never touched, or deferred          collapsed, counts per group
+Within a band: merge > approve > decide > forward > read > not yet sorted, then newest touched first
+Weekly sweep : Parked items untouched for over 14 days (or never) get a "keep, defer or drop?" chip,
+               and the Parked section leads with one line counting them
+```
+
+- Each item shows its group, project, topic, home (when several homes show),
+  how long ago it was touched, any deferral reason, the brief recommendation
+  chip, and an **Open brief** button. Tapping an item opens its ask, detail
+  and links; nothing is shown only on hover.
+- Items are numbered in display order. Numbers change as the order changes, so
+  the title is the stable spoken handle.
+- Collapsed sections show their counts on the closed heading, for example
+  "3 merge · 5 decide · 8 read". The page remembers open sections across its
+  refreshes.
+- `quarterdeck render --all` opens every section and shows every desk item
+  without the five-item cap.
+- Day-precision notes count from the start of that UTC day.
 - **Cross-check.** Every item must name a `task`. A matching readable backlog
   item remains visible while it needs the captain: a captain hold, a review-ready
   pull request, or blocked on the captain. A closed, cancelled, released, or
@@ -61,8 +101,10 @@ board file, Quarterdeck omits the captain board section.
   its value takes precedence, so a false value prevents stale hold text from
   keeping the item visible.
 - **Not yet sorted.** Open backlog items waiting on the captain that no board
-  item references are listed last with their raw hold note, so nothing is lost.
-  When the board file is present but unreadable, every such item appears here.
+  item references are ranked into the same bands from their backlog dates,
+  marked "Not yet sorted" and shown with their raw hold note, so nothing is
+  lost and a missing board entry still reaches the desk. When the board file
+  is present but unreadable, every such item appears this way.
 - **Age and staleness.** The header shows how long ago `updated_at` was, and
   flags the board as possibly out of date when the backlog file changed after
   `updated_at` (or `updated_at` is missing or invalid).
@@ -70,12 +112,12 @@ board file, Quarterdeck omits the captain board section.
   link, or detail URL produces a visible warning naming the problem;
   malformed detail is shown as text and the page never fails because of the board.
 - **Unsupported version.** Board items are skipped with a warning naming the
-  version; captain-gated backlog items from that home still appear under
+  version; captain-gated backlog items from that home still appear as
   “Not yet sorted.”
 - The reports-to-review list moves below the board in a collapsed section.
   The page reloads on its regular schedule and restores open items and sections
   after each refresh when browser session storage is available.
 
-The page is laid out for a 375px phone and follows the system light or dark
-setting. Quarterdeck makes no network calls to verify pull requests; settled
+The page is laid out touch-first for a 375px phone: one column, tap targets
+at least 44px, and the system light or dark setting. Quarterdeck makes no network calls to verify pull requests; settled
 state comes only from the backlog.

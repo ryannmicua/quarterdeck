@@ -1,0 +1,201 @@
+<!doctype html>
+<!--
+  Decision brief template, version 1.
+  Fill every {{PLACEHOLDER}}, delete the sections and comments marked optional
+  when they do not apply, save the result as a .html file outside any
+  repository, and publish it as a private Claude artifact.
+  See docs/how-to/write-decision-briefs.md for the rules behind each section.
+-->
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>{{TITLE}}</title>
+<style>
+/* Order: header, decision card, how it works, ship vs. wait, options, known limits, evidence. */
+:root {
+  --bg: #f4f6f5; --surface: #fff; --fg: #1b2420; --muted: #5a665f; --line: #d8dfdb;
+  --accent: #2f6b57; --accent-soft: #e2efe8; --warn: #9a5b12; --warn-soft: #f6ebdb; --bad: #a33a2e; --bad-soft: #f7e3e0;
+  --display: Georgia, "Times New Roman", serif; --body: system-ui, -apple-system, "Segoe UI", sans-serif; --mono: ui-monospace, Menlo, monospace;
+  color-scheme: light;
+}
+@media (prefers-color-scheme: dark) { :root:not([data-theme="light"]) {
+  --bg: #111614; --surface: #19201c; --fg: #e3e9e5; --muted: #9aa69f; --line: #2b3530;
+  --accent: #7cc3a8; --accent-soft: #1e3128; --warn: #e2ac67; --warn-soft: #33281a; --bad: #ef8b7e; --bad-soft: #3a2220;
+  color-scheme: dark;
+} }
+:root[data-theme="dark"] {
+  --bg: #111614; --surface: #19201c; --fg: #e3e9e5; --muted: #9aa69f; --line: #2b3530;
+  --accent: #7cc3a8; --accent-soft: #1e3128; --warn: #e2ac67; --warn-soft: #33281a; --bad: #ef8b7e; --bad-soft: #3a2220;
+  color-scheme: dark;
+}
+* { box-sizing: border-box; }
+body { margin: 0; background: var(--bg); color: var(--fg); font: 17px/1.55 var(--body); }
+.wrap { max-width: 60rem; margin: 0 auto; padding: 32px 16px 120px; display: flex; flex-direction: column; gap: 40px; }
+h1, h2 { font-family: var(--display); font-weight: 600; margin: 0; line-height: 1.2; }
+h1 { font-size: clamp(1.8rem, 6vw, 2.4rem); } h2 { font-size: 1.35rem; }
+h3 { margin: 0; font-size: 1rem; }
+p { margin: 0; max-width: 65ch; }
+a { color: var(--accent); font-weight: 600; }
+a:focus-visible, button:focus-visible { outline: 3px solid var(--accent); outline-offset: 2px; }
+section { display: flex; flex-direction: column; gap: 14px; }
+.eyebrow { font: 600 .74rem var(--mono); letter-spacing: .08em; text-transform: uppercase; color: var(--muted); }
+.meta { display: flex; flex-wrap: wrap; gap: 8px 16px; font: 500 .85rem var(--mono); color: var(--muted); }
+.chip { display: inline-flex; align-items: center; gap: 6px; }
+.dot { width: 9px; height: 9px; border-radius: 50%; background: var(--accent); }
+.dot.warn { background: var(--warn); } .dot.bad { background: var(--bad); }
+.card { background: var(--surface); border: 1px solid var(--line); border-radius: 12px; padding: 20px; min-width: 0; }
+/* Decision card: recommendation first on narrow screens. */
+.decide { display: grid; grid-template-columns: 1fr minmax(13rem, auto); gap: 20px; align-items: center; }
+.decide .q { font-size: 1.2rem; font-weight: 600; }
+.rec { display: flex; flex-direction: column; gap: 6px; background: var(--accent-soft); padding: 16px 18px; border-radius: 10px; }
+.rec b { font-size: 1.3rem; color: var(--accent); }
+.door { align-self: flex-start; padding: 2px 10px; border-radius: 999px; font: 600 .78rem var(--mono); border: 1px solid currentColor; }
+.door.two-way { color: var(--accent); } .door.one-way { color: var(--bad); }
+/* How it works: boxes in a row that stack below 700px, so nothing scrolls sideways. */
+.flow { display: flex; align-items: stretch; gap: 10px; }
+.step { flex: 1 1 0; display: flex; flex-direction: column; gap: 4px; padding: 14px; border: 1.5px solid var(--line); border-radius: 10px; background: var(--surface); }
+.step b { font-size: .98rem; } .step span { color: var(--muted); font-size: .85rem; }
+.step.new { border-color: var(--accent); background: var(--accent-soft); }
+.step.removed { border-color: var(--bad); border-style: solid; }
+.arrow { align-self: center; color: var(--muted); font-size: 1.3rem; }
+.arrow.later { opacity: .6; }
+.legend { display: flex; flex-wrap: wrap; gap: 16px; font-size: .85rem; color: var(--muted); margin-top: 12px; }
+.legend span { display: inline-flex; gap: 6px; align-items: center; }
+.sw { width: 16px; height: 10px; border-radius: 3px; display: inline-block; border: 1.5px solid var(--line); }
+.sw.new { border-color: var(--accent); background: var(--accent-soft); } .sw.removed { border-color: var(--bad); }
+/* Ship vs. wait: if-shipped cells left, if-not-shipped cells right. */
+.board { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; }
+.cell { display: flex; flex-direction: column; gap: 10px; }
+.cell.ship { border-top: 4px solid var(--accent); } .cell.wait { border-top: 4px solid var(--bad); }
+.cell ul { margin: 0; padding-left: 1.1rem; display: flex; flex-direction: column; gap: 6px; }
+.tag { font: 600 .74rem var(--mono); letter-spacing: .06em; text-transform: uppercase; }
+.ship .tag { color: var(--accent); } .wait .tag { color: var(--bad); }
+.options, .limits { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 15rem), 1fr)); gap: 16px; }
+.option.recommended { border: 2px solid var(--accent); }
+.limits .card { border-top: 4px solid var(--warn); } .limits .tag { color: var(--warn); }
+footer { font-size: .9rem; color: var(--muted); display: flex; flex-direction: column; gap: 6px; overflow-wrap: anywhere; }
+/* Sticky answer bar: the recommendation and the words to say. */
+.answer { position: fixed; left: 0; right: 0; bottom: 0; padding: 10px 16px calc(10px + env(safe-area-inset-bottom, 0px)); background: var(--surface); border-top: 1px solid var(--line); display: flex; flex-wrap: wrap; gap: 6px 16px; align-items: center; justify-content: center; min-height: 56px; }
+.answer b { color: var(--accent); }
+@media (max-width: 700px) {
+  .decide, .board { grid-template-columns: 1fr; }
+  .decide .rec { order: -1; }
+  .cell.wait { order: 1; }
+  .flow { flex-direction: column; }
+  .arrow { transform: rotate(90deg); }
+}
+@media print { .answer { position: static; } }
+</style>
+</head>
+<body>
+<div class="wrap">
+
+  <!-- 0. Header. The title is the board item's title: a short name the captain can say aloud. -->
+  <header style="display:flex;flex-direction:column;gap:10px">
+    <span class="eyebrow">Decision brief · {{PROJECT}} · {{ITEM}}</span>
+    <h1>{{TITLE}}</h1>
+    <div class="meta">
+      <!-- Status chips: checks, size, anything still unproven. Use .dot.warn or .dot.bad for caveats. -->
+      <span class="chip"><span class="dot"></span>{{STATUS_CHIP_1}}</span>
+      <span class="chip"><span class="dot warn"></span>{{STATUS_CHIP_2}}</span>
+      <span>{{SIZE}}</span>
+    </div>
+  </header>
+
+  <!-- 1. Decision card: the question in business terms, two lines of context, and the recommendation. -->
+  <div class="card decide">
+    <div style="display:flex;flex-direction:column;gap:8px">
+      <span class="eyebrow">The decision</span>
+      <p class="q">{{QUESTION_IN_BUSINESS_TERMS}}</p>
+      <p style="color:var(--muted)">{{TWO_LINES_OF_CONTEXT}}</p>
+    </div>
+    <div class="rec">
+      <span class="eyebrow">Recommendation</span>
+      <b>{{RECOMMENDATION_VERB}}</b>
+      <small>{{ONE_LINE_REASON}}</small>
+      <!-- Keep one: two-way door (cheap to undo) or one-way door (hard to undo). -->
+      <span class="door two-way">Two-way door: cheap to undo</span>
+    </div>
+  </div>
+
+  <!-- 2. How it works: one flow, left to right, at most 6 boxes, plain labels.
+       .step.new = added by this change, plain .step = already in place, .step.removed = removed,
+       .arrow.later = conditional or later. The aria-label sentence doubles as the spoken summary. -->
+  <section>
+    <span class="eyebrow">How it works</span>
+    <h2>{{FLOW_HEADING}}</h2>
+    <div class="card">
+      <div class="flow" role="img" aria-label="{{ONE_SENTENCE_FLOW_SUMMARY}}">
+        <div class="step"><b>{{STEP_1}}</b><span>{{STEP_1_DETAIL}}</span></div>
+        <span class="arrow" aria-hidden="true">→</span>
+        <div class="step new"><b>New: {{STEP_2}}</b><span>{{STEP_2_DETAIL}}</span></div>
+        <span class="arrow" aria-hidden="true">→</span>
+        <div class="step"><b>{{STEP_3}}</b><span>{{STEP_3_DETAIL}}</span></div>
+      </div>
+      <div class="legend">
+        <span><span class="sw new"></span>added by this change</span>
+        <span><span class="sw"></span>already in place</span>
+        <span><span class="sw removed"></span>removed</span>
+      </div>
+    </div>
+  </section>
+
+  <!-- 3. Ship vs. wait: business outcomes first; code detail belongs in known limits or the footer. -->
+  <section>
+    <span class="eyebrow">Ship vs. wait</span>
+    <h2>What changes either way</h2>
+    <div class="board">
+      <div class="card cell ship">
+        <span class="tag">If shipped · outcomes</span>
+        <ul><li>{{OUTCOME_IT_ENABLES}}</li><li>{{RISK_IT_CLOSES}}</li></ul>
+      </div>
+      <div class="card cell wait">
+        <span class="tag">If not shipped · cost of delay</span>
+        <ul><li>{{VALUE_LOST_OR_PAIN_THAT_CONTINUES_WHILE_IT_WAITS}}</li></ul>
+      </div>
+      <div class="card cell ship">
+        <span class="tag">If shipped · what changes</span>
+        <ul><li>{{WHO_NOTICES}}</li><li>{{WHAT_FILES_OR_BEHAVIOUR_CHANGE}}</li></ul>
+      </div>
+      <div class="card cell wait">
+        <span class="tag">If not shipped · exposure</span>
+        <ul><li>{{RISK_THAT_PERSISTS_AND_HOW_IT_GROWS}}</li></ul>
+      </div>
+    </div>
+  </section>
+
+  <!-- 4. Options (optional: decide items only). Two to four cards; mark the recommended one. -->
+  <section>
+    <span class="eyebrow">Options</span>
+    <h2>Your choices</h2>
+    <div class="options">
+      <div class="card option recommended"><span class="tag" style="color:var(--accent)">Recommended</span><h3>{{OPTION_A}}</h3><p>{{OPTION_A_TRADEOFF}}</p></div>
+      <div class="card option"><h3>{{OPTION_B}}</h3><p>{{OPTION_B_TRADEOFF}}</p></div>
+    </div>
+  </section>
+
+  <!-- 5. Known limits: what is unproven, not enforced, or still missing. Two to four cards. -->
+  <section>
+    <span class="eyebrow">Fine print</span>
+    <h2>Known limits</h2>
+    <div class="limits">
+      <div class="card"><span class="tag">Proof</span><p>{{WHAT_IS_NOT_YET_PROVEN}}</p></div>
+      <div class="card"><span class="tag">Not enforced</span><p>{{WHAT_NOTHING_CHECKS}}</p></div>
+    </div>
+  </section>
+
+  <!-- 6. Evidence and links. -->
+  <footer>
+    <span>Link: <a href="{{CHANGE_OR_REPORT_URL}}">{{CHANGE_OR_REPORT_LABEL}}</a></span>
+    <span>Evidence: {{CHECKS_AND_DATE_REVIEWED}}</span>
+    <span>To answer, say “{{SPOKEN_ANSWER}}”.</span>
+  </footer>
+</div>
+
+<div class="answer" role="note" aria-label="Recommendation">
+  <span>Recommend <b>{{RECOMMENDATION_VERB}}</b></span>
+  <span>Say “{{SPOKEN_ANSWER}}”</span>
+</div>
+</body>
+</html>

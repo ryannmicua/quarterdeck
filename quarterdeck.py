@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import argparse
+import base64
 import fcntl
 import hashlib
 import hmac
@@ -16,6 +17,7 @@ import secrets
 import shlex
 import shutil
 import socket
+import stat
 import subprocess
 import sys
 import tempfile
@@ -1106,8 +1108,8 @@ def build_html(
     metric_labels.append("Reports needing review")
     generated = bearings.generated if bearings else datetime.now(timezone.utc)
     timestamp = generated.strftime("%Y-%m-%d %H:%M:%S UTC")
-    board = board_view(homes)
-    board_block = board_html(board, generated) if board else ""
+    board = board_view(homes, generated)
+    board_block = board_html(board, generated, show_all) if board else ""
     board_status = board_status_html(board, generated) if board else ""
     bearings_block = bearings_html(
         bearings, collapse_reviews=board is not None, can_mark=allow_marks, ambiguous_ids=ambiguous_ids,
@@ -1307,7 +1309,21 @@ def build_html(
     .board-links li {{ margin: .6rem 0; }}
     .board-links a {{ display: inline-block; min-height: 2.75rem; line-height: 2.75rem; }}
     .board-links .path {{ display: block; margin-top: -.5rem; font-size: .8rem; }}
-    .board-topic {{ margin: 1.2rem 0 .2rem; color: var(--sea); font-size: 1rem; text-transform: uppercase; letter-spacing: .08em; }}
+    .board-chips, .board-brief {{ display: flex; flex-wrap: wrap; gap: .35rem; margin-top: .45rem; }}
+    .board-brief {{ align-items: center; gap: .5rem; }}
+    .chip {{ display: inline-block; padding: .1rem .55rem; border: 1px solid var(--line); border-radius: 999px; color: var(--muted); font-size: .78rem; overflow-wrap: anywhere; }}
+    .chip-group {{ color: var(--sea); border-color: var(--sea); font-weight: 700; text-transform: uppercase; letter-spacing: .06em; }}
+    .chip-deferred, .chip-sweep {{ color: var(--warn-ink); background: var(--warn-bg); border-color: var(--gold); }}
+    .chip-rec {{ color: var(--ink); background: var(--chip); border-color: var(--sea); font-size: .88rem; padding: .35rem .7rem; }}
+    .rec-label {{ color: var(--sea); font-weight: 700; text-transform: uppercase; letter-spacing: .06em; font-size: .72rem; }}
+    .brief-link {{ display: inline-flex; align-items: center; min-height: 44px; padding: 0 1rem; border: 1px solid var(--sea); border-radius: 10px; background: var(--paper); text-decoration: none; }}
+    details.board-band > summary {{ display: block; min-height: 44px; cursor: pointer; list-style: none; }}
+    details.board-band > summary::-webkit-details-marker, .board-more > summary::-webkit-details-marker {{ display: none; }}
+    details.board-band > summary h2::before {{ content: "▸ "; color: var(--gold); }}
+    details.board-band[open] > summary h2::before {{ content: "▾ "; }}
+    details.board-band > summary:focus-visible, .board-more > summary:focus-visible {{ outline: 3px solid var(--gold); outline-offset: 2px; }}
+    .board-more > summary {{ display: flex; align-items: center; min-height: 44px; padding: 0 1rem; cursor: pointer; list-style: none; color: var(--sea); font-weight: 700; border: 1px dashed var(--line); border-radius: 12px; }}
+    .sweep {{ margin: .2rem 0 .6rem; padding: .6rem .8rem; border: 1px solid var(--gold); border-radius: 10px; background: var(--warn-bg); color: var(--warn-ink); }}
     .stale {{ color: #ffd48a; }}
     details.reviews > summary {{ display: flex; justify-content: space-between; gap: 1rem; align-items: center; min-height: 3rem; cursor: pointer; list-style: none; }}
     details.reviews > summary h2 {{ display: inline; }}
@@ -1441,6 +1457,23 @@ class Bearings:
     linked_reports: set[Path] = field(default_factory=set)
 
 
+HOLD_REASON_PREFIX = "fm-hold-v1:"
+
+
+def decode_hold_reason(value: str) -> str:
+    """Decode Firstmate's reversible hold-reason encoding (fm-hold-v1: + base64 UTF-8); other text is unchanged."""
+    if not value.startswith(HOLD_REASON_PREFIX):
+        return value
+    payload = value[len(HOLD_REASON_PREFIX):]
+    try:
+        raw = base64.b64decode(payload, validate=True)
+        if base64.b64encode(raw).decode("ascii") != payload:
+            return value
+        return raw.decode("utf-8")
+    except (ValueError, UnicodeDecodeError):
+        return value
+
+
 def balanced_close(text: str, start: int) -> int:
     depth = 0
     for index in range(start, len(text)):
@@ -1518,7 +1551,7 @@ def parse_bullet_item(header: re.Match[str], continuation: list[str], section: s
         id=header.group("id"), title=title,
         state=state,
         attrs=attrs, body=body, raw=raw, done=done,
-        hold_reason=markdown_text(attrs.get("hold", "")), hold_kind=hold_kind,
+        hold_reason=markdown_text(decode_hold_reason(attrs.get("hold", ""))), hold_kind=hold_kind,
         held=(
             attrs["held"].strip().lower() in TRUE_VALUES if "held" in attrs
             else field_is_set(attrs.get("hold", ""))
@@ -1567,7 +1600,7 @@ def backlog_items(source: str, snapshot: HomeSnapshot) -> list[BacklogItem]:
             body=record.text if record.text != record.title else "", raw=record.text,
             done=is_closed(record),
             attrs={"merged": merged_date} if merged_date else {},
-            hold_reason=_blank(value_for(record.fields, "hold_reason")),
+            hold_reason=decode_hold_reason(_blank(value_for(record.fields, "hold_reason"))),
             hold_kind=normalized_state(_blank(value_for(record.fields, "hold_kind"))),
             held=value_for(record.fields, "held").lower() in TRUE_VALUES,
             blocked_by=_blank(value_for(record.fields, "waiting_on", "waiting_for", "blocked_by")),
@@ -2118,17 +2151,8 @@ def bearings_html(
 
 BOARD_FILENAME = "captain-board.json"
 BOARD_VERSION = 1
-BOARD_GROUPS = (
-    ("merge", "Ready to merge", "Pull requests ready for your word."),
-    ("approve", "Approvals and handovers", "Things waiting for your approval or a handover."),
-    ("decide", "Decisions", "Choices only you can make."),
-    ("forward", "Questions to forward", "Questions to pass on to other people."),
-    ("read", "Reviews at your leisure", "Reading you can do when you have time."),
-)
-BOARD_GROUP_KEYS = tuple(key for key, _title, _description in BOARD_GROUPS)
+BOARD_GROUP_KEYS = ("merge", "approve", "decide", "forward", "read")
 UNSORTED_TITLE = "Not yet sorted"
-UNSORTED_DESCRIPTION = "Waiting on you in the backlog, but not on the board yet. Raw note shown."
-OTHER_TOPIC = "Other decisions"
 
 
 @dataclass
@@ -2141,6 +2165,10 @@ class BoardItem:
     topic: str = ""
     task: str = ""
     links: list[tuple[str, str]] = field(default_factory=list)
+    touched_at: datetime | None = None
+    project: str = ""
+    brief_url: str = ""
+    recommendation: str = ""
 
 
 @dataclass
@@ -2158,6 +2186,10 @@ class BoardEntry:
     home: str
     number: int = 0
     refresh_key: str = ""
+    touched: datetime | None = None
+    deferred: str = ""
+    band: str = ""
+    sweep: bool = False
 
 
 @dataclass
@@ -2168,10 +2200,34 @@ class BoardView:
     warnings: list[str]
     status: list[tuple[str, datetime | None, str]]  # (home label, updated_at, stale reason)
     multiple_homes: bool = False
+    bands: dict[str, list[BoardEntry]] = field(default_factory=dict)
 
 
 def _board_text(value: object) -> str | None:
     return value.strip() if isinstance(value, str) and value.strip() else None
+
+
+def _board_url(value: object) -> str | None:
+    """Return an absolute http(s) URL, or None when the value is not one."""
+    url = _board_text(value)
+    try:
+        parsed = urlparse(url) if url else None
+    except ValueError:
+        parsed = None
+    if not url or parsed is None or parsed.scheme not in {"http", "https"} or not parsed.netloc:
+        return None
+    return url
+
+
+def parse_board_time(value: object) -> datetime | None:
+    """Parse an ISO 8601 time; a value without a zone is read as UTC."""
+    if not isinstance(value, str) or not value.strip():
+        return None
+    try:
+        parsed = datetime.fromisoformat(value.strip().replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    return parsed if parsed.tzinfo else parsed.replace(tzinfo=timezone.utc)
 
 
 def parse_captain_board(source: str, path: Path) -> CaptainBoard:
@@ -2191,13 +2247,7 @@ def parse_captain_board(source: str, path: Path) -> CaptainBoard:
         board.supported = False
         board.warnings.append(f"{name} has unsupported version {version!r}; expected {BOARD_VERSION}; board items were skipped.")
         return board
-    updated = data.get("updated_at")
-    if isinstance(updated, str):
-        try:
-            parsed = datetime.fromisoformat(updated.strip().replace("Z", "+00:00"))
-            board.updated_at = parsed if parsed.tzinfo else parsed.replace(tzinfo=timezone.utc)
-        except ValueError:
-            pass
+    board.updated_at = parse_board_time(data.get("updated_at"))
     if board.updated_at is None:
         board.warnings.append(f"{name} has a missing or invalid updated_at (expected ISO 8601), so its age is unknown.")
     items = data.get("items")
@@ -2234,8 +2284,8 @@ def parse_captain_board(source: str, path: Path) -> CaptainBoard:
             continue
         assert identifier and title and ask and task
         seen.add(identifier)
-        optional: dict[str, str] = {}
-        for key in ("detail", "topic"):
+        optional: dict[str, object] = {}
+        for key in ("detail", "topic", "project"):
             value = raw.get(key)
             if value is None:
                 continue
@@ -2252,17 +2302,36 @@ def parse_captain_board(source: str, path: Path) -> CaptainBoard:
             raw_links = []
         for link in raw_links or []:
             label = _board_text(link.get("label")) if isinstance(link, dict) else None
-            url = _board_text(link.get("url")) if isinstance(link, dict) else None
-            try:
-                parsed_url = urlparse(url) if url else None
-            except ValueError:
-                parsed_url = None
-            if not label or not url or parsed_url is None or parsed_url.scheme not in {"http", "https"} or not parsed_url.netloc:
+            url = _board_url(link.get("url")) if isinstance(link, dict) else None
+            if not label or not url:
                 board.warnings.append(f"{where}: a link needs a label and an http(s) url and was ignored.")
                 continue
             links.append((label, url))
+        touched = raw.get("touched_at")
+        if touched is not None:
+            optional["touched_at"] = parse_board_time(touched)
+            if optional["touched_at"] is None:
+                board.warnings.append(f"{where}: touched_at must be an ISO 8601 time and was ignored.")
+        brief = raw.get("brief")
+        if brief is not None:
+            if not isinstance(brief, dict):
+                board.warnings.append(f"{where}: brief must be an object with url and recommendation and was ignored.")
+            else:
+                if brief.get("url") is not None:
+                    brief_url = _board_url(brief.get("url"))
+                    if brief_url:
+                        optional["brief_url"] = brief_url
+                    else:
+                        board.warnings.append(f"{where}: brief url must be an http(s) url and was ignored.")
+                recommendation = brief.get("recommendation")
+                if recommendation is not None:
+                    if _board_text(recommendation):
+                        optional["recommendation"] = _board_text(recommendation)
+                    elif not isinstance(recommendation, str):
+                        board.warnings.append(f"{where}: brief recommendation must be a string and was ignored.")
         board.items.append(BoardItem(
-            id=identifier, group=str(group), title=title, ask=ask, task=task, links=links, **optional,
+            id=identifier, group=str(group), title=title, ask=ask, task=task, links=links,
+            **optional,  # type: ignore[arg-type]
         ))
     return board
 
@@ -2300,8 +2369,84 @@ def unsorted_note(item: BacklogItem) -> str:
     return f"Blocked, waiting on {item.blocked_by}" if item.blocked_by else "Waiting on the captain"
 
 
-def board_view(homes: list[HomeSnapshot]) -> BoardView | None:
-    """Merge the homes' boards, drop settled items, and add backlog items the boards miss."""
+BOARD_BANDS = (
+    ("desk", "On your desk", "What you touched in the last 2 days."),
+    ("week", "This week", "Touched in the last 7 days."),
+    ("parked", "Parked", "Older, deferred, or never touched."),
+)
+BOARD_BAND_KEYS = tuple(key for key, _title, _description in BOARD_BANDS)
+DESK_HOURS = 48
+WEEK_DAYS = 7
+SWEEP_DAYS = 14
+DESK_LIMIT = 5
+GROUP_RANK = {key: index for index, key in enumerate((*BOARD_GROUP_KEYS, "unsorted"))}
+GROUP_SHORT = {"merge": "Merge", "approve": "Approve", "decide": "Decide", "forward": "Forward", "read": "Read", "unsorted": UNSORTED_TITLE}
+CAPTAIN_NOTE_RE = re.compile(r"\bCaptain (\d{4}-\d{2}-\d{2})\b")
+HOLD_SET_RE = re.compile(r"\bCaptain hold set:\s*(\d{4}-\d{2}-\d{2}T[\d:]+(?:Z|[+-]\d{2}:?\d{2})?)")
+DEFERRED_HOLD_RE = re.compile(
+    r"(?i)\b(?:defer(?:red|s)?|parked)\b|\b(?:waits?|waiting)\s+(?:on|for)\s+[a-z0-9]+(?:-[a-z0-9]+)+\b"
+)
+
+
+def backlog_recency(item: BacklogItem, now: datetime) -> tuple[datetime | None, str]:
+    """Latest captain-dated note or hold-set time from the backlog, and why the item is deferred, if it is."""
+    times: list[datetime] = []
+    deferred = ""
+    for match in CAPTAIN_NOTE_RE.finditer(item.raw):
+        when = parse_when(match.group(1))
+        if when is None:
+            continue
+        if when.date() > now.date():
+            deferred = deferred or f"check-in dated {match.group(1)}"
+        else:
+            times.append(when)
+    for match in HOLD_SET_RE.finditer(item.raw):
+        when = parse_when(match.group(1))
+        if when is not None and when <= now:
+            times.append(when)
+    for key in ("hold-until", "until"):
+        until = parse_when(item.attrs.get(key, ""))
+        if until is not None and until > now:
+            deferred = f"deferred until {until.date().isoformat()}"
+            break
+    if not deferred and DEFERRED_HOLD_RE.search(item.hold_reason):
+        deferred = "deferred by its hold note"
+    return (max(times) if times else None), deferred
+
+
+def rank_entry(entry: BoardEntry, backlog_item: BacklogItem | None, now: datetime) -> None:
+    """Set the entry's touched time, deferral, band, and sweep flag from the board and backlog."""
+    times = [entry.item.touched_at] if entry.item.touched_at else []
+    if backlog_item is not None:
+        fallback, entry.deferred = backlog_recency(backlog_item, now)
+        if fallback is not None:
+            times.append(fallback)
+        if not entry.item.project and backlog_item.project:
+            entry.item = replace(entry.item, project=backlog_item.project)
+    entry.touched = min(max(times), now) if times else None
+    age = (now - entry.touched).total_seconds() if entry.touched else None
+    if age is not None and not entry.deferred and age <= DESK_HOURS * 3600:
+        entry.band = "desk"
+    elif age is not None and not entry.deferred and age <= WEEK_DAYS * 86400:
+        entry.band = "week"
+    else:
+        entry.band = "parked"
+        entry.sweep = age is None or age > SWEEP_DAYS * 86400
+
+
+def band_entries(entries: list[BoardEntry]) -> dict[str, list[BoardEntry]]:
+    """Group entries into bands, ordered by group, then newest touched first."""
+    bands: dict[str, list[BoardEntry]] = {key: [] for key in BOARD_BAND_KEYS}
+    for entry in entries:
+        bands[entry.band].append(entry)
+    for band in bands.values():
+        band.sort(key=lambda e: (GROUP_RANK[e.item.group], -(e.touched.timestamp() if e.touched else float("-inf"))))
+    return bands
+
+
+def board_view(homes: list[HomeSnapshot], now: datetime | None = None) -> BoardView | None:
+    """Merge the homes' boards, drop settled items, add backlog items the boards miss, and rank them by recency."""
+    now = now or datetime.now(timezone.utc)
     snapshots = all_snapshots(homes)
     boarded = [home for home in snapshots if home.board is not None]
     if not boarded:
@@ -2333,6 +2478,7 @@ def board_view(homes: list[HomeSnapshot]) -> BoardView | None:
         if home.error:
             view.warnings.append(f"Could not check board items for {label}: the backlog could not be read.")
         for item in board.items:
+            backlog_item: BacklogItem | None = None
             if not home.error:
                 target, task_id = home, item.task
                 route, separator, rest = item.task.partition("/")
@@ -2356,35 +2502,30 @@ def board_view(homes: list[HomeSnapshot]) -> BoardView | None:
                         and not any(url == pr_url for _link_label, url in item.links)
                     ):
                         item = replace(item, links=[*item.links, ("Pull request", pr_url)])
-            view.groups[item.group].append(BoardEntry(
-                item, label, refresh_key=f"{board.path}:{item.id}",
-            ))
+            entry = BoardEntry(item, label, refresh_key=f"{board.path}:{item.id}")
+            rank_entry(entry, backlog_item, now)
+            view.groups[item.group].append(entry)
     for snapshot in snapshots:
         for backlog_item in items_of(snapshot).values():
             if (id(snapshot), backlog_item.id) in referenced or not needs_captain(backlog_item):
                 continue
             links = [("Pull request", backlog_item.pr_url)] if PR_URL_RE.fullmatch(backlog_item.pr_url or "") else []
-            view.unsorted.append(BoardEntry(
+            entry = BoardEntry(
                 BoardItem(
                     id=backlog_item.id, group="unsorted", title=backlog_item.title, ask=unsorted_note(backlog_item),
                     detail=f"Backlog item `{backlog_item.id}`", task=backlog_item.id, links=links,
                 ), snapshot.spec.label,
                 refresh_key=f"{snapshot.backlog_path}:{backlog_item.id}",
-            ))
+            )
+            rank_entry(entry, backlog_item, now)
+            view.unsorted.append(entry)
     view.multiple_homes = len({entry.home for entries in view.groups.values() for entry in entries} | {e.home for e in view.unsorted}) > 1
+    view.bands = band_entries([*(e for key in BOARD_GROUP_KEYS for e in view.groups[key]), *view.unsorted])
     number = 0
-    for key in BOARD_GROUP_KEYS:
-        entries = view.groups[key]
-        if key == "decide":
-            topics = list(dict.fromkeys(entry.item.topic for entry in entries if entry.item.topic))
-            order = {topic: index for index, topic in enumerate(topics)}
-            entries.sort(key=lambda entry: order.get(entry.item.topic, len(topics)))
-        for entry in entries:
+    for band in BOARD_BAND_KEYS:
+        for entry in view.bands[band]:
             number += 1
             entry.number = number
-    for entry in view.unsorted:
-        number += 1
-        entry.number = number
     return view
 
 
@@ -2408,9 +2549,35 @@ def board_status_html(view: BoardView, now: datetime) -> str:
     return "".join(lines)
 
 
-def board_entry_html(entry: BoardEntry, show_home: bool) -> str:
+def touched_text(entry: BoardEntry, now: datetime) -> str:
+    if entry.touched is None:
+        return "touched time unknown"
+    if (now - entry.touched).total_seconds() < 3600:
+        return "touched under an hour ago"
+    return f"touched {waited_text(entry.touched.isoformat(), now)} ago"
+
+
+def board_entry_html(entry: BoardEntry, show_home: bool, now: datetime) -> str:
     item = entry.item
-    home = f'<span class="board-home">{html.escape(entry.home)}</span>' if show_home else ""
+    chips = [f'<span class="chip chip-group">{html.escape(GROUP_SHORT[item.group])}</span>']
+    if item.project:
+        chips.append(f'<span class="chip">{html.escape(item.project)}</span>')
+    if item.topic:
+        chips.append(f'<span class="chip">{html.escape(item.topic)}</span>')
+    if show_home:
+        chips.append(f'<span class="chip board-home">{html.escape(entry.home)}</span>')
+    chips.append(f'<span class="chip chip-age">{html.escape(touched_text(entry, now))}</span>')
+    if entry.deferred:
+        chips.append(f'<span class="chip chip-deferred">{html.escape(entry.deferred)}</span>')
+    if entry.sweep:
+        chips.append('<span class="chip chip-sweep">keep, defer or drop?</span>')
+    brief = []
+    if item.recommendation:
+        brief.append(
+            f'<span class="chip chip-rec"><span class="rec-label">Recommend</span> {html.escape(item.recommendation)}</span>'
+        )
+    if item.brief_url:
+        brief.append(f'<a class="brief-link" href="{html.escape(item.brief_url, quote=True)}">Open brief</a>')
     parts = [
         f'<p class="board-ask">{html.escape(item.ask)}</p>',
     ]
@@ -2425,55 +2592,333 @@ def board_entry_html(entry: BoardEntry, show_home: bool) -> str:
             )
             detail = html.escape(item.detail)
         parts.append(f'{detail_warning}<div class="body">{detail}</div>')
-    if item.links:
-        links = "".join(
+    links = ([("Decision brief", item.brief_url)] if item.brief_url else []) + [
+        (label, url) for label, url in item.links if url != item.brief_url
+    ]
+    if links:
+        rendered = "".join(
             f'<li><a href="{html.escape(url, quote=True)}">{html.escape(label)}</a> '
             f'<span class="path">{html.escape(url)}</span></li>'
-            for label, url in item.links
+            for label, url in links
         )
-        parts.append(f'<ul class="board-links">{links}</ul>')
+        parts.append(f'<ul class="board-links">{rendered}</ul>')
+    brief_row = f'<span class="board-brief">{"".join(brief)}</span>' if brief else ""
     return (
         f'<details class="board-item" id="item-{entry.number}" '
         f'data-refresh-key="{html.escape(entry.refresh_key, quote=True)}"><summary>'
         f'<span class="board-num" aria-label="Number {entry.number}">{entry.number}</span>'
-        f'<span class="board-text"><span class="board-title">{html.escape(item.title)}</span>{home}'
-        f'<span class="board-line">{html.escape(item.ask)}</span></span></summary>'
+        f'<span class="board-text"><span class="board-title">{html.escape(item.title)}</span>'
+        f'<span class="board-line">{html.escape(item.ask)}</span>'
+        f'<span class="board-chips">{"".join(chips)}</span>{brief_row}</span></summary>'
         f'<div class="board-body">{"".join(parts)}</div></details>'
     )
 
 
-def board_html(view: BoardView, now: datetime) -> str:
+def band_counts(entries: list[BoardEntry]) -> str:
+    counts: dict[str, int] = {}
+    for entry in entries:
+        counts[entry.item.group] = counts.get(entry.item.group, 0) + 1
+    return " · ".join(
+        f"{counts[key]} {GROUP_SHORT[key].lower()}" for key in (*BOARD_GROUP_KEYS, "unsorted") if counts.get(key)
+    )
+
+
+def board_html(view: BoardView, now: datetime, show_all: bool = False) -> str:
     out = ['<section class="board" id="board" aria-label="Waiting on you">']
     out.extend(f'<div class="warning"><p>{html.escape(warning)}</p></div>' for warning in view.warnings)
     if view.hidden:
         out.append(f'<p class="source-note">{view.hidden} board item{"s" if view.hidden != 1 else ""} already settled in the backlog and hidden.</p>')
-    shown = 0
-    sections = [(key, title, description, view.groups[key]) for key, title, description in BOARD_GROUPS]
-    sections.append(("unsorted", UNSORTED_TITLE, UNSORTED_DESCRIPTION, view.unsorted))
-    for key, title, description, entries in sections:
+    if not any(view.bands.values()):
+        out.append('<p class="empty">Nothing is waiting on you right now.</p>')
+        out.append("</section>")
+        return "".join(out)
+    show_home = view.multiple_homes
+    for key, title, description in BOARD_BANDS:
+        entries = view.bands[key]
+        counts = band_counts(entries)
+        head = (
+            f'<div class="section-head"><div><h2>{html.escape(title)}</h2>'
+            f'<p>{html.escape(description)}{" " + html.escape(counts) + "." if counts and key != "desk" else ""}</p></div>'
+            f'<span class="count">{len(entries)}</span></div>'
+        )
+        if key == "desk":
+            shown = entries if show_all else entries[:DESK_LIMIT]
+            more = [] if show_all else entries[DESK_LIMIT:]
+            body = "".join(board_entry_html(entry, show_home, now) for entry in shown)
+            if not entries:
+                body = '<p class="empty">Nothing touched in the last 2 days. Older items are below.</p>'
+            if more:
+                body += (
+                    '<details class="board-more" id="board-desk-more" data-refresh-key="board-band:desk-more">'
+                    f'<summary>+{len(more)} more you touched recently</summary>'
+                    f'{"".join(board_entry_html(entry, show_home, now) for entry in more)}</details>'
+                )
+            out.append(f'<div class="dashboard-section board-band" id="board-desk">{head}{body}</div>')
+            continue
         if not entries:
             continue
-        shown += len(entries)
-        body = []
-        if key == "decide" and any(entry.item.topic for entry in entries):
-            current: object = object()
-            for entry in entries:
-                topic = entry.item.topic or OTHER_TOPIC
-                if topic != current:
-                    body.append(f'<h3 class="board-topic">{html.escape(topic)}</h3>')
-                    current = topic
-                body.append(board_entry_html(entry, view.multiple_homes))
-        else:
-            body.extend(board_entry_html(entry, view.multiple_homes) for entry in entries)
+        sweep = sum(entry.sweep for entry in entries)
+        sweep_line = (
+            f'<p class="sweep">Weekly sweep: {sweep} parked item{"s" if sweep != 1 else ""} untouched for over '
+            f"{SWEEP_DAYS} days. Keep, defer or drop?</p>"
+        ) if sweep else ""
         out.append(
-            f'<div class="dashboard-section board-group" id="board-{key}"><div class="section-head"><div>'
-            f'<h2>{html.escape(title)}</h2><p>{html.escape(description)}</p></div>'
-            f'<span class="count">{len(entries)}</span></div>{"".join(body)}</div>'
+            f'<details class="dashboard-section board-band" id="board-{key}" data-refresh-key="board-band:{key}"'
+            f'{" open" if show_all else ""}><summary>{head}</summary>{sweep_line}'
+            f'{"".join(board_entry_html(entry, show_home, now) for entry in entries)}</details>'
         )
-    if not shown:
-        out.append('<p class="empty">Nothing is waiting on you right now.</p>')
     out.append("</section>")
     return "".join(out)
+
+
+# --- Board writer ------------------------------------------------------------
+# `quarterdeck board` is the one command that writes into a home: it changes
+# only <data>/captain-board.json, the file Firstmate already owns and
+# Quarterdeck already reads. render and serve never call it.
+
+
+def board_time_text(value: datetime) -> str:
+    return value.astimezone(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+
+def board_file_path(args: argparse.Namespace) -> Path:
+    raw_home = args.home or os.environ.get("FM_HOME")
+    if args.data_dir:
+        data_dir = Path(args.data_dir).expanduser().resolve()
+    elif raw_home:
+        override = os.environ.get("FM_DATA_OVERRIDE")
+        data_dir = Path(override).expanduser().resolve() if override else Path(raw_home).expanduser().resolve() / "data"
+    else:
+        raise ValueError("a Firstmate home is required; pass --home or --data-dir, or set FM_HOME")
+    if not data_dir.is_dir():
+        raise ValueError(f"board data directory is not a directory: {data_dir}")
+    path = data_dir / BOARD_FILENAME
+    if path.is_symlink():
+        raise ValueError(f"refusing symbolic-link board file: {path}")
+    return path
+
+
+@contextmanager
+def board_lock(path: Path) -> Iterator[None]:
+    """Hold an exclusive lock on the board's directory, so no lock file is added to the home."""
+    descriptor = os.open(path.parent, os.O_RDONLY)
+    try:
+        fcntl.flock(descriptor, fcntl.LOCK_EX)
+        yield
+    finally:
+        os.close(descriptor)
+
+
+def load_board_document(path: Path) -> dict[str, object]:
+    """Read the raw board for editing; refuse anything a write could damage."""
+    try:
+        source = path.read_text(encoding="utf-8")
+    except FileNotFoundError:
+        return {"version": BOARD_VERSION, "items": []}
+    except (OSError, UnicodeDecodeError) as exc:
+        raise ValueError(f"could not read {path}: {exc}") from exc
+    try:
+        data = json.loads(source)
+    except ValueError as exc:
+        raise ValueError(f"{path} is not valid JSON ({exc}); fix or remove it before writing") from exc
+    if not isinstance(data, dict) or type(data.get("version")) is not int or data.get("version") != BOARD_VERSION:
+        raise ValueError(f"{path} is not a version {BOARD_VERSION} board; refusing to overwrite it")
+    if not isinstance(data.get("items"), list):
+        raise ValueError(f"{path} has no items list; refusing to overwrite it")
+    return data
+
+
+def write_board_document(path: Path, data: dict[str, object], now: datetime) -> None:
+    data["updated_at"] = board_time_text(now)
+    mode = stat.S_IMODE(path.stat().st_mode) if path.exists() else 0o644
+    temporary_path: Path | None = None
+    try:
+        with tempfile.NamedTemporaryFile(
+            "w", encoding="utf-8", dir=path.parent, prefix=f".{path.name}.", suffix=".tmp", delete=False,
+        ) as stream:
+            temporary_path = Path(stream.name)
+            json.dump(data, stream, indent=2, ensure_ascii=False)
+            stream.write("\n")
+        os.chmod(temporary_path, mode)
+        os.replace(temporary_path, path)
+    except OSError:
+        if temporary_path is not None:
+            temporary_path.unlink(missing_ok=True)
+        raise
+
+
+def board_items_for(items: list[object], task: str, item_id: str | None) -> list[dict[str, object]]:
+    if item_id:
+        return [raw for raw in items if isinstance(raw, dict) and raw.get("id") == item_id]
+    matches = [raw for raw in items if isinstance(raw, dict) and raw.get("task") == task]
+    return matches or [raw for raw in items if isinstance(raw, dict) and raw.get("id") == task]
+
+
+def touched_value(args: argparse.Namespace, now: datetime) -> str | None:
+    at = getattr(args, "touched_at", None) or getattr(args, "at", None)
+    if at:
+        parsed = parse_board_time(at)
+        if parsed is None:
+            raise ValueError(f"not an ISO 8601 time: {at}")
+        return board_time_text(parsed)
+    return board_time_text(now) if getattr(args, "touch", False) else None
+
+
+def apply_board_upsert(raw: dict[str, object], args: argparse.Namespace, now: datetime) -> None:
+    raw["task"] = args.task
+    for key in ("group", "title", "ask", "detail", "topic", "project"):
+        value = getattr(args, key)
+        if value is None:
+            continue
+        if value.strip():
+            raw[key] = value.strip()
+        elif key in {"detail", "topic", "project"}:
+            raw.pop(key, None)
+        else:
+            raise ValueError(f"--{key} cannot be empty")
+    if args.group is not None and args.group not in BOARD_GROUP_KEYS:
+        raise ValueError(f"--group must be one of {', '.join(BOARD_GROUP_KEYS)}")
+    if args.links is not None:
+        links = []
+        for value in args.links:
+            label, separator, url = value.partition("=")
+            if not separator or not label.strip() or not _board_url(url):
+                raise ValueError(f"--link needs LABEL=URL with an http(s) URL: {value}")
+            links.append({"label": label.strip(), "url": url.strip()})
+        if links:
+            raw["links"] = links
+        else:
+            raw.pop("links", None)
+    if args.brief_url is not None or args.recommendation is not None:
+        brief = raw.get("brief") if isinstance(raw.get("brief"), dict) else {}
+        assert isinstance(brief, dict)
+        if args.brief_url is not None:
+            if not args.brief_url.strip():
+                brief.pop("url", None)
+            elif not _board_url(args.brief_url):
+                raise ValueError(f"--brief-url must be an http(s) URL: {args.brief_url}")
+            else:
+                brief["url"] = args.brief_url.strip()
+        if args.recommendation is not None:
+            if args.recommendation.strip():
+                brief["recommendation"] = args.recommendation.strip()
+            else:
+                brief.pop("recommendation", None)
+        if brief:
+            raw["brief"] = brief
+        else:
+            raw.pop("brief", None)
+    touched = touched_value(args, now)
+    if touched:
+        raw["touched_at"] = touched
+
+
+def board_upsert(args: argparse.Namespace) -> int:
+    now = datetime.now(timezone.utc)
+    try:
+        path = board_file_path(args)
+        with board_lock(path):
+            data = load_board_document(path)
+            items = data["items"]
+            assert isinstance(items, list)
+            matches = board_items_for(items, args.task, args.id)
+            if len(matches) > 1:
+                raise ValueError(f"{len(matches)} board items name task {args.task}; pass --id to pick one")
+            if matches:
+                raw = matches[0]
+                action = "updated"
+            else:
+                item_id = args.id or re.sub(r"[^\w.-]+", "-", args.task).strip("-")
+                if any(isinstance(other, dict) and other.get("id") == item_id for other in items):
+                    raise ValueError(f"board item id {item_id} already names another task; pass --id")
+                missing = [name for name in ("group", "title", "ask") if not getattr(args, name)]
+                if missing:
+                    raise ValueError("a new board item needs " + ", ".join(f"--{name}" for name in missing))
+                raw = {"id": item_id}
+                items.append(raw)
+                action = "added"
+            apply_board_upsert(raw, args, now)
+            check = parse_captain_board(json.dumps(data), path)
+            if not any(item.id == raw.get("id") for item in check.items):
+                problems = [w for w in check.warnings if f"({raw.get('id')})" in w]
+                raise ValueError("the item would not be valid: " + " ".join(problems or check.warnings))
+            write_board_document(path, data, now)
+    except (OSError, ValueError) as exc:
+        print(f"quarterdeck: {exc}", file=sys.stderr)
+        return 2
+    print(f"{action} {raw['id']} (task {args.task}) in {path}")
+    return 0
+
+
+def board_touch(args: argparse.Namespace) -> int:
+    now = datetime.now(timezone.utc)
+    try:
+        path = board_file_path(args)
+        with board_lock(path):
+            data = load_board_document(path)
+            items = data["items"]
+            assert isinstance(items, list)
+            matches = board_items_for(items, args.task, None)
+            if not matches:
+                print(
+                    f"quarterdeck: no board item names task {args.task}; add it with `quarterdeck board upsert`",
+                    file=sys.stderr,
+                )
+                return 1
+            stamp = touched_value(args, now) or board_time_text(now)
+            for raw in matches:
+                previous = parse_board_time(raw.get("touched_at"))
+                if previous is None or previous < parse_board_time(stamp):  # type: ignore[operator]
+                    raw["touched_at"] = stamp
+            write_board_document(path, data, now)
+    except (OSError, ValueError) as exc:
+        print(f"quarterdeck: {exc}", file=sys.stderr)
+        return 2
+    print(f"touched {', '.join(str(raw['id']) for raw in matches)} at {stamp}")
+    return 0
+
+
+def board_remove(args: argparse.Namespace) -> int:
+    now = datetime.now(timezone.utc)
+    try:
+        path = board_file_path(args)
+        with board_lock(path):
+            if not path.exists():
+                print(f"no board file at {path}; nothing to remove")
+                return 0
+            data = load_board_document(path)
+            items = data["items"]
+            assert isinstance(items, list)
+            matches = board_items_for(items, args.task, args.id)
+            if not matches:
+                print(f"no board item names task {args.task}; nothing to remove")
+                return 0
+            data["items"] = [raw for raw in items if not any(raw is match for match in matches)]
+            write_board_document(path, data, now)
+    except (OSError, ValueError) as exc:
+        print(f"quarterdeck: {exc}", file=sys.stderr)
+        return 2
+    print(f"removed {', '.join(str(raw.get('id')) for raw in matches)} from {path}")
+    return 0
+
+
+def board_list(args: argparse.Namespace) -> int:
+    try:
+        path = board_file_path(args)
+        data = load_board_document(path)
+    except (OSError, ValueError) as exc:
+        print(f"quarterdeck: {exc}", file=sys.stderr)
+        return 2
+    board = parse_captain_board(json.dumps(data), path)
+    if args.as_json:
+        print(json.dumps(data, indent=2, ensure_ascii=False))
+        return 0
+    for warning in board.warnings:
+        print(f"warning: {warning}", file=sys.stderr)
+    for item in board.items:
+        touched = board_time_text(item.touched_at) if item.touched_at else "-"
+        print(f"{item.task}\t{item.id}\t{item.group}\t{touched}\t{item.title}")
+    return 0
 
 
 def load_config(path: Path | None) -> dict[str, object]:
@@ -3078,6 +3523,7 @@ COMMAND_DOCS = {
     "add": ["how-to/configure-multiple-homes.md", "reference/cli-and-config.md"],
     "list": ["how-to/configure-multiple-homes.md", "reference/cli-and-config.md"],
     "remove": ["how-to/configure-multiple-homes.md", "reference/cli-and-config.md"],
+    "board": ["how-to/keep-the-board-current.md", "reference/captain-board.md", "explanation/privacy-and-architecture.md"],
     "install": ["how-to/install.md", "how-to/update.md", "how-to/uninstall.md"],
     "update": ["how-to/update.md", "reference/cli-and-config.md"],
     "help": ["README.md", "reference/cli-and-config.md"],
@@ -3523,6 +3969,72 @@ def make_parser() -> argparse.ArgumentParser:
     remove_parser.add_argument("target", help="registered label or Firstmate home path")
     remove_parser.add_argument("--config", type=Path, help="JSON config file; defaults to the private user config")
     remove_parser.set_defaults(handler=remove_home)
+
+    board_parser = subparsers.add_parser(
+        "board", help="add, touch, remove, or list captain board items",
+        description=(
+            "Keep a home's captain board current by task id. Writes only <data>/captain-board.json, atomically "
+            "and under a lock, and refuses to overwrite a board it cannot read. render and serve stay read-only."
+        ),
+    )
+    command_parsers["board"] = board_parser
+    board_subparsers = board_parser.add_subparsers(dest="board_command", required=True)
+
+    def board_target(command_parser: argparse.ArgumentParser) -> None:
+        command_parser.add_argument("--home", help="Firstmate home whose data/captain-board.json to use (default FM_HOME)")
+        command_parser.add_argument("--data-dir", help="use this data directory instead of <home>/data")
+
+    upsert_parser = board_subparsers.add_parser(
+        "upsert", help="add or update the item for a task",
+        description=(
+            "Add the board item for TASK, or update the one that already names it. A new item needs --group, "
+            "--title and --ask. An empty value clears --detail, --topic, --project, --brief-url or --recommendation. "
+            "touched_at changes only with --touch or --touched-at."
+        ),
+    )
+    upsert_parser.add_argument("task", help="backlog task id; route/id names a secondmate's task")
+    upsert_parser.add_argument("--id", help="board item id (default: the task id)")
+    upsert_parser.add_argument("--group", help=f"one of {', '.join(BOARD_GROUP_KEYS)}")
+    upsert_parser.add_argument("--title", help="short name the captain can say aloud")
+    upsert_parser.add_argument("--ask", help="one plain-language line: what is wanted")
+    upsert_parser.add_argument("--detail", help="short Markdown shown when the item is opened")
+    upsert_parser.add_argument("--topic", help="optional topic label")
+    upsert_parser.add_argument("--project", help="project the item belongs to")
+    upsert_parser.add_argument("--brief-url", help="http(s) link to the decision brief")
+    upsert_parser.add_argument("--recommendation", help="one-line recommendation shown as a chip")
+    upsert_parser.add_argument("--link", dest="links", action="append", metavar="LABEL=URL", help="replace the links; repeat for several")
+    upsert_parser.add_argument("--touch", action="store_true", help="also record that the captain engaged with it now")
+    upsert_parser.add_argument("--touched-at", metavar="ISO", help="record the captain's engagement at this time")
+    board_target(upsert_parser)
+    upsert_parser.set_defaults(handler=board_upsert)
+
+    touch_parser = board_subparsers.add_parser(
+        "touch", help="record that the captain engaged with a task now",
+        description=(
+            "Set touched_at on every board item that names TASK; a newer recorded time is kept. "
+            "Exits 1 when no item names it."
+        ),
+    )
+    touch_parser.add_argument("task", help="backlog task id")
+    touch_parser.add_argument("--at", metavar="ISO", help="engagement time (default now)")
+    board_target(touch_parser)
+    touch_parser.set_defaults(handler=board_touch)
+
+    board_remove_parser = board_subparsers.add_parser(
+        "remove", help="remove the items for a task",
+        description="Remove every board item that names TASK, or only --id. Removing nothing succeeds.",
+    )
+    board_remove_parser.add_argument("task", help="backlog task id")
+    board_remove_parser.add_argument("--id", help="remove only this board item id")
+    board_target(board_remove_parser)
+    board_remove_parser.set_defaults(handler=board_remove)
+
+    board_list_parser = board_subparsers.add_parser(
+        "list", help="print the board items", description="Print task, id, group, touched_at and title per item.",
+    )
+    board_list_parser.add_argument("--json", dest="as_json", action="store_true", help="print the raw board JSON")
+    board_target(board_list_parser)
+    board_list_parser.set_defaults(handler=board_list)
 
     install_parser = subparsers.add_parser(
         "install", help="install or uninstall Quarterdeck", description="Run the user-local shell installer."

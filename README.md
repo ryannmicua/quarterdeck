@@ -7,7 +7,7 @@
 Quarterdeck turns running Firstmate homes' backlogs and scout reports into one
 local HTML review page. Serving is read-only by default; report review marks are
 available as an opt-in. When any selected home or registered secondmate has
-a captain board, the grouped list leads the page; otherwise the page leads with
+a captain board, the recency-ranked "On your desk" list leads the page; otherwise the page leads with
 the four sections from Firstmate's `/bearings` digest. Reports waiting on your
 review also appear. Configure several homes to review them together; each home
 is grouped under a clear label, with its registered local secondmates under
@@ -20,10 +20,19 @@ as a local artifact. Quarterdeck itself has no agent or build step.
 ## Features
 
 - Captain board: when a home has `data/captain-board.json`, the page leads with
-  a grouped, numbered, phone-friendly "waiting on you" list (merge, approve,
-  decide, forward, read), cross-checked against the live backlog, with anything
-  unlisted under "Not yet sorted". See the
+  what the captain touched in the last two days ("On your desk", at most five),
+  then collapsed "This week" and "Parked" sections with counts per group. Items
+  are cross-checked against the live backlog, carry a decision-brief link and
+  recommendation chip, and backlog items missing from the board still appear,
+  marked "Not yet sorted". See the
   [board file reference](docs/reference/captain-board.md).
+- Board writer: `quarterdeck board upsert|touch|remove|list <task-id>` lets
+  Firstmate keep the board current without hand-editing JSON; it writes only
+  the board file. See [Keep the captain board current](docs/how-to/keep-the-board-current.md).
+- Decision briefs: a touch-friendly, theme-aware
+  [brief template](templates/decision-brief.html.tmpl) that Firstmate fills and
+  publishes as a private Claude artifact. See
+  [Write and publish a decision brief](docs/how-to/write-decision-briefs.md).
 - Review buttons: start `quarterdeck serve --allow-marks` and use "Mark
   reviewed" and "Unmark" on the served page. They run the same code as
   `quarterdeck reports mark-reviewed` and `unmark-reviewed`; off by default.
@@ -151,7 +160,9 @@ error if none is set.
 
 ## Roadmap
 
-Possible future work: marking backlog and board items as seen, an agent-driven
-marking path, multi-user review history, write-back to homes, answer capture, Firstmate extension
-binding, and hosted or authenticated views. These are out of scope today;
-apart from the opt-in report review marks, Quarterdeck remains a read-only view.
+Possible future work: a pinned desk artifact for reading off the local
+network, a Listen button and tap-to-answer on briefs, an agent-driven marking
+path, multi-user review history, Firstmate extension binding, and hosted or
+authenticated views; see the [captain desk experience log](docs/explanation/captain-desk-experience-log.md).
+These are out of scope today. Apart from the opt-in report review marks and the
+explicit `quarterdeck board` writer, Quarterdeck remains a read-only view.
