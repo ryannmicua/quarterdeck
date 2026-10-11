@@ -11,6 +11,10 @@ quarterdeck reports list [--home PATH] [--config FILE]
 quarterdeck reports read <report-id> [--home PATH] [--config FILE] [--open]
 quarterdeck reports mark-reviewed <report-id> [--home PATH] [--config FILE]
 quarterdeck reports unmark-reviewed <report-id> [--home PATH] [--config FILE]
+quarterdeck board upsert <task-id> [--id ID] [--group GROUP] [--title TEXT] [--ask TEXT] [--detail TEXT] [--topic TEXT] [--project TEXT] [--brief-url URL] [--recommendation TEXT] [--link LABEL=URL ...] [--touch] [--touched-at ISO] [--home PATH] [--data-dir PATH]
+quarterdeck board touch <task-id> [--at ISO] [--home PATH] [--data-dir PATH]
+quarterdeck board remove <task-id> [--id ID] [--home PATH] [--data-dir PATH]
+quarterdeck board list [--json] [--home PATH] [--data-dir PATH]
 quarterdeck add <firstmate-home> [--label LABEL] [--config FILE]
 quarterdeck list [--config FILE]
 quarterdeck remove <label-or-path> [--config FILE]
@@ -115,6 +119,18 @@ an object containing `urls`, raw configured `hosts`, and `source`; when no unit
 is installed, `source` is `default` and `note` explains the fallback. See
 [Serve the always-current bearings page](../how-to/serve-the-page.md).
 
+`board` manages one home's `<data>/captain-board.json` by task id. It uses
+`--data-dir` directly when supplied, without requiring a home. Otherwise it
+requires `--home` or `FM_HOME`, and uses `FM_DATA_OVERRIDE` when set, then
+`<home>/data`. The data directory must already exist. It does not read the
+config's home list. `upsert` adds or updates an item, `touch` records the captain's
+engagement time, `remove` deletes the task's items, and `list` prints them.
+Writes are atomic and locked; an unreadable or unsupported board is refused
+rather than overwritten. If both `--touch` and `--touched-at` are supplied,
+the explicit timestamp takes precedence. Exit status is 0 on success, 1 when
+`touch` finds no item, and 2 for invalid input or an unwritable board. See
+[Keep the captain board current](../how-to/keep-the-board-current.md).
+
 `add`, `list`, and `remove` accept the same `--config FILE` option. `add` also
 accepts `--label LABEL`; `remove` takes one label or path.
 
@@ -169,9 +185,11 @@ or name it `.quarterdeck.json`, which is ignored by Git.
 
 ## Data shown
 
-Recommendations are shown only when a report explicitly labels one. See [The
-attention model](../explanation/attention-model.md) for dashboard inclusion and
-`--all` behavior.
+Report recommendations are shown only when the report explicitly labels one.
+Board recommendation chips come from the optional
+[`brief.recommendation` field](captain-board.md). See [The attention
+model](../explanation/attention-model.md) for dashboard inclusion and `--all`
+behavior.
 
 The page is regenerated on demand. `quarterdeck render --lavish` writes a
 separate Lavish-ready file beside the normal output (for example,

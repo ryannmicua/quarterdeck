@@ -27,8 +27,17 @@ Firstmate cache as part of its own operation. `--no-snapshot` skips it, and the
 page falls back to parsing the backlog when it is absent, fails, or times out.
 The wrapper may also read registered remote secondmate ledgers through
 Firstmate's routes and show the returned rows. Quarterdeck invokes no other
-Firstmate script directly, makes no network calls itself, and writes nothing to
-a home.
+Firstmate script directly, and makes no network calls itself. `render` and
+`serve` write nothing to a home.
+
+The one exception is the explicit `quarterdeck board` command, which Firstmate
+runs to keep its captain board current. It writes only
+`<data>/captain-board.json`: the file Firstmate already owns and Quarterdeck
+already reads, in the schema Quarterdeck owns. It is a schema-checked
+replacement for Firstmate editing that JSON by hand, not a new data flow: it
+reads nothing but that file, runs no Firstmate script, never runs from `render`
+or `serve`, and has no HTTP endpoint. It writes atomically under a lock on the
+data directory and refuses to overwrite a board it cannot read.
 
 `quarterdeck serve` adds an HTTP listener. By default it answers only `GET` for
 generated pages, has no write endpoints and no login, and binds 127.0.0.1.
@@ -64,9 +73,15 @@ selected home. Its default location is under
 custom output outside the repo and selected homes, and keep real config outside
 the repo as well. Quarterdeck refuses output inside its checkout or a selected
 home. The page uses inline CSS and makes no network requests. `serve` is an
-optional HTTP process that can run under the systemd user unit; Quarterdeck has
+optional HTTP process that can run under the systemd user unit. The page has
 no write-back path into a Firstmate home; the opt-in report marks above write only
 Quarterdeck's own state directory.
+
+Board items may link decision briefs published as private Claude artifacts.
+Quarterdeck only renders the link and its one-line recommendation; it never
+fetches the brief. Brief content lives with the artifact service, which is the
+same processor that already runs Firstmate's Claude sessions, never in this
+repository.
 
 Quarterdeck writes readable HTML copies of linked reports, reports needing
 review, and the backlog beside the main page; the dependency-free Markdown
