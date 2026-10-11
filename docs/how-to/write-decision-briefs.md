@@ -67,9 +67,11 @@ in section 5 or the footer.
    ```
 
    See [Keep the captain board current](keep-the-board-current.md).
-5. When a comment thread on the brief reaches a Claude worker, that worker
-   relays decisions to Firstmate; Firstmate then runs `quarterdeck board touch
-   <task-id>` so the item stays on the desk.
+5. Comments on a published brief artifact receive Claude Code's automatic
+   instant reply. Every reply Firstmate writes itself starts with `FM: ` so
+   the two can be told apart. When the comment thread reaches a Claude worker,
+   that worker relays decisions to Firstmate; Firstmate then runs
+   `quarterdeck board touch <task-id>` so the item stays on the desk.
 
 **Fallback:** when the Artifact tool is unavailable, open the same file with
 Lavish (`lavish-axi brief.html`) and use the Lavish session URL as the

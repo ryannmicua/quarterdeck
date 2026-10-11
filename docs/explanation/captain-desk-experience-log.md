@@ -44,6 +44,10 @@ captain to declare it.
 | Report review marks | Rejected: no timestamps stored. |
 | Comments on decision briefs | Strong signal; the watching worker relays it to Firstmate, which records `touched_at`. |
 
+Comments on a published brief artifact receive Claude Code's automatic instant
+reply. Every reply Firstmate writes itself starts with `FM: ` so the two can
+be told apart.
+
 ## Ranking chosen
 
 Recency bands, documented in the

@@ -1638,6 +1638,10 @@ def waited_text(filed: str, now: datetime) -> str:
     then = parse_when(filed)
     if then is None:
         return ""
+    return elapsed_text(then, now)
+
+
+def elapsed_text(then: datetime, now: datetime) -> str:
     seconds = max(0, int((now - then).total_seconds()))
     days, hours = seconds // 86400, seconds // 3600
     if days >= 1:
@@ -2546,10 +2550,10 @@ def board_age_text(updated: datetime | None, now: datetime) -> str:
     if updated is None:
         return "at an unknown time"
     if updated > now:
-        return f"{waited_text(now.isoformat(), updated)} ahead (clock skew)"
+        return f"{elapsed_text(now, updated)} ahead (clock skew)"
     if (now - updated).total_seconds() < 120:
         return "just now"
-    return f"{waited_text(updated.isoformat(), now)} ago"
+    return f"{elapsed_text(updated, now)} ago"
 
 
 def board_status_html(view: BoardView, now: datetime) -> str:
@@ -2565,9 +2569,7 @@ def board_status_html(view: BoardView, now: datetime) -> str:
 def touched_text(entry: BoardEntry, now: datetime) -> str:
     if entry.touched is None:
         return "touched time unknown"
-    if (now - entry.touched).total_seconds() < 3600:
-        return "touched under an hour ago"
-    return f"touched {waited_text(entry.touched.isoformat(), now)} ago"
+    return f"touched {elapsed_text(entry.touched, now)} ago"
 
 
 def board_entry_html(entry: BoardEntry, show_home: bool, now: datetime) -> str:

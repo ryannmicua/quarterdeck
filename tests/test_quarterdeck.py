@@ -1581,6 +1581,44 @@ class CaptainBoardTests(unittest.TestCase):
                             self.assertEqual((entry.touched, entry.band), (touched, band))
                             self.assertEqual(bool(entry.deferred), field == "hold-until" and band == "parked")
 
+    def test_age_displays_use_parsed_offset_and_fractional_timestamps(self) -> None:
+        now = datetime(2026, 10, 10, 2, tzinfo=timezone.utc)
+        cases = [
+            ("2026-10-09T08:00:00.500+08:00", "1 day"),
+            ("2026-10-09T08:00:00.500-08:00", "9 hours"),
+            ("2026-10-09T08:00:00.500Z", "17 hours"),
+            ("2026-10-10T09:30:00.500+08:00", "under an hour"),
+        ]
+        for value, age in cases:
+            for source_format in ("body", "bullet", "table", "board"):
+                for boarded in (False, True) if source_format != "board" else (True,):
+                    with self.subTest(value=value, source_format=source_format, boarded=boarded), tempfile.TemporaryDirectory() as temp:
+                        items = [board_item(task="chart-ask", **({"touched_at": value} if source_format == "board" else {}))] if boarded else []
+                        home = self.make_home(Path(temp), items)
+                        if source_format == "table":
+                            backlog = (
+                                "| id | title | held | hold_kind | hold_set |\n"
+                                "| --- | --- | --- | --- | --- |\n"
+                                f"| chart-ask | Chart ask | yes | captain | {value} |\n"
+                            )
+                        else:
+                            backlog = "- [ ] chart-ask - Chart ask (held: yes) (hold-kind: captain)"
+                            if source_format == "bullet":
+                                backlog += f" (hold-set: {value})"
+                            backlog += "\n"
+                            if source_format == "body":
+                                backlog += f"  Captain hold set: {value}\n"
+                        (home / "data" / "backlog.md").write_text("# Backlog\n\n## Queued\n\n" + backlog, encoding="utf-8")
+                        homes, _ = self.view(home)
+                        view = quarterdeck.board_view(homes, now)
+                        assert view is not None
+                        entry = next(e for entries in view.bands.values() for e in entries if e.item.task == "chart-ask")
+                        self.assertIn(f'<span class="chip chip-age">touched {age} ago</span>', quarterdeck.board_entry_html(entry, False, now))
+            updated = datetime.fromisoformat(value.replace("Z", "+00:00"))
+            self.assertEqual(quarterdeck.board_age_text(updated, now), f"{age} ago")
+        future = datetime(2026, 10, 11, 8, 0, 0, 500000, tzinfo=timezone(timedelta(hours=8)))
+        self.assertEqual(quarterdeck.board_age_text(future, now), "22 hours ahead (clock skew)")
+
     def test_project_metadata_survives_backlog_conversion(self) -> None:
         for table in (False, True):
             for boarded in (False, True):
