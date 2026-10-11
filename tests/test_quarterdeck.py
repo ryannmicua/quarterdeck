@@ -1458,8 +1458,18 @@ class CaptainBoardTests(unittest.TestCase):
               for identifier in ("chart", "harbor-chart", "harbor_chart", "harbor.chart")],
             ("hold-set", "2026-10-08T08:00:00Z", "waits on captain to choose", "desk",
              datetime(2026, 10, 8, 8, tzinfo=timezone.utc)),
+            *[("hold-set", "2026-10-08T08:00:00Z", reason, "desk",
+               datetime(2026, 10, 8, 8, tzinfo=timezone.utc))
+              for reason in ("Waiting on the captain to approve", "waiting for the captain's decision",
+                             "waits on your approval", "waiting for a captain to choose", "waiting on me")],
+            ("hold-set", "2026-10-08T08:00:00Z", "waiting on the chart to land", "parked",
+             datetime(2026, 10, 8, 8, tzinfo=timezone.utc)),
             ("hold-set", "2026-10-08T08:00:00Z", "parked label to approve", "desk",
              datetime(2026, 10, 8, 8, tzinfo=timezone.utc)),
+        ]
+        cases += [
+            (field, value, "fm-hold-v1:" + base64.b64encode(reason.encode()).decode(), band, touched)
+            for field, value, reason, band, touched in cases if field == "hold-set"
         ]
         for field, value, reason, band, touched in cases:
             for table in (False, True):
@@ -1483,6 +1493,27 @@ class CaptainBoardTests(unittest.TestCase):
                         self.assertEqual((entry.band, entry.touched), (band, touched))
                         if field == "hold-until":
                             self.assertEqual(entry.deferred, "deferred until 2026-10-20")
+
+    def test_project_metadata_survives_backlog_conversion(self) -> None:
+        for table in (False, True):
+            for boarded in (False, True):
+                with self.subTest(table=table, boarded=boarded), tempfile.TemporaryDirectory() as temp:
+                    home = self.make_home(Path(temp), [board_item(task="chart-ask")] if boarded else [])
+                    backlog = (
+                        "| id | title | repo | held | hold_kind | hold_reason | hold_set |\n"
+                        "| --- | --- | --- | --- | --- | --- | --- |\n"
+                        "| chart-ask | Chart ask | reef-demo | yes | captain | choose | 2026-10-08T08:00:00Z |\n"
+                    ) if table else (
+                        "- [ ] chart-ask - Chart ask (repo: reef-demo) (held: yes) (hold-kind: captain) "
+                        "(hold: choose) (hold-set: 2026-10-08T08:00:00Z)\n"
+                    )
+                    (home / "data" / "backlog.md").write_text("# Backlog\n\n## Queued\n\n" + backlog, encoding="utf-8")
+                    homes, _ = self.view(home)
+                    view = quarterdeck.board_view(homes, self.NOW)
+                    assert view is not None
+                    entry = next(e for entries in view.bands.values() for e in entries if e.item.task == "chart-ask")
+                    self.assertEqual(entry.item.project, "reef-demo")
+                    self.assertIn('<span class="chip">reef-demo</span>', self.page(homes))
 
     def test_new_optional_fields_parse_and_warn(self) -> None:
         board = quarterdeck.parse_captain_board(json.dumps({
@@ -1848,6 +1879,51 @@ class BoardWriterTests(unittest.TestCase):
         self.assertEqual(self.data()["items"][0]["ask"], "Updated ask")
         self.assertEqual(self.cli("remove", "reef-fix", "--id", "dock-fix")[0], 0)
         self.assertEqual(self.data()["items"], [])
+
+    def test_writer_uses_reader_normalized_identity(self) -> None:
+        original = json.dumps({"version": 1, "items": [board_item(id=" dock-fix ", task=" reef-fix ")]})
+        for task in ("reef-fix", " reef-fix "):
+            for command in ("upsert", "touch", "remove"):
+                with self.subTest(task=task, command=command):
+                    self.board.write_text(original, encoding="utf-8")
+                    extra = ("--ask", "Updated ask") if command == "upsert" else ()
+                    self.assertEqual(self.cli(command, task, *extra)[0], 0)
+                    items = self.data()["items"]
+                    if command == "remove":
+                        self.assertEqual(items, [])
+                    else:
+                        self.assertEqual(len(items), 1)
+                        parsed = quarterdeck.parse_captain_board(self.board.read_text(encoding="utf-8"), self.board)
+                        self.assertEqual((parsed.items[0].id, parsed.items[0].task), ("dock-fix", "reef-fix"))
+                        if command == "upsert":
+                            self.assertEqual(parsed.items[0].ask, "Updated ask")
+                        else:
+                            self.assertIsNotNone(parsed.items[0].touched_at)
+        for item_id in ("dock-fix", " dock-fix "):
+            for command in ("upsert", "remove"):
+                with self.subTest(item_id=item_id, command=command):
+                    self.board.write_text(original, encoding="utf-8")
+                    extra = ("--ask", "Explicit ask") if command == "upsert" else ()
+                    self.assertEqual(self.cli(command, "reef-fix", "--id", item_id, *extra)[0], 0)
+                    self.assertEqual(len(self.data()["items"]), 1 if command == "upsert" else 0)
+        self.board.write_text(original, encoding="utf-8")
+        code, _, err = self.cli("upsert", "dock-fix", "--group", "read", "--title", "Dock ask", "--ask", "Read it")
+        self.assertEqual(code, 2)
+        self.assertIn("already names another task", err)
+        self.assertEqual(self.board.read_text(encoding="utf-8"), original)
+
+    def test_upsert_validates_the_changed_record_and_duplicate_identity(self) -> None:
+        for item in (board_item(id="dock-fix", task="reef-fix"),
+                     {"id": "dock-fix", "task": "reef-fix", "group": "read", "ask": "Read it"}):
+            with self.subTest(item=item):
+                original = json.dumps({"version": 1, "items": [board_item(id=" dock-fix ", task="other-task"), item]})
+                self.board.write_text(original, encoding="utf-8")
+                self.assertEqual(self.cli("upsert", "reef-fix", "--ask", "Updated ask")[0], 2)
+                self.assertEqual(self.board.read_text(encoding="utf-8"), original)
+        original = json.dumps({"version": 1, "items": [{"id": "dock-fix", "task": "reef-fix", "group": "read", "ask": "Read it"}]})
+        self.board.write_text(original, encoding="utf-8")
+        self.assertEqual(self.cli("upsert", "reef-fix", "--ask", "Updated ask")[0], 2)
+        self.assertEqual(self.board.read_text(encoding="utf-8"), original)
 
     def test_matched_items_without_ids_are_rejected_before_writing(self) -> None:
         for invalid_id in (None, "", "   ", 7):

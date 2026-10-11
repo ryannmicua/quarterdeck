@@ -1601,6 +1601,7 @@ def backlog_items(source: str, snapshot: HomeSnapshot) -> list[BacklogItem]:
             done=is_closed(record),
             attrs={key: value for key, value in {
                 "merged": merged_date,
+                "repo": value_for(record.fields, "repo"),
                 "hold-until": value_for(record.fields, "hold_until", "hold-until", "until"),
                 "hold-set": value_for(record.fields, "hold_set", "hold-set"),
             }.items() if value},
@@ -2389,7 +2390,8 @@ CAPTAIN_NOTE_RE = re.compile(r"\bCaptain (\d{4}-\d{2}-\d{2})\b")
 HOLD_SET_RE = re.compile(r"\bCaptain hold set:\s*(\d{4}-\d{2}-\d{2}T[\d:]+(?:Z|[+-]\d{2}:?\d{2})?)")
 DEFERRED_HOLD_RE = re.compile(
     r"(?i)\b(?:waits?|waiting)\s+(?:on|for)\s+"
-    r"(?!(?:captain|you|your|me|my|us|our)\b)[a-z0-9][\w.-]*\b"
+    r"(?!(?:(?:the|a|an)\s+)?(?:captain|you|your|me|my|us|our)\b)"
+    r"(?:(?:the|a|an)\s+)?[a-z0-9][\w.-]*\b"
 )
 
 
@@ -2755,10 +2757,16 @@ def write_board_document(path: Path, data: dict[str, object], now: datetime) -> 
 
 
 def board_items_for(items: list[object], task: str, item_id: str | None) -> list[dict[str, object]]:
-    matches = [
-        raw for raw in items if isinstance(raw, dict)
-        and (raw.get("id") == item_id if item_id else raw.get("task") == task)
-    ]
+    task = _board_text(task)
+    if item_id is not None:
+        item_id = _board_text(item_id)
+        if item_id is None:
+            raise ValueError("--id cannot be empty")
+        matches = [raw for raw in items if isinstance(raw, dict) and _board_text(raw.get("id")) == item_id]
+    else:
+        if task is None:
+            raise ValueError("task cannot be empty")
+        matches = [raw for raw in items if isinstance(raw, dict) and _board_text(raw.get("task")) == task]
     if any(not _board_text(raw.get("id")) for raw in matches):
         raise ValueError("matched board item has a missing or invalid id; fix it before writing")
     return matches
@@ -2775,7 +2783,7 @@ def touched_value(args: argparse.Namespace, now: datetime) -> str | None:
 
 
 def apply_board_upsert(raw: dict[str, object], args: argparse.Namespace, now: datetime) -> None:
-    raw["task"] = args.task
+    raw["task"] = args.task.strip()
     for key in ("group", "title", "ask", "detail", "topic", "project"):
         value = getattr(args, key)
         if value is None:
@@ -2838,8 +2846,8 @@ def board_upsert(args: argparse.Namespace) -> int:
                 raw = matches[0]
                 action = "updated"
             else:
-                item_id = args.id or re.sub(r"[^\w.-]+", "-", args.task).strip("-")
-                if any(isinstance(other, dict) and other.get("id") == item_id for other in items):
+                item_id = args.id.strip() if args.id is not None else re.sub(r"[^\w.-]+", "-", args.task.strip()).strip("-")
+                if any(isinstance(other, dict) and _board_text(other.get("id")) == item_id for other in items):
                     raise ValueError(f"board item id {item_id} already names another task; pass --id")
                 missing = [name for name in ("group", "title", "ask") if not getattr(args, name)]
                 if missing:
@@ -2847,11 +2855,13 @@ def board_upsert(args: argparse.Namespace) -> int:
                 raw = {"id": item_id}
                 items.append(raw)
                 action = "added"
+            raw["id"] = _board_text(raw.get("id"))
+            if sum(isinstance(other, dict) and _board_text(other.get("id")) == raw["id"] for other in items) != 1:
+                raise ValueError(f"board item id {raw['id']} is a duplicate; fix it before writing")
             apply_board_upsert(raw, args, now)
-            check = parse_captain_board(json.dumps(data), path)
-            if not any(item.id == raw.get("id") for item in check.items):
-                problems = [w for w in check.warnings if f"({raw.get('id')})" in w]
-                raise ValueError("the item would not be valid: " + " ".join(problems or check.warnings))
+            check = parse_captain_board(json.dumps({**data, "items": [raw]}), path)
+            if not check.items:
+                raise ValueError("the item would not be valid: " + " ".join(check.warnings))
             write_board_document(path, data, now)
     except (OSError, ValueError) as exc:
         print(f"quarterdeck: {exc}", file=sys.stderr)
