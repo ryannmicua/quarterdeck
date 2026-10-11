@@ -81,7 +81,7 @@ footer { font-size: .9rem; color: var(--muted); display: flex; flex-direction: c
 .answer { position: fixed; left: 0; right: 0; bottom: 0; padding: 10px 16px calc(10px + env(safe-area-inset-bottom, 0px)); background: var(--surface); border-top: 1px solid var(--line); display: flex; flex-wrap: wrap; gap: 6px 16px; align-items: center; justify-content: center; min-height: 56px; }
 .answer b { color: var(--accent); }
 @media (max-width: 700px) {
-  .decide, .board { grid-template-columns: 1fr; }
+  .decide, .board, .options, .limits { grid-template-columns: 1fr; }
   .decide .rec { order: -1; }
   .cell.wait { order: 1; }
   .flow { flex-direction: column; }
