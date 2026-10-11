@@ -1522,6 +1522,7 @@ def parse_bullet_item(header: re.Match[str], continuation: list[str], section: s
         (blocker_values[key] for key in ("waiting_on", "waiting_for", "blocked_by") if blocker_values.get(key)),
         "",
     )
+    attrs.update(blocker_values)
     title_part = BLOCKER_FIELD_RE.sub(" ", title_part)
     report_dir = ""
     report = REPORT_PATH_RE.search(title_part)
@@ -1602,6 +1603,9 @@ def backlog_items(source: str, snapshot: HomeSnapshot) -> list[BacklogItem]:
             attrs={key: value for key, value in {
                 "merged": merged_date,
                 "repo": value_for(record.fields, "repo"),
+                "blocked_by": value_for(record.fields, "blocked_by", "blocked-by"),
+                "waiting_on": value_for(record.fields, "waiting_on", "waiting-on"),
+                "waiting_for": value_for(record.fields, "waiting_for", "waiting-for"),
                 "hold-until": value_for(record.fields, "hold_until", "hold-until", "until"),
                 "hold-set": value_for(record.fields, "hold_set", "hold-set"),
             }.items() if value},
@@ -2392,7 +2396,9 @@ GROUP_RANK = {key: index for index, key in enumerate((*BOARD_GROUP_KEYS, "unsort
 GROUP_SHORT = {"merge": "Merge", "approve": "Approve", "decide": "Decide", "forward": "Forward", "read": "Read", "unsorted": UNSORTED_TITLE}
 CAPTAIN_NOTE_RE = re.compile(r"\bCaptain (\d{4}-\d{2}-\d{2})\b")
 HOLD_SET_RE = re.compile(r"\bCaptain hold set:\s*(\d{4}-\d{2}-\d{2}[T ][^\s]+)")
-DEFERRED_HOLD_RE = re.compile(r"(?i)\b(?:deferred|parked)\b")
+DEFERRED_HOLD_RE = re.compile(
+    r"(?i)\b(?:deferred\s+until|hold\s+off\b[^\n.!?;]*?\buntil|(?:waits?|waiting)\s+until)\s+\S"
+)
 HOLD_DEPENDENCY_RE = re.compile(r"(?i)\b(?:(?:waits|waiting)\s+(?:on|for)|after)\s+(\S+)")
 
 
@@ -2421,6 +2427,13 @@ def backlog_recency(item: BacklogItem, now: datetime, task_ids: Set[str]) -> tup
             break
     if not deferred and (
         DEFERRED_HOLD_RE.search(item.hold_reason)
+        or any(
+            token != item.id and token in task_ids
+            for value in [item.blocked_by, *(item.attrs.get(key, "") for key in (
+                "blocked_by", "blocked-by", "waiting_on", "waiting-on", "waiting_for", "waiting-for",
+            ))]
+            for token in [value.rstrip(".,;:!?)]}\"'`")]
+        )
         or any(
             token != item.id and token in task_ids
             for match in HOLD_DEPENDENCY_RE.finditer(item.hold_reason)

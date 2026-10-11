@@ -67,10 +67,12 @@ touched   = newest of: touched_at,
                        the latest "Captain YYYY-MM-DD" note in the backlog item (future dates ignored),
                        the backlog item's "Captain hold set: <ISO time>"
 deferred  = the backlog item has (hold-until: <date>) in the future,
-            or its hold says "deferred" or "parked",
+            or a blocked-by / waiting-on / waiting-for field names another task in the same backlog,
+            or its hold explicitly says "deferred until ...", "hold off ... until ...", or "waits until ...",
             or "waits/waiting on|for <token>" or "after <token>" in its hold names
                a different task in the same home's backlog (trailing punctuation stripped,
-               task ids compared exactly; unknown tokens are not dependencies)
+               task ids compared exactly; unknown tokens and self-references are not dependencies)
+            Bare "parked" or "deferred" wording does not defer an item.
 
 On your desk : touched within 48 hours and not deferred   open, at most 5, then "+N more you touched recently"
 This week    : touched within 7 days and not deferred     collapsed, counts per group

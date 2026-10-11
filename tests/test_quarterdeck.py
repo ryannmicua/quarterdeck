@@ -1465,16 +1465,19 @@ class CaptainBoardTests(unittest.TestCase):
               for reason in ("Waiting on the captain to approve", "waiting for the captain's decision",
                              "waits on your approval", "waiting for a captain to choose", "waiting on me",
                              "Waiting for approval from the captain", "waits on unknown-task to land",
-                             "after chart-ask", "waiting on chart-ask", "waiting on Chart")],
+                             "after chart-ask", "waiting on chart-ask", "waiting on Chart",
+                             "Previously parked; now ready for captain approval", "Deferred", "parked")],
             ("hold-set", "2026-10-08T08:00:00Z", "waiting on the chart to land", "desk",
              datetime(2026, 10, 8, 8, tzinfo=timezone.utc)),
-            ("hold-set", "2026-10-08T08:00:00Z", "parked label to approve", "parked",
+            ("hold-set", "2026-10-08T08:00:00Z", "parked label to approve", "desk",
              datetime(2026, 10, 8, 8, tzinfo=timezone.utc)),
         ]
         cases += [
             ("hold-set", "2026-10-08T08:00:00Z", reason, "parked",
              datetime(2026, 10, 8, 8, tzinfo=timezone.utc))
-            for reason in ("Deferred until later", "after chart.", "waiting for chart,",
+            for reason in ("Deferred until later", "Deferred until the chart work settles",
+                           "Hold off releasing until the chart work settles", "waits until the chart work settles",
+                           "after chart.", "waiting for chart,",
                            "waiting on unknown-task; after harbor.chart!")
         ]
         cases += [
@@ -1618,6 +1621,51 @@ class CaptainBoardTests(unittest.TestCase):
             self.assertEqual(quarterdeck.board_age_text(updated, now), f"{age} ago")
         future = datetime(2026, 10, 11, 8, 0, 0, 500000, tzinfo=timezone(timedelta(hours=8)))
         self.assertEqual(quarterdeck.board_age_text(future, now), "22 hours ahead (clock skew)")
+
+    def test_structured_dependencies_defer_across_backlog_formats(self) -> None:
+        for field in ("blocked_by", "blocked-by", "waiting_on", "waiting-on", "waiting_for", "waiting-for"):
+            for dependency in ("chart", "chart-ask", "captain", "unknown-task"):
+                for table in (False, True):
+                    for boarded in (False, True):
+                        with self.subTest(field=field, dependency=dependency, table=table, boarded=boarded), tempfile.TemporaryDirectory() as temp:
+                            home = self.make_home(Path(temp), [board_item(task="chart-ask")] if boarded else [])
+                            if table:
+                                backlog = (
+                                    f"| id | title | held | hold_kind | hold_set | {field} |\n"
+                                    "| --- | --- | --- | --- | --- | --- |\n"
+                                    f"| chart-ask | Chart ask | yes | captain | 2026-10-08T08:00:00Z | {dependency} |\n"
+                                    "| chart | Dependency | no | | | |\n"
+                                )
+                            else:
+                                backlog = (
+                                    "- [ ] chart-ask - Chart ask (held: yes) (hold-kind: captain) "
+                                    f"(hold-set: 2026-10-08T08:00:00Z) ({field}: {dependency})\n"
+                                    "- [ ] chart - Dependency\n"
+                                )
+                            (home / "data" / "backlog.md").write_text("# Backlog\n\n## Queued\n\n" + backlog, encoding="utf-8")
+                            homes, _ = self.view(home)
+                            view = quarterdeck.board_view(homes, self.NOW)
+                            assert view is not None
+                            entry = next(e for entries in view.bands.values() for e in entries if e.item.task == "chart-ask")
+                            self.assertEqual(entry.band, "parked" if dependency == "chart" else "desk")
+        for table in (False, True):
+            with self.subTest(multiple_fields=True, table=table), tempfile.TemporaryDirectory() as temp:
+                home = self.make_home(Path(temp), [])
+                backlog = (
+                    "| id | title | held | hold_kind | hold_set | blocked_by | waiting_on |\n"
+                    "| --- | --- | --- | --- | --- | --- | --- |\n"
+                    "| chart-ask | Chart ask | yes | captain | 2026-10-08T08:00:00Z | chart | captain |\n"
+                    "| chart | Dependency | no | | | | |\n"
+                ) if table else (
+                    "- [ ] chart-ask - Chart ask (held: yes) (hold-kind: captain) "
+                    "(hold-set: 2026-10-08T08:00:00Z) (blocked_by: chart) (waiting_on: captain)\n"
+                    "- [ ] chart - Dependency\n"
+                )
+                (home / "data" / "backlog.md").write_text("# Backlog\n\n## Queued\n\n" + backlog, encoding="utf-8")
+                homes, _ = self.view(home)
+                view = quarterdeck.board_view(homes, self.NOW)
+                assert view is not None
+                self.assertEqual(view.unsorted[0].band, "parked")
 
     def test_project_metadata_survives_backlog_conversion(self) -> None:
         for table in (False, True):
