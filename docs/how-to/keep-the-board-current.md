@@ -2,11 +2,9 @@
 
 The board only helps when it matches what the captain is working on. Hand-edited
 JSON went stale, so Quarterdeck ships a small writer that Firstmate calls on
-each change. Every command takes the backlog task id, writes only
-`<data>/captain-board.json`, and prints one line.
-
-Select the home with `--home PATH` or `FM_HOME`. `--data-dir PATH` (or
-`FM_DATA_OVERRIDE`) points at a non-default data directory.
+each change. `upsert`, `touch`, and `remove` take the backlog task id;
+`list` reads the board. See the [CLI reference](../reference/cli-and-config.md)
+for command syntax and home selection.
 
 ## When something starts waiting on the captain
 
@@ -17,7 +15,9 @@ quarterdeck board upsert dock-fix --group merge --title "Dock merge" \
 ```
 
 A new item needs `--group`, `--title` and `--ask`. Its id defaults to the task
-id. Commands match the task field only; use explicit `--id` with `upsert` or
+id with characters outside letters, digits, underscores, dots and hyphens
+replaced by hyphens, then leading and trailing hyphens removed.
+Commands match the task field only; use explicit `--id` with `upsert` or
 `remove` to select a board item id. `touch` updates every item for the task.
 Running `upsert` again updates only the options you pass, so this adds a brief
 later:
@@ -32,7 +32,8 @@ the item's links.
 
 `upsert` leaves `touched_at` alone unless you pass `--touch` (now) or
 `--touched-at ISO`, because a new ask is not the captain's attention. Until
-it is touched, a new item ranks by the backlog's `Captain hold set:` time.
+it is touched, backlog dates supply the ranking; see the
+[board file reference](../reference/captain-board.md#what-the-page-does-with-it).
 
 ## When the captain engages with it
 

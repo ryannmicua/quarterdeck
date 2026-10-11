@@ -50,29 +50,9 @@ be told apart.
 
 ## Ranking chosen
 
-Recency bands, documented in the
-[board file reference](../reference/captain-board.md#what-the-page-does-with-it):
-
-- **On your desk**: touched within 48 hours and not deferred, open, at most
-  five, then "+N more you touched recently".
-- **This week**: touched within 7 days, collapsed, counts per group.
-- **Parked**: older, never touched, or deferred, collapsed, counts per group,
-  with a "keep, defer or drop?" prompt for items with a known touched time
-  over 14 days ago.
-- Within a band: merge, approve, decide, forward, read, then items not yet on
-  the board; newest touched first.
-
-`touched` is the newest of the board's `touched_at`, the latest past captain
-note date, and the hold-set time. Deferral comes from a future `hold-until`
-date, a blocked-by or waiting-on/for dependency on another task, or explicit
-hold wording such as "deferred until ...", "hold off ... until ...", or
-"waits until ...". A hold note also defers when its
-"waits/waiting on|for <token>" or "after <token>" names a different task in the
-same home's backlog. Trailing punctuation is stripped and task IDs are
-compared exactly. Bare "parked" or "deferred" wording and self-references do
-not defer an item. Unknown tokens and captain-directed asks such as "Waiting
-for approval from the captain" do not establish a dependency. Future
-Captain-note dates are ignored and do not defer an item.
+Recency bands follow the captain's engagement, while deferred work stays out
+of the active desk. The [board file reference](../reference/captain-board.md#what-the-page-does-with-it)
+owns the timestamp fallbacks, deferral rules, ordering, and weekly sweep.
 
 ## What was built (phases 1 and 2)
 
@@ -147,7 +127,7 @@ Implementation decisions in this change:
   board's schema is Quarterdeck's, the file is Firstmate's, and the command
   runs only when Firstmate calls it. `render` and `serve` stay read-only.
 - **`upsert` does not mark an item touched by default.** A new ask is not the
-  captain's attention; until it is touched, the hold-set time ranks it.
+  captain's attention; until it is touched, backlog dates supply the ranking.
 - **Unsorted backlog items are ranked, not listed last.**
 
 ## Recommendation beyond the ask

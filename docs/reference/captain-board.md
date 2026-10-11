@@ -45,7 +45,7 @@ board file, Quarterdeck omits the captain board section.
 | `items[].title` | yes | Short name the captain can say aloud. |
 | `items[].ask` | yes | One plain-language line: what is wanted from the captain. |
 | `items[].detail` | no | Short Markdown shown when the item is opened. |
-| `items[].topic` | no | Sub-heading that groups `decide` items. |
+| `items[].topic` | no | Topic label shown as a chip. |
 | `items[].task` | yes | Backlog task id used for the cross-check. A `route/id` form names a registered secondmate's task. |
 | `items[].links` | no | List of `{label, url}`; only `http` and `https` URLs are kept. Use it for the pull request or a Lavish page. A merge item's backlog PR link is added if no board link already points to it. |
 | `items[].touched_at` | no | ISO 8601 time (UTC recommended; no zone means UTC) the captain last engaged with the item or its project: discussed it, answered, commented on its brief, or asked about it. Drives the ranking below. |
@@ -82,6 +82,9 @@ Weekly sweep : Parked items with a known touched time over 14 days ago get a "ke
                and the Parked section leads with one line counting them
 ```
 
+Captain-directed asks such as "Waiting on the captain to approve" or "Waiting
+for approval from the captain" do not establish a task dependency.
+
 - Each item shows its group, project, topic, home (when several homes show),
   how long ago it was touched, any deferral reason, the brief recommendation
   chip, and an **Open brief** button. Tapping an item opens its ask, detail
@@ -94,6 +97,8 @@ Weekly sweep : Parked items with a known touched time over 14 days ago get a "ke
 - `quarterdeck render --all` opens every section and shows every desk item
   without the five-item cap.
 - Day-precision notes count from the start of that UTC day.
+- Future hold-set times are ignored; a future board `touched_at` is capped at
+  the render time. Future captain-note dates do not defer an item.
 - **Cross-check.** Every item must name a `task`. A matching readable backlog
   item remains visible while it needs the captain: a captain hold, a review-ready
   pull request, or blocked on the captain. A closed, cancelled, released, or
@@ -106,7 +111,7 @@ Weekly sweep : Parked items with a known touched time over 14 days ago get a "ke
   keeping the item visible.
 - **Not yet sorted.** Open backlog items waiting on the captain that no board
   item references are ranked into the same bands from their backlog dates,
-  marked "Not yet sorted" and shown with their raw hold note, so nothing is
+  marked "Not yet sorted" and shown with their decoded hold note, so nothing is
   lost and a missing board entry still reaches the desk. When the board file
   is present but unreadable, every such item appears this way.
 - **Age and staleness.** The header shows how long ago `updated_at` was, and

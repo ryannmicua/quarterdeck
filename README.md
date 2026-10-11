@@ -22,12 +22,13 @@ as a local artifact. Quarterdeck itself has no agent or build step.
 - Captain board: when a home has `data/captain-board.json`, the page leads with
   what the captain touched in the last two days ("On your desk", at most five),
   then collapsed "This week" and "Parked" sections with counts per group. Items
-  are cross-checked against the live backlog, carry a decision-brief link and
-  recommendation chip, and backlog items missing from the board still appear,
+  are cross-checked against the live backlog and can carry a decision-brief link
+  and recommendation chip. Backlog items missing from the board still appear,
   marked "Not yet sorted". See the
   [board file reference](docs/reference/captain-board.md).
-- Board writer: `quarterdeck board upsert|touch|remove|list <task-id>` lets
-  Firstmate keep the board current without hand-editing JSON; it writes only
+- Board writer: `quarterdeck board upsert|touch|remove <task-id>` and
+  `quarterdeck board list` let Firstmate keep the board current without
+  hand-editing JSON; the writer changes only
   the board file. See [Keep the captain board current](docs/how-to/keep-the-board-current.md).
 - Decision briefs: a touch-friendly, theme-aware
   [brief template](templates/decision-brief.html.tmpl) that Firstmate fills and
