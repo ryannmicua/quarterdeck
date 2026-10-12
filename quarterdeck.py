@@ -7,13 +7,11 @@ import argparse
 import base64
 import fcntl
 import hashlib
-import hmac
 import ipaddress
 import html
 import json
 import os
 import re
-import secrets
 import shlex
 import shutil
 import socket
@@ -964,29 +962,6 @@ def update_review_mark(path: Path, report_id: str, fingerprint: str | None) -> N
         write_review_marks(path, marks)
 
 
-MARK_TOKEN_MIN_LENGTH = 32
-
-
-def load_or_create_mark_token(state_path: Path) -> str:
-    """Return the secret that served mark requests must present, creating it beside the marks file."""
-    token_path = state_path.with_name("mark-token")
-    if token_path.is_symlink():
-        raise ValueError(f"refusing symbolic-link mark token: {token_path}")
-    token_path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
-    if not token_path.exists():
-        try:
-            descriptor = os.open(token_path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
-        except FileExistsError:
-            pass
-        else:
-            with os.fdopen(descriptor, "w", encoding="utf-8") as stream:
-                stream.write(secrets.token_urlsafe(32) + "\n")
-    token = token_path.read_text(encoding="utf-8").strip()
-    if len(token) < MARK_TOKEN_MIN_LENGTH:
-        raise ValueError(f"invalid mark token in {token_path}; delete it to generate a new one")
-    return token
-
-
 def set_report_mark(
     args: argparse.Namespace, report_id: str, reviewed: bool, expected_fingerprint: str | None = None,
 ) -> Report:
@@ -1118,17 +1093,6 @@ def build_html(
     reviewed_block = reviewed_reports_html(homes, ambiguous_ids, report_resolution_incomplete) if allow_marks else ""
     mark_script = f"""
   <script>
-    const MARK_TOKEN_KEY = "quarterdeck-mark-token";
-    const MARK_KEY_PROMPT = "Enter the key from Quarterdeck's local state file review-state/mark-token.";
-    function askForMarkToken(message = MARK_KEY_PROMPT) {{
-      const token = (window.prompt(message) || "").trim();
-      if (!token) throw new Error("Mark refused. Enter the Quarterdeck key to continue.");
-      try {{ window.localStorage.setItem(MARK_TOKEN_KEY, token); }} catch (_) {{}}
-      return token;
-    }}
-    function storedMarkToken() {{
-      try {{ return window.localStorage.getItem(MARK_TOKEN_KEY) || ""; }} catch (_) {{ return ""; }}
-    }}
     document.addEventListener("click", async (event) => {{
       const button = event.target.closest("[data-mark-report]");
       if (!button || button.disabled) return;
@@ -1136,25 +1100,16 @@ def build_html(
       button.disabled = true;
       if (status) status.textContent = "Saving…";
       try {{
-        let token = storedMarkToken() || askForMarkToken();
-        for (let attempt = 0; attempt < 2; attempt++) {{
-          const response = await fetch("{MARK_ENDPOINT}", {{
-            method: "POST",
-            headers: {{"Content-Type": "application/json", "X-Quarterdeck-Token": token}},
-            body: JSON.stringify({{
-              report_id: button.dataset.markReport,
-              fingerprint: button.dataset.markFingerprint,
-              action: button.dataset.markAction
-            }}),
-          }});
-          if (response.status === 403 && attempt === 0) {{
-            try {{ window.localStorage.removeItem(MARK_TOKEN_KEY); }} catch (_) {{}}
-            token = askForMarkToken("Quarterdeck refused that key. " + MARK_KEY_PROMPT);
-            continue;
-          }}
-          if (!response.ok) throw new Error((await response.text()).trim() || response.statusText);
-          break;
-        }}
+        const response = await fetch("{MARK_ENDPOINT}", {{
+          method: "POST",
+          headers: {{"Content-Type": "application/json"}},
+          body: JSON.stringify({{
+            report_id: button.dataset.markReport,
+            fingerprint: button.dataset.markFingerprint,
+            action: button.dataset.markAction
+          }}),
+        }});
+        if (!response.ok) throw new Error((await response.text()).trim() || response.statusText);
         location.reload();
       }} catch (error) {{
         button.disabled = false;
@@ -3353,10 +3308,10 @@ MARK_BODY_LIMIT = 4096
 
 
 def make_handler(
-    cache: SiteCache, mark_token: str | None = None,
+    cache: SiteCache,
     set_mark: Callable[[str, bool, str], Report] | None = None,
 ) -> type[BaseHTTPRequestHandler]:
-    """Build the request handler; POST is refused unless both mark_token and set_mark are given."""
+    """Build the request handler; POST is refused unless set_mark is given."""
     class Handler(BaseHTTPRequestHandler):
         server_version = "Quarterdeck"
 
@@ -3395,7 +3350,7 @@ def make_handler(
             ))
 
         def mark_request_problem(self) -> tuple[int, str] | None:
-            """Return a refusal for a mark request that is cross-site, mistyped, or lacks the token."""
+            """Return a refusal for a mark request that is cross-site or mistyped."""
             if not self.host_allowed():
                 return 403, "Host is not allowed\n"
             origin = self.headers.get("Origin")
@@ -3406,13 +3361,10 @@ def make_handler(
             content_type = (self.headers.get("Content-Type") or "").split(";")[0].strip().lower()
             if content_type != "application/json":
                 return 415, "Content-Type must be application/json\n"
-            presented = self.headers.get("X-Quarterdeck-Token") or ""
-            if not hmac.compare_digest(presented.encode("utf-8"), str(mark_token).encode("utf-8")):
-                return 403, "Missing or wrong mark token\n"
             return None
 
         def do_POST(self) -> None:  # noqa: N802 - http.server naming
-            if mark_token is None or set_mark is None or urlparse(self.path).path != MARK_ENDPOINT:
+            if set_mark is None or urlparse(self.path).path != MARK_ENDPOINT:
                 self.refuse()
                 return
             problem = self.mark_request_problem()
@@ -3516,16 +3468,14 @@ def make_server(host: str, port: int, handler: type[BaseHTTPRequestHandler]) -> 
 def serve(args: argparse.Namespace) -> int:
     servers: list[ThreadingHTTPServer] = []
     try:
-        mark_token: str | None = None
         set_mark: Callable[[str, bool, str], Report] | None = None
         if getattr(args, "allow_marks", False):
-            mark_token = load_or_create_mark_token(load_report_snapshots(args)[1])
             set_mark = lambda report_id, reviewed, fingerprint: set_report_mark(  # noqa: E731
                 args, report_id, reviewed, fingerprint
             )
         cache = SiteCache(site_builder(args, getattr(args, "allow_marks", False)))
         cache.get()
-        handler = make_handler(cache, mark_token, set_mark)
+        handler = make_handler(cache, set_mark)
         port = args.port
         for host in bind_hosts(args):
             server = make_server(host, port, handler)
@@ -4048,7 +3998,7 @@ def render(args: argparse.Namespace) -> int:
 def add_serve_options(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--host", action="append", metavar="ADDRESS", help=f"address to bind; repeat to listen on several, all on the same port (default {DEFAULT_HOST} only; a non-loopback address exposes your work data without a login)")
     parser.add_argument("--port", type=port_number, default=DEFAULT_PORT, help=f"port to listen on (default {DEFAULT_PORT})")
-    parser.add_argument("--allow-marks", action="store_true", help="enable report marks; the browser prompts for a secret key from the state directory (default: read-only)")
+    parser.add_argument("--allow-marks", action="store_true", help="enable report marks (default: read-only; no key, anyone who can open the page can mark)")
     parser.add_argument("--home", help="serve this Firstmate home instead of configured homes or FM_HOME")
     parser.add_argument("--config", type=Path, help="optional JSON config file")
 
@@ -4073,7 +4023,7 @@ def make_parser() -> argparse.ArgumentParser:
 
     serve_parser = subparsers.add_parser(
         "serve", help="serve the always-current bearings page over HTTP",
-        description="Serve the bearings page and its readable report and backlog pages, re-rendered from the homes on request. Read-only by default: GET only, no login. With --allow-marks the only write is a key-protected request to mark or unmark a known report as reviewed. Binds loopback by default.",
+        description="Serve the bearings page and its readable report and backlog pages, re-rendered from the homes on request. Read-only by default: GET only, no login. With --allow-marks the only write is a request to mark or unmark a known report as reviewed. Binds loopback by default.",
     )
     command_parsers["serve"] = serve_parser
     add_serve_options(serve_parser)

@@ -2895,13 +2895,12 @@ class ServeTests(unittest.TestCase):
     def start_marking(self, temp: str, **extra: object):
         home = BearingsTests().make_home(Path(temp))
         args = self.make_args(home, allow_marks=True, **extra)
-        token = quarterdeck.load_or_create_mark_token(quarterdeck.load_report_snapshots(args)[1])
         cache = quarterdeck.SiteCache(quarterdeck.site_builder(args, True), 30)
         handler = quarterdeck.make_handler(
-            cache, token, lambda report_id, reviewed, fingerprint: quarterdeck.set_report_mark(
+            cache, lambda report_id, reviewed, fingerprint: quarterdeck.set_report_mark(
                 args, report_id, reviewed, fingerprint
             ))
-        return self.start_handler(handler), token, cache, home
+        return self.start_handler(handler), cache, home
 
     def start_handler(self, handler):
         from http.server import ThreadingHTTPServer
@@ -2910,11 +2909,9 @@ class ServeTests(unittest.TestCase):
         self.addCleanup(lambda: (server.shutdown(), server.server_close()))
         return server.server_address[1]
 
-    def post_mark(self, port: int, payload: object, token: str | None, headers: dict[str, str] | None = None,
+    def post_mark(self, port: int, payload: object, headers: dict[str, str] | None = None,
                   path: str = quarterdeck.MARK_ENDPOINT):
         request_headers = {"Content-Type": "application/json"}
-        if token is not None:
-            request_headers["X-Quarterdeck-Token"] = token
         request_headers.update(headers or {})
         body = payload if isinstance(payload, str) else json.dumps(payload)
         import http.client
@@ -2927,11 +2924,11 @@ class ServeTests(unittest.TestCase):
 
     def test_marks_endpoint_marks_and_unmarks_through_the_cli_storage(self) -> None:
         with tempfile.TemporaryDirectory() as temp, patch.dict(os.environ, {"XDG_STATE_HOME": str(Path(temp) / "state")}):
-            port, token, _cache, _home = self.start_marking(temp)
+            port, _cache, _home = self.start_marking(temp)
             status, page = self.fetch(port, "/")[0::2]
             self.assertEqual(status, 200)
-            self.assertNotIn(token, page)
-            self.assertNotIn('name="quarterdeck-mark-token"', page)
+            self.assertNotIn("X-Quarterdeck-Token", page)
+            self.assertNotIn("mark-token", page)
             self.assertIn("Mark reviewed", page)
             self.assertNotIn("after reading: quarterdeck reports mark-reviewed", page)
             button = re.search(
@@ -2940,7 +2937,7 @@ class ServeTests(unittest.TestCase):
             report_id, fingerprint = button.groups()
             status, body = self.post_mark(port, {
                 "report_id": report_id, "fingerprint": fingerprint, "action": "mark"
-            }, token,
+            },
                                           {"Origin": f"http://127.0.0.1:{port}", "Host": f"127.0.0.1:{port}"})
             self.assertEqual(status, 200, body)
             self.assertEqual(json.loads(body), {"report_id": report_id, "reviewed": True})
@@ -2954,38 +2951,34 @@ class ServeTests(unittest.TestCase):
             self.assertIn(f'data-mark-report="{report_id}" data-mark-fingerprint="{fingerprint}" data-mark-action="unmark"', page)
             status, body = self.post_mark(port, {
                 "report_id": report_id, "fingerprint": fingerprint, "action": "unmark"
-            }, token)
+            })
             self.assertEqual(status, 200, body)
             self.assertNotIn(report_id, quarterdeck.load_review_marks(quarterdeck.review_state_path()))
             self.assertIn(f'data-mark-report="{report_id}" data-mark-fingerprint="{fingerprint}" data-mark-action="mark"', self.fetch(port, "/")[2])
-            token_path = quarterdeck.review_state_path().with_name("mark-token")
-            self.assertEqual(token_path.stat().st_mode & 0o777, 0o600)
-            self.assertEqual(quarterdeck.load_or_create_mark_token(quarterdeck.review_state_path()), token)
+            self.assertFalse(quarterdeck.review_state_path().with_name("mark-token").exists())
 
     def test_marks_endpoint_refuses_bad_requests_without_writing(self) -> None:
         with tempfile.TemporaryDirectory() as temp, patch.dict(os.environ, {"XDG_STATE_HOME": str(Path(temp) / "state")}):
-            port, token, _cache, _home = self.start_marking(temp)
+            port, _cache, _home = self.start_marking(temp)
             page = self.fetch(port, "/")[2]
             button = re.search(
                 r'data-mark-report="([^"]+)" data-mark-fingerprint="([0-9a-f]{64})"', page
             )
             report_id, fingerprint = button.groups()
             good = {"report_id": report_id, "fingerprint": fingerprint, "action": "mark"}
-            self.assertEqual(self.post_mark(port, good, None)[0], 403)
-            self.assertEqual(self.post_mark(port, good, "wrong-token")[0], 403)
-            self.assertEqual(self.post_mark(port, good, token, {"Origin": "http://attacker.example"})[0], 403)
-            self.assertEqual(self.post_mark(port, good, token, {"Sec-Fetch-Site": "cross-site"})[0], 403)
-            self.assertEqual(self.post_mark(port, good, token, {"Host": "attacker.example"})[0], 403)
-            self.assertEqual(self.post_mark(port, good, token, {"Content-Type": "text/plain"})[0], 415)
+            self.assertEqual(self.post_mark(port, good, {"Origin": "http://attacker.example"})[0], 403)
+            self.assertEqual(self.post_mark(port, good, {"Sec-Fetch-Site": "cross-site"})[0], 403)
+            self.assertEqual(self.post_mark(port, good, {"Host": "attacker.example"})[0], 403)
+            self.assertEqual(self.post_mark(port, good, {"Content-Type": "text/plain"})[0], 415)
             self.assertEqual(self.post_mark(port, {
                 "report_id": "nope/unknown-1", "fingerprint": fingerprint, "action": "mark"
-            }, token)[0], 404)
-            self.assertEqual(self.post_mark(port, {**good, "action": "delete"}, token)[0], 400)
-            self.assertEqual(self.post_mark(port, {**good, "action": []}, token)[0], 400)
-            self.assertEqual(self.post_mark(port, {**good, "extra": 1}, token)[0], 400)
-            self.assertEqual(self.post_mark(port, "not json", token)[0], 400)
-            self.assertEqual(self.post_mark(port, good, token, path="/api/other")[0], 405)
-            self.assertEqual(self.post_mark(port, good, token, path="/")[0], 405)
+            })[0], 404)
+            self.assertEqual(self.post_mark(port, {**good, "action": "delete"})[0], 400)
+            self.assertEqual(self.post_mark(port, {**good, "action": []})[0], 400)
+            self.assertEqual(self.post_mark(port, {**good, "extra": 1})[0], 400)
+            self.assertEqual(self.post_mark(port, "not json")[0], 400)
+            self.assertEqual(self.post_mark(port, good, path="/api/other")[0], 405)
+            self.assertEqual(self.post_mark(port, good, path="/")[0], 405)
             for method in ("PUT", "DELETE", "PATCH", "HEAD", "OPTIONS"):
                 self.assertEqual(self.fetch(port, quarterdeck.MARK_ENDPOINT, method)[0], 405, method)
             self.assertEqual(self.fetch(port, quarterdeck.MARK_ENDPOINT)[0], 404)
@@ -2993,7 +2986,7 @@ class ServeTests(unittest.TestCase):
 
     def test_marks_endpoint_rejects_a_stale_page_fingerprint(self) -> None:
         with tempfile.TemporaryDirectory() as temp, patch.dict(os.environ, {"XDG_STATE_HOME": str(Path(temp) / "state")}):
-            port, token, _cache, home = self.start_marking(temp)
+            port, _cache, home = self.start_marking(temp)
             page = self.fetch(port, "/")[2]
             button = re.search(
                 r'data-mark-report="([^"]+)" data-mark-fingerprint="([0-9a-f]{64})" data-mark-action="mark"', page
@@ -3003,7 +2996,7 @@ class ServeTests(unittest.TestCase):
             report_path.write_text(report_path.read_text(encoding="utf-8") + "\nChanged after the page loaded.\n", encoding="utf-8")
             status, body = self.post_mark(port, {
                 "report_id": report_id, "fingerprint": fingerprint, "action": "mark"
-            }, token)
+            })
             self.assertEqual(status, 409, body)
             self.assertIn("report changed since the page was loaded", body)
             self.assertEqual(quarterdeck.load_review_marks(quarterdeck.review_state_path()), {})
@@ -3015,13 +3008,13 @@ class ServeTests(unittest.TestCase):
             port = self.start(quarterdeck.SiteCache(quarterdeck.site_builder(args), 30))
             page = self.fetch(port, "/")[2]
             self.assertNotIn("data-mark-report", page)
-            self.assertNotIn("quarterdeck-mark-token", page)
+            self.assertNotIn("mark-token", page)
             self.assertIn("after reading: quarterdeck reports mark-reviewed", page)
             report_id = re.search(r"quarterdeck reports mark-reviewed ([^<]+)<", page).group(1)
-            self.assertEqual(self.post_mark(port, {"report_id": report_id, "fingerprint": "0" * 64, "action": "mark"}, "x" * 43)[0], 405)
+            self.assertEqual(self.post_mark(port, {"report_id": report_id, "fingerprint": "0" * 64, "action": "mark"})[0], 405)
             self.assertFalse(quarterdeck.review_state_path().exists())
             self.assertFalse(quarterdeck.review_state_path().with_name("mark-token").exists())
-            # Static render never carries the buttons or token.
+            # Static render never carries the buttons.
             snapshots = [quarterdeck.load_home_snapshot(quarterdeck.HomeSpec("demo", home), discover_secondmates=True)]
             quarterdeck.apply_review_marks(snapshots, {})
             self.assertNotIn("data-mark-report", quarterdeck.build_html(snapshots, "T"))
@@ -3047,10 +3040,9 @@ class ServeTests(unittest.TestCase):
                 ["serve", "--home", str(home), "--no-snapshot", "--allow-marks"]
             )
 
-            snapshots, state_path = quarterdeck.load_report_snapshots(args)
+            snapshots = quarterdeck.load_report_snapshots(args)[0]
             self.assertIsNotNone(snapshots[0].error)
             self.assertIsNotNone(snapshots[0].board)
-            quarterdeck.load_or_create_mark_token(state_path)
             page = quarterdeck.site_builder(args, True)()["index.html"]
 
             self.assertIn("Unverified board item", page)
