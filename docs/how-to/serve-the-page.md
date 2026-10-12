@@ -55,10 +55,9 @@ same content fingerprint in the same marks file, and reloads the page. A report
 that changes afterwards returns to "needs review".
 
 There is no key or login: anyone who can open the page can mark or unmark
-reports, and clicking the button just saves the mark. Requests from other
-websites, for unknown or ambiguous report IDs, for reports that changed since
-the page loaded, or using any other method or path are refused. The only write
-is the review-marks file in Quarterdeck's state directory. `quarterdeck service
+reports, and clicking the button just saves the mark. See
+[Privacy and architecture](../explanation/privacy-and-architecture.md) for
+request restrictions and review-mark storage. `quarterdeck service
 --allow-marks` writes the flag into the systemd unit. Backlog and board items
 cannot be marked.
 

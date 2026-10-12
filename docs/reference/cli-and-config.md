@@ -103,7 +103,7 @@ for how marks affect the dashboard.
 request after its 30-second cache expires. It serves them with `GET` by default
 on each repeatable `--host` address (default `127.0.0.1` only) and `--port`
 (default 8765; valid ports are 1 through 65535). `--allow-marks` enables the
-report review request (no key; anyone who can open the page can use it) described in the
+report review request described in the
 [serving guide](../how-to/serve-the-page.md); all other writes remain refused.
 The served page reloads itself every 60 seconds and shows its generated-at
 time. `service` prints a systemd user unit that runs `serve` with the given

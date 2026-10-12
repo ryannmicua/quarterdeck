@@ -65,7 +65,8 @@ selected home. Its default location is under
 `${XDG_STATE_HOME:-~/.local/state}/quarterdeck/`, outside the repo. Keep any
 custom output outside the repo and selected homes, and keep real config outside
 the repo as well. Quarterdeck refuses output inside its checkout or a selected
-home. The page uses inline CSS and makes no network requests. `serve` is an
+home. The page uses inline CSS; report-review requests on served pages stay on
+the serving origin. `serve` is an
 optional HTTP process that can run under the systemd user unit. The page has
 no write-back path into a Firstmate home; the opt-in report marks above write only
 Quarterdeck's own state directory.
