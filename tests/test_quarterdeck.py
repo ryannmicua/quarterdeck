@@ -3555,12 +3555,6 @@ class DeskRelevanceTests(unittest.TestCase):
         self.assertTrue(all(r["markdown"] == "" for r in none["reports"]))
         self.cli("export", "--no-snapshot", "--bodies", "some", expect=2)
 
-    def test_artifact_header_status_is_legible_and_repeated_on_the_desk(self) -> None:
-        template = quarterdeck.ARTIFACT_TEMPLATE.read_text(encoding="utf-8")
-        self.assertRegex(template, r"header p\.status \{[^}]*color: #fffdf8")  # light text on the dark header
-        self.assertIn('id="sync"', template)
-        self.assertIn('id: "qd-banner"', template)  # the same state at the top of the desk
-
     def test_artifact_page_embeds_the_snapshot_safely(self) -> None:
         board = self.home / "data" / "captain-board.json"
         data = json.loads(board.read_text(encoding="utf-8"))

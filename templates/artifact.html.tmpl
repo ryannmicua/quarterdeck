@@ -349,7 +349,7 @@ footer { border-top: 1px solid var(--line); margin-top: 3rem; padding-top: 1rem;
   function openButton(kind, id, card) {
     var button = el("button", { type: "button", "class": "open", text: "View details" });
     button.addEventListener("click", function () { openDetail(kind, id); });
-    openers[kind + ":" + id] = button;
+    openers[kind + ":" + id] = openers[kind + ":" + id] || button;
     card.className += " openable";
     card.addEventListener("click", function (event) {
       if (event.target && event.target.closest && event.target.closest("button, a, input, summary, details")) return;
@@ -406,17 +406,8 @@ footer { border-top: 1px solid var(--line); margin-top: 3rem; padding-top: 1rem;
       card.appendChild(el("p", { "class": "note", text: firstLine.length > 160 ? firstLine.slice(0, 157) + "…" : firstLine }));
     }
     card.appendChild(openButton("call", call.id, card));
-    var links = [];
-    if (call.brief_url && safeUrl(call.brief_url)) links.push(el("a", { href: safeUrl(call.brief_url), target: "_blank", rel: "noopener", text: "Open brief" }));
-    (call.links || []).forEach(function (link) {
-      var href = safeUrl(link.url);
-      if (href) links.push(el("a", { href: href, target: "_blank", rel: "noopener", text: link.label }));
-    });
-    if (links.length) {
-      var row = el("p", { "class": "actions" });
-      links.forEach(function (link) { row.appendChild(link); });
-      card.appendChild(row);
-    }
+    var links = openLinks(linkRow(call));
+    if (links) card.appendChild(links);
     card.appendChild(reactionBox("call", call.id, card));
     return card;
   }
@@ -456,6 +447,10 @@ footer { border-top: 1px solid var(--line); margin-top: 3rem; padding-top: 1rem;
     return [el("h3", { text: title }), el("div", { "class": "block" }, nodes)];
   }
   function textBlock(value) { return el("div", { "class": "report-body", text: value }); }
+  function reportText(report) {
+    return report.markdown ? textBlock(report.markdown) :
+      el("p", { "class": "note", text: "The report text is not in this snapshot. Read it in the local Quarterdeck, or ask Firstmate for it." });
+  }
   function linkRow(call) {
     var links = [];
     if (call.brief_url && safeUrl(call.brief_url)) links.push(el("a", { href: safeUrl(call.brief_url), target: "_blank", rel: "noopener", text: "Open brief" }));
@@ -475,8 +470,7 @@ footer { border-top: 1px solid var(--line); margin-top: 3rem; padding-top: 1rem;
   function reportBlock(report) {
     var kids = [el("h4", { text: report.title }), el("div", { "class": "chips" }, [chip(report.home), stateChip(report)])];
     if (report.recommendation) kids.push(el("p", { text: "Recommendation: " + report.recommendation }));
-    kids.push(report.markdown ? textBlock(report.markdown) :
-      el("p", { "class": "note", text: "The report text is not in this snapshot. Read it in the local Quarterdeck, or ask Firstmate for it." }));
+    kids.push(reportText(report));
     return el("div", { "class": "block linked" }, kids);
   }
   function backButton() {
@@ -551,9 +545,7 @@ footer { border-top: 1px solid var(--line); margin-top: 3rem; padding-top: 1rem;
     wrap.appendChild(el("p", { "class": "note", text: report.id }));
     if (report.relevance === "stale" && report.relevance_reason) wrap.appendChild(el("p", { "class": "note", text: "Marked stale: " + report.relevance_reason }));
     if (report.recommendation) section("Recommendation", [el("p", { text: report.recommendation })]).forEach(function (n) { wrap.appendChild(n); });
-    section("Report", [report.markdown ? textBlock(report.markdown) :
-      el("p", { "class": "note", text: "The report text is not in this snapshot. Read it in the local Quarterdeck, or ask Firstmate for it." })]
-    ).forEach(function (n) { wrap.appendChild(n); });
+    section("Report", [reportText(report)]).forEach(function (n) { wrap.appendChild(n); });
     var calls = (snapshot.calls || []).filter(function (c) { return (c.reports || []).indexOf(report.id) >= 0; });
     if (calls.length) {
       wrap.appendChild(el("h3", { text: "Captain calls this report is linked to" }));
