@@ -4227,6 +4227,119 @@ const button = (c, text) => c.querySelectorAll('button').find(b => b.textContent
         self.assertIn("Approve on call invented-home/harbor-hold (task harbor-hold)", self.logged()[5])
         self.assertIn("Go with teal", self.logged()[5])
 
+    @unittest.skipUnless(shutil.which("node"), "Node is required to execute the generated artifact")
+    def test_artifact_counts_cards_opens_details_and_reports_each_capability_state(self) -> None:
+        snapshot = json.loads(self.cli("export", "--no-snapshot").stdout)
+        def call(call_id: str, group: str, detail: str) -> dict[str, object]:
+            return {"id": call_id, "title": f"Title {call_id}", "ask": "Ask?", "group": "Decide", "band": "desk",
+                    "desk_group": group, "home": "invented-home", "project": "", "topic": "", "detail": detail,
+                    "touched_at": None, "deferred": "", "sweep": False, "recommendation": "", "brief_url": "",
+                    "links": [], "relevance": "", "relevance_reason": "", "related_to": []}
+        snapshot["calls"] = [call("c1", "First heading", "Plain <b>text</b> detail"), call("c2", "Second heading", "")]
+        snapshot["session"] = None
+        snapshot["reactions"] = []
+        snapshot["delivered"] = []
+        page = quarterdeck.artifact_page(snapshot)
+        harness = r"""
+const assert = require('node:assert/strict');
+const page = require('node:fs').readFileSync(0, 'utf8');
+const payload = page.match(/<script type="application\/json" id="qd-snapshot">([\s\S]*?)<\/script>/)[1];
+const script = page.match(/<script>([\s\S]*?)<\/script>/)[1];
+class Element {
+  constructor(tag) { this.tag = tag; this.children = []; this.attrs = {}; this.listeners = {}; this._text = ''; this.open = false; this.disabled = false; }
+  set textContent(value) { this._text = String(value); this.children = []; }
+  get textContent() { return this._text + this.children.map(c => c.textContent).join(''); }
+  set className(value) { this.attrs.class = value; }
+  setAttribute(key, value) { this.attrs[key] = value; if (key === 'id') this.id = value; }
+  getAttribute(key) { return this.attrs[key]; }
+  appendChild(child) { this.children.push(child); }
+  addEventListener(name, callback) { this.listeners[name] = callback; }
+  all(tag) { return this.children.flatMap(c => [ ...(c.tag === tag ? [c] : []), ...c.all(tag) ]); }
+  querySelectorAll(tag) { return this.all(tag); }
+}
+function boot(use) {
+  const elements = Object.fromEntries(['qd-snapshot', 'root', 'title', 'generated', 'sync'].map(id => [id, new Element('div')]));
+  elements['qd-snapshot'].textContent = payload;
+  global.document = {createElement: tag => new Element(tag), getElementById: id => elements[id], activeElement: null};
+  global.window = use === undefined ? {} : {claude: {use}};
+  require('node:vm').runInThisContext(script);
+  return elements.root;
+}
+const flush = async () => { for (let i = 0; i < 10; i++) await Promise.resolve(); };
+const snaps = [];
+const db = {collection: () => ({onSnapshot: cb => { snaps.push(cb); cb({docs: []}); }}), doc: () => ({set: () => Promise.resolve()})};
+const comments = {openComposer: async () => ({opened: true})};
+const buttons = (root, text) => root.all('button').filter(b => b.textContent === text);
+const card = (root, title) => root.all('article').find(c => c.children.some(n => n.tag === 'h3' && n.textContent === title));
+(async () => {
+  // Late resolution: controls exist and are disabled at once, then light up.
+  let release;
+  const late = new Promise(resolve => { release = resolve; });
+  let root = boot(name => late.then(() => name === 'db' ? db : comments));
+  assert.ok(buttons(root, 'Approve').length >= 2 && buttons(root, 'Approve').every(b => b.disabled));
+  assert.ok(buttons(root, 'Discuss with Firstmate').every(b => b.disabled));
+  assert.ok(root.textContent.includes('Connecting…'));
+  assert.ok(global.document.getElementById('sync').textContent.includes('Connecting'));
+  // The desk badge counts the two cards, not the two sub-headings.
+  const deskHead = root.all('section').find(s => s.id === 'desk').children[0];
+  assert.equal(deskHead.all('span').find(s => s.attrs.class === 'count').textContent, '2');
+  release(); await flush();
+  assert.ok(buttons(root, 'Approve').every(b => !b.disabled));
+  assert.ok(buttons(root, 'Discuss with Firstmate').every(b => !b.disabled));
+  assert.ok(global.document.getElementById('sync').textContent.startsWith('Connected'));
+  assert.equal(root.textContent.includes('see the note at the top'), false);
+
+  // Details render as text, open, and stay open across a re-render.
+  const first = card(root, 'Title c1');
+  const detail = first.all('details')[0];
+  assert.ok(detail && detail.textContent.includes('Plain <b>text</b> detail'));
+  assert.equal(card(root, 'Title c2').all('details').length, 0);
+  assert.equal(detail.all('b').length, 0);
+  detail.open = true;
+  const week = root.all('details').find(d => d.id === 'week');
+  assert.ok(week && !week.open);
+  week.open = true;
+  snaps[0]({docs: []});  // a database snapshot re-renders the whole page
+  const after = root.all('details');
+  assert.ok(after.find(d => d.id === detail.id).open, 'call details stay open');
+  assert.ok(after.find(d => d.id === 'week').open, 'group stays open');
+  assert.equal(after.find(d => d.id === 'parked').open, false);
+
+  // Resolving null: controls stay, disabled, with a one-line reason in the header and on the controls.
+  root = boot(async () => null); await flush();
+  assert.ok(buttons(root, 'Approve').length >= 2 && buttons(root, 'Approve').every(b => b.disabled));
+  assert.ok(buttons(root, 'Discuss with Firstmate').every(b => b.disabled));
+  assert.ok(global.document.getElementById('sync').textContent.startsWith('Read-only: the artifact database is not available'));
+  assert.ok(root.textContent.includes('Reactions and Discuss unavailable, see the note at the top.'));
+  assert.equal(root.textContent.includes('not available in this view'), false, 'cards do not repeat the full reason');
+
+  // Only comments null.
+  root = boot(async name => name === 'db' ? db : null); await flush();
+  assert.ok(buttons(root, 'Approve').every(b => !b.disabled));
+  assert.ok(buttons(root, 'Discuss with Firstmate').every(b => b.disabled));
+  assert.ok(global.document.getElementById('sync').textContent.includes('Discuss with Firstmate is off'));
+  assert.ok(root.textContent.includes('Discuss unavailable, see the note at the top.'));
+
+  // A read error on one collection survives a later good snapshot on the other.
+  const listeners = {};
+  const flaky = {collection: name => ({onSnapshot: (cb, fail) => { listeners[name] = cb; if (name === 'qd-inbox') fail(new Error('denied')); else cb({docs: []}); }}),
+                 doc: () => ({set: () => Promise.resolve()})};
+  root = boot(async name => name === 'db' ? flaky : comments); await flush();
+  assert.ok(global.document.getElementById('sync').textContent.includes('Could not read recorded reactions.'));
+  Object.keys(listeners).filter(n => n !== 'qd-inbox').forEach(n => listeners[n]({docs: []}));
+  assert.ok(global.document.getElementById('sync').textContent.includes('Could not read recorded reactions.'));
+
+  // A rejected or missing runtime is also reported, never thrown.
+  root = boot(async () => { throw new Error('boom'); }); await flush();
+  assert.ok(global.document.getElementById('sync').textContent.includes('failed to load (boom)'));
+  root = boot(undefined); await flush();
+  assert.ok(global.document.getElementById('sync').textContent.startsWith('Read-only: open this page as a Claude artifact'));
+  assert.ok(buttons(root, 'Approve').length >= 2);
+})().catch(error => {process.stderr.write(error.stack); process.exitCode = 1;});
+"""
+        result = subprocess.run(["node", "-e", harness], input=page, capture_output=True, text=True, check=False)
+        self.assertEqual(result.returncode, 0, result.stderr)
+
 
 class PrivacyGuardTests(unittest.TestCase):
     def initialize_git(self, root: Path) -> None:

@@ -32,6 +32,30 @@ report bodies may contain paths and other work data. The privacy guarantees of t
 [architecture guide](../explanation/privacy-and-architecture.md) apply to the
 published page: it is your work data.
 
+## Read the header line
+
+The line under the title says what the page could connect to. Reactions,
+**Mark reviewed**, **Discard** and **Discuss with Firstmate** are always drawn;
+they are disabled until the matching capability resolves. Each card then
+shows a short hint (`Connecting…`, or `… unavailable, see the note at the
+top.`); the header line carries the full reason.
+
+| Header line | Meaning |
+| --- | --- |
+| `Connecting to the artifact database and comments…` | Claude has not answered yet. Controls are disabled and light up on their own. |
+| `Connected: reactions and review actions are saved in this artifact.` | The `db` capability resolved. Reactions and report actions work. |
+| `Read-only: the artifact database is not available in this view …` | `db` resolved with nothing: the page is open outside a signed-in artifact view, or was published without `db`. Reload signed in, or republish with `{db: {}}`. |
+| `Discuss with Firstmate is off: …` | `comments` resolved with nothing; **Discuss with Firstmate** stays disabled. Reactions still work. |
+| `Read-only: open this page as a Claude artifact …` | The page has no Claude runtime (a local file or plain browser). |
+| `… failed to load (…)` | The capability module threw or rejected. |
+| `… did not answer; reload the artifact.` | The capability did not answer within 15 seconds. Reload the artifact. |
+| `Downloads are unavailable in this view.` | A download button was pressed without the `downloads` capability. |
+| `Render error: …` | Something threw while drawing the page or one card. The rest of the page keeps working; report the message. |
+
+Call cards with more to say have a **Details** section. Click it to read the
+text; it stays open when the page refreshes. The **On your desk** badge counts
+cards, not the sub-headings between them.
+
 ## The round trip
 
 On the artifact you can **Mark reviewed**, **Discard**, **Unmark** and
@@ -93,7 +117,7 @@ items that no longer exist, or whose delivery failed, are skipped and listed.
 
 **Discuss with Firstmate** opens the claude.ai comment composer on that card.
 A comment sent to Claude reaches Firstmate's session directly, with no import.
-It needs the `comments` capability above; without it the button is absent.
+It needs the `comments` capability above; without it the button stays disabled.
 
 ## What the artifact does not do
 
