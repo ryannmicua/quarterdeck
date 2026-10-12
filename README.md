@@ -59,7 +59,12 @@ as a local artifact. Quarterdeck itself has no agent or build step.
 - Cloud artifact: `quarterdeck export --artifact FILE` builds a Claude
   artifact page from [`templates/artifact.html.tmpl`](templates/artifact.html.tmpl)
   and a data snapshot; marks and discards made there come back with
-  `quarterdeck import`. See [Use the cloud artifact](docs/how-to/use-the-cloud-artifact.md).
+  `quarterdeck import`. Clicking a card opens a detail view in the page (ask,
+  recommendation, detail text, links, linked report text, reaction controls),
+  and `--bodies desk` keeps the snapshot small by carrying report text only for
+  reports tied to the desk. A status line in the header and at the top of the
+  desk says whether reactions are connected. See
+  [Use the cloud artifact](docs/how-to/use-the-cloud-artifact.md).
 - Compact header: the page opens straight on the desk.
 - Bearings-shaped page: Captain's Call, Recently Landed, Underway, and Charted
   Next, each always rendered with an empty-state sentence.

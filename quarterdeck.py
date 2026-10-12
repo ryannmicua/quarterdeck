@@ -4880,7 +4880,40 @@ def iso_or_none(value: datetime | None) -> str | None:
     return board_time_text(value) if value else None
 
 
-def call_snapshot(entry: BoardEntry, band: str, desk_heading: str, state: ReviewState) -> dict[str, object]:
+BODIES_MODES = ("all", "desk", "none")
+
+
+def linked_report_ids(homes: list[HomeSnapshot], view: BoardView, state: ReviewState) -> dict[str, list[str]]:
+    """Captain call key -> ids of the reports linked to it: the report of that task, a report related to it by
+    Firstmate, or a report of a task the call is related to."""
+    snapshots = all_snapshots(homes)
+    entries = [e for band in BOARD_BAND_KEYS for e in view.bands[band]] + list(view.stale)
+    keys = {e.key for e in entries}
+    owners = {key: next((s for s in snapshots if report_reference(s.spec.label, key.partition("/")[2]) == key), None) for key in keys}
+    report_task: dict[str, str] = {}
+    linked: dict[str, set[str]] = {key: set() for key in keys}
+    for snapshot in snapshots:
+        items = backlog_items(snapshot.backlog_markdown or "", snapshot) if (
+            snapshot.backlog_markdown is not None and not snapshot.error
+        ) else []
+        for report in snapshot.reports:
+            item = report_backlog_item(items, report)
+            task = task_key(snapshot, item.id if item else report.path.parent.name, snapshots)
+            report_task[report.report_id] = task
+            for key in {task, *(task_key(snapshot, target, snapshots) for target in report.related_to)} & keys:
+                linked[key].add(report.report_id)
+    for key in keys:
+        owner = owners[key]
+        if owner is None:
+            continue
+        targets = {task_key(owner, target, snapshots) for target in state.relations.get(("call", key), [])}
+        linked[key].update(rid for rid, task in report_task.items() if task in targets)
+    return {key: sorted(ids) for key, ids in linked.items()}
+
+
+def call_snapshot(
+    entry: BoardEntry, band: str, desk_heading: str, state: ReviewState, reports: list[str] | None = None,
+) -> dict[str, object]:
     item = entry.item
     return {
         "id": entry.key, "title": item.title, "ask": item.ask, "group": item.group, "band": band,
@@ -4890,22 +4923,30 @@ def call_snapshot(entry: BoardEntry, band: str, desk_heading: str, state: Review
         "links": [{"label": label, "url": url} for label, url in item.links],
         "relevance": entry.relevance, "relevance_reason": entry.reason,
         "related_to": state.relations.get(("call", entry.key), []),
+        "reports": reports or [],
     }
 
 
-def build_snapshot(homes: list[HomeSnapshot], title: str, now: datetime) -> dict[str, object]:
+def build_snapshot(homes: list[HomeSnapshot], title: str, now: datetime, bodies: str = "all") -> dict[str, object]:
     """The data the cloud artifact renders: the desk, this week, related items, the report list and the latest
-    reaction per item. Nothing else."""
+    reaction per item. Nothing else. `bodies` picks which waiting reports carry their Markdown: "all" (the
+    default), "desk" (only reports linked to a desk or this-week call, or related to the session) or "none"."""
+    if bodies not in BODIES_MODES:
+        raise ValueError(f"unknown --bodies {bodies!r}; use one of {', '.join(BODIES_MODES)}")
     ambiguous = assign_report_ids(homes)
     state = next((s.review_state for s in all_snapshots(homes) if s.review_state is not None), None) or ReviewState()
     view = board_view(homes, now, fallback=True)
     calls: list[dict[str, object]] = []
     session: dict[str, object] | None = None
     assert view is not None
+    linked = linked_report_ids(homes, view, state)
     headings = {id(e): heading for heading, members in view.desk_groups for e in members}
     for band in BOARD_BAND_KEYS:
-        calls.extend(call_snapshot(e, band, headings.get(id(e), ""), state) for e in view.bands[band])
-    calls.extend(call_snapshot(e, "stale", "", state) for e in view.stale)
+        calls.extend(call_snapshot(e, band, headings.get(id(e), ""), state, linked.get(e.key)) for e in view.bands[band])
+    calls.extend(call_snapshot(e, "stale", "", state, linked.get(e.key)) for e in view.stale)
+    related_found = related_items(homes, view)
+    wanted = {rid for band in ("desk", "week") for e in view.bands[band] for rid in linked.get(e.key, [])}
+    wanted.update(item.key for item in related_found if item.kind == "report")
     if view.session is not None:
         session = {
             "idle": view.session.idle, "started_at": iso_or_none(view.session.started),
@@ -4918,13 +4959,14 @@ def build_snapshot(homes: list[HomeSnapshot], title: str, now: datetime) -> dict
             "fingerprint": report.fingerprint, "relevance": report.relevance,
             "relevance_reason": report.relevance_reason, "related_to": report.related_to,
             "modified_at": iso_or_none(report.modified), "ambiguous": report.report_id in ambiguous,
-            "markdown": report.markdown if report.waiting else "",
+            "markdown": report.markdown if report.waiting and (
+                bodies == "all" or bodies == "desk" and report.report_id in wanted) else "",
         }
         for snapshot in all_snapshots(homes) for report in snapshot.reports
     ]
     related = [
         {"kind": item.kind, "id": item.key, "title": item.title, "home": item.home, "why": item.why, "score": item.score}
-        for item in related_items(homes, view)
+        for item in related_found
     ]
     shown = {("call", call["id"]) for call in calls} | {("report", report["id"]) for report in reports} | {
         ("report" if item["kind"] == "report" else "call", item["id"]) for item in related
@@ -4959,7 +5001,7 @@ def export_snapshot(args: argparse.Namespace) -> int:
         config, homes, _bearings = load_site(args)
         configured_title = config.get("page_title")
         title = args.title or (configured_title if isinstance(configured_title, str) else None) or DEFAULT_TITLE
-        snapshot = build_snapshot(homes, title, datetime.now(timezone.utc))
+        snapshot = build_snapshot(homes, title, datetime.now(timezone.utc), args.bodies)
         document = json.dumps(snapshot, indent=2, ensure_ascii=False) + "\n"
         outputs: list[Path] = []
         if args.artifact:
@@ -5399,12 +5441,17 @@ def make_parser() -> argparse.ArgumentParser:
         description=(
             "Write the desk, this week, related items and the report list as JSON (stdout by default), and with "
             "--artifact a ready-to-publish page built from templates/artifact.html.tmpl. Reads homes only; "
-            "report text is not included."
+            "report Markdown travels for waiting reports (see --bodies)."
         ),
     )
     command_parsers["export"] = export_parser
     export_parser.add_argument("--output", help="write the snapshot JSON to this file")
     export_parser.add_argument("--artifact", help="write the artifact page (snapshot embedded) to this file")
+    export_parser.add_argument(
+        "--bodies", choices=BODIES_MODES, default="all",
+        help=("which waiting reports carry their Markdown: all (default), desk (only reports linked to a desk or "
+              "this-week call, or related to the session), or none"),
+    )
     export_parser.add_argument("--home", help="use this Firstmate home instead of configured homes or FM_HOME")
     export_parser.add_argument("--config", type=Path, help="optional JSON config file")
     export_parser.add_argument("--title", help="override the page title")

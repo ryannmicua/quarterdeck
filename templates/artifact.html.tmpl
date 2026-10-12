@@ -31,6 +31,7 @@ body { margin: 0; background: var(--bg); color: var(--fg); font: 16px/1.5 system
 header { background: var(--head); color: #fffdf8; padding: .55rem max(1rem, calc((100vw - 60rem) / 2)); border-bottom: 3px solid var(--gold); display: flex; flex-wrap: wrap; gap: .1rem 1rem; align-items: baseline; }
 h1 { margin: 0; font: 700 1.1rem/1.3 Georgia, serif; }
 header p { margin: 0; font-size: .82rem; color: #e4e8e8; }
+header p.status { flex: 1 1 100%; font-size: .95rem; font-weight: 650; color: #fffdf8; }
 main { width: min(60rem, calc(100% - 2rem)); margin: 1.2rem auto 4rem; }
 h2 { margin: 0; font: 700 1.25rem/1.3 Georgia, serif; }
 section, details.group { margin: 1.4rem 0; }
@@ -57,6 +58,16 @@ a { color: var(--accent); font-weight: 650; }
 .empty { border: 1px dashed var(--line); border-radius: 10px; color: var(--muted); padding: .8rem 1rem; }
 .sub { margin: 1rem 0 .3rem; font-size: .95rem; color: var(--accent); }
 .status { color: var(--muted); font-size: .85rem; }
+.banner { border: 1px solid var(--accent); border-left-width: 6px; background: var(--accent-soft); color: var(--fg); border-radius: 10px; padding: .6rem 1rem; margin: 0 0 1rem; font-size: .95rem; font-weight: 650; overflow-wrap: anywhere; }
+.banner.off { border-color: var(--gold); background: var(--warn-soft); color: var(--warn); }
+.card.openable { cursor: pointer; }
+.card .open { margin-top: .6rem; }
+.detail h2 { margin: .4rem 0 .2rem; font-size: 1.4rem; }
+.detail h3 { margin: 1.2rem 0 .3rem; font: 700 1rem/1.3 Georgia, serif; color: var(--accent); }
+.detail .block { background: var(--surface); border: 1px solid var(--line); border-radius: 10px; padding: .7rem 1rem; margin: .4rem 0; }
+.detail .block p { margin: .3rem 0; overflow-wrap: anywhere; }
+.detail .linked { border-left: 4px solid var(--accent); }
+.detail .linked h4 { margin: 0 0 .2rem; font: 700 1rem/1.3 Georgia, serif; overflow-wrap: anywhere; }
 footer { border-top: 1px solid var(--line); margin-top: 3rem; padding-top: 1rem; color: var(--muted); font-size: .85rem; }
 .reaction { margin-top: .6rem; }
 .reaction .latest { margin: .3rem 0; color: var(--muted); font-size: .85rem; }
@@ -65,9 +76,6 @@ footer { border-top: 1px solid var(--line); margin-top: 3rem; padding-top: 1rem;
 .reaction .reply { display: flex; flex-wrap: wrap; gap: .5rem; align-items: center; margin-top: .5rem; }
 .reaction input[type="text"] { flex: 1 1 14rem; min-width: 0; min-height: 44px; padding: 0 .6rem; border: 1px solid var(--line); border-radius: 8px; background: var(--surface); color: var(--fg); font: inherit; font-size: .9rem; }
 .report-body { white-space: pre-wrap; overflow-wrap: anywhere; font: inherit; }
-.card details { margin: .5rem 0; }
-.card details > summary { cursor: pointer; min-height: 44px; display: flex; align-items: center; font-weight: 650; color: var(--accent); }
-.card details > .report-body { margin: .2rem 0 .4rem; }
 .access { color: var(--warn); }
 .error { border: 1px solid var(--gold); background: var(--warn-soft); color: var(--warn); border-radius: 10px; padding: .6rem 1rem; margin: .6rem 0; overflow-wrap: anywhere; }
 </style>
@@ -102,6 +110,10 @@ footer { border-top: 1px solid var(--line); margin-top: 3rem; padding-top: 1rem;
   var renderErrors = []; // card-level render failures from the latest render
   var renderFailure = ""; // a render failure that stopped the page
   var pendingOpen = null;
+  var viewStack = [];    // detail views opened in the page: {kind, id, scroll}; the last one is shown
+  var detailShown = false;
+  var openers = {};      // "kind:id" -> the first rendered View details button, to return focus to on Back
+  var focusHeading = false; // move focus to the detail heading once, when a detail view is opened
   var composers = {};    // "kind:item id" -> every rendered {choices, input, status} for that draft
 
   function el(tag, attrs, children) {
@@ -182,9 +194,19 @@ footer { border-top: 1px solid var(--line); margin-top: 3rem; padding-top: 1rem;
     Object.keys(syncErrors).forEach(function (key) { parts.push(syncErrors[key]); });
     return parts.join(" ");
   }
+  function connected() { return access.db.state === "ready" && !!db; }
   function updateStatus() {
+    var text = statusLine();
     var node = document.getElementById("sync");
-    if (node) node.textContent = statusLine();
+    if (node) node.textContent = text;
+    var banner = document.getElementById("qd-banner");
+    if (banner) {
+      banner.textContent = text;
+      banner.className = "banner" + (connected() && !renderFailure && !renderErrors.length ? "" : " off");
+    }
+  }
+  function statusBanner() {
+    return el("p", { id: "qd-banner", "class": "banner", role: "status", "aria-live": "polite", text: statusLine() });
   }
   // Build one card; a failure becomes a visible error card instead of stopping the rest of the page.
   function guard(label, build) {
@@ -308,15 +330,34 @@ footer { border-top: 1px solid var(--line); margin-top: 3rem; padding-top: 1rem;
     });
   }
 
-  function reportBody(report, section) {
-    if (!report.markdown) return null;
-    var id = "body-" + section + "-" + docId(report.id);
-    var body = el("details", { id: id }, [
-      el("summary", { text: "Read report" }),
-      el("pre", { "class": "report-body", text: report.markdown }),
-    ]);
-    body.open = !!(pendingOpen && pendingOpen[id]);
-    return body;
+  // Open a card's detail view in the page; Back returns to the list where it was.
+  function openDetail(kind, id) {
+    viewStack.push({ kind: kind, id: id, scroll: window.scrollY || 0 });
+    focusHeading = true;
+    render();
+    if (window.scrollTo) window.scrollTo(0, 0);
+  }
+  function closeDetail() {
+    var last = viewStack.pop();
+    render();
+    if (last) {
+      if (window.scrollTo) window.scrollTo(0, last.scroll);
+      var again = openers[last.kind + ":" + last.id];
+      if (again && again.focus) again.focus({ preventScroll: true });
+    }
+  }
+  function openButton(kind, id, card) {
+    var button = el("button", { type: "button", "class": "open", text: "View details" });
+    button.addEventListener("click", function () { openDetail(kind, id); });
+    openers[kind + ":" + id] = openers[kind + ":" + id] || button;
+    card.className += " openable";
+    card.addEventListener("click", function (event) {
+      var hit = event.target && event.target.closest && event.target.closest("button, a, input, summary, details");
+      if (hit && hit !== card && card.contains(hit)) return;
+      if (window.getSelection && String(window.getSelection())) return;
+      openDetail(kind, id);
+    });
+    return button;
   }
 
   function reportCard(report, buttons) { return guard("report " + report.id, function () { return buildReportCard(report, buttons); }); }
@@ -330,8 +371,7 @@ footer { border-top: 1px solid var(--line); margin-top: 3rem; padding-top: 1rem;
     if (report.recommendation) card.appendChild(el("p", { text: "Recommendation: " + report.recommendation }));
     if (report.relevance === "stale" && report.relevance_reason) card.appendChild(el("p", { "class": "note", text: "Marked stale: " + report.relevance_reason }));
     card.appendChild(el("p", { "class": "note", text: report.id }));
-    var body = reportBody(report, "reports");
-    if (body) card.appendChild(body);
+    card.appendChild(openButton("report", report.id, card));
     if (report.ambiguous) {
       card.appendChild(el("p", { "class": "note", text: "ID is shared by multiple homes; actions are disabled." }));
     } else if (buttons.length) {
@@ -363,25 +403,12 @@ footer { border-top: 1px solid var(--line); margin-top: 3rem; padding-top: 1rem;
     var card = el("article", { "class": "card" }, [el("h3", { text: call.title }), el("p", { text: call.ask }), el("div", { "class": "chips" }, chips)]);
     if (call.relevance === "stale" && call.relevance_reason) card.appendChild(el("p", { "class": "note", text: "Marked stale: " + call.relevance_reason }));
     if (typeof call.detail === "string" && call.detail.trim()) {
-      var detailId = "detail-" + docId(call.band || "call") + "-" + docId(call.id);
-      var detail = el("details", { id: detailId }, [
-        el("summary", { text: "Details" }),
-        el("div", { "class": "report-body", text: call.detail }),
-      ]);
-      detail.open = !!(pendingOpen && pendingOpen[detailId]);
-      card.appendChild(detail);
+      var firstLine = call.detail.trim().split("\n")[0];
+      card.appendChild(el("p", { "class": "note", text: firstLine.length > 160 ? firstLine.slice(0, 157) + "…" : firstLine }));
     }
-    var links = [];
-    if (call.brief_url && safeUrl(call.brief_url)) links.push(el("a", { href: safeUrl(call.brief_url), target: "_blank", rel: "noopener", text: "Open brief" }));
-    (call.links || []).forEach(function (link) {
-      var href = safeUrl(link.url);
-      if (href) links.push(el("a", { href: href, target: "_blank", rel: "noopener", text: link.label }));
-    });
-    if (links.length) {
-      var row = el("p", { "class": "actions" });
-      links.forEach(function (link) { row.appendChild(link); });
-      card.appendChild(row);
-    }
+    card.appendChild(openButton("call", call.id, card));
+    var links = openLinks(linkRow(call));
+    if (links) card.appendChild(links);
     card.appendChild(reactionBox("call", call.id, card));
     return card;
   }
@@ -417,14 +444,168 @@ footer { border-top: 1px solid var(--line); margin-top: 3rem; padding-top: 1rem;
     updateStatus();
   }
 
+  function section(title, nodes) {
+    return [el("h3", { text: title }), el("div", { "class": "block" }, nodes)];
+  }
+  function textBlock(value) { return el("div", { "class": "report-body", text: value }); }
+  function reportText(report) {
+    return report.markdown ? textBlock(report.markdown) :
+      el("p", { "class": "note", text: "The report text is not in this snapshot. Read it in the local Quarterdeck, or ask Firstmate for it." });
+  }
+  function linkRow(call) {
+    var links = [];
+    if (call.brief_url && safeUrl(call.brief_url)) links.push(el("a", { href: safeUrl(call.brief_url), target: "_blank", rel: "noopener", text: "Open brief" }));
+    (call.links || []).forEach(function (link) {
+      var href = safeUrl(link.url);
+      if (href) links.push(el("a", { href: href, target: "_blank", rel: "noopener", text: link.label || href }));
+    });
+    return links;
+  }
+  function findCall(id) { return (snapshot.calls || []).filter(function (c) { return c.id === id; })[0]; }
+  function findReport(id) { return (snapshot.reports || []).filter(function (r) { return r.id === id; })[0]; }
+  function stateChip(report) {
+    var state = effectiveState(report);
+    return chip(state, state === "needs review" ? "warn" : "");
+  }
+  // A report with its full text, or a plain note when this snapshot does not carry it.
+  function reportBlock(report) {
+    var kids = [el("h4", { text: report.title }), el("div", { "class": "chips" }, [chip(report.home), stateChip(report)])];
+    if (report.recommendation) kids.push(el("p", { text: "Recommendation: " + report.recommendation }));
+    kids.push(reportText(report));
+    return el("div", { "class": "block linked" }, kids);
+  }
+  function backButton() {
+    var back = el("button", { type: "button", text: "← Back to the desk" });
+    back.addEventListener("click", closeDetail);
+    return back;
+  }
+  function openLinks(nodes) {
+    return nodes.length ? el("p", { "class": "actions" }, nodes) : null;
+  }
+
+  function buildDetail(view) {
+    var wrap = el("article", { "class": "detail" });
+    var top = el("div", { "class": "actions" }, [backButton()]);
+    wrap.appendChild(top);
+    var call = view.kind === "call" ? findCall(view.id) : null;
+    var report = view.kind === "report" ? findReport(view.id) : null;
+    if (!call && !report) {
+      wrap.appendChild(el("p", { "class": "empty", text: "This item is not in the snapshot any more." }));
+      return wrap;
+    }
+    var heading = call ? buildCallDetail(wrap, call) : buildReportDetail(wrap, report);
+    if (heading && focusHeading && heading.focus) {
+      focusHeading = false;
+      heading.setAttribute("tabindex", "-1");
+      setTimeout(function () { heading.focus({ preventScroll: true }); }, 0);
+    }
+    return wrap;
+  }
+
+  function buildCallDetail(wrap, call) {
+    var chips = [chip(call.group, "group")];
+    [call.project, call.topic, call.home].forEach(function (value) { if (value) chips.push(chip(value)); });
+    if (call.touched_at) chips.push(chip("touched " + ago(call.touched_at)));
+    if (call.deferred) chips.push(chip(call.deferred, "warn"));
+    if (call.sweep) chips.push(chip("keep, defer or drop?", "warn"));
+    var heading = el("h2", { text: call.title });
+    wrap.appendChild(heading);
+    wrap.appendChild(el("div", { "class": "chips" }, chips));
+    if (call.relevance === "stale" && call.relevance_reason) wrap.appendChild(el("p", { "class": "note", text: "Marked stale: " + call.relevance_reason }));
+    section("What is asked", [el("p", { text: call.ask || "No ask recorded." })]).forEach(function (n) { wrap.appendChild(n); });
+    if (call.recommendation) section("Firstmate's recommendation", [el("p", { text: call.recommendation })]).forEach(function (n) { wrap.appendChild(n); });
+    if (typeof call.detail === "string" && call.detail.trim()) section("Details", [textBlock(call.detail)]).forEach(function (n) { wrap.appendChild(n); });
+    var links = openLinks(linkRow(call));
+    if (links) section("Links", [links]).forEach(function (n) { wrap.appendChild(n); });
+    var latest = latestText(latestReaction("call", call.id));
+    if (latest) section("Your latest reaction", [el("p", { text: latest.replace(/^Latest reaction: /, "") })]).forEach(function (n) { wrap.appendChild(n); });
+    var reports = (call.reports || []).map(findReport).filter(Boolean);
+    if (reports.length) {
+      wrap.appendChild(el("h3", { text: "Reports linked to this call (" + reports.length + ")" }));
+      reports.forEach(function (linked) {
+        var block = reportBlock(linked);
+        var open = el("button", { type: "button", text: "Open this report" });
+        open.addEventListener("click", function () { openDetail("report", linked.id); });
+        block.appendChild(el("div", { "class": "actions" }, [open]));
+        wrap.appendChild(block);
+      });
+    } else {
+      wrap.appendChild(el("h3", { text: "Linked reports" }));
+      wrap.appendChild(el("p", { "class": "note", text: "No report is linked to this call in the snapshot." }));
+    }
+    wrap.appendChild(el("h3", { text: "Your reaction" }));
+    wrap.appendChild(reactionBox("call", call.id, wrap));
+    return heading;
+  }
+
+  function buildReportDetail(wrap, report) {
+    var heading = el("h2", { text: report.title });
+    wrap.appendChild(heading);
+    wrap.appendChild(el("div", { "class": "chips" }, [chip(report.home), stateChip(report)].concat(
+      report.relevance === "stale" ? [chip("stale", "warn")] : [])));
+    wrap.appendChild(el("p", { "class": "note", text: report.id }));
+    if (report.relevance === "stale" && report.relevance_reason) wrap.appendChild(el("p", { "class": "note", text: "Marked stale: " + report.relevance_reason }));
+    if (report.recommendation) section("Recommendation", [el("p", { text: report.recommendation })]).forEach(function (n) { wrap.appendChild(n); });
+    section("Report", [reportText(report)]).forEach(function (n) { wrap.appendChild(n); });
+    var calls = (snapshot.calls || []).filter(function (c) { return (c.reports || []).indexOf(report.id) >= 0; });
+    if (calls.length) {
+      wrap.appendChild(el("h3", { text: "Captain calls this report is linked to" }));
+      calls.forEach(function (linked) {
+        var block = el("div", { "class": "block linked" }, [el("h4", { text: linked.title }), el("p", { text: linked.ask })]);
+        var open = el("button", { type: "button", text: "Open this call" });
+        open.addEventListener("click", function () { openDetail("call", linked.id); });
+        block.appendChild(el("div", { "class": "actions" }, [open]));
+        wrap.appendChild(block);
+      });
+    }
+    var latest = latestText(latestReaction("report", report.id));
+    if (latest) section("Your latest reaction", [el("p", { text: latest.replace(/^Latest reaction: /, "") })]).forEach(function (n) { wrap.appendChild(n); });
+    if (report.ambiguous) {
+      wrap.appendChild(el("p", { "class": "note", text: "ID is shared by multiple homes; actions are disabled." }));
+      return heading;
+    }
+    var state = effectiveState(report);
+    var buttons = state === "reviewed" ? [["unmark", "Unmark"]] : state === "discarded" ? [["undiscard", "Undiscard"]] :
+      [["mark", "Mark reviewed"], ["discard", "Discard"]];
+    var status = el("span", { "class": "status", "aria-live": "polite" });
+    var row = el("div", { "class": "actions" });
+    buttons.forEach(function (pair) {
+      var button = el("button", { type: "button", text: pair[1] });
+      button.disabled = !db;
+      button.addEventListener("click", function () { button.disabled = true; record(report, pair[0], status); });
+      row.appendChild(button);
+    });
+    row.appendChild(status);
+    wrap.appendChild(row);
+    wrap.appendChild(el("h3", { text: "Your reaction" }));
+    wrap.appendChild(reactionBox("report", report.id, wrap));
+    return heading;
+  }
+
   function renderPage() {
     var root = document.getElementById("root");
-    var openNow = {};
-    Array.prototype.forEach.call(root.querySelectorAll("details"), function (d) { if (d.open) openNow[d.id] = true; });
-    pendingOpen = openNow;
+    if (!detailShown) {  // remember which groups are open on the list, to restore them after Back
+      var openNow = {};
+      Array.prototype.forEach.call(root.querySelectorAll("details"), function (d) { if (d.open) openNow[d.id] = true; });
+      pendingOpen = openNow;
+    }
     var focused = document.activeElement && document.activeElement.getAttribute && document.activeElement.getAttribute("data-draft");
     root.textContent = "";
     composers = {};
+    openers = {};
+    var shown = viewStack.length ? viewStack[viewStack.length - 1] : null;
+    if (shown) {
+      detailShown = true;
+      root.appendChild(statusBanner());
+      root.appendChild(guard("detail " + shown.id, function () { return buildDetail(shown); }));
+      if (focused) {
+        var kept = Array.prototype.filter.call(root.querySelectorAll("input[data-draft]"), function (node) { return node.getAttribute("data-draft") === focused; })[0];
+        if (kept) kept.focus();
+      }
+      return;
+    }
+    detailShown = false;
+    root.appendChild(statusBanner());
     var calls = snapshot.calls || [];
     var reports = snapshot.reports || [];
     var byBand = function (band) { return calls.filter(function (call) { return call.band === band; }); };
@@ -453,10 +634,7 @@ footer { border-top: 1px solid var(--line); margin-top: 3rem; padding-top: 1rem;
         el("div", { "class": "chips" }, chips),
       ]);
       if (item.kind === "report" && base && effectiveState(base) !== "needs review") return null;
-      if (item.kind === "report" && base) {
-        var body = reportBody(base, "related");
-        if (body) card.appendChild(body);
-      }
+      if (base) card.appendChild(openButton(item.kind === "report" ? "report" : "call", item.id, card));
       if (item.kind === "report" && base && !base.ambiguous) {
         var status = el("span", { "class": "status", "aria-live": "polite" });
         var row = el("div", { "class": "actions" });
@@ -582,6 +760,9 @@ footer { border-top: 1px solid var(--line); margin-top: 3rem; padding-top: 1rem;
     }
   }
 
+  if (document.addEventListener) document.addEventListener("keydown", function (event) {
+    if (event.key === "Escape" && viewStack.length && !(event.target && /^(INPUT|TEXTAREA)$/.test(event.target.tagName))) closeDetail();
+  });
   document.getElementById("title").textContent = "⚓ " + (snapshot.title || "Quarterdeck");
   document.getElementById("generated").textContent = "Snapshot " + (snapshot.generated_at || "") + (snapshot.generated_at ? " (" + ago(snapshot.generated_at) + ")" : "");
   render();  // controls appear at once, disabled, and light up as each capability resolves

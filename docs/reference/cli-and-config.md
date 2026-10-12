@@ -19,7 +19,7 @@ quarterdeck reports relate <report-id> --to <task-id> [--remove] [--home PATH] [
 quarterdeck calls list [--home PATH] [--config FILE]
 quarterdeck calls set-relevance <task-id> current|stale [--reason TEXT] [--home PATH] [--config FILE]
 quarterdeck calls relate <task-id> --to <task-id> [--remove] [--home PATH] [--config FILE]
-quarterdeck export [--output FILE] [--artifact FILE] [--home PATH] [--config FILE] [--title TEXT] [--no-snapshot]
+quarterdeck export [--output FILE] [--artifact FILE] [--home PATH] [--config FILE] [--title TEXT] [--bodies all|desk|none] [--no-snapshot]
 quarterdeck import <actions.json|-> [--dry-run] [--home PATH] [--config FILE]
 quarterdeck board upsert <task-id> [--id ID] [--group GROUP] [--title TEXT] [--ask TEXT] [--detail TEXT] [--topic TEXT] [--project TEXT] [--brief-url URL] [--recommendation TEXT] [--link LABEL=URL ...] [--touch] [--touched-at ISO] [--home PATH] [--data-dir PATH]
 quarterdeck board touch <task-id> [--at ISO] [--home PATH] [--data-dir PATH]
@@ -160,7 +160,9 @@ exists in several homes. `calls list` prints each call's ID, relevance and band.
 `export` writes the cloud artifact's data snapshot: JSON to standard output, to
 `--output`, and with `--artifact` an HTML page built from
 `templates/artifact.html.tmpl` with the snapshot embedded. Output paths must
-be outside the checkout and selected homes. `import` applies the artifact's
+be outside the checkout and selected homes. `--bodies` picks which waiting
+reports carry their Markdown: `all` (default), `desk` (only reports linked to
+a desk or this-week call, or related to the session) or `none`. `import` applies the artifact's
 recorded mark and discard actions from a file (or `-` for standard input) to
 the local state; actions for changed reports are skipped and listed. Exit
 status is 0 when the file was read, even if some actions were skipped, and 2
