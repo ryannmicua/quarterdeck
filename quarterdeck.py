@@ -1124,8 +1124,8 @@ def apply_report_action(
     else:
         wanted = "reviewed" if action == "unmark" else "discarded"
         write_state(state_path, [(
-            "DELETE FROM report_state WHERE report_id = ? AND state = ? AND fingerprint = ?",
-            (report.report_id, wanted, report.fingerprint),
+            "DELETE FROM report_state WHERE report_id = ? AND state = ?",
+            (report.report_id, wanted),
         )])
     apply_review_marks(snapshots, load_review_state(state_path))
     return report
@@ -1974,8 +1974,9 @@ class BearingsBuilder:
             if item and is_cancelled_state(item.state):
                 continue
             summary = _text(row.get("summary")) or key
-            bitem = BItem(title=summary, owner=target.spec.label,
-                          item_id=task, status=_text(row.get("verb")))
+            resolved = target is not snapshot or not owner or owner == "(main)"
+            bitem = BItem(title=summary, owner=target.spec.label if resolved else self.home_label(snapshot, owner),
+                          item_id=task if resolved else key, status=_text(row.get("verb")))
             if item is None:
                 bitem.detail = (
                     f"Full background lives in the secondmate home: {self.home_label(snapshot, owner)}."

@@ -2461,6 +2461,22 @@ class BearingsTests(unittest.TestCase):
             self.assertEqual(bearings.charted[-1].owner, child.spec.label)
             self.assertEqual(calls, [home])
 
+    def test_snapshot_call_from_unregistered_secondmate_keeps_its_owner(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            home = self.make_home(Path(temp))
+            snapshots = self.snapshots(home)
+            parent_label = snapshots[0].spec.label
+            payload = {**SNAPSHOT_JSON, "decisions_open": [
+                {"owner": "wren", "key": "task", "summary": "Unregistered call", "verb": "decide"},
+            ]}
+            bearings = quarterdeck.build_bearings(snapshots, runner=lambda *_args: (payload, ""))
+            self.assertEqual([(item.owner, item.item_id) for item in bearings.call], [("wren", "task")])
+            quarterdeck.apply_review_marks(snapshots, quarterdeck.ReviewState(
+                relevance={("call", quarterdeck.report_reference(parent_label, "task")): ("stale", "parent call")},
+            ))
+            bearings = quarterdeck.build_bearings(snapshots, runner=lambda *_args: (payload, ""))
+            self.assertEqual([item.title for item in bearings.call], ["Unregistered call"])
+
     def test_secondmate_summaries_do_not_duplicate_live_work(self) -> None:
         with tempfile.TemporaryDirectory() as temp:
             home = self.make_home(Path(temp))
