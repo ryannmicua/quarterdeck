@@ -352,7 +352,8 @@ footer { border-top: 1px solid var(--line); margin-top: 3rem; padding-top: 1rem;
     openers[kind + ":" + id] = openers[kind + ":" + id] || button;
     card.className += " openable";
     card.addEventListener("click", function (event) {
-      if (event.target && event.target.closest && event.target.closest("button, a, input, summary, details")) return;
+      var hit = event.target && event.target.closest && event.target.closest("button, a, input, summary, details");
+      if (hit && hit !== card && card.contains(hit)) return;
       if (window.getSelection && String(window.getSelection())) return;
       openDetail(kind, id);
     });

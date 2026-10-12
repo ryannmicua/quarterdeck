@@ -4261,7 +4261,9 @@ const button = (c, text) => c.querySelectorAll('button').find(b => b.textContent
                     "desk_group": group, "home": "invented-home", "project": "", "topic": "", "detail": detail,
                     "touched_at": None, "deferred": "", "sweep": False, "recommendation": "", "brief_url": "",
                     "links": [], "relevance": "", "relevance_reason": "", "related_to": []}
-        snapshot["calls"] = [call("c1", "First heading", "Plain <b>text</b> detail"), call("c2", "Second heading", "")]
+        parked = call("c3", "", "Parked detail")
+        parked["band"] = "parked"
+        snapshot["calls"] = [call("c1", "First heading", "Plain <b>text</b> detail"), call("c2", "Second heading", ""), parked]
         snapshot["session"] = None
         snapshot["reactions"] = []
         snapshot["delivered"] = []
@@ -4278,10 +4280,12 @@ class Element {
   set className(value) { this.attrs.class = value; }
   setAttribute(key, value) { this.attrs[key] = value; if (key === 'id') this.id = value; }
   getAttribute(key) { return this.attrs[key]; }
-  appendChild(child) { this.children.push(child); }
+  appendChild(child) { child.parentNode = this; this.children.push(child); }
   addEventListener(name, callback) { this.listeners[name] = callback; }
   all(tag) { return this.children.flatMap(c => [ ...(c.tag === tag ? [c] : []), ...c.all(tag) ]); }
   querySelectorAll(tag) { return this.all(tag); }
+  closest(selector) { const tags = selector.split(',').map(t => t.trim()); for (let n = this; n; n = n.parentNode) if (tags.includes(n.tag)) return n; return null; }
+  contains(other) { for (let n = other; n; n = n.parentNode) if (n === this) return true; return false; }
 }
 function boot(use) {
   const elements = Object.fromEntries(['qd-snapshot', 'root', 'title', 'generated', 'sync'].map(id => [id, new Element('div')]));
@@ -4335,6 +4339,12 @@ const card = (root, title) => root.all('article').find(c => c.children.some(n =>
   assert.ok(card(root, 'Title c2'));
   assert.ok(root.all('details').find(d => d.id === 'week').open, 'group stays open after Back');
   assert.equal(root.all('details').find(d => d.id === 'parked').open, false);
+  // Clicking the body of a card inside a collapsible group opens it too.
+  const parkedCard = card(root, 'Title c3');
+  assert.ok(parkedCard.closest('details'), 'the parked card sits inside its group');
+  parkedCard.listeners.click({target: parkedCard.children.find(n => n.tag === 'h3')}); await flush();
+  assert.ok(root.all('h2').some(h => h.textContent === 'Title c3'), 'a parked card body click opens its detail view');
+  buttons(root, '← Back to the desk')[0].listeners.click(); await flush();
 
   // Resolving null: controls stay, disabled, with a one-line reason in the header and on the controls.
   root = boot(async () => null); await flush();
