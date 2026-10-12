@@ -69,7 +69,8 @@ Each call, related item and report card has **Approve**, **Hold**, **Not now**
 and **Question** buttons, a short reply box and **Send**. Pick a reaction,
 write a reply, or both. Send writes one document per reaction to the
 artifact's own database (collection `qd-inbox`) with a unique `id`, the item ID,
-`kind` (`call` or `report`), the task ID, the reaction, the text, and a time.
+`kind` (`call` or `report`), the reaction, the text, and a time. The task is
+resolved from the item when the reaction is delivered.
 The card then shows it as the latest reaction. A reaction sent from the local
 page also appears as the latest reaction after the next export.
 

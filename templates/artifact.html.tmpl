@@ -89,6 +89,7 @@ footer { border-top: 1px solid var(--line); margin-top: 3rem; padding-top: 1rem;
   var db = null;
   var comments = null;
   var pendingOpen = null;
+  var composers = {};    // "kind:item id" -> every rendered {choices, input, status} for that draft
 
   function el(tag, attrs, children) {
     var node = document.createElement(tag);
@@ -160,8 +161,10 @@ footer { border-top: 1px solid var(--line); margin-top: 3rem; padding-top: 1rem;
         button.addEventListener("click", function () {
           draft.id = "";
           draft.reaction = draft.reaction === pair[0] ? "" : pair[0];
-          Array.prototype.forEach.call(choices.children, function (other, index) {
-            other.setAttribute("aria-pressed", String(draft.reaction === REACTIONS[index][0]));
+          composers[key].forEach(function (view) {
+            Array.prototype.forEach.call(view.choices.children, function (other, index) {
+              other.setAttribute("aria-pressed", String(draft.reaction === REACTIONS[index][0]));
+            });
           });
         });
         choices.appendChild(button);
@@ -169,15 +172,22 @@ footer { border-top: 1px solid var(--line); margin-top: 3rem; padding-top: 1rem;
       var input = el("input", { type: "text", maxlength: String(TEXT_LIMIT), placeholder: "Reply to Firstmate (optional)", "aria-label": "Reply to Firstmate", "data-draft": key });
       input.value = draft.text;
       input.disabled = draft.sending;
-      input.addEventListener("input", function () { draft.text = input.value; draft.id = ""; });
+      input.addEventListener("input", function () {
+        draft.text = input.value;
+        draft.id = "";
+        composers[key].forEach(function (view) { if (view.input !== input) view.input.value = draft.text; });
+      });
       var send = el("button", { type: "button", text: "Send" });
       send.disabled = draft.sending;
       send.addEventListener("click", function () {
         var text = draft.text.trim().replace(/\s+/g, " ");
-        if (!draft.reaction && !text) { status.textContent = "Pick a reaction or write a reply first."; return; }
+        if (!draft.reaction && !text) {
+          draft.status = "Pick a reaction or write a reply first.";
+          composers[key].forEach(function (view) { view.status.textContent = draft.status; });
+          return;
+        }
         var id2 = draft.id || (draft.id = newReactionId());
-        var data = { version: 1, id: id2, item_id: id, kind: kind, task: id.split("/").slice(1).join("/"),
-          reaction: draft.reaction, text: text, at: new Date().toISOString(), source: "artifact" };
+        var data = { version: 1, id: id2, item_id: id, kind: kind, reaction: draft.reaction, text: text, at: new Date().toISOString(), source: "artifact" };
         draft.sending = true;
         draft.status = "Sending…";
         render();
@@ -191,6 +201,7 @@ footer { border-top: 1px solid var(--line); margin-top: 3rem; padding-top: 1rem;
           render();
         });
       });
+      (composers[key] || (composers[key] = [])).push({ choices: choices, input: input, status: status });
       box.appendChild(choices);
       box.appendChild(el("div", { "class": "reply" }, [input, send, status]));
     }
@@ -333,6 +344,7 @@ footer { border-top: 1px solid var(--line); margin-top: 3rem; padding-top: 1rem;
     pendingOpen = openNow;
     var focused = document.activeElement && document.activeElement.getAttribute && document.activeElement.getAttribute("data-draft");
     root.textContent = "";
+    composers = {};
     var calls = snapshot.calls || [];
     var reports = snapshot.reports || [];
     var byBand = function (band) { return calls.filter(function (call) { return call.band === band; }); };

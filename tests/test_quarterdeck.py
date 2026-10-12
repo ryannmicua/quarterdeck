@@ -3946,6 +3946,19 @@ async function click(report, text) {
         self.assertIn("reply on report invented-home/lone-report (task lone-report)", self.logged()[5])
         self.assertIn("Latest reaction: Why option A?", request("GET", "/")[1])
 
+    def test_a_report_reaction_names_the_backlog_task_that_owns_the_report(self) -> None:
+        backlog = self.home / "data" / "backlog.md"
+        backlog.write_text(backlog.read_text(encoding="utf-8")
+                           + "- [ ] harbor-choice - Harbor choice: see data/lone-report/report.md (repo: harbor-demo)\n",
+                           encoding="utf-8")
+        request = self.serve()
+        status, body = request("POST", quarterdeck.REACTION_ENDPOINT, {
+            "id": "page-0005", "kind": "report", "item_id": "invented-home/lone-report", "reaction": "approve", "text": "",
+        })
+        self.assertEqual(status, 200, body)
+        self.assertEqual(json.loads(body)["task"], "harbor-choice")
+        self.assertIn("(task harbor-choice)", self.logged()[5])
+
     def test_reaction_route_refuses_bad_origin_bad_bodies_unknown_items_and_failed_delivery(self) -> None:
         request = self.serve()
         good = {"id": "page-0003", "kind": "call", "item_id": "invented-home/harbor-hold", "reaction": "hold", "text": ""}
@@ -4156,8 +4169,9 @@ const button = (c, text) => c.querySelectorAll('button').find(b => b.textContent
   const data = written[paths[0]];
   assert.match(paths[0], /^qd-inbox\/[A-Za-z0-9._-]{8,64}$/);
   assert.equal(paths[0], 'qd-inbox/' + data.id);
-  assert.deepEqual([data.kind, data.item_id, data.task, data.reaction, data.text, data.source, data.version],
-    ['call', 'invented-home/harbor-hold', 'harbor-hold', 'approve', 'Go with teal', 'artifact', 1]);
+  assert.deepEqual([data.kind, data.item_id, data.reaction, data.text, data.source, data.version],
+    ['call', 'invented-home/harbor-hold', 'approve', 'Go with teal', 'artifact', 1]);
+  assert.equal(data.task, undefined);
   assert.ok(!Number.isNaN(Date.parse(data.at)));
   assert.ok(card('Quay colour').textContent.includes('Latest reaction: Approve: Go with teal (from the artifact'));
   button(card('Quay colour'), 'Discuss with Firstmate').listeners.click();
@@ -4190,6 +4204,17 @@ const button = (c, text) => c.querySelectorAll('button').find(b => b.textContent
   button(tideCard(), 'Send').listeners.click(); await flush();
   assert.notEqual(attempts.at(-1), attempts.at(-2));  // an edited reaction gets a new id
   assert.equal(written[attempts.at(-1)].reaction, 'not-now');
+  const heading = c => c.children.find(n => n.tag === 'h3').textContent;
+  const twice = cards().map(heading).find(title => cards().filter(c => heading(c) === title).length > 1);
+  assert.ok(twice, 'an item shown on two cards');
+  const [first, second] = cards().filter(c => heading(c) === twice);
+  const firstInput = first.querySelectorAll('input')[0];
+  const secondInput = second.querySelectorAll('input')[0];
+  firstInput.value = 'Wait'; firstInput.listeners.input();
+  secondInput.value = 'Proceed'; secondInput.listeners.input();
+  assert.equal(firstInput.value, 'Proceed');  // every copy shows the draft Send would submit
+  button(second, 'Question').listeners.click();
+  assert.equal(button(first, 'Question').getAttribute('aria-pressed'), 'true');
   process.stdout.write(JSON.stringify(exported));
 })().catch(error => {process.stderr.write(error.stack); process.exitCode = 1;});
 """

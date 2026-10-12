@@ -1899,6 +1899,12 @@ def item_page_filename(home: Path | None, owner: str, item_id: str) -> str:
     return f"item-{digest}.html"
 
 
+def report_backlog_item(items: list[BacklogItem], report: Report) -> BacklogItem | None:
+    """The backlog task a report belongs to: one naming its directory, else one with the directory's id."""
+    directory = report.path.parent.name
+    return next((i for i in items if (i.report_dir or i.id) == directory or i.id == directory), None)
+
+
 def find_report(item: BacklogItem, snapshot: HomeSnapshot) -> Report | None:
     candidates = [name for name in (item.report_dir, item.id) if name]
     for name in candidates:
@@ -3315,7 +3321,7 @@ def related_items(homes: list[HomeSnapshot], view: BoardView | None) -> list[Rel
             if not report.waiting:
                 continue
             directory = report.path.parent.name
-            item = next((i for i in backlog[id(snapshot)] if (i.report_dir or i.id) == directory or i.id == directory), None)
+            item = report_backlog_item(backlog[id(snapshot)], report)
             task = task_key(snapshot, item.id if item else directory, snapshots)
             score, why = evaluate(
                 "", item.project if item else "", topics.get(task, ""),
@@ -4679,7 +4685,11 @@ def reaction_target(snapshots: list[HomeSnapshot], kind: str, item_id: str) -> t
     """Resolve a reaction's item to (the configured home to notify, the item's task id)."""
     if kind == "report":
         owner, report = unique_report(snapshots, item_id)
-        task = report.path.parent.name
+        items = backlog_items(owner.backlog_markdown, owner) if (
+            owner.backlog_markdown is not None and not owner.error
+        ) else []
+        item = report_backlog_item(items, report)
+        task = item.id if item else report.path.parent.name
     else:
         owners = call_owners(snapshots).get(item_id, [])
         if not owners:
