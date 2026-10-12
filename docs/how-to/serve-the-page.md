@@ -32,12 +32,13 @@ address and for its JSON output.
 | `--config FILE` | private user config, if present | Select homes with the same rules as `render`. |
 | `--title TEXT` | configured title | Override the page title. |
 | `--no-snapshot` | off | Skip the Firstmate snapshot script and always parse backlogs. |
-| `--allow-marks` | off | Enable the "Mark reviewed", "Unmark", "Discard" and "Undiscard" buttons for reports. |
+| `--allow-marks` | off | Enable the "Mark reviewed", "Unmark", "Discard" and "Undiscard" buttons for reports, and reactions sent to Firstmate. |
 
 By default the server only answers `GET` for the main page and the generated
 report, backlog and backlog-item pages. It has no write endpoints. With
-`--allow-marks` it also accepts one `POST` that marks or
-unmarks a known report (see below); everything else is still refused. When
+`--allow-marks` it also accepts a `POST` that marks or
+unmarks a known report and a `POST` that sends a reaction (see below);
+everything else is still refused. When
 snapshots are enabled, Firstmate's wrapper may refresh its cache and read
 registered remote secondmate ledgers through its own routes; `--no-snapshot`
 skips that behavior.
@@ -66,6 +67,21 @@ cannot be marked.
 When you bind to a non-loopback address, everyone who can reach the page can
 change review marks (and only review marks). Use marks only on a network you
 trust, or put the server behind an authenticating TLS reverse proxy.
+
+## React to calls and reports from the page
+
+With `--allow-marks`, each desk call, related item and report also has
+**Approve**, **Hold**, **Not now** and **Question** buttons, a short reply box
+and **Send**. Pick a reaction, write a reply, or both, then Send. Quarterdeck
+hands one line (item ID, task ID, reaction, your text and the time) to the
+item's home through its `bin/fm-inbox.sh note`, so Firstmate receives it as a
+note and wakes, and it routes the answer to you or the workers. The card shows
+"Sent to Firstmate" and then the latest reaction from either this page or the
+cloud artifact. If the home has no executable `bin/fm-inbox.sh`, or it fails,
+the card says "Not sent" and nothing is recorded; send it again.
+
+As with marks, there is no key: anyone who can open the page can send
+reactions as you, so use `--allow-marks` only on a network you trust.
 
 ## Where the sections come from
 

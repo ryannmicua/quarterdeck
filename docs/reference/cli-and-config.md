@@ -7,6 +7,7 @@ quarterdeck render [--home PATH] [--output PATH] [--config FILE] [--title TEXT] 
 quarterdeck serve [--host ADDRESS ...] [--port N] [--home PATH] [--config FILE] [--title TEXT] [--no-snapshot] [--allow-marks]
 quarterdeck service [--write] [--allow-marks] [--host ADDRESS ...] [--port N] [--home PATH] [--config FILE]
 quarterdeck url [--json]
+quarterdeck reactions import FILE|- [--dry-run] [--home PATH] [--config FILE]
 quarterdeck reports list [--home PATH] [--config FILE]
 quarterdeck reports read <report-id> [--home PATH] [--config FILE] [--open]
 quarterdeck reports mark-reviewed <report-id> [--home PATH] [--config FILE]
@@ -120,7 +121,7 @@ for how marks affect the dashboard.
 request after its 30-second cache expires. It serves them with `GET` by default
 on each repeatable `--host` address (default `127.0.0.1` only) and `--port`
 (default 8765; valid ports are 1 through 65535). `--allow-marks` enables the
-report review request described in the
+report review request and the reaction request described in the
 [serving guide](../how-to/serve-the-page.md); all other writes remain refused.
 The served page reloads itself every 60 seconds and shows its generated-at
 time. `service` prints a systemd user unit that runs `serve` with the given
@@ -165,6 +166,19 @@ the local state; actions for changed reports are skipped and listed. Exit
 status is 0 when the file was read, even if some actions were skipped, and 2
 for an unreadable file or invalid action. See
 [Use the cloud artifact](../how-to/use-the-cloud-artifact.md).
+
+`reactions import` delivers the reactions recorded in the cloud artifact
+(collection `qd-inbox`; a JSON list, or `{"version": 1, "reactions": [...]}`,
+of documents with `id`, `kind` of `call` or `report`, `item_id`, `reaction` one
+of `approve`, `hold`, `not-now`, `question` or empty, `text` up to 1000
+characters, and `at`). Oldest first, each is sent as a note through the item's
+home's `bin/fm-inbox.sh note --request-id qd-<id>`; delivered ids are kept in
+the local state, so none is sent twice. A reaction for an unknown item, an
+invalid document, or a failed delivery is skipped and listed (a failed one
+stays undelivered and is sent on the next import). `--dry-run` sends nothing.
+Exit status is 0 when the file was read, and 2 for an unreadable or malformed
+file. The served page's Send button posts to `POST /api/reactions` (body
+`{"kind", "item_id", "reaction", "text"}`) when `serve --allow-marks` is on.
 
 `add`, `list`, and `remove` accept the same `--config FILE` option. `add` also
 accepts `--label LABEL`; `remove` takes one label or path.

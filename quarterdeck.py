@@ -23,6 +23,7 @@ import tempfile
 import threading
 import time
 import unicodedata
+import uuid
 import webbrowser
 from collections.abc import Callable, Iterator, Set
 from contextlib import contextmanager
@@ -943,6 +944,9 @@ CREATE TABLE IF NOT EXISTS relevance (
     reason TEXT NOT NULL DEFAULT '', updated_at TEXT NOT NULL, PRIMARY KEY (kind, key));
 CREATE TABLE IF NOT EXISTS relations (
     kind TEXT NOT NULL, key TEXT NOT NULL, task TEXT NOT NULL, PRIMARY KEY (kind, key, task));
+CREATE TABLE IF NOT EXISTS reactions (
+    id TEXT PRIMARY KEY, item_id TEXT NOT NULL, kind TEXT NOT NULL, task TEXT NOT NULL,
+    reaction TEXT NOT NULL, text TEXT NOT NULL, at TEXT NOT NULL, source TEXT NOT NULL);
 """
 FINGERPRINT_RE = re.compile(r"[0-9a-f]{64}")
 
@@ -952,6 +956,8 @@ class ReviewState:
     reports: dict[str, tuple[str, str]] = field(default_factory=dict)  # report id -> (state, fingerprint)
     relevance: dict[tuple[str, str], tuple[str, str]] = field(default_factory=dict)  # (kind, key) -> (value, reason)
     relations: dict[tuple[str, str], list[str]] = field(default_factory=dict)  # (kind, key) -> task ids
+    reactions: dict[tuple[str, str], dict[str, str]] = field(default_factory=dict)  # (kind, item id) -> latest delivered
+    delivered: list[str] = field(default_factory=list)  # ids of the most recently delivered reactions
 
     def relevance_of(self, kind: str, key: str) -> tuple[str, str]:
         return self.relevance.get((kind, key), ("current", ""))
@@ -1031,6 +1037,14 @@ def load_review_state(path: Path) -> ReviewState:
             state.relevance[(kind, key)] = (value, reason)
         for kind, key, task in connection.execute("SELECT kind, key, task FROM relations ORDER BY task"):
             state.relations.setdefault((kind, key), []).append(task)
+        for row in connection.execute(
+            "SELECT id, item_id, kind, task, reaction, text, at, source FROM reactions ORDER BY at, id"
+        ):
+            keys = ("id", "item_id", "kind", "task", "reaction", "text", "at", "source")
+            state.reactions[(row[2], row[1])] = dict(zip(keys, row))
+        state.delivered = [row[0] for row in connection.execute(
+            "SELECT id FROM reactions ORDER BY at DESC, id DESC LIMIT ?", (DELIVERED_IDS_LIMIT,)
+        )]
     return state
 
 
@@ -1257,19 +1271,21 @@ def build_html(
     generated = bearings.generated if bearings else datetime.now(timezone.utc)
     timestamp = generated.strftime("%Y-%m-%d %H:%M:%S UTC")
     board = board_view(homes, generated)
+    review_state = next((s.review_state for s in snapshots if s.review_state is not None), None) or ReviewState()
+    reactions = ReactionContext(enabled=allow_marks, latest=review_state.reactions, now=generated)
     related_block = related_html(
         related_items(homes, board), generated, can_mark=allow_marks, ambiguous_ids=ambiguous_ids,
-        report_resolution_incomplete=report_resolution_incomplete,
+        report_resolution_incomplete=report_resolution_incomplete, reactions=reactions,
     )
-    board_block = board_html(board, generated, show_all, related_block) if board else related_block
+    board_block = board_html(board, generated, show_all, related_block, reactions) if board else related_block
     board_status = board_status_html(board, generated) if board else ""
     bearings_block = bearings_html(
         bearings, collapse_reviews=board is not None, can_mark=allow_marks, ambiguous_ids=ambiguous_ids,
-        report_resolution_incomplete=report_resolution_incomplete,
+        report_resolution_incomplete=report_resolution_incomplete, reactions=reactions,
     ) if bearings else ""
     reviewed_block = (
-        reviewed_reports_html(homes, ambiguous_ids, report_resolution_incomplete) if allow_marks else ""
-    ) + set_aside_reports_html(homes, ambiguous_ids, report_resolution_incomplete, allow_marks)
+        reviewed_reports_html(homes, ambiguous_ids, report_resolution_incomplete, reactions) if allow_marks else ""
+    ) + set_aside_reports_html(homes, ambiguous_ids, report_resolution_incomplete, allow_marks, reactions)
     mark_script = f"""
   <script>
     document.addEventListener("click", async (event) => {{
@@ -1294,6 +1310,51 @@ def build_html(
         button.disabled = false;
         if (status) status.textContent = "Could not save: " + error.message;
       }}
+    }});
+  </script>""" if allow_marks else ""
+    reaction_script = f"""
+  <script>
+    document.addEventListener("click", async (event) => {{
+      const choice = event.target.closest("[data-reaction-choice]");
+      if (choice) {{
+        const pressed = choice.getAttribute("aria-pressed") !== "true";
+        for (const other of choice.parentElement.querySelectorAll("[data-reaction-choice]")) other.setAttribute("aria-pressed", "false");
+        choice.setAttribute("aria-pressed", String(pressed));
+        return;
+      }}
+      const send = event.target.closest(".reaction-send");
+      if (!send || send.disabled) return;
+      const box = send.closest(".reaction");
+      const status = box.querySelector(".reaction-status");
+      const field = box.querySelector(".reaction-text");
+      const picked = box.querySelector("[data-reaction-choice][aria-pressed=true]");
+      const reaction = picked ? picked.dataset.reactionChoice : "";
+      const text = field.value.trim();
+      if (!reaction && !text) {{ status.textContent = "Pick a reaction or write a reply first."; return; }}
+      send.disabled = true;
+      status.textContent = "Sending…";
+      try {{
+        const response = await fetch("{REACTION_ENDPOINT}", {{
+          method: "POST",
+          headers: {{"Content-Type": "application/json"}},
+          body: JSON.stringify({{kind: box.dataset.reactionKind, item_id: box.dataset.reactionItem, reaction: reaction, text: text}}),
+        }});
+        if (!response.ok) throw new Error((await response.text()).trim() || response.statusText);
+        const sent = await response.json();
+        const label = {json.dumps(REACTION_LABELS)}[sent.reaction] || "";
+        const summary = label && sent.text ? label + ": " + sent.text : label || sent.text;
+        for (const node of document.querySelectorAll("[data-reaction-latest]")) {{
+          if (node.dataset.reactionLatest !== box.dataset.reactionKind + ":" + box.dataset.reactionItem) continue;
+          node.textContent = (node.tagName === "P" ? "Latest reaction: " : "") + summary + " (from this page · just now)";
+          node.hidden = false;
+        }}
+        field.value = "";
+        if (picked) picked.setAttribute("aria-pressed", "false");
+        status.textContent = "Sent to Firstmate";
+      }} catch (error) {{
+        status.textContent = "Not sent: " + error.message;
+      }}
+      send.disabled = false;
     }});
   </script>""" if allow_marks else ""
     refresh_script = (
@@ -1325,7 +1386,10 @@ def build_html(
     }})();
   </script>""" if refresh_seconds else ""
     )
-    footer_label = "Read-only snapshot except report review marks" if allow_marks else "Read-only snapshot"
+    footer_label = (
+        "Read-only snapshot except report review marks and reactions sent to Firstmate" if allow_marks
+        else "Read-only snapshot"
+    )
     refresh_note = f" · reloads every {int(refresh_seconds)} seconds" if refresh_seconds else ""
     metrics = "".join(
         f'<div class="metric"><b>{count}</b><span>{html.escape(label)}</span></div>'
@@ -1402,6 +1466,12 @@ def build_html(
     .request-lavish:focus-visible {{ outline: 3px solid var(--gold); outline-offset: 2px; }}
     .request-lavish:disabled {{ opacity: .7; cursor: default; }}
     .request-status {{ color: var(--muted); font-size: .82rem; }}
+    .reaction {{ margin-top: .6rem; }}
+    .reaction-latest {{ margin: .3rem 0; color: var(--muted); font-size: .85rem; }}
+    .reaction-text {{ flex: 1 1 14rem; min-width: 0; min-height: 2.2rem; padding: 0 .6rem; border: 1px solid var(--line); border-radius: 7px; background: var(--paper); color: var(--ink); font: inherit; font-size: .9rem; }}
+    .reaction-choice[aria-pressed=true] {{ background: var(--sea); color: var(--paper); }}
+    .chip-reaction {{ color: var(--ink); border-color: var(--gold); }}
+    .chip-reaction[hidden], .reaction-latest[hidden] {{ display: none; }}
     .quiet-summary {{ color: var(--muted); font-size: .82rem; margin: -.5rem 0 1rem; }}
     a {{ color: var(--sea); font-weight: 650; }}
     a:focus-visible {{ outline: 3px solid var(--gold); outline-offset: 3px; }}
@@ -1489,7 +1559,7 @@ def build_html(
     {''.join(home_panel(home, lavish, show_all) for home in homes)}
     <footer>{html.escape(introductory_text)} {footer_label} · generated {timestamp} · source files open as readable pages beside this one.</footer>
   </main>
-  {lavish_script}{refresh_script}{mark_script}
+  {lavish_script}{refresh_script}{mark_script}{reaction_script}
 </body>
 </html>
 '''
@@ -2208,7 +2278,7 @@ def mark_button(report_id: str, action: str, fingerprint: str, unavailable_reaso
 def report_list_html(
     homes: list[HomeSnapshot], ambiguous_ids: set[str], report_resolution_incomplete: bool, *,
     section_id: str, title: str, intro: str, empty: str, reports: Callable[[Report], bool],
-    actions: list[str], can_mark: bool = True,
+    actions: list[str], can_mark: bool = True, reactions: ReactionContext | None = None,
 ) -> str:
     cards = []
     for snapshot in all_snapshots(homes):
@@ -2225,10 +2295,14 @@ def report_list_html(
                 report.report_id, actions, report.fingerprint,
                 report_mark_unavailable_reason(report.report_id, ambiguous_ids, report_resolution_incomplete),
             ) if can_mark else ""
+            reaction = reaction_html(
+                reactions, "report", report.report_id,
+                not report_mark_unavailable_reason(report.report_id, ambiguous_ids, report_resolution_incomplete),
+            )
             cards.append(
                 f'<article class="card"><p class="eyebrow">{html.escape(snapshot.spec.label)} · '
                 f'<code>{html.escape(report.report_id)}</code></p><h3>{html.escape(report.title)}</h3>{reason}'
-                f'<p class="links"><a href="{html.escape(page, quote=True)}">Read report</a></p>{buttons}</article>'
+                f'<p class="links"><a href="{html.escape(page, quote=True)}">Read report</a></p>{buttons}{reaction}</article>'
             )
     content = "".join(cards) or f'<p class="empty">{html.escape(empty)}</p>'
     return (
@@ -2240,16 +2314,19 @@ def report_list_html(
 
 def reviewed_reports_html(
     homes: list[HomeSnapshot], ambiguous_ids: set[str], report_resolution_incomplete: bool,
+    reactions: ReactionContext | None = None,
 ) -> str:
     return report_list_html(
         homes, ambiguous_ids, report_resolution_incomplete, section_id="reviewed", title="Reviewed reports",
         intro="Unmark a report to return it to “needs review”. A report that changes after you review it returns on its own.",
         empty="No reports are marked reviewed.", reports=lambda report: report.reviewed, actions=["unmark"],
+        reactions=reactions,
     )
 
 
 def set_aside_reports_html(
     homes: list[HomeSnapshot], ambiguous_ids: set[str], report_resolution_incomplete: bool, can_mark: bool,
+    reactions: ReactionContext | None = None,
 ) -> str:
     """The stale and discarded report lists: hidden from the review list, one click away."""
     stale = report_list_html(
@@ -2258,14 +2335,14 @@ def set_aside_reports_html(
               "Read them if you want, or discard them.",
         empty="No unreviewed report is marked stale.",
         reports=lambda report: report.needs_review and report.relevance == "stale",
-        actions=["mark", "discard"], can_mark=can_mark,
+        actions=["mark", "discard"], can_mark=can_mark, reactions=reactions,
     )
     discarded = report_list_html(
         homes, ambiguous_ids, report_resolution_incomplete, section_id="discarded", title="Discarded reports",
         intro="Taken off your list without being marked reviewed. Undiscard returns one to “needs review”; "
               "a report that changes after you discard it returns on its own.",
         empty="No reports are discarded.", reports=lambda report: report.discarded,
-        actions=["undiscard"], can_mark=can_mark,
+        actions=["undiscard"], can_mark=can_mark, reactions=reactions,
     )
     return stale + discarded
 
@@ -2273,7 +2350,7 @@ def set_aside_reports_html(
 def bearings_html(
     bearings: Bearings, collapse_reviews: bool = False, can_mark: bool = False,
     ambiguous_ids: set[str] | None = None,
-    report_resolution_incomplete: bool = False,
+    report_resolution_incomplete: bool = False, reactions: ReactionContext | None = None,
 ) -> str:
     ambiguous_ids = ambiguous_ids or set()
     now = bearings.generated
@@ -2310,7 +2387,11 @@ def bearings_html(
         review_cards.append(
             f'<article class="card"><p class="eyebrow">{html.escape(snapshot.spec.label)} · <code>{html.escape(report.report_id)}</code></p>'
             f'<h3>{html.escape(report.title)}</h3>{recommendation}'
-            f'<p class="links"><a href="{html.escape(page, quote=True)}">Read report</a>{tail}</article>'
+            f'<p class="links"><a href="{html.escape(page, quote=True)}">Read report</a>{tail}'
+            + reaction_html(
+                reactions, "report", report.report_id,
+                not report_mark_unavailable_reason(report.report_id, ambiguous_ids, report_resolution_incomplete),
+            ) + '</article>'
         )
     nav = "".join(
         f'<a href="#{key}">{html.escape(title)} <b>{len(items)}</b></a>' for key, title, _d, items, _e in sections
@@ -2913,7 +2994,9 @@ def touched_text(entry: BoardEntry, now: datetime) -> str:
     return f"touched {elapsed_text(entry.touched, now)} ago"
 
 
-def board_entry_html(entry: BoardEntry, show_home: bool, now: datetime) -> str:
+def board_entry_html(
+    entry: BoardEntry, show_home: bool, now: datetime, reactions: ReactionContext | None = None,
+) -> str:
     item = entry.item
     chips = [f'<span class="chip chip-group">{html.escape(GROUP_SHORT[item.group])}</span>']
     if item.project:
@@ -2959,6 +3042,13 @@ def board_entry_html(entry: BoardEntry, show_home: bool, now: datetime) -> str:
         )
         parts.append(f'<ul class="board-links">{rendered}</ul>')
     brief_row = f'<span class="board-brief">{"".join(brief)}</span>' if brief else ""
+    reaction = reaction_html(reactions, "call", entry.key)
+    if reactions is not None and (reactions.latest.get(("call", entry.key))):
+        chips.append(
+            f'<span class="chip chip-reaction" data-reaction-latest="{html.escape("call:" + entry.key, quote=True)}">'
+            f'{html.escape(reaction_latest_text(reactions.latest[("call", entry.key)], now).removeprefix("Latest reaction: "))}</span>'
+        )
+    parts.append(reaction)
     return (
         f'<details class="board-item" id="item-{entry.number}" '
         f'data-refresh-key="{html.escape(entry.refresh_key, quote=True)}"><summary>'
@@ -2979,7 +3069,9 @@ def band_counts(entries: list[BoardEntry]) -> str:
     )
 
 
-def session_desk_html(view: BoardView, now: datetime, show_home: bool) -> str:
+def session_desk_html(
+    view: BoardView, now: datetime, show_home: bool, reactions: ReactionContext | None = None,
+) -> str:
     """The desk for a recorded operator session: grouped by message recency, or the last session when idle."""
     session = view.session
     assert session is not None
@@ -3003,13 +3095,13 @@ def session_desk_html(view: BoardView, now: datetime, show_home: bool) -> str:
     for heading, members in view.desk_groups:
         if heading:
             body.append(f'<h3 class="desk-group">{html.escape(heading)}</h3>')
-        body.extend(board_entry_html(entry, show_home, now) for entry in members)
+        body.extend(board_entry_html(entry, show_home, now, reactions) for entry in members)
     if not entries:
         body.append(f'<p class="empty">{html.escape(empty)}</p>')
     return f'<div class="dashboard-section board-band" id="board-desk">{head}{"".join(body)}</div>'
 
 
-def stale_calls_html(view: BoardView, now: datetime) -> str:
+def stale_calls_html(view: BoardView, now: datetime, reactions: ReactionContext | None = None) -> str:
     if not view.stale:
         return ""
     show_home = view.multiple_homes
@@ -3020,7 +3112,7 @@ def stale_calls_html(view: BoardView, now: datetime) -> str:
         'Bring one back with <code>quarterdeck calls set-relevance TASK current</code>.</p></div>'
         f'<span class="count">{len(view.stale)}</span></div></summary>'
         + "".join(
-            board_entry_html(entry, show_home, now)
+            board_entry_html(entry, show_home, now, reactions)
             + (f'<p class="source-note">Marked stale: {html.escape(entry.reason)}</p>' if entry.reason else "")
             for entry in view.stale
         )
@@ -3028,7 +3120,10 @@ def stale_calls_html(view: BoardView, now: datetime) -> str:
     )
 
 
-def board_html(view: BoardView, now: datetime, show_all: bool = False, related: str = "") -> str:
+def board_html(
+    view: BoardView, now: datetime, show_all: bool = False, related: str = "",
+    reactions: ReactionContext | None = None,
+) -> str:
     out = ['<section class="board" id="board" aria-label="Waiting on you">']
     out.extend(f'<div class="warning"><p>{html.escape(warning)}</p></div>' for warning in view.warnings)
     if view.hidden:
@@ -3036,7 +3131,7 @@ def board_html(view: BoardView, now: datetime, show_all: bool = False, related: 
     if not any(view.bands.values()):
         out.append('<p class="empty">Nothing is waiting on you right now.</p>')
         out.append(related)
-        out.append(stale_calls_html(view, now))
+        out.append(stale_calls_html(view, now, reactions))
         out.append("</section>")
         return "".join(out)
     show_home = view.multiple_homes
@@ -3049,20 +3144,20 @@ def board_html(view: BoardView, now: datetime, show_all: bool = False, related: 
             f'<span class="count">{len(entries)}</span></div>'
         )
         if key == "desk" and view.session is not None:
-            out.append(session_desk_html(view, now, show_home))
+            out.append(session_desk_html(view, now, show_home, reactions))
             out.append(related)
             continue
         if key == "desk":
             shown = entries if show_all else entries[:DESK_LIMIT]
             more = [] if show_all else entries[DESK_LIMIT:]
-            body = "".join(board_entry_html(entry, show_home, now) for entry in shown)
+            body = "".join(board_entry_html(entry, show_home, now, reactions) for entry in shown)
             if not entries:
                 body = '<p class="empty">Nothing touched in the last 2 days. Older items are below.</p>'
             if more:
                 body += (
                     '<details class="board-more" id="board-desk-more" data-refresh-key="board-band:desk-more">'
                     f'<summary>+{len(more)} more you touched recently</summary>'
-                    f'{"".join(board_entry_html(entry, show_home, now) for entry in more)}</details>'
+                    f'{"".join(board_entry_html(entry, show_home, now, reactions) for entry in more)}</details>'
                 )
             out.append(f'<div class="dashboard-section board-band" id="board-desk">{head}{body}</div>')
             out.append(related)
@@ -3079,9 +3174,9 @@ def board_html(view: BoardView, now: datetime, show_all: bool = False, related: 
         out.append(
             f'<details class="dashboard-section board-band" id="board-{key}" data-refresh-key="board-band:{key}"'
             f'{" open" if start_open else ""}><summary>{head}</summary>{sweep_line}'
-            f'{"".join(board_entry_html(entry, show_home, now) for entry in entries)}</details>'
+            f'{"".join(board_entry_html(entry, show_home, now, reactions) for entry in entries)}</details>'
         )
-    out.append(stale_calls_html(view, now))
+    out.append(stale_calls_html(view, now, reactions))
     out.append("</section>")
     return "".join(out)
 
@@ -3216,7 +3311,7 @@ def related_items(homes: list[HomeSnapshot], view: BoardView | None) -> list[Rel
 
 def related_html(
     items: list[RelatedItem], now: datetime, can_mark: bool = False, ambiguous_ids: set[str] | None = None,
-    report_resolution_incomplete: bool = False,
+    report_resolution_incomplete: bool = False, reactions: ReactionContext | None = None,
 ) -> str:
     """A collapsed section: never part of the desk, there for when the session turns to something older."""
     ambiguous_ids = ambiguous_ids or set()
@@ -3237,11 +3332,16 @@ def related_html(
                     report.report_id, ["mark", "discard"], report.fingerprint,
                     report_mark_unavailable_reason(report.report_id, ambiguous_ids, report_resolution_incomplete),
                 )
+            tail += reaction_html(
+                reactions, "report", report.report_id,
+                not report_mark_unavailable_reason(report.report_id, ambiguous_ids, report_resolution_incomplete),
+            )
         elif item.entry is not None:
             entry = item.entry
             body = f'<p>{html.escape(entry.item.ask)}</p>'
             if entry.deferred:
                 chips += f'<span class="chip chip-deferred">{html.escape(entry.deferred)}</span>'
+            tail = reaction_html(reactions, "call", entry.key)
         cards.append(
             f'<article class="card"><p class="eyebrow">{label} · {html.escape(item.home)}{when}</p>'
             f'<h3>{html.escape(item.title)}</h3>{body}<div class="board-chips">{chips}</div>{tail}</article>'
@@ -3784,8 +3884,9 @@ MARK_BODY_LIMIT = 4096
 def make_handler(
     cache: SiteCache,
     set_mark: Callable[[str, str, str], Report] | None = None,
+    send_reaction_to: Callable[[dict[str, object]], dict[str, str]] | None = None,
 ) -> type[BaseHTTPRequestHandler]:
-    """Build the request handler; POST is refused unless set_mark is given."""
+    """Build the request handler; POST is refused unless set_mark or send_reaction_to is given."""
     class Handler(BaseHTTPRequestHandler):
         server_version = "Quarterdeck"
 
@@ -3838,7 +3939,11 @@ def make_handler(
             return None
 
         def do_POST(self) -> None:  # noqa: N802 - http.server naming
-            if set_mark is None or urlparse(self.path).path != MARK_ENDPOINT:
+            path = urlparse(self.path).path
+            if send_reaction_to is not None and path == REACTION_ENDPOINT:
+                self.post_reaction(send_reaction_to)
+                return
+            if set_mark is None or path != MARK_ENDPOINT:
                 self.refuse()
                 return
             problem = self.mark_request_problem()
@@ -3875,6 +3980,38 @@ def make_handler(
                 }) + "\n",
                 "application/json; charset=utf-8",
             )
+
+        def post_reaction(self, deliver: Callable[[dict[str, object]], dict[str, str]]) -> None:
+            problem = self.mark_request_problem()
+            if problem:
+                self.send_text(*problem)
+                return
+            try:
+                length = int(self.headers.get("Content-Length") or "")
+                if not 0 < length <= REACTION_BODY_LIMIT:
+                    raise ValueError
+                body = json.loads(self.rfile.read(length).decode("utf-8"))
+                if (not isinstance(body, dict) or set(body) != {"kind", "item_id", "reaction", "text"}
+                        or not all(isinstance(value, str) for value in body.values())):
+                    raise ValueError
+                clean_reaction(body)
+            except (ValueError, UnicodeDecodeError):
+                self.send_text(400, "Expected JSON {\"kind\": \"call\" | \"report\", \"item_id\": ..., "
+                               "\"reaction\": \"approve\" | \"hold\" | \"not-now\" | \"question\" | \"\", "
+                               f"\"text\": ...}} with a reaction or text (text up to {REACTION_TEXT_LIMIT} characters)\n")
+                return
+            try:
+                reaction = deliver(body)
+            except ValueError as exc:
+                missing = str(exc).startswith(("no report matches", "no captain call matches", "no home matches"))
+                delivery = str(exc).startswith(("fm-inbox.sh", "no executable", "could not start"))
+                self.send_text(404 if missing else 502 if delivery else 409, f"{exc}\n")
+                return
+            except OSError as exc:
+                self.send_text(500, f"Quarterdeck could not send the reaction: {exc}\n")
+                return
+            cache.invalidate()
+            self.send_text(200, json.dumps(reaction) + "\n", "application/json; charset=utf-8")
 
         def refuse(self) -> None:
             self.send_response(405)
@@ -3949,9 +4086,12 @@ def serve(args: argparse.Namespace) -> int:
             set_mark = lambda report_id, action, fingerprint: set_report_action(  # noqa: E731
                 args, report_id, action, fingerprint
             )
+        send_reaction_to: Callable[[dict[str, object]], dict[str, str]] | None = None
+        if getattr(args, "allow_marks", False):
+            send_reaction_to = lambda raw: send_reaction(args, raw)  # noqa: E731
         cache = SiteCache(site_builder(args, getattr(args, "allow_marks", False)))
         cache.get()
-        handler = make_handler(cache, set_mark)
+        handler = make_handler(cache, set_mark, send_reaction_to)
         port = args.port
         for host in bind_hosts(args):
             server = make_server(host, port, handler)
@@ -3965,7 +4105,7 @@ def serve(args: argparse.Namespace) -> int:
     for server in servers:
         host = str(server.server_address[0])
         shown = f"[{host}]" if ":" in host else host
-        access = "report review marks enabled" if getattr(args, "allow_marks", False) else "read-only"
+        access = "report review marks and reactions enabled" if getattr(args, "allow_marks", False) else "read-only"
         print(f"Serving Quarterdeck at http://{shown}:{port}/ ({access}; Ctrl+C to stop)", flush=True)
     exposed = [host for host in bind_hosts(args) if not is_loopback(host)]
     if exposed:
@@ -4139,6 +4279,7 @@ COMMAND_DOCS = {
     "calls": ["how-to/keep-the-desk-relevant.md", "reference/cli-and-config.md"],
     "export": ["how-to/use-the-cloud-artifact.md", "reference/cli-and-config.md", "explanation/privacy-and-architecture.md"],
     "import": ["how-to/use-the-cloud-artifact.md", "reference/cli-and-config.md"],
+    "reactions": ["how-to/use-the-cloud-artifact.md", "reference/cli-and-config.md", "explanation/privacy-and-architecture.md"],
     "serve": ["how-to/serve-the-page.md", "reference/cli-and-config.md", "explanation/privacy-and-architecture.md"],
     "service": ["how-to/serve-the-page.md", "reference/cli-and-config.md"],
     "url": ["how-to/serve-the-page.md", "reference/cli-and-config.md"],
@@ -4443,9 +4584,242 @@ def calls_list(args: argparse.Namespace) -> int:
     return 0
 
 
+# --- Reactions ----------------------------------------------------------------
+# A reaction is the captain's quick answer or short reply on a call or report. It is delivered to Firstmate as a
+# note through the home's own bin/fm-inbox.sh, and only after delivery is it recorded in the local state, so the
+# state's rows are exactly the delivered reactions. fm-inbox.sh dedupes on the request id, so a retry is harmless.
+
+REACTION_ENDPOINT = "/api/reactions"
+REACTION_BODY_LIMIT = 8192
+REACTION_TEXT_LIMIT = 1000
+REACTIONS_VERSION = 1
+REACTION_LABELS = {"approve": "Approve", "hold": "Hold", "not-now": "Not now", "question": "Question"}
+REACTION_KINDS = ("call", "report")
+REACTION_ID_RE = re.compile(r"[A-Za-z0-9._-]{8,64}")
+INBOX_SCRIPT = Path("bin") / "fm-inbox.sh"
+INBOX_TIMEOUT_SECONDS = 15
+
+
+def clean_reaction(raw: dict[str, object], where: str = "reaction") -> dict[str, str]:
+    """Validate one reaction's fields; the task is filled in later from the item it names."""
+    kind, item_id, reaction, text = raw.get("kind"), raw.get("item_id"), raw.get("reaction", ""), raw.get("text", "")
+    if kind not in REACTION_KINDS:
+        raise ValueError(f"{where} needs a kind of {' or '.join(REACTION_KINDS)}")
+    if not isinstance(item_id, str) or not item_id.strip() or len(item_id) > 200:
+        raise ValueError(f"{where} needs an item_id")
+    if reaction not in ("", *REACTION_LABELS):
+        raise ValueError(f"{where} has an unknown reaction {reaction!r}; expected one of {', '.join(REACTION_LABELS)}")
+    if not isinstance(text, str) or len(text) > REACTION_TEXT_LIMIT:
+        raise ValueError(f"{where} text must be at most {REACTION_TEXT_LIMIT} characters")
+    text = " ".join(text.split())
+    if not reaction and not text:
+        raise ValueError(f"{where} needs a reaction or some text")
+    return {"item_id": item_id.strip(), "kind": str(kind), "reaction": str(reaction), "text": text}
+
+
+def reaction_summary(reaction: dict[str, str]) -> str:
+    label = REACTION_LABELS.get(reaction["reaction"], "")
+    text = reaction["text"]
+    return f"{label}: {text}" if label and text else label or text
+
+
+def reaction_note(reaction: dict[str, str], home_label: str) -> str:
+    """The one line Firstmate receives: the item, task, reaction, text and time."""
+    label = REACTION_LABELS.get(reaction["reaction"], "reply")
+    body = f"Quarterdeck reaction: {label} on {reaction['kind']} {reaction['item_id']}"
+    if reaction["task"]:
+        body += f" (task {reaction['task']})"
+    body += f", home {home_label}, at {reaction['at']}"
+    if reaction["text"]:
+        body += f': "{reaction["text"]}"'
+    return body
+
+
+def reaction_target(snapshots: list[HomeSnapshot], kind: str, item_id: str) -> tuple[HomeSnapshot, str]:
+    """Resolve a reaction's item to (the configured home to notify, the item's task id)."""
+    if kind == "report":
+        owner, report = unique_report(snapshots, item_id)
+        task = report.path.parent.name
+    else:
+        if item_id not in known_call_keys(snapshots):
+            raise ValueError(f"no captain call matches: {item_id}")
+        task = item_id.partition("/")[2]
+        owner = next((s for s in all_snapshots(snapshots)
+                      if report_reference(s.spec.label, task) == item_id), None)
+        if owner is None:
+            raise ValueError(f"no home matches: {item_id}")
+    top = next(s for s in snapshots if any(member is owner for member in all_snapshots([s])))
+    return top, task
+
+
+def deliver_reaction(
+    home: HomeSpec, reaction: dict[str, str], timeout: float = INBOX_TIMEOUT_SECONDS,
+) -> None:
+    """Hand one reaction to the home's fm-inbox.sh note; raise ValueError saying why it was not delivered."""
+    if home.home is None or home.remote_host is not None:
+        raise ValueError(f"{home.label} is not a local home, so it cannot receive reactions")
+    script = home.home / INBOX_SCRIPT
+    if not script.is_file() or not os.access(script, os.X_OK):
+        raise ValueError(f"no executable bin/fm-inbox.sh in {home.label}")
+    env = dict(os.environ, FM_HOME=str(home.home))
+    command = [str(script), "note", "--request-id", f"qd-{reaction['id']}", "--json", "--",
+               reaction_note(reaction, home.label)]
+    try:
+        process = subprocess.Popen(
+            command, cwd=home.home, env=env, stdin=subprocess.DEVNULL,
+            stdout=subprocess.PIPE, stderr=subprocess.PIPE, start_new_session=True,
+        )
+    except OSError as exc:
+        raise ValueError(f"could not start fm-inbox.sh: {exc}") from exc
+    try:
+        process.communicate(timeout=timeout)
+    except subprocess.TimeoutExpired:
+        try:
+            os.killpg(process.pid, 9)
+        except OSError:
+            process.kill()
+        process.communicate()
+        raise ValueError(f"fm-inbox.sh timed out after {timeout:g} seconds") from None
+    if process.returncode == 3:
+        raise ValueError("fm-inbox.sh saved the note but could not wake Firstmate; try again")
+    if process.returncode != 0:
+        raise ValueError(f"fm-inbox.sh exited with status {process.returncode}")
+
+
+def store_reaction(state_path: Path, reaction: dict[str, str]) -> None:
+    write_state(state_path, [(
+        "INSERT OR IGNORE INTO reactions VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+        (reaction["id"], reaction["item_id"], reaction["kind"], reaction["task"], reaction["reaction"],
+         reaction["text"], reaction["at"], reaction["source"]),
+    )])
+
+
+def reaction_delivered(state_path: Path, reaction_id: str) -> bool:
+    if not state_db_path(state_path).exists():
+        return False
+    with state_connection(state_path) as connection:
+        return connection.execute("SELECT 1 FROM reactions WHERE id = ?", (reaction_id,)).fetchone() is not None
+
+
+def send_reaction(args: argparse.Namespace, raw: dict[str, object]) -> dict[str, str]:
+    """Deliver a reaction made on the served page and record it; shared with the page's Send button."""
+    reaction = clean_reaction(raw)
+    snapshots, state_path = load_report_snapshots(args)
+    apply_review_marks(snapshots, {})
+    top, task = reaction_target(snapshots, reaction["kind"], reaction["item_id"])
+    reaction.update(id=uuid.uuid4().hex, task=task, at=state_timestamp(), source="page")
+    deliver_reaction(top.spec, reaction)
+    store_reaction(state_path, reaction)
+    return reaction
+
+
+def parse_artifact_reactions(source: str) -> list[dict[str, object]]:
+    """Read the artifact's recorded reactions: a list, or {"reactions": [...]}, of qd-inbox documents."""
+    try:
+        data = json.loads(source)
+    except ValueError as exc:
+        raise ValueError(f"reactions file is not valid JSON: {exc}") from exc
+    if isinstance(data, dict):
+        if data.get("version", REACTIONS_VERSION) != REACTIONS_VERSION:
+            raise ValueError(f"unsupported reactions version {data.get('version')!r}; expected {REACTIONS_VERSION}")
+        data = data.get("reactions")
+    if not isinstance(data, list):
+        raise ValueError("reactions file must be a list of reactions or an object with a reactions list")
+    return [raw["data"] if isinstance(raw, dict) and isinstance(raw.get("data"), dict) else raw for raw in data]
+
+
+def import_reactions(args: argparse.Namespace) -> int:
+    """Deliver the artifact's recorded reactions to Firstmate, oldest first, skipping any already delivered."""
+    try:
+        source = sys.stdin.read() if args.file == "-" else Path(args.file).expanduser().read_text(encoding="utf-8")
+        documents = parse_artifact_reactions(source)
+        snapshots, state_path = load_report_snapshots(args)
+        apply_review_marks(snapshots, {})
+        delivered = 0
+        skipped: list[str] = []
+        pending: list[tuple[datetime, int, dict[str, str]]] = []
+        for index, raw in enumerate(documents, start=1):
+            where = f"reaction {index}"
+            try:
+                if not isinstance(raw, dict):
+                    raise ValueError(f"{where} is not an object")
+                reaction = clean_reaction(raw, where)
+                reaction_id, at = raw.get("id"), raw.get("at")
+                if not isinstance(reaction_id, str) or not REACTION_ID_RE.fullmatch(reaction_id):
+                    raise ValueError(f"{where} needs an id of 8 to 64 letters, digits, dots, dashes or underscores")
+                when = parse_board_time(at)
+                if when is None:
+                    raise ValueError(f"{where} needs a valid at")
+                reaction.update(id=reaction_id, at=str(at), source="artifact", task="")
+                pending.append((when, index, reaction))
+            except ValueError as exc:
+                skipped.append(str(exc))
+        for _when, _index, reaction in sorted(pending, key=lambda item: item[:2]):
+            label = f"{reaction['id']} ({reaction['kind']} {reaction['item_id']})"
+            try:
+                if reaction_delivered(state_path, reaction["id"]):
+                    raise ValueError("already delivered")
+                top, reaction["task"] = reaction_target(snapshots, reaction["kind"], reaction["item_id"])
+                if not args.dry_run:
+                    deliver_reaction(top.spec, reaction)
+                    store_reaction(state_path, reaction)
+                delivered += 1
+            except ValueError as exc:
+                skipped.append(f"{label}: {exc}")
+    except (OSError, ValueError, UnicodeDecodeError) as exc:
+        print(f"quarterdeck: {exc}", file=sys.stderr)
+        return 2
+    verb = "Would deliver" if args.dry_run else "Delivered"
+    print(f"{verb} {delivered} of {len(documents)} artifact reaction{'s' if len(documents) != 1 else ''}.")
+    for line in skipped:
+        print(f"skipped: {line}")
+    return 0
+
+
+@dataclass
+class ReactionContext:
+    """What the served page needs to draw reactions: whether Send is on, and the latest reaction per item."""
+    enabled: bool = False
+    latest: dict[tuple[str, str], dict[str, str]] = field(default_factory=dict)
+    now: datetime | None = None
+
+
+def reaction_latest_text(reaction: dict[str, str] | None, now: datetime | None) -> str:
+    if not reaction:
+        return ""
+    when = parse_board_time(reaction["at"])
+    ago = f" · {elapsed_text(when, now)} ago" if when and now and when <= now else ""
+    sent = "from the artifact" if reaction["source"] == "artifact" else "from this page"
+    return f"Latest reaction: {reaction_summary(reaction)} ({sent}{ago})"
+
+
+def reaction_html(ctx: ReactionContext | None, kind: str, item_id: str, available: bool = True) -> str:
+    """The reaction row for a card: latest reaction, quick reactions, a reply box and Send."""
+    if ctx is None:
+        return ""
+    key = html.escape(f"{kind}:{item_id}", quote=True)
+    text = reaction_latest_text(ctx.latest.get((kind, item_id)), ctx.now)
+    latest = f'<p class="reaction-latest" data-reaction-latest="{key}" aria-live="polite"{"" if text else " hidden"}>{html.escape(text)}</p>'
+    if not ctx.enabled or not available:
+        return latest if text else ""
+    buttons = "".join(
+        f'<button class="request-lavish reaction-choice" type="button" aria-pressed="false" '
+        f'data-reaction-choice="{name}">{label}</button>' for name, label in REACTION_LABELS.items()
+    )
+    return (
+        f'<div class="reaction" data-reaction-kind="{kind}" data-reaction-item="{html.escape(item_id, quote=True)}">'
+        f'{latest}<div class="request-row">{buttons}</div>'
+        f'<div class="request-row"><input class="reaction-text" type="text" maxlength="{REACTION_TEXT_LIMIT}" '
+        f'placeholder="Reply to Firstmate (optional)" aria-label="Reply to Firstmate">'
+        f'<button class="request-lavish reaction-send" type="button">Send</button>'
+        f'<span class="request-status reaction-status" aria-live="polite"></span></div></div>'
+    )
+
+
 # --- Snapshot export and action import (the cloud artifact round trip) -------
 
 SNAPSHOT_VERSION = 1
+DELIVERED_IDS_LIMIT = 200
 ACTIONS_VERSION = 1
 ARTIFACT_TEMPLATE = Path(__file__).resolve().parent / "templates" / "artifact.html.tmpl"
 SNAPSHOT_PLACEHOLDER = "__QUARTERDECK_SNAPSHOT__"
@@ -4470,7 +4844,8 @@ def call_snapshot(entry: BoardEntry, band: str, desk_heading: str, state: Review
 
 
 def build_snapshot(homes: list[HomeSnapshot], title: str, now: datetime) -> dict[str, object]:
-    """The data the cloud artifact renders: the desk, this week, related items and the report list. Nothing else."""
+    """The data the cloud artifact renders: the desk, this week, related items, the report list and the latest
+    reaction per item. Nothing else."""
     ambiguous = assign_report_ids(homes)
     state = next((s.review_state for s in all_snapshots(homes) if s.review_state is not None), None) or ReviewState()
     view = board_view(homes, now, fallback=True)
@@ -4501,10 +4876,15 @@ def build_snapshot(homes: list[HomeSnapshot], title: str, now: datetime) -> dict
         {"kind": item.kind, "id": item.key, "title": item.title, "home": item.home, "why": item.why, "score": item.score}
         for item in related_items(homes, view)
     ]
+    latest = sorted(state.reactions.values(), key=lambda r: (r["at"], r["id"]))
+    reactions = [
+        {key: r[key] for key in ("kind", "item_id", "reaction", "text", "at", "source")} for r in latest
+    ]
     return {
         "version": SNAPSHOT_VERSION, "title": title,
         "generated_at": now.astimezone(timezone.utc).isoformat(timespec="microseconds").replace("+00:00", "Z"),
         "session": session, "calls": calls, "reports": reports, "related": related,
+        "reactions": reactions, "delivered": state.delivered,
     }
 
 
@@ -4798,7 +5178,7 @@ def render(args: argparse.Namespace) -> int:
 def add_serve_options(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--host", action="append", metavar="ADDRESS", help=f"address to bind; repeat to listen on several, all on the same port (default {DEFAULT_HOST} only; a non-loopback address exposes your work data without a login)")
     parser.add_argument("--port", type=port_number, default=DEFAULT_PORT, help=f"port to listen on (default {DEFAULT_PORT})")
-    parser.add_argument("--allow-marks", action="store_true", help="enable report marks (default: read-only; no key, anyone who can open the page can mark)")
+    parser.add_argument("--allow-marks", action="store_true", help="enable report marks and reactions to Firstmate (default: read-only; no key, anyone who can open the page can mark or react)")
     parser.add_argument("--home", help="serve this Firstmate home instead of configured homes or FM_HOME")
     parser.add_argument("--config", type=Path, help="optional JSON config file")
 
@@ -4823,7 +5203,7 @@ def make_parser() -> argparse.ArgumentParser:
 
     serve_parser = subparsers.add_parser(
         "serve", help="serve the always-current bearings page over HTTP",
-        description="Serve the bearings page and its readable report and backlog pages, re-rendered from the homes on request. Read-only by default: GET only, no login. With --allow-marks the only write is a request to mark or unmark a known report as reviewed. Binds loopback by default.",
+        description="Serve the bearings page and its readable report and backlog pages, re-rendered from the homes on request. Read-only by default: GET only, no login. With --allow-marks the only writes are a request to mark, unmark, discard or undiscard a known report, and a reaction sent to Firstmate through the home's bin/fm-inbox.sh. Binds loopback by default.",
     )
     command_parsers["serve"] = serve_parser
     add_serve_options(serve_parser)
@@ -4990,6 +5370,28 @@ def make_parser() -> argparse.ArgumentParser:
     import_parser.add_argument("--home", help="use this Firstmate home instead of configured homes or FM_HOME")
     import_parser.add_argument("--config", type=Path, help="optional JSON config file")
     import_parser.set_defaults(handler=import_actions)
+
+    reactions_parser = subparsers.add_parser(
+        "reactions", help="deliver the cloud artifact's reactions to Firstmate",
+        description=(
+            "Deliver the reactions recorded in the artifact (collection qd-inbox) to Firstmate as notes through each "
+            "home's bin/fm-inbox.sh. Reactions already delivered are skipped."
+        ),
+    )
+    command_parsers["reactions"] = reactions_parser
+    reactions_subparsers = reactions_parser.add_subparsers(dest="reactions_command", required=True)
+    reactions_import_parser = reactions_subparsers.add_parser(
+        "import", help="deliver reactions from a JSON file",
+        description=(
+            "Read a JSON list, or {\"reactions\": [...]}, of qd-inbox documents and send each one that has not been "
+            "delivered to Firstmate, oldest first. Delivered ids are kept in the local state, so none is sent twice."
+        ),
+    )
+    reactions_import_parser.add_argument("file", help="reactions JSON file, or - for standard input")
+    reactions_import_parser.add_argument("--dry-run", action="store_true", help="report what would be delivered without sending")
+    reactions_import_parser.add_argument("--home", help="use this Firstmate home instead of configured homes or FM_HOME")
+    reactions_import_parser.add_argument("--config", type=Path, help="optional JSON config file")
+    reactions_import_parser.set_defaults(handler=import_reactions)
 
     add_parser = subparsers.add_parser("add", help="register a Firstmate home", description="Validate and register a Firstmate home.")
     command_parsers["add"] = add_parser
