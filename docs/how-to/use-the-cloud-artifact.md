@@ -36,8 +36,9 @@ published page: it is your work data.
 
 The line under the title says what the page could connect to. Reactions,
 **Mark reviewed**, **Discard** and **Discuss with Firstmate** are always drawn;
-they are disabled until the matching capability resolves, and a disabled
-control is followed by the same reason.
+they are disabled until the matching capability resolves. Each card then
+shows a short hint (`Connecting…`, or `… unavailable, see the note at the
+top.`); the header line carries the full reason.
 
 | Header line | Meaning |
 | --- | --- |
@@ -46,7 +47,8 @@ control is followed by the same reason.
 | `Read-only: the artifact database is not available in this view …` | `db` resolved with nothing: the page is open outside a signed-in artifact view, or was published without `db`. Reload signed in, or republish with `{db: {}}`. |
 | `Discuss with Firstmate is off: …` | `comments` resolved with nothing; **Discuss with Firstmate** stays disabled. Reactions still work. |
 | `Read-only: open this page as a Claude artifact …` | The page has no Claude runtime (a local file or plain browser). |
-| `… failed to load (…)` | The capability module threw or did not answer in time. |
+| `… failed to load (…)` | The capability module threw or rejected. |
+| `… did not answer; reload the artifact.` | The capability did not answer within 15 seconds. Reload the artifact. |
 | `Downloads are unavailable in this view.` | A download button was pressed without the `downloads` capability. |
 | `Render error: …` | Something threw while drawing the page or one card. The rest of the page keeps working; report the message. |
 

@@ -4278,7 +4278,7 @@ const card = (root, title) => root.all('article').find(c => c.children.some(n =>
   let root = boot(name => late.then(() => name === 'db' ? db : comments));
   assert.ok(buttons(root, 'Approve').length >= 2 && buttons(root, 'Approve').every(b => b.disabled));
   assert.ok(buttons(root, 'Discuss with Firstmate').every(b => b.disabled));
-  assert.ok(root.textContent.includes('Connecting to the artifact database'));
+  assert.ok(root.textContent.includes('Connecting…'));
   assert.ok(global.document.getElementById('sync').textContent.includes('Connecting'));
   // The desk badge counts the two cards, not the two sub-headings.
   const deskHead = root.all('section').find(s => s.id === 'desk').children[0];
@@ -4287,7 +4287,7 @@ const card = (root, title) => root.all('article').find(c => c.children.some(n =>
   assert.ok(buttons(root, 'Approve').every(b => !b.disabled));
   assert.ok(buttons(root, 'Discuss with Firstmate').every(b => !b.disabled));
   assert.ok(global.document.getElementById('sync').textContent.startsWith('Connected'));
-  assert.equal(root.textContent.includes('Discuss is off'), false);
+  assert.equal(root.textContent.includes('see the note at the top'), false);
 
   // Details render as text, open, and stay open across a re-render.
   const first = card(root, 'Title c1');
@@ -4310,14 +4310,24 @@ const card = (root, title) => root.all('article').find(c => c.children.some(n =>
   assert.ok(buttons(root, 'Approve').length >= 2 && buttons(root, 'Approve').every(b => b.disabled));
   assert.ok(buttons(root, 'Discuss with Firstmate').every(b => b.disabled));
   assert.ok(global.document.getElementById('sync').textContent.startsWith('Read-only: the artifact database is not available'));
-  assert.ok(root.textContent.includes('Reactions and review actions are off'));
-  assert.ok(root.textContent.includes('Discuss is off'));
+  assert.ok(root.textContent.includes('Reactions and Discuss unavailable, see the note at the top.'));
+  assert.equal(root.textContent.includes('not available in this view'), false, 'cards do not repeat the full reason');
 
   // Only comments null.
   root = boot(async name => name === 'db' ? db : null); await flush();
   assert.ok(buttons(root, 'Approve').every(b => !b.disabled));
   assert.ok(buttons(root, 'Discuss with Firstmate').every(b => b.disabled));
   assert.ok(global.document.getElementById('sync').textContent.includes('Discuss with Firstmate is off'));
+  assert.ok(root.textContent.includes('Discuss unavailable, see the note at the top.'));
+
+  // A read error on one collection survives a later good snapshot on the other.
+  const listeners = {};
+  const flaky = {collection: name => ({onSnapshot: (cb, fail) => { listeners[name] = cb; if (name === 'qd-inbox') fail(new Error('denied')); else cb({docs: []}); }}),
+                 doc: () => ({set: () => Promise.resolve()})};
+  root = boot(async name => name === 'db' ? flaky : comments); await flush();
+  assert.ok(global.document.getElementById('sync').textContent.includes('Could not read recorded reactions.'));
+  Object.keys(listeners).filter(n => n !== 'qd-inbox').forEach(n => listeners[n]({docs: []}));
+  assert.ok(global.document.getElementById('sync').textContent.includes('Could not read recorded reactions.'));
 
   // A rejected or missing runtime is also reported, never thrown.
   root = boot(async () => { throw new Error('boom'); }); await flush();

@@ -98,7 +98,7 @@ footer { border-top: 1px solid var(--line); margin-top: 3rem; padding-top: 1rem;
     db: { state: "pending", reason: "" },
     comments: { state: "pending", reason: "" },
   };
-  var syncError = "";    // a database read error to show in the header
+  var syncErrors = {};   // collection name or "downloads" -> an error to show in the header
   var renderErrors = []; // card-level render failures from the latest render
   var renderFailure = ""; // a render failure that stopped the page
   var pendingOpen = null;
@@ -158,14 +158,14 @@ footer { border-top: 1px solid var(--line); margin-top: 3rem; padding-top: 1rem;
       .sort(function (a, b) { return Date.parse(a.at) - Date.parse(b.at); });
   }
 
-  function dbUnavailableText() {
-    if (db) return "";
-    if (access.db.state === "pending") return "Connecting to the artifact database…";
-    return "Reactions and review actions are off: " + access.db.reason;
-  }
-  function commentsUnavailableText() {
-    if (access.comments.state === "pending") return "Connecting to comments…";
-    return "Discuss is off: " + access.comments.reason;
+  // A short per-card hint; the header carries the full reason.
+  function accessHint() {
+    var off = [];
+    if (!db) off.push("Reactions");
+    if (!comments) off.push("Discuss");
+    if (!off.length) return "";
+    if ((!db && access.db.state === "pending") || (!comments && access.comments.state === "pending")) return "Connecting…";
+    return off.join(" and ") + " unavailable, see the note at the top.";
   }
   // The one-line header text: what is connected, what is not, and why.
   function statusLine() {
@@ -179,7 +179,7 @@ footer { border-top: 1px solid var(--line); margin-top: 3rem; padding-top: 1rem;
       else parts.push("Read-only: " + access.db.reason);
       if (!comments) parts.push("Discuss with Firstmate is off: " + access.comments.reason);
     }
-    if (syncError) parts.push(syncError);
+    Object.keys(syncErrors).forEach(function (key) { parts.push(syncErrors[key]); });
     return parts.join(" ");
   }
   function updateStatus() {
@@ -204,61 +204,58 @@ footer { border-top: 1px solid var(--line); margin-top: 3rem; padding-top: 1rem;
     var latest = latestText(latestReaction(kind, id));
     if (latest) box.appendChild(el("p", { "class": "latest", text: latest }));
     var status = el("span", { "class": "status", "aria-live": "polite", text: draft.status });
-    var unavailable = dbUnavailableText();
-    if (true) {
-      var choices = el("div", { "class": "choices" });
-      REACTIONS.forEach(function (pair) {
-        var button = el("button", { type: "button", "aria-pressed": String(draft.reaction === pair[0]), text: pair[1] });
-        button.disabled = draft.sending || !db;
-        button.addEventListener("click", function () {
-          if (!db) return;
-          draft.id = "";
-          draft.reaction = draft.reaction === pair[0] ? "" : pair[0];
-          composers[key].forEach(function (view) {
-            Array.prototype.forEach.call(view.choices.children, function (other, index) {
-              other.setAttribute("aria-pressed", String(draft.reaction === REACTIONS[index][0]));
-            });
+    var choices = el("div", { "class": "choices" });
+    REACTIONS.forEach(function (pair) {
+      var button = el("button", { type: "button", "aria-pressed": String(draft.reaction === pair[0]), text: pair[1] });
+      button.disabled = draft.sending || !db;
+      button.addEventListener("click", function () {
+        if (!db) return;
+        draft.id = "";
+        draft.reaction = draft.reaction === pair[0] ? "" : pair[0];
+        composers[key].forEach(function (view) {
+          Array.prototype.forEach.call(view.choices.children, function (other, index) {
+            other.setAttribute("aria-pressed", String(draft.reaction === REACTIONS[index][0]));
           });
         });
-        choices.appendChild(button);
       });
-      var input = el("input", { type: "text", maxlength: String(TEXT_LIMIT), placeholder: "Reply to Firstmate (optional)", "aria-label": "Reply to Firstmate", "data-draft": key });
-      input.value = draft.text;
-      input.disabled = draft.sending || !db;
-      input.addEventListener("input", function () {
-        draft.text = input.value;
-        draft.id = "";
-        composers[key].forEach(function (view) { if (view.input !== input) view.input.value = draft.text; });
-      });
-      var send = el("button", { type: "button", text: "Send" });
-      send.disabled = draft.sending || !db;
-      send.addEventListener("click", function () {
-        if (!db) return;
-        var text = draft.text.trim().replace(/\s+/g, " ");
-        if (!draft.reaction && !text) {
-          draft.status = "Pick a reaction or write a reply first.";
-          composers[key].forEach(function (view) { view.status.textContent = draft.status; });
-          return;
-        }
-        var id2 = draft.id || (draft.id = newReactionId());
-        var data = { version: 1, id: id2, item_id: id, kind: kind, reaction: draft.reaction, text: text, at: new Date().toISOString(), source: "artifact" };
-        draft.sending = true;
-        draft.status = "Sending…";
+      choices.appendChild(button);
+    });
+    var input = el("input", { type: "text", maxlength: String(TEXT_LIMIT), placeholder: "Reply to Firstmate (optional)", "aria-label": "Reply to Firstmate", "data-draft": key });
+    input.value = draft.text;
+    input.disabled = draft.sending || !db;
+    input.addEventListener("input", function () {
+      draft.text = input.value;
+      draft.id = "";
+      composers[key].forEach(function (view) { if (view.input !== input) view.input.value = draft.text; });
+    });
+    var send = el("button", { type: "button", text: "Send" });
+    send.disabled = draft.sending || !db;
+    send.addEventListener("click", function () {
+      if (!db) return;
+      var text = draft.text.trim().replace(/\s+/g, " ");
+      if (!draft.reaction && !text) {
+        draft.status = "Pick a reaction or write a reply first.";
+        composers[key].forEach(function (view) { view.status.textContent = draft.status; });
+        return;
+      }
+      var id2 = draft.id || (draft.id = newReactionId());
+      var data = { version: 1, id: id2, item_id: id, kind: kind, reaction: draft.reaction, text: text, at: new Date().toISOString(), source: "artifact" };
+      draft.sending = true;
+      draft.status = "Sending…";
+      render();
+      db.doc(INBOX + "/" + id2).set(data).then(function () {
+        inboxDocs[id2] = data;
+        delete drafts[key];
         render();
-        db.doc(INBOX + "/" + id2).set(data).then(function () {
-          inboxDocs[id2] = data;
-          delete drafts[key];
-          render();
-        }, function (error) {
-          draft.sending = false;
-          draft.status = "Could not send: " + ((error && error.message) || "unavailable");
-          render();
-        });
+      }, function (error) {
+        draft.sending = false;
+        draft.status = "Could not send: " + ((error && error.message) || "unavailable");
+        render();
       });
-      (composers[key] || (composers[key] = [])).push({ choices: choices, input: input, status: status });
-      box.appendChild(choices);
-      box.appendChild(el("div", { "class": "reply" }, [input, send, status]));
-    }
+    });
+    (composers[key] || (composers[key] = [])).push({ choices: choices, input: input, status: status });
+    box.appendChild(choices);
+    box.appendChild(el("div", { "class": "reply" }, [input, send, status]));
     var discuss = el("button", { type: "button", text: "Discuss with Firstmate" });
     discuss.disabled = !comments;
     discuss.addEventListener("click", function () {
@@ -267,10 +264,8 @@ footer { border-top: 1px solid var(--line); margin-top: 3rem; padding-top: 1rem;
         .catch(function () { status.textContent = "Comments are unavailable in this view."; });
     });
     box.appendChild(el("div", { "class": "actions" }, [discuss]));
-    var why = [];
-    if (unavailable) why.push(unavailable);
-    if (!comments) why.push(commentsUnavailableText());
-    if (why.length) box.appendChild(el("p", { "class": "note access", text: why.join(" ") }));
+    var hint = accessHint();
+    if (hint) box.appendChild(el("p", { "class": "note access", text: hint }));
     return box;
   }
 
@@ -531,12 +526,15 @@ footer { border-top: 1px solid var(--line); margin-top: 3rem; padding-top: 1rem;
     return JSON.stringify({ version: 1, generated_at: snapshot.generated_at, reactions: pendingReactions() }, null, 2) + "\n";
   }
   function saveDownload(filename, data) {
-    var failed = function () { syncError = "Downloads are unavailable in this view."; updateStatus(); };
+    var failed = function () { syncErrors.downloads = "Downloads are unavailable in this view."; updateStatus(); };
     var runtime = window.claude;
     if (!runtime || typeof runtime.use !== "function") { failed(); return; }
     Promise.resolve().then(function () { return runtime.use("downloads"); }).then(function (downloads) {
       if (!downloads) { failed(); return; }
-      return downloads.save({ filename: filename, data: data });
+      return Promise.resolve(downloads.save({ filename: filename, data: data })).then(function () {
+        delete syncErrors.downloads;
+        updateStatus();
+      });
     }).catch(failed);
   }
   function exportActions() { saveDownload("quarterdeck-actions.json", actionsJson()); }
@@ -576,11 +574,11 @@ footer { border-top: 1px solid var(--line); margin-top: 3rem; padding-top: 1rem;
   function watch(name, handler, failure) {
     try {
       db.collection(name).onSnapshot(function (snap) {
-        try { handler(snap); syncError = ""; } catch (error) { syncError = failure; }
+        try { handler(snap); delete syncErrors[name]; } catch (error) { syncErrors[name] = failure; }
         render();
-      }, function () { syncError = failure; updateStatus(); });
+      }, function () { syncErrors[name] = failure; updateStatus(); });
     } catch (error) {
-      syncError = failure;
+      syncErrors[name] = failure;
     }
   }
 
