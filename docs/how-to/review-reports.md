@@ -30,11 +30,20 @@ quarterdeck reports mark-reviewed maple-harbor/amber-18
 quarterdeck reports unmark-reviewed maple-harbor/amber-18
 ```
 
+To take a report off your list without saying you reviewed it, discard it; to
+hide one-offs and decided items, see [Keep the desk relevant](keep-the-desk-relevant.md):
+
+```sh
+quarterdeck reports discard maple-harbor/amber-18
+quarterdeck reports undiscard maple-harbor/amber-18
+```
+
 ## Mark reports from the served page
 
 If you use `quarterdeck serve`, start it with `--allow-marks` to get a "Mark
-reviewed" button on each report waiting for review and an "Unmark" button under
-"Reviewed reports". The buttons use the same code and marks file as the
+reviewed" and "Discard" buttons on each report waiting for review, "Unmark"
+under "Reviewed reports" and "Undiscard" under "Discarded reports". The
+buttons use the same code and state database as the
 commands above, and the page updates after each click. See
 [Mark reports reviewed from the page](serve-the-page.md#mark-reports-reviewed-from-the-page).
 

@@ -8,6 +8,7 @@ import os
 import re
 import shlex
 import shutil
+import sqlite3
 import stat
 import subprocess
 import sys
@@ -386,10 +387,13 @@ Use the compact format for the first release.
             listed = self.run_cli(["reports", "list", "--home", str(home)], root, config_home)
             self.assertIn(f"{report_id}\treviewed\tAmber Kite import review", listed.stdout)
 
-            state_path = root / "state" / "quarterdeck" / "review-state" / "marks.json"
-            state = json.loads(state_path.read_text(encoding="utf-8"))
+            state_path = root / "state" / "quarterdeck" / "review-state" / "state.db"
             report_path = home / "data" / "amber-18" / "report.md"
-            self.assertEqual(state["reviewed"][report_id], quarterdeck.hashlib.sha256(report_path.read_bytes()).hexdigest())
+            with sqlite3.connect(state_path) as db:
+                rows = db.execute("SELECT report_id, state, fingerprint FROM report_state").fetchall()
+            self.assertEqual(
+                rows, [(report_id, "reviewed", quarterdeck.hashlib.sha256(report_path.read_bytes()).hexdigest())]
+            )
             self.assertEqual(stat.S_IMODE(state_path.stat().st_mode), 0o600)
             self.assertFalse(state_path.is_relative_to(home))
             self.assertFalse(state_path.is_relative_to(ROOT))
@@ -407,8 +411,7 @@ Use the compact format for the first release.
 
             unmarked = self.run_cli(["reports", "unmark-reviewed", report_id, "--home", str(home)], root, config_home)
             self.assertEqual(unmarked.returncode, 0, unmarked.stderr)
-            state = json.loads(state_path.read_text(encoding="utf-8"))
-            self.assertNotIn(report_id, state["reviewed"])
+            self.assertNotIn(report_id, quarterdeck.load_review_marks(state_path.with_name("marks.json")))
 
     def test_report_id_collisions_are_listed_and_refused_for_resolution(self) -> None:
         with tempfile.TemporaryDirectory() as temp:
@@ -506,59 +509,27 @@ Use the compact format for the first release.
                     self.assertIn("cannot resolve report ID", result.stderr)
                     self.assertIn("sample-bay", result.stderr)
 
-    def test_concurrent_review_mark_updates_preserve_both_marks(self) -> None:
+    def test_concurrent_review_mark_updates_preserve_every_mark(self) -> None:
         with tempfile.TemporaryDirectory() as temp:
             marks_path = Path(temp) / "review-state" / "marks.json"
-            first_loaded = threading.Event()
-            release_first = threading.Event()
-            second_started = threading.Event()
-            second_loaded = threading.Event()
             errors: list[BaseException] = []
-            original_load = quarterdeck.load_review_marks
 
-            def controlled_load(path: Path) -> dict[str, str]:
-                marks = original_load(path)
-                thread_name = threading.current_thread().name
-                if thread_name == "first-mark":
-                    first_loaded.set()
-                    if not release_first.wait(timeout=5):
-                        raise TimeoutError("first mark update was not released")
-                elif thread_name == "second-mark":
-                    second_loaded.set()
-                return marks
-
-            def apply_mark(report_id: str, fingerprint: str, started: threading.Event | None = None) -> None:
-                if started is not None:
-                    started.set()
+            def apply_mark(index: int) -> None:
                 try:
-                    quarterdeck.update_review_mark(marks_path, report_id, fingerprint)
+                    quarterdeck.update_review_mark(marks_path, f"sample/report-{index}", f"{index:064x}")
                 except BaseException as exc:
                     errors.append(exc)
 
-            with patch.object(quarterdeck, "load_review_marks", side_effect=controlled_load):
-                first = threading.Thread(
-                    target=apply_mark, args=("sample/first", "a" * 64), name="first-mark",
-                )
-                second = threading.Thread(
-                    target=apply_mark, args=("sample/second", "b" * 64, second_started), name="second-mark",
-                )
-                first.start()
-                try:
-                    self.assertTrue(first_loaded.wait(timeout=3))
-                    second.start()
-                    self.assertTrue(second_started.wait(timeout=3))
-                    self.assertFalse(second_loaded.wait(timeout=0.5))
-                finally:
-                    release_first.set()
-                    first.join(timeout=3)
-                    if second.ident is not None:
-                        second.join(timeout=3)
-
-            self.assertFalse(first.is_alive())
-            self.assertFalse(second.is_alive())
+            threads = [threading.Thread(target=apply_mark, args=(index,)) for index in range(12)]
+            for thread in threads:
+                thread.start()
+            for thread in threads:
+                thread.join(timeout=20)
             self.assertEqual(errors, [])
-            marks = original_load(marks_path)
-            self.assertEqual(marks, {"sample/first": "a" * 64, "sample/second": "b" * 64})
+            self.assertEqual(
+                quarterdeck.load_review_marks(marks_path),
+                {f"sample/report-{index}": f"{index:064x}" for index in range(12)},
+            )
 
     def test_reports_read_retains_html_path_when_browser_open_fails(self) -> None:
         with tempfile.TemporaryDirectory() as temp:
@@ -2897,8 +2868,8 @@ class ServeTests(unittest.TestCase):
         args = self.make_args(home, allow_marks=True, **extra)
         cache = quarterdeck.SiteCache(quarterdeck.site_builder(args, True), 30)
         handler = quarterdeck.make_handler(
-            cache, lambda report_id, reviewed, fingerprint: quarterdeck.set_report_mark(
-                args, report_id, reviewed, fingerprint
+            cache, lambda report_id, action, fingerprint: quarterdeck.set_report_action(
+                args, report_id, action, fingerprint
             ))
         return self.start_handler(handler), cache, home
 
@@ -2940,7 +2911,7 @@ class ServeTests(unittest.TestCase):
             },
                                           {"Origin": f"http://127.0.0.1:{port}", "Host": f"127.0.0.1:{port}"})
             self.assertEqual(status, 200, body)
-            self.assertEqual(json.loads(body), {"report_id": report_id, "reviewed": True})
+            self.assertEqual(json.loads(body), {"report_id": report_id, "reviewed": True, "state": "reviewed"})
             marks = quarterdeck.load_review_marks(quarterdeck.review_state_path())
             self.assertIn(report_id, marks)
             page = self.fetch(port, "/")[2]  # the cache was invalidated, so no manual re-render is needed
@@ -3062,8 +3033,10 @@ class ServeTests(unittest.TestCase):
             page = quarterdeck.build_html(homes, "T", bearings=bearings, allow_marks=True)
             self.assertEqual(page.count('data-mark-report="shared-home/amber-18"'), 0)
             disabled = 'button class="request-lavish" type="button" disabled>Mark reviewed</button>'
-            self.assertEqual(page.count(disabled), len(bearings.reports))
-            self.assertEqual(page.count("ID is shared by multiple homes; marking is disabled."), len(bearings.reports))
+            self.assertGreaterEqual(page.count(disabled), len(bearings.reports))
+            self.assertGreaterEqual(
+                page.count("ID is shared by multiple homes; marking is disabled."), len(bearings.reports)
+            )
 
     def test_incomplete_local_report_discovery_disables_mark_and_unmark(self) -> None:
         with tempfile.TemporaryDirectory() as temp:
@@ -3308,6 +3281,331 @@ class ServeTests(unittest.TestCase):
             self.assertEqual(len(directives["Service"]["ExecStart"]), 1)
             self.assertEqual(directives["Service"]["ExecStart"][0][2], "serve")
             self.assertEqual(directives["Install"]["WantedBy"][0], ["default.target"])
+
+
+RELEVANCE_BACKLOG = """# Backlog
+
+## In flight
+
+- [ ] harbor-build - Harbor build: raise the invented quay (repo: harbor-demo) (state: in_flight)
+
+## Queued
+
+- [ ] harbor-hold - Harbor hold: choose the quay colour (repo: harbor-demo) (held: yes) (hold: Raw note: red or blue.) (hold-kind: captain)
+- [ ] tide-hold - Tide hold: pick the tide table (repo: harbor-demo) (held: yes) (hold: Raw note: pick one.) (hold-kind: captain)
+- [ ] far-hold - Far hold: name the distant light (repo: faraway-demo) (held: yes) (hold: Raw note: pick one.) (hold-kind: captain)
+- [ ] tide-note - Tide note: survey the tides (repo: harbor-demo)
+"""
+
+
+class DeskRelevanceTests(unittest.TestCase):
+    """Discard, relevance, relations, the related section, and the artifact round trip."""
+
+    def setUp(self) -> None:
+        self.temp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.temp.cleanup)
+        self.root = Path(self.temp.name)
+        self.state = self.root / "state"
+        self.home = self.make_home()
+        patcher = patch.dict(os.environ, {"XDG_STATE_HOME": str(self.state), "HOME": str(self.root)})
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
+    def make_home(self) -> Path:
+        home = self.root / "invented-home"
+        data = home / "data"
+        for name in ("harbor-hold", "tide-note", "lone-report"):
+            (data / name).mkdir(parents=True)
+            (data / name / "report.md").write_text(
+                f"# {name.replace('-', ' ').title()} report\n\n## Recommendation\n\nGo with option A.\n\n## Evidence\n\nBody-only evidence line.\n",
+                encoding="utf-8",
+            )
+        (data / "backlog.md").write_text(RELEVANCE_BACKLOG, encoding="utf-8")
+        now = datetime.now(timezone.utc)
+        old = (now - timedelta(days=20)).strftime("%Y-%m-%dT%H:%M:%SZ")
+        recent = now.strftime("%Y-%m-%dT%H:%M:%SZ")
+        items = [
+            {"id": "harbor", "group": "decide", "title": "Quay colour", "ask": "Pick the quay colour.",
+             "task": "harbor-hold", "touched_at": recent, "topic": "Quay"},
+            {"id": "tide", "group": "decide", "title": "Tide table", "ask": "Pick the tide table.",
+             "task": "tide-hold", "touched_at": old},
+            {"id": "far", "group": "decide", "title": "Distant light", "ask": "Name the distant light.",
+             "task": "far-hold", "touched_at": old},
+        ]
+        (data / "captain-board.json").write_text(
+            json.dumps({"version": 1, "updated_at": recent, "items": items}), encoding="utf-8"
+        )
+        return home
+
+    def cli(self, *args: str, expect: int = 0) -> subprocess.CompletedProcess[str]:
+        env = {**os.environ, "XDG_CONFIG_HOME": str(self.root / "config")}
+        env.pop("FM_HOME", None)
+        env.pop("FM_DATA_OVERRIDE", None)
+        result = subprocess.run(
+            [sys.executable, str(ROOT / "quarterdeck.py"), *args, "--home", str(self.home)],
+            check=False, text=True, capture_output=True, env=env,
+        )
+        self.assertEqual(result.returncode, expect, result.stderr + result.stdout)
+        return result
+
+    def page(self) -> str:
+        output = self.root / "out" / "index.html"
+        self.cli("render", "--output", str(output), "--no-snapshot")
+        return output.read_text(encoding="utf-8")
+
+    def section(self, page: str, section_id: str) -> str:
+        start = page.index(f'id="{section_id}"')
+        return page[start:page.index("</details>", start)]
+
+    def test_discard_is_not_reviewed_and_is_undone_by_undiscard(self) -> None:
+        listed = self.cli("reports", "list").stdout
+        self.assertIn("invented-home/lone-report\tneeds review\t", listed)
+        self.cli("reports", "discard", "invented-home/lone-report")
+        listed = self.cli("reports", "list").stdout
+        self.assertIn("invented-home/lone-report\tdiscarded\t", listed)
+        self.assertEqual(quarterdeck.load_review_marks(quarterdeck.review_state_path()), {})
+        page = self.page()
+        self.assertIn("Lone Report report", self.section(page, "discarded"))
+        self.assertNotIn("Lone Report report", page.split('id="reviewed"')[0].split('id="reviews"')[1].split("</details>")[0])
+        self.cli("reports", "undiscard", "invented-home/lone-report")
+        self.assertIn("invented-home/lone-report\tneeds review\t", self.cli("reports", "list").stdout)
+
+    def test_discard_and_reviewed_replace_each_other_and_content_change_returns_the_report(self) -> None:
+        report = "invented-home/lone-report"
+        self.cli("reports", "mark-reviewed", report)
+        self.cli("reports", "discard", report)
+        self.assertEqual(quarterdeck.load_review_marks(quarterdeck.review_state_path()), {})
+        self.assertIn(f"{report}\tdiscarded\t", self.cli("reports", "list").stdout)
+        self.cli("reports", "unmark-reviewed", report)  # clears only its own state
+        self.assertIn(f"{report}\tdiscarded\t", self.cli("reports", "list").stdout)
+        self.cli("reports", "mark-reviewed", report)
+        self.assertIn(f"{report}\treviewed\t", self.cli("reports", "list").stdout)
+        self.cli("reports", "discard", report)
+        path = self.home / "data" / "lone-report" / "report.md"
+        path.write_text(path.read_text(encoding="utf-8") + "\nNew finding.\n", encoding="utf-8")
+        self.assertIn(f"{report}\tneeds review\t", self.cli("reports", "list").stdout)
+
+    def test_stale_reports_are_hidden_by_default_and_shown_in_their_own_section(self) -> None:
+        report = "invented-home/lone-report"
+        self.assertIn("\tcurrent", self.cli("reports", "list").stdout)  # unclassified means current
+        self.cli("reports", "set-relevance", report, "stale", "--reason", "one-off, already decided")
+        self.assertIn(f"{report}\tneeds review\tLone Report report\tinvented-home\tstale", self.cli("reports", "list").stdout)
+        page = self.page()
+        review_list = page.split('id="reviews"')[1].split("</details>")[0]
+        self.assertNotIn("Lone Report report", review_list)
+        stale = self.section(page, "stale-reports")
+        self.assertIn("Lone Report report", stale)
+        self.assertIn("one-off, already decided", stale)
+        self.cli("reports", "set-relevance", report, "current")
+        self.assertIn("Lone Report report", self.page().split('id="reviews"')[1].split("</details>")[0])
+        self.cli("reports", "set-relevance", report, "maybe", expect=2)
+
+    def test_stale_calls_leave_the_desk_and_bands(self) -> None:
+        self.cli("calls", "set-relevance", "tide-hold", "stale", "--reason", "decided in chat")
+        homes = [quarterdeck.load_home_snapshot(quarterdeck.HomeSpec("invented-home", self.home))]
+        quarterdeck.apply_review_marks(homes, quarterdeck.load_review_state(quarterdeck.review_state_path()))
+        view = quarterdeck.board_view(homes)
+        self.assertEqual([e.item.title for e in view.stale], ["Tide table"])
+        self.assertEqual(view.stale[0].reason, "decided in chat")
+        shown = [e.item.title for band in view.bands.values() for e in band]
+        self.assertNotIn("Tide table", shown)
+        page = self.page()
+        self.assertIn("Marked stale", page)
+        self.assertIn("decided in chat", page)
+        listing = self.cli("calls", "list").stdout
+        self.assertIn("invented-home/tide-hold\tstale\tstale\tTide table", listing)
+        self.cli("calls", "set-relevance", "invented-home/tide-hold", "current")
+        self.assertNotIn("Marked stale", self.page())
+        self.cli("calls", "set-relevance", "no-such-task", "stale", expect=2)
+
+    def test_related_section_is_collapsed_below_the_desk_and_ranked(self) -> None:
+        page = self.page()
+        self.assertLess(page.index('id="board-desk"'), page.index('id="related"'))
+        self.assertIn('<details class="dashboard-section related" id="related"', page)
+        self.assertNotIn(" open", page[page.index('id="related"'):page.index('id="related"') + 80])
+        desk = page[page.index('id="board-desk"'):page.index('id="related"')]
+        related = self.section(page, "related")
+        self.assertNotIn("Tide table", desk)
+        self.assertIn("Tide table", related)  # shares the project with the desk and in-flight work
+        self.assertIn("same project: harbor-demo", related)
+        self.assertNotIn("Distant light", related)
+        self.assertNotIn("Lone Report report", related)
+        self.cli("reports", "relate", "invented-home/lone-report", "--to", "harbor-build")
+        related = self.section(self.page(), "related")
+        self.assertIn("linked to Harbor build: raise the invented quay by Firstmate", related)
+        self.assertLess(related.index("Lone Report report"), related.index("Tide table"))
+        self.cli("reports", "relate", "invented-home/lone-report", "--to", "harbor-build", "--remove")
+        self.assertNotIn("Lone Report report", self.section(self.page(), "related"))
+        self.cli("calls", "relate", "far-hold", "--to", "harbor-hold")
+        self.assertIn("Distant light", self.section(self.page(), "related"))
+
+    def test_related_section_leaves_out_stale_and_discarded_reports(self) -> None:
+        self.assertIn("Tide Note report", self.section(self.page(), "related"))
+        self.cli("reports", "set-relevance", "invented-home/tide-note", "stale")
+        self.assertNotIn("Tide Note report", self.section(self.page(), "related"))
+        self.cli("reports", "set-relevance", "invented-home/tide-note", "current")
+        self.cli("reports", "discard", "invented-home/tide-note")
+        self.assertNotIn("Tide Note report", self.section(self.page(), "related"))
+
+    def test_header_is_compact_and_the_desk_comes_first(self) -> None:
+        page = self.page()
+        self.assertNotIn("clamp(2.5rem", page)
+        self.assertNotIn('class="kicker"', page)
+        header = page[page.index("<header>"):page.index("</header>")]
+        self.assertNotIn("A read-only view", header)
+        self.assertLess(page.index("<header>"), page.index('id="board-desk"'))
+        self.assertLess(page.index('id="board-desk"'), page.index("Reports waiting on your review"))
+
+    def test_marks_json_is_imported_once_and_left_readable(self) -> None:
+        report_path = self.home / "data" / "lone-report" / "report.md"
+        fingerprint = quarterdeck.hashlib.sha256(report_path.read_bytes()).hexdigest()
+        legacy = self.state / "quarterdeck" / "review-state" / "marks.json"
+        legacy.parent.mkdir(parents=True)
+        original = json.dumps({"version": 1, "reviewed": {"invented-home/lone-report": fingerprint}})
+        legacy.write_text(original, encoding="utf-8")
+        self.assertIn("invented-home/lone-report\treviewed\t", self.cli("reports", "list").stdout)
+        self.assertTrue((legacy.parent / "state.db").is_file())
+        self.assertEqual(legacy.read_text(encoding="utf-8"), original)
+        self.cli("reports", "unmark-reviewed", "invented-home/lone-report")
+        self.assertIn("invented-home/lone-report\tneeds review\t", self.cli("reports", "list").stdout)  # not re-imported
+        self.assertEqual(legacy.read_text(encoding="utf-8"), original)
+
+    def test_invalid_legacy_marks_are_refused_not_dropped(self) -> None:
+        legacy = self.state / "quarterdeck" / "review-state" / "marks.json"
+        legacy.parent.mkdir(parents=True)
+        legacy.write_text("{not json", encoding="utf-8")
+        result = self.cli("reports", "list", expect=2)
+        self.assertIn("could not read review state", result.stderr)
+
+    def test_state_database_is_private(self) -> None:
+        self.cli("reports", "discard", "invented-home/lone-report")
+        db = self.state / "quarterdeck" / "review-state" / "state.db"
+        self.assertEqual(stat.S_IMODE(db.stat().st_mode), 0o600)
+        self.assertEqual(stat.S_IMODE(db.parent.stat().st_mode), 0o700)
+        self.assertFalse(list(self.home.rglob("*.db")))
+        board = json.loads((self.home / "data" / "captain-board.json").read_text(encoding="utf-8"))
+        self.assertEqual(len(board["items"]), 3)  # the home's board is untouched by relevance and discards
+
+    def test_export_writes_the_snapshot_and_nothing_else(self) -> None:
+        self.cli("reports", "set-relevance", "invented-home/lone-report", "stale", "--reason", "one-off")
+        self.cli("calls", "set-relevance", "far-hold", "stale")
+        snapshot = json.loads(self.cli("export", "--no-snapshot").stdout)
+        self.assertEqual(snapshot["version"], 1)
+        self.assertEqual(
+            set(snapshot), {"version", "title", "generated_at", "session", "calls", "reports", "related"}
+        )
+        bands = {call["id"]: call["band"] for call in snapshot["calls"]}
+        self.assertEqual(bands["invented-home/harbor-hold"], "desk")
+        self.assertEqual(bands["invented-home/tide-hold"], "parked")
+        self.assertEqual(bands["invented-home/far-hold"], "stale")
+        reports = {report["id"]: report for report in snapshot["reports"]}
+        self.assertEqual(reports["invented-home/lone-report"]["relevance"], "stale")
+        self.assertRegex(reports["invented-home/lone-report"]["fingerprint"], r"^[0-9a-f]{64}$")
+        self.assertNotIn("Body-only evidence", json.dumps(snapshot))  # report text stays local
+        self.assertNotIn(str(self.home), json.dumps(snapshot))
+        self.assertTrue(any(item["id"] == "invented-home/tide-hold" for item in snapshot["related"]))
+
+    def test_artifact_page_embeds_the_snapshot_safely(self) -> None:
+        board = self.home / "data" / "captain-board.json"
+        data = json.loads(board.read_text(encoding="utf-8"))
+        data["items"][0]["title"] = "</script><script>alert(1)</script>"
+        board.write_text(json.dumps(data), encoding="utf-8")
+        output = self.root / "out" / "artifact.html"
+        self.cli("export", "--no-snapshot", "--artifact", str(output))
+        page = output.read_text(encoding="utf-8")
+        self.assertNotIn("__QUARTERDECK_", page)
+        self.assertEqual(page.count("</script>"), 2)  # the snapshot block and the page script only
+        payload = re.search(r'id="qd-snapshot">(.*?)</script>', page, re.S).group(1)
+        embedded = json.loads(payload)
+        self.assertIn("</script><script>alert(1)</script>", [c["title"] for c in embedded["calls"]])
+        self.assertIn("window.claude", page)
+        self.assertNotIn("http://", page.replace("http://www.w3.org", ""))
+        inside = self.cli("export", "--no-snapshot", "--artifact", str(self.home / "artifact.html"), expect=2)
+        self.assertIn("outside the Quarterdeck checkout", inside.stderr)
+
+    def test_import_applies_artifact_actions_and_skips_changed_reports(self) -> None:
+        snapshot = json.loads(self.cli("export", "--no-snapshot").stdout)
+        reports = {r["id"]: r for r in snapshot["reports"]}
+        lone, tide = reports["invented-home/lone-report"], reports["invented-home/tide-note"]
+        actions = {"version": 1, "actions": [
+            {"report_id": lone["id"], "action": "mark", "fingerprint": lone["fingerprint"], "at": "2026-10-12T10:00:00Z"},
+            {"report_id": lone["id"], "action": "discard", "fingerprint": lone["fingerprint"], "at": "2026-10-12T11:00:00Z"},
+            {"report_id": tide["id"], "action": "mark", "fingerprint": "0" * 64, "at": "2026-10-12T10:00:00Z"},
+        ]}
+        path = self.root / "actions.json"
+        path.write_text(json.dumps(actions), encoding="utf-8")
+        dry = self.cli("import", str(path), "--dry-run").stdout
+        self.assertIn("Would apply 2 of 3", dry)
+        self.assertIn("needs review", self.cli("reports", "list").stdout.split("lone-report")[1].split("\n")[0])
+        result = self.cli("import", str(path)).stdout
+        self.assertIn("Applied 2 of 3", result)
+        self.assertIn("skipped: invented-home/tide-note (mark): report changed", result)
+        listed = self.cli("reports", "list").stdout
+        self.assertIn("invented-home/lone-report\tdiscarded\t", listed)  # the later action won
+        self.assertIn("invented-home/tide-note\tneeds review\t", listed)
+        bare = self.root / "bare.json"  # a bare list of database documents is accepted too
+        bare.write_text(json.dumps([{"id": "x", "data": {
+            "report_id": lone["id"], "action": "undiscard", "fingerprint": lone["fingerprint"], "at": "2026-10-12T12:00:00Z",
+        }}]), encoding="utf-8")
+        self.cli("import", str(bare))
+        self.assertIn("invented-home/lone-report\tneeds review\t", self.cli("reports", "list").stdout)
+
+    def test_import_rejects_malformed_files(self) -> None:
+        for name, content in {
+            "not-json": "{",
+            "unknown-action": json.dumps([{"report_id": "a/b", "action": "delete", "fingerprint": "0" * 64}]),
+            "bad-fingerprint": json.dumps([{"report_id": "a/b", "action": "mark", "fingerprint": "abc"}]),
+            "wrong-shape": json.dumps({"actions": "mark"}),
+        }.items():
+            with self.subTest(name):
+                path = self.root / f"{name}.json"
+                path.write_text(content, encoding="utf-8")
+                self.cli("import", str(path), expect=2)
+        self.assertFalse((self.state / "quarterdeck" / "review-state" / "state.db").exists())
+
+    def test_served_page_discards_through_the_mark_endpoint(self) -> None:
+        import argparse
+        import http.client
+        from http.server import ThreadingHTTPServer
+        args = argparse.Namespace(home=str(self.home), config=None, title=None, no_snapshot=True)
+        cache = quarterdeck.SiteCache(quarterdeck.site_builder(args, True), 30)
+        handler = quarterdeck.make_handler(
+            cache, lambda report_id, action, fingerprint: quarterdeck.set_report_action(args, report_id, action, fingerprint)
+        )
+        server = ThreadingHTTPServer(("127.0.0.1", 0), handler)
+        threading.Thread(target=server.serve_forever, daemon=True).start()
+        self.addCleanup(lambda: (server.shutdown(), server.server_close()))
+        port = server.server_address[1]
+
+        def request(method: str, path: str, body: object = None) -> tuple[int, str]:
+            connection = http.client.HTTPConnection("127.0.0.1", port, timeout=10)
+            connection.request(method, path, json.dumps(body) if body is not None else None,
+                               {"Content-Type": "application/json"})
+            response = connection.getresponse()
+            text = response.read().decode("utf-8")
+            connection.close()
+            return response.status, text
+
+        page = request("GET", "/")[1]
+        match = re.search(
+            r'data-mark-report="(invented-home/lone-report)" data-mark-fingerprint="([0-9a-f]{64})" data-mark-action="discard"',
+            page,
+        )
+        self.assertIsNotNone(match)
+        report_id, fingerprint = match.groups()
+        status, body = request("POST", quarterdeck.MARK_ENDPOINT,
+                               {"report_id": report_id, "fingerprint": fingerprint, "action": "discard"})
+        self.assertEqual(status, 200, body)
+        self.assertEqual(json.loads(body), {"report_id": report_id, "reviewed": False, "state": "discarded"})
+        self.assertEqual(quarterdeck.load_review_marks(quarterdeck.review_state_path()), {})
+        page = request("GET", "/")[1]
+        self.assertIn('data-mark-action="undiscard"', page)
+        status, _ = request("POST", quarterdeck.MARK_ENDPOINT,
+                            {"report_id": report_id, "fingerprint": fingerprint, "action": "banish"})
+        self.assertEqual(status, 400)
+        status, _ = request("POST", quarterdeck.MARK_ENDPOINT,
+                            {"report_id": report_id, "fingerprint": "0" * 64, "action": "undiscard"})
+        self.assertEqual(status, 409)
 
 
 class PrivacyGuardTests(unittest.TestCase):

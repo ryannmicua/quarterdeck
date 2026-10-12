@@ -39,9 +39,22 @@ as a local artifact. Quarterdeck itself has no agent or build step.
   publishes as a private Claude artifact. See
   [Write and publish a decision brief](docs/how-to/write-decision-briefs.md).
 - Review buttons: start `quarterdeck serve --allow-marks` and use "Mark
-  reviewed" and "Unmark" on the served page. They run the same code as
-  `quarterdeck reports mark-reviewed` and `unmark-reviewed`; off by default.
+  reviewed", "Discard", "Unmark" and "Undiscard" on the served page. They run
+  the same code as `quarterdeck reports mark-reviewed`, `unmark-reviewed`,
+  `discard` and `undiscard`; off by default. Discard takes a report off the
+  list without claiming you reviewed it.
   See the [serving guide](docs/how-to/serve-the-page.md#mark-reports-reviewed-from-the-page).
+- Relevance: Firstmate marks reports and past captain calls current or stale
+  (`reports set-relevance`, `calls set-relevance`); stale ones are hidden by
+  default behind a collapsed section. A collapsed "Related to this session"
+  section below the desk surfaces older reports and deferred calls that share
+  a project, topic, task link or explicit relation with the active session.
+  See [Keep the desk relevant](docs/how-to/keep-the-desk-relevant.md).
+- Cloud artifact: `quarterdeck export --artifact FILE` builds a Claude
+  artifact page from [`templates/artifact.html.tmpl`](templates/artifact.html.tmpl)
+  and a data snapshot; marks and discards made there come back with
+  `quarterdeck import`. See [Use the cloud artifact](docs/how-to/use-the-cloud-artifact.md).
+- Compact header: the page opens straight on the desk.
 - Bearings-shaped page: Captain's Call, Recently Landed, Underway, and Charted
   Next, each always rendered with an empty-state sentence.
 - Captain's Call cards include local hold context, options, and recommendations
@@ -53,7 +66,7 @@ as a local artifact. Quarterdeck itself has no agent or build step.
   print or write a systemd user unit; see the
   [serving guide](docs/how-to/serve-the-page.md).
 - Scout reports with an explicit recommendation when the report states one.
-- Stable report IDs, Markdown and readable HTML reading, and local review marks.
+- Stable report IDs, Markdown and readable HTML reading, and local review state (reviewed, discarded, relevance) in a private SQLite database.
 - Reports needing review appear independently of backlog attention.
 - In-flight tasks and pull requests marked ready for review.
 - Attention filtering, with `quarterdeck render --all` restoring queued, finished, closed, and historical items.
@@ -168,5 +181,6 @@ Possible future work: a pinned desk artifact for reading off the local
 network, a Listen button and tap-to-answer on briefs, an agent-driven marking
 path, multi-user review history, Firstmate extension binding, and hosted or
 authenticated views; see the [captain desk experience log](docs/explanation/captain-desk-experience-log.md).
-These are out of scope today. Apart from the opt-in report review marks and the
-explicit `quarterdeck board` writer, Quarterdeck remains a read-only view.
+These are out of scope today. Apart from the opt-in report review marks, the local
+state commands, and the explicit `quarterdeck board` writer, Quarterdeck remains a read-only view of
+Firstmate homes.
