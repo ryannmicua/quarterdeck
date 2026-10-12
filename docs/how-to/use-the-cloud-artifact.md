@@ -24,23 +24,47 @@ on the local network. The local page and Lavish page keep working unchanged.
 
 The snapshot holds what the page shows: calls (title, ask, band, project,
 topic, links, relevance), the report list (title, recommendation, state,
-fingerprint, relevance) and related items. Each current, unreviewed report's
-Markdown body travels in the snapshot to the private artifact; expand **Read
-report** in the report list or related section to read it. Stale, discarded and
+fingerprint, relevance) and related items. By default each current,
+unreviewed report's Markdown body travels in the snapshot to the private
+artifact, and you read it in the card's detail view. Stale, discarded and
 reviewed reports omit the body. The snapshot omits home metadata paths, but
 report bodies may contain paths and other work data. The privacy guarantees of the
 [architecture guide](../explanation/privacy-and-architecture.md) apply to the
 published page: it is your work data.
 
-## Read the header line
+### Keep the snapshot small
 
-The line under the title says what the page could connect to. Reactions,
+The full set of report bodies can reach about 1 MB, more than a person or an
+agent reviewing the page before publishing wants to read. `--bodies` chooses
+which reports carry their text:
+
+| `--bodies` | Report text in the snapshot |
+| --- | --- |
+| `all` (default) | Every current, unreviewed report. |
+| `desk` | Only reports linked to a desk or this-week call (the report of that task, a report related to it with `reports relate`, or a report of a task the call is related to) and reports related to the session. |
+| `none` | No report text. |
+
+```sh
+quarterdeck export --bodies desk --artifact ~/.local/state/quarterdeck/artifact.html
+```
+
+A report without text still shows its title, recommendation and state, and its
+detail view says the text is not in the snapshot.
+
+## Read the status line
+
+The page says what it could connect to in two places: a line in the header
+(light text on the dark bar, so it reads in light and dark mode) and a banner
+at the top of the desk, repeated at the top of every detail view. Both show the
+same text, so in the Claude app you can tell at a glance whether reactions are
+connected. The banner is green-tinted when connected and amber when the page is
+read-only or reports an error. Reactions,
 **Mark reviewed**, **Discard** and **Discuss with Firstmate** are always drawn;
 they are disabled until the matching capability resolves. Each card then
 shows a short hint (`Connecting…`, or `… unavailable, see the note at the
-top.`); the header line carries the full reason.
+top.`); the status line carries the full reason.
 
-| Header line | Meaning |
+| Status line | Meaning |
 | --- | --- |
 | `Connecting to the artifact database and comments…` | Claude has not answered yet. Controls are disabled and light up on their own. |
 | `Connected: reactions and review actions are saved in this artifact.` | The `db` capability resolved. Reactions and report actions work. |
@@ -52,9 +76,26 @@ top.`); the header line carries the full reason.
 | `Downloads are unavailable in this view.` | A download button was pressed without the `downloads` capability. |
 | `Render error: …` | Something threw while drawing the page or one card. The rest of the page keeps working; report the message. |
 
-Call cards with more to say have a **Details** section. Click it to read the
-text; it stays open when the page refreshes. The **On your desk** badge counts
-cards, not the sub-headings between them.
+The thin gold rule under the header is decoration, not a status. The **On
+your desk** badge counts cards, not the sub-headings between them.
+
+## Open a card for details
+
+Click a card, or its **View details** button, to open its detail view in the
+page. **← Back to the desk** (or Escape) returns to the list where you were,
+with the same groups open. The detail view holds what you need to decide:
+
+- For a captain call: the title, the ask, Firstmate's recommendation, the full
+  detail text, the brief and other links (each opens in a new tab), your latest
+  reaction, the reports linked to the call with their text when the snapshot
+  carries it, and the reaction controls.
+- For a report: the title, recommendation, full text when the snapshot carries
+  it, the captain calls it is linked to, **Mark reviewed** and **Discard** (or
+  **Unmark** / **Undiscard**), and the reaction controls.
+
+Linked reports and calls open in the same view, and Back steps back through
+them. Cards in this week, related, parked, and the report sections all open the
+same view.
 
 ## The round trip
 

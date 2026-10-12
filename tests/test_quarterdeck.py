@@ -3537,6 +3537,30 @@ class DeskRelevanceTests(unittest.TestCase):
         self.assertNotIn(str(self.home), json.dumps(snapshot))
         self.assertTrue(any(item["id"] == "invented-home/tide-hold" for item in snapshot["related"]))
 
+    def test_export_bodies_desk_keeps_text_only_for_reports_tied_to_the_desk(self) -> None:
+        everything = json.loads(self.cli("export", "--no-snapshot").stdout)
+        full = {r["id"]: r["markdown"] for r in everything["reports"]}
+        self.assertTrue(full["invented-home/lone-report"])  # the default keeps every waiting report's text
+        desk = json.loads(self.cli("export", "--no-snapshot", "--bodies", "desk").stdout)
+        kept = {r["id"]: r["markdown"] for r in desk["reports"]}
+        self.assertEqual(kept["invented-home/harbor-hold"], full["invented-home/harbor-hold"])  # the desk call's report
+        self.assertEqual(kept["invented-home/tide-note"], full["invented-home/tide-note"])  # related to the session
+        self.assertEqual(kept["invented-home/lone-report"], "")  # tied to neither
+        call = next(c for c in desk["calls"] if c["id"] == "invented-home/harbor-hold")
+        self.assertIn("invented-home/harbor-hold", call["reports"])
+        self.cli("reports", "relate", "invented-home/lone-report", "--to", "harbor-build")
+        related = json.loads(self.cli("export", "--no-snapshot", "--bodies", "desk").stdout)
+        self.assertTrue(next(r for r in related["reports"] if r["id"] == "invented-home/lone-report")["markdown"])
+        none = json.loads(self.cli("export", "--no-snapshot", "--bodies", "none").stdout)
+        self.assertTrue(all(r["markdown"] == "" for r in none["reports"]))
+        self.cli("export", "--no-snapshot", "--bodies", "some", expect=2)
+
+    def test_artifact_header_status_is_legible_and_repeated_on_the_desk(self) -> None:
+        template = quarterdeck.ARTIFACT_TEMPLATE.read_text(encoding="utf-8")
+        self.assertRegex(template, r"header p\.status \{[^}]*color: #fffdf8")  # light text on the dark header
+        self.assertIn('id="sync"', template)
+        self.assertIn('id: "qd-banner"', template)  # the same state at the top of the desk
+
     def test_artifact_page_embeds_the_snapshot_safely(self) -> None:
         board = self.home / "data" / "captain-board.json"
         data = json.loads(board.read_text(encoding="utf-8"))
@@ -3784,9 +3808,17 @@ async function click(report, text) {
 (async () => {
   await flush();
   assert.equal(buttons().filter(b => b.textContent.startsWith('Download')).length, 0);
+  assert.equal(elements.root.querySelectorAll('pre').length, 0, 'cards no longer carry report text');
   for (const section of ['reports', 'related']) {
-    const body = document.getElementById(section).querySelectorAll('pre').find(e => e.textContent === harbor.markdown);
-    assert.ok(body, 'report body in ' + section);
+    const card = document.getElementById(section).querySelectorAll('article')
+      .find(a => a.children.some(n => n.tag === 'h3' && n.textContent === harbor.title));
+    card.querySelectorAll('button').find(b => b.textContent === 'View details').listeners.click(); await flush();
+    const body = elements.root.querySelectorAll('div').find(e => e.textContent === harbor.markdown);
+    assert.ok(body, 'report body in the detail view opened from ' + section);
+    assert.ok(elements.root.querySelectorAll('h2').some(h => h.textContent === harbor.title));
+    assert.equal(elements.root.querySelectorAll('section').length, 0, 'the detail view replaces the list');
+    elements.root.querySelectorAll('button').find(b => b.textContent.startsWith('←')).listeners.click(); await flush();
+    assert.ok(document.getElementById(section), 'Back returns to the list');
   }
   assert.equal(elements.root.querySelectorAll('script').length, 0);
   await click(lone, 'Unmark'); await click(lone, 'Discard'); await click(lone, 'Undiscard');
@@ -4291,19 +4323,24 @@ const card = (root, title) => root.all('article').find(c => c.children.some(n =>
 
   // Details render as text, open, and stay open across a re-render.
   const first = card(root, 'Title c1');
-  const detail = first.all('details')[0];
-  assert.ok(detail && detail.textContent.includes('Plain <b>text</b> detail'));
-  assert.equal(card(root, 'Title c2').all('details').length, 0);
-  assert.equal(detail.all('b').length, 0);
-  detail.open = true;
+  assert.equal(first.all('details').length, 0, 'the card itself carries no expanding details');
   const week = root.all('details').find(d => d.id === 'week');
   assert.ok(week && !week.open);
   week.open = true;
-  snaps[0]({docs: []});  // a database snapshot re-renders the whole page
-  const after = root.all('details');
-  assert.ok(after.find(d => d.id === detail.id).open, 'call details stay open');
-  assert.ok(after.find(d => d.id === 'week').open, 'group stays open');
-  assert.equal(after.find(d => d.id === 'parked').open, false);
+  const banner = root.all('p').find(p => p.attrs.id === 'qd-banner');
+  assert.ok(banner && banner.textContent.startsWith('Connected'), 'the desk shows the connection state');
+  buttons(card(root, 'Title c1'), 'View details')[0].listeners.click(); await flush();
+  assert.ok(root.all('h2').some(h => h.textContent === 'Title c1'));
+  assert.ok(root.textContent.includes('Plain <b>text</b> detail'));
+  assert.equal(root.all('b').length, 0);
+  assert.ok(root.all('p').some(p => p.attrs.id === 'qd-banner'), 'the detail view shows the connection state too');
+  assert.ok(buttons(root, 'Approve').length === 1 && !buttons(root, 'Approve')[0].disabled, 'reaction controls are in the detail view');
+  snaps[0]({docs: []});  // a database snapshot re-renders; the detail view stays
+  assert.ok(root.all('h2').some(h => h.textContent === 'Title c1'));
+  buttons(root, '← Back to the desk')[0].listeners.click(); await flush();
+  assert.ok(card(root, 'Title c2'));
+  assert.ok(root.all('details').find(d => d.id === 'week').open, 'group stays open after Back');
+  assert.equal(root.all('details').find(d => d.id === 'parked').open, false);
 
   // Resolving null: controls stay, disabled, with a one-line reason in the header and on the controls.
   root = boot(async () => null); await flush();
@@ -4311,7 +4348,8 @@ const card = (root, title) => root.all('article').find(c => c.children.some(n =>
   assert.ok(buttons(root, 'Discuss with Firstmate').every(b => b.disabled));
   assert.ok(global.document.getElementById('sync').textContent.startsWith('Read-only: the artifact database is not available'));
   assert.ok(root.textContent.includes('Reactions and Discuss unavailable, see the note at the top.'));
-  assert.equal(root.textContent.includes('not available in this view'), false, 'cards do not repeat the full reason');
+  assert.equal(card(root, 'Title c1').textContent.includes('not available in this view'), false, 'cards do not repeat the full reason');
+  assert.ok(root.all('p').find(p => p.attrs.id === 'qd-banner').textContent.startsWith('Read-only: the artifact database'), 'the desk shows why');
 
   // Only comments null.
   root = boot(async name => name === 'db' ? db : null); await flush();
