@@ -65,6 +65,11 @@ footer { border-top: 1px solid var(--line); margin-top: 3rem; padding-top: 1rem;
 .reaction .reply { display: flex; flex-wrap: wrap; gap: .5rem; align-items: center; margin-top: .5rem; }
 .reaction input[type="text"] { flex: 1 1 14rem; min-width: 0; min-height: 44px; padding: 0 .6rem; border: 1px solid var(--line); border-radius: 8px; background: var(--surface); color: var(--fg); font: inherit; font-size: .9rem; }
 .report-body { white-space: pre-wrap; overflow-wrap: anywhere; font: inherit; }
+.card details { margin: .5rem 0; }
+.card details > summary { cursor: pointer; min-height: 44px; display: flex; align-items: center; font-weight: 650; color: var(--accent); }
+.card details > .report-body { margin: .2rem 0 .4rem; }
+.access { color: var(--warn); }
+.error { border: 1px solid var(--gold); background: var(--warn-soft); color: var(--warn); border-radius: 10px; padding: .6rem 1rem; margin: .6rem 0; overflow-wrap: anywhere; }
 </style>
 </head>
 <body>
@@ -88,6 +93,14 @@ footer { border-top: 1px solid var(--line); margin-top: 3rem; padding-top: 1rem;
   var drafts = {};       // "kind:item id" -> {reaction, text, id, sending, status} typed but not sent
   var db = null;
   var comments = null;
+  // Each capability is "pending" until claude.use() settles, then "ready" or "unavailable" (with a reason).
+  var access = {
+    db: { state: "pending", reason: "" },
+    comments: { state: "pending", reason: "" },
+  };
+  var syncError = "";    // a database read error to show in the header
+  var renderErrors = []; // card-level render failures from the latest render
+  var renderFailure = ""; // a render failure that stopped the page
   var pendingOpen = null;
   var composers = {};    // "kind:item id" -> every rendered {choices, input, status} for that draft
 
@@ -145,6 +158,44 @@ footer { border-top: 1px solid var(--line); margin-top: 3rem; padding-top: 1rem;
       .sort(function (a, b) { return Date.parse(a.at) - Date.parse(b.at); });
   }
 
+  function dbUnavailableText() {
+    if (db) return "";
+    if (access.db.state === "pending") return "Connecting to the artifact database…";
+    return "Reactions and review actions are off: " + access.db.reason;
+  }
+  function commentsUnavailableText() {
+    if (access.comments.state === "pending") return "Connecting to comments…";
+    return "Discuss is off: " + access.comments.reason;
+  }
+  // The one-line header text: what is connected, what is not, and why.
+  function statusLine() {
+    var parts = [];
+    if (renderFailure) parts.push("Render error: " + renderFailure);
+    else if (renderErrors.length) parts.push("Render error in " + renderErrors.length + " card" + (renderErrors.length === 1 ? "" : "s") + ": " + renderErrors[0]);
+    if (access.db.state === "pending" || access.comments.state === "pending") {
+      parts.push("Connecting to the artifact database and comments…");
+    } else {
+      if (db) parts.push("Connected: reactions and review actions are saved in this artifact.");
+      else parts.push("Read-only: " + access.db.reason);
+      if (!comments) parts.push("Discuss with Firstmate is off: " + access.comments.reason);
+    }
+    if (syncError) parts.push(syncError);
+    return parts.join(" ");
+  }
+  function updateStatus() {
+    var node = document.getElementById("sync");
+    if (node) node.textContent = statusLine();
+  }
+  // Build one card; a failure becomes a visible error card instead of stopping the rest of the page.
+  function guard(label, build) {
+    try { return build(); }
+    catch (error) {
+      var message = label + ": " + ((error && error.message) || String(error));
+      renderErrors.push(message);
+      return el("div", { "class": "error", role: "alert", text: "This item could not be shown (" + message + ")." });
+    }
+  }
+
   // Quick reactions, a reply box and Send for one card, plus a button that opens the claude.ai comment composer on it.
   function reactionBox(kind, id, card) {
     var key = kind + ":" + id;
@@ -153,12 +204,14 @@ footer { border-top: 1px solid var(--line); margin-top: 3rem; padding-top: 1rem;
     var latest = latestText(latestReaction(kind, id));
     if (latest) box.appendChild(el("p", { "class": "latest", text: latest }));
     var status = el("span", { "class": "status", "aria-live": "polite", text: draft.status });
-    if (db) {
+    var unavailable = dbUnavailableText();
+    if (true) {
       var choices = el("div", { "class": "choices" });
       REACTIONS.forEach(function (pair) {
         var button = el("button", { type: "button", "aria-pressed": String(draft.reaction === pair[0]), text: pair[1] });
-        button.disabled = draft.sending;
+        button.disabled = draft.sending || !db;
         button.addEventListener("click", function () {
+          if (!db) return;
           draft.id = "";
           draft.reaction = draft.reaction === pair[0] ? "" : pair[0];
           composers[key].forEach(function (view) {
@@ -171,15 +224,16 @@ footer { border-top: 1px solid var(--line); margin-top: 3rem; padding-top: 1rem;
       });
       var input = el("input", { type: "text", maxlength: String(TEXT_LIMIT), placeholder: "Reply to Firstmate (optional)", "aria-label": "Reply to Firstmate", "data-draft": key });
       input.value = draft.text;
-      input.disabled = draft.sending;
+      input.disabled = draft.sending || !db;
       input.addEventListener("input", function () {
         draft.text = input.value;
         draft.id = "";
         composers[key].forEach(function (view) { if (view.input !== input) view.input.value = draft.text; });
       });
       var send = el("button", { type: "button", text: "Send" });
-      send.disabled = draft.sending;
+      send.disabled = draft.sending || !db;
       send.addEventListener("click", function () {
+        if (!db) return;
         var text = draft.text.trim().replace(/\s+/g, " ");
         if (!draft.reaction && !text) {
           draft.status = "Pick a reaction or write a reply first.";
@@ -205,13 +259,18 @@ footer { border-top: 1px solid var(--line); margin-top: 3rem; padding-top: 1rem;
       box.appendChild(choices);
       box.appendChild(el("div", { "class": "reply" }, [input, send, status]));
     }
-    if (comments) {
-      var discuss = el("button", { type: "button", text: "Discuss with Firstmate" });
-      discuss.addEventListener("click", function () {
-        comments.openComposer({ element: card }).catch(function () { status.textContent = "Comments are unavailable in this view."; });
-      });
-      box.appendChild(el("div", { "class": "actions" }, [discuss]));
-    }
+    var discuss = el("button", { type: "button", text: "Discuss with Firstmate" });
+    discuss.disabled = !comments;
+    discuss.addEventListener("click", function () {
+      if (!comments) return;
+      Promise.resolve().then(function () { return comments.openComposer({ element: card }); })
+        .catch(function () { status.textContent = "Comments are unavailable in this view."; });
+    });
+    box.appendChild(el("div", { "class": "actions" }, [discuss]));
+    var why = [];
+    if (unavailable) why.push(unavailable);
+    if (!comments) why.push(commentsUnavailableText());
+    if (why.length) box.appendChild(el("p", { "class": "note access", text: why.join(" ") }));
     return box;
   }
 
@@ -265,7 +324,8 @@ footer { border-top: 1px solid var(--line); margin-top: 3rem; padding-top: 1rem;
     return body;
   }
 
-  function reportCard(report, buttons) {
+  function reportCard(report, buttons) { return guard("report " + report.id, function () { return buildReportCard(report, buttons); }); }
+  function buildReportCard(report, buttons) {
     var chips = [chip(report.home)];
     if (report.relevance === "stale") chips.push(chip("stale", "warn"));
     var card = el("article", { "class": "card" }, [
@@ -279,11 +339,12 @@ footer { border-top: 1px solid var(--line); margin-top: 3rem; padding-top: 1rem;
     if (body) card.appendChild(body);
     if (report.ambiguous) {
       card.appendChild(el("p", { "class": "note", text: "ID is shared by multiple homes; actions are disabled." }));
-    } else if (db && buttons.length) {
+    } else if (buttons.length) {
       var status = el("span", { "class": "status", "aria-live": "polite" });
       var row = el("div", { "class": "actions" });
       buttons.forEach(function (pair) {
         var button = el("button", { type: "button", text: pair[1] });
+        button.disabled = !db;
         button.addEventListener("click", function () { button.disabled = true; record(report, pair[0], status); });
         row.appendChild(button);
       });
@@ -294,7 +355,8 @@ footer { border-top: 1px solid var(--line); margin-top: 3rem; padding-top: 1rem;
     return card;
   }
 
-  function callCard(call) {
+  function callCard(call) { return guard("call " + call.id, function () { return buildCallCard(call); }); }
+  function buildCallCard(call) {
     var chips = [chip(call.group, "group")];
     if (call.project) chips.push(chip(call.project));
     if (call.topic) chips.push(chip(call.topic));
@@ -305,6 +367,15 @@ footer { border-top: 1px solid var(--line); margin-top: 3rem; padding-top: 1rem;
     if (call.recommendation) chips.push(chip("Recommend: " + call.recommendation, "rec"));
     var card = el("article", { "class": "card" }, [el("h3", { text: call.title }), el("p", { text: call.ask }), el("div", { "class": "chips" }, chips)]);
     if (call.relevance === "stale" && call.relevance_reason) card.appendChild(el("p", { "class": "note", text: "Marked stale: " + call.relevance_reason }));
+    if (typeof call.detail === "string" && call.detail.trim()) {
+      var detailId = "detail-" + docId(call.band || "call") + "-" + docId(call.id);
+      var detail = el("details", { id: detailId }, [
+        el("summary", { text: "Details" }),
+        el("div", { "class": "report-body", text: call.detail }),
+      ]);
+      detail.open = !!(pendingOpen && pendingOpen[detailId]);
+      card.appendChild(detail);
+    }
     var links = [];
     if (call.brief_url && safeUrl(call.brief_url)) links.push(el("a", { href: safeUrl(call.brief_url), target: "_blank", rel: "noopener", text: "Open brief" }));
     (call.links || []).forEach(function (link) {
@@ -330,14 +401,28 @@ footer { border-top: 1px solid var(--line); margin-top: 3rem; padding-top: 1rem;
     if (open || pendingOpen && pendingOpen[id]) details.open = true;
     return details;
   }
-  function openSection(id, title, note, nodes, emptyText) {
+  // `count` is the number of cards; `nodes` may also hold sub-headings, which are not items.
+  function openSection(id, title, note, nodes, emptyText, count) {
     return el("section", { id: id }, [
-      el("div", { "class": "head" }, [el("div", {}, [el("h2", { text: title }), el("p", { text: note })]), el("span", { "class": "count", text: String(nodes.length) })]),
+      el("div", { "class": "head" }, [el("div", {}, [el("h2", { text: title }), el("p", { text: note })]), el("span", { "class": "count", text: String(count) })]),
       el("div", {}, nodes.length ? nodes : [el("p", { "class": "empty", text: emptyText })]),
     ]);
   }
 
   function render() {
+    renderErrors = [];
+    try {
+      renderPage();
+      renderFailure = "";
+    } catch (error) {
+      renderFailure = (error && error.message) || String(error);
+      var root = document.getElementById("root");
+      if (root) root.appendChild(el("div", { "class": "error", role: "alert", text: "The page could not be fully drawn (" + renderFailure + ")." }));
+    }
+    updateStatus();
+  }
+
+  function renderPage() {
     var root = document.getElementById("root");
     var openNow = {};
     Array.prototype.forEach.call(root.querySelectorAll("details"), function (d) { if (d.open) openNow[d.id] = true; });
@@ -361,9 +446,10 @@ footer { border-top: 1px solid var(--line); margin-top: 3rem; padding-top: 1rem;
     var deskNote = session && session.idle ? "Open items from your last session. Everything else still open follows." :
       "What you raised or touched recently.";
     root.appendChild(openSection("desk", session && session.idle ? "Open items from our last session" : "On your desk", deskNote, nodes,
-      "Nothing from this session is waiting on you. Earlier work is below."));
+      "Nothing from this session is waiting on you. Earlier work is below.", desk.length));
 
-    var related = (snapshot.related || []).map(function (item) {
+    var related = (snapshot.related || []).map(function (item) { return guard("related " + item.id, function () { return relatedCard(item); }); }).filter(Boolean);
+    function relatedCard(item) {
       var chips = (item.why || []).map(function (why) { return chip(why); });
       var base = item.kind === "report" ? reports.filter(function (r) { return r.id === item.id; })[0] : calls.filter(function (c) { return c.id === item.id; })[0];
       var card = el("article", { "class": "card" }, [
@@ -376,11 +462,12 @@ footer { border-top: 1px solid var(--line); margin-top: 3rem; padding-top: 1rem;
         var body = reportBody(base, "related");
         if (body) card.appendChild(body);
       }
-      if (item.kind === "report" && base && db && !base.ambiguous) {
+      if (item.kind === "report" && base && !base.ambiguous) {
         var status = el("span", { "class": "status", "aria-live": "polite" });
         var row = el("div", { "class": "actions" });
         [["mark", "Mark reviewed"], ["discard", "Discard"]].forEach(function (pair) {
           var button = el("button", { type: "button", text: pair[1] });
+          button.disabled = !db;
           button.addEventListener("click", function () { button.disabled = true; record(base, pair[0], status); });
           row.appendChild(button);
         });
@@ -389,13 +476,13 @@ footer { border-top: 1px solid var(--line); margin-top: 3rem; padding-top: 1rem;
       }
       if (!(base && base.ambiguous)) card.appendChild(reactionBox(item.kind === "report" ? "report" : "call", item.id, card));
       return card;
-    }).filter(Boolean);
+    }
 
-    var week = byBand("week").map(callCard);
+    var week = byBand("week").map(function (call) { return callCard(call); });
     root.appendChild(group("week", "This week", "Touched in the last 7 days.", week.length, week, "Nothing else was touched this week."));
     root.appendChild(group("related", "Related to this session", "Older reports and deferred or held calls that connect to what you are working on now, most related first. Not on your desk.",
       related.length, related, "Nothing older relates to what is on your desk or in flight right now."));
-    var parked = byBand("parked").map(callCard);
+    var parked = byBand("parked").map(function (call) { return callCard(call); });
     root.appendChild(group("parked", "Parked", "Older, deferred, or never touched.", parked.length, parked, "Nothing is parked."));
 
     var states = reports.map(function (report) { return [report, effectiveState(report)]; });
@@ -403,12 +490,12 @@ footer { border-top: 1px solid var(--line); margin-top: 3rem; padding-top: 1rem;
       return reportCard(p[0], [["mark", "Mark reviewed"], ["discard", "Discard"]]);
     });
     root.appendChild(openSection("reports", "Reports waiting on your review", "Mark one reviewed once you have read it, or discard it to take it off the list without saying you reviewed it.", waiting,
-      "No reports are waiting on your review."));
+      "No reports are waiting on your review.", waiting.length));
     var stale = states.filter(function (p) { return p[1] === "needs review" && p[0].relevance === "stale"; }).map(function (p) {
       return reportCard(p[0], [["mark", "Mark reviewed"], ["discard", "Discard"]]);
     });
     root.appendChild(group("stale-reports", "Stale reports", "One-offs or already decided; off the review list.", stale.length, stale, "No unreviewed report is marked stale."));
-    var staleCalls = byBand("stale").map(callCard);
+    var staleCalls = byBand("stale").map(function (call) { return callCard(call); });
     root.appendChild(group("stale-calls", "Calls marked stale", "One-offs or already decided; off your desk.", staleCalls.length, staleCalls, "No captain call is marked stale."));
     var reviewed = states.filter(function (p) { return p[1] === "reviewed"; }).map(function (p) { return reportCard(p[0], [["unmark", "Unmark"]]); });
     root.appendChild(group("reviewed", "Reviewed reports", "Unmark to return one to needs review.", reviewed.length, reviewed, "No reports are marked reviewed."));
@@ -440,55 +527,92 @@ footer { border-top: 1px solid var(--line); margin-top: 3rem; padding-top: 1rem;
       .sort(function (a, b) { return Date.parse(a.at) - Date.parse(b.at); });
     return JSON.stringify({ version: 1, generated_at: snapshot.generated_at, actions: list }, null, 2) + "\n";
   }
-  function exportActions() {
-    claude.use("downloads").then(function (downloads) {
-      if (!downloads) { document.getElementById("sync").textContent = "Downloads are unavailable in this view."; return; }
-      return downloads.save({ filename: "quarterdeck-actions.json", data: actionsJson() });
-    }).catch(function () {});
-  }
-
   function reactionsJson() {
     return JSON.stringify({ version: 1, generated_at: snapshot.generated_at, reactions: pendingReactions() }, null, 2) + "\n";
   }
-  function exportReactions() {
-    claude.use("downloads").then(function (downloads) {
-      if (!downloads) { document.getElementById("sync").textContent = "Downloads are unavailable in this view."; return; }
-      return downloads.save({ filename: "quarterdeck-reactions.json", data: reactionsJson() });
-    }).catch(function () {});
+  function saveDownload(filename, data) {
+    var failed = function () { syncError = "Downloads are unavailable in this view."; updateStatus(); };
+    var runtime = window.claude;
+    if (!runtime || typeof runtime.use !== "function") { failed(); return; }
+    Promise.resolve().then(function () { return runtime.use("downloads"); }).then(function (downloads) {
+      if (!downloads) { failed(); return; }
+      return downloads.save({ filename: filename, data: data });
+    }).catch(failed);
+  }
+  function exportActions() { saveDownload("quarterdeck-actions.json", actionsJson()); }
+  function exportReactions() { saveDownload("quarterdeck-reactions.json", reactionsJson()); }
+
+  // Resolve a capability without ever throwing: a missing runtime, a rejection or a null all become "unavailable".
+  function useCapability(name, label, fallbackReason) {
+    var done = false;
+    function settle(handle, reason) {
+      if (done) return null;
+      done = true;
+      access[name] = handle ? { state: "ready", reason: "" } : { state: "unavailable", reason: reason };
+      return handle || null;
+    }
+    return new Promise(function (resolve) {
+      var runtime = window.claude;
+      if (!runtime || typeof runtime.use !== "function") {
+        resolve(settle(null, "open this page as a Claude artifact to use " + label + "."));
+        return;
+      }
+      // The runtime resolves null after about 10 s; this only covers a runtime that never answers.
+      var timer = setTimeout(function () {
+        resolve(settle(null, label + " did not answer; reload the artifact."));
+      }, 15000);
+      function finish(handle, reason) { clearTimeout(timer); resolve(settle(handle, reason)); }
+      var pending;
+      try { pending = runtime.use(name); }
+      catch (error) { finish(null, label + " failed to load (" + ((error && error.message) || "error") + ")."); return; }
+      Promise.resolve(pending).then(function (handle) {
+        finish(handle || null, fallbackReason);
+      }, function (error) {
+        finish(null, label + " failed to load (" + ((error && error.message) || "error") + ").");
+      });
+    });
+  }
+
+  function watch(name, handler, failure) {
+    try {
+      db.collection(name).onSnapshot(function (snap) {
+        try { handler(snap); syncError = ""; } catch (error) { syncError = failure; }
+        render();
+      }, function () { syncError = failure; updateStatus(); });
+    } catch (error) {
+      syncError = failure;
+    }
   }
 
   document.getElementById("title").textContent = "⚓ " + (snapshot.title || "Quarterdeck");
   document.getElementById("generated").textContent = "Snapshot " + (snapshot.generated_at || "") + (snapshot.generated_at ? " (" + ago(snapshot.generated_at) + ")" : "");
-  render();
+  render();  // controls appear at once, disabled, and light up as each capability resolves
 
-  if (window.claude && typeof window.claude.use === "function") {
-    window.claude.use("db").then(function (handle) {
-      if (!handle) { document.getElementById("sync").textContent = "Read-only: actions need a signed-in view."; return; }
+  useCapability("db", "the artifact database",
+    "the artifact database is not available in this view (open the artifact signed in, not as a shared or top-level page, and check that it was published with the db capability).")
+    .then(function (handle) {
       db = handle;
-      handle.collection(COLLECTION).onSnapshot(function (snap) {
-        actionDocs = {};
-        snap.docs.forEach(function (doc) {
-          var data = doc.data();
-          if (data && typeof data.report_id === "string") actionDocs[data.report_id] = data;
-        });
-        render();
-      }, function () { document.getElementById("sync").textContent = "Could not read recorded actions."; });
-      handle.collection(INBOX).onSnapshot(function (snap) {
-        inboxDocs = {};
-        snap.docs.forEach(function (doc) {
-          var data = doc.data();
-          if (data && typeof data.id === "string" && typeof data.item_id === "string") inboxDocs[data.id] = data;
-        });
-        render();
-      }, function () { document.getElementById("sync").textContent = "Could not read recorded reactions."; });
+      if (handle) {
+        watch(COLLECTION, function (snap) {
+          actionDocs = {};
+          snap.docs.forEach(function (doc) {
+            var data = doc.data();
+            if (data && typeof data.report_id === "string") actionDocs[data.report_id] = data;
+          });
+        }, "Could not read recorded actions.");
+        watch(INBOX, function (snap) {
+          inboxDocs = {};
+          snap.docs.forEach(function (doc) {
+            var data = doc.data();
+            if (data && typeof data.id === "string" && typeof data.item_id === "string") inboxDocs[data.id] = data;
+          });
+        }, "Could not read recorded reactions.");
+      }
       render();
     });
-    window.claude.use("comments").then(function (handle) {
-      if (handle) { comments = handle; render(); }
-    }, function () {});
-  } else {
-    document.getElementById("sync").textContent = "Read-only: open this page as a Claude artifact to record actions.";
-  }
+  useCapability("comments", "comments",
+    "comments are not available in this view (the artifact needs the comments capability and a signed-in view).")
+    .then(function (handle) { comments = handle; render(); });
 })();
 </script>
 </body>
