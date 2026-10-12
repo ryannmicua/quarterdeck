@@ -985,18 +985,12 @@ def state_timestamp() -> str:
 
 
 @contextmanager
-def state_connection(path: Path, create: bool = True) -> Iterator[sqlite3.Connection | None]:
-    """Open the state database beside the legacy marks file, creating it and importing marks.json once.
-
-    Yields None when create is false and there is nothing to read.
-    """
+def state_connection(path: Path) -> Iterator[sqlite3.Connection]:
+    """Open the state database beside the legacy marks file and import marks.json once."""
     db_path = state_db_path(path)
     for candidate in (path, db_path):
         if candidate.is_symlink():
             raise ValueError(f"refusing symbolic-link review state: {candidate}")
-    if not create and not db_path.exists():
-        yield None
-        return
     db_path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
     connection = sqlite3.connect(db_path, timeout=15, isolation_level=None)
     try:
@@ -1031,7 +1025,6 @@ def load_review_state(path: Path) -> ReviewState:
         return ReviewState()
     state = ReviewState()
     with state_connection(path) as connection:
-        assert connection is not None
         for report_id, kind, fingerprint in connection.execute("SELECT report_id, state, fingerprint FROM report_state"):
             state.reports[report_id] = (kind, fingerprint)
         for kind, key, value, reason in connection.execute("SELECT kind, key, value, reason FROM relevance"):
@@ -1051,7 +1044,6 @@ def load_review_marks(path: Path) -> dict[str, str]:
 
 def write_state(path: Path, statements: list[tuple[str, tuple[object, ...]]]) -> None:
     with state_connection(path) as connection:
-        assert connection is not None
         connection.execute("BEGIN IMMEDIATE")
         try:
             for statement, parameters in statements:
@@ -1130,10 +1122,12 @@ def apply_report_action(
     if new_state is not None:
         update_report_state(state_path, report.report_id, new_state, report.fingerprint)
     else:
-        current = load_review_state(state_path).reports.get(report.report_id)
         wanted = "reviewed" if action == "unmark" else "discarded"
-        if current is not None and current[0] == wanted:
-            update_report_state(state_path, report.report_id, None)
+        write_state(state_path, [(
+            "DELETE FROM report_state WHERE report_id = ? AND state = ? AND fingerprint = ?",
+            (report.report_id, wanted, report.fingerprint),
+        )])
+    apply_review_marks(snapshots, load_review_state(state_path))
     return report
 
 
@@ -1921,18 +1915,21 @@ class BearingsBuilder:
         self.result = Bearings(generated=now)
 
     # -- shared helpers --
-    def lookup(self, snapshot: HomeSnapshot, owner: str, item_id: str) -> tuple[HomeSnapshot, BacklogItem | None]:
+    def lookup(self, snapshot: HomeSnapshot, owner: str, item_id: str) -> tuple[HomeSnapshot, BacklogItem | None, str]:
         """Find the backlog entry for an id, using the secondmate's home when the owner is one."""
         target = snapshot
         if owner and owner != "(main)":
             target = next((child for child in snapshot.children if child.spec.route_id == owner), snapshot)
+            if target is not snapshot:
+                item_id = item_id.removeprefix(owner + "/")
+        target, item_id = task_owner(target, item_id)
         if target.error or target.backlog_markdown is None:
-            return target, None
+            return target, None, item_id
         items = getattr(target, "_items", None)
         if items is None:
             items = {item.id: item for item in backlog_items(target.backlog_markdown, target)}
             setattr(target, "_items", items)
-        return target, items.get(item_id)
+        return target, items.get(item_id), item_id
 
     def home_label(self, snapshot: HomeSnapshot, owner: str) -> str:
         if not owner or owner == "(main)":
@@ -1973,12 +1970,12 @@ class BearingsBuilder:
         for row in _rows(data, "decisions_open"):
             owner = _text(row.get("owner"))
             key = _text(row.get("key")) or _text(row.get("id"))
-            target, item = self.lookup(snapshot, owner, key)
+            target, item, task = self.lookup(snapshot, owner, key)
             if item and is_cancelled_state(item.state):
                 continue
             summary = _text(row.get("summary")) or key
-            bitem = BItem(title=summary, owner=self.home_label(snapshot, owner),
-                          item_id=key, status=_text(row.get("verb")))
+            bitem = BItem(title=summary, owner=target.spec.label,
+                          item_id=task, status=_text(row.get("verb")))
             if item is None:
                 bitem.detail = (
                     f"Full background lives in the secondmate home: {self.home_label(snapshot, owner)}."
@@ -1990,7 +1987,7 @@ class BearingsBuilder:
             owner = _text(row.get("owner"))
             artifact = _blank(_text(row.get("artifact")))
             item_id = _text(row.get("id"))
-            target, item = self.lookup(snapshot, owner, item_id)
+            target, item, _task = self.lookup(snapshot, owner, item_id)
             if item and is_cancelled_state(item.state):
                 continue
             bitem = BItem(title=_text(row.get("what")) or item_id, owner=self.home_label(snapshot, owner),
@@ -2012,7 +2009,7 @@ class BearingsBuilder:
         for row in _rows(data, "in_flight"):
             item_id = _text(row.get("id"))
             owner = item_id.partition("/")[0] if "/" in item_id else "(main)"
-            _, item = self.lookup(snapshot, owner, item_id.split("/")[-1])
+            _, item, _task = self.lookup(snapshot, owner, item_id.split("/")[-1])
             if is_cancelled_state(_text(row.get("state"))) or (item and is_cancelled_state(item.state)):
                 continue
             self.result.underway.append(BItem(
@@ -2034,7 +2031,7 @@ class BearingsBuilder:
         for row in _rows(data, "gates"):
             owner = _text(row.get("owner"))
             item_id = _text(row.get("id")).split("/")[-1]
-            target, item = self.lookup(snapshot, owner, item_id)
+            target, item, _task = self.lookup(snapshot, owner, item_id)
             if item and is_cancelled_state(item.state):
                 continue
             waits = " — ".join(part for part in (_blank(_text(row.get("blocked_by"))), _blank(_text(row.get("reason")))) if part)
@@ -2776,12 +2773,29 @@ def settle_relevance(entry: BoardEntry, state: ReviewState, view: BoardView) -> 
     return False
 
 
-def board_view(homes: list[HomeSnapshot], now: datetime | None = None) -> BoardView | None:
+def task_owner(snapshot: HomeSnapshot, task: str) -> tuple[HomeSnapshot, str]:
+    route, separator, rest = task.partition("/")
+    child = next((c for c in snapshot.children if separator and c.spec.route_id == route), None)
+    return task_owner(child, rest) if child is not None else (snapshot, task)
+
+
+def task_key(snapshot: HomeSnapshot, task: str, snapshots: list[HomeSnapshot]) -> str:
+    _prefix, separator, rest = task.strip().partition("/")
+    owner = next((s for s in snapshots if separator and report_reference(s.spec.label, rest) == task.strip()), None)
+    if owner is not None:
+        return report_reference(owner.spec.label, rest)
+    owner, task = task_owner(snapshot, task.strip())
+    return report_reference(owner.spec.label, task)
+
+
+def board_view(
+    homes: list[HomeSnapshot], now: datetime | None = None, *, fallback: bool = False,
+) -> BoardView | None:
     """Merge the homes' boards, drop settled items, add backlog items the boards miss, and rank them by recency."""
     now = now or datetime.now(timezone.utc)
     snapshots = all_snapshots(homes)
     boarded = [home for home in snapshots if home.board is not None]
-    if not boarded:
+    if not boarded and not fallback:
         return None
     view = BoardView({key: [] for key in BOARD_GROUP_KEYS}, [], 0, [], [])
     view.session = session = desk_session([home.board for home in boarded if home.board is not None], now)
@@ -2813,12 +2827,8 @@ def board_view(homes: list[HomeSnapshot], now: datetime | None = None) -> BoardV
             view.warnings.append(f"Could not check board items for {label}: the backlog could not be read.")
         for item in board.items:
             backlog_item: BacklogItem | None = None
-            target, task_id = home, item.task
+            target, task_id = task_owner(home, item.task)
             if not home.error:
-                route, separator, rest = item.task.partition("/")
-                child = next((c for c in home.children if separator and c.spec.route_id == route), None)
-                if child is not None:
-                    target, task_id = child, rest
                 if target.error:
                     view.warnings.append(
                         f"Could not check {item.id}: the backlog could not be read for {target.spec.label}; the item remains visible."
@@ -2836,8 +2846,9 @@ def board_view(homes: list[HomeSnapshot], now: datetime | None = None) -> BoardV
                         and not any(url == pr_url for _link_label, url in item.links)
                     ):
                         item = replace(item, links=[*item.links, ("Pull request", pr_url)])
-            entry = BoardEntry(item, label, refresh_key=f"{board.path}:{item.id}", key=report_reference(label, item.task))
+            entry = BoardEntry(item, label, refresh_key=f"{board.path}:{item.id}", key=report_reference(target.spec.label, task_id))
             rank_entry(entry, backlog_item, now, items_of(target).keys(), session)
+            entry.refs = frozenset(task_key(target, ref, snapshots) for ref in entry.refs)
             if settle_relevance(entry, state, view):
                 continue
             view.groups[item.group].append(entry)
@@ -2855,6 +2866,7 @@ def board_view(homes: list[HomeSnapshot], now: datetime | None = None) -> BoardV
                 key=report_reference(snapshot.spec.label, backlog_item.id),
             )
             rank_entry(entry, backlog_item, now, items_of(snapshot).keys(), session)
+            entry.refs = frozenset(task_key(snapshot, ref, snapshots) for ref in entry.refs)
             if settle_relevance(entry, state, view):
                 continue
             view.unsorted.append(entry)
@@ -3092,17 +3104,13 @@ class RelatedItem:
     entry: BoardEntry | None = None
 
 
-def bare_task(task: str) -> str:
-    return task.rsplit("/", 1)[-1].strip()
-
-
 def dependency_tokens(item: BacklogItem) -> set[str]:
     """Task ids a backlog item names as what it waits on."""
     values = [item.blocked_by, *(item.attrs.get(key, "") for key in (
         "blocked_by", "blocked-by", "waiting_on", "waiting-on", "waiting_for", "waiting-for",
     ))]
     values.extend(match.group(1) for match in HOLD_DEPENDENCY_RE.finditer(item.hold_reason))
-    return {bare_task(value.rstrip(".,;:!?)]}\"'`")) for value in values if value.strip()} - {item.id}
+    return {value.rstrip(".,;:!?)]}\"'`").strip() for value in values if value.strip()} - {item.id}
 
 
 def related_items(homes: list[HomeSnapshot], view: BoardView | None) -> list[RelatedItem]:
@@ -3113,6 +3121,8 @@ def related_items(homes: list[HomeSnapshot], view: BoardView | None) -> list[Rel
     a shared project, or a shared topic.
     """
     snapshots = all_snapshots(homes)
+    if view is None:
+        view = board_view(homes, fallback=True)
     context_tasks: dict[str, str] = {}
     context_projects: dict[str, str] = {}
     context_topics: dict[str, str] = {}
@@ -3125,35 +3135,34 @@ def related_items(homes: list[HomeSnapshot], view: BoardView | None) -> list[Rel
         ) else []
         for item in backlog[id(snapshot)]:
             if is_in_flight_state(item.state) and not item.done and not is_cancelled_state(item.state):
-                context_tasks.setdefault(item.id, item.title)
+                context_tasks.setdefault(task_key(snapshot, item.id, snapshots), item.title)
                 if item.project:
                     context_projects.setdefault(item.project, item.title)
                 for token in dependency_tokens(item):
-                    context_refs.setdefault(token, item.title)
-    candidates: list[BoardEntry] = []
-    if view is not None:
-        every = [*(e for key in BOARD_GROUP_KEYS for e in view.groups[key]), *view.unsorted]
-        for entry in every:
-            if entry.item.topic:
-                topics.setdefault(bare_task(entry.item.task), entry.item.topic)
-        for entry in view.bands["desk"]:
-            task = bare_task(entry.item.task)
-            context_tasks.setdefault(task, entry.item.title)
-            if entry.item.project:
-                context_projects.setdefault(entry.item.project, entry.item.title)
-            if entry.item.topic:
-                context_topics.setdefault(entry.item.topic, entry.item.title)
-            for token in entry.refs:
-                context_refs.setdefault(token, entry.item.title)
-        candidates = [*view.bands["week"], *view.bands["parked"]]
+                    context_refs.setdefault(task_key(snapshot, token, snapshots), item.title)
+    assert view is not None
+    every = [*(e for key in BOARD_GROUP_KEYS for e in view.groups[key]), *view.unsorted]
+    for entry in every:
+        if entry.item.topic:
+            topics.setdefault(entry.key, entry.item.topic)
+    for entry in view.bands["desk"]:
+        task = entry.key
+        context_tasks.setdefault(task, entry.item.title)
+        if entry.item.project:
+            context_projects.setdefault(entry.item.project, entry.item.title)
+        if entry.item.topic:
+            context_topics.setdefault(entry.item.topic, entry.item.title)
+        for token in entry.refs:
+            context_refs.setdefault(token, entry.item.title)
+    candidates = [*view.bands["week"], *view.bands["parked"]]
     state = next((s.review_state for s in snapshots if s.review_state is not None), None) or ReviewState()
 
     def evaluate(task: str, project: str, topic: str, refs: set[str], explicit: list[str], own: str) -> tuple[int, list[str]]:
         score, why = 0, []
         for target in explicit:
-            if bare_task(target) in context_tasks:
+            if target in context_tasks:
                 score += RELATED_WEIGHTS["relation"]
-                why.append(f"linked to {context_tasks[bare_task(target)]} by Firstmate")
+                why.append(f"linked to {context_tasks[target]} by Firstmate")
         if task and task in context_refs and task not in context_tasks:
             score += RELATED_WEIGHTS["link"]
             why.append(f"{context_refs[task]} waits on it")
@@ -3173,12 +3182,13 @@ def related_items(homes: list[HomeSnapshot], view: BoardView | None) -> list[Rel
 
     found: list[RelatedItem] = []
     for entry in candidates:
-        task = bare_task(entry.item.task)
+        task = entry.key
         if task in context_tasks:
             continue  # already on the desk or in flight
+        owner = next(s for s in snapshots if report_reference(s.spec.label, task.partition("/")[2]) == task)
         score, why = evaluate(
             task, entry.item.project, entry.item.topic, entry.refs,
-            state.relations.get(("call", entry.key), []), "",
+            [task_key(owner, target, snapshots) for target in state.relations.get(("call", entry.key), [])], "",
         )
         if score:
             found.append(RelatedItem("call", entry.key, entry.item.title, entry.home, why, score, entry.touched, entry=entry))
@@ -3188,10 +3198,11 @@ def related_items(homes: list[HomeSnapshot], view: BoardView | None) -> list[Rel
                 continue
             directory = report.path.parent.name
             item = next((i for i in backlog[id(snapshot)] if (i.report_dir or i.id) == directory or i.id == directory), None)
-            task = item.id if item else directory
+            task = task_key(snapshot, item.id if item else directory, snapshots)
             score, why = evaluate(
-                "", item.project if item else "", topics.get(task, ""), dependency_tokens(item) if item else set(),
-                report.related_to, task,
+                "", item.project if item else "", topics.get(task, ""),
+                {task_key(snapshot, ref, snapshots) for ref in dependency_tokens(item)} if item else set(),
+                [task_key(snapshot, target, snapshots) for target in report.related_to], task,
             )
             if score:
                 found.append(RelatedItem(
@@ -3858,8 +3869,8 @@ def make_handler(
             cache.invalidate()
             self.send_text(
                 200, json.dumps({
-                    "report_id": report.report_id, "reviewed": body["action"] == "mark",
-                    "state": REPORT_ACTIONS[body["action"]][0] or "needs review",
+                    "report_id": report.report_id, "reviewed": report.reviewed,
+                    "state": report.state,
                 }) + "\n",
                 "application/json; charset=utf-8",
             )
@@ -4365,7 +4376,8 @@ def known_call_keys(snapshots: list[HomeSnapshot]) -> list[str]:
     for snapshot in all_snapshots(snapshots):
         if snapshot.board is not None and snapshot.board.supported:
             for item in snapshot.board.items:
-                keys[report_reference(snapshot.spec.label, item.task)] = None
+                target, task = task_owner(snapshot, item.task)
+                keys[report_reference(target.spec.label, task)] = None
         if snapshot.backlog_markdown is not None and not snapshot.error:
             for item in backlog_items(snapshot.backlog_markdown, snapshot):
                 keys[report_reference(snapshot.spec.label, item.id)] = None
@@ -4412,18 +4424,17 @@ def calls_relate(args: argparse.Namespace) -> int:
 def calls_list(args: argparse.Namespace) -> int:
     try:
         snapshots, _state_path, state = load_report_context(args)
-        view = board_view(snapshots)
+        view = board_view(snapshots, fallback=True)
     except (OSError, ValueError) as exc:
         print(f"quarterdeck: {exc}", file=sys.stderr)
         return 2
-    entries: list[BoardEntry] = []
-    if view is not None:
-        entries = [e for band in BOARD_BAND_KEYS for e in view.bands[band]] + view.stale
+    assert view is not None
+    entries = [e for band in BOARD_BAND_KEYS for e in view.bands[band]] + view.stale
     if not entries:
         print("No captain calls found.")
         return 0
     print("ID\tRelevance\tBand\tTitle")
-    stale_keys = {entry.key for entry in view.stale} if view else set()
+    stale_keys = {entry.key for entry in view.stale}
     for entry in entries:
         band = "stale" if entry.key in stale_keys else entry.band
         related = ",".join(state.relations.get(("call", entry.key), []))
@@ -4461,19 +4472,19 @@ def build_snapshot(homes: list[HomeSnapshot], title: str, now: datetime) -> dict
     """The data the cloud artifact renders: the desk, this week, related items and the report list. Nothing else."""
     ambiguous = assign_report_ids(homes)
     state = next((s.review_state for s in all_snapshots(homes) if s.review_state is not None), None) or ReviewState()
-    view = board_view(homes, now)
+    view = board_view(homes, now, fallback=True)
     calls: list[dict[str, object]] = []
     session: dict[str, object] | None = None
-    if view is not None:
-        headings = {id(e): heading for heading, members in view.desk_groups for e in members}
-        for band in BOARD_BAND_KEYS:
-            calls.extend(call_snapshot(e, band, headings.get(id(e), ""), state) for e in view.bands[band])
-        calls.extend(call_snapshot(e, "stale", "", state) for e in view.stale)
-        if view.session is not None:
-            session = {
-                "idle": view.session.idle, "started_at": iso_or_none(view.session.started),
-                "last_active_at": iso_or_none(view.session.last_active),
-            }
+    assert view is not None
+    headings = {id(e): heading for heading, members in view.desk_groups for e in members}
+    for band in BOARD_BAND_KEYS:
+        calls.extend(call_snapshot(e, band, headings.get(id(e), ""), state) for e in view.bands[band])
+    calls.extend(call_snapshot(e, "stale", "", state) for e in view.stale)
+    if view.session is not None:
+        session = {
+            "idle": view.session.idle, "started_at": iso_or_none(view.session.started),
+            "last_active_at": iso_or_none(view.session.last_active),
+        }
     reports = [
         {
             "id": report.report_id, "title": report.title, "home": snapshot.spec.label,
@@ -4481,6 +4492,7 @@ def build_snapshot(homes: list[HomeSnapshot], title: str, now: datetime) -> dict
             "fingerprint": report.fingerprint, "relevance": report.relevance,
             "relevance_reason": report.relevance_reason, "related_to": report.related_to,
             "modified_at": iso_or_none(report.modified), "ambiguous": report.report_id in ambiguous,
+            "markdown": report.markdown if report.waiting else "",
         }
         for snapshot in all_snapshots(homes) for report in snapshot.reports
     ]
@@ -4489,7 +4501,8 @@ def build_snapshot(homes: list[HomeSnapshot], title: str, now: datetime) -> dict
         for item in related_items(homes, view)
     ]
     return {
-        "version": SNAPSHOT_VERSION, "title": title, "generated_at": board_time_text(now),
+        "version": SNAPSHOT_VERSION, "title": title,
+        "generated_at": now.astimezone(timezone.utc).isoformat(timespec="microseconds").replace("+00:00", "Z"),
         "session": session, "calls": calls, "reports": reports, "related": related,
     }
 
@@ -4545,7 +4558,12 @@ def parse_artifact_actions(source: str) -> list[dict[str, str]]:
     if isinstance(data, dict):
         if data.get("version", ACTIONS_VERSION) != ACTIONS_VERSION:
             raise ValueError(f"unsupported actions version {data.get('version')!r}; expected {ACTIONS_VERSION}")
+        cutoff = data.get("generated_at")
+        if cutoff is not None and (not isinstance(cutoff, str) or parse_board_time(cutoff) is None):
+            raise ValueError("actions file has an invalid generated_at")
         data = data.get("actions")
+    else:
+        cutoff = None
     if not isinstance(data, list):
         raise ValueError("actions file must be a list of actions or an object with an actions list")
     actions: list[dict[str, str]] = []
@@ -4565,7 +4583,19 @@ def parse_artifact_actions(source: str) -> list[dict[str, str]]:
             raise ValueError(f"{where} needs the report's 64-character fingerprint")
         if not isinstance(at, str):
             raise ValueError(f"{where} has a non-text at")
-        actions.append({"report_id": report_id.strip(), "action": action, "fingerprint": fingerprint, "at": at})
+        resulting_state = raw.get("state")
+        if resulting_state is not None and resulting_state not in (*REPORT_STATES, "needs review"):
+            raise ValueError(f"{where} has an invalid state")
+        if cutoff is not None:
+            when = parse_board_time(at)
+            if when is None:
+                raise ValueError(f"{where} needs a valid at")
+            if when <= parse_board_time(cutoff):
+                continue
+        parsed = {"report_id": report_id.strip(), "action": action, "fingerprint": fingerprint, "at": at}
+        if resulting_state is not None:
+            parsed["state"] = resulting_state
+        actions.append(parsed)
     return actions
 
 
@@ -4586,7 +4616,16 @@ def import_actions(args: argparse.Namespace) -> int:
                     if report.fingerprint != action["fingerprint"]:
                         raise ValueError("report changed since the artifact was exported")
                 else:
-                    apply_report_action(snapshots, state_path, action["report_id"], action["action"], action["fingerprint"])
+                    if "state" in action:
+                        _s, report = unique_report(snapshots, action["report_id"])
+                        if report.fingerprint != action["fingerprint"]:
+                            raise ValueError("report changed since the artifact was exported")
+                        update_report_state(
+                            state_path, report.report_id,
+                            None if action["state"] == "needs review" else action["state"], report.fingerprint,
+                        )
+                    else:
+                        apply_report_action(snapshots, state_path, action["report_id"], action["action"], action["fingerprint"])
                 applied += 1
             except ValueError as exc:
                 skipped.append(f"{action['report_id']} ({action['action']}): {exc}")

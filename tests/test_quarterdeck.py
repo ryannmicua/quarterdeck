@@ -3501,7 +3501,8 @@ class DeskRelevanceTests(unittest.TestCase):
         reports = {report["id"]: report for report in snapshot["reports"]}
         self.assertEqual(reports["invented-home/lone-report"]["relevance"], "stale")
         self.assertRegex(reports["invented-home/lone-report"]["fingerprint"], r"^[0-9a-f]{64}$")
-        self.assertNotIn("Body-only evidence", json.dumps(snapshot))  # report text stays local
+        self.assertEqual(reports["invented-home/lone-report"]["markdown"], "")
+        self.assertIn("Body-only evidence", reports["invented-home/tide-note"]["markdown"])
         self.assertNotIn(str(self.home), json.dumps(snapshot))
         self.assertTrue(any(item["id"] == "invented-home/tide-hold" for item in snapshot["related"]))
 
@@ -3563,6 +3564,223 @@ class DeskRelevanceTests(unittest.TestCase):
                 self.cli("import", str(path), expect=2)
         self.assertFalse((self.state / "quarterdeck" / "review-state" / "state.db").exists())
 
+    def test_export_omits_bodies_for_reviewed_discarded_and_stale_reports(self) -> None:
+        self.cli("reports", "mark-reviewed", "invented-home/harbor-hold")
+        self.cli("reports", "discard", "invented-home/tide-note")
+        self.cli("reports", "set-relevance", "invented-home/lone-report", "stale")
+        reports = json.loads(self.cli("export", "--no-snapshot").stdout)["reports"]
+        self.assertTrue(reports)
+        self.assertTrue(all(report["markdown"] == "" for report in reports))
+
+    def test_no_board_calls_remain_available_to_listing_related_and_export(self) -> None:
+        (self.home / "data" / "captain-board.json").unlink()
+        self.assertIn("invented-home/tide-hold", self.cli("calls", "list").stdout)
+        snapshot = json.loads(self.cli("export", "--no-snapshot").stdout)
+        self.assertEqual({call["id"] for call in snapshot["calls"]}, {
+            "invented-home/harbor-hold", "invented-home/tide-hold", "invented-home/far-hold",
+        })
+        self.assertIn("invented-home/tide-hold", {item["id"] for item in snapshot["related"]})
+        self.cli("calls", "set-relevance", "tide-hold", "stale")
+        snapshot = json.loads(self.cli("export", "--no-snapshot").stdout)
+        self.assertEqual(next(call["band"] for call in snapshot["calls"] if call["id"].endswith("/tide-hold")), "stale")
+
+    def test_routed_calls_share_keys_across_board_backlog_bearings_and_export(self) -> None:
+        child = quarterdeck.HomeSnapshot(
+            quarterdeck.HomeSpec("Field guide", None, route_id="wren"),
+            backlog_markdown="- [ ] task - Choose a bird (held: yes) (hold-kind: captain)\n",
+        )
+        parent = quarterdeck.load_home_snapshot(quarterdeck.HomeSpec("invented-home", self.home))
+        parent.children = [child]
+        parent.board.items = [quarterdeck.BoardItem(
+            id="route", group="decide", title="Bird", ask="Choose", task="wren/task",
+        )]
+        homes = [parent]
+        key = "field-guide/task"
+        self.assertEqual(quarterdeck.resolve_call_key(homes, "task"), key)
+        state = quarterdeck.ReviewState(relevance={("call", key): ("stale", "settled")})
+        quarterdeck.apply_review_marks(homes, state)
+        view = quarterdeck.board_view(homes)
+        self.assertEqual([entry.key for entry in view.stale], [key])
+        self.assertNotIn(key, {entry.key for band in view.bands.values() for entry in band})
+        self.assertNotIn("task", {item.item_id for item in quarterdeck.build_bearings(homes, use_snapshot=False).call})
+        payload = {**SNAPSHOT_JSON, "decisions_open": [
+            {"owner": owner, "key": task, "summary": "Bird", "verb": "decide"}
+            for owner, task in [("wren", "task"), ("wren", "wren/task"), ("(main)", "wren/task")]
+        ]}
+        bearings = quarterdeck.build_bearings(homes, runner=lambda *_args: (payload, ""))
+        self.assertFalse(bearings.call)
+        exported = quarterdeck.build_snapshot(homes, "Q", datetime.now(timezone.utc))
+        self.assertEqual(next(call["band"] for call in exported["calls"] if call["id"] == key), "stale")
+        state.relevance.clear()
+        state.relations[("call", key)] = ["invented-home/harbor-build"]
+        quarterdeck.apply_review_marks(homes, state)
+        self.assertIn(key, {item.key for item in quarterdeck.related_items(homes, quarterdeck.board_view(homes))})
+        parent.board = None
+        exported = quarterdeck.build_snapshot(homes, "Q", datetime.now(timezone.utc))
+        self.assertEqual(next(call["related_to"] for call in exported["calls"] if call["id"] == key), ["invented-home/harbor-build"])
+        self.assertIn(key, {item["id"] for item in exported["related"]})
+
+    def test_related_matching_preserves_home_identity_for_tasks_links_and_topics(self) -> None:
+        a = quarterdeck.HomeSnapshot(quarterdeck.HomeSpec("A", None), backlog_markdown="""# Backlog
+## In flight
+- [ ] build - A active (state: in_flight) (waiting_on: b/dep)
+## Queued
+- [ ] desk - A desk (held: yes) (hold-kind: captain)
+""")
+        b = quarterdeck.HomeSnapshot(quarterdeck.HomeSpec("B", None), backlog_markdown="""# Backlog
+## Queued
+- [ ] build - B held (held: yes) (hold-kind: captain) (waiting_on: a/build)
+- [ ] dep - B dependency (held: yes) (hold-kind: captain)
+- [ ] desk - B desk (held: yes) (hold-kind: captain)
+""")
+        now = datetime.now(timezone.utc)
+        a.board = quarterdeck.CaptainBoard(Path("board-a"), items=[quarterdeck.BoardItem(
+            id="desk", group="decide", title="A desk", ask="Choose", task="desk", topic="A topic", touched_at=now,
+        )])
+        b.board = quarterdeck.CaptainBoard(Path("board-b"), items=[quarterdeck.BoardItem(
+            id="desk", group="decide", title="B desk", ask="Choose", task="desk", topic="B topic",
+        )])
+        for snapshot in (a, b):
+            snapshot.reports = [quarterdeck.Report("Build report", Path("build/report.md"), None, "Body", "0" * 64)]
+        homes = [a, b]
+        quarterdeck.apply_review_marks(homes, {})
+        related = {(item.kind, item.key): item for item in quarterdeck.related_items(homes, quarterdeck.board_view(homes, now))}
+        self.assertIn(("call", "b/build"), related)
+        self.assertIn("waits on A active", related[("call", "b/build")].why)
+        self.assertFalse(any(reason.startswith("report for") for reason in related[("report", "b/build")].why))
+        self.assertIn(("call", "b/dep"), related)
+        self.assertNotIn(("call", "b/desk"), related)
+        self.assertIn("report for A active", related[("report", "a/build")].why)
+        b.reports.append(quarterdeck.Report("Desk report", Path("desk/report.md"), None, "Body", "1" * 64))
+        state = quarterdeck.ReviewState(relations={("call", "b/desk"): ["b/build"]})
+        quarterdeck.apply_review_marks(homes, state)
+        related = {item.key for item in quarterdeck.related_items(homes, quarterdeck.board_view(homes, now))}
+        self.assertNotIn("b/desk", related)
+        state.relations[("call", "b/desk")] = ["a/build"]
+        quarterdeck.apply_review_marks(homes, state)
+        related = {item.key for item in quarterdeck.related_items(homes, quarterdeck.board_view(homes, now))}
+        self.assertIn("b/desk", related)
+
+    def test_import_skips_actions_superseded_by_the_snapshot_cutoff(self) -> None:
+        report = "invented-home/lone-report"
+        fingerprint = next(r["fingerprint"] for r in json.loads(self.cli("export", "--no-snapshot").stdout)["reports"] if r["id"] == report)
+        self.cli("reports", "mark-reviewed", report)
+        self.cli("reports", "unmark-reviewed", report)
+        path = self.root / "actions.json"
+        homes = [quarterdeck.load_home_snapshot(quarterdeck.HomeSpec("invented-home", self.home))]
+        when = quarterdeck.parse_board_time("2026-10-12T12:00:00.900000Z")
+        cutoff = quarterdeck.build_snapshot(homes, "Q", when)["generated_at"]
+        self.assertEqual(quarterdeck.parse_board_time(cutoff), when)
+        path.write_text(json.dumps({"version": 1, "generated_at": cutoff, "actions": [{
+            "report_id": report, "action": "mark", "fingerprint": fingerprint, "state": "reviewed",
+            "at": "2026-10-12T12:00:00.100Z",
+        }]}), encoding="utf-8")
+        self.assertIn("Applied 0 of 0", self.cli("import", str(path)).stdout)
+        self.assertIn(f"{report}\tneeds review", self.cli("reports", "list").stdout)
+
+    def test_inverse_actions_preserve_a_concurrently_replaced_state(self) -> None:
+        homes = [quarterdeck.load_home_snapshot(quarterdeck.HomeSpec("invented-home", self.home))]
+        quarterdeck.apply_review_marks(homes, {})
+        report = next(r for r in homes[0].reports if r.report_id.endswith("/lone-report"))
+        path = quarterdeck.review_state_path()
+        write = quarterdeck.write_state
+        for initial, inverse, replacement in [("reviewed", "unmark", "discarded"), ("discarded", "undiscard", "reviewed")]:
+            with self.subTest(action=inverse):
+                quarterdeck.update_report_state(path, report.report_id, initial, report.fingerprint)
+
+                def interleave(state_path, statements):
+                    if statements[0][0].startswith("DELETE"):
+                        quarterdeck.update_report_state(path, report.report_id, replacement, report.fingerprint)
+                    write(state_path, statements)
+
+                with patch.object(quarterdeck, "write_state", side_effect=interleave):
+                    result = quarterdeck.apply_report_action(homes, path, report.report_id, inverse, report.fingerprint)
+                self.assertEqual(quarterdeck.load_review_state(path).reports[report.report_id][0], replacement)
+                self.assertEqual(result.state, replacement)
+
+    @unittest.skipUnless(shutil.which("node"), "Node is required to execute the generated artifact")
+    def test_artifact_click_sequences_download_resulting_states_and_read_report_bodies(self) -> None:
+        self.cli("reports", "mark-reviewed", "invented-home/lone-report")
+        self.cli("reports", "discard", "invented-home/tide-note")
+        report_path = self.home / "data" / "harbor-hold" / "report.md"
+        report_path.write_text("# Readable report\n\nEvidence <script>alert(1)</script>\n", encoding="utf-8")
+        snapshot = json.loads(self.cli("export", "--no-snapshot").stdout)
+        snapshot["generated_at"] = "2000-01-01T00:00:00Z"
+        page = quarterdeck.artifact_page(snapshot)
+        harness = r"""
+const assert = require('node:assert/strict');
+const page = require('node:fs').readFileSync(0, 'utf8');
+const payload = page.match(/<script type="application\/json" id="qd-snapshot">([\s\S]*?)<\/script>/)[1];
+const snapshot = JSON.parse(payload);
+class Element {
+  constructor(tag) { this.tag = tag; this.children = []; this.attrs = {}; this.listeners = {}; this._text = ''; }
+  set textContent(value) { this._text = String(value); this.children = []; }
+  get textContent() { return this._text + this.children.map(c => c.textContent).join(''); }
+  setAttribute(key, value) { this.attrs[key] = value; if (key === 'id') this.id = value; }
+  appendChild(child) { this.children.push(child); }
+  addEventListener(name, callback) { this.listeners[name] = callback; }
+  querySelectorAll(tag) { return this.children.flatMap(c => [ ...(c.tag === tag ? [c] : []), ...c.querySelectorAll(tag) ]); }
+}
+const elements = Object.fromEntries(['qd-snapshot', 'root', 'title', 'generated', 'sync'].map(id => [id, new Element('div')]));
+elements['qd-snapshot'].textContent = payload;
+global.document = {
+  createElement: tag => new Element(tag),
+  getElementById: id => elements[id] || elements.root.querySelectorAll('details').concat(elements.root.querySelectorAll('section')).find(e => e.id === id)
+};
+const reports = Object.fromEntries(snapshot.reports.map(r => [r.id, r]));
+const lone = reports['invented-home/lone-report'], tide = reports['invented-home/tide-note'], harbor = reports['invented-home/harbor-hold'];
+const docs = [{report_id: harbor.id, action: 'mark', state: 'reviewed', fingerprint: harbor.fingerprint, at: '1999-12-31T00:00:00Z'},
+  {report_id: tide.id, action: 'mark', state: 'reviewed', fingerprint: '0'.repeat(64), at: '2001-01-01T00:00:00Z'},
+  {report_id: 'unknown/report', action: 'mark', state: 'reviewed', fingerprint: '0'.repeat(64), at: '2001-01-01T00:00:00Z'}];
+let downloaded;
+const saved = {};
+const db = {
+  collection: () => ({onSnapshot: callback => callback({docs: docs.map(data => ({data: () => data}))})}),
+  doc: () => ({set: data => {saved[data.report_id] = data; return Promise.resolve();}})
+};
+global.claude = {use: async capability => capability === 'db' ? db : {save: async data => {downloaded = JSON.parse(data.data);}}};
+global.window = {claude};
+const script = page.match(/<script>([\s\S]*?)<\/script>/)[1];
+require('node:vm').runInThisContext(script);
+const flush = async () => {for (let i = 0; i < 5; i++) await Promise.resolve();};
+const buttons = () => elements.root.querySelectorAll('button');
+async function click(report, text) {
+  const card = elements.root.querySelectorAll('article').find(c => c.children.some(n => n.tag === 'h3' && n.textContent === report.title) && c.querySelectorAll('button').some(b => b.textContent === text));
+  assert.ok(card, report.id + ': ' + text);
+  card.querySelectorAll('button').find(b => b.textContent === text).listeners.click();
+  await flush();
+}
+(async () => {
+  await flush();
+  assert.equal(buttons().filter(b => b.textContent.startsWith('Download')).length, 0);
+  for (const section of ['reports', 'related']) {
+    const body = document.getElementById(section).querySelectorAll('pre').find(e => e.textContent === harbor.markdown);
+    assert.ok(body, 'report body in ' + section);
+  }
+  assert.equal(elements.root.querySelectorAll('script').length, 0);
+  await click(lone, 'Unmark'); await click(lone, 'Discard'); await click(lone, 'Undiscard');
+  await click(tide, 'Undiscard'); await click(tide, 'Mark reviewed'); await click(tide, 'Unmark');
+  for (const report of [lone, tide]) {
+    assert.equal(saved[report.id].state, 'needs review');
+    assert.ok(document.getElementById('reports').textContent.includes(report.title));
+  }
+  const download = buttons().find(b => b.textContent.startsWith('Download'));
+  assert.ok(download.textContent.startsWith('Download 2 recorded actions'));
+  download.listeners.click(); await flush();
+  assert.deepEqual(downloaded.actions.map(a => a.report_id).sort(), [lone.id, tide.id].sort());
+  assert.equal(downloaded.generated_at, snapshot.generated_at);
+  process.stdout.write(JSON.stringify(downloaded));
+})().catch(error => {process.stderr.write(error.stack); process.exitCode = 1;});
+"""
+        result = subprocess.run(["node", "-e", harness], input=page, capture_output=True, text=True, check=False)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        actions = self.root / "actions.json"
+        actions.write_text(result.stdout, encoding="utf-8")
+        self.cli("import", str(actions))
+        listed = self.cli("reports", "list").stdout
+        self.assertIn("invented-home/lone-report\tneeds review", listed)
+        self.assertIn("invented-home/tide-note\tneeds review", listed)
+
     def test_served_page_discards_through_the_mark_endpoint(self) -> None:
         import argparse
         import http.client
@@ -3597,6 +3815,19 @@ class DeskRelevanceTests(unittest.TestCase):
                                {"report_id": report_id, "fingerprint": fingerprint, "action": "discard"})
         self.assertEqual(status, 200, body)
         self.assertEqual(json.loads(body), {"report_id": report_id, "reviewed": False, "state": "discarded"})
+        status, body = request("POST", quarterdeck.MARK_ENDPOINT,
+                               {"report_id": report_id, "fingerprint": fingerprint, "action": "unmark"})
+        self.assertEqual(status, 200, body)
+        self.assertEqual(json.loads(body)["state"], "discarded")
+        request("POST", quarterdeck.MARK_ENDPOINT,
+                {"report_id": report_id, "fingerprint": fingerprint, "action": "mark"})
+        status, body = request("POST", quarterdeck.MARK_ENDPOINT,
+                               {"report_id": report_id, "fingerprint": fingerprint, "action": "undiscard"})
+        self.assertEqual(status, 200, body)
+        self.assertEqual(json.loads(body)["state"], "reviewed")
+        self.assertTrue(json.loads(body)["reviewed"])
+        request("POST", quarterdeck.MARK_ENDPOINT,
+                {"report_id": report_id, "fingerprint": fingerprint, "action": "discard"})
         self.assertEqual(quarterdeck.load_review_marks(quarterdeck.review_state_path()), {})
         page = request("GET", "/")[1]
         self.assertIn('data-mark-action="undiscard"', page)

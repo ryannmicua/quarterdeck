@@ -55,6 +55,7 @@ a { color: var(--accent); font-weight: 650; }
 .sub { margin: 1rem 0 .3rem; font-size: .95rem; color: var(--accent); }
 .status { color: var(--muted); font-size: .85rem; }
 footer { border-top: 1px solid var(--line); margin-top: 3rem; padding-top: 1rem; color: var(--muted); font-size: .85rem; }
+.report-body { white-space: pre-wrap; overflow-wrap: anywhere; font: inherit; }
 </style>
 </head>
 <body>
@@ -98,11 +99,22 @@ footer { border-top: 1px solid var(--line); margin-top: 3rem; padding-top: 1rem;
   }
   function docId(reportId) { return encodeURIComponent(reportId).replace(/%/g, "_"); }
 
+  function currentAction(report) {
+    var doc = actionDocs[report.id];
+    return doc && doc.fingerprint === report.fingerprint && doc.at &&
+      Date.parse(doc.at) > Date.parse(snapshot.generated_at) ? doc : null;
+  }
+
+  function currentActions() {
+    return (snapshot.reports || []).map(currentAction).filter(Boolean);
+  }
+
   // The state a report shows: the snapshot's, overlaid by an artifact action made after the export
   // for the same content. An action for changed content is ignored, as it is on import.
   function effectiveState(report) {
-    var doc = actionDocs[report.id];
-    if (doc && doc.fingerprint === report.fingerprint && doc.at && Date.parse(doc.at) > Date.parse(snapshot.generated_at)) {
+    var doc = currentAction(report);
+    if (doc) {
+      if (doc.state === "reviewed" || doc.state === "discarded" || doc.state === "needs review") return doc.state;
       if (doc.action === "mark") return "reviewed";
       if (doc.action === "discard") return "discarded";
       if (doc.action === "unmark" && report.state === "reviewed") return "needs review";
@@ -114,13 +126,27 @@ footer { border-top: 1px solid var(--line); margin-top: 3rem; padding-top: 1rem;
   function record(report, action, status) {
     if (!db) return;
     status.textContent = "Saving…";
-    var data = { report_id: report.id, action: action, fingerprint: report.fingerprint, at: new Date().toISOString() };
+    var before = effectiveState(report);
+    var state = action === "mark" ? "reviewed" : action === "discard" ? "discarded" :
+      (action === "unmark" && before === "reviewed" || action === "undiscard" && before === "discarded") ? "needs review" : before;
+    var data = { report_id: report.id, action: action, state: state, fingerprint: report.fingerprint, at: new Date().toISOString() };
     db.doc(COLLECTION + "/" + docId(report.id)).set(data).then(function () {
       actionDocs[report.id] = data;
       render();
     }, function (error) {
       status.textContent = "Could not save: " + ((error && error.message) || "unavailable");
     });
+  }
+
+  function reportBody(report, section) {
+    if (!report.markdown) return null;
+    var id = "body-" + section + "-" + docId(report.id);
+    var body = el("details", { id: id }, [
+      el("summary", { text: "Read report" }),
+      el("pre", { "class": "report-body", text: report.markdown }),
+    ]);
+    body.open = !!(pendingOpen && pendingOpen[id]);
+    return body;
   }
 
   function reportCard(report, buttons) {
@@ -132,7 +158,9 @@ footer { border-top: 1px solid var(--line); margin-top: 3rem; padding-top: 1rem;
     ]);
     if (report.recommendation) card.appendChild(el("p", { text: "Recommendation: " + report.recommendation }));
     if (report.relevance === "stale" && report.relevance_reason) card.appendChild(el("p", { "class": "note", text: "Marked stale: " + report.relevance_reason }));
-    card.appendChild(el("p", { "class": "note", text: report.id + " · read it locally with: quarterdeck reports read " + report.id }));
+    card.appendChild(el("p", { "class": "note", text: report.id }));
+    var body = reportBody(report, "reports");
+    if (body) card.appendChild(body);
     if (report.ambiguous) {
       card.appendChild(el("p", { "class": "note", text: "ID is shared by multiple homes; actions are disabled." }));
     } else if (db && buttons.length) {
@@ -224,6 +252,10 @@ footer { border-top: 1px solid var(--line); margin-top: 3rem; padding-top: 1rem;
         el("div", { "class": "chips" }, chips),
       ]);
       if (item.kind === "report" && base && effectiveState(base) !== "needs review") return null;
+      if (item.kind === "report" && base) {
+        var body = reportBody(base, "related");
+        if (body) card.appendChild(body);
+      }
       if (item.kind === "report" && base && db && !base.ambiguous) {
         var status = el("span", { "class": "status", "aria-live": "polite" });
         var row = el("div", { "class": "actions" });
@@ -262,8 +294,8 @@ footer { border-top: 1px solid var(--line); margin-top: 3rem; padding-top: 1rem;
     var discarded = states.filter(function (p) { return p[1] === "discarded"; }).map(function (p) { return reportCard(p[0], [["undiscard", "Undiscard"]]); });
     root.appendChild(group("discarded", "Discarded reports", "Off your list, not marked reviewed. Undiscard to bring one back.", discarded.length, discarded, "No reports are discarded."));
 
-    var recorded = Object.keys(actionDocs).length;
-    var footer = el("footer", {}, [el("p", { text: "Actions you take here are saved in this artifact's own database and applied to the local state with `quarterdeck import`. Report text stays local." })]);
+    var recorded = currentActions().length;
+    var footer = el("footer", {}, [el("p", { text: "Actions you take here are saved in this artifact's own database and applied to the local state with `quarterdeck import`. Current unreviewed report text travels in this private snapshot." })]);
     if (recorded) {
       var save = el("button", { type: "button", text: "Download " + recorded + " recorded action" + (recorded === 1 ? "" : "s") + " as JSON" });
       save.addEventListener("click", exportActions);
@@ -273,9 +305,9 @@ footer { border-top: 1px solid var(--line); margin-top: 3rem; padding-top: 1rem;
   }
 
   function actionsJson() {
-    var list = Object.keys(actionDocs).map(function (key) { return actionDocs[key]; })
+    var list = currentActions()
       .sort(function (a, b) { return Date.parse(a.at) - Date.parse(b.at); });
-    return JSON.stringify({ version: 1, actions: list }, null, 2) + "\n";
+    return JSON.stringify({ version: 1, generated_at: snapshot.generated_at, actions: list }, null, 2) + "\n";
   }
   function exportActions() {
     claude.use("downloads").then(function (downloads) {
