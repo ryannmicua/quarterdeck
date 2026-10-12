@@ -114,8 +114,9 @@ short reasons, not a copy of the report or Firstmate data.
 
 `quarterdeck export` is a read of the homes that writes a snapshot of the page's
 data (calls, report titles and recommendations, states and fingerprints) to a
-file you choose. Current, unreviewed reports include their Markdown bodies;
-stale, discarded and reviewed reports omit theirs. Home metadata paths are
+file you choose. By default current, unreviewed reports include their Markdown
+bodies (`--bodies desk` or `none` narrows this); stale, discarded and reviewed
+reports omit theirs. Home metadata paths are
 omitted, but report text may contain paths and other work data. It leaves the
 machine only if you publish the artifact built from it; `quarterdeck import`
 applies the artifact's recorded actions to the local state database and writes

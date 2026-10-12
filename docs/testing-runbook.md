@@ -42,8 +42,8 @@ Check that reviewed → Unmark → Discard → Undiscard and discarded → Undis
 Mark → Unmark end at needs review, both on the artifact and after import.
 Downloads must omit actions at or before the snapshot time, changed-content
 actions, and unknown reports. Snapshot timestamps preserve subsecond precision.
-Current unreviewed report bodies must appear as readable text in the report
-list and related section; stale, discarded and reviewed bodies are omitted.
+Current unreviewed report bodies must appear as readable text in the card's
+detail view; stale, discarded and reviewed bodies are omitted.
 
 The same class covers routed board/backlog/Bearings keys, missing-board call
 fallback, home-scoped session matching, inverse-action interleavings and HTTP
