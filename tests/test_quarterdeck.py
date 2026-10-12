@@ -3949,6 +3949,7 @@ async function click(report, text) {
     def test_a_report_reaction_names_the_backlog_task_that_owns_the_report(self) -> None:
         backlog = self.home / "data" / "backlog.md"
         backlog.write_text(backlog.read_text(encoding="utf-8")
+                           + "- [ ] lone-report - Lone report: see data/tide-note/report.md (repo: harbor-demo)\n"
                            + "- [ ] harbor-choice - Harbor choice: see data/lone-report/report.md (repo: harbor-demo)\n",
                            encoding="utf-8")
         request = self.serve()

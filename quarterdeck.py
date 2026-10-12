@@ -1900,9 +1900,12 @@ def item_page_filename(home: Path | None, owner: str, item_id: str) -> str:
 
 
 def report_backlog_item(items: list[BacklogItem], report: Report) -> BacklogItem | None:
-    """The backlog task a report belongs to: one naming its directory, else one with the directory's id."""
+    """The backlog task a report belongs to: one naming its directory, else one with no report named and the
+    directory's id."""
     directory = report.path.parent.name
-    return next((i for i in items if (i.report_dir or i.id) == directory or i.id == directory), None)
+    return next((i for i in items if i.report_dir == directory), None) or next(
+        (i for i in items if not i.report_dir and i.id == directory), None
+    )
 
 
 def find_report(item: BacklogItem, snapshot: HomeSnapshot) -> Report | None:
