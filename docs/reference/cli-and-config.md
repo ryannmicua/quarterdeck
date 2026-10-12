@@ -179,8 +179,8 @@ stays undelivered and is sent on the next import). `--dry-run` sends nothing.
 Exit status is 0 when the file was read, and 2 for an unreadable or malformed
 file. The served page's Send button posts to `POST /api/reactions` (body
 `{"id", "kind", "item_id", "reaction", "text"}`) when `serve --allow-marks` is
-on. The page keeps a draft's id until it is sent, so a retry reuses the same
-fm-inbox request id and is not delivered twice.
+on. The page keeps a draft's id until it is sent or edited, so an unchanged
+retry reuses the same fm-inbox request id and is not delivered twice.
 
 `add`, `list`, and `remove` accept the same `--config FILE` option. `add` also
 accepts `--label LABEL`; `remove` takes one label or path.

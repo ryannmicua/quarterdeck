@@ -85,8 +85,9 @@ wrapping the documents as `{"version": 1, "reactions": [...]}` (a bare list
 works too). Each reaction is sent oldest first through the item's home's
 `bin/fm-inbox.sh note`, which writes a durable note and wakes Firstmate.
 Delivered ids are kept in the local state, so importing the same file again
-sends nothing twice, and the export lists recently delivered ids so the
-download leaves them out. `--dry-run` shows what would be sent. Reactions for
+sends nothing twice, and the export lists the delivered ids for the items it
+shows so the download leaves them out. The export carries reactions only for
+the calls, reports and related items it shows. `--dry-run` shows what would be sent. Reactions for
 items that no longer exist, or whose delivery failed, are skipped and listed.
 
 **Discuss with Firstmate** opens the claude.ai comment composer on that card.

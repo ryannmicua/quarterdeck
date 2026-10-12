@@ -4023,11 +4023,56 @@ async function click(report, text) {
         self.assertEqual(len([line for line in self.logged() if line.startswith("qd-")]), 3)
         state = self.review_state()
         self.assertEqual(state.reactions[("call", "invented-home/tide-hold")]["source"], "artifact")
-        self.assertEqual(set(state.delivered), {"react-0001", "react-0002", "react-0004"})
+        self.assertEqual({i for ids in state.delivered.values() for i in ids}, {"react-0001", "react-0002", "react-0004"})
         snapshot = json.loads(self.cli("export", "--no-snapshot").stdout)
         self.assertEqual({r["item_id"] for r in snapshot["reactions"]},
                          {"invented-home/tide-hold", "invented-home/harbor-hold", "invented-home/lone-report"})
         self.assertEqual(set(snapshot["delivered"]), {"react-0001", "react-0002", "react-0004"})
+
+    def test_reaction_times_are_normalized_so_the_latest_reaction_is_the_newest(self) -> None:
+        documents = [
+            {"id": "react-late", "item_id": "invented-home/harbor-hold", "kind": "call", "reaction": "approve",
+             "text": "", "at": "2026-10-12T10:00:00.500Z"},
+            {"id": "react-early", "item_id": "invented-home/harbor-hold", "kind": "call", "reaction": "hold",
+             "text": "", "at": "2026-10-12T11:00:00+01:00"},
+        ]
+        path = self.root / "reactions.json"
+        path.write_text(json.dumps(documents), encoding="utf-8")
+        self.assertIn("Delivered 2 of 2", self.cli("reactions", "import", str(path)).stdout)
+        state = self.review_state()
+        latest = state.reactions[("call", "invented-home/harbor-hold")]
+        self.assertEqual((latest["id"], latest["at"]), ("react-late", "2026-10-12T10:00:00.500Z"))
+        self.assertEqual(state.delivered[("call", "invented-home/harbor-hold")], ["react-early", "react-late"])
+
+    def test_export_carries_only_reactions_for_items_the_artifact_shows(self) -> None:
+        quarterdeck.store_reaction(quarterdeck.review_state_path(), {
+            "id": "react-elsewhere", "item_id": "other-home/private-task", "kind": "call", "task": "private-task",
+            "reaction": "", "text": "private reply", "at": "2026-10-12T10:00:00.000Z", "source": "page",
+        })
+        quarterdeck.store_reaction(quarterdeck.review_state_path(), {
+            "id": "react-shown", "item_id": "invented-home/harbor-hold", "kind": "call", "task": "harbor-hold",
+            "reaction": "hold", "text": "", "at": "2026-10-12T10:00:00.000Z", "source": "page",
+        })
+        snapshot = json.loads(self.cli("export", "--no-snapshot").stdout)
+        self.assertEqual([r["item_id"] for r in snapshot["reactions"]], ["invented-home/harbor-hold"])
+        self.assertEqual(snapshot["delivered"], ["react-shown"])
+        self.assertNotIn("private reply", quarterdeck.artifact_page(snapshot))
+
+    def test_call_reactions_go_to_the_home_that_owns_the_call_and_refuse_ambiguous_labels(self) -> None:
+        second = self.root / "second-home"
+        (second / "data").mkdir(parents=True)
+        (second / "data" / "backlog.md").write_text(
+            "# Backlog\n\n## Queued\n\n- [ ] only-second - Only second: a task (repo: harbor-demo)\n"
+            "- [ ] tide-note - Tide note: a second copy (repo: harbor-demo)\n",
+            encoding="utf-8",
+        )
+        snapshots = [quarterdeck.load_home_snapshot(quarterdeck.HomeSpec("Dock", home, None))
+                     for home in (self.home, second)]
+        owner, task = quarterdeck.reaction_target(snapshots, "call", "dock/only-second")
+        self.assertEqual((owner.spec.home, task), (second, "only-second"))
+        self.assertEqual(quarterdeck.reaction_target(snapshots, "call", "dock/harbor-hold")[0].spec.home, self.home)
+        with self.assertRaisesRegex(ValueError, "ambiguous"):
+            quarterdeck.reaction_target(snapshots, "call", "dock/tide-note")
 
     def test_import_keeps_a_failed_delivery_for_retry_and_rejects_malformed_files(self) -> None:
         document = {"id": "react-0009", "item_id": "invented-home/harbor-hold", "kind": "call", "reaction": "hold",
@@ -4036,7 +4081,7 @@ async function click(report, text) {
         path.write_text(json.dumps([document]), encoding="utf-8")
         with patch.dict(os.environ, {"QD_TEST_FAIL": "1"}):
             self.assertIn("skipped: react-0009", self.cli("reactions", "import", str(path)).stdout)
-        self.assertEqual(self.review_state().delivered, [])
+        self.assertEqual(self.review_state().delivered, {})
         self.assertIn("Delivered 1 of 1", self.cli("reactions", "import", str(path)).stdout)
         for name, content in {"not-json": "{", "wrong-shape": json.dumps({"reactions": "x"}),
                               "version": json.dumps({"version": 2, "reactions": []})}.items():
@@ -4074,8 +4119,14 @@ const composed = [];
 let inboxCallback;
 const db = {
   collection: name => ({onSnapshot: callback => { if (name === 'qd-inbox') inboxCallback = callback; else callback({docs: []}); }}),
-  doc: path => ({set: data => { written[path] = data; return Promise.resolve(); }})
+  doc: path => ({set: data => {
+    attempts.push(path);
+    if (nextSet) { const pending = nextSet; nextSet = null; return pending(); }
+    written[path] = data; return Promise.resolve();
+  }})
 };
+const attempts = [];
+let nextSet = null;
 let downloaded;
 global.claude = {use: async name => name === 'db' ? db
   : name === 'comments' ? {openComposer: async target => { composed.push(target); return {opened: true}; }}
@@ -4117,7 +4168,29 @@ const button = (c, text) => c.querySelectorAll('button').find(b => b.textContent
   save.listeners.click(); await flush();
   assert.equal(downloaded.version, 1);
   assert.deepEqual(downloaded.reactions.map(r => r.id), [data.id]);
-  process.stdout.write(JSON.stringify(downloaded));
+  const exported = downloaded;
+  const tideCard = () => card('Tide table');
+  const sync = () => inboxCallback({docs: Object.values(written).map(d => ({data: () => d}))});
+  button(tideCard(), 'Hold').listeners.click();
+  tideCard().querySelectorAll('input')[0].value = 'wait'; tideCard().querySelectorAll('input')[0].listeners.input();
+  let rejectSet;
+  nextSet = () => new Promise((_, reject) => { rejectSet = reject; });
+  button(tideCard(), 'Send').listeners.click();
+  sync();  // a re-render while the send is pending keeps the composer locked
+  assert.ok(button(tideCard(), 'Send').disabled && button(tideCard(), 'Approve').disabled && tideCard().querySelectorAll('input')[0].disabled);
+  assert.ok(tideCard().textContent.includes('Sending…'));
+  rejectSet(new Error('offline')); await flush();
+  assert.ok(tideCard().textContent.includes('Could not send: offline'));
+  assert.ok(!button(tideCard(), 'Send').disabled);
+  assert.equal(tideCard().querySelectorAll('input')[0].value, 'wait');
+  nextSet = () => Promise.reject(new Error('offline'));
+  button(tideCard(), 'Send').listeners.click(); await flush();
+  assert.equal(attempts.at(-1), attempts.at(-2));  // an unchanged retry reuses its id
+  button(tideCard(), 'Not now').listeners.click();
+  button(tideCard(), 'Send').listeners.click(); await flush();
+  assert.notEqual(attempts.at(-1), attempts.at(-2));  // an edited reaction gets a new id
+  assert.equal(written[attempts.at(-1)].reaction, 'not-now');
+  process.stdout.write(JSON.stringify(exported));
 })().catch(error => {process.stderr.write(error.stack); process.exitCode = 1;});
 """
         result = subprocess.run(["node", "-e", harness], input=page, capture_output=True, text=True, check=False)

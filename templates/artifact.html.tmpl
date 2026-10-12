@@ -85,7 +85,7 @@ footer { border-top: 1px solid var(--line); margin-top: 3rem; padding-top: 1rem;
   var TEXT_LIMIT = 1000;
   var actionDocs = {};   // report id -> latest recorded action document
   var inboxDocs = {};    // reaction id -> recorded reaction document
-  var drafts = {};       // "kind:item id" -> {reaction, text} typed but not sent
+  var drafts = {};       // "kind:item id" -> {reaction, text, id, sending, status} typed but not sent
   var db = null;
   var comments = null;
   var pendingOpen = null;
@@ -147,16 +147,18 @@ footer { border-top: 1px solid var(--line); margin-top: 3rem; padding-top: 1rem;
   // Quick reactions, a reply box and Send for one card, plus a button that opens the claude.ai comment composer on it.
   function reactionBox(kind, id, card) {
     var key = kind + ":" + id;
-    var draft = drafts[key] || (drafts[key] = { reaction: "", text: "" });
+    var draft = drafts[key] || (drafts[key] = { reaction: "", text: "", id: "", sending: false, status: "" });
     var box = el("div", { "class": "reaction" });
     var latest = latestText(latestReaction(kind, id));
     if (latest) box.appendChild(el("p", { "class": "latest", text: latest }));
-    var status = el("span", { "class": "status", "aria-live": "polite" });
+    var status = el("span", { "class": "status", "aria-live": "polite", text: draft.status });
     if (db) {
       var choices = el("div", { "class": "choices" });
       REACTIONS.forEach(function (pair) {
         var button = el("button", { type: "button", "aria-pressed": String(draft.reaction === pair[0]), text: pair[1] });
+        button.disabled = draft.sending;
         button.addEventListener("click", function () {
+          draft.id = "";
           draft.reaction = draft.reaction === pair[0] ? "" : pair[0];
           Array.prototype.forEach.call(choices.children, function (other, index) {
             other.setAttribute("aria-pressed", String(draft.reaction === REACTIONS[index][0]));
@@ -166,23 +168,27 @@ footer { border-top: 1px solid var(--line); margin-top: 3rem; padding-top: 1rem;
       });
       var input = el("input", { type: "text", maxlength: String(TEXT_LIMIT), placeholder: "Reply to Firstmate (optional)", "aria-label": "Reply to Firstmate", "data-draft": key });
       input.value = draft.text;
-      input.addEventListener("input", function () { draft.text = input.value; });
+      input.disabled = draft.sending;
+      input.addEventListener("input", function () { draft.text = input.value; draft.id = ""; });
       var send = el("button", { type: "button", text: "Send" });
+      send.disabled = draft.sending;
       send.addEventListener("click", function () {
         var text = draft.text.trim().replace(/\s+/g, " ");
         if (!draft.reaction && !text) { status.textContent = "Pick a reaction or write a reply first."; return; }
-        var id2 = newReactionId();
+        var id2 = draft.id || (draft.id = newReactionId());
         var data = { version: 1, id: id2, item_id: id, kind: kind, task: id.split("/").slice(1).join("/"),
           reaction: draft.reaction, text: text, at: new Date().toISOString(), source: "artifact" };
-        send.disabled = true;
-        status.textContent = "Sending…";
+        draft.sending = true;
+        draft.status = "Sending…";
+        render();
         db.doc(INBOX + "/" + id2).set(data).then(function () {
           inboxDocs[id2] = data;
           delete drafts[key];
           render();
         }, function (error) {
-          send.disabled = false;
-          status.textContent = "Could not send: " + ((error && error.message) || "unavailable");
+          draft.sending = false;
+          draft.status = "Could not send: " + ((error && error.message) || "unavailable");
+          render();
         });
       });
       box.appendChild(choices);

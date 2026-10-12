@@ -956,7 +956,7 @@ class ReviewState:
     relevance: dict[tuple[str, str], tuple[str, str]] = field(default_factory=dict)  # (kind, key) -> (value, reason)
     relations: dict[tuple[str, str], list[str]] = field(default_factory=dict)  # (kind, key) -> task ids
     reactions: dict[tuple[str, str], dict[str, str]] = field(default_factory=dict)  # (kind, item id) -> latest delivered
-    delivered: list[str] = field(default_factory=list)  # ids of the most recently delivered reactions
+    delivered: dict[tuple[str, str], list[str]] = field(default_factory=dict)  # (kind, item id) -> delivered ids
 
     def relevance_of(self, kind: str, key: str) -> tuple[str, str]:
         return self.relevance.get((kind, key), ("current", ""))
@@ -1037,13 +1037,11 @@ def load_review_state(path: Path) -> ReviewState:
         for kind, key, task in connection.execute("SELECT kind, key, task FROM relations ORDER BY task"):
             state.relations.setdefault((kind, key), []).append(task)
         for row in connection.execute(
-            "SELECT id, item_id, kind, task, reaction, text, at, source FROM reactions ORDER BY at, id"
+            "SELECT id, item_id, kind, task, reaction, text, at, source FROM reactions ORDER BY at, rowid"
         ):
             keys = ("id", "item_id", "kind", "task", "reaction", "text", "at", "source")
             state.reactions[(row[2], row[1])] = dict(zip(keys, row))
-        state.delivered = [row[0] for row in connection.execute(
-            "SELECT id FROM reactions ORDER BY at DESC, id DESC LIMIT ?", (DELIVERED_IDS_LIMIT,)
-        )]
+            state.delivered.setdefault((row[2], row[1]), []).append(row[0])
     return state
 
 
@@ -1332,12 +1330,13 @@ def build_html(
       return box.dataset.reactionId;
     }}
     document.addEventListener("input", event => {{
-      if (event.target.matches(".reaction-text")) reactionId(event.target.closest(".reaction"));
+      if (event.target.matches(".reaction-text")) delete event.target.closest(".reaction").dataset.reactionId;
     }});
     document.addEventListener("click", async (event) => {{
       const choice = event.target.closest("[data-reaction-choice]");
       if (choice) {{
-        reactionId(choice.closest(".reaction"));
+        if (choice.disabled) return;
+        delete choice.closest(".reaction").dataset.reactionId;
         const pressed = choice.getAttribute("aria-pressed") !== "true";
         for (const other of choice.parentElement.querySelectorAll("[data-reaction-choice]")) other.setAttribute("aria-pressed", "false");
         choice.setAttribute("aria-pressed", String(pressed));
@@ -1352,7 +1351,8 @@ def build_html(
       const reaction = picked ? picked.dataset.reactionChoice : "";
       const text = field.value.trim();
       if (!reaction && !text) {{ status.textContent = "Pick a reaction or write a reply first."; return; }}
-      send.disabled = true;
+      const controls = [send, field, ...box.querySelectorAll("[data-reaction-choice]")];
+      for (const control of controls) control.disabled = true;
       status.textContent = "Sending…";
       try {{
         const response = await fetch("{REACTION_ENDPOINT}", {{
@@ -1376,7 +1376,7 @@ def build_html(
       }} catch (error) {{
         status.textContent = "Not sent: " + error.message;
       }}
-      send.disabled = false;
+      for (const control of controls) control.disabled = false;
     }});
   </script>""" if allow_marks else ""
     refresh_script = (
@@ -4535,18 +4535,27 @@ def reports_relate(args: argparse.Namespace) -> int:
     return 0
 
 
-def known_call_keys(snapshots: list[HomeSnapshot]) -> list[str]:
-    """Every <home-label-slug>/<task> a captain call can carry: board items and backlog tasks."""
-    keys: dict[str, None] = {}
+def call_owners(snapshots: list[HomeSnapshot]) -> dict[str, list[HomeSnapshot]]:
+    """Every <home-label-slug>/<task> a captain call can carry (board items and backlog tasks) and the homes owning it."""
+    owners: dict[str, list[HomeSnapshot]] = {}
+
+    def add(key: str, owner: HomeSnapshot) -> None:
+        homes = owners.setdefault(key, [])
+        if not any(home is owner for home in homes):
+            homes.append(owner)
     for snapshot in all_snapshots(snapshots):
         if snapshot.board is not None and snapshot.board.supported:
             for item in snapshot.board.items:
                 target, task = task_owner(snapshot, item.task)
-                keys[report_reference(target.spec.label, task)] = None
+                add(report_reference(target.spec.label, task), target)
         if snapshot.backlog_markdown is not None and not snapshot.error:
             for item in backlog_items(snapshot.backlog_markdown, snapshot):
-                keys[report_reference(snapshot.spec.label, item.id)] = None
-    return list(keys)
+                add(report_reference(snapshot.spec.label, item.id), snapshot)
+    return owners
+
+
+def known_call_keys(snapshots: list[HomeSnapshot]) -> list[str]:
+    return list(call_owners(snapshots))
 
 
 def resolve_call_key(snapshots: list[HomeSnapshot], requested: str) -> str:
@@ -4643,6 +4652,11 @@ def clean_reaction(raw: dict[str, object], where: str = "reaction") -> dict[str,
     return {"id": reaction_id, "item_id": item_id.strip(), "kind": str(kind), "reaction": str(reaction), "text": text}
 
 
+def reaction_time(value: datetime) -> str:
+    """A reaction's time as fixed-width UTC with milliseconds, so text order is time order."""
+    return value.astimezone(timezone.utc).isoformat(timespec="milliseconds").replace("+00:00", "Z")
+
+
 def reaction_summary(reaction: dict[str, str]) -> str:
     label = REACTION_LABELS.get(reaction["reaction"], "")
     text = reaction["text"]
@@ -4667,13 +4681,14 @@ def reaction_target(snapshots: list[HomeSnapshot], kind: str, item_id: str) -> t
         owner, report = unique_report(snapshots, item_id)
         task = report.path.parent.name
     else:
-        if item_id not in known_call_keys(snapshots):
+        owners = call_owners(snapshots).get(item_id, [])
+        if not owners:
             raise ValueError(f"no captain call matches: {item_id}")
+        if len(owners) > 1:
+            raise ValueError(f"captain call is ambiguous across homes: {item_id}; "
+                             f"matching homes: {', '.join(owner.spec.label for owner in owners)}")
+        owner = owners[0]
         task = item_id.partition("/")[2]
-        owner = next((s for s in all_snapshots(snapshots)
-                      if report_reference(s.spec.label, task) == item_id), None)
-        if owner is None:
-            raise ValueError(f"no home matches: {item_id}")
     top = next(s for s in snapshots if any(member is owner for member in all_snapshots([s])))
     return top, task
 
@@ -4733,7 +4748,7 @@ def send_reaction(args: argparse.Namespace, raw: dict[str, object]) -> dict[str,
     snapshots, state_path = load_report_snapshots(args)
     apply_review_marks(snapshots, {})
     top, task = reaction_target(snapshots, reaction["kind"], reaction["item_id"])
-    reaction.update(task=task, at=state_timestamp(), source="page")
+    reaction.update(task=task, at=reaction_time(datetime.now(timezone.utc)), source="page")
     deliver_reaction(top.spec, reaction)
     store_reaction(state_path, reaction)
     return reaction
@@ -4770,11 +4785,10 @@ def import_reactions(args: argparse.Namespace) -> int:
                 if not isinstance(raw, dict):
                     raise ValueError(f"{where} is not an object")
                 reaction = clean_reaction(raw, where)
-                at = raw.get("at")
-                when = parse_board_time(at)
+                when = parse_board_time(raw.get("at"))
                 if when is None:
                     raise ValueError(f"{where} needs a valid at")
-                reaction.update(at=str(at), source="artifact", task="")
+                reaction.update(at=reaction_time(when), source="artifact", task="")
                 pending.append((when, index, reaction))
             except ValueError as exc:
                 skipped.append(str(exc))
@@ -4843,7 +4857,6 @@ def reaction_html(ctx: ReactionContext | None, kind: str, item_id: str, availabl
 # --- Snapshot export and action import (the cloud artifact round trip) -------
 
 SNAPSHOT_VERSION = 1
-DELIVERED_IDS_LIMIT = 200
 ACTIONS_VERSION = 1
 ARTIFACT_TEMPLATE = Path(__file__).resolve().parent / "templates" / "artifact.html.tmpl"
 SNAPSHOT_PLACEHOLDER = "__QUARTERDECK_SNAPSHOT__"
@@ -4900,15 +4913,19 @@ def build_snapshot(homes: list[HomeSnapshot], title: str, now: datetime) -> dict
         {"kind": item.kind, "id": item.key, "title": item.title, "home": item.home, "why": item.why, "score": item.score}
         for item in related_items(homes, view)
     ]
-    latest = sorted(state.reactions.values(), key=lambda r: (r["at"], r["id"]))
+    shown = {("call", call["id"]) for call in calls} | {("report", report["id"]) for report in reports} | {
+        ("report" if item["kind"] == "report" else "call", item["id"]) for item in related
+    }
+    latest = sorted((r for key, r in state.reactions.items() if key in shown), key=lambda r: r["at"])
     reactions = [
         {key: r[key] for key in ("kind", "item_id", "reaction", "text", "at", "source")} for r in latest
     ]
+    delivered = [reaction_id for key, ids in state.delivered.items() if key in shown for reaction_id in ids]
     return {
         "version": SNAPSHOT_VERSION, "title": title,
         "generated_at": now.astimezone(timezone.utc).isoformat(timespec="microseconds").replace("+00:00", "Z"),
         "session": session, "calls": calls, "reports": reports, "related": related,
-        "reactions": reactions, "delivered": state.delivered,
+        "reactions": reactions, "delivered": delivered,
     }
 
 
