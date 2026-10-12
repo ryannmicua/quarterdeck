@@ -117,7 +117,7 @@ items that no longer exist, or whose delivery failed, are skipped and listed.
 
 **Discuss with Firstmate** opens the claude.ai comment composer on that card.
 A comment sent to Claude reaches Firstmate's session directly, with no import.
-It needs the `comments` capability above; without it the button is absent.
+It needs the `comments` capability above; without it the button stays disabled.
 
 ## What the artifact does not do
 
