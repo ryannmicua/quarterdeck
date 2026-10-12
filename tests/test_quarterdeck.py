@@ -3917,14 +3917,16 @@ async function click(report, text) {
     def test_sending_a_reaction_delivers_one_note_records_it_and_shows_it_on_the_card(self) -> None:
         request = self.serve()
         status, body = request("POST", quarterdeck.REACTION_ENDPOINT, {
-            "kind": "call", "item_id": "invented-home/harbor-hold", "reaction": "approve", "text": "Go  with\nteal.",
+            "id": "page-0001", "kind": "call", "item_id": "invented-home/harbor-hold", "reaction": "approve",
+            "text": "Go  with\nteal.",
         })
         self.assertEqual(status, 200, body)
         sent = json.loads(body)
         self.assertEqual((sent["task"], sent["reaction"], sent["text"], sent["source"]),
                          ("harbor-hold", "approve", "Go with teal.", "page"))
         lines = self.logged()
-        self.assertEqual(lines[:5], ["note", "--request-id", f"qd-{sent['id']}", "--json", "--"])
+        self.assertEqual(sent["id"], "page-0001")
+        self.assertEqual(lines[:5], ["note", "--request-id", "qd-page-0001", "--json", "--"])
         self.assertEqual(len(lines), 7)  # five option lines, one note body, then the home
         note = lines[5]
         for part in ("Approve", "call invented-home/harbor-hold", "task harbor-hold", sent["at"], '"Go with teal."'):
@@ -3937,7 +3939,8 @@ async function click(report, text) {
     def test_reports_can_be_reacted_to_and_a_reply_needs_no_reaction(self) -> None:
         request = self.serve()
         status, body = request("POST", quarterdeck.REACTION_ENDPOINT, {
-            "kind": "report", "item_id": "invented-home/lone-report", "reaction": "", "text": "Why option A?",
+            "id": "page-0002", "kind": "report", "item_id": "invented-home/lone-report", "reaction": "",
+            "text": "Why option A?",
         })
         self.assertEqual(status, 200, body)
         self.assertIn("reply on report invented-home/lone-report (task lone-report)", self.logged()[5])
@@ -3945,12 +3948,13 @@ async function click(report, text) {
 
     def test_reaction_route_refuses_bad_origin_bad_bodies_unknown_items_and_failed_delivery(self) -> None:
         request = self.serve()
-        good = {"kind": "call", "item_id": "invented-home/harbor-hold", "reaction": "hold", "text": ""}
+        good = {"id": "page-0003", "kind": "call", "item_id": "invented-home/harbor-hold", "reaction": "hold", "text": ""}
         self.assertEqual(request("POST", quarterdeck.REACTION_ENDPOINT, good, {"Origin": "http://evil.example"})[0], 403)
         self.assertEqual(request("POST", quarterdeck.REACTION_ENDPOINT, good, {"Sec-Fetch-Site": "cross-site"})[0], 403)
         self.assertEqual(request("POST", quarterdeck.REACTION_ENDPOINT, good, {"Content-Type": "text/plain"})[0], 415)
         for body in ({**good, "reaction": "banish"}, {**good, "reaction": "", "text": ""}, {**good, "kind": "task"},
-                     {**good, "text": "x" * 1001}, {**good, "extra": "1"}, {"kind": "call"}, {**good, "text": 5}):
+                     {**good, "text": "x" * 1001}, {**good, "extra": "1"}, {"kind": "call"}, {**good, "text": 5},
+                     {**good, "id": "bad id"}, {**good, "id": "short"}, {k: v for k, v in good.items() if k != "id"}):
             self.assertEqual(request("POST", quarterdeck.REACTION_ENDPOINT, body)[0], 400, body)
         self.assertEqual(request("POST", quarterdeck.REACTION_ENDPOINT, {**good, "item_id": "invented-home/nope"})[0], 404)
         self.assertEqual(request("POST", quarterdeck.REACTION_ENDPOINT,
@@ -3963,6 +3967,8 @@ async function click(report, text) {
         with patch.dict(os.environ, {"QD_TEST_FAIL": "3"}):
             self.assertIn("could not wake", request("POST", quarterdeck.REACTION_ENDPOINT, good)[1])
         self.assertEqual(request("POST", quarterdeck.REACTION_ENDPOINT, good)[0], 200)
+        request_ids = [line for line in self.logged() if line.startswith("qd-")]
+        self.assertEqual(request_ids, ["qd-page-0003"] * 3)  # every retry reuses the page's id, so fm-inbox dedupes it
 
     def test_reaction_route_is_absent_without_marks_and_a_home_without_the_script_cannot_deliver(self) -> None:
         from http.server import ThreadingHTTPServer
@@ -3979,7 +3985,7 @@ async function click(report, text) {
         (self.home / "bin" / "fm-inbox.sh").unlink()
         request = self.serve()
         status, body = request("POST", quarterdeck.REACTION_ENDPOINT, {
-            "kind": "call", "item_id": "invented-home/harbor-hold", "reaction": "hold", "text": "",
+            "id": "page-0004", "kind": "call", "item_id": "invented-home/harbor-hold", "reaction": "hold", "text": "",
         })
         self.assertEqual(status, 502)
         self.assertIn("no executable bin/fm-inbox.sh", body)

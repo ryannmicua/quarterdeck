@@ -123,8 +123,8 @@ on each repeatable `--host` address (default `127.0.0.1` only) and `--port`
 (default 8765; valid ports are 1 through 65535). `--allow-marks` enables the
 report review request and the reaction request described in the
 [serving guide](../how-to/serve-the-page.md); all other writes remain refused.
-The served page reloads itself every 60 seconds and shows its generated-at
-time. `service` prints a systemd user unit that runs `serve` with the given
+The served page reloads itself every 60 seconds, waiting while a reaction is
+being written or sent, and shows its generated-at time. `service` prints a systemd user unit that runs `serve` with the given
 options, or with `--write` writes it to
 `${XDG_CONFIG_HOME:-~/.config}/systemd/user/quarterdeck.service`; it never runs
 `systemctl`. A non-loopback host exposes work data without a login. `url`
@@ -178,7 +178,9 @@ invalid document, or a failed delivery is skipped and listed (a failed one
 stays undelivered and is sent on the next import). `--dry-run` sends nothing.
 Exit status is 0 when the file was read, and 2 for an unreadable or malformed
 file. The served page's Send button posts to `POST /api/reactions` (body
-`{"kind", "item_id", "reaction", "text"}`) when `serve --allow-marks` is on.
+`{"id", "kind", "item_id", "reaction", "text"}`) when `serve --allow-marks` is
+on. The page keeps a draft's id until it is sent, so a retry reuses the same
+fm-inbox request id and is not delivered twice.
 
 `add`, `list`, and `remove` accept the same `--config FILE` option. `add` also
 accepts `--label LABEL`; `remove` takes one label or path.

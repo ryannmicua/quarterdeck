@@ -23,7 +23,6 @@ import tempfile
 import threading
 import time
 import unicodedata
-import uuid
 import webbrowser
 from collections.abc import Callable, Iterator, Set
 from contextlib import contextmanager
@@ -1288,6 +1287,16 @@ def build_html(
     ) + set_aside_reports_html(homes, ambiguous_ids, report_resolution_incomplete, allow_marks, reactions)
     mark_script = f"""
   <script>
+    function quarterdeckReload() {{
+      const editing = Array.from(document.querySelectorAll(".reaction-text")).some(
+        field => field.value || field === document.activeElement
+      );
+      if (editing || document.querySelector('[data-reaction-choice][aria-pressed=true], .reaction-send:disabled')) {{
+        setTimeout(quarterdeckReload, 1000);
+        return;
+      }}
+      location.reload();
+    }}
     document.addEventListener("click", async (event) => {{
       const button = event.target.closest("[data-mark-report]");
       if (!button || button.disabled) return;
@@ -1305,7 +1314,8 @@ def build_html(
           }}),
         }});
         if (!response.ok) throw new Error((await response.text()).trim() || response.statusText);
-        location.reload();
+        if (status) status.textContent = "Saved";
+        quarterdeckReload();
       }} catch (error) {{
         button.disabled = false;
         if (status) status.textContent = "Could not save: " + error.message;
@@ -1314,9 +1324,20 @@ def build_html(
   </script>""" if allow_marks else ""
     reaction_script = f"""
   <script>
+    function reactionId(box) {{
+      if (!box.dataset.reactionId) {{
+        box.dataset.reactionId = Array.from(crypto.getRandomValues(new Uint8Array(16)),
+          byte => byte.toString(16).padStart(2, "0")).join("");
+      }}
+      return box.dataset.reactionId;
+    }}
+    document.addEventListener("input", event => {{
+      if (event.target.matches(".reaction-text")) reactionId(event.target.closest(".reaction"));
+    }});
     document.addEventListener("click", async (event) => {{
       const choice = event.target.closest("[data-reaction-choice]");
       if (choice) {{
+        reactionId(choice.closest(".reaction"));
         const pressed = choice.getAttribute("aria-pressed") !== "true";
         for (const other of choice.parentElement.querySelectorAll("[data-reaction-choice]")) other.setAttribute("aria-pressed", "false");
         choice.setAttribute("aria-pressed", String(pressed));
@@ -1337,7 +1358,7 @@ def build_html(
         const response = await fetch("{REACTION_ENDPOINT}", {{
           method: "POST",
           headers: {{"Content-Type": "application/json"}},
-          body: JSON.stringify({{kind: box.dataset.reactionKind, item_id: box.dataset.reactionItem, reaction: reaction, text: text}}),
+          body: JSON.stringify({{id: reactionId(box), kind: box.dataset.reactionKind, item_id: box.dataset.reactionItem, reaction: reaction, text: text}}),
         }});
         if (!response.ok) throw new Error((await response.text()).trim() || response.statusText);
         const sent = await response.json();
@@ -1350,6 +1371,7 @@ def build_html(
         }}
         field.value = "";
         if (picked) picked.setAttribute("aria-pressed", "false");
+        delete box.dataset.reactionId;
         status.textContent = "Sent to Firstmate";
       }} catch (error) {{
         status.textContent = "Not sent: " + error.message;
@@ -1381,7 +1403,7 @@ def build_html(
           ).filter(Boolean);
           sessionStorage.setItem(storageKey, JSON.stringify(openKeys));
         }} catch (_) {{}}
-        location.reload();
+        {"quarterdeckReload();" if allow_marks else "location.reload();"}
       }}, {int(refresh_seconds) * 1000});
     }})();
   </script>""" if refresh_seconds else ""
@@ -3991,12 +4013,13 @@ def make_handler(
                 if not 0 < length <= REACTION_BODY_LIMIT:
                     raise ValueError
                 body = json.loads(self.rfile.read(length).decode("utf-8"))
-                if (not isinstance(body, dict) or set(body) != {"kind", "item_id", "reaction", "text"}
+                if (not isinstance(body, dict) or set(body) != {"id", "kind", "item_id", "reaction", "text"}
                         or not all(isinstance(value, str) for value in body.values())):
                     raise ValueError
                 clean_reaction(body)
             except (ValueError, UnicodeDecodeError):
-                self.send_text(400, "Expected JSON {\"kind\": \"call\" | \"report\", \"item_id\": ..., "
+                self.send_text(400, "Expected JSON {\"id\": 8 to 64 letters, digits, dots, dashes or underscores, "
+                               "\"kind\": \"call\" | \"report\", \"item_id\": ..., "
                                "\"reaction\": \"approve\" | \"hold\" | \"not-now\" | \"question\" | \"\", "
                                f"\"text\": ...}} with a reaction or text (text up to {REACTION_TEXT_LIMIT} characters)\n")
                 return
@@ -4602,6 +4625,9 @@ INBOX_TIMEOUT_SECONDS = 15
 
 def clean_reaction(raw: dict[str, object], where: str = "reaction") -> dict[str, str]:
     """Validate one reaction's fields; the task is filled in later from the item it names."""
+    reaction_id = raw.get("id")
+    if not isinstance(reaction_id, str) or not REACTION_ID_RE.fullmatch(reaction_id):
+        raise ValueError(f"{where} needs an id of 8 to 64 letters, digits, dots, dashes or underscores")
     kind, item_id, reaction, text = raw.get("kind"), raw.get("item_id"), raw.get("reaction", ""), raw.get("text", "")
     if kind not in REACTION_KINDS:
         raise ValueError(f"{where} needs a kind of {' or '.join(REACTION_KINDS)}")
@@ -4614,7 +4640,7 @@ def clean_reaction(raw: dict[str, object], where: str = "reaction") -> dict[str,
     text = " ".join(text.split())
     if not reaction and not text:
         raise ValueError(f"{where} needs a reaction or some text")
-    return {"item_id": item_id.strip(), "kind": str(kind), "reaction": str(reaction), "text": text}
+    return {"id": reaction_id, "item_id": item_id.strip(), "kind": str(kind), "reaction": str(reaction), "text": text}
 
 
 def reaction_summary(reaction: dict[str, str]) -> str:
@@ -4707,7 +4733,7 @@ def send_reaction(args: argparse.Namespace, raw: dict[str, object]) -> dict[str,
     snapshots, state_path = load_report_snapshots(args)
     apply_review_marks(snapshots, {})
     top, task = reaction_target(snapshots, reaction["kind"], reaction["item_id"])
-    reaction.update(id=uuid.uuid4().hex, task=task, at=state_timestamp(), source="page")
+    reaction.update(task=task, at=state_timestamp(), source="page")
     deliver_reaction(top.spec, reaction)
     store_reaction(state_path, reaction)
     return reaction
@@ -4744,13 +4770,11 @@ def import_reactions(args: argparse.Namespace) -> int:
                 if not isinstance(raw, dict):
                     raise ValueError(f"{where} is not an object")
                 reaction = clean_reaction(raw, where)
-                reaction_id, at = raw.get("id"), raw.get("at")
-                if not isinstance(reaction_id, str) or not REACTION_ID_RE.fullmatch(reaction_id):
-                    raise ValueError(f"{where} needs an id of 8 to 64 letters, digits, dots, dashes or underscores")
+                at = raw.get("at")
                 when = parse_board_time(at)
                 if when is None:
                     raise ValueError(f"{where} needs a valid at")
-                reaction.update(id=reaction_id, at=str(at), source="artifact", task="")
+                reaction.update(at=str(at), source="artifact", task="")
                 pending.append((when, index, reaction))
             except ValueError as exc:
                 skipped.append(str(exc))
