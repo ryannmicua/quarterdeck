@@ -46,24 +46,17 @@ Binding another address exposes real work data to that network.
 `quarterdeck serve --allow-marks` adds exactly one write endpoint,
 `POST /api/reports/review`, which marks or unmarks one known report ID as
 reviewed. It runs the same code, storage, fingerprint and lock as `quarterdeck
-reports mark-reviewed` and `unmark-reviewed`. On startup, it creates or reads
-`review-state/mark-token` in Quarterdeck's state directory; each accepted
-request writes only the review-marks file there, never a Firstmate home. A request
-must carry the key from `review-state/mark-token` (generated with mode 0600
-if absent) in an `X-Quarterdeck-Token` header, include the fingerprint shown on
-the page, be `application/json`, come from the page's own origin (cross-origin
-`Origin` or `Sec-Fetch-Site` values are refused), and name an existing,
-unambiguous report whose content has not changed since the page loaded. Every
-other route and method stays refused. The key is not embedded in the served
-page: the browser prompts for it on the first mark click and keeps it in that
-browser's local storage when available. Anyone who has the key can mark reports;
-readers without it can view the page and buttons but cannot change review state.
-The key is a write credential, not a login or a limit on who can read the page.
-On a non-loopback bind, the key travels unencrypted over plain HTTP, so someone
-observing that network could replay it to change review marks only; it grants no
-other write access. Use marks only on a trusted network or behind a TLS reverse
-proxy, and rotate the key if exposed.
-The static `render` output never contains the buttons or the key.
+reports mark-reviewed` and `unmark-reviewed`. Each accepted request writes only
+the review-marks file in Quarterdeck's state directory, never a Firstmate home.
+A request must include the fingerprint shown on the page, be `application/json`,
+come from the page's own origin (cross-origin `Origin` or `Sec-Fetch-Site`
+values are refused), and name an existing, unambiguous report whose content has
+not changed since the page loaded. Every other route and method stays refused.
+There is no key or login: anyone who can open the served page can mark or
+unmark reports, so on a non-loopback bind that means anyone on that network.
+The endpoint grants no other write access. Use marks only on a network you
+trust, or put the server behind an authenticating TLS reverse proxy.
+The static `render` output never contains the buttons.
 Each configured home is loaded independently. A missing or unreadable home
 shows its own error while other sections still render.
 
