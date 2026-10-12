@@ -14,7 +14,14 @@ queued, finished, closed, and unlinked reports remain visible until reviewed.
 With `--all`, each report appears once in **All scout reports**, where its
 review state remains visible. Marking a report reviewed removes it from the
 default section; changing its bytes makes the mark stop matching and returns
-it to that section. See the [CLI reference](../reference/cli-and-config.md)
+it to that section. Discarding a report removes it from the section without
+marking it reviewed, and a report Firstmate marked **stale** (a one-off or
+already decided) moves to a collapsed "Stale reports" section; the same
+rules for a changed report apply to a discard. Unclassified reports are
+current. Past captain calls marked stale likewise leave the desk, week and
+parked bands, and a collapsed "Related to this session" section below the desk
+ranks older reports and deferred calls that connect to the active session. See
+[Keep the desk relevant](../how-to/keep-the-desk-relevant.md). See the [CLI reference](../reference/cli-and-config.md)
 for report commands and the [privacy and architecture guide](privacy-and-architecture.md)
 for how review marks are stored.
 

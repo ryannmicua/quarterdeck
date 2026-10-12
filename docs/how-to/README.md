@@ -9,5 +9,7 @@
 - [View in Lavish](view-in-lavish.md)
 - [Request a Lavish page](request-lavish-page.md)
 - [Read and track report reviews](review-reports.md)
+- [Keep the desk relevant](keep-the-desk-relevant.md)
+- [Use the cloud artifact](use-the-cloud-artifact.md)
 - [Keep the captain board current](keep-the-board-current.md)
 - [Write and publish a decision brief](write-decision-briefs.md)

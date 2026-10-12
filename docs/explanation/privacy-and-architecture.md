@@ -44,16 +44,18 @@ generated pages, has no write endpoints and no login, and binds 127.0.0.1.
 Binding another address exposes real work data to that network.
 
 `quarterdeck serve --allow-marks` adds exactly one write endpoint,
-`POST /api/reports/review`, which marks or unmarks one known report ID as
-reviewed. It runs the same code, storage, fingerprint and lock as `quarterdeck
-reports mark-reviewed` and `unmark-reviewed`. Each accepted request writes only
-the review-marks file in Quarterdeck's state directory, never a Firstmate home.
+`POST /api/reports/review`, which marks, unmarks, discards or undiscards one
+known report ID. It runs the same code, storage and fingerprint as `quarterdeck
+reports mark-reviewed`, `unmark-reviewed`, `discard` and `undiscard`. Each
+accepted request writes only the state database in Quarterdeck's state
+directory, never a Firstmate home.
 A request must include the fingerprint shown on the page, be `application/json`,
 come from the page's own origin (cross-origin `Origin` or `Sec-Fetch-Site`
 values are refused), and name an existing, unambiguous report whose content has
 not changed since the page loaded. Every other route and method stays refused.
 There is no key or login: anyone who can open the served page can mark or
-unmark reports, so on a non-loopback bind that means anyone on that network.
+unmark or discard reports, so on a non-loopback bind that means anyone on that
+network.
 The endpoint grants no other write access. Use marks only on a network you
 trust, or put the server behind an authenticating TLS reverse proxy.
 The static `render` output never contains the buttons.
@@ -83,13 +85,25 @@ renderer escapes source HTML. `quarterdeck reports read <id>` uses the same
 renderer. The [CLI reference](../reference/cli-and-config.md) documents its
 output path, report IDs, and collision handling.
 
-Reviewed marks are stored separately from rendered pages at
-`${XDG_STATE_HOME:-~/.local/state}/quarterdeck/review-state/marks.json`. Each
-mark stores the sha256 fingerprint of the report
-bytes. Before it reads or writes this state, Quarterdeck verifies the state
-directory is outside the repository checkout, all selected homes, and their
-configured data directories. The state file contains report IDs and
-fingerprints, not a copy of the report or Firstmate data.
+Review marks, discards, relevance and relations are stored separately from
+rendered pages in a SQLite database at
+`${XDG_STATE_HOME:-~/.local/state}/quarterdeck/review-state/state.db` (mode
+0600). A mark or discard stores the sha256 fingerprint of the report bytes; a
+relevance or relation row stores a report ID or `<home-label-slug>/<task-id>`
+and a task ID. A `marks.json` from an earlier version is imported once and left
+unchanged beside it. Before it reads or writes this state, Quarterdeck verifies
+the state directory is outside the repository checkout, all selected homes, and
+their configured data directories. The database contains IDs, fingerprints and
+short reasons, not a copy of the report or Firstmate data.
+
+`quarterdeck export` is a read of the homes that writes a snapshot of the page's
+data (calls, report titles and recommendations, states and fingerprints) to a
+file you choose. Current, unreviewed reports include their Markdown bodies;
+stale, discarded and reviewed reports omit theirs. Home metadata paths are
+omitted, but report text may contain paths and other work data. It leaves the
+machine only if you publish the artifact built from it; `quarterdeck import`
+applies the artifact's recorded actions to the local state database and writes
+nothing else.
 
 Lavish request controls are present only on `quarterdeck render --lavish`
 pages, including each report needing review. A report request carries its

@@ -11,6 +11,15 @@ quarterdeck reports list [--home PATH] [--config FILE]
 quarterdeck reports read <report-id> [--home PATH] [--config FILE] [--open]
 quarterdeck reports mark-reviewed <report-id> [--home PATH] [--config FILE]
 quarterdeck reports unmark-reviewed <report-id> [--home PATH] [--config FILE]
+quarterdeck reports discard <report-id> [--home PATH] [--config FILE]
+quarterdeck reports undiscard <report-id> [--home PATH] [--config FILE]
+quarterdeck reports set-relevance <report-id> current|stale [--reason TEXT] [--home PATH] [--config FILE]
+quarterdeck reports relate <report-id> --to <task-id> [--remove] [--home PATH] [--config FILE]
+quarterdeck calls list [--home PATH] [--config FILE]
+quarterdeck calls set-relevance <task-id> current|stale [--reason TEXT] [--home PATH] [--config FILE]
+quarterdeck calls relate <task-id> --to <task-id> [--remove] [--home PATH] [--config FILE]
+quarterdeck export [--output FILE] [--artifact FILE] [--home PATH] [--config FILE] [--title TEXT] [--no-snapshot]
+quarterdeck import <actions.json|-> [--dry-run] [--home PATH] [--config FILE]
 quarterdeck board upsert <task-id> [--id ID] [--group GROUP] [--title TEXT] [--ask TEXT] [--detail TEXT] [--topic TEXT] [--project TEXT] [--brief-url URL] [--recommendation TEXT] [--link LABEL=URL ...] [--touch] [--touched-at ISO] [--home PATH] [--data-dir PATH]
 quarterdeck board touch <task-id> [--at ISO] [--home PATH] [--data-dir PATH]
 quarterdeck board remove <task-id> [--id ID] [--home PATH] [--data-dir PATH]
@@ -84,7 +93,15 @@ refuse resolution while a selected local home is incomplete.
 `reports read` prints Markdown and writes the existing readable HTML format.
 The HTML page is written to the Quarterdeck state directory. Use `--open` to
 open the generated page in a browser. `mark-reviewed` records the current
-report fingerprint; `unmark-reviewed` clears that mark. See [Privacy and architecture](../explanation/privacy-and-architecture.md)
+report fingerprint; `unmark-reviewed` clears that mark. `discard` takes the
+report off the list without marking it reviewed (`undiscard` reverses it);
+reviewed and discarded replace each other, and a changed report returns to
+needs review. `list` prints `ID`, review state (`needs review`, `reviewed`,
+`discarded` or `ID collision`), title, home and relevance. `set-relevance`
+marks a report `current` or `stale` (default current; stale reports leave the
+review list), and `relate --to TASK` records that the report belongs with a
+task, which surfaces it under "Related to this session" while that task is on
+the desk or in flight. See [Keep the desk relevant](../how-to/keep-the-desk-relevant.md). See [Privacy and architecture](../explanation/privacy-and-architecture.md)
 for review-state storage and [The attention model](../explanation/attention-model.md)
 for how marks affect the dashboard.
 
@@ -133,6 +150,21 @@ rather than overwritten. If both `--touch` and `--touched-at` are supplied,
 the explicit timestamp takes precedence. Exit status is 0 on success, 1 when
 `touch` finds no item, and 2 for invalid input or an unwritable board. See
 [Keep the captain board current](../how-to/keep-the-board-current.md).
+
+`calls` sets relevance and relations for past captain calls (board items and
+held backlog tasks) in Quarterdeck's local state, never in the board file. A
+call is named by its task ID, or `<home-label-slug>/<task-id>` when the same ID
+exists in several homes. `calls list` prints each call's ID, relevance and band.
+
+`export` writes the cloud artifact's data snapshot: JSON to standard output, to
+`--output`, and with `--artifact` an HTML page built from
+`templates/artifact.html.tmpl` with the snapshot embedded. Output paths must
+be outside the checkout and selected homes. `import` applies the artifact's
+recorded mark and discard actions from a file (or `-` for standard input) to
+the local state; actions for changed reports are skipped and listed. Exit
+status is 0 when the file was read, even if some actions were skipped, and 2
+for an unreadable file or invalid action. See
+[Use the cloud artifact](../how-to/use-the-cloud-artifact.md).
 
 `add`, `list`, and `remove` accept the same `--config FILE` option. `add` also
 accepts `--label LABEL`; `remove` takes one label or path.

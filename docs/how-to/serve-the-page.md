@@ -32,7 +32,7 @@ address and for its JSON output.
 | `--config FILE` | private user config, if present | Select homes with the same rules as `render`. |
 | `--title TEXT` | configured title | Override the page title. |
 | `--no-snapshot` | off | Skip the Firstmate snapshot script and always parse backlogs. |
-| `--allow-marks` | off | Enable the "Mark reviewed" and "Unmark" buttons for reports. |
+| `--allow-marks` | off | Enable the "Mark reviewed", "Unmark", "Discard" and "Undiscard" buttons for reports. |
 
 By default the server only answers `GET` for the main page and the generated
 report, backlog and backlog-item pages. It has no write endpoints. With
@@ -51,8 +51,10 @@ quarterdeck serve --allow-marks
 The page then shows "Mark reviewed" on each report waiting for review, and a
 collapsed "Reviewed reports" section with "Unmark". Each click calls the same
 code as `quarterdeck reports mark-reviewed` / `unmark-reviewed`, stores the
-same content fingerprint in the same marks file, and reloads the page. A report
-that changes afterwards returns to "needs review".
+same content fingerprint in the same state database, and reloads the page. A
+report that changes afterwards returns to "needs review". **Discard** takes a
+report off the list without marking it reviewed; discarded reports are in a
+collapsed "Discarded reports" section with **Undiscard**.
 
 There is no key or login: anyone who can open the page can mark or unmark
 reports, and clicking the button just saves the mark. See

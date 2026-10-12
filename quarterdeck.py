@@ -15,6 +15,7 @@ import re
 import shlex
 import shutil
 import socket
+import sqlite3
 import stat
 import subprocess
 import sys
@@ -70,6 +71,24 @@ class Report:
     fingerprint: str
     report_id: str = ""
     reviewed: bool = False
+    discarded: bool = False
+    relevance: str = "current"
+    relevance_reason: str = ""
+    related_to: list[str] = field(default_factory=list)
+    modified: datetime | None = None
+
+    @property
+    def state(self) -> str:
+        return "discarded" if self.discarded else "reviewed" if self.reviewed else "needs review"
+
+    @property
+    def needs_review(self) -> bool:
+        return not self.reviewed and not self.discarded
+
+    @property
+    def waiting(self) -> bool:
+        """True when the report belongs on the review list: unreviewed, not discarded, and still relevant."""
+        return self.needs_review and self.relevance != "stale"
 
 
 @dataclass
@@ -97,6 +116,7 @@ class HomeSnapshot:
     children: list[HomeSnapshot] = field(default_factory=list)
     board: CaptainBoard | None = None
     backlog_changed: datetime | None = None
+    review_state: ReviewState | None = None
 
 
 def markdown_text(value: str) -> str:
@@ -172,9 +192,13 @@ def read_reports(data_dir: Path, warnings: list[str] | None = None) -> list[Repo
              if (match := re.match(r"^\s{0,3}#{1,2}\s+(.+)$", line))),
             report_path.parent.name.replace("-", " ").replace("_", " "),
         )
+        try:
+            modified = datetime.fromtimestamp(report_path.stat().st_mtime, timezone.utc)
+        except OSError:
+            modified = None
         reports.append(Report(
             title, report_path.resolve(), report_recommendation(source), source,
-            hashlib.sha256(raw_source).hexdigest(),
+            hashlib.sha256(raw_source).hexdigest(), modified=modified,
         ))
     return reports
 
@@ -627,7 +651,7 @@ def source_pages(homes: list[HomeSnapshot], show_all: bool = False, bearings: Be
                 record.report for record in snapshot.records
                 if record.report and (is_captain_held(record) or is_review_ready(record))
             }
-            linked_reports.update(report.path for report in snapshot.reports if not report.reviewed)
+            linked_reports.update(report.path for report in snapshot.reports)
         if bearings is not None:
             linked_reports.update(bearings.linked_reports)
         for report in snapshot.reports:
@@ -742,7 +766,9 @@ def report_card(report: Report, snapshot: HomeSnapshot, lavish: bool = False) ->
     recommendation = f'<p><strong>Recommendation:</strong> {html.escape(report.recommendation)}</p>' if report.recommendation else ""
     name = source_page_filename("report", home, report.path)
     relative = display_path(report.path, home)
-    review_label = "Reviewed" if report.reviewed else "Needs review"
+    review_label = {"reviewed": "Reviewed", "discarded": "Discarded"}.get(report.state, "Needs review")
+    if report.needs_review and report.relevance == "stale":
+        review_label += " · stale"
     parts = [
         f'<article class="card"{element_id}><p class="eyebrow">Scout report · {review_label} · '
         f'<code>{html.escape(report.report_id)}</code></p>',
@@ -750,7 +776,7 @@ def report_card(report: Report, snapshot: HomeSnapshot, lavish: bool = False) ->
         f'<p class="links"><a href="{html.escape(name, quote=True)}">Read report '
         f'<code>{html.escape(report.report_id)}</code> <span class="path">{html.escape(relative)}</span></a></p>',
     ]
-    if lavish and not report.reviewed:
+    if lavish and report.waiting:
         payload = {
             "item_id": report.report_id,
             "report_id": report.report_id,
@@ -811,7 +837,7 @@ def home_panel(snapshot: HomeSnapshot, lavish: bool = False, show_all: bool = Fa
         in_flight_cards = [card(record, snapshot, "In-flight work", "in_flight", lavish, False) for record in groups["in_flight"]]
         blocked_cards = [card(record, snapshot, "Blocked for captain or external party", "blocked", lavish, False) for record in groups["blocked"]]
         if not show_all:
-            needs_review = [report for report in snapshot.reports if not report.reviewed]
+            needs_review = [report for report in snapshot.reports if report.waiting]
             needs_review_cards = [report_card(report, snapshot, lavish) for report in needs_review]
             body.append(section_html(
                 "Reports needing review",
@@ -874,6 +900,7 @@ def report_reference(home_label: str, task_id: str) -> str:
 
 
 def review_state_path() -> Path:
+    """The legacy review-marks file; its directory also holds state.db, which is where state now lives."""
     return default_output_dir() / "review-state" / "marks.json"
 
 
@@ -898,7 +925,43 @@ def validate_review_state_location(snapshots: list[HomeSnapshot]) -> Path:
     return state_dir / "marks.json"
 
 
-def load_review_marks(path: Path) -> dict[str, str]:
+# --- Review state (SQLite) ---------------------------------------------------
+# Review marks, discards, relevance and relations live in <state>/review-state/state.db.
+# The legacy marks.json beside it is imported once and then left untouched and readable.
+
+STATE_DB_NAME = "state.db"
+REPORT_STATES = ("reviewed", "discarded")
+RELEVANCE_VALUES = ("current", "stale")
+RELATION_KINDS = ("report", "call")
+SCHEMA = """
+CREATE TABLE IF NOT EXISTS meta (key TEXT PRIMARY KEY, value TEXT NOT NULL);
+CREATE TABLE IF NOT EXISTS report_state (
+    report_id TEXT PRIMARY KEY, state TEXT NOT NULL CHECK (state IN ('reviewed', 'discarded')),
+    fingerprint TEXT NOT NULL, updated_at TEXT NOT NULL);
+CREATE TABLE IF NOT EXISTS relevance (
+    kind TEXT NOT NULL, key TEXT NOT NULL, value TEXT NOT NULL CHECK (value IN ('current', 'stale')),
+    reason TEXT NOT NULL DEFAULT '', updated_at TEXT NOT NULL, PRIMARY KEY (kind, key));
+CREATE TABLE IF NOT EXISTS relations (
+    kind TEXT NOT NULL, key TEXT NOT NULL, task TEXT NOT NULL, PRIMARY KEY (kind, key, task));
+"""
+FINGERPRINT_RE = re.compile(r"[0-9a-f]{64}")
+
+
+@dataclass
+class ReviewState:
+    reports: dict[str, tuple[str, str]] = field(default_factory=dict)  # report id -> (state, fingerprint)
+    relevance: dict[tuple[str, str], tuple[str, str]] = field(default_factory=dict)  # (kind, key) -> (value, reason)
+    relations: dict[tuple[str, str], list[str]] = field(default_factory=dict)  # (kind, key) -> task ids
+
+    def relevance_of(self, kind: str, key: str) -> tuple[str, str]:
+        return self.relevance.get((kind, key), ("current", ""))
+
+
+def state_db_path(path: Path) -> Path:
+    return path.with_name(STATE_DB_NAME)
+
+
+def read_legacy_marks(path: Path) -> dict[str, str]:
     if path.is_symlink():
         raise ValueError(f"refusing symbolic-link review state: {path}")
     if not path.exists():
@@ -911,68 +974,167 @@ def load_review_marks(path: Path) -> dict[str, str]:
         raise ValueError(f"invalid review state format: {path}")
     marks = value["reviewed"]
     if any(not isinstance(key, str) or not isinstance(fingerprint, str)
-           or not re.fullmatch(r"[0-9a-f]{64}", fingerprint)
+           or not FINGERPRINT_RE.fullmatch(fingerprint)
            for key, fingerprint in marks.items()):
         raise ValueError(f"invalid review state entry: {path}")
     return dict(marks)
 
 
-def write_review_marks(path: Path, marks: dict[str, str]) -> None:
-    if path.is_symlink():
-        raise ValueError(f"refusing to replace symbolic-link review state: {path}")
-    path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
-    temporary_path: Path | None = None
-    try:
-        with tempfile.NamedTemporaryFile(
-            "w", encoding="utf-8", dir=path.parent,
-            prefix=f".{path.name}.", suffix=".tmp", delete=False,
-        ) as stream:
-            temporary_path = Path(stream.name)
-            json.dump({"version": 1, "reviewed": marks}, stream, indent=2, sort_keys=True)
-            stream.write("\n")
-        os.chmod(temporary_path, 0o600)
-        os.replace(temporary_path, path)
-    except OSError:
-        if temporary_path is not None:
-            temporary_path.unlink(missing_ok=True)
-        raise
+def state_timestamp() -> str:
+    return board_time_text(datetime.now(timezone.utc))
 
 
 @contextmanager
-def review_marks_lock(path: Path) -> Iterator[None]:
-    path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
-    lock_path = path.with_name(f"{path.name}.lock")
-    if lock_path.is_symlink():
-        raise ValueError(f"refusing symbolic-link review state lock: {lock_path}")
-    with lock_path.open("a") as stream:
-        fcntl.flock(stream.fileno(), fcntl.LOCK_EX)
+def state_connection(path: Path) -> Iterator[sqlite3.Connection]:
+    """Open the state database beside the legacy marks file and import marks.json once."""
+    db_path = state_db_path(path)
+    for candidate in (path, db_path):
+        if candidate.is_symlink():
+            raise ValueError(f"refusing symbolic-link review state: {candidate}")
+    db_path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
+    connection = sqlite3.connect(db_path, timeout=15, isolation_level=None)
+    try:
+        os.chmod(db_path, 0o600)
+        connection.executescript(SCHEMA)
+        migrated = connection.execute("SELECT value FROM meta WHERE key = 'marks_migrated'").fetchone()
+        if migrated is None:
+            marks = read_legacy_marks(path)
+            connection.execute("BEGIN IMMEDIATE")
+            try:
+                if connection.execute("SELECT 1 FROM meta WHERE key = 'marks_migrated'").fetchone() is None:
+                    now = state_timestamp()
+                    connection.executemany(
+                        "INSERT OR IGNORE INTO report_state VALUES (?, 'reviewed', ?, ?)",
+                        [(report_id, fingerprint, now) for report_id, fingerprint in marks.items()],
+                    )
+                    connection.execute("INSERT INTO meta VALUES ('marks_migrated', ?)", (now,))
+                connection.execute("COMMIT")
+            except BaseException:
+                connection.execute("ROLLBACK")
+                raise
+        yield connection
+    except sqlite3.Error as exc:
+        raise ValueError(f"could not use review state {db_path}: {exc}") from exc
+    finally:
+        connection.close()
+
+
+def load_review_state(path: Path) -> ReviewState:
+    """Read the whole state; an absent database and marks file mean an empty state without creating either."""
+    if not state_db_path(path).exists() and not path.exists():
+        return ReviewState()
+    state = ReviewState()
+    with state_connection(path) as connection:
+        for report_id, kind, fingerprint in connection.execute("SELECT report_id, state, fingerprint FROM report_state"):
+            state.reports[report_id] = (kind, fingerprint)
+        for kind, key, value, reason in connection.execute("SELECT kind, key, value, reason FROM relevance"):
+            state.relevance[(kind, key)] = (value, reason)
+        for kind, key, task in connection.execute("SELECT kind, key, task FROM relations ORDER BY task"):
+            state.relations.setdefault((kind, key), []).append(task)
+    return state
+
+
+def load_review_marks(path: Path) -> dict[str, str]:
+    """The reviewed marks as {report id: content fingerprint}."""
+    return {
+        report_id: fingerprint
+        for report_id, (state, fingerprint) in load_review_state(path).reports.items() if state == "reviewed"
+    }
+
+
+def write_state(path: Path, statements: list[tuple[str, tuple[object, ...]]]) -> None:
+    with state_connection(path) as connection:
+        connection.execute("BEGIN IMMEDIATE")
         try:
-            yield
-        finally:
-            fcntl.flock(stream.fileno(), fcntl.LOCK_UN)
+            for statement, parameters in statements:
+                connection.execute(statement, parameters)
+            connection.execute("COMMIT")
+        except BaseException:
+            connection.execute("ROLLBACK")
+            raise
+
+
+def update_report_state(path: Path, report_id: str, state: str | None, fingerprint: str = "") -> None:
+    """Set a report's state to reviewed or discarded for a fingerprint, or clear it with None."""
+    if state is None:
+        write_state(path, [("DELETE FROM report_state WHERE report_id = ?", (report_id,))])
+        return
+    if state not in REPORT_STATES:
+        raise ValueError(f"report state must be one of {', '.join(REPORT_STATES)}")
+    write_state(path, [(
+        "INSERT INTO report_state VALUES (?, ?, ?, ?) ON CONFLICT(report_id) DO UPDATE SET "
+        "state = excluded.state, fingerprint = excluded.fingerprint, updated_at = excluded.updated_at",
+        (report_id, state, fingerprint, state_timestamp()),
+    )])
 
 
 def update_review_mark(path: Path, report_id: str, fingerprint: str | None) -> None:
-    with review_marks_lock(path):
-        marks = load_review_marks(path)
-        if fingerprint is None:
-            marks.pop(report_id, None)
-        else:
-            marks[report_id] = fingerprint
-        write_review_marks(path, marks)
+    update_report_state(path, report_id, None if fingerprint is None else "reviewed", fingerprint or "")
+
+
+def update_relevance(path: Path, kind: str, key: str, value: str, reason: str = "") -> None:
+    if value not in RELEVANCE_VALUES:
+        raise ValueError(f"relevance must be one of {', '.join(RELEVANCE_VALUES)}")
+    write_state(path, [(
+        "INSERT INTO relevance VALUES (?, ?, ?, ?, ?) ON CONFLICT(kind, key) DO UPDATE SET "
+        "value = excluded.value, reason = excluded.reason, updated_at = excluded.updated_at",
+        (kind, key, value, reason.strip(), state_timestamp()),
+    )])
+
+
+def update_relation(path: Path, kind: str, key: str, task: str, add: bool) -> None:
+    if add:
+        write_state(path, [("INSERT OR IGNORE INTO relations VALUES (?, ?, ?)", (kind, key, task))])
+    else:
+        write_state(path, [("DELETE FROM relations WHERE kind = ? AND key = ? AND task = ?", (kind, key, task))])
+
+
+REPORT_ACTIONS = {
+    "mark": ("reviewed", "Marked {id} reviewed for its current content."),
+    "unmark": (None, "Removed the reviewed mark for {id}."),
+    "discard": ("discarded", "Discarded {id}: off the list, not marked reviewed."),
+    "undiscard": (None, "Returned {id} to the list."),
+}
+
+
+def set_report_action(
+    args: argparse.Namespace, report_id: str, action: str, expected_fingerprint: str | None = None,
+) -> Report:
+    """Mark, unmark, discard or undiscard one report by ID; shared by the CLI and the served page's buttons.
+
+    Reviewed and discarded are exclusive: each replaces the other. Unmark and undiscard clear only their own state.
+    """
+    if action not in REPORT_ACTIONS:
+        raise ValueError(f"unknown report action: {action}")
+    snapshots, state_path = load_report_snapshots(args)
+    apply_review_marks(snapshots, {})
+    return apply_report_action(snapshots, state_path, report_id, action, expected_fingerprint)
+
+
+def apply_report_action(
+    snapshots: list[HomeSnapshot], state_path: Path, report_id: str, action: str,
+    expected_fingerprint: str | None = None,
+) -> Report:
+    _snapshot, report = unique_report(snapshots, report_id)
+    if expected_fingerprint is not None and report.fingerprint != expected_fingerprint:
+        raise ValueError("report changed since the page was loaded; reload before marking")
+    new_state = REPORT_ACTIONS[action][0]
+    if new_state is not None:
+        update_report_state(state_path, report.report_id, new_state, report.fingerprint)
+    else:
+        wanted = "reviewed" if action == "unmark" else "discarded"
+        write_state(state_path, [(
+            "DELETE FROM report_state WHERE report_id = ? AND state = ?",
+            (report.report_id, wanted),
+        )])
+    apply_review_marks(snapshots, load_review_state(state_path))
+    return report
 
 
 def set_report_mark(
     args: argparse.Namespace, report_id: str, reviewed: bool, expected_fingerprint: str | None = None,
 ) -> Report:
-    """Mark or unmark one report by ID; shared by the CLI and the served page's buttons."""
-    snapshots, state_path = load_report_snapshots(args)
-    apply_review_marks(snapshots, {})
-    _snapshot, report = unique_report(snapshots, report_id)
-    if expected_fingerprint is not None and report.fingerprint != expected_fingerprint:
-        raise ValueError("report changed since the page was loaded; reload before marking")
-    update_review_mark(state_path, report.report_id, report.fingerprint if reviewed else None)
-    return report
+    return set_report_action(args, report_id, "mark" if reviewed else "unmark", expected_fingerprint)
 
 
 def assign_report_ids(snapshots: list[HomeSnapshot]) -> set[str]:
@@ -984,14 +1146,25 @@ def assign_report_ids(snapshots: list[HomeSnapshot]) -> set[str]:
     return {report_id for report_id, count in counts.items() if count > 1}
 
 
-def apply_review_marks(snapshots: list[HomeSnapshot], marks: dict[str, str]) -> None:
+def apply_review_marks(snapshots: list[HomeSnapshot], marks: dict[str, str] | ReviewState) -> None:
+    """Apply review state to every report; a plain dict is read as reviewed marks only."""
+    state = marks if isinstance(marks, ReviewState) else ReviewState(
+        reports={report_id: ("reviewed", fingerprint) for report_id, fingerprint in marks.items()}
+    )
     ambiguous_ids = assign_report_ids(snapshots)
     for snapshot in all_snapshots(snapshots):
+        snapshot.review_state = state
         for report in snapshot.reports:
-            report.reviewed = (
-                report.report_id not in ambiguous_ids
-                and marks.get(report.report_id) == report.fingerprint
-            )
+            report.reviewed = report.discarded = False
+            report.relevance, report.relevance_reason = "current", ""
+            report.related_to = []
+            if report.report_id in ambiguous_ids:
+                continue
+            kind, fingerprint = state.reports.get(report.report_id, ("", ""))
+            if fingerprint == report.fingerprint:
+                report.reviewed, report.discarded = kind == "reviewed", kind == "discarded"
+            report.relevance, report.relevance_reason = state.relevance_of("report", report.report_id)
+            report.related_to = list(state.relations.get(("report", report.report_id), []))
 
 
 def report_discovery_errors(snapshots: list[HomeSnapshot]) -> list[tuple[HomeSnapshot, str]]:
@@ -1061,11 +1234,11 @@ def load_report_snapshots(args: argparse.Namespace) -> tuple[list[HomeSnapshot],
     return snapshots, state_path
 
 
-def load_report_context(args: argparse.Namespace) -> tuple[list[HomeSnapshot], Path, dict[str, str]]:
+def load_report_context(args: argparse.Namespace) -> tuple[list[HomeSnapshot], Path, ReviewState]:
     snapshots, state_path = load_report_snapshots(args)
-    marks = load_review_marks(state_path)
-    apply_review_marks(snapshots, marks)
-    return snapshots, state_path, marks
+    state = load_review_state(state_path)
+    apply_review_marks(snapshots, state)
+    return snapshots, state_path, state
 
 
 def build_html(
@@ -1079,18 +1252,24 @@ def build_html(
     metric_labels = ["Held for captain", "Review-ready PRs", "In-flight work", "Blocked for captain/external"]
     if show_all:
         metric_labels.extend(["Other backlog items", "Scout reports"])
-    counts.append(sum(not report.reviewed for snapshot in snapshots for report in snapshot.reports))
+    counts.append(sum(report.waiting for snapshot in snapshots for report in snapshot.reports))
     metric_labels.append("Reports needing review")
     generated = bearings.generated if bearings else datetime.now(timezone.utc)
     timestamp = generated.strftime("%Y-%m-%d %H:%M:%S UTC")
     board = board_view(homes, generated)
-    board_block = board_html(board, generated, show_all) if board else ""
+    related_block = related_html(
+        related_items(homes, board), generated, can_mark=allow_marks, ambiguous_ids=ambiguous_ids,
+        report_resolution_incomplete=report_resolution_incomplete,
+    )
+    board_block = board_html(board, generated, show_all, related_block) if board else related_block
     board_status = board_status_html(board, generated) if board else ""
     bearings_block = bearings_html(
         bearings, collapse_reviews=board is not None, can_mark=allow_marks, ambiguous_ids=ambiguous_ids,
         report_resolution_incomplete=report_resolution_incomplete,
     ) if bearings else ""
-    reviewed_block = reviewed_reports_html(homes, ambiguous_ids, report_resolution_incomplete) if allow_marks else ""
+    reviewed_block = (
+        reviewed_reports_html(homes, ambiguous_ids, report_resolution_incomplete) if allow_marks else ""
+    ) + set_aside_reports_html(homes, ambiguous_ids, report_resolution_incomplete, allow_marks)
     mark_script = f"""
   <script>
     document.addEventListener("click", async (event) => {{
@@ -1192,10 +1371,9 @@ def build_html(
     :root {{ color-scheme: light dark; --navy: #17324d; --sea: #176b69; --sand: #f3eddf; --paper: #fffdf8; --ink: #20303d; --muted: #657482; --line: #d8d3c8; --gold: #c98635; --head: #17324d; --soft: #ffffff70; --warn-bg: #fff8e9; --warn-ink: #624313; --fail-bg: #fff2ee; --fail-ink: #6f251b; --chip: #e6f1ee; }}
     * {{ box-sizing: border-box; }}
     body {{ margin: 0; background: var(--sand); color: var(--ink); font: 16px/1.55 system-ui, -apple-system, Segoe UI, sans-serif; }}
-    header {{ background: var(--head); color: #fffdf8; padding: clamp(2rem, 7vw, 5rem) max(1.2rem, calc((100vw - 1080px) / 2)); border-bottom: 5px solid var(--gold); }}
-    .kicker {{ color: #d8c49b; text-transform: uppercase; letter-spacing: .14em; font-size: .76rem; font-weight: 700; }}
-    h1 {{ margin: .25rem 0 .35rem; font: 700 clamp(2.5rem, 7vw, 4.6rem)/1 Georgia, serif; letter-spacing: -.04em; }}
-    header p {{ max-width: 46rem; margin: .7rem 0 0; color: #e4e8e8; }}
+    header {{ background: var(--head); color: #fffdf8; padding: .55rem max(1.2rem, calc((100vw - 1080px) / 2)); border-bottom: 3px solid var(--gold); display: flex; flex-wrap: wrap; align-items: baseline; gap: .1rem 1rem; }}
+    h1 {{ margin: 0; font: 700 1.1rem/1.3 Georgia, serif; letter-spacing: -.01em; }}
+    header p {{ margin: 0; color: #e4e8e8; font-size: .82rem; }}
     main {{ width: min(1080px, calc(100% - 2.4rem)); margin: 2rem auto 4rem; }}
     .summary {{ display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: .8rem; margin-bottom: 2rem; }}
     .metric {{ background: var(--paper); border: 1px solid var(--line); border-radius: 12px; padding: 1rem 1.1rem; }}
@@ -1281,8 +1459,11 @@ def build_html(
     .desk-group {{ margin: .9rem 0 .4rem; font-size: .95rem; color: var(--sea); }}
     .sweep {{ margin: .2rem 0 .6rem; padding: .6rem .8rem; border: 1px solid var(--gold); border-radius: 10px; background: var(--warn-bg); color: var(--warn-ink); }}
     .stale {{ color: #ffd48a; }}
-    details.reviews > summary {{ display: flex; justify-content: space-between; gap: 1rem; align-items: center; min-height: 3rem; cursor: pointer; list-style: none; }}
-    details.reviews > summary h2 {{ display: inline; }}
+    details.dashboard-section:not(.board-band) > summary {{ display: flex; justify-content: space-between; gap: 1rem; align-items: center; min-height: 3rem; cursor: pointer; list-style: none; }}
+    details.dashboard-section:not(.board-band) > summary::-webkit-details-marker {{ display: none; }}
+    details.dashboard-section:not(.board-band) > summary h2 {{ display: inline; }}
+    details.dashboard-section:not(.board-band) > summary h2::before {{ content: "▸ "; color: var(--gold); }}
+    details.dashboard-section:not(.board-band)[open] > summary h2::before {{ content: "▾ "; }}
     @media (prefers-color-scheme: dark) {{
       :root {{ --navy: #a9cdee; --sea: #5fc2b9; --sand: #11181f; --paper: #1a242d; --ink: #e3e8ec; --muted: #9aa8b3; --line: #33434f; --gold: #e0a24e; --head: #0d2438; --soft: #ffffff10; --warn-bg: #2d2412; --warn-ink: #f0d9a8; --fail-bg: #331b17; --fail-ink: #f3c4bb; --chip: #1f3a37; }}
       .board-num {{ color: #0b1a18; }}
@@ -1293,9 +1474,7 @@ def build_html(
 </head>
 <body>
   <header>
-    <div class="kicker">Firstmate · local review</div>
     <h1>⚓ {html.escape(title)}</h1>
-    <p>{html.escape(introductory_text)}</p>
     <p class="generated">Generated at {timestamp}{refresh_note}</p>
     {board_status}
   </header>
@@ -1308,7 +1487,7 @@ def build_html(
       {metrics}
     </div>
     {''.join(home_panel(home, lavish, show_all) for home in homes)}
-    <footer>{footer_label} · generated {timestamp} · source files open as readable pages beside this one.</footer>
+    <footer>{html.escape(introductory_text)} {footer_label} · generated {timestamp} · source files open as readable pages beside this one.</footer>
   </main>
   {lavish_script}{refresh_script}{mark_script}
 </body>
@@ -1736,18 +1915,21 @@ class BearingsBuilder:
         self.result = Bearings(generated=now)
 
     # -- shared helpers --
-    def lookup(self, snapshot: HomeSnapshot, owner: str, item_id: str) -> tuple[HomeSnapshot, BacklogItem | None]:
+    def lookup(self, snapshot: HomeSnapshot, owner: str, item_id: str) -> tuple[HomeSnapshot, BacklogItem | None, str]:
         """Find the backlog entry for an id, using the secondmate's home when the owner is one."""
         target = snapshot
         if owner and owner != "(main)":
             target = next((child for child in snapshot.children if child.spec.route_id == owner), snapshot)
+            if target is not snapshot:
+                item_id = item_id.removeprefix(owner + "/")
+        target, item_id = task_owner(target, item_id)
         if target.error or target.backlog_markdown is None:
-            return target, None
+            return target, None, item_id
         items = getattr(target, "_items", None)
         if items is None:
             items = {item.id: item for item in backlog_items(target.backlog_markdown, target)}
             setattr(target, "_items", items)
-        return target, items.get(item_id)
+        return target, items.get(item_id), item_id
 
     def home_label(self, snapshot: HomeSnapshot, owner: str) -> str:
         if not owner or owner == "(main)":
@@ -1788,12 +1970,13 @@ class BearingsBuilder:
         for row in _rows(data, "decisions_open"):
             owner = _text(row.get("owner"))
             key = _text(row.get("key")) or _text(row.get("id"))
-            target, item = self.lookup(snapshot, owner, key)
+            target, item, task = self.lookup(snapshot, owner, key)
             if item and is_cancelled_state(item.state):
                 continue
             summary = _text(row.get("summary")) or key
-            bitem = BItem(title=summary, owner=self.home_label(snapshot, owner),
-                          item_id=key, status=_text(row.get("verb")))
+            resolved = target is not snapshot or not owner or owner == "(main)"
+            bitem = BItem(title=summary, owner=target.spec.label if resolved else self.home_label(snapshot, owner),
+                          item_id=task if resolved else key, status=_text(row.get("verb")))
             if item is None:
                 bitem.detail = (
                     f"Full background lives in the secondmate home: {self.home_label(snapshot, owner)}."
@@ -1805,7 +1988,7 @@ class BearingsBuilder:
             owner = _text(row.get("owner"))
             artifact = _blank(_text(row.get("artifact")))
             item_id = _text(row.get("id"))
-            target, item = self.lookup(snapshot, owner, item_id)
+            target, item, _task = self.lookup(snapshot, owner, item_id)
             if item and is_cancelled_state(item.state):
                 continue
             bitem = BItem(title=_text(row.get("what")) or item_id, owner=self.home_label(snapshot, owner),
@@ -1827,7 +2010,7 @@ class BearingsBuilder:
         for row in _rows(data, "in_flight"):
             item_id = _text(row.get("id"))
             owner = item_id.partition("/")[0] if "/" in item_id else "(main)"
-            _, item = self.lookup(snapshot, owner, item_id.split("/")[-1])
+            _, item, _task = self.lookup(snapshot, owner, item_id.split("/")[-1])
             if is_cancelled_state(_text(row.get("state"))) or (item and is_cancelled_state(item.state)):
                 continue
             self.result.underway.append(BItem(
@@ -1849,7 +2032,7 @@ class BearingsBuilder:
         for row in _rows(data, "gates"):
             owner = _text(row.get("owner"))
             item_id = _text(row.get("id")).split("/")[-1]
-            target, item = self.lookup(snapshot, owner, item_id)
+            target, item, _task = self.lookup(snapshot, owner, item_id)
             if item and is_cancelled_state(item.state):
                 continue
             waits = " — ".join(part for part in (_blank(_text(row.get("blocked_by"))), _blank(_text(row.get("reason")))) if part)
@@ -1907,10 +2090,16 @@ class BearingsBuilder:
                 self.result.sources.append(HomeSource(snapshot.spec.label, "fallback", reason))
                 for member in [snapshot] + all_snapshots(snapshot.children):
                     self.from_backlog(member)
+        state = next((s.review_state for s in all_snapshots(self.homes) if s.review_state is not None), None)
+        if state is not None:
+            self.result.call = [
+                item for item in self.result.call
+                if state.relevance_of("call", report_reference(item.owner, item.item_id))[0] != "stale"
+            ]
         self.result.call.sort(key=lambda item: parse_when(item.filed) or datetime.max.replace(tzinfo=timezone.utc))
         self.result.reports = [
             (snapshot, report)
-            for snapshot in all_snapshots(self.homes) for report in snapshot.reports if not report.reviewed
+            for snapshot in all_snapshots(self.homes) for report in snapshot.reports if report.waiting
         ]
         return self.result
 
@@ -1989,46 +2178,96 @@ def report_mark_unavailable_reason(
     return None
 
 
-def mark_button(report_id: str, action: str, fingerprint: str, unavailable_reason: str | None) -> str:
-    label = "Mark reviewed" if action == "mark" else "Unmark"
+MARK_LABELS = {"mark": "Mark reviewed", "unmark": "Unmark", "discard": "Discard", "undiscard": "Undiscard"}
+MARK_TITLES = {"discard": "Take it off the list without marking it reviewed"}
+
+
+def mark_buttons(report_id: str, actions: list[str], fingerprint: str, unavailable_reason: str | None) -> str:
     if unavailable_reason:
+        buttons = "".join(
+            f'<button class="request-lavish" type="button" disabled>{MARK_LABELS[action]}</button>' for action in actions
+        )
         return (
-            '<div class="request-row">'
-            f'<button class="request-lavish" type="button" disabled>{label}</button>'
+            f'<div class="request-row">{buttons}'
             f'<span class="request-status">{html.escape(unavailable_reason)}</span></div>'
         )
-    return (
-        '<div class="request-row">'
+    buttons = "".join(
         f'<button class="request-lavish" type="button" data-mark-report="{html.escape(report_id, quote=True)}" '
-        f'data-mark-fingerprint="{html.escape(fingerprint, quote=True)}" '
-        f'data-mark-action="{action}">{label}</button>'
-        '<span class="request-status" aria-live="polite"></span></div>'
+        f'data-mark-fingerprint="{html.escape(fingerprint, quote=True)}" data-mark-action="{action}"'
+        + (f' title="{html.escape(MARK_TITLES[action], quote=True)}"' if action in MARK_TITLES else "")
+        + f'>{MARK_LABELS[action]}</button>'
+        for action in actions
+    )
+    return f'<div class="request-row">{buttons}<span class="request-status" aria-live="polite"></span></div>'
+
+
+def mark_button(report_id: str, action: str, fingerprint: str, unavailable_reason: str | None) -> str:
+    return mark_buttons(report_id, [action], fingerprint, unavailable_reason)
+
+
+def report_list_html(
+    homes: list[HomeSnapshot], ambiguous_ids: set[str], report_resolution_incomplete: bool, *,
+    section_id: str, title: str, intro: str, empty: str, reports: Callable[[Report], bool],
+    actions: list[str], can_mark: bool = True,
+) -> str:
+    cards = []
+    for snapshot in all_snapshots(homes):
+        for report in snapshot.reports:
+            if not reports(report):
+                continue
+            home = snapshot.spec.home or Path(".")
+            page = source_page_filename("report", home, report.path)
+            reason = (
+                f'<p class="reason"><strong>Marked stale:</strong> {html.escape(report.relevance_reason)}</p>'
+                if report.relevance == "stale" and report.relevance_reason else ""
+            )
+            buttons = mark_buttons(
+                report.report_id, actions, report.fingerprint,
+                report_mark_unavailable_reason(report.report_id, ambiguous_ids, report_resolution_incomplete),
+            ) if can_mark else ""
+            cards.append(
+                f'<article class="card"><p class="eyebrow">{html.escape(snapshot.spec.label)} · '
+                f'<code>{html.escape(report.report_id)}</code></p><h3>{html.escape(report.title)}</h3>{reason}'
+                f'<p class="links"><a href="{html.escape(page, quote=True)}">Read report</a></p>{buttons}</article>'
+            )
+    content = "".join(cards) or f'<p class="empty">{html.escape(empty)}</p>'
+    return (
+        f'<details class="dashboard-section" id="{section_id}" data-refresh-key="{section_id}">'
+        f'<summary><h2>{html.escape(title)}</h2><span class="count">{len(cards)}</span></summary>'
+        f'<p>{html.escape(intro)}</p><div class="cards">{content}</div></details>'
     )
 
 
 def reviewed_reports_html(
     homes: list[HomeSnapshot], ambiguous_ids: set[str], report_resolution_incomplete: bool,
 ) -> str:
-    cards = []
-    for snapshot in all_snapshots(homes):
-        for report in snapshot.reports:
-            if not report.reviewed:
-                continue
-            home = snapshot.spec.home or Path(".")
-            page = source_page_filename("report", home, report.path)
-            cards.append(
-                f'<article class="card"><p class="eyebrow">{html.escape(snapshot.spec.label)} · '
-                f'<code>{html.escape(report.report_id)}</code></p><h3>{html.escape(report.title)}</h3>'
-                f'<p class="links"><a href="{html.escape(page, quote=True)}">Read report</a></p>'
-                f'{mark_button(report.report_id, "unmark", report.fingerprint, report_mark_unavailable_reason(report.report_id, ambiguous_ids, report_resolution_incomplete))}</article>'
-            )
-    content = "".join(cards) or '<p class="empty">No reports are marked reviewed.</p>'
-    return (
-        '<details class="dashboard-section" id="reviewed"><summary><h2>Reviewed reports</h2>'
-        f'<span class="count">{len(cards)}</span></summary>'
-        '<p>Unmark a report to return it to “needs review”. A report that changes after you review it returns on its own.</p>'
-        f'<div class="cards">{content}</div></details>'
+    return report_list_html(
+        homes, ambiguous_ids, report_resolution_incomplete, section_id="reviewed", title="Reviewed reports",
+        intro="Unmark a report to return it to “needs review”. A report that changes after you review it returns on its own.",
+        empty="No reports are marked reviewed.", reports=lambda report: report.reviewed, actions=["unmark"],
     )
+
+
+def set_aside_reports_html(
+    homes: list[HomeSnapshot], ambiguous_ids: set[str], report_resolution_incomplete: bool, can_mark: bool,
+) -> str:
+    """The stale and discarded report lists: hidden from the review list, one click away."""
+    stale = report_list_html(
+        homes, ambiguous_ids, report_resolution_incomplete, section_id="stale-reports", title="Stale reports",
+        intro="One-offs or already decided; Firstmate marked these no longer relevant, so they are off the review list. "
+              "Read them if you want, or discard them.",
+        empty="No unreviewed report is marked stale.",
+        reports=lambda report: report.needs_review and report.relevance == "stale",
+        actions=["mark", "discard"], can_mark=can_mark,
+    )
+    discarded = report_list_html(
+        homes, ambiguous_ids, report_resolution_incomplete, section_id="discarded", title="Discarded reports",
+        intro="Taken off your list without being marked reviewed. Undiscard returns one to “needs review”; "
+              "a report that changes after you discard it returns on its own.",
+        empty="No reports are discarded.", reports=lambda report: report.discarded,
+        actions=["undiscard"], can_mark=can_mark,
+    )
+    return stale + discarded
 
 
 def bearings_html(
@@ -2058,7 +2297,7 @@ def bearings_html(
             unavailable_reason = report_mark_unavailable_reason(
                 report.report_id, ambiguous_ids, report_resolution_incomplete
             )
-            tail = f'</p>{mark_button(report.report_id, "mark", report.fingerprint, unavailable_reason)}'
+            tail = f'</p>{mark_buttons(report.report_id, ["mark", "discard"], report.fingerprint, unavailable_reason)}'
         elif report_resolution_incomplete:
             tail = ' · <span class="path">Review changes are disabled while a selected local home is incomplete.</span></p>'
         elif report.report_id in ambiguous_ids:
@@ -2161,6 +2400,10 @@ class BoardEntry:
     deferred: str = ""
     band: str = ""
     sweep: bool = False
+    key: str = ""  # <home-label-slug>/<task>, the id for relevance and relations
+    refs: Set[str] = field(default_factory=frozenset)  # task ids this item waits on
+    relevance: str = "current"
+    reason: str = ""
 
 
 @dataclass
@@ -2182,6 +2425,7 @@ class BoardView:
     bands: dict[str, list[BoardEntry]] = field(default_factory=dict)
     session: DeskSession | None = None
     desk_groups: list[tuple[str, list[BoardEntry]]] = field(default_factory=list)  # (heading, entries)
+    stale: list[BoardEntry] = field(default_factory=list)  # marked no longer relevant; hidden from the bands
 
 
 def _board_text(value: object) -> str | None:
@@ -2443,6 +2687,7 @@ def rank_entry(
             times.append(fallback)
         if not entry.item.project and backlog_item.project:
             entry.item = replace(entry.item, project=backlog_item.project)
+        entry.refs = frozenset(dependency_tokens(backlog_item))
     entry.touched = min(max(times), now) if times else None
     age = (now - entry.touched).total_seconds() if entry.touched else None
     if session is not None:
@@ -2520,15 +2765,42 @@ def band_entries(entries: list[BoardEntry]) -> dict[str, list[BoardEntry]]:
     return bands
 
 
-def board_view(homes: list[HomeSnapshot], now: datetime | None = None) -> BoardView | None:
+def settle_relevance(entry: BoardEntry, state: ReviewState, view: BoardView) -> bool:
+    """Apply the call's recorded relevance; True when it is stale and was set aside from the desk."""
+    entry.relevance, entry.reason = state.relevance_of("call", entry.key)
+    if entry.relevance == "stale":
+        view.stale.append(entry)
+        return True
+    return False
+
+
+def task_owner(snapshot: HomeSnapshot, task: str) -> tuple[HomeSnapshot, str]:
+    route, separator, rest = task.partition("/")
+    child = next((c for c in snapshot.children if separator and c.spec.route_id == route), None)
+    return task_owner(child, rest) if child is not None else (snapshot, task)
+
+
+def task_key(snapshot: HomeSnapshot, task: str, snapshots: list[HomeSnapshot]) -> str:
+    _prefix, separator, rest = task.strip().partition("/")
+    owner = next((s for s in snapshots if separator and report_reference(s.spec.label, rest) == task.strip()), None)
+    if owner is not None:
+        return report_reference(owner.spec.label, rest)
+    owner, task = task_owner(snapshot, task.strip())
+    return report_reference(owner.spec.label, task)
+
+
+def board_view(
+    homes: list[HomeSnapshot], now: datetime | None = None, *, fallback: bool = False,
+) -> BoardView | None:
     """Merge the homes' boards, drop settled items, add backlog items the boards miss, and rank them by recency."""
     now = now or datetime.now(timezone.utc)
     snapshots = all_snapshots(homes)
     boarded = [home for home in snapshots if home.board is not None]
-    if not boarded:
+    if not boarded and not fallback:
         return None
     view = BoardView({key: [] for key in BOARD_GROUP_KEYS}, [], 0, [], [])
     view.session = session = desk_session([home.board for home in boarded if home.board is not None], now)
+    state = next((home.review_state for home in snapshots if home.review_state is not None), None) or ReviewState()
     cache: dict[int, dict[str, BacklogItem]] = {}
 
     def items_of(snapshot: HomeSnapshot) -> dict[str, BacklogItem]:
@@ -2556,12 +2828,8 @@ def board_view(homes: list[HomeSnapshot], now: datetime | None = None) -> BoardV
             view.warnings.append(f"Could not check board items for {label}: the backlog could not be read.")
         for item in board.items:
             backlog_item: BacklogItem | None = None
-            target, task_id = home, item.task
+            target, task_id = task_owner(home, item.task)
             if not home.error:
-                route, separator, rest = item.task.partition("/")
-                child = next((c for c in home.children if separator and c.spec.route_id == route), None)
-                if child is not None:
-                    target, task_id = child, rest
                 if target.error:
                     view.warnings.append(
                         f"Could not check {item.id}: the backlog could not be read for {target.spec.label}; the item remains visible."
@@ -2579,8 +2847,11 @@ def board_view(homes: list[HomeSnapshot], now: datetime | None = None) -> BoardV
                         and not any(url == pr_url for _link_label, url in item.links)
                     ):
                         item = replace(item, links=[*item.links, ("Pull request", pr_url)])
-            entry = BoardEntry(item, label, refresh_key=f"{board.path}:{item.id}")
+            entry = BoardEntry(item, label, refresh_key=f"{board.path}:{item.id}", key=report_reference(target.spec.label, task_id))
             rank_entry(entry, backlog_item, now, items_of(target).keys(), session)
+            entry.refs = frozenset(task_key(target, ref, snapshots) for ref in entry.refs)
+            if settle_relevance(entry, state, view):
+                continue
             view.groups[item.group].append(entry)
     for snapshot in snapshots:
         for backlog_item in items_of(snapshot).values():
@@ -2593,8 +2864,12 @@ def board_view(homes: list[HomeSnapshot], now: datetime | None = None) -> BoardV
                     detail=f"Backlog item `{backlog_item.id}`", task=backlog_item.id, links=links,
                 ), snapshot.spec.label,
                 refresh_key=f"{snapshot.backlog_path}:{backlog_item.id}",
+                key=report_reference(snapshot.spec.label, backlog_item.id),
             )
             rank_entry(entry, backlog_item, now, items_of(snapshot).keys(), session)
+            entry.refs = frozenset(task_key(snapshot, ref, snapshots) for ref in entry.refs)
+            if settle_relevance(entry, state, view):
+                continue
             view.unsorted.append(entry)
     view.multiple_homes = len({entry.home for entries in view.groups.values() for entry in entries} | {e.home for e in view.unsorted}) > 1
     view.bands = band_entries([*(e for key in BOARD_GROUP_KEYS for e in view.groups[key]), *view.unsorted])
@@ -2605,6 +2880,10 @@ def board_view(homes: list[HomeSnapshot], now: datetime | None = None) -> BoardV
         for entry in view.bands[band]:
             number += 1
             entry.number = number
+    view.stale.sort(key=lambda e: -(e.touched.timestamp() if e.touched else float("-inf")))
+    for entry in view.stale:
+        number += 1
+        entry.number = number
     return view
 
 
@@ -2730,13 +3009,34 @@ def session_desk_html(view: BoardView, now: datetime, show_home: bool) -> str:
     return f'<div class="dashboard-section board-band" id="board-desk">{head}{"".join(body)}</div>'
 
 
-def board_html(view: BoardView, now: datetime, show_all: bool = False) -> str:
+def stale_calls_html(view: BoardView, now: datetime) -> str:
+    if not view.stale:
+        return ""
+    show_home = view.multiple_homes
+    return (
+        '<details class="dashboard-section board-band" id="board-stale" data-refresh-key="board-band:stale">'
+        '<summary><div class="section-head"><div><h2>Marked stale</h2>'
+        '<p>One-off or already decided; Firstmate marked these no longer relevant, so they are off your desk. '
+        'Bring one back with <code>quarterdeck calls set-relevance TASK current</code>.</p></div>'
+        f'<span class="count">{len(view.stale)}</span></div></summary>'
+        + "".join(
+            board_entry_html(entry, show_home, now)
+            + (f'<p class="source-note">Marked stale: {html.escape(entry.reason)}</p>' if entry.reason else "")
+            for entry in view.stale
+        )
+        + "</details>"
+    )
+
+
+def board_html(view: BoardView, now: datetime, show_all: bool = False, related: str = "") -> str:
     out = ['<section class="board" id="board" aria-label="Waiting on you">']
     out.extend(f'<div class="warning"><p>{html.escape(warning)}</p></div>' for warning in view.warnings)
     if view.hidden:
         out.append(f'<p class="source-note">{view.hidden} board item{"s" if view.hidden != 1 else ""} already settled in the backlog and hidden.</p>')
     if not any(view.bands.values()):
         out.append('<p class="empty">Nothing is waiting on you right now.</p>')
+        out.append(related)
+        out.append(stale_calls_html(view, now))
         out.append("</section>")
         return "".join(out)
     show_home = view.multiple_homes
@@ -2750,6 +3050,7 @@ def board_html(view: BoardView, now: datetime, show_all: bool = False) -> str:
         )
         if key == "desk" and view.session is not None:
             out.append(session_desk_html(view, now, show_home))
+            out.append(related)
             continue
         if key == "desk":
             shown = entries if show_all else entries[:DESK_LIMIT]
@@ -2764,6 +3065,7 @@ def board_html(view: BoardView, now: datetime, show_all: bool = False) -> str:
                     f'{"".join(board_entry_html(entry, show_home, now) for entry in more)}</details>'
                 )
             out.append(f'<div class="dashboard-section board-band" id="board-desk">{head}{body}</div>')
+            out.append(related)
             continue
         if not entries:
             continue
@@ -2779,8 +3081,180 @@ def board_html(view: BoardView, now: datetime, show_all: bool = False) -> str:
             f'{" open" if start_open else ""}><summary>{head}</summary>{sweep_line}'
             f'{"".join(board_entry_html(entry, show_home, now) for entry in entries)}</details>'
         )
+    out.append(stale_calls_html(view, now))
     out.append("</section>")
     return "".join(out)
+
+
+# --- Related to this session ---------------------------------------------------
+
+RELATED_WEIGHTS = {"relation": 10, "link": 5, "project": 3, "topic": 2}
+
+
+@dataclass
+class RelatedItem:
+    kind: str  # "report" or "call"
+    key: str
+    title: str
+    home: str
+    why: list[str]
+    score: int
+    when: datetime | None = None
+    report: Report | None = None
+    snapshot: HomeSnapshot | None = None
+    entry: BoardEntry | None = None
+
+
+def dependency_tokens(item: BacklogItem) -> set[str]:
+    """Task ids a backlog item names as what it waits on."""
+    values = [item.blocked_by, *(item.attrs.get(key, "") for key in (
+        "blocked_by", "blocked-by", "waiting_on", "waiting-on", "waiting_for", "waiting-for",
+    ))]
+    values.extend(match.group(1) for match in HOLD_DEPENDENCY_RE.finditer(item.hold_reason))
+    return {value.rstrip(".,;:!?)]}\"'`").strip() for value in values if value.strip()} - {item.id}
+
+
+def related_items(homes: list[HomeSnapshot], view: BoardView | None) -> list[RelatedItem]:
+    """Reports and deferred or held captain calls that relate to the active session, most related first.
+
+    The session is the desk's items plus in-flight backlog work. A candidate relates through an explicit relation
+    set with `quarterdeck reports relate` / `calls relate`, a task link (the report of, a dependency on or from),
+    a shared project, or a shared topic.
+    """
+    snapshots = all_snapshots(homes)
+    if view is None:
+        view = board_view(homes, fallback=True)
+    context_tasks: dict[str, str] = {}
+    context_projects: dict[str, str] = {}
+    context_topics: dict[str, str] = {}
+    context_refs: dict[str, str] = {}
+    topics: dict[str, str] = {}
+    backlog: dict[int, list[BacklogItem]] = {}
+    for snapshot in snapshots:
+        backlog[id(snapshot)] = backlog_items(snapshot.backlog_markdown or "", snapshot) if (
+            snapshot.backlog_markdown is not None and not snapshot.error
+        ) else []
+        for item in backlog[id(snapshot)]:
+            if is_in_flight_state(item.state) and not item.done and not is_cancelled_state(item.state):
+                context_tasks.setdefault(task_key(snapshot, item.id, snapshots), item.title)
+                if item.project:
+                    context_projects.setdefault(item.project, item.title)
+                for token in dependency_tokens(item):
+                    context_refs.setdefault(task_key(snapshot, token, snapshots), item.title)
+    assert view is not None
+    every = [*(e for key in BOARD_GROUP_KEYS for e in view.groups[key]), *view.unsorted]
+    for entry in every:
+        if entry.item.topic:
+            topics.setdefault(entry.key, entry.item.topic)
+    for entry in view.bands["desk"]:
+        task = entry.key
+        context_tasks.setdefault(task, entry.item.title)
+        if entry.item.project:
+            context_projects.setdefault(entry.item.project, entry.item.title)
+        if entry.item.topic:
+            context_topics.setdefault(entry.item.topic, entry.item.title)
+        for token in entry.refs:
+            context_refs.setdefault(token, entry.item.title)
+    candidates = [*view.bands["week"], *view.bands["parked"]]
+    state = next((s.review_state for s in snapshots if s.review_state is not None), None) or ReviewState()
+
+    def evaluate(task: str, project: str, topic: str, refs: set[str], explicit: list[str], own: str) -> tuple[int, list[str]]:
+        score, why = 0, []
+        for target in explicit:
+            if target in context_tasks:
+                score += RELATED_WEIGHTS["relation"]
+                why.append(f"linked to {context_tasks[target]} by Firstmate")
+        if task and task in context_refs and task not in context_tasks:
+            score += RELATED_WEIGHTS["link"]
+            why.append(f"{context_refs[task]} waits on it")
+        for token in sorted(refs & set(context_tasks)):
+            score += RELATED_WEIGHTS["link"]
+            why.append(f"waits on {context_tasks[token]}")
+        if own and own in context_tasks:
+            score += RELATED_WEIGHTS["link"]
+            why.append(f"report for {context_tasks[own]}")
+        if project and project in context_projects:
+            score += RELATED_WEIGHTS["project"]
+            why.append(f"same project: {project}")
+        if topic and topic in context_topics:
+            score += RELATED_WEIGHTS["topic"]
+            why.append(f"same topic: {topic}")
+        return score, why
+
+    found: list[RelatedItem] = []
+    for entry in candidates:
+        task = entry.key
+        if task in context_tasks:
+            continue  # already on the desk or in flight
+        owner = next(s for s in snapshots if report_reference(s.spec.label, task.partition("/")[2]) == task)
+        score, why = evaluate(
+            task, entry.item.project, entry.item.topic, entry.refs,
+            [task_key(owner, target, snapshots) for target in state.relations.get(("call", entry.key), [])], "",
+        )
+        if score:
+            found.append(RelatedItem("call", entry.key, entry.item.title, entry.home, why, score, entry.touched, entry=entry))
+    for snapshot in snapshots:
+        for report in snapshot.reports:
+            if not report.waiting:
+                continue
+            directory = report.path.parent.name
+            item = next((i for i in backlog[id(snapshot)] if (i.report_dir or i.id) == directory or i.id == directory), None)
+            task = task_key(snapshot, item.id if item else directory, snapshots)
+            score, why = evaluate(
+                "", item.project if item else "", topics.get(task, ""),
+                {task_key(snapshot, ref, snapshots) for ref in dependency_tokens(item)} if item else set(),
+                [task_key(snapshot, target, snapshots) for target in report.related_to], task,
+            )
+            if score:
+                found.append(RelatedItem(
+                    "report", report.report_id, report.title, snapshot.spec.label, why, score, report.modified,
+                    report=report, snapshot=snapshot,
+                ))
+    found.sort(key=lambda r: (-r.score, -(r.when.timestamp() if r.when else float("-inf")), r.title))
+    return found
+
+
+def related_html(
+    items: list[RelatedItem], now: datetime, can_mark: bool = False, ambiguous_ids: set[str] | None = None,
+    report_resolution_incomplete: bool = False,
+) -> str:
+    """A collapsed section: never part of the desk, there for when the session turns to something older."""
+    ambiguous_ids = ambiguous_ids or set()
+    cards = []
+    for item in items:
+        chips = "".join(f'<span class="chip">{html.escape(reason)}</span>' for reason in item.why)
+        label = "Report" if item.kind == "report" else "Captain call"
+        when = f" · {html.escape(elapsed_text(item.when, now))} ago" if item.when else ""
+        body, tail = "", ""
+        if item.report is not None and item.snapshot is not None:
+            report = item.report
+            if report.recommendation:
+                body = f'<p><strong>Recommendation:</strong> {html.escape(report.recommendation)}</p>'
+            page = source_page_filename("report", item.snapshot.spec.home or Path("."), report.path)
+            tail = f'<p class="links"><a href="{html.escape(page, quote=True)}">Read report</a></p>'
+            if can_mark:
+                tail += mark_buttons(
+                    report.report_id, ["mark", "discard"], report.fingerprint,
+                    report_mark_unavailable_reason(report.report_id, ambiguous_ids, report_resolution_incomplete),
+                )
+        elif item.entry is not None:
+            entry = item.entry
+            body = f'<p>{html.escape(entry.item.ask)}</p>'
+            if entry.deferred:
+                chips += f'<span class="chip chip-deferred">{html.escape(entry.deferred)}</span>'
+        cards.append(
+            f'<article class="card"><p class="eyebrow">{label} · {html.escape(item.home)}{when}</p>'
+            f'<h3>{html.escape(item.title)}</h3>{body}<div class="board-chips">{chips}</div>{tail}</article>'
+        )
+    content = "".join(cards) or (
+        '<p class="empty">Nothing older relates to what is on your desk or in flight right now.</p>'
+    )
+    return (
+        '<details class="dashboard-section related" id="related" data-refresh-key="related">'
+        f'<summary><h2>Related to this session</h2><span class="count">{len(items)}</span></summary>'
+        '<p>Older reports and deferred or held calls that connect to what you are working on now, most related '
+        f'first. They are not on your desk.</p><div class="cards">{content}</div></details>'
+    )
 
 
 # --- Board writer ------------------------------------------------------------
@@ -3309,7 +3783,7 @@ MARK_BODY_LIMIT = 4096
 
 def make_handler(
     cache: SiteCache,
-    set_mark: Callable[[str, bool, str], Report] | None = None,
+    set_mark: Callable[[str, str, str], Report] | None = None,
 ) -> type[BaseHTTPRequestHandler]:
     """Build the request handler; POST is refused unless set_mark is given."""
     class Handler(BaseHTTPRequestHandler):
@@ -3380,14 +3854,13 @@ def make_handler(
                         or not isinstance(body["report_id"], str) or not isinstance(body["action"], str)
                         or not isinstance(body["fingerprint"], str)
                         or not re.fullmatch(r"[0-9a-f]{64}", body["fingerprint"])
-                        or body["action"] not in {"mark", "unmark"}):
+                        or body["action"] not in REPORT_ACTIONS):
                     raise ValueError
             except (ValueError, UnicodeDecodeError):
-                self.send_text(400, "Expected JSON {\"report_id\": ..., \"fingerprint\": ..., \"action\": \"mark\" | \"unmark\"}\n")
+                self.send_text(400, "Expected JSON {\"report_id\": ..., \"fingerprint\": ..., \"action\": \"mark\" | \"unmark\" | \"discard\" | \"undiscard\"}\n")
                 return
-            reviewed = body["action"] == "mark"
             try:
-                report = set_mark(body["report_id"], reviewed, body["fingerprint"])
+                report = set_mark(body["report_id"], body["action"], body["fingerprint"])
             except ValueError as exc:
                 self.send_text(404 if str(exc).startswith("no report matches") else 409, f"{exc}\n")
                 return
@@ -3396,7 +3869,10 @@ def make_handler(
                 return
             cache.invalidate()
             self.send_text(
-                200, json.dumps({"report_id": report.report_id, "reviewed": reviewed}) + "\n",
+                200, json.dumps({
+                    "report_id": report.report_id, "reviewed": report.reviewed,
+                    "state": report.state,
+                }) + "\n",
                 "application/json; charset=utf-8",
             )
 
@@ -3468,10 +3944,10 @@ def make_server(host: str, port: int, handler: type[BaseHTTPRequestHandler]) -> 
 def serve(args: argparse.Namespace) -> int:
     servers: list[ThreadingHTTPServer] = []
     try:
-        set_mark: Callable[[str, bool, str], Report] | None = None
+        set_mark: Callable[[str, str, str], Report] | None = None
         if getattr(args, "allow_marks", False):
-            set_mark = lambda report_id, reviewed, fingerprint: set_report_mark(  # noqa: E731
-                args, report_id, reviewed, fingerprint
+            set_mark = lambda report_id, action, fingerprint: set_report_action(  # noqa: E731
+                args, report_id, action, fingerprint
             )
         cache = SiteCache(site_builder(args, getattr(args, "allow_marks", False)))
         cache.get()
@@ -3659,7 +4135,10 @@ def url(args: argparse.Namespace) -> int:
 
 COMMAND_DOCS = {
     "render": ["how-to/serve-the-page.md", "how-to/view-in-lavish.md", "how-to/request-lavish-page.md", "explanation/attention-model.md", "reference/cli-and-config.md", "explanation/privacy-and-architecture.md"],
-    "reports": ["how-to/review-reports.md", "reference/cli-and-config.md", "explanation/privacy-and-architecture.md"],
+    "reports": ["how-to/review-reports.md", "how-to/keep-the-desk-relevant.md", "reference/cli-and-config.md", "explanation/privacy-and-architecture.md"],
+    "calls": ["how-to/keep-the-desk-relevant.md", "reference/cli-and-config.md"],
+    "export": ["how-to/use-the-cloud-artifact.md", "reference/cli-and-config.md", "explanation/privacy-and-architecture.md"],
+    "import": ["how-to/use-the-cloud-artifact.md", "reference/cli-and-config.md"],
     "serve": ["how-to/serve-the-page.md", "reference/cli-and-config.md", "explanation/privacy-and-architecture.md"],
     "service": ["how-to/serve-the-page.md", "reference/cli-and-config.md"],
     "url": ["how-to/serve-the-page.md", "reference/cli-and-config.md"],
@@ -3776,12 +4255,10 @@ def reports_list(args: argparse.Namespace) -> int:
             identifiers: dict[str, int] = {}
             for _snapshot, report in reports:
                 identifiers[report.report_id] = identifiers.get(report.report_id, 0) + 1
-            print("ID\tReview state\tTitle\tHome")
+            print("ID\tReview state\tTitle\tHome\tRelevance")
             for snapshot, report in reports:
-                state = "ID collision" if identifiers[report.report_id] > 1 else (
-                    "reviewed" if report.reviewed else "needs review"
-                )
-                print(f"{report.report_id}\t{state}\t{report.title}\t{snapshot.spec.label}")
+                state = "ID collision" if identifiers[report.report_id] > 1 else report.state
+                print(f"{report.report_id}\t{state}\t{report.title}\t{snapshot.spec.label}\t{report.relevance}")
         for snapshot, error in discovery_errors:
             print(f"Discovery error ({snapshot.spec.label}): {error}")
     except (OSError, ValueError) as exc:
@@ -3837,6 +4314,329 @@ def reports_unmark_reviewed(args: argparse.Namespace) -> int:
         print(f"quarterdeck: {exc}", file=sys.stderr)
         return 2
     print(f"Removed the reviewed mark for {report.report_id}.")
+    return 0
+
+
+def reports_discard(args: argparse.Namespace) -> int:
+    try:
+        report = set_report_action(args, args.report_id, "discard")
+    except (OSError, ValueError) as exc:
+        print(f"quarterdeck: {exc}", file=sys.stderr)
+        return 2
+    print(REPORT_ACTIONS["discard"][1].format(id=report.report_id))
+    return 0
+
+
+def reports_undiscard(args: argparse.Namespace) -> int:
+    try:
+        report = set_report_action(args, args.report_id, "undiscard")
+    except (OSError, ValueError) as exc:
+        print(f"quarterdeck: {exc}", file=sys.stderr)
+        return 2
+    print(REPORT_ACTIONS["undiscard"][1].format(id=report.report_id))
+    return 0
+
+
+def reports_set_relevance(args: argparse.Namespace) -> int:
+    try:
+        snapshots, state_path = load_report_snapshots(args)
+        apply_review_marks(snapshots, {})
+        _snapshot, report = unique_report(snapshots, args.report_id)
+        update_relevance(state_path, "report", report.report_id, args.relevance, args.reason or "")
+    except (OSError, ValueError) as exc:
+        print(f"quarterdeck: {exc}", file=sys.stderr)
+        return 2
+    print(f"Marked {report.report_id} {args.relevance}.")
+    return 0
+
+
+def check_relation_task(task: str) -> str:
+    task = task.strip()
+    if not task or any(character.isspace() for character in task):
+        raise ValueError("--to needs a backlog task id")
+    return task
+
+
+def reports_relate(args: argparse.Namespace) -> int:
+    try:
+        task = check_relation_task(args.to)
+        snapshots, state_path = load_report_snapshots(args)
+        apply_review_marks(snapshots, {})
+        _snapshot, report = unique_report(snapshots, args.report_id)
+        update_relation(state_path, "report", report.report_id, task, not args.remove)
+    except (OSError, ValueError) as exc:
+        print(f"quarterdeck: {exc}", file=sys.stderr)
+        return 2
+    print(f"{'Unrelated' if args.remove else 'Related'} {report.report_id} {'from' if args.remove else 'to'} task {task}.")
+    return 0
+
+
+def known_call_keys(snapshots: list[HomeSnapshot]) -> list[str]:
+    """Every <home-label-slug>/<task> a captain call can carry: board items and backlog tasks."""
+    keys: dict[str, None] = {}
+    for snapshot in all_snapshots(snapshots):
+        if snapshot.board is not None and snapshot.board.supported:
+            for item in snapshot.board.items:
+                target, task = task_owner(snapshot, item.task)
+                keys[report_reference(target.spec.label, task)] = None
+        if snapshot.backlog_markdown is not None and not snapshot.error:
+            for item in backlog_items(snapshot.backlog_markdown, snapshot):
+                keys[report_reference(snapshot.spec.label, item.id)] = None
+    return list(keys)
+
+
+def resolve_call_key(snapshots: list[HomeSnapshot], requested: str) -> str:
+    keys = known_call_keys(snapshots)
+    if requested in keys:
+        return requested
+    matches = [key for key in keys if key.partition("/")[2] == requested]
+    if not matches:
+        raise ValueError(f"no captain call or backlog task matches: {requested}")
+    if len(matches) > 1:
+        raise ValueError(f"task is ambiguous across homes: {requested}; use one of: {', '.join(matches)}")
+    return matches[0]
+
+
+def calls_set_relevance(args: argparse.Namespace) -> int:
+    try:
+        snapshots, state_path = load_report_snapshots(args)
+        key = resolve_call_key(snapshots, args.task)
+        update_relevance(state_path, "call", key, args.relevance, args.reason or "")
+    except (OSError, ValueError) as exc:
+        print(f"quarterdeck: {exc}", file=sys.stderr)
+        return 2
+    print(f"Marked call {key} {args.relevance}.")
+    return 0
+
+
+def calls_relate(args: argparse.Namespace) -> int:
+    try:
+        task = check_relation_task(args.to)
+        snapshots, state_path = load_report_snapshots(args)
+        key = resolve_call_key(snapshots, args.task)
+        update_relation(state_path, "call", key, task, not args.remove)
+    except (OSError, ValueError) as exc:
+        print(f"quarterdeck: {exc}", file=sys.stderr)
+        return 2
+    print(f"{'Unrelated' if args.remove else 'Related'} call {key} {'from' if args.remove else 'to'} task {task}.")
+    return 0
+
+
+def calls_list(args: argparse.Namespace) -> int:
+    try:
+        snapshots, _state_path, state = load_report_context(args)
+        view = board_view(snapshots, fallback=True)
+    except (OSError, ValueError) as exc:
+        print(f"quarterdeck: {exc}", file=sys.stderr)
+        return 2
+    assert view is not None
+    entries = [e for band in BOARD_BAND_KEYS for e in view.bands[band]] + view.stale
+    if not entries:
+        print("No captain calls found.")
+        return 0
+    print("ID\tRelevance\tBand\tTitle")
+    stale_keys = {entry.key for entry in view.stale}
+    for entry in entries:
+        band = "stale" if entry.key in stale_keys else entry.band
+        related = ",".join(state.relations.get(("call", entry.key), []))
+        print(f"{entry.key}\t{entry.relevance}\t{band}\t{entry.item.title}" + (f"\trelated: {related}" if related else ""))
+    return 0
+
+
+# --- Snapshot export and action import (the cloud artifact round trip) -------
+
+SNAPSHOT_VERSION = 1
+ACTIONS_VERSION = 1
+ARTIFACT_TEMPLATE = Path(__file__).resolve().parent / "templates" / "artifact.html.tmpl"
+SNAPSHOT_PLACEHOLDER = "__QUARTERDECK_SNAPSHOT__"
+TEMPLATE_TITLE_PLACEHOLDER = "__QUARTERDECK_TITLE__"
+
+
+def iso_or_none(value: datetime | None) -> str | None:
+    return board_time_text(value) if value else None
+
+
+def call_snapshot(entry: BoardEntry, band: str, desk_heading: str, state: ReviewState) -> dict[str, object]:
+    item = entry.item
+    return {
+        "id": entry.key, "title": item.title, "ask": item.ask, "group": item.group, "band": band,
+        "desk_group": desk_heading, "home": entry.home, "project": item.project, "topic": item.topic,
+        "detail": item.detail, "touched_at": iso_or_none(entry.touched), "deferred": entry.deferred,
+        "sweep": entry.sweep, "recommendation": item.recommendation, "brief_url": item.brief_url,
+        "links": [{"label": label, "url": url} for label, url in item.links],
+        "relevance": entry.relevance, "relevance_reason": entry.reason,
+        "related_to": state.relations.get(("call", entry.key), []),
+    }
+
+
+def build_snapshot(homes: list[HomeSnapshot], title: str, now: datetime) -> dict[str, object]:
+    """The data the cloud artifact renders: the desk, this week, related items and the report list. Nothing else."""
+    ambiguous = assign_report_ids(homes)
+    state = next((s.review_state for s in all_snapshots(homes) if s.review_state is not None), None) or ReviewState()
+    view = board_view(homes, now, fallback=True)
+    calls: list[dict[str, object]] = []
+    session: dict[str, object] | None = None
+    assert view is not None
+    headings = {id(e): heading for heading, members in view.desk_groups for e in members}
+    for band in BOARD_BAND_KEYS:
+        calls.extend(call_snapshot(e, band, headings.get(id(e), ""), state) for e in view.bands[band])
+    calls.extend(call_snapshot(e, "stale", "", state) for e in view.stale)
+    if view.session is not None:
+        session = {
+            "idle": view.session.idle, "started_at": iso_or_none(view.session.started),
+            "last_active_at": iso_or_none(view.session.last_active),
+        }
+    reports = [
+        {
+            "id": report.report_id, "title": report.title, "home": snapshot.spec.label,
+            "recommendation": report.recommendation or "", "state": report.state,
+            "fingerprint": report.fingerprint, "relevance": report.relevance,
+            "relevance_reason": report.relevance_reason, "related_to": report.related_to,
+            "modified_at": iso_or_none(report.modified), "ambiguous": report.report_id in ambiguous,
+            "markdown": report.markdown if report.waiting else "",
+        }
+        for snapshot in all_snapshots(homes) for report in snapshot.reports
+    ]
+    related = [
+        {"kind": item.kind, "id": item.key, "title": item.title, "home": item.home, "why": item.why, "score": item.score}
+        for item in related_items(homes, view)
+    ]
+    return {
+        "version": SNAPSHOT_VERSION, "title": title,
+        "generated_at": now.astimezone(timezone.utc).isoformat(timespec="microseconds").replace("+00:00", "Z"),
+        "session": session, "calls": calls, "reports": reports, "related": related,
+    }
+
+
+def artifact_page(snapshot: dict[str, object]) -> str:
+    try:
+        template = ARTIFACT_TEMPLATE.read_text(encoding="utf-8")
+    except OSError as exc:
+        raise ValueError(f"could not read the artifact template {ARTIFACT_TEMPLATE}: {exc}") from exc
+    if template.count(SNAPSHOT_PLACEHOLDER) != 1:
+        raise ValueError(f"{ARTIFACT_TEMPLATE} must contain {SNAPSHOT_PLACEHOLDER} exactly once")
+    payload = json.dumps(snapshot, ensure_ascii=False, separators=(",", ":"))
+    payload = payload.replace("<", "\\u003c").replace(">", "\\u003e").replace("&", "\\u0026").replace("\u2028", "\\u2028").replace("\u2029", "\\u2029")
+    return template.replace(TEMPLATE_TITLE_PLACEHOLDER, html.escape(str(snapshot["title"]))).replace(SNAPSHOT_PLACEHOLDER, payload)
+
+
+def export_snapshot(args: argparse.Namespace) -> int:
+    try:
+        config, homes, _bearings = load_site(args)
+        configured_title = config.get("page_title")
+        title = args.title or (configured_title if isinstance(configured_title, str) else None) or DEFAULT_TITLE
+        snapshot = build_snapshot(homes, title, datetime.now(timezone.utc))
+        document = json.dumps(snapshot, indent=2, ensure_ascii=False) + "\n"
+        outputs: list[Path] = []
+        if args.artifact:
+            page_path = Path(args.artifact).expanduser().resolve()
+            validate_output_path(page_path, homes)
+            page_path.parent.mkdir(parents=True, exist_ok=True)
+            write_generated_page(page_path, artifact_page(snapshot))
+            outputs.append(page_path)
+        if args.output:
+            json_path = Path(args.output).expanduser().resolve()
+            validate_output_path(json_path, homes)
+            json_path.parent.mkdir(parents=True, exist_ok=True)
+            write_generated_page(json_path, document)
+            outputs.append(json_path)
+        if not outputs:
+            sys.stdout.write(document)
+    except (OSError, ValueError) as exc:
+        print(f"quarterdeck: {exc}", file=sys.stderr)
+        return 2
+    for path in outputs:
+        print(path)
+    return 0
+
+
+def parse_artifact_actions(source: str) -> list[dict[str, str]]:
+    """Read the artifact's recorded interactions: a list, or {"actions": [...]}, of report actions."""
+    try:
+        data = json.loads(source)
+    except ValueError as exc:
+        raise ValueError(f"actions file is not valid JSON: {exc}") from exc
+    if isinstance(data, dict):
+        if data.get("version", ACTIONS_VERSION) != ACTIONS_VERSION:
+            raise ValueError(f"unsupported actions version {data.get('version')!r}; expected {ACTIONS_VERSION}")
+        cutoff = data.get("generated_at")
+        if cutoff is not None and (not isinstance(cutoff, str) or parse_board_time(cutoff) is None):
+            raise ValueError("actions file has an invalid generated_at")
+        data = data.get("actions")
+    else:
+        cutoff = None
+    if not isinstance(data, list):
+        raise ValueError("actions file must be a list of actions or an object with an actions list")
+    actions: list[dict[str, str]] = []
+    for index, raw in enumerate(data, start=1):
+        if isinstance(raw, dict) and isinstance(raw.get("data"), dict):
+            raw = raw["data"]  # a database document as listed by the artifact's storage
+        where = f"action {index}"
+        if not isinstance(raw, dict):
+            raise ValueError(f"{where} is not an object")
+        report_id, action, fingerprint = raw.get("report_id"), raw.get("action"), raw.get("fingerprint")
+        at = raw.get("at", "")
+        if not isinstance(report_id, str) or not report_id.strip():
+            raise ValueError(f"{where} has no report_id")
+        if action not in REPORT_ACTIONS:
+            raise ValueError(f"{where} has an unknown action {action!r}; expected one of {', '.join(REPORT_ACTIONS)}")
+        if not isinstance(fingerprint, str) or not FINGERPRINT_RE.fullmatch(fingerprint):
+            raise ValueError(f"{where} needs the report's 64-character fingerprint")
+        if not isinstance(at, str):
+            raise ValueError(f"{where} has a non-text at")
+        resulting_state = raw.get("state")
+        if resulting_state is not None and resulting_state not in (*REPORT_STATES, "needs review"):
+            raise ValueError(f"{where} has an invalid state")
+        if cutoff is not None:
+            when = parse_board_time(at)
+            if when is None:
+                raise ValueError(f"{where} needs a valid at")
+            if when <= parse_board_time(cutoff):
+                continue
+        parsed = {"report_id": report_id.strip(), "action": action, "fingerprint": fingerprint, "at": at}
+        if resulting_state is not None:
+            parsed["state"] = resulting_state
+        actions.append(parsed)
+    return actions
+
+
+def import_actions(args: argparse.Namespace) -> int:
+    """Apply the artifact's recorded mark and discard actions to the local state, oldest first."""
+    try:
+        source = sys.stdin.read() if args.file == "-" else Path(args.file).expanduser().read_text(encoding="utf-8")
+        actions = parse_artifact_actions(source)
+        snapshots, state_path = load_report_snapshots(args)
+        apply_review_marks(snapshots, {})
+        applied = 0
+        skipped: list[str] = []
+        ordered = sorted(enumerate(actions), key=lambda pair: (parse_board_time(pair[1]["at"]) or datetime.min.replace(tzinfo=timezone.utc), pair[0]))
+        for _index, action in ordered:
+            try:
+                if args.dry_run:
+                    _s, report = unique_report(snapshots, action["report_id"])
+                    if report.fingerprint != action["fingerprint"]:
+                        raise ValueError("report changed since the artifact was exported")
+                else:
+                    if "state" in action:
+                        _s, report = unique_report(snapshots, action["report_id"])
+                        if report.fingerprint != action["fingerprint"]:
+                            raise ValueError("report changed since the artifact was exported")
+                        update_report_state(
+                            state_path, report.report_id,
+                            None if action["state"] == "needs review" else action["state"], report.fingerprint,
+                        )
+                    else:
+                        apply_report_action(snapshots, state_path, action["report_id"], action["action"], action["fingerprint"])
+                applied += 1
+            except ValueError as exc:
+                skipped.append(f"{action['report_id']} ({action['action']}): {exc}")
+    except (OSError, ValueError, UnicodeDecodeError) as exc:
+        print(f"quarterdeck: {exc}", file=sys.stderr)
+        return 2
+    verb = "Would apply" if args.dry_run else "Applied"
+    print(f"{verb} {applied} of {len(actions)} artifact action{'s' if len(actions) != 1 else ''}.")
+    for line in skipped:
+        print(f"skipped: {line}")
     return 0
 
 
@@ -3945,7 +4745,7 @@ def load_site(args: argparse.Namespace) -> tuple[dict[str, object], list[HomeSna
     if load_error:
         raise ValueError(load_error)
     state_path = validate_review_state_location(homes)
-    apply_review_marks(homes, load_review_marks(state_path))
+    apply_review_marks(homes, load_review_state(state_path))
     bearings = build_bearings(homes, use_snapshot=not getattr(args, "no_snapshot", False))
     return config, homes, bearings
 
@@ -4092,6 +4892,104 @@ def make_parser() -> argparse.ArgumentParser:
     reports_unmark_parser.add_argument("--home", help="use only this Firstmate home")
     reports_unmark_parser.add_argument("--config", type=Path, help="optional JSON config file")
     reports_unmark_parser.set_defaults(handler=reports_unmark_reviewed)
+
+    def report_target(command_parser: argparse.ArgumentParser) -> None:
+        command_parser.add_argument("--home", help="use only this Firstmate home")
+        command_parser.add_argument("--config", type=Path, help="optional JSON config file")
+
+    discard_parser = reports_subparsers.add_parser(
+        "discard", help="take a report off the list without marking it reviewed",
+        description="Take the report off your list without saying you reviewed it. A report that changes afterwards returns on its own.",
+    )
+    discard_parser.add_argument("report_id", help="stable report ID: <home-label-slug>/<task-id>")
+    report_target(discard_parser)
+    discard_parser.set_defaults(handler=reports_discard)
+
+    undiscard_parser = reports_subparsers.add_parser(
+        "undiscard", help="return a discarded report to the list", description="Remove the discard so the report needs review again.",
+    )
+    undiscard_parser.add_argument("report_id", help="stable report ID: <home-label-slug>/<task-id>")
+    report_target(undiscard_parser)
+    undiscard_parser.set_defaults(handler=reports_undiscard)
+
+    set_relevance_parser = reports_subparsers.add_parser(
+        "set-relevance", help="mark a report current or stale",
+        description="Stale reports (one-offs or already decided) are hidden from the review list by default. Unclassified reports are current.",
+    )
+    set_relevance_parser.add_argument("report_id", help="stable report ID: <home-label-slug>/<task-id>")
+    set_relevance_parser.add_argument("relevance", choices=RELEVANCE_VALUES)
+    set_relevance_parser.add_argument("--reason", help="why, shown beside the stale report")
+    report_target(set_relevance_parser)
+    set_relevance_parser.set_defaults(handler=reports_set_relevance)
+
+    relate_parser = reports_subparsers.add_parser(
+        "relate", help="relate a report to a task",
+        description="Record that the report relates to TASK, so it appears under 'Related to this session' while that task is on the desk or in flight.",
+    )
+    relate_parser.add_argument("report_id", help="stable report ID: <home-label-slug>/<task-id>")
+    relate_parser.add_argument("--to", required=True, metavar="TASK", help="backlog task id")
+    relate_parser.add_argument("--remove", action="store_true", help="remove the relation instead")
+    report_target(relate_parser)
+    relate_parser.set_defaults(handler=reports_relate)
+
+    calls_parser = subparsers.add_parser(
+        "calls", help="set relevance and relations for past captain calls",
+        description="Keep past captain calls (board items and held backlog items) relevant. Stored in Quarterdeck's local state, never in a home.",
+    )
+    command_parsers["calls"] = calls_parser
+    calls_subparsers = calls_parser.add_subparsers(dest="calls_command", required=True)
+    calls_list_parser = calls_subparsers.add_parser("list", help="list captain calls and their relevance", description="List captain calls with relevance and band.")
+    report_target(calls_list_parser)
+    calls_list_parser.set_defaults(handler=calls_list)
+    calls_relevance_parser = calls_subparsers.add_parser(
+        "set-relevance", help="mark a captain call current or stale",
+        description="Stale calls (one-offs or already decided) are set aside from the desk, week and parked bands. Unclassified calls are current.",
+    )
+    calls_relevance_parser.add_argument("task", help="backlog task id, or <home-label-slug>/<task-id>")
+    calls_relevance_parser.add_argument("relevance", choices=RELEVANCE_VALUES)
+    calls_relevance_parser.add_argument("--reason", help="why, shown beside the stale call")
+    report_target(calls_relevance_parser)
+    calls_relevance_parser.set_defaults(handler=calls_set_relevance)
+    calls_relate_parser = calls_subparsers.add_parser(
+        "relate", help="relate a captain call to a task",
+        description="Record that the call relates to TASK, so it appears under 'Related to this session' while that task is on the desk or in flight.",
+    )
+    calls_relate_parser.add_argument("task", help="backlog task id, or <home-label-slug>/<task-id>")
+    calls_relate_parser.add_argument("--to", required=True, metavar="TASK", help="backlog task id")
+    calls_relate_parser.add_argument("--remove", action="store_true", help="remove the relation instead")
+    report_target(calls_relate_parser)
+    calls_relate_parser.set_defaults(handler=calls_relate)
+
+    export_parser = subparsers.add_parser(
+        "export", help="write the data snapshot for the cloud artifact",
+        description=(
+            "Write the desk, this week, related items and the report list as JSON (stdout by default), and with "
+            "--artifact a ready-to-publish page built from templates/artifact.html.tmpl. Reads homes only; "
+            "report text is not included."
+        ),
+    )
+    command_parsers["export"] = export_parser
+    export_parser.add_argument("--output", help="write the snapshot JSON to this file")
+    export_parser.add_argument("--artifact", help="write the artifact page (snapshot embedded) to this file")
+    export_parser.add_argument("--home", help="use this Firstmate home instead of configured homes or FM_HOME")
+    export_parser.add_argument("--config", type=Path, help="optional JSON config file")
+    export_parser.add_argument("--title", help="override the page title")
+    export_parser.add_argument("--no-snapshot", action="store_true", help="skip the Firstmate bearings snapshot script")
+    export_parser.set_defaults(handler=export_snapshot)
+
+    import_parser = subparsers.add_parser(
+        "import", help="apply the cloud artifact's mark and discard actions",
+        description=(
+            "Apply the actions the artifact recorded (a JSON list, or {\"actions\": [...]}) to Quarterdeck's local "
+            "state, oldest first. An action whose report changed since the export is skipped."
+        ),
+    )
+    command_parsers["import"] = import_parser
+    import_parser.add_argument("file", help="actions JSON file, or - for standard input")
+    import_parser.add_argument("--dry-run", action="store_true", help="report what would apply without changing state")
+    import_parser.add_argument("--home", help="use this Firstmate home instead of configured homes or FM_HOME")
+    import_parser.add_argument("--config", type=Path, help="optional JSON config file")
+    import_parser.set_defaults(handler=import_actions)
 
     add_parser = subparsers.add_parser("add", help="register a Firstmate home", description="Validate and register a Firstmate home.")
     command_parsers["add"] = add_parser
