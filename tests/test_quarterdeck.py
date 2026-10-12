@@ -3314,6 +3314,14 @@ RELEVANCE_BACKLOG = """# Backlog
 """
 
 
+FAKE_INBOX = """#!/bin/sh
+printf '%s\\n' "$@" >> "$QD_TEST_LOG"
+printf 'home=%s\\n' "$FM_HOME" >> "$QD_TEST_LOG"
+[ -z "$QD_TEST_FAIL" ] || exit "$QD_TEST_FAIL"
+echo '{"outcome":"created"}'
+"""
+
+
 class DeskRelevanceTests(unittest.TestCase):
     """Discard, relevance, relations, the related section, and the artifact round trip."""
 
@@ -3323,7 +3331,13 @@ class DeskRelevanceTests(unittest.TestCase):
         self.root = Path(self.temp.name)
         self.state = self.root / "state"
         self.home = self.make_home()
-        patcher = patch.dict(os.environ, {"XDG_STATE_HOME": str(self.state), "HOME": str(self.root)})
+        script = self.home / "bin" / "fm-inbox.sh"
+        script.parent.mkdir()
+        script.write_text(FAKE_INBOX, encoding="utf-8")
+        script.chmod(0o755)
+        self.log = self.root / "inbox.log"
+        env = {"XDG_STATE_HOME": str(self.state), "HOME": str(self.root), "QD_TEST_LOG": str(self.log)}
+        patcher = patch.dict(os.environ, env)
         patcher.start()
         self.addCleanup(patcher.stop)
 
@@ -3508,7 +3522,8 @@ class DeskRelevanceTests(unittest.TestCase):
         snapshot = json.loads(self.cli("export", "--no-snapshot").stdout)
         self.assertEqual(snapshot["version"], 1)
         self.assertEqual(
-            set(snapshot), {"version", "title", "generated_at", "session", "calls", "reports", "related"}
+            set(snapshot),
+            {"version", "title", "generated_at", "session", "calls", "reports", "related", "reactions", "delivered"},
         )
         bands = {call["id"]: call["band"] for call in snapshot["calls"]}
         self.assertEqual(bands["invented-home/harbor-hold"], "desk")
@@ -3853,6 +3868,364 @@ async function click(report, text) {
         status, _ = request("POST", quarterdeck.MARK_ENDPOINT,
                             {"report_id": report_id, "fingerprint": "0" * 64, "action": "undiscard"})
         self.assertEqual(status, 409)
+
+
+    def logged(self) -> list[str]:
+        return self.log.read_text(encoding="utf-8").splitlines() if self.log.exists() else []
+
+    def review_state(self) -> "quarterdeck.ReviewState":
+        return quarterdeck.load_review_state(quarterdeck.review_state_path())
+
+    def serve(self):
+        import argparse
+        from http.server import ThreadingHTTPServer
+        args = argparse.Namespace(home=str(self.home), config=None, title=None, no_snapshot=True)
+        cache = quarterdeck.SiteCache(quarterdeck.site_builder(args, True), 30)
+        handler = quarterdeck.make_handler(
+            cache, lambda *a: quarterdeck.set_report_action(args, *a),
+            lambda raw: quarterdeck.send_reaction(args, raw),
+        )
+        server = ThreadingHTTPServer(("127.0.0.1", 0), handler)
+        threading.Thread(target=server.serve_forever, daemon=True).start()
+        self.addCleanup(lambda: (server.shutdown(), server.server_close()))
+        port = server.server_address[1]
+
+        def request(method: str, path: str, body: object = None, headers: dict[str, str] | None = None):
+            import http.client
+            connection = http.client.HTTPConnection("127.0.0.1", port, timeout=10)
+            sent = {"Content-Type": "application/json", **(headers or {})}
+            connection.request(method, path, json.dumps(body) if body is not None else None, sent)
+            response = connection.getresponse()
+            text = response.read().decode("utf-8")
+            connection.close()
+            return response.status, text
+        return request
+
+    def test_served_page_shows_reactions_on_calls_related_items_and_reports_only_with_marks_enabled(self) -> None:
+        request = self.serve()
+        page = request("GET", "/")[1]
+        self.assertGreaterEqual(page.count('data-reaction-kind="call"'), 2)
+        self.assertIn('data-reaction-kind="report"', page)
+        for name in quarterdeck.REACTION_LABELS:
+            self.assertIn(f'data-reaction-choice="{name}"', page)
+        self.assertIn('data-reaction-item="invented-home/harbor-hold"', page)
+        self.assertIn('data-reaction-item="invented-home/lone-report"', page)
+        related = page[page.index('id="related"'):]
+        self.assertIn('data-reaction-kind="call"', related.split("</details>")[0])
+        self.assertNotIn("data-reaction-kind", self.page())  # a rendered file has no server to send to
+
+    def test_sending_a_reaction_delivers_one_note_records_it_and_shows_it_on_the_card(self) -> None:
+        request = self.serve()
+        status, body = request("POST", quarterdeck.REACTION_ENDPOINT, {
+            "id": "page-0001", "kind": "call", "item_id": "invented-home/harbor-hold", "reaction": "approve",
+            "text": "Go  with\nteal.",
+        })
+        self.assertEqual(status, 200, body)
+        sent = json.loads(body)
+        self.assertEqual((sent["task"], sent["reaction"], sent["text"], sent["source"]),
+                         ("harbor-hold", "approve", "Go with teal.", "page"))
+        lines = self.logged()
+        self.assertEqual(sent["id"], "page-0001")
+        self.assertEqual(lines[:5], ["note", "--request-id", "qd-page-0001", "--json", "--"])
+        self.assertEqual(len(lines), 7)  # five option lines, one note body, then the home
+        note = lines[5]
+        for part in ("Approve", "call invented-home/harbor-hold", "task harbor-hold", sent["at"], '"Go with teal."'):
+            self.assertIn(part, note)
+        self.assertEqual(lines[6], f"home={self.home}")
+        self.assertEqual(self.review_state().reactions[("call", "invented-home/harbor-hold")]["id"], sent["id"])
+        page = request("GET", "/")[1]
+        self.assertIn("Latest reaction: Approve: Go with teal. (from this page", page)
+
+    def test_reports_can_be_reacted_to_and_a_reply_needs_no_reaction(self) -> None:
+        request = self.serve()
+        status, body = request("POST", quarterdeck.REACTION_ENDPOINT, {
+            "id": "page-0002", "kind": "report", "item_id": "invented-home/lone-report", "reaction": "",
+            "text": "Why option A?",
+        })
+        self.assertEqual(status, 200, body)
+        self.assertIn("reply on report invented-home/lone-report (task lone-report)", self.logged()[5])
+        self.assertIn("Latest reaction: Why option A?", request("GET", "/")[1])
+
+    def test_a_report_reaction_names_the_backlog_task_that_owns_the_report(self) -> None:
+        backlog = self.home / "data" / "backlog.md"
+        backlog.write_text(backlog.read_text(encoding="utf-8")
+                           + "- [ ] lone-report - Lone report: see data/tide-note/report.md (repo: harbor-demo)\n"
+                           + "- [ ] harbor-choice - Harbor choice: see data/lone-report/report.md (repo: harbor-demo)\n",
+                           encoding="utf-8")
+        request = self.serve()
+        status, body = request("POST", quarterdeck.REACTION_ENDPOINT, {
+            "id": "page-0005", "kind": "report", "item_id": "invented-home/lone-report", "reaction": "approve", "text": "",
+        })
+        self.assertEqual(status, 200, body)
+        self.assertEqual(json.loads(body)["task"], "harbor-choice")
+        self.assertIn("(task harbor-choice)", self.logged()[5])
+
+    def test_reaction_route_refuses_bad_origin_bad_bodies_unknown_items_and_failed_delivery(self) -> None:
+        request = self.serve()
+        good = {"id": "page-0003", "kind": "call", "item_id": "invented-home/harbor-hold", "reaction": "hold", "text": ""}
+        self.assertEqual(request("POST", quarterdeck.REACTION_ENDPOINT, good, {"Origin": "http://evil.example"})[0], 403)
+        self.assertEqual(request("POST", quarterdeck.REACTION_ENDPOINT, good, {"Sec-Fetch-Site": "cross-site"})[0], 403)
+        self.assertEqual(request("POST", quarterdeck.REACTION_ENDPOINT, good, {"Content-Type": "text/plain"})[0], 415)
+        for body in ({**good, "reaction": "banish"}, {**good, "reaction": "", "text": ""}, {**good, "kind": "task"},
+                     {**good, "text": "x" * 1001}, {**good, "extra": "1"}, {"kind": "call"}, {**good, "text": 5},
+                     {**good, "id": "bad id"}, {**good, "id": "short"}, {k: v for k, v in good.items() if k != "id"}):
+            self.assertEqual(request("POST", quarterdeck.REACTION_ENDPOINT, body)[0], 400, body)
+        self.assertEqual(request("POST", quarterdeck.REACTION_ENDPOINT, {**good, "item_id": "invented-home/nope"})[0], 404)
+        self.assertEqual(request("POST", quarterdeck.REACTION_ENDPOINT,
+                                 {**good, "kind": "report", "item_id": "invented-home/nope"})[0], 404)
+        self.assertEqual(self.logged(), [])
+        with patch.dict(os.environ, {"QD_TEST_FAIL": "1"}):
+            status, body = request("POST", quarterdeck.REACTION_ENDPOINT, good)
+        self.assertEqual(status, 502, body)
+        self.assertEqual(self.review_state().reactions, {})  # an undelivered reaction is not recorded
+        with patch.dict(os.environ, {"QD_TEST_FAIL": "3"}):
+            self.assertIn("could not wake", request("POST", quarterdeck.REACTION_ENDPOINT, good)[1])
+        self.assertEqual(request("POST", quarterdeck.REACTION_ENDPOINT, good)[0], 200)
+        request_ids = [line for line in self.logged() if line.startswith("qd-")]
+        self.assertEqual(request_ids, ["qd-page-0003"] * 3)  # every retry reuses the page's id, so fm-inbox dedupes it
+
+    def test_reaction_route_is_absent_without_marks_and_a_home_without_the_script_cannot_deliver(self) -> None:
+        from http.server import ThreadingHTTPServer
+        import http.client
+        read_only = ThreadingHTTPServer(
+            ("127.0.0.1", 0), quarterdeck.make_handler(quarterdeck.SiteCache(lambda: {"index.html": "ok"}))
+        )
+        threading.Thread(target=read_only.serve_forever, daemon=True).start()
+        self.addCleanup(lambda: (read_only.shutdown(), read_only.server_close()))
+        connection = http.client.HTTPConnection("127.0.0.1", read_only.server_address[1], timeout=10)
+        connection.request("POST", quarterdeck.REACTION_ENDPOINT, "{}", {"Content-Type": "application/json"})
+        self.assertEqual(connection.getresponse().status, 405)
+        connection.close()
+        (self.home / "bin" / "fm-inbox.sh").unlink()
+        request = self.serve()
+        status, body = request("POST", quarterdeck.REACTION_ENDPOINT, {
+            "id": "page-0004", "kind": "call", "item_id": "invented-home/harbor-hold", "reaction": "hold", "text": "",
+        })
+        self.assertEqual(status, 502)
+        self.assertIn("no executable bin/fm-inbox.sh", body)
+        self.assertNotIn("data-reaction-kind", self.page())
+
+    def test_import_delivers_each_artifact_reaction_once(self) -> None:
+        def doc(reaction_id: str, item: str, kind: str = "call", **extra: object) -> dict[str, object]:
+            return {"version": 1, "id": reaction_id, "item_id": item, "kind": kind, "task": "ignored",
+                    "reaction": "not-now", "text": "later", "at": "2026-10-12T10:00:00Z", "source": "artifact", **extra}
+        documents = [
+            {"id": "x", "data": doc("react-0002", "invented-home/tide-hold", at="2026-10-12T11:00:00Z")},
+            doc("react-0001", "invented-home/harbor-hold"),
+            doc("react-0003", "invented-home/nowhere"),
+            doc("react-0004", "invented-home/lone-report", "report", reaction="", text="Which option?"),
+            doc("bad id", "invented-home/harbor-hold"),
+            doc("react-0005", "invented-home/harbor-hold", reaction="banish"),
+        ]
+        path = self.root / "reactions.json"
+        path.write_text(json.dumps({"version": 1, "reactions": documents}), encoding="utf-8")
+        dry = self.cli("reactions", "import", str(path), "--dry-run").stdout
+        self.assertIn("Would deliver 3 of 6", dry)
+        self.assertEqual(self.logged(), [])
+        result = self.cli("reactions", "import", str(path)).stdout
+        self.assertIn("Delivered 3 of 6", result)
+        self.assertIn("invented-home/nowhere", result)
+        self.assertEqual(result.count("skipped:"), 3)
+        lines = self.logged()
+        request_ids = [line for line in lines if line.startswith("qd-")]
+        self.assertEqual(request_ids, ["qd-react-0001", "qd-react-0004", "qd-react-0002"])  # oldest first
+        self.assertIn("task harbor-hold", lines[lines.index("qd-react-0001") + 3])
+        self.assertIn("(task lone-report)", lines[lines.index("qd-react-0004") + 3])
+        again = self.cli("reactions", "import", str(path)).stdout
+        self.assertIn("Delivered 0 of 6", again)
+        self.assertIn("react-0001 (call invented-home/harbor-hold): already delivered", again)
+        self.assertEqual(len([line for line in self.logged() if line.startswith("qd-")]), 3)
+        state = self.review_state()
+        self.assertEqual(state.reactions[("call", "invented-home/tide-hold")]["source"], "artifact")
+        self.assertEqual({i for ids in state.delivered.values() for i in ids}, {"react-0001", "react-0002", "react-0004"})
+        snapshot = json.loads(self.cli("export", "--no-snapshot").stdout)
+        self.assertEqual({r["item_id"] for r in snapshot["reactions"]},
+                         {"invented-home/tide-hold", "invented-home/harbor-hold", "invented-home/lone-report"})
+        self.assertEqual(set(snapshot["delivered"]), {"react-0001", "react-0002", "react-0004"})
+
+    def test_reaction_times_are_normalized_so_the_latest_reaction_is_the_newest(self) -> None:
+        documents = [
+            {"id": "react-late", "item_id": "invented-home/harbor-hold", "kind": "call", "reaction": "approve",
+             "text": "", "at": "2026-10-12T10:00:00.500Z"},
+            {"id": "react-early", "item_id": "invented-home/harbor-hold", "kind": "call", "reaction": "hold",
+             "text": "", "at": "2026-10-12T11:00:00+01:00"},
+        ]
+        path = self.root / "reactions.json"
+        path.write_text(json.dumps(documents), encoding="utf-8")
+        self.assertIn("Delivered 2 of 2", self.cli("reactions", "import", str(path)).stdout)
+        state = self.review_state()
+        latest = state.reactions[("call", "invented-home/harbor-hold")]
+        self.assertEqual((latest["id"], latest["at"]), ("react-late", "2026-10-12T10:00:00.500Z"))
+        self.assertEqual(state.delivered[("call", "invented-home/harbor-hold")], ["react-early", "react-late"])
+
+    def test_export_carries_only_reactions_for_items_the_artifact_shows(self) -> None:
+        quarterdeck.store_reaction(quarterdeck.review_state_path(), {
+            "id": "react-elsewhere", "item_id": "other-home/private-task", "kind": "call", "task": "private-task",
+            "reaction": "", "text": "private reply", "at": "2026-10-12T10:00:00.000Z", "source": "page",
+        })
+        quarterdeck.store_reaction(quarterdeck.review_state_path(), {
+            "id": "react-shown", "item_id": "invented-home/harbor-hold", "kind": "call", "task": "harbor-hold",
+            "reaction": "hold", "text": "", "at": "2026-10-12T10:00:00.000Z", "source": "page",
+        })
+        snapshot = json.loads(self.cli("export", "--no-snapshot").stdout)
+        self.assertEqual([r["item_id"] for r in snapshot["reactions"]], ["invented-home/harbor-hold"])
+        self.assertEqual(snapshot["delivered"], ["react-shown"])
+        self.assertNotIn("private reply", quarterdeck.artifact_page(snapshot))
+
+    def test_call_reactions_go_to_the_home_that_owns_the_call_and_refuse_ambiguous_labels(self) -> None:
+        second = self.root / "second-home"
+        (second / "data").mkdir(parents=True)
+        (second / "data" / "backlog.md").write_text(
+            "# Backlog\n\n## Queued\n\n- [ ] only-second - Only second: a task (repo: harbor-demo)\n"
+            "- [ ] tide-note - Tide note: a second copy (repo: harbor-demo)\n",
+            encoding="utf-8",
+        )
+        snapshots = [quarterdeck.load_home_snapshot(quarterdeck.HomeSpec("Dock", home, None))
+                     for home in (self.home, second)]
+        owner, task = quarterdeck.reaction_target(snapshots, "call", "dock/only-second")
+        self.assertEqual((owner.spec.home, task), (second, "only-second"))
+        self.assertEqual(quarterdeck.reaction_target(snapshots, "call", "dock/harbor-hold")[0].spec.home, self.home)
+        with self.assertRaisesRegex(ValueError, "ambiguous"):
+            quarterdeck.reaction_target(snapshots, "call", "dock/tide-note")
+
+    def test_import_keeps_a_failed_delivery_for_retry_and_rejects_malformed_files(self) -> None:
+        document = {"id": "react-0009", "item_id": "invented-home/harbor-hold", "kind": "call", "reaction": "hold",
+                    "text": "", "at": "2026-10-12T10:00:00Z"}
+        path = self.root / "reactions.json"
+        path.write_text(json.dumps([document]), encoding="utf-8")
+        with patch.dict(os.environ, {"QD_TEST_FAIL": "1"}):
+            self.assertIn("skipped: react-0009", self.cli("reactions", "import", str(path)).stdout)
+        self.assertEqual(self.review_state().delivered, {})
+        self.assertIn("Delivered 1 of 1", self.cli("reactions", "import", str(path)).stdout)
+        for name, content in {"not-json": "{", "wrong-shape": json.dumps({"reactions": "x"}),
+                              "version": json.dumps({"version": 2, "reactions": []})}.items():
+            with self.subTest(name):
+                bad = self.root / f"{name}.json"
+                bad.write_text(content, encoding="utf-8")
+                self.cli("reactions", "import", str(bad), expect=2)
+
+    @unittest.skipUnless(shutil.which("node"), "Node is required to execute the generated artifact")
+    def test_artifact_sends_reactions_to_the_inbox_collection_and_opens_the_composer(self) -> None:
+        snapshot = json.loads(self.cli("export", "--no-snapshot").stdout)
+        snapshot["reactions"] = [{"kind": "call", "item_id": "invented-home/tide-hold", "reaction": "hold",
+                                  "text": "from the page", "at": "2000-01-02T00:00:00Z", "source": "page"}]
+        snapshot["delivered"] = []
+        page = quarterdeck.artifact_page(snapshot)
+        harness = r"""
+const assert = require('node:assert/strict');
+const page = require('node:fs').readFileSync(0, 'utf8');
+const payload = page.match(/<script type="application\/json" id="qd-snapshot">([\s\S]*?)<\/script>/)[1];
+class Element {
+  constructor(tag) { this.tag = tag; this.children = []; this.attrs = {}; this.listeners = {}; this._text = ''; }
+  set textContent(value) { this._text = String(value); this.children = []; }
+  get textContent() { return this._text + this.children.map(c => c.textContent).join(''); }
+  setAttribute(key, value) { this.attrs[key] = value; if (key === 'id') this.id = value; }
+  getAttribute(key) { return this.attrs[key]; }
+  appendChild(child) { this.children.push(child); }
+  addEventListener(name, callback) { this.listeners[name] = callback; }
+  querySelectorAll(tag) { return this.children.flatMap(c => [ ...(c.tag === tag ? [c] : []), ...c.querySelectorAll(tag) ]); }
+}
+const elements = Object.fromEntries(['qd-snapshot', 'root', 'title', 'generated', 'sync'].map(id => [id, new Element('div')]));
+elements['qd-snapshot'].textContent = payload;
+global.document = {createElement: tag => new Element(tag), getElementById: id => elements[id]};
+const written = {};
+const composed = [];
+let inboxCallback;
+const db = {
+  collection: name => ({onSnapshot: callback => { if (name === 'qd-inbox') inboxCallback = callback; else callback({docs: []}); }}),
+  doc: path => ({set: data => {
+    attempts.push(path);
+    if (nextSet) { const pending = nextSet; nextSet = null; return pending(); }
+    written[path] = data; return Promise.resolve();
+  }})
+};
+const attempts = [];
+let nextSet = null;
+let downloaded;
+global.claude = {use: async name => name === 'db' ? db
+  : name === 'comments' ? {openComposer: async target => { composed.push(target); return {opened: true}; }}
+  : {save: async data => { downloaded = JSON.parse(data.data); }}};
+global.window = {claude};
+require('node:vm').runInThisContext(page.match(/<script>([\s\S]*?)<\/script>/)[1]);
+const flush = async () => {for (let i = 0; i < 8; i++) await Promise.resolve();};
+const cards = () => elements.root.querySelectorAll('article');
+const card = title => cards().find(c => c.children.some(n => n.tag === 'h3' && n.textContent === title));
+const button = (c, text) => c.querySelectorAll('button').find(b => b.textContent === text);
+(async () => {
+  await flush();
+  const tide = card('Tide table');
+  assert.ok(tide.textContent.includes('Latest reaction: Hold: from the page (from the local page'));
+  const harbor = card('Quay colour');
+  for (const label of ['Approve', 'Hold', 'Not now', 'Question', 'Send', 'Discuss with Firstmate']) assert.ok(button(harbor, label), label);
+  button(harbor, 'Send').listeners.click();
+  assert.equal(Object.keys(written).length, 0);  // nothing to send yet
+  assert.ok(harbor.textContent.includes('Pick a reaction or write a reply first.'));
+  button(harbor, 'Approve').listeners.click();
+  const input = harbor.querySelectorAll('input')[0];
+  input.value = '  Go  with teal '; input.listeners.input();
+  button(harbor, 'Send').listeners.click();
+  await flush();
+  const paths = Object.keys(written);
+  assert.equal(paths.length, 1);
+  const data = written[paths[0]];
+  assert.match(paths[0], /^qd-inbox\/[A-Za-z0-9._-]{8,64}$/);
+  assert.equal(paths[0], 'qd-inbox/' + data.id);
+  assert.deepEqual([data.kind, data.item_id, data.reaction, data.text, data.source, data.version],
+    ['call', 'invented-home/harbor-hold', 'approve', 'Go with teal', 'artifact', 1]);
+  assert.equal(data.task, undefined);
+  assert.ok(!Number.isNaN(Date.parse(data.at)));
+  assert.ok(card('Quay colour').textContent.includes('Latest reaction: Approve: Go with teal (from the artifact'));
+  button(card('Quay colour'), 'Discuss with Firstmate').listeners.click();
+  await flush();
+  assert.equal(composed.length, 1);
+  assert.ok(composed[0].element);
+  const save = elements.root.querySelectorAll('button').find(b => b.textContent.startsWith('Download 1 recorded reaction'));
+  save.listeners.click(); await flush();
+  assert.equal(downloaded.version, 1);
+  assert.deepEqual(downloaded.reactions.map(r => r.id), [data.id]);
+  const exported = downloaded;
+  const tideCard = () => card('Tide table');
+  const sync = () => inboxCallback({docs: Object.values(written).map(d => ({data: () => d}))});
+  button(tideCard(), 'Hold').listeners.click();
+  tideCard().querySelectorAll('input')[0].value = 'wait'; tideCard().querySelectorAll('input')[0].listeners.input();
+  let rejectSet;
+  nextSet = () => new Promise((_, reject) => { rejectSet = reject; });
+  button(tideCard(), 'Send').listeners.click();
+  sync();  // a re-render while the send is pending keeps the composer locked
+  assert.ok(button(tideCard(), 'Send').disabled && button(tideCard(), 'Approve').disabled && tideCard().querySelectorAll('input')[0].disabled);
+  assert.ok(tideCard().textContent.includes('Sending…'));
+  rejectSet(new Error('offline')); await flush();
+  assert.ok(tideCard().textContent.includes('Could not send: offline'));
+  assert.ok(!button(tideCard(), 'Send').disabled);
+  assert.equal(tideCard().querySelectorAll('input')[0].value, 'wait');
+  nextSet = () => Promise.reject(new Error('offline'));
+  button(tideCard(), 'Send').listeners.click(); await flush();
+  assert.equal(attempts.at(-1), attempts.at(-2));  // an unchanged retry reuses its id
+  button(tideCard(), 'Not now').listeners.click();
+  button(tideCard(), 'Send').listeners.click(); await flush();
+  assert.notEqual(attempts.at(-1), attempts.at(-2));  // an edited reaction gets a new id
+  assert.equal(written[attempts.at(-1)].reaction, 'not-now');
+  const heading = c => c.children.find(n => n.tag === 'h3').textContent;
+  const twice = cards().map(heading).find(title => cards().filter(c => heading(c) === title).length > 1);
+  assert.ok(twice, 'an item shown on two cards');
+  const [first, second] = cards().filter(c => heading(c) === twice);
+  const firstInput = first.querySelectorAll('input')[0];
+  const secondInput = second.querySelectorAll('input')[0];
+  firstInput.value = 'Wait'; firstInput.listeners.input();
+  secondInput.value = 'Proceed'; secondInput.listeners.input();
+  assert.equal(firstInput.value, 'Proceed');  // every copy shows the draft Send would submit
+  button(second, 'Question').listeners.click();
+  assert.equal(button(first, 'Question').getAttribute('aria-pressed'), 'true');
+  process.stdout.write(JSON.stringify(exported));
+})().catch(error => {process.stderr.write(error.stack); process.exitCode = 1;});
+"""
+        result = subprocess.run(["node", "-e", harness], input=page, capture_output=True, text=True, check=False)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        downloaded = self.root / "reactions.json"
+        downloaded.write_text(result.stdout, encoding="utf-8")
+        self.assertIn("Delivered 1 of 1", self.cli("reactions", "import", str(downloaded)).stdout)
+        self.assertIn("Approve on call invented-home/harbor-hold (task harbor-hold)", self.logged()[5])
+        self.assertIn("Go with teal", self.logged()[5])
 
 
 class PrivacyGuardTests(unittest.TestCase):

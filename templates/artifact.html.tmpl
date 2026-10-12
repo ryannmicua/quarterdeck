@@ -3,9 +3,12 @@
   Quarterdeck cloud artifact template, version 1.
   `quarterdeck export --artifact FILE` fills the title and snapshot
   placeholders below and writes the page outside any repository. Publish the
-  result as a private Claude artifact with capabilities {db: {}, downloads: true}.
-  Interactions are stored in the artifact's own shared database (collection
-  "qd-actions") and applied back with `quarterdeck import`.
+  result as a private Claude artifact with capabilities
+  {db: {}, downloads: true, comments: {composer_only: true}}.
+  Report clicks are stored in the artifact's own shared database (collection
+  "qd-actions") and applied back with `quarterdeck import`. Reactions and
+  replies are stored in collection "qd-inbox" and delivered to Firstmate with
+  `quarterdeck reactions import`.
   See docs/how-to/use-the-cloud-artifact.md.
 -->
 <html lang="en">
@@ -55,6 +58,12 @@ a { color: var(--accent); font-weight: 650; }
 .sub { margin: 1rem 0 .3rem; font-size: .95rem; color: var(--accent); }
 .status { color: var(--muted); font-size: .85rem; }
 footer { border-top: 1px solid var(--line); margin-top: 3rem; padding-top: 1rem; color: var(--muted); font-size: .85rem; }
+.reaction { margin-top: .6rem; }
+.reaction .latest { margin: .3rem 0; color: var(--muted); font-size: .85rem; }
+.reaction .choices { display: flex; flex-wrap: wrap; gap: .4rem; }
+.reaction button[aria-pressed="true"] { background: var(--accent); color: var(--surface); }
+.reaction .reply { display: flex; flex-wrap: wrap; gap: .5rem; align-items: center; margin-top: .5rem; }
+.reaction input[type="text"] { flex: 1 1 14rem; min-width: 0; min-height: 44px; padding: 0 .6rem; border: 1px solid var(--line); border-radius: 8px; background: var(--surface); color: var(--fg); font: inherit; font-size: .9rem; }
 .report-body { white-space: pre-wrap; overflow-wrap: anywhere; font: inherit; }
 </style>
 </head>
@@ -71,9 +80,16 @@ footer { border-top: 1px solid var(--line); margin-top: 3rem; padding-top: 1rem;
   "use strict";
   var snapshot = JSON.parse(document.getElementById("qd-snapshot").textContent);
   var COLLECTION = "qd-actions";
+  var INBOX = "qd-inbox";
+  var REACTIONS = [["approve", "Approve"], ["hold", "Hold"], ["not-now", "Not now"], ["question", "Question"]];
+  var TEXT_LIMIT = 1000;
   var actionDocs = {};   // report id -> latest recorded action document
+  var inboxDocs = {};    // reaction id -> recorded reaction document
+  var drafts = {};       // "kind:item id" -> {reaction, text, id, sending, status} typed but not sent
   var db = null;
+  var comments = null;
   var pendingOpen = null;
+  var composers = {};    // "kind:item id" -> every rendered {choices, input, status} for that draft
 
   function el(tag, attrs, children) {
     var node = document.createElement(tag);
@@ -98,6 +114,106 @@ footer { border-top: 1px solid var(--line); margin-top: 3rem; padding-top: 1rem;
     return Math.round(minutes / 1440) + " days ago";
   }
   function docId(reportId) { return encodeURIComponent(reportId).replace(/%/g, "_"); }
+
+  function reactionLabel(name) {
+    var found = REACTIONS.filter(function (pair) { return pair[0] === name; })[0];
+    return found ? found[1] : "";
+  }
+  function newReactionId() {
+    var raw = window.crypto && crypto.randomUUID ? crypto.randomUUID() : Date.now().toString(36) + Math.random().toString(36).slice(2);
+    return raw.replace(/[^A-Za-z0-9._-]/g, "").slice(0, 64);
+  }
+  // The newest reaction for an item, from the snapshot (sent from the local page) or this artifact's inbox.
+  function latestReaction(kind, id) {
+    var best = null;
+    (snapshot.reactions || []).concat(Object.keys(inboxDocs).map(function (key) { return inboxDocs[key]; })).forEach(function (r) {
+      if (r.kind === kind && r.item_id === id && r.at && (!best || Date.parse(r.at) >= Date.parse(best.at))) best = r;
+    });
+    return best;
+  }
+  function latestText(r) {
+    if (!r) return "";
+    var label = reactionLabel(r.reaction);
+    var summary = label && r.text ? label + ": " + r.text : label || r.text;
+    return "Latest reaction: " + summary + " (" + (r.source === "artifact" ? "from the artifact" : "from the local page") + ", " + ago(r.at) + ")";
+  }
+  function pendingReactions() {
+    var delivered = {};
+    (snapshot.delivered || []).forEach(function (id) { delivered[id] = true; });
+    return Object.keys(inboxDocs).filter(function (id) { return !delivered[id]; })
+      .map(function (id) { return inboxDocs[id]; })
+      .sort(function (a, b) { return Date.parse(a.at) - Date.parse(b.at); });
+  }
+
+  // Quick reactions, a reply box and Send for one card, plus a button that opens the claude.ai comment composer on it.
+  function reactionBox(kind, id, card) {
+    var key = kind + ":" + id;
+    var draft = drafts[key] || (drafts[key] = { reaction: "", text: "", id: "", sending: false, status: "" });
+    var box = el("div", { "class": "reaction" });
+    var latest = latestText(latestReaction(kind, id));
+    if (latest) box.appendChild(el("p", { "class": "latest", text: latest }));
+    var status = el("span", { "class": "status", "aria-live": "polite", text: draft.status });
+    if (db) {
+      var choices = el("div", { "class": "choices" });
+      REACTIONS.forEach(function (pair) {
+        var button = el("button", { type: "button", "aria-pressed": String(draft.reaction === pair[0]), text: pair[1] });
+        button.disabled = draft.sending;
+        button.addEventListener("click", function () {
+          draft.id = "";
+          draft.reaction = draft.reaction === pair[0] ? "" : pair[0];
+          composers[key].forEach(function (view) {
+            Array.prototype.forEach.call(view.choices.children, function (other, index) {
+              other.setAttribute("aria-pressed", String(draft.reaction === REACTIONS[index][0]));
+            });
+          });
+        });
+        choices.appendChild(button);
+      });
+      var input = el("input", { type: "text", maxlength: String(TEXT_LIMIT), placeholder: "Reply to Firstmate (optional)", "aria-label": "Reply to Firstmate", "data-draft": key });
+      input.value = draft.text;
+      input.disabled = draft.sending;
+      input.addEventListener("input", function () {
+        draft.text = input.value;
+        draft.id = "";
+        composers[key].forEach(function (view) { if (view.input !== input) view.input.value = draft.text; });
+      });
+      var send = el("button", { type: "button", text: "Send" });
+      send.disabled = draft.sending;
+      send.addEventListener("click", function () {
+        var text = draft.text.trim().replace(/\s+/g, " ");
+        if (!draft.reaction && !text) {
+          draft.status = "Pick a reaction or write a reply first.";
+          composers[key].forEach(function (view) { view.status.textContent = draft.status; });
+          return;
+        }
+        var id2 = draft.id || (draft.id = newReactionId());
+        var data = { version: 1, id: id2, item_id: id, kind: kind, reaction: draft.reaction, text: text, at: new Date().toISOString(), source: "artifact" };
+        draft.sending = true;
+        draft.status = "Sending…";
+        render();
+        db.doc(INBOX + "/" + id2).set(data).then(function () {
+          inboxDocs[id2] = data;
+          delete drafts[key];
+          render();
+        }, function (error) {
+          draft.sending = false;
+          draft.status = "Could not send: " + ((error && error.message) || "unavailable");
+          render();
+        });
+      });
+      (composers[key] || (composers[key] = [])).push({ choices: choices, input: input, status: status });
+      box.appendChild(choices);
+      box.appendChild(el("div", { "class": "reply" }, [input, send, status]));
+    }
+    if (comments) {
+      var discuss = el("button", { type: "button", text: "Discuss with Firstmate" });
+      discuss.addEventListener("click", function () {
+        comments.openComposer({ element: card }).catch(function () { status.textContent = "Comments are unavailable in this view."; });
+      });
+      box.appendChild(el("div", { "class": "actions" }, [discuss]));
+    }
+    return box;
+  }
 
   function currentAction(report) {
     var doc = actionDocs[report.id];
@@ -174,6 +290,7 @@ footer { border-top: 1px solid var(--line); margin-top: 3rem; padding-top: 1rem;
       row.appendChild(status);
       card.appendChild(row);
     }
+    if (!report.ambiguous) card.appendChild(reactionBox("report", report.id, card));
     return card;
   }
 
@@ -199,6 +316,7 @@ footer { border-top: 1px solid var(--line); margin-top: 3rem; padding-top: 1rem;
       links.forEach(function (link) { row.appendChild(link); });
       card.appendChild(row);
     }
+    card.appendChild(reactionBox("call", call.id, card));
     return card;
   }
 
@@ -224,7 +342,9 @@ footer { border-top: 1px solid var(--line); margin-top: 3rem; padding-top: 1rem;
     var openNow = {};
     Array.prototype.forEach.call(root.querySelectorAll("details"), function (d) { if (d.open) openNow[d.id] = true; });
     pendingOpen = openNow;
+    var focused = document.activeElement && document.activeElement.getAttribute && document.activeElement.getAttribute("data-draft");
     root.textContent = "";
+    composers = {};
     var calls = snapshot.calls || [];
     var reports = snapshot.reports || [];
     var byBand = function (band) { return calls.filter(function (call) { return call.band === band; }); };
@@ -267,6 +387,7 @@ footer { border-top: 1px solid var(--line); margin-top: 3rem; padding-top: 1rem;
         row.appendChild(status);
         card.appendChild(row);
       }
+      if (!(base && base.ambiguous)) card.appendChild(reactionBox(item.kind === "report" ? "report" : "call", item.id, card));
       return card;
     }).filter(Boolean);
 
@@ -295,13 +416,23 @@ footer { border-top: 1px solid var(--line); margin-top: 3rem; padding-top: 1rem;
     root.appendChild(group("discarded", "Discarded reports", "Off your list, not marked reviewed. Undiscard to bring one back.", discarded.length, discarded, "No reports are discarded."));
 
     var recorded = currentActions().length;
-    var footer = el("footer", {}, [el("p", { text: "Actions you take here are saved in this artifact's own database and applied to the local state with `quarterdeck import`. Current unreviewed report text travels in this private snapshot." })]);
+    var footer = el("footer", {}, [el("p", { text: "Actions you take here are saved in this artifact's own database and applied to the local state with `quarterdeck import`; reactions are delivered to Firstmate with `quarterdeck reactions import`. Current unreviewed report text travels in this private snapshot." })]);
     if (recorded) {
       var save = el("button", { type: "button", text: "Download " + recorded + " recorded action" + (recorded === 1 ? "" : "s") + " as JSON" });
       save.addEventListener("click", exportActions);
       footer.appendChild(save);
     }
+    var pending = pendingReactions().length;
+    if (pending) {
+      var saveReactions = el("button", { type: "button", text: "Download " + pending + " recorded reaction" + (pending === 1 ? "" : "s") + " as JSON" });
+      saveReactions.addEventListener("click", exportReactions);
+      footer.appendChild(saveReactions);
+    }
     root.appendChild(footer);
+    if (focused) {
+      var again = Array.prototype.filter.call(root.querySelectorAll("input[data-draft]"), function (node) { return node.getAttribute("data-draft") === focused; })[0];
+      if (again) again.focus();
+    }
   }
 
   function actionsJson() {
@@ -313,6 +444,16 @@ footer { border-top: 1px solid var(--line); margin-top: 3rem; padding-top: 1rem;
     claude.use("downloads").then(function (downloads) {
       if (!downloads) { document.getElementById("sync").textContent = "Downloads are unavailable in this view."; return; }
       return downloads.save({ filename: "quarterdeck-actions.json", data: actionsJson() });
+    }).catch(function () {});
+  }
+
+  function reactionsJson() {
+    return JSON.stringify({ version: 1, generated_at: snapshot.generated_at, reactions: pendingReactions() }, null, 2) + "\n";
+  }
+  function exportReactions() {
+    claude.use("downloads").then(function (downloads) {
+      if (!downloads) { document.getElementById("sync").textContent = "Downloads are unavailable in this view."; return; }
+      return downloads.save({ filename: "quarterdeck-reactions.json", data: reactionsJson() });
     }).catch(function () {});
   }
 
@@ -332,8 +473,19 @@ footer { border-top: 1px solid var(--line); margin-top: 3rem; padding-top: 1rem;
         });
         render();
       }, function () { document.getElementById("sync").textContent = "Could not read recorded actions."; });
+      handle.collection(INBOX).onSnapshot(function (snap) {
+        inboxDocs = {};
+        snap.docs.forEach(function (doc) {
+          var data = doc.data();
+          if (data && typeof data.id === "string" && typeof data.item_id === "string") inboxDocs[data.id] = data;
+        });
+        render();
+      }, function () { document.getElementById("sync").textContent = "Could not read recorded reactions."; });
       render();
     });
+    window.claude.use("comments").then(function (handle) {
+      if (handle) { comments = handle; render(); }
+    }, function () {});
   } else {
     document.getElementById("sync").textContent = "Read-only: open this page as a Claude artifact to record actions.";
   }

@@ -18,7 +18,9 @@ on the local network. The local page and Lavish page keep working unchanged.
    with the snapshot. `--output` writes the snapshot JSON alone; with neither
    flag the JSON goes to standard output.
 2. Publish the page as a private Claude artifact with capabilities
-   `{db: {}, downloads: true}`. Republish after each export to refresh it.
+   `{db: {}, downloads: true, comments: {composer_only: true}}`. Republish after
+   each export to refresh it. (`composer_only` grants only the button that opens
+   the comment composer; it asks for no consent and cannot write comments.)
 
 The snapshot holds what the page shows: calls (title, ask, band, project,
 topic, links, relevance), the report list (title, recommendation, state,
@@ -60,6 +62,38 @@ Re-export after importing. The artifact ignores and excludes from downloads
 actions recorded at or before its snapshot time. Import also skips those actions
 when the envelope includes `generated_at`. A bare list has no snapshot cutoff;
 filter database documents before saving such a list to avoid replaying old clicks.
+
+## React and discuss
+
+Each call, related item and report card has **Approve**, **Hold**, **Not now**
+and **Question** buttons, a short reply box and **Send**. Pick a reaction,
+write a reply, or both. Send writes one document per reaction to the
+artifact's own database (collection `qd-inbox`) with a unique `id`, the item ID,
+`kind` (`call` or `report`), the reaction, the text, and a time. The task is
+resolved from the item when the reaction is delivered.
+The card then shows it as the latest reaction. A reaction sent from the local
+page also appears as the latest reaction after the next export.
+
+Reactions reach Firstmate when you deliver them locally:
+
+```sh
+quarterdeck reactions import quarterdeck-reactions.json
+```
+
+The file comes from the footer's **Download N recorded reactions as JSON**
+button, or from a Firstmate session reading the `qd-inbox` collection and
+wrapping the documents as `{"version": 1, "reactions": [...]}` (a bare list
+works too). Each reaction is sent oldest first through the item's home's
+`bin/fm-inbox.sh note`, which writes a durable note and wakes Firstmate.
+Delivered ids are kept in the local state, so importing the same file again
+sends nothing twice, and the export lists the delivered ids for the items it
+shows so the download leaves them out. The export carries reactions only for
+the calls, reports and related items it shows. `--dry-run` shows what would be sent. Reactions for
+items that no longer exist, or whose delivery failed, are skipped and listed.
+
+**Discuss with Firstmate** opens the claude.ai comment composer on that card.
+A comment sent to Claude reaches Firstmate's session directly, with no import.
+It needs the `comments` capability above; without it the button is absent.
 
 ## What the artifact does not do
 

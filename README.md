@@ -44,6 +44,12 @@ as a local artifact. Quarterdeck itself has no agent or build step.
   `discard` and `undiscard`; off by default. Discard takes a report off the
   list without claiming you reviewed it.
   See the [serving guide](docs/how-to/serve-the-page.md#mark-reports-reviewed-from-the-page).
+- Reactions: with `--allow-marks`, each desk call, related item and report on
+  the served page has Approve, Hold, Not now and Question buttons and a reply
+  box. Send delivers a note to Firstmate through the home's `bin/fm-inbox.sh`.
+  The cloud artifact has the same controls, recorded for
+  `quarterdeck reactions import`, and a "Discuss with Firstmate" button that
+  opens the claude.ai comment composer on the card.
 - Relevance: Firstmate marks reports and past captain calls current or stale
   (`reports set-relevance`, `calls set-relevance`); stale ones are hidden by
   default behind a collapsed section. A collapsed "Related to this session"
@@ -145,8 +151,8 @@ schedule it; see
 
 The default is 127.0.0.1. A non-loopback `--host` exposes your real work data
 to that network with no login. Keep the default unless you control the network.
-With `--allow-marks`, anyone who can open the page can mark or unmark reports;
-there is no key. See the
+With `--allow-marks`, anyone who can open the page can mark or unmark reports
+and send reactions to Firstmate; there is no key. See the
 [serving guide](docs/how-to/serve-the-page.md#mark-reports-reviewed-from-the-page).
 
 ### Does it cost tokens?

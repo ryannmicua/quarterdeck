@@ -27,8 +27,9 @@ Firstmate cache as part of its own operation. `--no-snapshot` skips it, and the
 page falls back to parsing the backlog when it is absent, fails, or times out.
 The wrapper may also read registered remote secondmate ledgers through
 Firstmate's routes and show the returned rows. Quarterdeck invokes no other
-Firstmate script directly, and makes no network calls itself. `render` and
-`serve` write nothing to a home.
+Firstmate script directly, except one: a reaction (below) runs the home's own
+`bin/fm-inbox.sh note`. Quarterdeck makes no network calls itself. `render` and
+`serve` write nothing to a home directly.
 
 The one exception is the explicit `quarterdeck board` command, which Firstmate
 runs to keep its captain board current. It writes only
@@ -59,6 +60,21 @@ network.
 The endpoint grants no other write access. Use marks only on a network you
 trust, or put the server behind an authenticating TLS reverse proxy.
 The static `render` output never contains the buttons.
+
+`serve --allow-marks` also enables a second endpoint, `POST /api/reactions`, for
+reactions: a quick Approve, Hold, Not now or Question, and a short reply, on a
+desk call, a related item or a report. It applies the same origin, content-type
+and no-key rules as the mark endpoint, and accepts only an item that exists. It
+is the one place Quarterdeck acts on a home beyond reading: it runs that home's
+own `bin/fm-inbox.sh note --request-id qd-<id> --json -- <one line>`, the
+captain's out-of-band channel to Firstmate. The line names the item, its task
+ID, the reaction, the text and the time; nothing else leaves Quarterdeck, and
+Quarterdeck does not write the home's inbox files itself. The note goes to the
+configured home the item belongs to (a secondmate's item goes to its parent
+home, which routes it). Only after the script succeeds is the reaction recorded
+in the state database, so a failed delivery is reported on the card and nothing
+is recorded. `quarterdeck reactions import FILE` runs the same delivery for the
+reactions recorded in the cloud artifact, skipping ids already delivered.
 Each configured home is loaded independently. A missing or unreadable home
 shows its own error while other sections still render.
 

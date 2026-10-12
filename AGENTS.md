@@ -6,7 +6,7 @@ This file is the project's committed home for project-intrinsic agent knowledge:
 
 ## Project notes
 
-- Preserve the read-only boundary: `quarterdeck.py` reads backlog, report, and `data/secondmates.md` route files directly. The only script it may run in a home is `bin/fm-bearings-snapshot.sh --json` (skippable with `--no-snapshot`); invoke no other fleet scripts. The only home write is the explicit `quarterdeck board` command, limited to `data/captain-board.json`. `serve` binds loopback by default and enables its report-marking write only with `--allow-marks`. See `docs/explanation/privacy-and-architecture.md`.
+- Preserve the read-only boundary: `quarterdeck.py` reads backlog, report, and `data/secondmates.md` route files directly. The only scripts it may run in a home are `bin/fm-bearings-snapshot.sh --json` (skippable with `--no-snapshot`) and, for a reaction sent from `serve --allow-marks` or `quarterdeck reactions import`, `bin/fm-inbox.sh note`; invoke no other fleet scripts. The only home write is the explicit `quarterdeck board` command, limited to `data/captain-board.json`. `serve` binds loopback by default and enables its report-marking and reaction writes only with `--allow-marks`. See `docs/explanation/privacy-and-architecture.md`.
 - Validation commands live in `CONTRIBUTING.md`.
 
 ## Maintaining this file
