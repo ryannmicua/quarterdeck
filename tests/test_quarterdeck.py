@@ -5665,6 +5665,57 @@ class AttentionTests(unittest.TestCase):
                 self.assertGreaterEqual(second["shown_above"], 1)
                 self.assertNotIn(row["key"], [item["key"] for item in second["information"]])
 
+    def test_briefing_regression_deferred_decisions_stay_out_of_information(self) -> None:
+        for representation in ("bullet", "table"):
+            for routed in (False, True):
+                with self.subTest(representation=representation, routed=routed), tempfile.TemporaryDirectory() as temp:
+                    root = Path(temp)
+                    home = self.make_home(root, ledger="")
+                    owner = home
+                    if routed:
+                        owner = root / "mate"
+                        (owner / "data").mkdir(parents=True)
+                        (home / "data" / "backlog.md").write_text("# Backlog\n")
+                        (home / "data" / "secondmates.md").write_text(
+                            f"- mate - Fictional maps. (home: {owner}; projects: harbor-app; added 2026-01-04)\n")
+                    if representation == "bullet":
+                        source = ("# Backlog\n\n## Queued\n\n"
+                                  "- [ ] dated-choice - Deferred choice (repo: harbor-app) (held: true) "
+                                  "(hold-kind: captain) (hold-until: 2026-07-03)\n"
+                                  "- [ ] feed-choice - Feed choice (repo: harbor-app)\n"
+                                  "- [ ] chart - Draw chart (repo: harbor-app)\n")
+                    else:
+                        source = ("| ID | Title | repo | held | hold_kind | hold_until |\n"
+                                  "| --- | --- | --- | --- | --- | --- |\n"
+                                  "| dated-choice | Deferred choice | harbor-app | yes | captain | 2026-07-03 |\n"
+                                  "| feed-choice | Feed choice | harbor-app | no | - | - |\n"
+                                  "| chart | Draw chart | harbor-app | no | - | - |\n")
+                    (owner / "data" / "backlog.md").write_text(source)
+                    snapshots = [quarterdeck.load_home_snapshot(quarterdeck.HomeSpec("invented", home), discover_secondmates=True)]
+                    for use_feed in (False, True):
+                        for due in (False, True):
+                            now = ATTENTION_NOW + timedelta(days=int(due))
+                            feed = {"open_decisions": [{
+                                "task": ("mate/" if routed else "") + "feed-choice", "title": "Feed choice",
+                                "kind": "captain_hold", "bucket": "live" if due else "dated",
+                                "opened_at": now.isoformat(),
+                            }]}
+                            for order in (("waiting", "information", "project"), ("project", "information", "waiting")):
+                                definition = {"name": "Deferred", "sections": [
+                                    {"type": kind, **({"project": "harbor-app"} if kind == "project" else {})}
+                                    for kind in order]}
+                                result = quarterdeck.attention_view(snapshots, now, use_feed=use_feed,
+                                    feed_runner=lambda *_: feed, saved_views=([definition], "Deferred"), view_name="")
+                                items = [item for section in result["view"]["sections"] for item in
+                                         [*section["needs_you"], *section["information"],
+                                          *(section["background"] or {}).get("items", [])]]
+                                self.assertIn("Draw chart", [item["title"] for item in items])
+                                self.assertEqual("Deferred choice" in [item["title"] for item in items], due)
+                                if use_feed:
+                                    self.assertEqual("Feed choice" in [item["title"] for item in items], due)
+                                self.assertFalse(any(item["title"] == "Deferred choice" and
+                                                     item["kind"] == "informational" for item in items))
+
     def test_briefing_regression_recent_uses_task_identity_in_every_order(self) -> None:
         with tempfile.TemporaryDirectory() as temp:
             home, _ = self.saved_views_home(Path(temp))

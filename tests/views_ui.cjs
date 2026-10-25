@@ -24,6 +24,12 @@ class Element {
   get previousElementSibling() { return this.parent.children[this.parent.children.indexOf(this) - 1]; }
   get nextElementSibling() { return this.parent.children[this.parent.children.indexOf(this) + 1]; }
   querySelector(tag) { return this.children.find(child => child.tagName === tag); }
+  querySelectorAll(selector) {
+    const tags = selector.split(',').map(tag => tag.trim());
+    return this.children.flatMap(child => [
+      ...(tags.includes(child.tagName) ? [child] : []), ...child.querySelectorAll(selector),
+    ]);
+  }
   matches(selector) {
     const id = selector.match(/^#([\w-]+)/);
     if (!id || id[1] !== this.id) return false;
@@ -34,6 +40,7 @@ class Element {
   setAttribute(name, value) { this[name] = value; }
   addEventListener(name, callback) { (this.events[name] ??= []).push(callback); }
   async emit(name) {
+    if (name === 'click' && this.disabled) return;
     for (const callback of this.events[name] ?? []) await callback({target: this});
     if (this.parent) await this.parent.emit(name);
   }
@@ -43,13 +50,16 @@ async function main() {
   const ids = Object.fromEntries(['views-data', 'view-sections', 'view-name', 'view-startup',
     'view-status', 'view-save', 'view-editor'].map(id => [id, new Element()]));
   for (const [id, element] of Object.entries(ids)) element.id = id;
+  ids['view-name'].tagName = ids['view-startup'].tagName = 'input';
+  ids['view-save'].tagName = 'button';
   ids['views-data'].textContent = page.data;
-  for (const id of ['view-name', 'view-sections', 'view-startup']) ids['view-editor'].append(ids[id]);
+  for (const id of ['view-name', 'view-sections', 'view-startup', 'view-save']) ids['view-editor'].append(ids[id]);
   const data = JSON.parse(page.data);
   const buttons = data.views.map(entry => Object.assign(new Element(), {dataset: {viewButton: entry.name}}));
   const panels = data.views.map(entry => Object.assign(new Element(), {dataset: {viewPanel: entry.name}}));
   const editor = ids['view-editor'], save = ids['view-save'], list = ids['view-sections'];
   let reloads = 0, retries = 0, request, complete;
+  const stored = new Map();
   const context = vm.createContext({
     document: {
       getElementById: id => ids[id], createElement: tag => new Element(tag),
@@ -57,7 +67,7 @@ async function main() {
       querySelectorAll: selector => selector === '[data-view-button]' ? buttons : selector === '[data-view-panel]' ? panels : [],
       querySelector: selector => Object.values(ids).find(element => selector.split(',').some(part => element.matches(part.trim()))),
     },
-    sessionStorage: {getItem: () => null, setItem() {}},
+    sessionStorage: {getItem: key => stored.get(key), setItem: (key, value) => stored.set(key, value)},
     location: {reload: () => reloads++},
     setTimeout: () => retries++,
     fetch: async (_url, options) => {
@@ -97,20 +107,30 @@ async function main() {
   for (const row of list.children) row.children[0].checked = row === project;
   const pending = save.emit('click');
   assert.equal(save.dataset.saving, 'true');
+  assert([...editor.querySelectorAll('input, button'), ...buttons].every(control => control.disabled));
+  await buttons.find(button => button.dataset.viewButton === 'Priorities').emit('click');
+  assert.equal(ids['view-name'].value, 'Only reef');
+  const beforeMove = list.children.slice();
+  await project.children[2].emit('click');
+  assert.deepEqual(list.children, beforeMove);
   editor.dataset.dirty = 'false';
   refresh();
   assert.equal(reloads, 1);
   assert.deepEqual(request.sections, [{type: 'project', project: 'reef-demo'}]);
   complete({ok: false, text: async () => 'Unavailable'});
   await pending;
-  assert.equal(save.disabled, false);
+  assert([...editor.querySelectorAll('input, button'), ...buttons].every(control => !control.disabled));
   assert.equal(save.dataset.saving, 'false');
   await ids['view-name'].emit('input');
   const retry = save.emit('click');
+  assert.equal(request.name, 'Only reef');
+  ids['view-name'].value = 'Programmatic change';
   complete({ok: true});
   await retry;
   assert.equal(editor.dataset.dirty, 'false');
   assert.equal(reloads, 2);
+  assert.equal(stored.get('quarterdeck-view'), 'Only reef');
+  assert([...editor.querySelectorAll('input, button'), ...buttons].every(control => !control.disabled));
   await buttons.find(button => button.dataset.viewButton === 'Priorities').emit('click');
   assert.deepEqual(list.children.filter(row => row.children[0].checked).map(section),
     [{type: 'project', project: 'reef-demo'}, {type: 'project', project: 'harbor-app'}, {type: 'waiting'}]);

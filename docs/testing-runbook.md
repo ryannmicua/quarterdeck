@@ -179,4 +179,9 @@ across recent work and queues, and saving/building Done recently. Fictional home
 and preferences are disposable. The editor regression needs Node.js on PATH
 and executes the generated page scripts with DOM controls and a held save
 response: both priority checkboxes must be available, and edits, moves and pending
-saves must defer automatic refresh. No real home or browser state is changed.
+saves must defer automatic refresh. While a save is pending, inputs, ordering
+buttons and view switches must be disabled; failure restores them and success
+keeps the submitted name. Deferred-decision cases exercise feed and backlog
+sources, bullet/table records, routed children, both section orders and expiry:
+deferred tasks stay out of information/project queues while ordinary queued work
+remains visible. No real home or browser state is changed.

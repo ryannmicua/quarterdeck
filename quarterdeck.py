@@ -3195,7 +3195,8 @@ def attention_view(
     projects: dict[str, str] = {}
     views = [home_attention(snapshot, now, True, use_feed, feed_runner, board_activity, projects) for snapshot in homes]
     shared = {"schema": ATTENTION_SCHEMA, "generated": iso_seconds(now.timestamp()), "homes": views}
-    board = board_view(homes, now, fallback=True, decisions=decision_rows(homes, shared))
+    decisions = decision_rows(homes, shared)
+    board = board_view(homes, now, fallback=True, decisions=decisions)
     waiting_by_home = [home_waiting(snapshot, view, board, projects) for snapshot, view in zip(homes, views)]
     known = registered_projects(homes, waiting_by_home) if project or priority_projects else []
     if project:
@@ -3224,7 +3225,7 @@ def attention_view(
         view["waiting_scope"] = scope["scope"]
         view["more_count"] = scope["more_count"]
         if view_name is not None or all_views:
-            taken = {item["key"] for items in waiting.values() for item in items}
+            taken = set(decisions).union(item["key"] for items in waiting.values() for item in items)
             view_homes.append({
                 "label": view["label"], "waiting": waiting, "complete": complete,
                 "open_work": informational_work(snapshot, taken),
@@ -3714,23 +3715,25 @@ def views_html(view: dict[str, object], homes: list[dict[str, object]], now: dat
     const sections = Array.from(list.children).filter(item => item.querySelector("input").checked)
       .map(item => JSON.parse(item.dataset.section));
     if (!sections.length) {{ status.textContent = "Pick at least one section."; return; }}
-    save.disabled = true;
+    const submitted = {{name: nameField.value, sections: sections, default: startup.checked}};
+    const controls = [...editor.querySelectorAll("input, button"), ...buttons];
+    for (const control of controls) control.disabled = true;
     save.dataset.saving = "true";
     status.textContent = "Saving…";
     try {{
       const response = await fetch(data.endpoint, {{
         method: "POST", headers: {{"Content-Type": "application/json"}},
-        body: JSON.stringify({{name: nameField.value, sections: sections, default: startup.checked}}),
+        body: JSON.stringify(submitted),
       }});
       if (!response.ok) throw new Error((await response.text()).trim() || response.statusText);
-      try {{ sessionStorage.setItem("quarterdeck-view", nameField.value.trim()); }} catch (_) {{}}
+      try {{ sessionStorage.setItem("quarterdeck-view", submitted.name.trim()); }} catch (_) {{}}
       status.textContent = "Saved";
       editor.dataset.dirty = "false";
       location.reload();
     }} catch (error) {{
       status.textContent = "Not saved: " + error.message;
-      save.disabled = false;
     }} finally {{
+      for (const control of controls) control.disabled = false;
       save.dataset.saving = "false";
     }}
   }});
