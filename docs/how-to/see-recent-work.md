@@ -89,7 +89,8 @@ quarterdeck attention --json --project harbor-app
 ## Briefing views
 
 A view is an ordered stack of sections you choose: Waiting on you, Recent work
-(last six hours), one section per priority project, and For your information.
+(last six hours), one section per priority project, For your information, and Done recently
+(merged work in the last six hours).
 Quarterdeck ships two, Morning (opens at startup) and Priorities. On the page, a
 Views rail (a row of buttons on a phone) switches between them; "Edit view"
 lets you tick sections, move them up or down, rename, and tick "Use at

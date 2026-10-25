@@ -220,7 +220,7 @@ sections from every selected home so readers only draw them.
 | `layout` | The saved sections: `{type}` or `{type: "project", project}`. |
 | `sections` | The built sections, top first, as below. |
 
-Each section has `type` (`waiting`, `recent`, `project` or `information`; a
+Each section has `type` (`waiting`, `recent`, `project`, `information` or `done`; a
 saved `priorities` section becomes one `project` section per priority project),
 `title`, `project` (project sections only), `needs_you` and `information` (item
 lists), `background`, `shown_above`, `nothing_waiting` and `say`, a short
@@ -233,20 +233,21 @@ sentence fit to be read aloud.
   there are none.
 - `recent` holds the last six hours of merged and started work in
   `information`, newest first, each item with `event`, `at`, `task`, `title`,
-  `project`, `pr` and `home`. The section is left out of `sections` entirely
+  `project`, `pr`, `key` and `home`. The section is left out of `sections` entirely
   when nothing merged or started in six hours.
+- `done` holds merged tasks from the last six hours, newest first, using the
+  same task identities and first-section claiming as every other section.
 - `project` holds that project's `needs_you` items, then its `information`
   items. When nothing is waiting on it, both lists are empty,
   `nothing_waiting` is `true` and `say` is "Nothing waiting on <project>.";
   `nothing_waiting` is `null` with "<project>: waiting status unavailable."
   when a required source failed, as for `priorities`.
 - `information` holds the informational (board `read`) items and work recorded
-  as in flight in a home's backlog that is not already waiting on the captain.
+  as in flight or queued in a home's backlog that is not already waiting on the captain.
 
 An item shows once per screen. Sections are built in order; the first section
 that claims an item lists it and each later section that would have listed it
-counts it in `shown_above` ("1 shown above" in `say`). Recent work lines are
-events, not items, and are not counted. `nothing_waiting` is `false` whenever
+counts it in `shown_above` ("1 shown above" in `say`), including recent work. `nothing_waiting` is `false` whenever
 the section lists something or counted something shown above.
 
 Items in `needs_you` and `information` have `key`, `kind`, `title`, `ask`,

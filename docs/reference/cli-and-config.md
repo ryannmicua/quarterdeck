@@ -93,9 +93,9 @@ empty list. Names resolve as described in the
 [attention JSON reference](attention-json.md#waiting-and-priorities).
 
 `views` keeps saved briefing views beside the priorities. A view has a name
-(up to 40 characters, unique ignoring case) and one to seven ordered sections:
+(up to 40 characters, unique ignoring case) and one or more ordered sections:
 `waiting` (Waiting on you), `recent` (the last six hours of merged and started
-work), `priorities` (one section per priority project, in set order),
+work), `done` (Done recently, merged work in the last six hours), `priorities` (one section per priority project, in set order),
 `project:NAME` (one named project) and `information` (For your information). A
 section may appear once per view; unknown section types and unregistered
 projects are refused with exit 2. `views save` replaces a view of the same name

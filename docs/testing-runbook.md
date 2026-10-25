@@ -169,3 +169,14 @@ Reload after replacing the ledger with only a seven-hour-old event: `#recent-wor
 must disappear while waiting queues remain. A directory at a registered child's
 `data/secondmates.md` exercises the real read-failure path without OS permission
 simulation. Stop the server, close the test tab, and remove fictional homes.
+
+
+### Saved briefing view regressions
+
+Run `PYTHONPATH=tests python3 -m unittest test_quarterdeck.AttentionTests -k briefing_regression -v`
+for queued work in information/project sections, first-section task claiming
+across recent work and queues, and saving/building Done recently. Fictional homes
+and preferences are disposable. The editor regression needs Node.js on PATH
+and executes the generated page scripts with DOM controls and a held save
+response: both priority checkboxes must be available, and edits, moves and pending
+saves must defer automatic refresh. No real home or browser state is changed.

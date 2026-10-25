@@ -5629,6 +5629,81 @@ class AttentionTests(unittest.TestCase):
     def sections(self, view: dict) -> dict[str, dict]:
         return {section.get("project") or section["type"]: section for section in view["sections"]}
 
+    def test_briefing_regression_done_can_be_saved_built_and_claimed(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            home, prefs = self.saved_views_home(root)
+            result = self.run_tool(root, "views", "save", "Catch up", "--section", "recent", "--section", "done",
+                                   "--section", "information", "--home", str(home))
+            self.assertEqual(result.returncode, 0, result.stderr)
+            saved = quarterdeck.read_saved_views(prefs)
+            view = self.view(home, saved_views=saved, view_name="Catch up")["view"]
+            sections = self.sections(view)
+            self.assertEqual(sections["done"]["information"], [])
+            self.assertEqual(sections["done"]["shown_above"], 2)
+            reversed_view = self.view(home, saved_views=([{"name": "Done first", "sections": [
+                {"type": "done"}, {"type": "recent"}]}], "Done first"), view_name="")["view"]
+            done, recent = reversed_view["sections"]
+            self.assertEqual([item["event"] for item in done["information"]], ["merged", "merged"])
+            self.assertEqual([item["event"] for item in recent["information"]], ["started"])
+            self.assertEqual(recent["shown_above"], 2)
+            self.assertIn("Done recently", quarterdeck.view_section_html(done, ATTENTION_NOW, False))
+
+    def test_briefing_regression_open_queued_work_reaches_information_and_project(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            home, _ = self.saved_views_home(Path(temp))
+            with (home / "data" / "backlog.md").open("a") as out:
+                out.write("\n## Queued\n\n- [ ] queued-chart - Draw the chart (repo: harbor-app)\n")
+            for order in (("information", "project"), ("project", "information")):
+                definition = {"name": "Queue", "sections": [
+                    {"type": kind, **({"project": "harbor-app"} if kind == "project" else {})} for kind in order]}
+                view = self.view(home, saved_views=([definition], "Queue"), view_name="")["view"]
+                first, second = view["sections"]
+                row = next(item for item in first["information"] if item["title"] == "Draw the chart")
+                self.assertEqual(row["status_label"], "Queued")
+                self.assertFalse(first["nothing_waiting"])
+                self.assertGreaterEqual(second["shown_above"], 1)
+                self.assertNotIn(row["key"], [item["key"] for item in second["information"]])
+
+    def test_briefing_regression_recent_uses_task_identity_in_every_order(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            home, _ = self.saved_views_home(Path(temp))
+            with (home / "state" / "fleet-ledger.jsonl").open("a") as out:
+                for task in ("kelp-survey", "new-chart", "new-chart"):
+                    out.write(json.dumps({"v": 1, "ts": ATTENTION_NOW.timestamp() - 60,
+                                          "event": "task.dispatched", "task": task, "project": "reef-demo"}) + "\n")
+            with (home / "data" / "backlog.md").open("a") as out:
+                out.write("\n- [ ] new-chart - New chart (repo: reef-demo) (state: working)\n")
+            for order in (("waiting", "recent", "information", "project"),
+                          ("recent", "project", "waiting", "information"),
+                          ("project", "information", "recent", "waiting")):
+                definition = {"name": "Mixed", "sections": [
+                    {"type": kind, **({"project": "reef-demo"} if kind == "project" else {})} for kind in order]}
+                view = self.view(home, saved_views=([definition], "Mixed"), view_name="")["view"]
+                keys = [item["key"] for section in view["sections"] for item in
+                        [*section["needs_you"], *section["information"], *(section["background"] or {}).get("items", [])]]
+                self.assertEqual(len(keys), len(set(keys)))
+                self.assertIn("invented/new-chart", keys)
+                self.assertIn("invented/kelp-survey", keys)
+                self.assertGreater(sum(section["shown_above"] for section in view["sections"]), 0)
+
+    @unittest.skipUnless(shutil.which("node"), "Node.js is needed to execute the emitted editor scripts")
+    def test_briefing_regression_editor_choices_and_refresh_safety(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            home, _ = self.saved_views_home(Path(temp))
+            snapshots = [quarterdeck.load_home_snapshot(quarterdeck.HomeSpec("invented", home))]
+            view = quarterdeck.attention_view(snapshots, ATTENTION_NOW,
+                                            priority_projects=["reef-demo", "harbor-app"], all_views=True)
+            bearings = quarterdeck.build_bearings(snapshots, ATTENTION_NOW, use_snapshot=False)
+            bearings.attention = view
+            page = quarterdeck.build_html(snapshots, "Quarterdeck", bearings=bearings, allow_marks=True)
+            scripts = re.findall(r"<script(?: [^>]*)?>(.*?)</script>", page, re.S)
+            data = re.search(r'<script type="application/json" id="views-data">(.*?)</script>', page, re.S)
+            result = subprocess.run(["node", str(ROOT / "tests" / "views_ui.cjs")],
+                                    input=json.dumps({"data": data.group(1), "scripts": scripts}),
+                                    text=True, capture_output=True)
+            self.assertEqual(result.returncode, 0, result.stderr)
+
     def test_view_member_is_added_only_on_request_and_seeds_morning_and_priorities(self) -> None:
         with tempfile.TemporaryDirectory() as temp:
             home, _prefs = self.saved_views_home(Path(temp))
