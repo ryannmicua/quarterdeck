@@ -98,3 +98,9 @@ board/export rows under active, idle and absent operator sessions. Shared
 relevance must never imply a captain message. The executable artifact test
 `DeskRelevanceTests.test_artifact_counts_cards_opens_details_and_reports_each_capability_state`
 checks matching labels on both the card and its detail view when Node is on PATH.
+
+`AttentionTests.test_child_ledger_activity_is_shared_by_feed_and_fallback_decisions`
+uses an absent parent ledger and an hour-old child worker event. It checks
+fallback, routed, home-qualified and keyed feed representations against the
+same relevance, event timestamp, page visibility and exported desk band;
+a same-named parent task must remain background.

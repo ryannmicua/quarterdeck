@@ -2801,14 +2801,9 @@ def home_attention(
         }
         view["recent_work"] = recent_work(records, snapshot, feed_titles, now)
     snapshots = all_snapshots([snapshot])
-    candidates = [(row, records or []) for row in feed_rows]
-    represented = {decision_key(snapshot, row) for row in feed_rows}
+    normalized: list[dict[str, object]] = []
     for owner in snapshots:
         if owner.error or owner.spec.home is None or owner.spec.remote_host:
-            continue
-        items = backlog_items(owner.backlog_markdown or "", owner)
-        missing = [item for item in items if needs_captain(item) and task_key(owner, item.id, snapshots) not in represented]
-        if not missing:
             continue
         local_records = records or []
         if owner is not snapshot:
@@ -2817,9 +2812,14 @@ def home_attention(
             except AttentionSourceError as exc:
                 errors.append(exc.as_dict())
                 local_records = []
-        normalized = [dict(record, task=task_key(owner, str(record["task"]), snapshots)) for record in local_records]
-        if owner is not snapshot:
-            normalized += [dict(record, task=task_key(snapshot, str(record["task"]), snapshots)) for record in records or []]
+        normalized.extend(dict(record, task=task_key(owner, str(record["task"]), snapshots)) for record in local_records)
+    candidates = list(feed_rows)
+    represented = {decision_key(snapshot, row) for row in feed_rows}
+    for owner in snapshots:
+        if owner.error or owner.spec.home is None or owner.spec.remote_host:
+            continue
+        items = backlog_items(owner.backlog_markdown or "", owner)
+        missing = [item for item in items if needs_captain(item) and task_key(owner, item.id, snapshots) not in represented]
         for item in missing:
             touched, deferred = backlog_recency(item, now, {other.id for other in items})
             row = {
@@ -2828,13 +2828,13 @@ def home_attention(
                 "bucket": "dated" if deferred else "live", "opened_at": item.filed or None,
                 "last_touched_at": iso_or_none(touched),
             }
-            candidates.append((row, normalized))
+            candidates.append(row)
     relevant: list[dict[str, object]] = []
     background: list[dict[str, object]] = []
     state = snapshot.review_state or ReviewState()
-    for row, task_records in candidates:
+    for row in candidates:
         key = decision_key(snapshot, row)
-        why, activity = decision_relevance(row, task_records, since, (board_activity or {}).get(key))
+        why, activity = decision_relevance(dict(row, task=key), normalized, since, (board_activity or {}).get(key))
         if why != "deferred" and state.relevance_of("call", key)[0] == "stale":
             why = "stale"
         (relevant if why in RELEVANT_REASONS else background).append(dict(row, relevance=why, activity_at=iso_seconds(activity) if activity is not None else None))

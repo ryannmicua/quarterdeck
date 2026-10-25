@@ -4983,6 +4983,54 @@ class AttentionTests(unittest.TestCase):
                 self.assertNotIn("Open items from our last session", page)
                 self.assertNotIn("What you touched in the last 2 days", page)
 
+    def test_child_ledger_activity_is_shared_by_feed_and_fallback_decisions(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            home = self.make_home(root, ledger="")
+            child = root / "mate"
+            (child / "data").mkdir(parents=True)
+            (child / "state").mkdir()
+            for owner, title in ((home, "Parent ledger choice"), (child, "Child ledger choice")):
+                (owner / "data" / "backlog.md").write_text(
+                    f"# Backlog\n\n- [ ] local-ledger - {title} (held: true) (hold-kind: captain)\n"
+                )
+            (home / "data" / "secondmates.md").write_text(
+                f"- mate - Maintains fictional maps. (home: {child}; scope: Maps; projects: demo; added 2026-01-04)\n"
+            )
+            event_time = ATTENTION_NOW - timedelta(hours=1)
+            (child / "state" / "fleet-ledger.jsonl").write_text(json.dumps({
+                "v": 1, "ts": event_time.timestamp(), "event": "task.status", "task": "local-ledger"
+            }) + "\n")
+            homes = [quarterdeck.load_home_snapshot(quarterdeck.HomeSpec("invented", home), discover_secondmates=True)]
+            key = quarterdeck.report_reference(homes[0].children[0].spec.label, "local-ledger")
+            base = {"task": "local-ledger", "kind": "captain_hold", "title": "Parent ledger choice",
+                    "bucket": "live", "opened_at": "2026-06-01T00:00:00Z", "last_touched_at": None}
+            for identity in (None, "mate/local-ledger", key, "keyed"):
+                with self.subTest(identity=identity):
+                    rows = [base]
+                    if identity is not None:
+                        rows.append(dict(base, task="mate" if identity == "keyed" else identity,
+                                         kind="keyed" if identity == "keyed" else "captain_hold",
+                                         key="local-ledger" if identity == "keyed" else None, title="Child ledger choice"))
+                    (root / "feed.json").write_text(json.dumps({"schema": "fm-attention.v1", "open_decisions": rows}))
+                    view = quarterdeck.attention_view(homes, ATTENTION_NOW, all_decisions=True)
+                    self.assertTrue(view["ok"], view)
+                    relevant = view["homes"][0]["decisions"]["relevant"]
+                    self.assertEqual(len(relevant), 1)
+                    self.assertEqual(relevant[0]["title"], "Child ledger choice")
+                    self.assertEqual(relevant[0]["relevance"], "recent_work")
+                    self.assertEqual(quarterdeck.parse_board_time(relevant[0]["activity_at"]), event_time)
+                    bearings = quarterdeck.build_bearings(homes, ATTENTION_NOW, use_snapshot=False)
+                    bearings.attention = view
+                    page = AttentionPage()
+                    page.feed(quarterdeck.build_html(homes, "Quarterdeck", bearings=bearings))
+                    self.assertIn("Child ledger choice", " ".join(page.visible))
+                    self.assertNotIn("Parent ledger choice", " ".join(page.visible))
+                    exported = quarterdeck.build_snapshot(homes, "Quarterdeck", ATTENTION_NOW, attention=view)
+                    bands = {call["id"]: call["band"] for call in exported["calls"]}
+                    self.assertEqual(bands[key], "desk")
+                    self.assertEqual(bands["invented/local-ledger"], "parked")
+
     def test_unknown_ledger_version_is_refused_with_a_structured_error(self) -> None:
         with tempfile.TemporaryDirectory() as temp:
             ledger = (ATTENTION_FIXTURES / "fleet-ledger.jsonl").read_text(encoding="utf-8")

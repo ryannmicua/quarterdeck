@@ -12,8 +12,9 @@ quarterdeck attention --check [--home PATH] [--config FILE]
 ```
 
 Homes are selected as for `render`: `--home`, then the config's `homes`, then
-`FM_HOME`. Registered local secondmates contribute backlog decisions, board engagement,
-and ledger activity when their calls are absent from the parent's feed.
+`FM_HOME`. Registered local secondmates contribute backlog decisions absent
+from the parent's feed. Their board and ledger activity applies equally to
+feed-backed and fallback decisions.
 Quarterdeck does not run additional scripts in those homes.
 
 ## Sources
