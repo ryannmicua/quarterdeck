@@ -109,7 +109,63 @@ Manual CLI/browser check (2026-10-25): shift the attention fixtures' timestamps
 relative to the current time before running `serve`; the CLI has no clock override.
 Config home entries use `path`, not `home`. For gate runs that permit evidence
 storage, put disposable `XDG_STATE_HOME` there: review state inside the checkout
-is deliberately rejected. At `/`, scroll to `#recent-work`, expand
+is deliberately rejected. At `/`, scroll to `#attention` (and `#recent-work` when the last six hours have work), expand
 `#recent-background-0`, and verify quiet calls appear while dated calls remain
 absent. Capture desktop/mobile screenshots and the incompatible-ledger warning.
 Stop the disposable server and remove fictional homes and private state afterward.
+
+
+### Priority waiting queues and preference safety
+
+Run `PYTHONPATH=tests python3 -m unittest test_quarterdeck.AttentionTests -v`.
+Fixtures are fictional disposable homes; no real home or preference file is used.
+The priority regressions check quiet pending decisions with background output
+both enabled and disabled, board-only project/ask metadata, merge/read queue
+classification, and visible versus collapsed output on both the attention
+section and board. Multi-home cases check that one home's priority work keeps
+another home's unrelated work behind the counted more indicator.
+
+CLI checks accept projects from route registry entries and pending items
+without a projects directory. Set and clear must reject explicit, default,
+symlinked, and separate-data-directory destinations inside selected homes.
+Malformed preference elements must produce a concise CLI error while render
+still succeeds. Temporary fixture/state directories clean up automatically.
+
+
+The same focused attention class checks that the six-hour ledger feed is the
+page's sole recent-work list in snapshot and backlog modes. Yesterday's landed
+items and future ledger events must not appear; the exact six-hour boundary
+is included. Across homes, sort before applying the visible-list limit so the
+newest event stays visible. Qualified project names from both registry entries
+and waiting items must work with set and explicit project queries. Empty project
+results report unknown status when feed, ledger, home, backlog, child, registry,
+or board data is unavailable, or when the feed is deliberately skipped.
+
+
+Board-completeness regressions exercise real reads of malformed JSON, non-object
+boards, missing or invalid item lists, skipped records, ignored project metadata,
+invalid UTF-8, and a directory at the board-file path. Run each against parent
+and child homes: empty project summaries must say status unavailable, while a
+valid empty board may confirm nothing is waiting. Project-query regressions use
+two qualified projects sharing a short name and compare explicit query output
+with saved-priority output, including previously saved short names, `--more`,
+and exact-name precedence.
+
+
+Priority-board regressions keep a report linked to an active task under the
+collapsed Related to this session section, both with matching priorities and
+with the empty-priority fallback. Child-registry failure cases cover permission
+denial, a directory at the registry path, and invalid UTF-8. Readable pending
+work must survive page and snapshot generation; the failed child retains its
+registry error and empty priority summaries remain unavailable. The same check
+exercises project discovery used by priority writes.
+
+Manual gate check (2026-10-25): use a fictional board with `decide`, `merge`,
+and `read` items sharing a priority project, plus an unrelated decision. Serve
+with isolated XDG config/state and `--no-snapshot`. At 1280px and 375px, verify
+queue order and no horizontal overflow; expand the counted more toggle and
+`#related` to confirm unrelated work and the linked report remain accessible.
+Reload after replacing the ledger with only a seven-hour-old event: `#recent-work`
+must disappear while waiting queues remain. A directory at a registered child's
+`data/secondmates.md` exercises the real read-failure path without OS permission
+simulation. Stop the server, close the test tab, and remove fictional homes.

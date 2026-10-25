@@ -7,10 +7,12 @@
 Quarterdeck turns running Firstmate homes' backlogs and scout reports into one
 local HTML review page. Serving is read-only by default; report review marks are
 available as an opt-in. When any selected home or registered secondmate has
-a captain board, the "On your desk" list leads the page. The shared
+a captain board, the board leads the page. The shared
 [decision relevance rules](docs/reference/attention-json.md#decisions) determine
-which decisions appear. Without a board, recent work leads the page, followed
-by the four sections from Firstmate's `/bearings` digest. Reports waiting on your
+which decisions appear. Without a board, the waiting view leads, followed by
+Captain's Call, Underway, and Charted Next from Firstmate's `/bearings` digest. See
+[See recent work](docs/how-to/see-recent-work.md) for the waiting queues and
+recent-work display. Reports waiting on your
 review also appear. Configure several homes to review them together; each home
 is grouped under a clear label, with its registered local secondmates under
 their parent. Run `quarterdeck render --all` to include other backlog records
@@ -64,14 +66,15 @@ as a local artifact. Quarterdeck itself has no agent or build step.
   desk says whether reactions are connected. See
   [Use the cloud artifact](docs/how-to/use-the-cloud-artifact.md).
 - Compact header: the page opens straight on the desk.
-- Bearings-shaped page: Captain's Call, Recently Landed, Underway, and Charted
-  Next, each always rendered with an empty-state sentence.
+- Bearings-shaped page: Captain's Call, Underway, and Charted Next, each
+  rendered with an empty-state sentence. Recent work uses the six-hour feed.
 - Captain's Call cards include local hold context, options, and recommendations
   when available. Remote decisions show the snapshot summary and point to their
   secondmate home for the full background.
-- Last 48 hours: what merged and started in the last 12 hours, 12–24 hours
-  ago and 24–48 hours ago, from Firstmate's fleet ledger, and only the
-  decisions still in play. See the guide for background and deferred decisions.
+- Waiting on you: your priority projects first (set with
+  `quarterdeck priorities set`, up to three), the decisions still in play, and
+  the last six hours of merged and started work from Firstmate's fleet ledger,
+  shown only when there is some. See the guide for background and deferred decisions.
   `quarterdeck attention --json` prints the same view for other readers, and
   `quarterdeck attention --check` validates Firstmate's formats after an
   update. See [See recent work](docs/how-to/see-recent-work.md).
