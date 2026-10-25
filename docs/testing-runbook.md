@@ -113,3 +113,20 @@ is deliberately rejected. At `/`, scroll to `#attention` (and `#recent-work` whe
 `#recent-background-0`, and verify quiet calls appear while dated calls remain
 absent. Capture desktop/mobile screenshots and the incompatible-ledger warning.
 Stop the disposable server and remove fictional homes and private state afterward.
+
+
+### Priority waiting queues and preference safety
+
+Run `PYTHONPATH=tests python3 -m unittest test_quarterdeck.AttentionTests -v`.
+Fixtures are fictional disposable homes; no real home or preference file is used.
+The priority regressions check quiet pending decisions with background output
+both enabled and disabled, board-only project/ask metadata, merge/read queue
+classification, and visible versus collapsed output on both the attention
+section and board. Multi-home cases check that one home's priority work keeps
+another home's unrelated work behind the counted more indicator.
+
+CLI checks accept projects from route registry entries and pending items
+without a projects directory. Set and clear must reject explicit, default,
+symlinked, and separate-data-directory destinations inside selected homes.
+Malformed preference elements must produce a concise CLI error while render
+still succeeds. Temporary fixture/state directories clean up automatically.

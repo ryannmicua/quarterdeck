@@ -1308,7 +1308,7 @@ def build_html(
         related_items(homes, board, decisions=decisions), generated, can_mark=allow_marks, ambiguous_ids=ambiguous_ids,
         report_resolution_incomplete=report_resolution_incomplete, reactions=reactions,
     )
-    board_block = board_html(board, generated, show_all, related_block, reactions) if board else related_block
+    board_block = board_html(board, generated, show_all, related_block, reactions, bearings.attention if bearings else None) if board else related_block
     board_status = board_status_html(board, generated) if board else ""
     bearings_block = bearings_html(
         bearings, collapse_reviews=board is not None, can_mark=allow_marks, ambiguous_ids=ambiguous_ids,
@@ -2902,27 +2902,39 @@ def home_waiting(
     """What waits on the captain in one home: its decisions, the rest of what needs them, then informational items."""
     labels = {owner.spec.label for owner in all_snapshots([snapshot])}
     decisions = view.get("decisions")
-    rows = decisions["relevant"] if isinstance(decisions, dict) else []
-    waiting_decisions = []
-    seen: set[str] = set()
-    for row in rows:
-        key = decision_key(snapshot, row)
-        seen.add(key)
-        waiting_decisions.append(waiting_item(
-            "decision", key, str(row["title"]), str(row.get("reason") or ""), projects.get(key), "decision",
-            row.get("activity_at") or row.get("last_touched_at") or row.get("opened_at"),  # type: ignore[arg-type]
-        ))
+    rows = [*decisions["relevant"], *(decisions.get("background") or [])] if isinstance(decisions, dict) else []
+    entries = {entry.key: entry for entry in (
+        [*(entry for items in board.bands.values() for entry in items), *board.stale] if board else []
+    ) if entry.home in labels and not entry.deferred}
+    waiting_decisions: list[dict[str, object]] = []
     needs_you: list[dict[str, object]] = []
     informational: list[dict[str, object]] = []
-    for entry in (board.bands["desk"] if board is not None else []):
-        if entry.home not in labels or entry.key in seen:
+    queues = {"decision": waiting_decisions, "needs_you": needs_you, "informational": informational}
+    seen: set[str] = set()
+    for row in rows:
+        if row.get("relevance") == "deferred":
             continue
-        item = waiting_item(
-            "informational" if entry.item.group == "read" else "needs_you", entry.key, entry.item.title,
-            entry.item.ask, entry.item.project or projects.get(entry.key), entry.item.group,
-            iso_or_none(entry.touched),
-        )
-        (informational if entry.item.group == "read" else needs_you).append(item)
+        key = decision_key(snapshot, row)
+        if key in seen:
+            continue
+        seen.add(key)
+        entry = entries.get(key)
+        group = entry.item.group if entry else "decision"
+        kind = "informational" if group == "read" else "decision" if group in {"decision", "decide", "unsorted"} else "needs_you"
+        queues[kind].append(dict(waiting_item(
+            kind, key, entry.item.title if entry else str(row["title"]),
+            entry.item.ask if entry else str(row.get("reason") or ""),
+            (entry.item.project if entry else None) or projects.get(key), group,
+            row.get("activity_at") or row.get("last_touched_at") or row.get("opened_at"),
+        ), relevance=row.get("relevance")))
+    for entry in entries.values():
+        if entry.key in seen:
+            continue
+        kind = "informational" if entry.item.group == "read" else "needs_you"
+        queues[kind].append(waiting_item(
+            kind, entry.key, entry.item.title, entry.item.ask,
+            entry.item.project or projects.get(entry.key), entry.item.group, iso_or_none(entry.touched),
+        ))
     return {"decisions": waiting_decisions, "needs_you": needs_you, "informational": informational}
 
 
@@ -2939,7 +2951,7 @@ def priority_entries(waiting: dict[str, list[dict[str, object]]], names: list[st
 
 
 def scope_waiting(
-    waiting: dict[str, list[dict[str, object]]], names: list[str], show_more: bool,
+    waiting: dict[str, list[dict[str, object]]], names: list[str], show_more: bool, has_priority: bool,
 ) -> tuple[dict[str, list[dict[str, object]]], dict[str, object]]:
     """Put priority-project items first, in priority order; hold back the rest unless asked or nothing is pending for them."""
     def rank(item: dict[str, object]) -> int | None:
@@ -2950,7 +2962,7 @@ def scope_waiting(
         items.sort(key=lambda item: len(names) if item["priority"] is None else item["priority"])  # type: ignore[operator]
     total = sum(len(items) for items in ranked.values())
     mine = sum(1 for items in ranked.values() for item in items if item["priority"] is not None)
-    if not names or mine == 0 or show_more:
+    if not names or not has_priority or show_more:
         return ranked, {"scope": "all", "more_count": 0}
     return (
         {kind: [item for item in items if item["priority"] is not None] for kind, items in ranked.items()},
@@ -2967,16 +2979,23 @@ def attention_view(
     now = now or datetime.now(timezone.utc)
     board_activity = board_engagement(homes)
     projects: dict[str, str] = {}
-    views = [home_attention(snapshot, now, all_decisions, use_feed, feed_runner, board_activity, projects) for snapshot in homes]
+    views = [home_attention(snapshot, now, True, use_feed, feed_runner, board_activity, projects) for snapshot in homes]
     names = [project] if project else list(priority_projects or [])
     shared = {"schema": ATTENTION_SCHEMA, "generated": iso_seconds(now.timestamp()), "homes": views}
     board = board_view(homes, now, fallback=True, decisions=decision_rows(homes, shared))
-    for snapshot, view in zip(homes, views):
-        waiting = home_waiting(snapshot, view, board, projects)
+    waiting_by_home = [home_waiting(snapshot, view, board, projects) for snapshot, view in zip(homes, views)]
+    has_priority = any(project_matches(item["project"], name)
+                       for waiting in waiting_by_home for items in waiting.values() for item in items for name in names)
+    for view, waiting in zip(views, waiting_by_home):
         view["priorities"] = priority_entries(waiting, names)
-        view["waiting"], scope = scope_waiting(waiting, names, show_more)
+        view["waiting"], scope = scope_waiting(waiting, names, show_more, has_priority)
+        visible = {item["key"] for items in view["waiting"].values() for item in items}
+        view["waiting_more"] = {kind: [item for item in items if item["key"] not in visible]
+                                for kind, items in waiting.items()}
         view["waiting_scope"] = scope["scope"]
         view["more_count"] = scope["more_count"]
+        if not all_decisions and isinstance(view["decisions"], dict):
+            view["decisions"]["background"] = None
     return {
         "schema": ATTENTION_SCHEMA, "generated": shared["generated"],
         "ok": all(view["ok"] for view in views), "priority_projects": list(priority_projects or []),
@@ -3010,6 +3029,10 @@ def decision_rows(
         for row in [*(decisions.get("background") or []), *decisions["relevant"]]:
             key = decision_key(snapshot, row)
             rows[key] = row
+    if any(home.get("waiting_scope") == "priority" for home in view["homes"]):
+        visible = {item["key"] for home in view["homes"] for items in home.get("waiting", {}).values() for item in items}
+        rows = {key: dict(row, relevance="quiet") if key not in visible and row.get("relevance") in RELEVANT_REASONS else row
+                for key, row in rows.items()}
     return rows
 
 
@@ -3054,8 +3077,8 @@ def read_preferences(path: Path) -> dict[str, object]:
     if not isinstance(data, dict) or data.get("version") != PREFERENCES_VERSION:
         raise ValueError(f"preferences {path} must be a JSON object with version {PREFERENCES_VERSION}")
     names = data.get("priority_projects", [])
-    if (not isinstance(names, list) or len(names) > PRIORITY_LIMIT or len(set(names)) != len(names)
-            or not all(isinstance(name, str) and name.strip() for name in names)):
+    if (not isinstance(names, list) or len(names) > PRIORITY_LIMIT
+            or not all(isinstance(name, str) and name.strip() for name in names) or len(set(names)) != len(names)):
         raise ValueError(f"preferences {path}: priority_projects must be up to {PRIORITY_LIMIT} distinct project names")
     return data
 
@@ -3064,14 +3087,37 @@ def read_priority_projects(path: Path) -> list[str]:
     return list(read_preferences(path).get("priority_projects", []))  # type: ignore[call-overload]
 
 
-def registered_projects(homes: list[HomeSnapshot]) -> list[str]:
-    """Project names a home has registered: the directories under its projects/, including secondmates'."""
+def registered_projects(homes: list[HomeSnapshot], view: dict[str, object] | None = None) -> list[str]:
+    """Project names recorded in route registries or on pending work."""
     names: set[str] = set()
     for owner in all_snapshots(homes):
-        projects = owner.spec.home / "projects" if owner.spec.home and not owner.spec.remote_host else None
-        if projects is not None and projects.is_dir():
-            names.update(entry.name for entry in projects.iterdir() if entry.is_dir() and not entry.name.startswith("."))
+        if owner.spec.home is None or owner.spec.remote_host:
+            continue
+        try:
+            registry = (owner.spec.home / "data" / "secondmates.md").read_text(encoding="utf-8")
+        except FileNotFoundError:
+            registry = ""
+        for line in registry.splitlines():
+            route = SECONDMATE_ENTRY_RE.match(line)
+            projects = re.search(r"(?:^|;\s*)projects:\s*([^;]+)", route.group("attributes"), re.I) if route else None
+            if projects:
+                names.update(name.strip("`").rsplit("/", 1)[-1] for name in re.split(r"[,\s]+", projects[1].strip()) if name.strip("`"))
+    view = view if view is not None else attention_view(homes)
+    for home in view["homes"]:
+        for items in [*home["waiting"].values(), *home["waiting_more"].values()]:
+            names.update(str(item["project"]).rsplit("/", 1)[-1] for item in items if item["project"])
     return sorted(names, key=str.lower)
+
+
+def write_preferences(path: Path, document: dict[str, object], homes: list[HomeSnapshot]) -> None:
+    destination = path.resolve()
+    for owner in all_snapshots(homes):
+        if owner.spec.home is None or owner.spec.remote_host:
+            continue
+        for root in (owner.spec.home, owner.spec.data_dir or owner.data_dir or owner.spec.home / "data"):
+            if destination.is_relative_to(root.resolve()):
+                raise ValueError("preferences must be outside selected Firstmate homes and their data directories")
+    write_config(path, document)
 
 
 def selected_homes(args: argparse.Namespace) -> list[HomeSnapshot]:
@@ -3089,17 +3135,21 @@ def attention(args: argparse.Namespace) -> int:
     try:
         homes = selected_homes(args)
         priorities = read_priority_projects(preferences_path(args))
+        apply_review_marks(homes, load_review_state(validate_review_state_location(homes)))
+        view = attention_view(homes, all_decisions=args.all_decisions, priority_projects=priorities, project=args.project, show_more=args.more)
         if args.project:
-            known = registered_projects(homes)
+            known = registered_projects(homes, view)
             match = next((name for name in known if name.lower() == args.project.strip().lower()), None)
             if match is None:
-                raise ValueError(f"unknown project {args.project!r}; registered projects: {', '.join(known) or 'none'}")
-            args.project = match
-        apply_review_marks(homes, load_review_state(validate_review_state_location(homes)))
+                raise ValueError(f"unknown project {args.project!r}; recorded projects: {', '.join(known) or 'none'}")
+            view["requested_project"] = match
+            for home in view["homes"]:
+                for entry in home["priorities"]:
+                    entry["project"] = match
+                    entry["say"] = str(entry["say"]).replace(args.project, match, 1)
     except (OSError, ValueError) as exc:
         print(f"quarterdeck: {exc}", file=sys.stderr)
         return 2
-    view = attention_view(homes, all_decisions=args.all_decisions, priority_projects=priorities, project=args.project, show_more=args.more)
     if args.check:
         print(attention_check_line(view))
     else:
@@ -3117,12 +3167,13 @@ def priorities(args: argparse.Namespace) -> int:
             else:
                 print("Priority projects: " + ", ".join(current) + "." if current else "No priority projects are set.")
             return 0
+        homes = selected_homes(args)
         if args.priorities_command == "clear":
             names: list[str] = []
         else:
             if len(args.projects) > PRIORITY_LIMIT:
                 raise ValueError(f"at most {PRIORITY_LIMIT} priority projects are allowed; got {len(args.projects)}")
-            known = registered_projects(selected_homes(args))
+            known = registered_projects(homes)
             names = []
             for raw in args.projects:
                 match = next((name for name in known if name.lower() == raw.strip().lower()), None)
@@ -3132,7 +3183,7 @@ def priorities(args: argparse.Namespace) -> int:
                     names.append(match)
         document = read_preferences(path)
         document.update({"version": PREFERENCES_VERSION, "priority_projects": names})
-        write_config(path, document)
+        write_preferences(path, document, homes)
     except (OSError, ValueError) as exc:
         print(f"quarterdeck: {exc}", file=sys.stderr)
         return 2
@@ -3150,17 +3201,12 @@ def attention_item_html(item: dict[str, object], now: datetime) -> str:
             f'{elapsed_text(at, now) + " ago" if at else ""}</span>{link}</li>')
 
 
-def attention_decision_html(row: dict[str, object], now: datetime) -> str:
-    activity = parse_board_time(row.get("activity_at"))
-    touched = parse_when(str(row.get("last_touched_at") or ""))
-    when = (f" · activity {elapsed_text(activity, now)} ago" if activity else
-            f" · touched {elapsed_text(touched, now)} ago" if touched else "")
-    why = RELEVANCE_TEXT.get(str(row.get("relevance")), str(row.get("relevance")))
-    return (f'<li>{html.escape(str(row["title"]))} <span class="path">{html.escape(why)}{when}'
-            f' · <code>{html.escape(str(row["task"]))}</code></span></li>')
+def waiting_item_html(item: dict[str, object]) -> str:
+    ask = f' — {html.escape(str(item["ask"]))}' if item.get("ask") else ""
+    return f'<li>{html.escape(str(item["title"]))}{ask}</li>'
 
 
-def priorities_panel_html(homes: list[dict[str, object]], now: datetime) -> str:
+def priorities_panel_html(homes: list[dict[str, object]]) -> str:
     rows = []
     for home in homes:
         label = f"{home['label']}: " if len(homes) > 1 else ""
@@ -3169,9 +3215,8 @@ def priorities_panel_html(homes: list[dict[str, object]], now: datetime) -> str:
                 rows.append(f'<li><strong>{html.escape(label)}{html.escape(entry["project"])}</strong> '
                             f'<span class="path">nothing is waiting</span></li>')
                 continue
-            titles = "".join(f'<li>{html.escape(str(item["title"]))}</li>' for item in entry["waiting"])
             rows.append(f'<li><strong>{html.escape(label)}{html.escape(entry["project"])}</strong> '
-                        f'<span class="path">{len(entry["waiting"])} waiting</span><ul>{titles}</ul></li>')
+                        f'<span class="path">{len(entry["waiting"])} waiting</span></li>')
     if not rows:
         return ""
     return f'<div class="priority-projects" id="priority-projects"><h3>Priority projects</h3><ul>{"".join(rows)}</ul></div>'
@@ -3184,11 +3229,11 @@ def attention_html(view: dict[str, object] | None) -> str:
     homes = [home for home in view["homes"] if isinstance(home, dict)]  # type: ignore[union-attr]
     out = ['<section class="dashboard-section recent-work" id="attention" aria-label="Waiting and recent work">'
            '<div class="section-head"><div><h2>Waiting on you</h2>'
-           "<p>Your priority projects first, then the decisions still in play from Firstmate's attention feed. "
-           f"Work from the last {RECENT_HOURS} hours appears only when there is some. Quiet decisions stay collapsed; "
-           "dated decisions stay hidden until due.</p></div></div>"]
-    out.append(priorities_panel_html(homes, now))
-    for index, home in enumerate(homes):
+           "<p>Waiting decisions, then needs you and information, with your priority projects first. "
+           f"Work from the last {RECENT_HOURS} hours appears only when there is some. "
+           "Dated decisions stay hidden until due.</p></div></div>"]
+    out.append(priorities_panel_html(homes))
+    for home in homes:
         label = f"{home['label']}: " if len(homes) > 1 else ""
         for error in home["errors"]:
             out.append(
@@ -3200,21 +3245,28 @@ def attention_html(view: dict[str, object] | None) -> str:
         if isinstance(decisions, dict) and decisions.get("skipped"):
             out.append(f'<p class="source-note">{html.escape(label)}Attention feed not read: '
                        f'{html.escape(str(decisions["skipped"]))}.</p>')
-        if isinstance(decisions, dict):
-            days = home["decision_relevance"]["recent_days"]  # type: ignore[index]
-            relevant = "".join(attention_decision_html(row, now) for row in decisions["relevant"])
-            out.append(f'<h3>{html.escape(label)}Decisions in play</h3>'
-                       + (f"<ul>{relevant}</ul>" if relevant else
-                          f'<p class="empty">No open decision was raised, acted on or worked on in the last {days} days.</p>'))
-            rows = [row for row in decisions.get("background") or [] if row["relevance"] != "deferred"]
-            count = len(rows)
-            if count:
-                listed = "<ul>" + "".join(attention_decision_html(row, now) for row in rows) + "</ul>"
-                out.append(
-                    f'<details class="board-more" id="recent-background-{index}" data-refresh-key="recent-background:{index}">'
-                    f'<summary>{count} background decision{"s" if count != 1 else ""} '
-                    f'(quiet for {days} days or marked stale)</summary>{listed}</details>'
-                )
+    for kind, title in (("decisions", "Waiting decisions"), ("needs_you", "Needs you"), ("informational", "For your information")):
+        for index, home in enumerate(homes):
+            label = f"{home['label']}: " if len(homes) > 1 else ""
+            items = home.get("waiting", {}).get(kind, [])
+            scoped = bool(view.get("priority_projects") or view.get("requested_project"))
+            background = [item for item in items if kind == "decisions" and not scoped and item.get("relevance") in {"quiet", "stale"}]
+            shown = [item for item in items if item not in background]
+            if shown:
+                out.append(f'<h3>{html.escape(label)}{title}</h3><ul>'
+                           + "".join(waiting_item_html(item) for item in shown) + '</ul>')
+            if background:
+                out.append(f'<details class="board-more" id="recent-background-{index}" data-refresh-key="recent-background:{index}">'
+                           f'<summary>{len(background)} background decisions</summary><ul>'
+                           + "".join(waiting_item_html(item) for item in background) + '</ul></details>')
+    count = sum(int(home.get("more_count", 0)) for home in homes)
+    if count:
+        out.append(f'<details class="board-more" data-refresh-key="waiting-more"><summary>+{count} more waiting items</summary>')
+        for kind, title in (("decisions", "Waiting decisions"), ("needs_you", "Needs you"), ("informational", "For your information")):
+            items = [item for home in homes for item in home["waiting_more"][kind]]
+            if items:
+                out.append(f'<h3>{title}</h3><ul>' + "".join(waiting_item_html(item) for item in items) + '</ul>')
+        out.append('</details>')
     recent = [(home, item) for home in homes for item in home.get("recent_work_6h") or []]  # type: ignore[union-attr]
     if recent:
         shown = "".join(
@@ -3943,8 +3995,29 @@ def stale_calls_html(view: BoardView, now: datetime, reactions: ReactionContext 
 
 def board_html(
     view: BoardView, now: datetime, show_all: bool = False, related: str = "",
-    reactions: ReactionContext | None = None,
+    reactions: ReactionContext | None = None, attention: dict[str, object] | None = None,
 ) -> str:
+    if attention and (attention.get("priority_projects") or attention.get("requested_project")):
+        entries = {entry.key: entry for items in view.bands.values() for entry in items}
+        entries.update((entry.key, entry) for entry in view.stale)
+        out = ['<section class="board" id="board" aria-label="Waiting on you">']
+        out.extend(f'<div class="warning"><p>{html.escape(warning)}</p></div>' for warning in view.warnings)
+        for field in ("waiting", "waiting_more"):
+            count = sum(1 for home in attention["homes"] for items in home[field].values()
+                        for item in items if item["key"] in entries)
+            if field == "waiting_more":
+                if not count:
+                    continue
+                out.append(f'<details class="board-more" data-refresh-key="board-priority-more"><summary>+{count} more waiting items</summary>')
+            for kind, title in (("decisions", "Waiting decisions"), ("needs_you", "Needs you"), ("informational", "For your information")):
+                items = [entries[item["key"]] for home in attention["homes"] for item in home[field][kind] if item["key"] in entries]
+                if items:
+                    out.append(f'<div class="dashboard-section"><h2>{title}</h2>'
+                               + "".join(board_entry_html(entry, view.multiple_homes, now, reactions) for entry in items) + '</div>')
+            if field == "waiting_more":
+                out.append('</details>')
+        out.append('</section>')
+        return "".join(out)
     out = ['<section class="board" id="board" aria-label="Waiting on you">']
     out.extend(f'<div class="warning"><p>{html.escape(warning)}</p></div>' for warning in view.warnings)
     if view.hidden:
@@ -6271,7 +6344,7 @@ def make_parser() -> argparse.ArgumentParser:
         "priorities", help="show, set or clear up to three priority projects",
         description=(
             "Keep the captain's priority projects (at most three, each a project registered in a selected home) in the "
-            "shared preferences file that Quarterdeck and Cadence both read. Writes only that file."
+            "preferences file. Cadence adopts this file in its own change. Writes only that file."
         ),
     )
     command_parsers["priorities"] = priorities_parser

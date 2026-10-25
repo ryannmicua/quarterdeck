@@ -10,8 +10,8 @@ out of the way until you ask for them.
 
 - "Priority projects": for each project you set (see below), its waiting items,
   or "nothing is waiting";
-- "Decisions in play": open decisions raised, acted on by you, or worked on in
-  the last 3 days;
+- waiting decisions, then "Needs you", then "For your information", scoped to
+  your priorities; other waiting items stay behind a counted "more" toggle;
 - a collapsed "background decisions" toggle with quiet decisions; dated decisions stay hidden until due;
 - "Last 6 hours": what merged and started in the last six hours, newest first,
   with project and PR link. This part appears only when there is such work;
@@ -63,8 +63,9 @@ section until Quarterdeck is updated.
 
 ## Priority projects
 
-Name up to three important projects once; Quarterdeck and Cadence both read
+Name up to three important projects once; Quarterdeck reads
 them from `~/.config/quarterdeck/preferences.json` (or under `XDG_CONFIG_HOME`).
+Cadence adopts this preference file in its own change.
 
 ```sh
 quarterdeck priorities set harbor-app reef-demo
@@ -72,8 +73,8 @@ quarterdeck priorities show
 quarterdeck priorities clear
 ```
 
-`set` refuses more than three names and names that are not a directory under a
-selected home's `projects/`. With priorities set, `quarterdeck attention --json`
+`set` refuses more than three names and names absent from Firstmate's route
+registry project entries and waiting items. With priorities set, `quarterdeck attention --json`
 lists the waiting items for those projects first, in priority order, and holds
 back the rest, reporting `more_count`; pass `--more` to include them. When
 nothing is waiting for the priority projects, the rest is shown. Each priority

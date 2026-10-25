@@ -165,15 +165,18 @@ so does work on its task.
 ### Waiting and priorities
 
 `waiting` has three lists, in the order to say them: `decisions` (open decisions
-still in play), `needs_you` (the rest of what needs the captain, from the
-desk: merge, approve, decide, forward and unsorted board and backlog items not
+including quiet, nondeferred decisions), `needs_you` (the rest of what needs the captain, from the
+board: merge, approve, decide, forward and unsorted board and backlog items not
 already a decision), and `informational` (board `read` items). Each item has
 `kind`, `key`, `title`, `ask`, `group`, `project`, `at` and `priority` (index
-into the priority projects, or `null`).
+into the priority projects, or `null`). Items projected from decisions also
+retain `relevance`, so quiet decisions can remain collapsed without affecting
+the pending-work count.
 
 With priority projects set, items for them come first in priority order. When
-any exist, `waiting_scope` is `priority`, only those items are listed, and
-`more_count` counts the held-back items; `--more` lists everything and sets
+any exist across the selected homes, `waiting_scope` is `priority`, only those items are listed, and
+`more_count` counts the held-back items, available in the same three lists
+under `waiting_more`; `--more` lists everything and sets
 `waiting_scope` to `all`. When none exist for the priorities, or none are set,
 everything is listed (`waiting_scope` `all`, `more_count` `0`).
 

@@ -80,8 +80,8 @@ the other homes still render. The page links to readable HTML copies of
 selected reports and backlogs, generated beside the main page, and HTTPS links
 for GitHub pull requests.
 
-`priorities show|set|clear` keeps up to three priority projects (each a directory
-under a selected home's `projects/`) in `~/.config/quarterdeck/preferences.json`
+`priorities show|set|clear` keeps up to three priority projects (each recorded
+in a selected home's route registry or waiting items) in `~/.config/quarterdeck/preferences.json`
 (`--preferences FILE` overrides); `attention --json` reads it, and takes
 `--project NAME` and `--more`. `attention --json` prints the last 12, 12–24 and 24–48 hours of work and the
 open decisions split into relevant and background (schema
