@@ -3108,10 +3108,14 @@ def registered_projects(
     for owner in all_snapshots(homes):
         if owner.spec.home is None or owner.spec.remote_host or owner.registry_error:
             continue
+        registry_path = owner.spec.home / "data" / "secondmates.md"
         try:
-            registry = (owner.spec.home / "data" / "secondmates.md").read_text(encoding="utf-8")
+            registry = registry_path.read_text(encoding="utf-8")
         except FileNotFoundError:
             registry = ""
+        except (OSError, UnicodeDecodeError) as exc:
+            owner.registry_error = f"{registry_path}: {exc}"
+            continue
         for line in registry.splitlines():
             route = SECONDMATE_ENTRY_RE.match(line)
             projects = re.search(r"(?:^|;\s*)projects:\s*([^;]+)", route.group("attributes"), re.I) if route else None
@@ -4033,6 +4037,7 @@ def board_html(
                                + "".join(board_entry_html(entry, view.multiple_homes, now, reactions) for entry in items) + '</div>')
             if field == "waiting_more":
                 out.append('</details>')
+        out.append(related)
         out.append('</section>')
         return "".join(out)
     out = ['<section class="board" id="board" aria-label="Waiting on you">']

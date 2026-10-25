@@ -150,3 +150,12 @@ valid empty board may confirm nothing is waiting. Project-query regressions use
 two qualified projects sharing a short name and compare explicit query output
 with saved-priority output, including previously saved short names, `--more`,
 and exact-name precedence.
+
+
+Priority-board regressions keep a report linked to an active task under the
+collapsed Related to this session section, both with matching priorities and
+with the empty-priority fallback. Child-registry failure cases cover permission
+denial, a directory at the registry path, and invalid UTF-8. Readable pending
+work must survive page and snapshot generation; the failed child retains its
+registry error and empty priority summaries remain unavailable. The same check
+exercises project discovery used by priority writes.

@@ -5544,6 +5544,80 @@ class AttentionTests(unittest.TestCase):
                 self.assertEqual(saved_home["priorities"][0]["project"], canonical)
                 self.assertEqual([item["project"] for item in saved_home["waiting"]["decisions"]], [canonical])
 
+    def test_priority_board_preserves_collapsed_related_reports(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            home = self.make_home(root, ledger="", feed=json.dumps({"schema": "fm-attention.v1", "open_decisions": []}))
+            (home / "data" / "backlog.md").write_text(
+                "# Backlog\n\n## Held\n\n- [ ] choice - Active priority choice (repo: reef-demo) (held: true) (hold-kind: captain) (since: 2026-07-02T11:00:00Z)\n"
+            )
+            report_dir = home / "data" / "choice"
+            report_dir.mkdir()
+            (report_dir / "report.md").write_text("# Related priority evidence\n\nEvidence for the choice.\n")
+            (home / "data" / "captain-board.json").write_text(json.dumps({
+                "version": 1, "updated_at": ATTENTION_NOW.isoformat(), "items": [
+                    {"id": "choice", "task": "choice", "group": "decide", "title": "Active priority choice", "ask": "Choose", "project": "reef-demo"}
+                ]
+            }))
+            snapshots = [quarterdeck.load_home_snapshot(quarterdeck.HomeSpec("invented", home))]
+            for priorities in ([], ["reef-demo"], ["empty-project"]):
+                with self.subTest(priorities=priorities):
+                    bearings = quarterdeck.build_bearings(snapshots, ATTENTION_NOW, use_snapshot=False)
+                    bearings.attention = quarterdeck.attention_view(snapshots, ATTENTION_NOW, priority_projects=priorities)
+                    output = quarterdeck.build_html(snapshots, "Quarterdeck", bearings=bearings)
+                    related = output.split('id="related"', 1)[1].split('</details>', 1)[0]
+                    self.assertIn("Related to this session", related)
+                    self.assertIn("Related priority evidence", related)
+                    page = AttentionPage()
+                    page.feed('<details ' + related + '</details>')
+                    self.assertNotIn("Related priority evidence", " ".join(page.visible))
+
+    def test_child_registry_read_failures_preserve_readable_work_and_unknown_status(self) -> None:
+        for failure in ("permission", "directory", "decode"):
+            with self.subTest(failure=failure), tempfile.TemporaryDirectory() as temp:
+                root = Path(temp)
+                home = self.make_home(root, ledger="", feed=json.dumps({"schema": "fm-attention.v1", "open_decisions": []}))
+                (home / "data" / "backlog.md").write_text(
+                    "# Backlog\n\n## Held\n\n- [ ] choice - Readable priority choice (repo: reef-demo) (held: true) (hold-kind: captain) (since: 2026-07-02T11:00:00Z)\n"
+                )
+                child = root / "child"
+                (child / "data").mkdir(parents=True)
+                (child / "data" / "backlog.md").write_text("# Backlog\n")
+                (home / "data" / "secondmates.md").write_text(
+                    f"- mate - Fictional child. (home: {child}; projects: reef-demo; added 2026-01-04)\n"
+                )
+                registry_path = child / "data" / "secondmates.md"
+                if failure == "directory":
+                    registry_path.mkdir()
+                elif failure == "decode":
+                    registry_path.write_bytes(b"\xff")
+                else:
+                    registry_path.write_text("# Registry\n")
+                read_text = Path.read_text
+
+                def read_registry(path, *args, **kwargs):
+                    if failure == "permission" and path == registry_path:
+                        raise PermissionError("fixture registry is unreadable")
+                    return read_text(path, *args, **kwargs)
+
+                with patch.object(Path, "read_text", read_registry):
+                    snapshots = [quarterdeck.load_home_snapshot(quarterdeck.HomeSpec("invented", home), discover_secondmates=True)]
+                    self.assertIsNone(snapshots[0].children[0].registry_error)
+                    view = quarterdeck.attention_view(snapshots, ATTENTION_NOW, priority_projects=["reef-demo", "unknown-project"])
+                    self.assertTrue(snapshots[0].children[0].registry_error)
+                    self.assertIsNone(view["homes"][0]["priorities"][1]["nothing_waiting"])
+                    self.assertEqual(view["homes"][0]["waiting"]["decisions"][0]["title"], "Readable priority choice")
+                    bearings = quarterdeck.build_bearings(snapshots, ATTENTION_NOW, use_snapshot=False)
+                    bearings.attention = view
+                    output = quarterdeck.build_html(snapshots, "Quarterdeck", bearings=bearings)
+                    self.assertIn("Readable priority choice", output)
+                    self.assertIn("waiting status unavailable", output)
+                    exported = quarterdeck.build_snapshot(snapshots, "Quarterdeck", ATTENTION_NOW, attention=view)
+                    self.assertTrue(exported)
+                    fresh = [quarterdeck.load_home_snapshot(quarterdeck.HomeSpec("invented", home), discover_secondmates=True)]
+                    self.assertIn("reef-demo", quarterdeck.registered_projects(fresh))
+                    self.assertTrue(fresh[0].children[0].registry_error)
+
 
 if __name__ == "__main__":
     unittest.main()
