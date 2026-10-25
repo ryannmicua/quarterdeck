@@ -5629,6 +5629,69 @@ class AttentionTests(unittest.TestCase):
     def sections(self, view: dict) -> dict[str, dict]:
         return {section.get("project") or section["type"]: section for section in view["sections"]}
 
+    def test_briefing_regression_recent_and_done_order_by_status_priority_then_activity(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            rows = [
+                ("other", "elsewhere", "task.merged", 1),
+                ("second", "harbor-app", "task.merged", 2),
+                ("first-old", "reef-demo", "task.merged", 4),
+                ("first-new", "reef-demo", "task.merged", 3),
+                ("decision", "elsewhere", "task.dispatched", 5),
+                ("decision-merged", "elsewhere", "task.merged", 5.5),
+                ("started", "reef-demo", "task.dispatched", 0.5),
+            ]
+            records = []
+            for task, project, event, hours in rows:
+                records.append({"v": 1, "ts": (ATTENTION_NOW - timedelta(hours=hours)).timestamp(),
+                                "event": "task.dispatched", "task": task, "project": project})
+                if event == "task.merged":
+                    records.append(dict(records[-1], event=event))
+            home = self.make_home(Path(temp), ledger="".join(json.dumps(row) + "\n" for row in records),
+                                  feed=json.dumps({"schema": "fm-attention.v1", "open_decisions": [{
+                                      "task": task, "title": "Decision", "kind": "captain_hold", "bucket": "live",
+                                      "opened_at": ATTENTION_NOW.isoformat(),
+                                  } for task in ("decision", "decision-merged")]}))
+            for priorities, merged in ((["reef-demo", "harbor-app"], ["first-new", "first-old", "second", "other"]),
+                                       (["harbor-app", "reef-demo"], ["second", "first-new", "first-old", "other"])):
+                for kind in ("recent", "done"):
+                    definition = {"name": "Ordered", "sections": [{"type": kind}]}
+                    result = self.view(home, priority_projects=priorities,
+                                       saved_views=([definition], "Ordered"), view_name="")
+                    items = result["view"]["sections"][0]["information"]
+                    expected = (["decision", "decision-merged", *merged, "started"] if kind == "recent" else
+                                ["decision-merged", *merged])
+                    self.assertEqual([item["task"] for item in items], expected)
+                    self.assertEqual(len({item["key"] for item in items}), len(items))
+
+    def test_briefing_regression_preferences_keep_normalized_views_and_default(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            home, prefs = self.saved_views_home(root)
+            prefs.parent.mkdir(parents=True)
+            raw = {"version": 1, "views": [
+                {"name": " Morning ", "sections": [{"type": "waiting"}]},
+                {"name": " Reef ", "sections": [{"type": "project", "project": " reef-demo "}]},
+            ], "default_view": "morning"}
+            prefs.write_text(json.dumps(raw))
+            definitions, startup = quarterdeck.read_saved_views(prefs)
+            self.assertEqual(startup, "Morning")
+            self.assertEqual(definitions, [
+                {"name": "Morning", "sections": [{"type": "waiting"}]},
+                {"name": "Reef", "sections": [{"type": "project", "project": "reef-demo"}]},
+            ])
+            self.assertEqual(json.loads(prefs.read_text()), raw, "reading must not write preferences")
+            listed = self.run_tool(root, "views", "list", "--json")
+            self.assertEqual(listed.returncode, 0, listed.stderr)
+            self.assertEqual(json.loads(listed.stdout)["default_view"], "Morning")
+            result = self.run_tool(root, "attention", "--json", "--view", "--home", str(home))
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertEqual((json.loads(result.stdout)["view"]["name"], json.loads(result.stdout)["view"]["default"]),
+                             ("Morning", True))
+            result = self.run_tool(root, "views", "default", "reef", "--home", str(home))
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertEqual(json.loads(prefs.read_text())["views"], definitions)
+            self.assertEqual(json.loads(prefs.read_text())["default_view"], "Reef")
+
     def test_briefing_regression_done_can_be_saved_built_and_claimed(self) -> None:
         with tempfile.TemporaryDirectory() as temp:
             root = Path(temp)
@@ -5741,10 +5804,15 @@ class AttentionTests(unittest.TestCase):
     @unittest.skipUnless(shutil.which("node"), "Node.js is needed to execute the emitted editor scripts")
     def test_briefing_regression_editor_choices_and_refresh_safety(self) -> None:
         with tempfile.TemporaryDirectory() as temp:
-            home, _ = self.saved_views_home(Path(temp))
+            home, prefs = self.saved_views_home(Path(temp))
+            prefs.parent.mkdir(parents=True)
+            prefs.write_text(json.dumps({"version": 1, "views": [
+                dict(view, name=" " + str(view["name"]) + " ") for view in quarterdeck.SEEDED_VIEWS
+            ], "default_view": "morning"}))
             snapshots = [quarterdeck.load_home_snapshot(quarterdeck.HomeSpec("invented", home))]
             view = quarterdeck.attention_view(snapshots, ATTENTION_NOW,
-                                            priority_projects=["reef-demo", "harbor-app"], all_views=True)
+                                            priority_projects=["reef-demo", "harbor-app"], all_views=True,
+                                            saved_views=quarterdeck.read_saved_views(prefs))
             bearings = quarterdeck.build_bearings(snapshots, ATTENTION_NOW, use_snapshot=False)
             bearings.attention = view
             page = quarterdeck.build_html(snapshots, "Quarterdeck", bearings=bearings, allow_marks=True)
@@ -5805,7 +5873,7 @@ class AttentionTests(unittest.TestCase):
             fresh = quarterdeck.attention_view([snapshot], ATTENTION_NOW, view_name="Morning")["view"]
             recent = self.sections(fresh)["recent"]
             self.assertEqual(recent["say"], "In the last six hours, 2 merged and 1 started.")
-            self.assertEqual([item["event"] for item in recent["information"]], ["merged", "started", "merged"])
+            self.assertEqual([item["event"] for item in recent["information"]], ["merged", "merged", "started"])
             later = quarterdeck.attention_view([snapshot], ATTENTION_NOW + timedelta(hours=8), view_name="Morning")["view"]
             self.assertEqual([section["type"] for section in later["sections"]], ["waiting", "information"])
 

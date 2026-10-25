@@ -184,4 +184,8 @@ buttons and view switches must be disabled; failure restores them and success
 keeps the submitted name. Deferred-decision cases exercise feed and backlog
 sources, bullet/table records, routed children, both section orders and expiry:
 deferred tasks stay out of information/project queues while ordinary queued work
-remains visible. No real home or browser state is changed.
+remains visible. Recent/Done ordering cases vary priority order and activity time,
+including a decision tier ahead of merged and started events. Preference cases
+load padded names/projects with a lowercase startup name through CLI readers,
+subsequent saves and the generated editor scripts. Reads must leave the file
+unchanged. No real home or browser state is changed.

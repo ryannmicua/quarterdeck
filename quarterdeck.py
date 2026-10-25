@@ -3091,13 +3091,18 @@ def build_view(
             if not any(entry == other or (entry.get("project") and project_matches(entry["project"], other.get("project", "")))
                        for other in wanted):
                 wanted.append(entry)
+    status_order = {item["key"]: item["_order"][0] for item in [*needs, *info]}
     claimed: set[object] = set()
     sections: list[dict[str, object]] = []
     for entry in wanted:
         kind, project = entry["type"], entry.get("project")
         if kind in {"recent", "done"}:
             candidates = sorted((item for item in recent if kind == "recent" or item["event"] == "merged"),
-                                key=lambda item: parse_when(str(item["at"])), reverse=True)
+                                key=lambda item: (
+                                    status_order.get(item["key"], list(STATUS_LABELS).index(
+                                        "result_ready" if item["event"] == "merged" else "in_flight")),
+                                    rank(item["project"]), -parse_when(str(item["at"])).timestamp(),
+                                ))
             if candidates or kind == "done":
                 shown = []
                 above_keys = set()
@@ -3334,11 +3339,16 @@ def read_preferences(path: Path) -> dict[str, object]:
             views = data.get("views")
             if not isinstance(views, list) or not 1 <= len(views) <= VIEW_LIMIT:
                 raise ValueError(f"views must list 1 to {VIEW_LIMIT} views")
-            labels = [clean_view(view)["name"].lower() for view in views]  # type: ignore[union-attr]
+            views = [clean_view(view) for view in views]
+            labels = [view["name"].lower() for view in views]  # type: ignore[union-attr]
             if len(set(labels)) != len(labels):
                 raise ValueError("view names must be distinct")
-            if data.get("default_view") is not None and str(data["default_view"]).lower() not in labels:
-                raise ValueError("default_view must name a saved view")
+            if data.get("default_view") is not None:
+                default = str(data["default_view"]).strip().lower()
+                if default not in labels:
+                    raise ValueError("default_view must name a saved view")
+                data["default_view"] = views[labels.index(default)]["name"]
+            data["views"] = views
         except ValueError as exc:
             raise ValueError(f"preferences {path}: {exc}") from exc
     return data

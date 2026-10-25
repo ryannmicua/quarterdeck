@@ -232,11 +232,15 @@ sentence fit to be read aloud.
   decisions waiting". `background` is `null` in every other section and when
   there are none.
 - `recent` holds the last six hours of merged and started work in
-  `information`, newest first, each item with `event`, `at`, `task`, `title`,
+  `information`, ordered by status tier, priority-project order, then newest
+  activity, each item with `event`, `at`, `task`, `title`,
   `project`, `pr`, `key` and `home`. The section is left out of `sections` entirely
-  when nothing merged or started in six hours.
-- `done` holds merged tasks from the last six hours, newest first, using the
-  same task identities and first-section claiming as every other section.
+  when nothing merged or started in six hours. The status tier comes from the
+  task's waiting or informational queue when present; otherwise merged work
+  ranks as Result ready and started work as In flight.
+- `done` holds merged tasks from the last six hours, ordered by status tier,
+  priority-project order, then newest activity, using the same task identities
+  and first-section claiming as every other section.
 - `project` holds that project's `needs_you` items, then its `information`
   items. When nothing is waiting on it, both lists are empty,
   `nothing_waiting` is `true` and `say` is "Nothing waiting on <project>.";
