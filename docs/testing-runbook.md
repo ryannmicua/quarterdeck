@@ -130,3 +130,13 @@ without a projects directory. Set and clear must reject explicit, default,
 symlinked, and separate-data-directory destinations inside selected homes.
 Malformed preference elements must produce a concise CLI error while render
 still succeeds. Temporary fixture/state directories clean up automatically.
+
+
+The same focused attention class checks that the six-hour ledger feed is the
+page's sole recent-work list in snapshot and backlog modes. Yesterday's landed
+items and future ledger events must not appear; the exact six-hour boundary
+is included. Across homes, sort before applying the visible-list limit so the
+newest event stays visible. Qualified project names from both registry entries
+and waiting items must work with set and explicit project queries. Empty project
+results report unknown status when feed, ledger, home, backlog, child, registry,
+or board data is unavailable, or when the feed is deliberately skipped.

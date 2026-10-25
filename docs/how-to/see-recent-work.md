@@ -15,7 +15,8 @@ out of the way until you ask for them.
 - a collapsed "background decisions" toggle with quiet decisions; dated decisions stay hidden until due;
 - "Last 6 hours": what merged and started in the last six hours, newest first,
   with project and PR link. This part appears only when there is such work;
-  older work is skipped and only the waiting items show.
+  older work is skipped and only the waiting items show. This is the page's
+  single recent-work list; the former Recently Landed list is no longer shown.
 
 The board, Captain's Call, Underway, Charted Next, home cards and header
 totals use the same relevance rule. Calls marked stale remain in the

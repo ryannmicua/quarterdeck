@@ -3,8 +3,9 @@
 `quarterdeck serve` runs a small local web server. It reads your Firstmate homes
 at startup and again on the first page request after its 30-second cache expires.
 When any selected home or registered secondmate has a captain board, its
-recency-ranked list leads the page; otherwise it starts with the four sections from Firstmate's
-`/bearings` digest (Captain's Call, Recently Landed, Underway, Charted Next).
+recency-ranked list leads the page; otherwise it starts with the waiting sections from Firstmate's
+`/bearings` digest (Captain's Call, Underway, Charted Next). Recent work appears
+only in the six-hour feed section.
 Reports waiting on your review also appear. See the
 [captain board reference](../reference/captain-board.md) for its file and display
 rules. Serving costs no tokens and needs no Firstmate session.

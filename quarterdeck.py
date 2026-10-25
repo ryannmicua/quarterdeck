@@ -2261,9 +2261,8 @@ def bearings_item_html(item: BItem, now: datetime, section: str) -> str:
     when = []
     if item.filed:
         waited = waited_text(item.filed, now)
-        label = "Landed" if section == "landed" else "Filed"
-        when.append(f"{label} {html.escape(item.filed[:16].replace('T', ' '))}")
-        if waited and section != "landed":
+        when.append(f"Filed {html.escape(item.filed[:16].replace('T', ' '))}")
+        if waited:
             when.append(f"waiting {html.escape(waited)}")
     elif section == "call":
         when.append("Filed date not recorded")
@@ -2428,8 +2427,6 @@ def bearings_html(
     sections = [
         ("call", "Captain's Call", "Decisions and reviews waiting on you, with everything needed to answer.",
          bearings.call, "Nothing is waiting on a captain decision."),
-        ("landed", "Recently Landed", "Merged pull requests and finished work.",
-         bearings.landed, "Nothing has landed recently."),
         ("underway", "Underway", "Work that is live right now.", bearings.underway, "Nothing is underway."),
         ("charted", "Charted Next", "Queued or gated work, and what each item waits on.",
          bearings.charted, "Nothing is queued or gated."),
@@ -2440,7 +2437,7 @@ def bearings_html(
         visible = []
         for item in items:
             identity = report_reference(item.owner, item.item_id)
-            why = decisions.get(identity, {}).get("relevance") if key != "landed" else None
+            why = decisions.get(identity, {}).get("relevance")
             if why in {"quiet", "stale"}:
                 background.setdefault(identity, (item, key))
             elif why != "deferred":
@@ -2728,7 +2725,7 @@ def recent_work(records: list[dict[str, object]] | None, snapshot: HomeSnapshot,
             "merged_count": len(merged), "started_count": len(started), "answered_count": answered,
             "merged": merged, "started": started,
         })
-    latest = [r for r in reversed(ordered) if float(r["ts"]) >= end - RECENT_HOURS * 3600]  # type: ignore[arg-type]
+    latest = [r for r in reversed(ordered) if end - RECENT_HOURS * 3600 <= float(r["ts"]) <= end]  # type: ignore[arg-type]
     last_6h = [
         describe(r) | ({"event": "merged", "via": r.get("via") if isinstance(r.get("via"), str) else None}
                        if r["event"] == "task.merged" else
@@ -2938,15 +2935,17 @@ def home_waiting(
     return {"decisions": waiting_decisions, "needs_you": needs_you, "informational": informational}
 
 
-def priority_entries(waiting: dict[str, list[dict[str, object]]], names: list[str]) -> list[dict[str, object]]:
+def priority_entries(waiting: dict[str, list[dict[str, object]]], names: list[str], complete: bool) -> list[dict[str, object]]:
     """For each named project, its waiting items, or an explicit nothing_waiting flag and a sentence to say."""
     everything = [*waiting["decisions"], *waiting["needs_you"], *waiting["informational"]]
     entries = []
     for name in names:
         items = [item for item in everything if project_matches(item["project"], name)]
-        say = (f"{name}: nothing is waiting." if not items else
+        nothing_waiting = not items if complete or items else None
+        say = (f"{name}: waiting status unavailable." if nothing_waiting is None else
+               f"{name}: nothing is waiting." if nothing_waiting else
                f"{name}: {len(items)} waiting. " + "; ".join(str(item["title"]) for item in items) + ".")
-        entries.append({"project": name, "nothing_waiting": not items, "waiting": items, "say": say})
+        entries.append({"project": name, "nothing_waiting": nothing_waiting, "waiting": items, "say": say})
     return entries
 
 
@@ -2986,8 +2985,13 @@ def attention_view(
     waiting_by_home = [home_waiting(snapshot, view, board, projects) for snapshot, view in zip(homes, views)]
     has_priority = any(project_matches(item["project"], name)
                        for waiting in waiting_by_home for items in waiting.values() for item in items for name in names)
-    for view, waiting in zip(views, waiting_by_home):
-        view["priorities"] = priority_entries(waiting, names)
+    for snapshot, view, waiting in zip(homes, views, waiting_by_home):
+        complete = use_feed and bool(view["ok"]) and not any(
+            owner.registry_error or (not owner.spec.remote_host and owner.error)
+            or (owner.board is not None and not owner.board.supported)
+            for owner in all_snapshots([snapshot])
+        )
+        view["priorities"] = priority_entries(waiting, names, complete)
         view["waiting"], scope = scope_waiting(waiting, names, show_more, has_priority)
         visible = {item["key"] for items in view["waiting"].values() for item in items}
         view["waiting_more"] = {kind: [item for item in items if item["key"] not in visible]
@@ -3101,11 +3105,11 @@ def registered_projects(homes: list[HomeSnapshot], view: dict[str, object] | Non
             route = SECONDMATE_ENTRY_RE.match(line)
             projects = re.search(r"(?:^|;\s*)projects:\s*([^;]+)", route.group("attributes"), re.I) if route else None
             if projects:
-                names.update(name.strip("`").rsplit("/", 1)[-1] for name in re.split(r"[,\s]+", projects[1].strip()) if name.strip("`"))
+                names.update(name.strip("`") for name in re.split(r"[,\s]+", projects[1].strip()) if name.strip("`"))
     view = view if view is not None else attention_view(homes)
     for home in view["homes"]:
         for items in [*home["waiting"].values(), *home["waiting_more"].values()]:
-            names.update(str(item["project"]).rsplit("/", 1)[-1] for item in items if item["project"])
+            names.update(str(item["project"]) for item in items if item["project"])
     return sorted(names, key=str.lower)
 
 
@@ -3140,6 +3144,7 @@ def attention(args: argparse.Namespace) -> int:
         if args.project:
             known = registered_projects(homes, view)
             match = next((name for name in known if name.lower() == args.project.strip().lower()), None)
+            match = match or next((name for name in known if project_matches(name, args.project)), None)
             if match is None:
                 raise ValueError(f"unknown project {args.project!r}; recorded projects: {', '.join(known) or 'none'}")
             view["requested_project"] = match
@@ -3177,6 +3182,7 @@ def priorities(args: argparse.Namespace) -> int:
             names = []
             for raw in args.projects:
                 match = next((name for name in known if name.lower() == raw.strip().lower()), None)
+                match = match or next((name for name in known if project_matches(name, raw)), None)
                 if match is None:
                     raise ValueError(f"unknown project {raw!r}; registered projects: {', '.join(known) or 'none'}")
                 if match not in names:
@@ -3211,6 +3217,10 @@ def priorities_panel_html(homes: list[dict[str, object]]) -> str:
     for home in homes:
         label = f"{home['label']}: " if len(homes) > 1 else ""
         for entry in home.get("priorities") or []:  # type: ignore[union-attr]
+            if entry["nothing_waiting"] is None:
+                rows.append(f'<li><strong>{html.escape(label)}{html.escape(entry["project"])}</strong> '
+                            '<span class="path">waiting status unavailable</span></li>')
+                continue
             if entry["nothing_waiting"]:
                 rows.append(f'<li><strong>{html.escape(label)}{html.escape(entry["project"])}</strong> '
                             f'<span class="path">nothing is waiting</span></li>')
@@ -3268,6 +3278,7 @@ def attention_html(view: dict[str, object] | None) -> str:
                 out.append(f'<h3>{title}</h3><ul>' + "".join(waiting_item_html(item) for item in items) + '</ul>')
         out.append('</details>')
     recent = [(home, item) for home in homes for item in home.get("recent_work_6h") or []]  # type: ignore[union-attr]
+    recent.sort(key=lambda pair: parse_when(str(pair[1]["at"])), reverse=True)
     if recent:
         shown = "".join(
             f'<li>{html.escape(str(home["label"]) + ": " if len(homes) > 1 else "")}{html.escape(str(item["event"]).capitalize())} · '

@@ -183,7 +183,9 @@ everything is listed (`waiting_scope` `all`, `more_count` `0`).
 `priorities` has one entry per priority project (or the single `--project`
 name): `project`, `nothing_waiting`, `waiting` (all matching items across the
 three lists, unaffected by scope) and `say`, a short sentence such as
-"harbor-app: nothing is waiting." Projects match case-insensitively on the
+"harbor-app: nothing is waiting." When required sources fail or the feed is
+skipped, an empty result has `nothing_waiting: null` and says "waiting status
+unavailable" instead. Projects match case-insensitively on the
 recorded project name or the part after `owner/`.
 
 These members were added to schema `quarterdeck-attention.v1` without changing

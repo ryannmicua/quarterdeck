@@ -2392,10 +2392,10 @@ class BearingsTests(unittest.TestCase):
         quarterdeck.apply_review_marks(homes, {})
         return homes
 
-    def assert_four_sections(self, page: str) -> None:
-        order = [page.index(f'id="{key}"') for key in ("call", "landed", "underway", "charted")]
+    def assert_waiting_sections(self, page: str) -> None:
+        order = [page.index(f'id="{key}"') for key in ("call", "underway", "charted")]
         self.assertEqual(order, sorted(order))
-        for title in ("Captain&#x27;s Call", "Recently Landed", "Underway", "Charted Next",
+        for title in ("Captain&#x27;s Call", "Underway", "Charted Next",
                       "Reports waiting on your review"):
             self.assertIn(title, page)
 
@@ -2410,7 +2410,7 @@ class BearingsTests(unittest.TestCase):
             self.assertEqual([i.title for i in bearings.underway], ["Harbor chart"])
             self.assertEqual([i.item_id for i in bearings.charted], ["later-work"])
             page = quarterdeck.bearings_html(bearings)
-            self.assert_four_sections(page)
+            self.assert_waiting_sections(page)
             # The full backlog text replaces the snapshot's truncated summary.
             self.assertIn("Waiting on the invented diver roster", page)
             self.assertIn("Second paragraph with the long body text", page)
@@ -2420,7 +2420,7 @@ class BearingsTests(unittest.TestCase):
             self.assertIn("waiting 14 days", page)
             self.assertIn("project reef-demo", page)
             self.assertIn("Read report", page)
-            self.assertIn(f'href="{PIER_PR}">{PIER_PR}<', page)
+            self.assertNotIn(PIER_PR, page)
             self.assertIn("harbor-chart — queued behind the chart", page)
             self.assertIn("Firstmate bearings snapshot", page)
 
@@ -2547,13 +2547,13 @@ class BearingsTests(unittest.TestCase):
             self.assertEqual([i.item_id for i in bearings.charted], ["later-work"])
             self.assertEqual(bearings.charted[0].waits_on, "queue order")
             page = quarterdeck.bearings_html(bearings)
-            self.assert_four_sections(page)
+            self.assert_waiting_sections(page)
             self.assertIn("fallback", page)
             self.assertIn("no executable bin/fm-bearings-snapshot.sh", page)
             self.assertIn("waiting on the invented diver roster".lower(), page.lower())
             self.assertIn("Second paragraph with the long body text", page)
             self.assertIn("(a) survey now, (b) wait for spring.", page)
-            self.assertIn(PIER_PR, page)
+            self.assertNotIn(PIER_PR, page)
             self.assertIn("waiting 14 days", page)
             self.assertIn("Kelp survey report", page)  # report is listed as needing review
 
@@ -4644,7 +4644,7 @@ class AttentionTests(unittest.TestCase):
             bearings = quarterdeck.build_bearings([snapshot], ATTENTION_NOW, use_snapshot=False)
             bearings.attention = view
             page = quarterdeck.build_html([snapshot], "Quarterdeck", bearings=bearings)
-            calls = page.split('id="call"', 1)[1].split('id="landed"', 1)[0]
+            calls = page.split('id="call"', 1)[1].split('id="underway"', 1)[0]
             self.assertIn(rows[4]["title"], calls)
             self.assertNotIn(rows[1]["title"], page)
             expired = quarterdeck.attention_view([snapshot], datetime(2026, 7, 6, 12, tzinfo=timezone.utc))
@@ -5343,6 +5343,114 @@ class AttentionTests(unittest.TestCase):
                 result = self.run_tool(root, "render", "--no-snapshot", "--home", str(home), "--output", str(output))
                 self.assertEqual(result.returncode, 0, result.stderr)
                 self.assertTrue(output.is_file())
+
+    def test_page_uses_only_six_hour_feed_for_recent_work(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            feed = json.dumps({"schema": "fm-attention.v1", "open_decisions": []})
+            records = [{"v": 1, "ts": (ATTENTION_NOW - timedelta(hours=hours)).timestamp(),
+                        "event": "task.merged", "task": task}
+                       for task, hours in (("yesterday", 24), ("fresh", 1), ("boundary", 6), ("expired", 6.01), ("future", -1))]
+            home = self.make_home(root, ledger="".join(json.dumps(record) + "\n" for record in records), feed=feed)
+            (home / "data" / "backlog.md").write_text(
+                "# Backlog\n\n## Done\n\n" + "\n".join(
+                    f"- [x] {task} - {task} finished work (done: 2026-07-01)" for task in ("yesterday", "fresh", "boundary", "expired", "future")
+                )
+            )
+            snapshots = [quarterdeck.load_home_snapshot(quarterdeck.HomeSpec("invented", home))]
+            for use_snapshot in (False, True):
+                bearings = quarterdeck.build_bearings(snapshots, ATTENTION_NOW, use_snapshot=use_snapshot,
+                    runner=lambda *_: ({**SNAPSHOT_JSON, "landed": [{"owner": "(main)", "id": "yesterday", "what": "yesterday finished work", "artifact": ""}]}, ""))
+                bearings.attention = quarterdeck.attention_view(snapshots, ATTENTION_NOW, use_feed=use_snapshot)
+                page = quarterdeck.build_html(snapshots, "Quarterdeck", bearings=bearings)
+                for task in ("yesterday", "expired", "future"):
+                    self.assertNotIn(f"{task} finished work", page)
+                for task in ("fresh", "boundary"):
+                    self.assertIn(f"{task} finished work", page)
+                self.assertNotIn('id="landed"', page)
+            output = root / "out.html"
+            result = self.run_tool(root, "render", "--no-snapshot", "--home", str(home), "--output", str(output))
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertNotIn("yesterday finished work", output.read_text())
+            self.assertNotIn('id="landed"', output.read_text())
+
+    def test_project_commands_preserve_qualified_registry_and_waiting_names(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            home = self.make_home(root, ledger="")
+            (home / "data" / "backlog.md").write_text(
+                "# Backlog\n\n## Held\n\n- [ ] choice - Qualified project choice (repo: acme/harbor-app) (held: true) (hold-kind: captain)\n"
+            )
+            (home / "data" / "secondmates.md").write_text(
+                "- mate - Fictional registry. (projects: acme/registry-app; added 2026-01-04)\n"
+            )
+            for name in ("acme/harbor-app", "acme/registry-app", "harbor-app", "registry-app"):
+                canonical = name if "/" in name else "acme/" + name
+                result = self.run_tool(root, "priorities", "set", name, "--home", str(home))
+                self.assertEqual(result.returncode, 0, result.stderr)
+                preferences = json.loads((root / "config" / "quarterdeck" / "preferences.json").read_text())
+                self.assertEqual(preferences["priority_projects"], [canonical])
+                result = self.run_tool(root, "attention", "--json", "--project", name, "--home", str(home))
+                self.assertEqual(result.returncode, 0, result.stderr)
+                view = json.loads(result.stdout)
+                self.assertEqual(view["requested_project"], canonical)
+                if "harbor" in name:
+                    self.assertEqual(view["homes"][0]["waiting"]["decisions"][0]["project"], "acme/harbor-app")
+
+    def test_priority_absence_claims_require_complete_sources(self) -> None:
+        cases = ("healthy", "feed", "ledger", "backlog", "home", "child", "registry", "board", "skipped")
+        for case in cases:
+            with self.subTest(case=case), tempfile.TemporaryDirectory() as temp:
+                root = Path(temp)
+                home = self.make_home(root, ledger="", script=case != "feed",
+                                      feed=json.dumps({"schema": "fm-attention.v1", "open_decisions": []}))
+                if case == "ledger":
+                    (home / "state" / "fleet-ledger.jsonl").write_text('{"v":999}\n')
+                elif case == "backlog":
+                    (home / "data" / "backlog.md").unlink()
+                elif case == "home":
+                    home = root / "missing-home"
+                elif case == "board":
+                    (home / "data" / "captain-board.json").write_text('{"version":999}')
+                snapshot = quarterdeck.load_home_snapshot(quarterdeck.HomeSpec("invented", home))
+                if case == "child":
+                    snapshot.children = [quarterdeck.load_home_snapshot(quarterdeck.HomeSpec("child", root / "missing-child"))]
+                elif case == "registry":
+                    snapshot.registry_error = "registry unavailable"
+                view = quarterdeck.attention_view([snapshot], ATTENTION_NOW, priority_projects=["unseen-project"], use_feed=case != "skipped")
+                entry = view["homes"][0]["priorities"][0]
+                self.assertEqual(entry["waiting"], [])
+                page = quarterdeck.attention_html(view)
+                if case == "healthy":
+                    self.assertIs(entry["nothing_waiting"], True)
+                    self.assertIn("nothing is waiting", entry["say"])
+                    self.assertIn("nothing is waiting", page)
+                else:
+                    self.assertIsNone(entry["nothing_waiting"])
+                    self.assertNotIn("nothing is waiting", entry["say"])
+                    self.assertNotIn("nothing is waiting", page)
+                    self.assertIn("waiting status unavailable", page)
+
+    def test_recent_work_limit_sorts_across_homes_before_collapsing(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            snapshots = []
+            for label, ages in (("older-home", [5 + index / 60 for index in range(quarterdeck.RECENT_LIST_LIMIT)]), ("newer-home", [1 / 60])):
+                local = root / label
+                local.mkdir()
+                records = [{"v": 1, "ts": (ATTENTION_NOW - timedelta(hours=age)).timestamp(), "event": "task.merged", "task": f"{label}-{index}"}
+                           for index, age in enumerate(ages)]
+                home = self.make_home(local, ledger="".join(json.dumps(record) + "\n" for record in records))
+                snapshots.append(quarterdeck.load_home_snapshot(quarterdeck.HomeSpec(label, home)))
+            view = quarterdeck.attention_view(snapshots, ATTENTION_NOW)
+            output = quarterdeck.attention_html(view).split('id="recent-work"', 1)[1]
+            page = AttentionPage()
+            page.feed(output)
+            visible, all_text = " ".join(page.visible), " ".join(page.all_text)
+            self.assertIn("newer-home-0", visible)
+            self.assertLess(visible.index("newer-home-0"), visible.index("older-home-0"))
+            self.assertIn("older-home-5", all_text)
+            self.assertNotIn("older-home-5", visible)
 
 
 if __name__ == "__main__":
