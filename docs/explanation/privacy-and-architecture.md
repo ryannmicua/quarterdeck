@@ -75,6 +75,11 @@ The endpoint grants no other write access. Use marks only on a network you
 trust, or put the server behind an authenticating TLS reverse proxy.
 The static `render` output never contains the buttons.
 
+`serve --allow-marks` also enables `POST /api/views`, which saves one briefing
+view (and optionally the startup view) to the preferences file. It applies the
+same origin, content-type and no-key rules, validates the view exactly as
+`quarterdeck views save` does, and writes only that file, never a home.
+
 `serve --allow-marks` also enables a second endpoint, `POST /api/reactions`, for
 reactions: a quick Approve, Hold, Not now or Question, and a short reply, on a
 desk call, a related item or a report. It applies the same origin, content-type

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import argparse
 import base64
 import json
 import html
@@ -16,6 +17,8 @@ import tempfile
 import threading
 import time
 import unittest
+import urllib.error
+import urllib.request
 from contextlib import contextmanager, redirect_stderr, redirect_stdout
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -237,7 +240,8 @@ Use the compact format for the first release.
             self.assertIn("Reports needing review", page)
             homes = [quarterdeck.load_home_snapshot(quarterdeck.HomeSpec(home.name, home), discover_secondmates=True)]
             bearings = quarterdeck.build_bearings(homes)
-            bearings.attention = quarterdeck.attention_view(homes, bearings.generated, all_decisions=True)
+            bearings.attention = quarterdeck.attention_view(
+                homes, bearings.generated, all_decisions=True, saved_views=quarterdeck.effective_views({}), all_views=True)
             expected = quarterdeck.build_html(homes, "Quarterdeck", lavish=True, bearings=bearings)
             stamp = re.compile(r"[Gg]enerated(?: at)? \d{4}-\d\d-\d\d \d\d:\d\d:\d\d UTC")
             self.assertEqual(stamp.sub("", page), stamp.sub("", expected))
@@ -5617,6 +5621,189 @@ class AttentionTests(unittest.TestCase):
                     fresh = [quarterdeck.load_home_snapshot(quarterdeck.HomeSpec("invented", home), discover_secondmates=True)]
                     self.assertIn("reef-demo", quarterdeck.registered_projects(fresh))
                     self.assertTrue(fresh[0].children[0].registry_error)
+
+
+    def saved_views_home(self, root: Path) -> tuple[Path, Path]:
+        return self.priority_home(root), root / "config" / "quarterdeck" / "preferences.json"
+
+    def sections(self, view: dict) -> dict[str, dict]:
+        return {section.get("project") or section["type"]: section for section in view["sections"]}
+
+    def test_view_member_is_added_only_on_request_and_seeds_morning_and_priorities(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            home, _prefs = self.saved_views_home(Path(temp))
+            plain = self.view(home)
+            self.assertNotIn("view", plain)
+            self.assertNotIn("views", plain)
+            view = self.view(home, view_name="")["view"]
+            self.assertEqual((view["name"], view["default"], view["available"]), ("Morning", True, ["Morning", "Priorities"]))
+            self.assertEqual([section["type"] for section in view["sections"]], ["waiting", "recent", "information"])
+            self.assertEqual({key: value for key, value in self.view(home, view_name="") .items() if key != "view"}, plain)
+            with self.assertRaisesRegex(ValueError, "unknown view 'Nope'.*Morning, Priorities"):
+                self.view(home, view_name="Nope")
+
+    def test_waiting_section_orders_by_tier_then_priority_then_newest_and_ends_with_a_background_card(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            home, _prefs = self.saved_views_home(Path(temp))
+            view = self.view(home, view_name="Morning", priority_projects=["reef-demo"])["view"]
+            waiting = self.sections(view)["waiting"]
+            self.assertEqual([item["title"] for item in waiting["needs_you"]],
+                             ["Kelp survey scope", "Approve the tide table format", "Pick the new harbor map vendor"])
+            self.assertEqual({item["status_label"] for item in waiting["needs_you"]}, {"Decision waiting"})
+            self.assertEqual(waiting["background"]["say"], "2 older decisions waiting")
+            self.assertEqual(waiting["background"]["count"], len(waiting["background"]["items"]))
+            self.assertTrue(all(item["background"] for item in waiting["background"]["items"]))
+            self.assertEqual(waiting["say"], "3 things need you. First, Kelp survey scope: Decision waiting. 2 older decisions waiting.")
+
+    def test_an_item_shows_once_in_the_first_section_that_claims_it(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            home, _prefs = self.saved_views_home(Path(temp))
+            view = self.view(home, view_name="Priorities", priority_projects=["reef-demo", "harbor-app"])["view"]
+            self.assertEqual([section["project"] if section["type"] == "project" else section["type"] for section in view["sections"]],
+                             ["reef-demo", "harbor-app", "waiting"])
+            reef, harbor, waiting = view["sections"]
+            self.assertEqual([item["title"] for item in reef["needs_you"]], ["Kelp survey scope"])
+            self.assertEqual((reef["shown_above"], waiting["shown_above"]), (0, 1))
+            self.assertNotIn("Kelp survey scope", [item["title"] for item in waiting["needs_you"]])
+            self.assertTrue(waiting["say"].endswith("1 shown above."))
+            keys = [item["key"] for section in view["sections"]
+                    for item in [*section["needs_you"], *section["information"], *(section["background"] or {}).get("items", [])]]
+            self.assertEqual(len(keys), len(set(keys)), "no item appears twice on one screen")
+            self.assertEqual((harbor["nothing_waiting"], harbor["say"], harbor["needs_you"], harbor["information"]),
+                             (True, "Nothing waiting on harbor-app.", [], []))
+
+    def test_recent_work_section_is_dropped_when_nothing_is_newer_than_six_hours(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            home, _prefs = self.saved_views_home(Path(temp))
+            snapshot = quarterdeck.load_home_snapshot(quarterdeck.HomeSpec("invented", home))
+            fresh = quarterdeck.attention_view([snapshot], ATTENTION_NOW, view_name="Morning")["view"]
+            recent = self.sections(fresh)["recent"]
+            self.assertEqual(recent["say"], "In the last six hours, 2 merged and 1 started.")
+            self.assertEqual([item["event"] for item in recent["information"]], ["merged", "started", "merged"])
+            later = quarterdeck.attention_view([snapshot], ATTENTION_NOW + timedelta(hours=8), view_name="Morning")["view"]
+            self.assertEqual([section["type"] for section in later["sections"]], ["waiting", "information"])
+
+    def test_project_section_says_when_status_is_unavailable(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            home = self.priority_home(Path(temp))
+            snapshot = quarterdeck.load_home_snapshot(quarterdeck.HomeSpec("invented", home))
+            view = quarterdeck.attention_view([snapshot], ATTENTION_NOW, use_feed=False, priority_projects=["harbor-app"],
+                                              view_name="Priorities")["view"]
+            harbor = self.sections(view)["harbor-app"]
+            self.assertEqual((harbor["nothing_waiting"], harbor["say"]), (None, "harbor-app: waiting status unavailable."))
+
+    def test_views_commands_save_list_show_default_and_refuse_bad_input(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            home, prefs = self.saved_views_home(root)
+            listed = self.run_tool(root, "views", "list", "--json")
+            self.assertEqual(listed.returncode, 0, listed.stderr)
+            self.assertEqual(json.loads(listed.stdout)["default_view"], "Morning")
+            self.assertEqual([view["name"] for view in json.loads(listed.stdout)["views"]], ["Morning", "Priorities"])
+            self.assertFalse(prefs.exists(), "seeding writes nothing")
+            for bad in (["--section", "bogus"], ["--section", "project:nope"], ["--section", "project:"],
+                        ["--section", "waiting", "--section", "waiting"]):
+                result = self.run_tool(root, "views", "save", "Odd", *bad, "--home", str(home))
+                self.assertEqual(result.returncode, 2, bad)
+            self.assertFalse(prefs.exists())
+            ok = self.run_tool(root, "views", "save", "Reef", "--section", "project:reef-demo", "--section", "waiting",
+                               "--default", "--home", str(home))
+            self.assertEqual(ok.returncode, 0, ok.stderr)
+            saved = json.loads(prefs.read_text())
+            self.assertEqual(saved["default_view"], "Reef")
+            self.assertEqual([view["name"] for view in saved["views"]], ["Morning", "Priorities", "Reef"])
+            self.assertEqual(saved["views"][2]["sections"], [{"type": "project", "project": "reef-demo"}, {"type": "waiting"}])
+            self.assertEqual(self.run_tool(root, "views", "show", "reef").stdout.strip(),
+                             "Reef (startup): project reef-demo, Waiting on you.")
+            self.assertEqual(self.run_tool(root, "views", "default", "morning", "--home", str(home)).returncode, 0)
+            self.assertEqual(json.loads(prefs.read_text())["default_view"], "Morning")
+            self.assertEqual(self.run_tool(root, "views", "default", "nope", "--home", str(home)).returncode, 2)
+            self.assertEqual(self.run_tool(root, "views", "show", "nope").returncode, 2)
+            self.run_tool(root, "priorities", "set", "reef-demo", "--home", str(home))
+            self.assertEqual(json.loads(prefs.read_text())["default_view"], "Morning", "priorities keep the views")
+            self.assertIn("views", json.loads(prefs.read_text()))
+
+    def test_attention_cli_view_flag_uses_the_saved_startup_view(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            home, prefs = self.saved_views_home(root)
+            self.run_tool(root, "views", "save", "Reef", "--section", "project:reef-demo", "--default", "--home", str(home))
+            plain = self.run_tool(root, "attention", "--json", "--home", str(home))
+            self.assertNotIn("view", json.loads(plain.stdout))
+            result = self.run_tool(root, "attention", "--json", "--view", "--home", str(home))
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertEqual(json.loads(result.stdout)["view"]["name"], "Reef")
+            named = self.run_tool(root, "attention", "--json", "--view", "Priorities", "--home", str(home))
+            self.assertEqual(json.loads(named.stdout)["view"]["name"], "Priorities")
+            self.assertEqual(self.run_tool(root, "attention", "--json", "--view", "Nope", "--home", str(home)).returncode, 2)
+            prefs.write_text(json.dumps({"version": 1, "views": [{"name": "Bad", "sections": [{"type": "bogus"}]}]}))
+            self.assertEqual(self.run_tool(root, "attention", "--json", "--view", "--home", str(home)).returncode, 2)
+            prefs.write_text(json.dumps({"version": 1, "views": [{"name": "A", "sections": [{"type": "waiting"}]}], "default_view": "Z"}))
+            self.assertEqual(self.run_tool(root, "attention", "--json", "--home", str(home)).returncode, 2)
+
+    def test_page_renders_a_view_rail_with_the_startup_view_open_and_an_editor(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            home = self.priority_home(Path(temp))
+            snapshot = quarterdeck.load_home_snapshot(quarterdeck.HomeSpec("invented", home))
+            view = quarterdeck.attention_view([snapshot], ATTENTION_NOW, priority_projects=["reef-demo"], all_views=True)
+            page = quarterdeck.attention_html(view)
+            self.assertIn('aria-label="Briefing views"', page)
+            self.assertRegex(page, r'data-view-button="Morning" aria-pressed="true"')
+            self.assertRegex(page, r'data-view-button="Priorities" aria-pressed="false"')
+            self.assertRegex(page, r'data-view-panel="Morning">')
+            self.assertRegex(page, r'data-view-panel="Priorities" hidden>')
+            self.assertIn("2 older decisions waiting", page)
+            self.assertIn("1 shown above", page)
+            self.assertIn("Use at startup", page)
+            self.assertRegex(page, r'id="view-save" disabled')
+            self.assertIn("--allow-marks", page)
+            marked = quarterdeck.attention_html(view, allow_marks=True)
+            self.assertNotRegex(marked, r'id="view-save" disabled')
+            self.assertIn('"endpoint": "/api/views"', marked)
+            self.assertNotIn("<script>alert", marked)
+            hostile = quarterdeck.attention_html(dict(view, views=[dict(view["views"][0], layout=[{"type": "project", "project": "</script><b>"}])]))
+            self.assertNotIn("</script><b>", hostile)
+
+    def test_page_edits_save_through_the_views_endpoint_only_with_marks(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            home, prefs = self.saved_views_home(root)
+            args = argparse.Namespace(home=str(home), config=None, preferences=prefs)
+            saved = {}
+            def save(body: dict) -> dict:
+                saved.update(body)
+                return {"views": ["Morning"], "default_view": "Morning"}
+            cache = quarterdeck.SiteCache(lambda: {"index.html": "<p>ok</p>"})
+            server = quarterdeck.make_server("127.0.0.1", 0, quarterdeck.make_handler(cache, None, None, save))
+            read_only = quarterdeck.make_server("127.0.0.1", 0, quarterdeck.make_handler(cache))
+            threads = [threading.Thread(target=item.serve_forever, daemon=True) for item in (server, read_only)]
+            for thread in threads:
+                thread.start()
+            try:
+                def post(target, body: bytes, path: str = "/api/views") -> int:
+                    port = target.server_address[1]
+                    request = urllib.request.Request(f"http://127.0.0.1:{port}{path}", data=body, method="POST",
+                                                     headers={"Content-Type": "application/json"})
+                    try:
+                        with urllib.request.urlopen(request) as response:
+                            return response.status
+                    except urllib.error.HTTPError as exc:
+                        return exc.code
+                good = json.dumps({"name": "Mine", "sections": [{"type": "waiting"}], "default": True}).encode()
+                self.assertEqual(post(read_only, good), 405)
+                self.assertEqual(post(server, b"{}"), 400)
+                self.assertEqual(post(server, good), 200)
+                self.assertEqual(saved["name"], "Mine")
+            finally:
+                for item in (server, read_only):
+                    item.shutdown()
+                    item.server_close()
+            with self.assertRaisesRegex(ValueError, "unknown section type"):
+                quarterdeck.save_view_request(args, {"name": "Mine", "sections": [{"type": "bogus"}], "default": False})
+            self.assertFalse(prefs.exists())
+            result = quarterdeck.save_view_request(args, {"name": "Mine", "sections": [{"type": "information"}, {"type": "waiting"}], "default": True})
+            self.assertEqual(result["default_view"], "Mine")
+            self.assertEqual(json.loads(prefs.read_text())["views"][2]["sections"], [{"type": "information"}, {"type": "waiting"}])
 
 
 if __name__ == "__main__":

@@ -6,7 +6,7 @@ this shared view. Readers use `recent_work_6h` and `show_recent` for recent-work
 display; the older three-window `recent_work` member remains for compatibility.
 
 ```text
-quarterdeck attention --json [--all-decisions] [--project NAME] [--more] [--preferences FILE] [--home PATH] [--config FILE]
+quarterdeck attention --json [--all-decisions] [--project NAME] [--more] [--view [NAME]] [--preferences FILE] [--home PATH] [--config FILE]
 quarterdeck attention --check [--home PATH] [--config FILE]
 ```
 
@@ -203,6 +203,69 @@ in alphabetical order. Scoping then matches that full recorded name.
 These members were added to schema `quarterdeck-attention.v1` without changing
 existing members. See the [CLI and configuration reference](cli-and-config.md)
 for preference storage, validation, and command options.
+
+## Briefing views
+
+`--view NAME` (or `--view` alone for the startup view) adds one `view` member
+and changes nothing else. Without the flag the output has no `view` member.
+An unknown name exits 2 and lists the saved views. Views are saved beside the
+priority projects; see the [CLI reference](cli-and-config.md) for the commands
+and the two seeded views, Morning and Priorities. Quarterdeck builds the
+sections from every selected home so readers only draw them.
+
+| `view` member | Meaning |
+| --- | --- |
+| `name`, `default` | The view's name, and whether it is the startup view. |
+| `available` | The names of all saved views, in saved order. |
+| `layout` | The saved sections: `{type}` or `{type: "project", project}`. |
+| `sections` | The built sections, top first, as below. |
+
+Each section has `type` (`waiting`, `recent`, `project` or `information`; a
+saved `priorities` section becomes one `project` section per priority project),
+`title`, `project` (project sections only), `needs_you` and `information` (item
+lists), `background`, `shown_above`, `nothing_waiting` and `say`, a short
+sentence fit to be read aloud.
+
+- `waiting` holds every Needs you item (decisions and the rest of the board's
+  needs-you items). Quiet and stale decisions are not listed there; they
+  become `background`, `{count, say, items}` with `say` such as "4 older
+  decisions waiting". `background` is `null` in every other section and when
+  there are none.
+- `recent` holds the last six hours of merged and started work in
+  `information`, newest first, each item with `event`, `at`, `task`, `title`,
+  `project`, `pr` and `home`. The section is left out of `sections` entirely
+  when nothing merged or started in six hours.
+- `project` holds that project's `needs_you` items, then its `information`
+  items. When nothing is waiting on it, both lists are empty,
+  `nothing_waiting` is `true` and `say` is "Nothing waiting on <project>.";
+  `nothing_waiting` is `null` with "<project>: waiting status unavailable."
+  when a required source failed, as for `priorities`.
+- `information` holds the informational (board `read`) items and work recorded
+  as in flight in a home's backlog that is not already waiting on the captain.
+
+An item shows once per screen. Sections are built in order; the first section
+that claims an item lists it and each later section that would have listed it
+counts it in `shown_above` ("1 shown above" in `say`). Recent work lines are
+events, not items, and are not counted. `nothing_waiting` is `false` whenever
+the section lists something or counted something shown above.
+
+Items in `needs_you` and `information` have `key`, `kind`, `title`, `ask`,
+`project`, `home` (the home label), `status`, `status_label`, `at` and
+`background`. Within a section they sort by status tier, then by priority
+project in the set order (others last), then newest first. The tiers, in
+order, are:
+
+| `status` | `status_label` | Taken from |
+| --- | --- | --- |
+| `decision_waiting` | Decision waiting | an open decision, or a board `decide` or unsorted item |
+| `blocked` | Blocked | a board `forward` item |
+| `pr_ready` | PR ready to merge | a board `merge` item |
+| `review_waiting` | Review waiting | a board `approve` item |
+| `result_ready` | Result ready | a board `read` item |
+| `in_flight` | In flight | a backlog task recorded as in flight |
+
+The served page uses the same builder for every saved view; the page's data is
+not part of this JSON. Readers must ignore members they do not recognize.
 
 ## `--check`
 

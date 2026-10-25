@@ -33,12 +33,13 @@ address and for its JSON output.
 | `--config FILE` | private user config, if present | Select homes with the same rules as `render`. |
 | `--title TEXT` | configured title | Override the page title. |
 | `--no-snapshot` | off | Skip the Firstmate snapshot script and always parse backlogs. |
-| `--allow-marks` | off | Enable the "Mark reviewed", "Unmark", "Discard" and "Undiscard" buttons for reports, and reactions sent to Firstmate. |
+| `--allow-marks` | off | Enable the "Mark reviewed", "Unmark", "Discard" and "Undiscard" buttons for reports, reactions sent to Firstmate, and saving briefing views from the page. |
 
 By default the server only answers `GET` for the main page and the generated
 report, backlog and backlog-item pages. It has no write endpoints. With
 `--allow-marks` it also accepts a `POST` that marks or
-unmarks a known report and a `POST` that sends a reaction (see below);
+unmarks a known report, a `POST` that sends a reaction (see below) and a `POST`
+that saves a briefing view to the preferences file;
 everything else is still refused. When
 snapshots are enabled, Firstmate's wrapper may refresh its cache and read
 registered remote secondmate ledgers through its own routes; `--no-snapshot`
