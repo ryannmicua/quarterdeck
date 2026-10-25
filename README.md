@@ -7,10 +7,12 @@
 Quarterdeck turns running Firstmate homes' backlogs and scout reports into one
 local HTML review page. Serving is read-only by default; report review marks are
 available as an opt-in. When any selected home or registered secondmate has
-a captain board, the "On your desk" list leads the page. The shared
+a captain board, the board leads the page. The shared
 [decision relevance rules](docs/reference/attention-json.md#decisions) determine
-which decisions appear. Without a board, recent work leads the page, followed
-by the four sections from Firstmate's `/bearings` digest. Reports waiting on your
+which decisions appear. Without a board, the waiting view leads, followed by
+Captain's Call, Underway, and Charted Next from Firstmate's `/bearings` digest. See
+[See recent work](docs/how-to/see-recent-work.md) for the waiting queues and
+recent-work display. Reports waiting on your
 review also appear. Configure several homes to review them together; each home
 is grouped under a clear label, with its registered local secondmates under
 their parent. Run `quarterdeck render --all` to include other backlog records

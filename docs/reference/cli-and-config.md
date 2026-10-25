@@ -19,7 +19,10 @@ quarterdeck reports relate <report-id> --to <task-id> [--remove] [--home PATH] [
 quarterdeck calls list [--home PATH] [--config FILE]
 quarterdeck calls set-relevance <task-id> current|stale [--reason TEXT] [--home PATH] [--config FILE]
 quarterdeck calls relate <task-id> --to <task-id> [--remove] [--home PATH] [--config FILE]
-quarterdeck attention --json|--check [--all-decisions] [--home PATH] [--config FILE]
+quarterdeck attention --json|--check [--all-decisions] [--project NAME] [--more] [--preferences FILE] [--home PATH] [--config FILE]
+quarterdeck priorities show [--json] [--preferences FILE] [--home PATH] [--config FILE]
+quarterdeck priorities set PROJECT [PROJECT ...] [--preferences FILE] [--home PATH] [--config FILE]
+quarterdeck priorities clear [--preferences FILE] [--home PATH] [--config FILE]
 quarterdeck export [--output FILE] [--artifact FILE] [--home PATH] [--config FILE] [--title TEXT] [--bodies all|desk|none] [--no-snapshot]
 quarterdeck import <actions.json|-> [--dry-run] [--home PATH] [--config FILE]
 quarterdeck board upsert <task-id> [--id ID] [--group GROUP] [--title TEXT] [--ask TEXT] [--detail TEXT] [--topic TEXT] [--project TEXT] [--brief-url URL] [--recommendation TEXT] [--link LABEL=URL ...] [--touch] [--touched-at ISO] [--home PATH] [--data-dir PATH]
@@ -80,16 +83,28 @@ the other homes still render. The page links to readable HTML copies of
 selected reports and backlogs, generated beside the main page, and HTTPS links
 for GitHub pull requests.
 
-`priorities show|set|clear` keeps up to three priority projects (each recorded
-in a selected home's route registry or waiting items) in `~/.config/quarterdeck/preferences.json`
-(`--preferences FILE` overrides); `attention --json` reads it, and takes
-`--project NAME` and `--more`. `attention --json` prints the last 12, 12–24 and 24–48 hours of work and the
-open decisions split into relevant and background (schema
-`quarterdeck-attention.v1`); `--all-decisions` lists the background ones. The shared relevance window is 3 days. `attention --check`
-validates the Firstmate sources and prints one line. Both exit 1 with a
-structured error when a source is missing or in a version Quarterdeck does not
-understand (a missing ledger is recording off, not an error). See the
-[attention JSON reference](attention-json.md) for source errors and output formats.
+`priorities set` replaces the saved priorities with one to three project names
+recorded in selected homes' route registry project entries or waiting items.
+`show` prints them (`--json` includes the limit and file path); `clear` saves an
+empty list. Names resolve as described in the
+[attention JSON reference](attention-json.md#waiting-and-priorities).
+
+The preference file is
+`${XDG_CONFIG_HOME:-~/.config}/quarterdeck/preferences.json`.
+`priorities` subcommands and `attention` accept `--preferences FILE` to override
+it; page commands read the default file. Its JSON object has `version: 1` and
+`priority_projects`, a list of at most three distinct, nonempty strings; unknown
+members are preserved on writes. A missing file means no priorities. An
+unreadable or invalid file makes the priority and attention commands exit 2;
+the page ignores it and uses no priorities. Writes are atomic with mode `0600`
+and refuse destinations inside selected local homes or their data directories.
+
+`attention --json` prints the shared waiting and recent-work view;
+`--project NAME` selects a project and `--more` includes held-back waiting items.
+`--all-decisions` also fills the background decision list. `attention --check`
+validates the Firstmate sources and prints one line. See the
+[attention JSON reference](attention-json.md) for field definitions, scoping,
+relevance rules, source errors, compatibility windows, and exit statuses.
 
 `reports list`, `reports read`, `reports mark-reviewed`, and
 `reports unmark-reviewed` use the selected homes in the config, or the single

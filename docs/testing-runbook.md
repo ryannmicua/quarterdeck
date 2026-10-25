@@ -159,3 +159,13 @@ denial, a directory at the registry path, and invalid UTF-8. Readable pending
 work must survive page and snapshot generation; the failed child retains its
 registry error and empty priority summaries remain unavailable. The same check
 exercises project discovery used by priority writes.
+
+Manual gate check (2026-10-25): use a fictional board with `decide`, `merge`,
+and `read` items sharing a priority project, plus an unrelated decision. Serve
+with isolated XDG config/state and `--no-snapshot`. At 1280px and 375px, verify
+queue order and no horizontal overflow; expand the counted more toggle and
+`#related` to confirm unrelated work and the linked report remain accessible.
+Reload after replacing the ledger with only a seven-hour-old event: `#recent-work`
+must disappear while waiting queues remain. A directory at a registered child's
+`data/secondmates.md` exercises the real read-failure path without OS permission
+simulation. Stop the server, close the test tab, and remove fictional homes.

@@ -36,8 +36,10 @@ formats documented by Firstmate, and Quarterdeck refuses a version it does not
 understand rather than guess; see the
 [attention JSON reference](../reference/attention-json.md). This keeps the
 recent-work view an add-on: Firstmate itself is unchanged. `quarterdeck priorities`
-writes only the shared preference file `~/.config/quarterdeck/preferences.json`,
-never a home.
+writes only its preference file and refuses destinations inside selected local
+homes or their data directories. See the
+[CLI and configuration reference](../reference/cli-and-config.md) for its location
+and overrides.
 
 Quarterdeck invokes no other Firstmate script directly, except one: a reaction
 (below) runs the home's own `bin/fm-inbox.sh note`. Quarterdeck makes no network calls itself. `render` and

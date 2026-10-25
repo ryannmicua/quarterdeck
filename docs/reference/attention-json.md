@@ -1,10 +1,9 @@
 # Attention JSON (`quarterdeck-attention.v1`)
 
-`quarterdeck attention --json` prints one JSON object: the work of the last 48
-hours in three windows, and the open decisions split into the ones still in
-play and the background. The page's "Last 48 hours" section renders this same
-object, so the page, `quarterdeck attention`, and any reader such as Cadence
-give the same answer.
+`quarterdeck attention --json` prints one JSON object with waiting queues,
+project priorities, and recent work. The page's "Waiting on you" section renders
+this shared view. Readers use `recent_work_6h` and `show_recent` for recent-work
+display; the older three-window `recent_work` member remains for compatibility.
 
 ```text
 quarterdeck attention --json [--all-decisions] [--project NAME] [--more] [--preferences FILE] [--home PATH] [--config FILE]
@@ -66,7 +65,7 @@ secondmate ledgers.
 | `generated` | UTC time of the read, ISO 8601, second precision. Windows and relevance are measured back from it. |
 | `ok` | `true` when no home reported an error. |
 | `priority_projects` | The saved priority projects (up to three), in priority order. |
-| `requested_project` | The `--project` name, else `null`. |
+| `requested_project` | The resolved recorded name for `--project`, else `null`. |
 | `homes` | One entry per selected home, in selection order. |
 
 Readers must ignore members they do not recognize; later versions may add
@@ -83,7 +82,7 @@ members without changing the schema name.
 | `decision_relevance` | `{recent_days, since}`: the relevance window. |
 | `recent_work_6h` | Merged and started items of the last six hours, newest first; each is a recent-work item plus `event` (`merged` or `started`). `[]` when none or the ledger could not be read. |
 | `show_recent` | `true` only when `recent_work_6h` is not empty. Readers skip recent work otherwise. |
-| `waiting`, `waiting_scope`, `more_count` | See [Waiting](#waiting-and-priorities). |
+| `waiting`, `waiting_more`, `waiting_scope`, `more_count` | See [Waiting](#waiting-and-priorities). |
 | `priorities` | See [Waiting](#waiting-and-priorities). |
 | `decisions` | See below, or `null` when no feed was read and no backlog candidates were found (except with `--no-snapshot`). Source failures remain in `errors` even if backlog decisions are available. |
 
@@ -93,6 +92,11 @@ one of `home_not_local`, `backlog_unreadable`, `ledger_unreadable`,
 `feed_malformed`, or `feed_schema`. Show `message` to the reader as it is.
 
 ### Recent work
+
+`recent_work_6h` includes events at or after six hours before `generated` and
+at or before `generated`; future events are excluded. Each item uses the fields
+described below, plus `event` (`merged` or `started`). `show_recent` says whether
+this list contains any items.
 
 `recent_work` has `ledger_starts_at`, the time of the oldest ledger record or
 `null`, and `windows`, newest first:
@@ -169,31 +173,36 @@ including quiet, nondeferred decisions), `needs_you` (the rest of what needs the
 board: merge, approve, decide, forward and unsorted board and backlog items not
 already a decision), and `informational` (board `read` items). Each item has
 `kind`, `key`, `title`, `ask`, `group`, `project`, `at` and `priority` (index
-into the priority projects, or `null`). Items projected from decisions also
+into the effective project list, or `null`). `kind` is `decision`, `needs_you`,
+or `informational`. Items projected from decisions also
 retain `relevance`, so quiet decisions can remain collapsed without affecting
 the pending-work count.
 
 With priority projects set, items for them come first in priority order. When
 any exist across the selected homes, `waiting_scope` is `priority`, only those items are listed, and
 `more_count` counts the held-back items, available in the same three lists
-under `waiting_more`; `--more` lists everything and sets
+under `waiting_more` (these held-back items omit `priority`); `--more` lists everything and sets
 `waiting_scope` to `all`. When none exist for the priorities, or none are set,
 everything is listed (`waiting_scope` `all`, `more_count` `0`).
 
+`--project` replaces the saved projects for scoping, using the same fallback
+when nothing matches. Its effective project list has just that resolved name.
+
 `priorities` has one entry per priority project (or the single `--project`
 name): `project`, `nothing_waiting`, `waiting` (all matching items across the
-three lists, unaffected by scope) and `say`, a short sentence such as
+three lists, unaffected by scope and without the `priority` field) and `say`, a short sentence such as
 "harbor-app: nothing is waiting." When required sources fail or the feed is
 skipped, an empty result has `nothing_waiting: null` and says "waiting status
-unavailable" instead. Project names match case-insensitively. The set command and explicit project
+unavailable" instead. This also applies when a local home or route registry
+cannot be read, or a board is unsupported or has parsing warnings.
+Project names match case-insensitively. The set command and explicit project
 queries resolve short names to a recorded name before filtering; an exact
 recorded name takes precedence, followed by the first matching `owner/name`
 in alphabetical order. Scoping then matches that full recorded name.
 
 These members were added to schema `quarterdeck-attention.v1` without changing
-existing members. The preference file is
-`~/.config/quarterdeck/preferences.json`: `{"version": 1, "priority_projects": [...]}`;
-a file in another version, or with more than three names, exits 2.
+existing members. See the [CLI and configuration reference](cli-and-config.md)
+for preference storage, validation, and command options.
 
 ## `--check`
 

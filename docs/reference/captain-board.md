@@ -62,6 +62,11 @@ unknown keys are ignored by the page and kept by `quarterdeck board`.
 
 ## What the page does with it
 
+With saved priority projects, the board uses the shared
+[waiting queues and priority scope](attention-json.md#waiting-and-priorities)
+instead of the recency bands below. The collapsed "Related to this session"
+section remains available. The recency layout below applies without priorities.
+
 When the shared attention view supplies relevance, decisions follow the
 [attention relevance contract](attention-json.md#decisions). The desk uses
 recorded activity times and activity-based labels rather than inferring
