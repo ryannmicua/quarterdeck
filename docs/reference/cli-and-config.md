@@ -19,6 +19,7 @@ quarterdeck reports relate <report-id> --to <task-id> [--remove] [--home PATH] [
 quarterdeck calls list [--home PATH] [--config FILE]
 quarterdeck calls set-relevance <task-id> current|stale [--reason TEXT] [--home PATH] [--config FILE]
 quarterdeck calls relate <task-id> --to <task-id> [--remove] [--home PATH] [--config FILE]
+quarterdeck attention --json|--check [--all-decisions] [--home PATH] [--config FILE]
 quarterdeck export [--output FILE] [--artifact FILE] [--home PATH] [--config FILE] [--title TEXT] [--bodies all|desk|none] [--no-snapshot]
 quarterdeck import <actions.json|-> [--dry-run] [--home PATH] [--config FILE]
 quarterdeck board upsert <task-id> [--id ID] [--group GROUP] [--title TEXT] [--ask TEXT] [--detail TEXT] [--topic TEXT] [--project TEXT] [--brief-url URL] [--recommendation TEXT] [--link LABEL=URL ...] [--touch] [--touched-at ISO] [--home PATH] [--data-dir PATH]
@@ -67,15 +68,25 @@ For each configured home, Quarterdeck reads `data/backlog.md` and immediate
 child `*/report.md` files. It also reads the parent's optional
 `data/secondmates.md` registry and renders each registered local secondmate
 under that parent. It may run that home's
-`bin/fm-bearings-snapshot.sh --json` for the bearings view, unless
-`--no-snapshot` is set. Quarterdeck itself makes no network calls and invokes
-no other Firstmate script directly. The snapshot wrapper may read registered
+`bin/fm-bearings-snapshot.sh --json` for the bearings view and
+`bin/fm-attention.sh --json` for the "Last 48 hours" section, unless
+`--no-snapshot` is set, and it reads `state/fleet-ledger.jsonl` for that
+section. Quarterdeck itself makes no network calls and invokes no other
+Firstmate script directly, apart from `bin/fm-inbox.sh note` for reactions. The snapshot wrapper may read registered
 remote secondmate ledgers through Firstmate's routes and cache, and Quarterdeck
 shows the returned rows. A missing or unreadable home in a configured list
 gets a failure section;
 the other homes still render. The page links to readable HTML copies of
 selected reports and backlogs, generated beside the main page, and HTTPS links
 for GitHub pull requests.
+
+`attention --json` prints the last 12, 12–24 and 24–48 hours of work and the
+open decisions split into relevant and background (schema
+`quarterdeck-attention.v1`); `--all-decisions` lists the background ones. The shared relevance window is 3 days. `attention --check`
+validates the Firstmate sources and prints one line. Both exit 1 with a
+structured error when a source is missing or in a version Quarterdeck does not
+understand (a missing ledger is recording off, not an error). See the
+[attention JSON reference](attention-json.md) for source errors and output formats.
 
 `reports list`, `reports read`, `reports mark-reviewed`, and
 `reports unmark-reviewed` use the selected homes in the config, or the single
@@ -112,10 +123,9 @@ for how marks affect the dashboard.
 | `--output PATH` | Output HTML path; overrides `output_dir` in config. Keep it outside the repo and selected homes; those locations are refused. |
 | `--config FILE` | JSON config for this command; defaults to the private user config where documented above. It may supply homes, title, and output directory. |
 | `--title TEXT` | Page title; overrides `page_title` in config. |
-| `--all` | Show every backlog item and report, including queued, finished, closed, and unlinked historical records. |
+| `--all` | Include other backlog records and all reports; [decision relevance](attention-json.md#decisions) still applies. |
 | `--lavish` | Write a separate `*.lavish.html` review page with stable IDs on review cards, then open it with `lavish-axi` when available. Without Lavish, print a command hint and succeed. |
-
-| `--no-snapshot` | Do not run a home's `bin/fm-bearings-snapshot.sh`; classify from the backlog only. |
+| `--no-snapshot` | Do not run a home's `bin/fm-bearings-snapshot.sh` or `bin/fm-attention.sh`; use backlog decisions with recorded board and ledger activity, and show recent work from the ledger. |
 
 `serve` re-renders the page and its readable pages at startup and on the first
 request after its 30-second cache expires. It serves them with `GET` by default
@@ -159,8 +169,13 @@ exists in several homes. `calls list` prints each call's ID, relevance and band.
 
 `export` writes the cloud artifact's data snapshot: JSON to standard output, to
 `--output`, and with `--artifact` an HTML page built from
-`templates/artifact.html.tmpl` with the snapshot embedded. Output paths must
-be outside the checkout and selected homes. `--bodies` picks which waiting
+`templates/artifact.html.tmpl` with the snapshot embedded. Shared-relevance
+snapshots carry `decision_window_days`; their calls retain the real activity
+time in `touched_at` and identify its classification with `activity_reason`.
+Artifact cards and details label worker-only activity as "worked on" and do
+not claim captain-message recency. Output paths must
+be outside the checkout and selected homes. A failed attention view aborts
+export with status 2 before writing either output. `--bodies` picks which waiting
 reports carry their Markdown: `all` (default), `desk` (only reports linked to
 a desk or this-week call, or related to the session) or `none`. `import` applies the artifact's
 recorded mark and discard actions from a file (or `-` for standard input) to

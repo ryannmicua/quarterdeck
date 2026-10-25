@@ -7,12 +7,14 @@
 Quarterdeck turns running Firstmate homes' backlogs and scout reports into one
 local HTML review page. Serving is read-only by default; report review marks are
 available as an opt-in. When any selected home or registered secondmate has
-a captain board, the "On your desk" list of what is waiting on you in your
-current session with Firstmate leads the page; otherwise the page leads with
-the four sections from Firstmate's `/bearings` digest. Reports waiting on your
+a captain board, the "On your desk" list leads the page. The shared
+[decision relevance rules](docs/reference/attention-json.md#decisions) determine
+which decisions appear. Without a board, recent work leads the page, followed
+by the four sections from Firstmate's `/bearings` digest. Reports waiting on your
 review also appear. Configure several homes to review them together; each home
 is grouped under a clear label, with its registered local secondmates under
-their parent. Run `quarterdeck render --all` to restore the exhaustive view.
+their parent. Run `quarterdeck render --all` to include other backlog records
+and all reports; decision relevance still applies.
 
 Render on demand, or run `quarterdeck serve` for a page that stays current on
 its own. Open the result in a browser, or hand a rendered file to `lavish-axi`
@@ -21,11 +23,7 @@ as a local artifact. Quarterdeck itself has no agent or build step.
 ## Features
 
 - Captain board: when a home has `data/captain-board.json`, the page leads with
-  what was raised or discussed in the captain's current session with Firstmate,
-  grouped from "Open items from your last message" back to "from yesterday";
-  after a long idle gap it leads with "Open items from our last session" instead.
-  Boards with no recorded operator activity use the earlier rule: what the
-  captain touched in the last two days, at most five. Then come collapsed "This week" and "Parked" sections with counts per group. Items
+  decisions still in play, with background items collapsed. Items
   are cross-checked against the live backlog and can carry a decision-brief link
   and recommendation chip. Backlog items missing from the board still appear,
   marked "Not yet sorted". See the
@@ -53,7 +51,7 @@ as a local artifact. Quarterdeck itself has no agent or build step.
 - Relevance: Firstmate marks reports and past captain calls current or stale
   (`reports set-relevance`, `calls set-relevance`); stale ones are hidden by
   default behind a collapsed section. A collapsed "Related to this session"
-  section below the desk surfaces older reports and deferred calls that share
+  section below the desk surfaces related items that share
   a project, topic, task link or explicit relation with the active session.
   See [Keep the desk relevant](docs/how-to/keep-the-desk-relevant.md).
 - Cloud artifact: `quarterdeck export --artifact FILE` builds a Claude
@@ -71,6 +69,12 @@ as a local artifact. Quarterdeck itself has no agent or build step.
 - Captain's Call cards include local hold context, options, and recommendations
   when available. Remote decisions show the snapshot summary and point to their
   secondmate home for the full background.
+- Last 48 hours: what merged and started in the last 12 hours, 12–24 hours
+  ago and 24–48 hours ago, from Firstmate's fleet ledger, and only the
+  decisions still in play. See the guide for background and deferred decisions.
+  `quarterdeck attention --json` prints the same view for other readers, and
+  `quarterdeck attention --check` validates Firstmate's formats after an
+  update. See [See recent work](docs/how-to/see-recent-work.md).
 - Uses Firstmate's own `bin/fm-bearings-snapshot.sh --json` when a home has it,
   and says so when it falls back to parsing the backlog.
 - `quarterdeck serve` serves the page over HTTP. `quarterdeck service` can
@@ -80,7 +84,7 @@ as a local artifact. Quarterdeck itself has no agent or build step.
 - Stable report IDs, Markdown and readable HTML reading, and local review state (reviewed, discarded, relevance) in a private SQLite database.
 - Reports needing review appear independently of backlog attention.
 - In-flight tasks and pull requests marked ready for review.
-- Attention filtering, with `quarterdeck render --all` restoring queued, finished, closed, and historical items.
+- Attention filtering; see [the attention model](docs/explanation/attention-model.md) for `--all` behavior.
 - Combined pages for configured homes, with registered secondmates grouped
   under their parent.
 - Inline-styled review page with readable local report and backlog pages.

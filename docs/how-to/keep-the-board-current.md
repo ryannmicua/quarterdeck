@@ -15,15 +15,11 @@ captain sends Firstmate a message or comments on a watched brief:
 quarterdeck board active
 ```
 
-It records the message time as `operator.last_active_at`. The desk groups what
-is waiting by that time: asks raised or touched after it are "from your last
-message", earlier ones are "still waiting on you from N minutes ago", and so
-on. A message more than four hours after the previous one starts a new
-session, and the desk then holds only what is raised or touched in it. Pass
-`--new-session` when a new Firstmate chat starts sooner than that.
-The command records the current time. Until operator activity is first
-recorded, the page keeps the legacy desk; see the
-[board file reference](../reference/captain-board.md#sessions).
+It records the current message time as `operator.last_active_at`. Pass
+`--new-session` when a new Firstmate chat starts. This records session context;
+item engagement is recorded separately with `touch` or `upsert --touch`. See
+the [board file reference](../reference/captain-board.md#what-the-page-does-with-it)
+for shared relevance and the fallback session rules.
 
 So that the desk shows every question Firstmate asks in a session, put each
 ask on the board in the same turn with `upsert ... --touch`, and `touch` items
@@ -54,12 +50,11 @@ An empty value (`--topic ""`) clears `--detail`, `--topic`, `--project`,
 the item's links.
 
 `upsert` leaves `touched_at` alone unless you pass `--touch` (now) or
-`--touched-at ISO`, because a new ask is not the captain's attention. Until
-it is touched, backlog dates rank it in the other bands or the legacy desk;
-they never put it on a session desk. See the
+`--touched-at ISO`. An untouched ask can still qualify through recorded feed
+or task activity under the shared relevance rules. See the
 [board file reference](../reference/captain-board.md#what-the-page-does-with-it).
 Pass `--touch` when Firstmate raises the ask in its conversation with the
-captain, so it appears on that session's desk.
+captain, so that engagement is recorded for relevance.
 
 ## When the captain engages with it
 

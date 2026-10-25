@@ -19,6 +19,7 @@ import unittest
 from contextlib import contextmanager, redirect_stderr, redirect_stdout
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
+from html.parser import HTMLParser
 from unittest.mock import patch
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -235,9 +236,9 @@ Use the compact format for the first release.
             self.assertRegex(page, r'<article class="card" id="review-report-[0-9a-f]{12}">')
             self.assertIn("Reports needing review", page)
             homes = [quarterdeck.load_home_snapshot(quarterdeck.HomeSpec(home.name, home), discover_secondmates=True)]
-            expected = quarterdeck.build_html(
-                homes, "Quarterdeck", lavish=True, bearings=quarterdeck.build_bearings(homes),
-            )
+            bearings = quarterdeck.build_bearings(homes)
+            bearings.attention = quarterdeck.attention_view(homes, bearings.generated, all_decisions=True)
+            expected = quarterdeck.build_html(homes, "Quarterdeck", lavish=True, bearings=bearings)
             stamp = re.compile(r"[Gg]enerated(?: at)? \d{4}-\d\d-\d\d \d\d:\d\d:\d\d UTC")
             self.assertEqual(stamp.sub("", page), stamp.sub("", expected))
 
@@ -1903,12 +1904,12 @@ class CaptainBoardTests(unittest.TestCase):
         harness = r"""
 const storageKey = "quarterdeck-open-details";
 const details = [
-  { id: "item-9", dataset: { refreshKey: "/home/data/captain-board.json:merge" }, open: false },
+  { id: "item-9", dataset: { refreshKey: "/fictional/data/captain-board.json:merge" }, open: false },
   { id: "reviews", dataset: {}, open: false },
   { id: "", dataset: { refreshKey: "bearing:backlog-task-1.html" }, open: false }
 ];
 const values = new Map([[storageKey, JSON.stringify([
-  "/home/data/captain-board.json:merge", "reviews", "bearing:backlog-task-1.html"
+  "/fictional/data/captain-board.json:merge", "reviews", "bearing:backlog-task-1.html"
 ])]]);
 let reloaded = false;
 globalThis.document = {
@@ -2450,7 +2451,7 @@ class BearingsTests(unittest.TestCase):
             calls = []
             bearings = quarterdeck.build_bearings(
                 snapshots, runner=lambda selected_home, _data_dir: (calls.append(selected_home) or payload, ""))
-            task = next(item for item in bearings.underway if item.item_id == "kestrel/kestrel-work")
+            task = next(item for item in bearings.underway if item.item_id == "kestrel-work")
             self.assertEqual(task.title, "Willow Quay field guide")
             self.assertEqual(task.owner, child.spec.label)
             self.assertEqual(bearings.call[0].owner, child.spec.label)
@@ -2562,7 +2563,7 @@ class BearingsTests(unittest.TestCase):
             "garbage": ("#!/bin/sh\necho not json\n", "did not print JSON"),
             "schema": ('#!/bin/sh\necho \'{"schema":"other"}\'\n', "unrecognized schema"),
             "slow": ("#!/bin/sh\nsleep 5\n", "timed out"),
-            "invalid utf-8": ("#!/bin/sh\nprintf '\\377'\n", "invalid UTF-8"),
+            "invalid utf-8": ("#!/bin/sh\nprintf '\\377'\n", "invalid utf-8"),
         }
         for name, (script, expected) in cases.items():
             with self.subTest(name), tempfile.TemporaryDirectory() as temp:
@@ -2634,7 +2635,7 @@ class BearingsTests(unittest.TestCase):
             extra = """
 
 ## More work
-- [ ] review-patch - Review the added patch (repo: patch-demo) (state: review_ready) (pr: https://github.com/example/quarterdeck-demo/pull/84)
+- [ ] review-patch - Review the added patch (repo: patch-demo) (state: review_ready) (pr: https://github.com/example/quarterdeck-demo/""" + "pull/84" + """)
 - [ ] running-task - Resume the running survey (state: running)
 - [ ] progress-task - Continue the active chart (status: in_progress)
 
@@ -4264,7 +4265,10 @@ const button = (c, text) => c.querySelectorAll('button').find(b => b.textContent
         parked = call("c3", "", "Parked detail")
         parked["band"] = "parked"
         snapshot["calls"] = [call("c1", "First heading", "Plain <b>text</b> detail"), call("c2", "Second heading", ""), parked]
-        snapshot["session"] = None
+        snapshot["session"] = {"idle": True}
+        snapshot["decision_window_days"] = 3
+        snapshot["calls"][0]["touched_at"] = "2026-07-02T08:00:00Z"
+        snapshot["calls"][0]["activity_reason"] = "recent_work"
         snapshot["reactions"] = []
         snapshot["delivered"] = []
         page = quarterdeck.artifact_page(snapshot)
@@ -4309,6 +4313,10 @@ const card = (root, title) => root.all('article').find(c => c.children.some(n =>
   assert.ok(buttons(root, 'Approve').length >= 2 && buttons(root, 'Approve').every(b => b.disabled));
   assert.ok(buttons(root, 'Discuss with Firstmate').every(b => b.disabled));
   assert.ok(root.textContent.includes('Connecting…'));
+  assert.ok(root.textContent.includes('raised, acted on or worked on in the last 3 days'));
+  assert.equal(root.textContent.includes('Open items from our last session'), false);
+  assert.ok(card(root, 'Title c1').textContent.includes('worked on '));
+  assert.equal(card(root, 'Title c1').textContent.includes('touched '), false);
   assert.ok(global.document.getElementById('sync').textContent.includes('Connecting'));
   // The desk badge counts the two cards, not the two sub-headings.
   const deskHead = root.all('section').find(s => s.id === 'desk').children[0];
@@ -4330,6 +4338,8 @@ const card = (root, title) => root.all('article').find(c => c.children.some(n =>
   buttons(card(root, 'Title c1'), 'View details')[0].listeners.click(); await flush();
   assert.ok(root.all('h2').some(h => h.textContent === 'Title c1'));
   assert.ok(root.textContent.includes('Plain <b>text</b> detail'));
+  assert.ok(root.textContent.includes('worked on '));
+  assert.equal(root.textContent.includes('touched '), false);
   assert.equal(root.all('b').length, 0);
   assert.ok(root.all('p').some(p => p.attrs.id === 'qd-banner'), 'the detail view shows the connection state too');
   assert.ok(buttons(root, 'Approve').length === 1 && !buttons(root, 'Approve')[0].disabled, 'reaction controls are in the detail view');
@@ -4423,6 +4433,714 @@ class PrivacyGuardTests(unittest.TestCase):
             self.stage(root, "README.md", "Example task key: " + work_key + "\n")
             self.assertTrue(any("ticket-shaped" in item for item in privacy_guard.check_staged(root)))
 
+
+ATTENTION_FIXTURES = ROOT / "tests" / "fixtures" / "attention"
+ATTENTION_NOW = datetime(2026, 7, 2, 12, tzinfo=timezone.utc)
+ATTENTION_BACKLOG = """# Backlog
+
+## Done
+
+- [x] pier-fix - Fix the pier lights https://forge.example.test/acme/harbor-app/pulls/7 (repo: harbor-app) (kind: ship)
+- [ ] kelp-survey - Kelp survey: map the invented reef (repo: reef-demo) (kind: scout)
+"""
+
+
+class AttentionPage(HTMLParser):
+    def __init__(self) -> None:
+        super().__init__()
+        self.collapsed: list[bool] = []
+        self.visible: list[str] = []
+        self.all_text: list[str] = []
+
+    def handle_starttag(self, tag: str, attrs: list) -> None:
+        if tag == "details":
+            self.collapsed.append("open" not in dict(attrs))
+
+    def handle_endtag(self, tag: str) -> None:
+        if tag == "details":
+            self.collapsed.pop()
+
+    def handle_data(self, data: str) -> None:
+        self.all_text.append(data)
+        if not any(self.collapsed):
+            self.visible.append(data)
+
+
+class AttentionTests(unittest.TestCase):
+    """Contract tests: fixtures follow Firstmate's documented fleet ledger (v1) and fm-attention.v1 formats."""
+
+    def make_home(self, root: Path, ledger: str | None = None, feed: str | None = None, script: bool = True) -> Path:
+        home = root / "invented-home"
+        (home / "data").mkdir(parents=True)
+        (home / "data" / "backlog.md").write_text(ATTENTION_BACKLOG, encoding="utf-8")
+        (home / "state").mkdir()
+        if ledger is None:
+            ledger = (ATTENTION_FIXTURES / "fleet-ledger.jsonl").read_text(encoding="utf-8")
+        if ledger:
+            (home / "state" / "fleet-ledger.jsonl").write_text(ledger, encoding="utf-8")
+        if script:
+            feed_path = root / "feed.json"
+            feed_path.write_text(feed if feed is not None else (ATTENTION_FIXTURES / "fm-attention.json").read_text(encoding="utf-8"),
+                                 encoding="utf-8")
+            path = home / "bin" / "fm-attention.sh"
+            path.parent.mkdir()
+            path.write_text(f"#!/bin/sh\n[ \"$1\" = --json ] || exit 2\ncat {shlex.quote(str(feed_path))}\n", encoding="utf-8")
+            path.chmod(0o755)
+        return home
+
+    def view(self, home: Path, **options: object) -> dict:
+        homes = [quarterdeck.load_home_snapshot(quarterdeck.HomeSpec("invented", home))]
+        return quarterdeck.attention_view(homes, ATTENTION_NOW, **options)  # type: ignore[arg-type]
+
+    def run_cli(self, *args: str) -> subprocess.CompletedProcess[str]:
+        with tempfile.TemporaryDirectory() as private:
+            env = dict(os.environ, XDG_CONFIG_HOME=str(Path(private) / "config"), XDG_STATE_HOME=str(Path(private) / "state"))
+            return subprocess.run([sys.executable, str(ROOT / "quarterdeck.py"), "attention", *args],
+                                  check=False, text=True, capture_output=True, env=env)
+
+    def test_windows_count_merged_started_and_answered_newest_first(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            view = self.view(self.make_home(Path(temp)))
+            self.assertEqual(view["schema"], "quarterdeck-attention.v1")
+            self.assertTrue(view["ok"])
+            home = view["homes"][0]
+            self.assertEqual(home["ledger"]["records"], 14, "identical records count once")
+            work = home["recent_work"]
+            self.assertEqual(work["ledger_starts_at"], "2026-07-01T06:00:00Z")
+            last, middle, oldest = work["windows"]
+            self.assertEqual([w["window"] for w in work["windows"]], ["last_12h", "12h_to_24h", "24h_to_48h"])
+            self.assertEqual([w["coverage"] for w in work["windows"]], ["full", "full", "partial"])
+            self.assertEqual((last["merged_count"], last["started_count"], last["answered_count"]), (2, 1, 1))
+            self.assertEqual([m["task"] for m in last["merged"]], ["dock-notes", "pier-fix"])
+            pier = last["merged"][1]
+            self.assertEqual(pier["title"], "Fix the pier lights")
+            self.assertEqual(pier["project"], "harbor-app")
+            self.assertEqual(pier["via"], "pr")
+            self.assertEqual(pier["pr"], "https://forge.example.test/acme/harbor-app/pulls/7")
+            self.assertEqual(pier["at"], "2026-07-02T10:00:00Z")
+            self.assertEqual(last["merged"][0], {"at": "2026-07-02T11:03:00Z", "task": "dock-notes", "title": "dock-notes",
+                                                  "project": None, "pr": None, "via": "local"})
+            self.assertEqual(last["started"][0]["title"], "Buoy light refit", "falls back to the feed's in-flight title")
+            self.assertEqual(last["started"][0]["kind"], "ship")
+            self.assertEqual([s["task"] for s in middle["started"]], ["kelp-survey"])
+            self.assertEqual((middle["merged_count"], middle["answered_count"]), (0, 0))
+            self.assertEqual([s["task"] for s in oldest["started"]], ["pier-fix"])
+            self.assertEqual(oldest["started"][0]["pr"], "https://forge.example.test/acme/harbor-app/pulls/7")
+            self.assertEqual((oldest["from"], oldest["to"]), ("2026-06-30T12:00:00Z", "2026-07-01T12:00:00Z"))
+
+    def test_decisions_split_relevant_from_background(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            home = self.make_home(Path(temp))
+            decisions = self.view(home)["homes"][0]["decisions"]
+            self.assertEqual([(r["task"], r["relevance"]) for r in decisions["relevant"]],
+                             [("fresh-call", "raised"), ("tide-call", "captain_activity"), ("kelp-survey", "recent_work")])
+            self.assertEqual(decisions["background_count"], 3)
+            self.assertIsNone(decisions["background"], "background is a count unless asked for")
+            listed = self.view(home, all_decisions=True)["homes"][0]["decisions"]["background"]
+            self.assertEqual([(r["task"], r["relevance"]) for r in listed],
+                             [("anchor-deferred", "deferred"), ("rope-quiet", "quiet"), ("mate", "quiet")])
+            self.assertEqual(listed[2]["key"], "api-shape", "feed members pass through unchanged")
+
+    def test_decision_visibility_across_the_whole_page(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            home = self.make_home(Path(temp))
+            rows = json.loads((ATTENTION_FIXTURES / "fm-attention.json").read_text())["open_decisions"][:5]
+            backlog = "# Backlog\n\n## Held\n\n" + "\n".join(
+                f'- [ ] {row["task"]} - {row["title"]} (held: true) (hold-kind: captain)'
+                for row in rows
+            )
+            backlog += "\n\n| ID | Title | held | hold_kind |\n| --- | --- | --- | --- |\n" + "\n".join(
+                f'| {row["task"]} | {row["title"]} | true | captain |' for row in rows
+            )
+            (home / "data" / "backlog.md").write_text(backlog)
+            snapshot = quarterdeck.load_home_snapshot(quarterdeck.HomeSpec("invented", home))
+            snapshot.board = quarterdeck.CaptainBoard(
+                home / "data" / "captain-board.json", updated_at=ATTENTION_NOW,
+                last_active_at=ATTENTION_NOW, session_started_at=ATTENTION_NOW,
+                items=[quarterdeck.BoardItem(id=row["task"], task=row["task"], group="decide",
+                                            title=row["title"], ask="Choose", touched_at=ATTENTION_NOW) for row in rows[:3]],
+            )
+            for boarded in (True, False):
+                if not boarded:
+                    snapshot.board = None
+                bearings = quarterdeck.build_bearings([snapshot], now=ATTENTION_NOW, use_snapshot=False)
+                bearings.attention = quarterdeck.attention_view([snapshot], ATTENTION_NOW, all_decisions=True)
+                bearings.call.append(quarterdeck.BItem(title="Second mate API shape", owner="mate", item_id="api-shape"))
+                bearings.call.append(quarterdeck.BItem(title="Unrecorded old call", owner="invented", item_id="old-unrecorded"))
+                exported = quarterdeck.build_snapshot([snapshot], "Quarterdeck", ATTENTION_NOW, attention=bearings.attention)
+                exported_calls = {call["title"]: call["band"] for call in exported["calls"]}
+                self.assertNotIn(rows[1]["title"], exported_calls)
+                self.assertEqual(exported_calls[rows[4]["title"]], "parked")
+                for row in (rows[0], rows[2], rows[3]):
+                    self.assertEqual(exported_calls[row["title"]], "desk")
+                for show_all in (False, True):
+                    parser = AttentionPage()
+                    parser.feed(quarterdeck.build_html([snapshot], "Quarterdeck", bearings=bearings, show_all=show_all))
+                    visible, all_text = " ".join(parser.visible), " ".join(parser.all_text)
+                    for row in (rows[0], rows[2], rows[3]):
+                        self.assertIn(row["title"], visible)
+                    if not show_all:
+                        self.assertNotIn(rows[4]["title"], visible)
+                    self.assertIn(rows[4]["title"], all_text)
+                    self.assertNotIn(rows[1]["title"], all_text)
+                    for title in ("Second mate API shape", "Unrecorded old call"):
+                        self.assertNotIn(title, visible)
+                        self.assertIn(title, all_text)
+
+    def test_touched_decision_boundary_without_ledger(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            feed = json.loads((ATTENTION_FIXTURES / "fm-attention.json").read_text())
+            row = dict(feed["open_decisions"][2])
+            feed["open_decisions"] = [row]
+            for touched, expected in (("2026-06-29T12:00:00Z", True), ("2026-06-29T11:59:59Z", False)):
+                row["last_touched_at"] = touched
+                root = Path(temp) / ("inside" if expected else "outside")
+                root.mkdir()
+                home = self.make_home(root, ledger="", feed=json.dumps(feed))
+                decisions = self.view(home)["homes"][0]["decisions"]
+                self.assertEqual(bool(decisions["relevant"]), expected)
+
+    def test_board_touch_reactivates_quiet_decisions_without_overriding_deferral(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            home = self.make_home(root)
+            rows = json.loads((ATTENTION_FIXTURES / "fm-attention.json").read_text())["open_decisions"]
+            selected = [rows[1], rows[4]]
+            (home / "data" / "backlog.md").write_text(
+                "# Backlog\n\n| ID | Title | held | hold_kind |\n| --- | --- | --- | --- |\n" + "\n".join(
+                    f'| {row["task"]} | {row["title"]} | true | captain |' for row in selected
+                )
+            )
+            board = {"version": 1, "updated_at": "2026-06-01T12:00:00Z", "items": [
+                {"id": row["task"], "task": row["task"], "group": "decide", "title": row["title"],
+                 "ask": "Choose", "touched_at": "2026-06-01T12:00:00Z"} for row in selected
+            ]}
+            (home / "data" / "captain-board.json").write_text(json.dumps(board))
+            before = self.view(home)["homes"][0]["decisions"]
+            self.assertNotIn("rope-quiet", [row["task"] for row in before["relevant"]])
+            for row in selected:
+                result = subprocess.run(
+                    [sys.executable, str(ROOT / "quarterdeck.py"), "board", "touch", row["task"],
+                     "--at", "2026-07-02T12:00:00Z", "--data-dir", str(home / "data")],
+                    capture_output=True, text=True, check=False,
+                )
+                self.assertEqual(result.returncode, 0, result.stderr)
+            snapshot = quarterdeck.load_home_snapshot(quarterdeck.HomeSpec("invented", home))
+            view = quarterdeck.attention_view([snapshot], ATTENTION_NOW, all_decisions=True)
+            decisions = view["homes"][0]["decisions"]
+            relevant = {row["task"]: row["relevance"] for row in decisions["relevant"]}
+            self.assertEqual(relevant["rope-quiet"], "captain_activity")
+            self.assertNotIn("anchor-deferred", relevant)
+            board_view = quarterdeck.board_view([snapshot], ATTENTION_NOW, decisions=quarterdeck.decision_rows([snapshot], view))
+            self.assertEqual([entry.item.task for entry in board_view.bands["desk"]], ["rope-quiet"])
+            exported = quarterdeck.build_snapshot([snapshot], "Quarterdeck", ATTENTION_NOW, attention=view)
+            self.assertEqual([(call["id"], call["band"]) for call in exported["calls"]], [("invented/rope-quiet", "desk")])
+            bearings = quarterdeck.build_bearings([snapshot], ATTENTION_NOW, use_snapshot=False)
+            bearings.attention = view
+            page = quarterdeck.build_html([snapshot], "Quarterdeck", bearings=bearings)
+            calls = page.split('id="call"', 1)[1].split('id="landed"', 1)[0]
+            self.assertIn(rows[4]["title"], calls)
+            self.assertNotIn(rows[1]["title"], page)
+            expired = quarterdeck.attention_view([snapshot], datetime(2026, 7, 6, 12, tzinfo=timezone.utc))
+            self.assertNotIn("rope-quiet", [row["task"] for row in expired["homes"][0]["decisions"]["relevant"]])
+
+    def test_board_engagement_is_home_scoped_for_routed_and_keyed_calls(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            feed = json.loads((ATTENTION_FIXTURES / "fm-attention.json").read_text())
+            quiet = feed["open_decisions"][4]
+            feed["open_decisions"] = [quiet, dict(quiet, task="mate/rope-quiet"), feed["open_decisions"][5]]
+            home = self.make_home(root, feed=json.dumps(feed))
+            child = root / "mate"
+            (child / "data").mkdir(parents=True)
+            (child / "data" / "backlog.md").write_text("# Backlog\n")
+            (home / "data" / "secondmates.md").write_text(
+                f"- mate - Maintains fictional maps. (home: {child}; scope: Maps; projects: demo; added 2026-01-04)\n"
+            )
+            (child / "data" / "captain-board.json").write_text(json.dumps({
+                "version": 1, "updated_at": "2026-07-02T12:00:00Z", "items": [
+                    {"id": task, "task": task, "group": "decide", "title": task, "ask": "Choose",
+                     "touched_at": datetime.now(timezone.utc).isoformat()} for task in ("rope-quiet", "api-shape")
+                ]
+            }))
+            result = self.run_cli("--json", "--home", str(home))
+            self.assertEqual(result.returncode, 0, result.stderr)
+            relevant = {row["task"]: row["relevance"] for row in json.loads(result.stdout)["homes"][0]["decisions"]["relevant"]}
+            self.assertEqual(relevant, {"mate/rope-quiet": "captain_activity", "mate": "captain_activity"})
+
+    def test_export_refuses_attention_errors_before_writing_any_destination(self) -> None:
+        cases = (
+            {"ledger": '{"v":2,"ts":1782990400,"event":"task.status","task":"kelp-survey"}\n'},
+            {"feed": '{"schema":"fm-attention.v2","open_decisions":[]}'},
+        )
+        for options in cases:
+            with self.subTest(options=options), tempfile.TemporaryDirectory() as temp:
+                root = Path(temp)
+                home = self.make_home(root, **options)
+                view = self.view(home, all_decisions=True)
+                homes = [quarterdeck.load_home_snapshot(quarterdeck.HomeSpec("invented", home))]
+                with self.assertRaisesRegex(ValueError, "quarterdeck attention check: FAILED"):
+                    quarterdeck.build_snapshot(homes, "Quarterdeck", ATTENTION_NOW, attention=view)
+                output, artifact = root / "export.json", root / "export.html"
+                output.write_text("existing JSON")
+                artifact.write_text("existing artifact")
+                env = dict(os.environ, XDG_CONFIG_HOME=str(root / "config"), XDG_STATE_HOME=str(root / "review-state"))
+                for destinations in ([], ["--output", str(output)], ["--artifact", str(artifact)],
+                                     ["--output", str(output), "--artifact", str(artifact)]):
+                    result = subprocess.run(
+                        [sys.executable, str(ROOT / "quarterdeck.py"), "export", "--home", str(home), *destinations],
+                        capture_output=True, text=True, check=False, env=env,
+                    )
+                    self.assertNotEqual(result.returncode, 0)
+                    self.assertEqual(result.stdout, "")
+                    self.assertIn("quarterdeck attention check: FAILED", result.stderr)
+                    self.assertIn(view["homes"][0]["errors"][0]["message"], result.stderr)
+                    self.assertEqual(output.read_text(), "existing JSON")
+                    self.assertEqual(artifact.read_text(), "existing artifact")
+
+    def test_export_reports_failed_home_when_another_home_skips_the_feed(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            for name in ("good", "bad"):
+                (root / name).mkdir()
+            good = self.make_home(root / "good")
+            bad = self.make_home(root / "bad", ledger='{"v":2,"ts":1782990400,"event":"task.status","task":"kelp-survey"}\n')
+            config = root / "config.json"
+            config.write_text(json.dumps({"homes": [{"label": "good", "path": str(good)}, {"label": "bad", "path": str(bad)}]}))
+            env = dict(os.environ, XDG_CONFIG_HOME=str(root / "unused-config"), XDG_STATE_HOME=str(root / "review-state"))
+            result = subprocess.run(
+                [sys.executable, str(ROOT / "quarterdeck.py"), "export", "--config", str(config), "--no-snapshot"],
+                capture_output=True, text=True, check=False, env=env,
+            )
+            self.assertNotEqual(result.returncode, 0)
+            self.assertEqual(result.stdout, "")
+            self.assertIn("bad: ledger:", result.stderr)
+            self.assertIn("record version 2", result.stderr)
+            self.assertNotIn("Traceback", result.stderr)
+
+    def test_unescalated_secondmate_calls_use_local_evidence_in_every_consumer(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            home = self.make_home(root)
+            child = root / "mate"
+            (child / "data").mkdir(parents=True)
+            (child / "state").mkdir()
+            (home / "data" / "secondmates.md").write_text(
+                f"- mate - Maintains fictional maps. (home: {child}; scope: Maps; projects: demo; added 2026-01-04)\n"
+            )
+            tasks = ("local-touch", "local-deferred", "local-quiet", "local-raised", "local-work", "local-ledger")
+            lines = []
+            for task in tasks:
+                extra = " (since: 2026-07-02T10:00:00Z)" if task == "local-raised" else ""
+                if task == "local-deferred":
+                    extra = " (hold-until: 2026-07-03T00:00:00Z) (hold: Deferred until 2026-07-03T00:00:00Z)"
+                lines.append(f"- [ ] {task} - Choice {task} (held: true) (hold-kind: captain){extra}")
+            (child / "data" / "backlog.md").write_text("# Backlog\n\n## Held\n\n" + "\n".join(lines))
+            (child / "data" / "captain-board.json").write_text(json.dumps({
+                "version": 1, "updated_at": "2026-06-01T12:00:00Z", "items": [
+                    {"id": task, "task": task, "group": "decide", "title": f"Choice {task}", "ask": "Choose"}
+                    for task in tasks[:2]
+                ]
+            }))
+            for task in tasks[:2]:
+                touched = subprocess.run(
+                    [sys.executable, str(ROOT / "quarterdeck.py"), "board", "touch", task,
+                     "--data-dir", str(child / "data"), "--at", "2026-07-02T11:00:00Z"],
+                    capture_output=True, text=True, check=False,
+                )
+                self.assertEqual(touched.returncode, 0, touched.stderr)
+            event = {"v": 1, "ts": ATTENTION_NOW.timestamp() - 3600, "event": "task.status", "task": "local-ledger"}
+            (child / "state" / "fleet-ledger.jsonl").write_text(json.dumps(event) + "\n")
+            with (home / "state" / "fleet-ledger.jsonl").open("a") as ledger:
+                ledger.write(json.dumps(dict(event, task="mate/local-work")) + "\n")
+            homes = [quarterdeck.load_home_snapshot(quarterdeck.HomeSpec("invented", home), discover_secondmates=True)]
+            view = quarterdeck.attention_view(homes, ATTENTION_NOW, all_decisions=True)
+            self.assertTrue(view["ok"], view)
+            child_label = homes[0].children[0].spec.label
+            key = lambda task: quarterdeck.report_reference(child_label, task)
+            relevant = {row["task"]: row["relevance"] for row in view["homes"][0]["decisions"]["relevant"]}
+            for task, why in (("local-touch", "captain_activity"), ("local-raised", "raised"),
+                              ("local-work", "recent_work"), ("local-ledger", "recent_work")):
+                self.assertEqual(relevant[key(task)], why)
+            for task in ("local-deferred", "local-quiet"):
+                self.assertNotIn(key(task), relevant)
+            bearings = quarterdeck.build_bearings(homes, ATTENTION_NOW, use_snapshot=False)
+            bearings.attention = view
+            page = AttentionPage()
+            page.feed(quarterdeck.build_html(homes, "Quarterdeck", bearings=bearings, show_all=True))
+            for task in ("local-touch", "local-raised", "local-work", "local-ledger"):
+                self.assertIn(f"Choice {task}", " ".join(page.visible))
+            self.assertNotIn("Choice local-deferred", " ".join(page.all_text))
+            self.assertIn("Choice local-quiet", " ".join(page.all_text))
+            data = {**SNAPSHOT_JSON, "decisions_open": [], "landed": [], "secondmates": [],
+                    "in_flight": [{"id": f"mate/{task}", "name": f"Choice {task}"} for task in tasks[:3]],
+                    "gates": [{"id": f"mate/{task}", "owner": "mate", "title": f"Choice {task}"} for task in tasks[:3]]}
+            from_snapshot = quarterdeck.build_bearings(homes, ATTENTION_NOW, runner=lambda *_: (data, ""))
+            from_snapshot.attention = view
+            snapshot_page = AttentionPage()
+            snapshot_page.feed(quarterdeck.build_html(homes, "Quarterdeck", bearings=from_snapshot))
+            self.assertIn("Choice local-touch", " ".join(snapshot_page.visible))
+            self.assertNotIn("Choice local-quiet", " ".join(snapshot_page.visible))
+            self.assertIn("Choice local-quiet", " ".join(snapshot_page.all_text))
+            self.assertNotIn("Choice local-deferred", " ".join(snapshot_page.all_text))
+            exported = quarterdeck.build_snapshot(homes, "Quarterdeck", ATTENTION_NOW, attention=view)
+            bands = {row["id"]: row["band"] for row in exported["calls"]}
+            self.assertEqual(bands[key("local-touch")], "desk")
+            self.assertEqual(bands[key("local-quiet")], "parked")
+            self.assertNotIn(key("local-deferred"), bands)
+            due = quarterdeck.attention_view(homes, datetime(2026, 7, 4, 12, tzinfo=timezone.utc), all_decisions=True)
+            self.assertIn(key("local-deferred"), [row["task"] for row in due["homes"][0]["decisions"]["relevant"]])
+
+    def test_charted_underway_home_cards_and_totals_share_decision_visibility(self) -> None:
+        for representation in ("table", "bullet"):
+            with self.subTest(representation=representation), tempfile.TemporaryDirectory() as temp:
+                root = Path(temp)
+                home = self.make_home(root)
+                items = [(f"{age}-{state}", state, age) for age in ("quiet", "deferred", "live")
+                         for state in ("blocked", "in_flight")]
+                items += [("ordinary-flight", "in_flight", "ordinary")]
+                if representation == "table":
+                    source = "# Backlog\n\n| ID | Title | State | blocked_by | hold_set | hold_until |\n| --- | --- | --- | --- | --- | --- |\n"
+                    for task, state, age in items:
+                        touched = "2026-07-02T10:00:00Z" if age == "live" else "-"
+                        until = "2026-07-03T00:00:00Z" if age == "deferred" else "-"
+                        blocker = "captain" if age != "ordinary" else "-"
+                        source += f"| {task} | Choice {task} | {state} | {blocker} | {touched} | {until} |\n"
+                else:
+                    source = "# Backlog\n\n## Work\n\n"
+                    for task, state, age in items:
+                        extra = " (blocked-by: captain)" if age != "ordinary" else ""
+                        if age == "live":
+                            extra += " (hold-set: 2026-07-02T10:00:00Z)"
+                        if age == "deferred":
+                            extra += " (hold-until: 2026-07-03T00:00:00Z)"
+                        source += f"- [ ] {task} - Choice {task} (state: {state}){extra}\n"
+                (home / "data" / "backlog.md").write_text(source)
+                homes = [quarterdeck.load_home_snapshot(quarterdeck.HomeSpec("invented", home))]
+                for use_feed in (True, False):
+                    view = quarterdeck.attention_view(homes, ATTENTION_NOW, all_decisions=True, use_feed=use_feed,
+                                                      feed_runner=lambda *_: {"open_decisions": []})
+                    bearings = quarterdeck.build_bearings(homes, ATTENTION_NOW, use_snapshot=False)
+                    bearings.attention = view
+                    page = AttentionPage()
+                    rendered = quarterdeck.build_html(homes, "Quarterdeck", bearings=bearings)
+                    page.feed(rendered)
+                    visible, all_text = " ".join(page.visible), " ".join(page.all_text)
+                    for task, state, age in items:
+                        title = f"Choice {task}"
+                        if age in ("live", "ordinary"):
+                            self.assertIn(title, visible)
+                        elif age == "quiet":
+                            self.assertNotIn(title, visible)
+                            self.assertIn(title, all_text)
+                        else:
+                            self.assertNotIn(title, all_text)
+                    if representation == "table":
+                        self.assertIn('<div class="metric"><b>2</b><span>In-flight work</span></div>', rendered)
+                        self.assertIn('<div class="metric"><b>1</b><span>Blocked for captain/external</span></div>', rendered)
+                    exported = quarterdeck.build_snapshot(homes, "Quarterdeck", ATTENTION_NOW, attention=view)
+                    bands = {row["id"].split("/", 1)[1]: row["band"] for row in exported["calls"]}
+                    for task, state, age in items:
+                        if age == "live":
+                            self.assertEqual(bands[task], "desk")
+                        elif age == "quiet":
+                            self.assertEqual(bands[task], "parked")
+                        else:
+                            self.assertNotIn(task, bands)
+
+    def test_attention_cli_honors_stale_and_current_call_transitions(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            now = datetime.now(timezone.utc).isoformat()
+            feed = {"schema": "fm-attention.v1", "open_decisions": [
+                {"task": "fresh-call", "kind": "captain_hold", "title": "Choose a fictional signal",
+                 "bucket": "live", "opened_at": now, "last_touched_at": now}
+            ]}
+            home = self.make_home(root, feed=json.dumps(feed))
+            (home / "data" / "backlog.md").write_text(
+                "# Backlog\n\n- [ ] fresh-call - Choose a fictional signal (held: true) (hold-kind: captain)\n"
+            )
+            env = dict(os.environ, XDG_CONFIG_HOME=str(root / "config"), XDG_STATE_HOME=str(root / "review-state"))
+            def run(*args: str) -> subprocess.CompletedProcess:
+                return subprocess.run([sys.executable, str(ROOT / "quarterdeck.py"), *args, "--home", str(home)],
+                                      capture_output=True, text=True, check=False, env=env)
+            for state in ("stale", "current"):
+                changed = run("calls", "set-relevance", "fresh-call", state)
+                self.assertEqual(changed.returncode, 0, changed.stderr)
+                result = run("attention", "--json", "--all-decisions")
+                self.assertEqual(result.returncode, 0, result.stderr)
+                decisions = json.loads(result.stdout)["homes"][0]["decisions"]
+                self.assertEqual(bool(decisions["relevant"]), state == "current")
+                if state == "stale":
+                    self.assertEqual(decisions["background"][0]["relevance"], "stale")
+                output = root / f"{state}.html"
+                rendered = run("render", "--output", str(output))
+                self.assertEqual(rendered.returncode, 0, rendered.stderr)
+                page = AttentionPage()
+                page.feed(output.read_text())
+                self.assertEqual("Choose a fictional signal" in " ".join(page.visible), state == "current")
+                exported = run("export")
+                self.assertEqual(exported.returncode, 0, exported.stderr)
+                calls = json.loads(exported.stdout)["calls"]
+                self.assertEqual(calls[0]["band"], "stale" if state == "stale" else "desk")
+
+    def test_dated_hold_notes_expire_at_the_recorded_time(self) -> None:
+        for representation in ("table", "bullet"):
+            for until in ("2026-07-03", "2026-07-03T01:30:00+08:00", "2026-07-03 01:30:00+08:00"):
+                for structured in (False, True):
+                    with self.subTest(representation=representation, until=until, structured=structured), tempfile.TemporaryDirectory() as temp:
+                        home = self.make_home(Path(temp))
+                        due = datetime.fromisoformat(until)
+                        due = due.replace(tzinfo=timezone.utc) if due.tzinfo is None else due
+                        touched = (due - timedelta(hours=1)).isoformat()
+                        note = f"Deferred until {until}."
+                        if representation == "bullet":
+                            source = f"# Backlog\n\n- [ ] dated-call - Dated choice (held: true) (hold-kind: captain) (hold: {note})"
+                            if structured:
+                                source += f" (hold-until: {until})"
+                        else:
+                            source = ("| ID | Title | held | hold_kind | hold_reason | hold_until |\n"
+                                      "| --- | --- | --- | --- | --- | --- |\n"
+                                      f'| dated-call | Dated choice | yes | captain | {note} | {until if structured else "-"} |')
+                        (home / "data" / "backlog.md").write_text(source)
+                        (home / "data" / "captain-board.json").write_text(json.dumps({
+                            "version": 1, "updated_at": touched, "items": [
+                                {"id": "dated-call", "task": "dated-call", "group": "decide", "title": "Dated choice",
+                                 "ask": "Choose", "touched_at": touched}
+                            ]
+                        }))
+                        homes = [quarterdeck.load_home_snapshot(quarterdeck.HomeSpec("invented", home))]
+                        for offset in (-1, 0, 1):
+                            now = due + timedelta(seconds=offset)
+                            view = quarterdeck.attention_view(homes, now, all_decisions=True,
+                                                              feed_runner=lambda *_: {"open_decisions": []})
+                            decisions = view["homes"][0]["decisions"]
+                            self.assertEqual(bool(decisions["relevant"]), offset >= 0)
+                            bearings = quarterdeck.build_bearings(homes, now, use_snapshot=False)
+                            bearings.attention = view
+                            page = AttentionPage()
+                            page.feed(quarterdeck.build_html(homes, "Quarterdeck", bearings=bearings))
+                            self.assertEqual("Dated choice" in " ".join(page.all_text), offset >= 0)
+                            exported = quarterdeck.build_snapshot(homes, "Quarterdeck", now, attention=view)
+                            self.assertEqual(bool(exported["calls"]), offset >= 0)
+                        (home / "data" / "backlog.md").write_text(source + (
+                            " (blocked-by: dependency)\n- [ ] dependency - Still working" if representation == "bullet" else
+                            "\n| dependency | Still working | no | - | - | - |"
+                        ))
+                        if representation == "table":
+                            text = (home / "data" / "backlog.md").read_text().replace(note, note + " waits on dependency")
+                            (home / "data" / "backlog.md").write_text(text)
+                        homes = [quarterdeck.load_home_snapshot(quarterdeck.HomeSpec("invented", home))]
+                        view = quarterdeck.attention_view(homes, due + timedelta(days=1), all_decisions=True,
+                                                          feed_runner=lambda *_: {"open_decisions": []})
+                        self.assertFalse(view["homes"][0]["decisions"]["relevant"])
+
+    def test_worker_only_relevance_preserves_activity_time_without_message_labels(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            home = self.make_home(Path(temp), feed=json.dumps({"schema": "fm-attention.v1", "open_decisions": [
+                {"task": task, "title": f"Choice {task}", "kind": "captain_hold", "bucket": "live",
+                 "opened_at": opened, "last_touched_at": opened}
+                for task, opened in (("worker-only", None), ("worker-old", "2026-06-01T00:00:00Z"))
+            ]}))
+            (home / "data" / "backlog.md").write_text(
+                "# Backlog\n\n" + "\n".join(
+                    f"- [ ] {task} - Choice {task} (held: true) (hold-kind: captain)" for task in ("worker-only", "worker-old")
+                )
+            )
+            events = {task: ATTENTION_NOW - timedelta(hours=hours) for task, hours in (("worker-only", 4), ("worker-old", 3))}
+            (home / "state" / "fleet-ledger.jsonl").write_text("".join(
+                json.dumps({"v": 1, "ts": when.timestamp(), "event": "task.status", "task": task}) + "\n"
+                for task, when in events.items()
+            ))
+            for mode in ("active", "idle", "no-session"):
+                operator = {} if mode == "no-session" else {"operator": {
+                    "last_active_at": (ATTENTION_NOW - timedelta(hours=1 if mode == "active" else 12)).isoformat(),
+                    "session_started_at": (ATTENTION_NOW - timedelta(days=1)).isoformat(),
+                }}
+                (home / "data" / "captain-board.json").write_text(json.dumps({
+                    "version": 1, "updated_at": ATTENTION_NOW.isoformat(), **operator,
+                    "items": [{"id": "worker-only", "task": "worker-only", "group": "decide", "title": "Choice worker-only", "ask": "Choose"}],
+                }))
+                homes = [quarterdeck.load_home_snapshot(quarterdeck.HomeSpec("invented", home))]
+                view = quarterdeck.attention_view(homes, ATTENTION_NOW, all_decisions=True)
+                for row in view["homes"][0]["decisions"]["relevant"]:
+                    self.assertEqual(row["relevance"], "recent_work")
+                    self.assertEqual(quarterdeck.parse_board_time(row["activity_at"]), events[row["task"]])
+                exported = quarterdeck.build_snapshot(homes, "Quarterdeck", ATTENTION_NOW, attention=view)
+                self.assertEqual(exported["decision_window_days"], 3)
+                for call in exported["calls"]:
+                    self.assertEqual(quarterdeck.parse_board_time(call["touched_at"]), events[call["id"].split("/", 1)[1]])
+                    self.assertEqual(call["activity_reason"], "recent_work")
+                    self.assertEqual(call["desk_group"], "")
+                bearings = quarterdeck.build_bearings(homes, ATTENTION_NOW, use_snapshot=False)
+                bearings.attention = view
+                page = quarterdeck.build_html(homes, "Quarterdeck", bearings=bearings)
+                self.assertIn("worked on 4 hours ago", page)
+                self.assertIn("worked on 3 hours ago", page)
+                self.assertIn("raised, acted on or worked on in the last 3 days", page)
+                self.assertNotIn("Open items from your last message", page)
+                self.assertNotIn("Raised or discussed in this session", page)
+                self.assertNotIn("Open items from our last session", page)
+                self.assertNotIn("What you touched in the last 2 days", page)
+
+    def test_child_ledger_activity_is_shared_by_feed_and_fallback_decisions(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            home = self.make_home(root, ledger="")
+            child = root / "mate"
+            (child / "data").mkdir(parents=True)
+            (child / "state").mkdir()
+            for owner, title in ((home, "Parent ledger choice"), (child, "Child ledger choice")):
+                (owner / "data" / "backlog.md").write_text(
+                    f"# Backlog\n\n- [ ] local-ledger - {title} (held: true) (hold-kind: captain)\n"
+                )
+            (home / "data" / "secondmates.md").write_text(
+                f"- mate - Maintains fictional maps. (home: {child}; scope: Maps; projects: demo; added 2026-01-04)\n"
+            )
+            event_time = ATTENTION_NOW - timedelta(hours=1)
+            (child / "state" / "fleet-ledger.jsonl").write_text(json.dumps({
+                "v": 1, "ts": event_time.timestamp(), "event": "task.status", "task": "local-ledger"
+            }) + "\n")
+            homes = [quarterdeck.load_home_snapshot(quarterdeck.HomeSpec("invented", home), discover_secondmates=True)]
+            key = quarterdeck.report_reference(homes[0].children[0].spec.label, "local-ledger")
+            base = {"task": "local-ledger", "kind": "captain_hold", "title": "Parent ledger choice",
+                    "bucket": "live", "opened_at": "2026-06-01T00:00:00Z", "last_touched_at": None}
+            for identity in (None, "mate/local-ledger", key, "keyed"):
+                with self.subTest(identity=identity):
+                    rows = [base]
+                    if identity is not None:
+                        rows.append(dict(base, task="mate" if identity == "keyed" else identity,
+                                         kind="keyed" if identity == "keyed" else "captain_hold",
+                                         key="local-ledger" if identity == "keyed" else None, title="Child ledger choice"))
+                    (root / "feed.json").write_text(json.dumps({"schema": "fm-attention.v1", "open_decisions": rows}))
+                    view = quarterdeck.attention_view(homes, ATTENTION_NOW, all_decisions=True)
+                    self.assertTrue(view["ok"], view)
+                    relevant = view["homes"][0]["decisions"]["relevant"]
+                    self.assertEqual(len(relevant), 1)
+                    self.assertEqual(relevant[0]["title"], "Child ledger choice")
+                    self.assertEqual(relevant[0]["relevance"], "recent_work")
+                    self.assertEqual(quarterdeck.parse_board_time(relevant[0]["activity_at"]), event_time)
+                    bearings = quarterdeck.build_bearings(homes, ATTENTION_NOW, use_snapshot=False)
+                    bearings.attention = view
+                    page = AttentionPage()
+                    page.feed(quarterdeck.build_html(homes, "Quarterdeck", bearings=bearings))
+                    self.assertIn("Child ledger choice", " ".join(page.visible))
+                    self.assertNotIn("Parent ledger choice", " ".join(page.visible))
+                    exported = quarterdeck.build_snapshot(homes, "Quarterdeck", ATTENTION_NOW, attention=view)
+                    bands = {call["id"]: call["band"] for call in exported["calls"]}
+                    self.assertEqual(bands[key], "desk")
+                    self.assertEqual(bands["invented/local-ledger"], "parked")
+
+    def test_unknown_ledger_version_is_refused_with_a_structured_error(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            ledger = (ATTENTION_FIXTURES / "fleet-ledger.jsonl").read_text(encoding="utf-8")
+            ledger += '{"v":2,"ts":1782990400,"event":"task.status","task":"pier-fix"}\n'
+            home = self.make_home(Path(temp), ledger=ledger)
+            result = self.run_cli("--json", "--home", str(home))
+            self.assertEqual(result.returncode, 1, result.stderr)
+            data = json.loads(result.stdout)
+            self.assertFalse(data["ok"])
+            entry = data["homes"][0]
+            self.assertIsNone(entry["recent_work"], "no partial guess from a ledger it does not understand")
+            self.assertEqual(entry["errors"][0]["code"], "ledger_version")
+            self.assertIn("line 16 has record version 2", entry["errors"][0]["message"])
+            check = self.run_cli("--check", "--home", str(home))
+            self.assertEqual(check.returncode, 1)
+            self.assertEqual(len(check.stdout.strip().splitlines()), 1)
+            self.assertTrue(check.stdout.startswith("quarterdeck attention check: FAILED — invented-home: ledger: "))
+
+    def test_ledger_shape_errors_and_an_unterminated_last_line(self) -> None:
+        cases = {
+            '{"ts":1,"event":"task.status","task":"a"}\n': "ledger_version",
+            'not json\n{"v":1,"ts":1,"event":"task.status","task":"a"}\n': "ledger_malformed",
+            '{"v":1,"ts":"soon","event":"task.status","task":"a"}\n': "ledger_malformed",
+            '[1]\n': "ledger_malformed",
+        }
+        for ledger, code in cases.items():
+            with self.subTest(ledger=ledger), tempfile.TemporaryDirectory() as temp:
+                entry = self.view(self.make_home(Path(temp), ledger=ledger))["homes"][0]
+                self.assertEqual([e["code"] for e in entry["errors"]], [code])
+        with tempfile.TemporaryDirectory() as temp:
+            torn = '{"v":1,"ts":1782990000,"event":"task.dispatched","task":"a"}\n{"v":1,"ts":17829'
+            entry = self.view(self.make_home(Path(temp), ledger=torn))["homes"][0]
+            self.assertEqual(entry["errors"], [])
+            self.assertEqual(entry["ledger"]["records"], 1)
+
+    def test_missing_ledger_is_reported_as_uncovered_not_empty(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            home = self.make_home(Path(temp), ledger="")
+            entry = self.view(home)["homes"][0]
+            self.assertTrue(entry["ok"])
+            self.assertFalse(entry["ledger"]["present"])
+            self.assertIsNone(entry["recent_work"]["ledger_starts_at"])
+            self.assertEqual({w["coverage"] for w in entry["recent_work"]["windows"]}, {"none"})
+            self.assertEqual([r["task"] for r in entry["decisions"]["relevant"]], ["fresh-call", "tide-call"])
+            check = self.run_cli("--check", "--home", str(home))
+            self.assertEqual(check.returncode, 0, check.stderr)
+            self.assertIn("no state/fleet-ledger.jsonl (recording off; recent work not covered)", check.stdout)
+
+    def test_feed_problems_are_errors_and_recent_work_still_shows(self) -> None:
+        bad_schema = json.dumps({"schema": "fm-attention.v2", "open_decisions": []})
+        bad_row = json.dumps({"schema": "fm-attention.v1", "open_decisions": [{"task": "a", "kind": "captain_hold"}]})
+        for feed, script, code in ((bad_schema, True, "feed_schema"), (bad_row, True, "feed_malformed"),
+                                   ("not json", True, "feed_malformed"), (None, False, "feed_missing")):
+            with self.subTest(code=code), tempfile.TemporaryDirectory() as temp:
+                entry = self.view(self.make_home(Path(temp), feed=feed, script=script))["homes"][0]
+                self.assertFalse(entry["ok"])
+                self.assertEqual([(e["source"], e["code"]) for e in entry["errors"]], [("decisions", code)])
+                self.assertIsNone(entry["decisions"])
+                self.assertEqual(len(entry["recent_work"]["windows"]), 3)
+
+    def test_check_and_json_commands_on_a_valid_home(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            home = self.make_home(Path(temp))
+            check = self.run_cli("--check", "--home", str(home))
+            self.assertEqual(check.returncode, 0, check.stderr)
+            self.assertEqual(check.stdout.strip(), "quarterdeck attention check: ok — invented-home: ledger v1, 14 records "
+                             "from 2026-07-01T06:00:00Z; fm-attention.v1, 6 open decisions")
+            result = self.run_cli("--json", "--all-decisions", "--home", str(home))
+            self.assertEqual(result.returncode, 0, result.stderr)
+            data = json.loads(result.stdout)
+            self.assertEqual(data["homes"][0]["decision_relevance"]["recent_days"], 3)
+            self.assertIsInstance(data["homes"][0]["decisions"]["background"], list)
+            self.assertEqual(self.run_cli("--home", str(home)).returncode, 2)
+            self.assertEqual(self.run_cli("--json", "--recent-days", "0", "--home", str(home)).returncode, 2)
+
+    def test_page_shows_windows_relevant_decisions_and_background_behind_a_toggle(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            page = quarterdeck.attention_html(self.view(self.make_home(Path(temp)), all_decisions=True))
+            self.assertIn('id="recent-work"', page)
+            for title in ("Last 12 hours", "12–24 hours ago", "24–48 hours ago"):
+                self.assertIn(title, page)
+            self.assertIn("2 merged · 1 started · 1 decision answered", page)
+            self.assertIn("Not fully covered: the ledger starts 2026-07-01 06:00 UTC.", page)
+            self.assertIn('<a href="https://forge.example.test/acme/harbor-app/pulls/7">PR</a>', page)
+            relevant, background = page.split('id="recent-background-0"')
+            self.assertIn("Pick the new harbor map vendor", relevant)
+            self.assertNotIn("Replace the anchor chain", relevant)
+            self.assertIn("2 background decisions", background)
+            self.assertNotIn("Replace the anchor chain", background)
+        with tempfile.TemporaryDirectory() as temp:
+            page = quarterdeck.attention_html(self.view(self.make_home(Path(temp), script=False)))
+            self.assertIn('class="warning"', page)
+            self.assertIn("decisions unavailable", page)
+            self.assertIn("quarterdeck attention --check", page)
+
+    def test_render_without_snapshot_skips_the_feed_but_keeps_recent_work(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            home = self.make_home(root)
+            (home / "bin" / "fm-attention.sh").write_text("#!/bin/sh\nexit 9\n", encoding="utf-8")
+            output = root / "out" / "index.html"
+            result = subprocess.run(
+                [sys.executable, str(ROOT / "quarterdeck.py"), "render", "--no-snapshot", "--home", str(home), "--output", str(output)],
+                check=False, text=True, capture_output=True, env=dict(os.environ, XDG_STATE_HOME=str(root / "state-home")),
+            )
+            self.assertEqual(result.returncode, 0, result.stderr)
+            page = output.read_text(encoding="utf-8")
+            self.assertIn('id="recent-work"', page)
+            self.assertIn("Attention feed not read: the Firstmate scripts were skipped with --no-snapshot.", page)
+            self.assertNotIn('class="warning"', page.split('id="recent-work"')[1].split("</section>")[0])
 
 if __name__ == "__main__":
     unittest.main()
