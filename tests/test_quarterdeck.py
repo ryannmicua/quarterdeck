@@ -19,6 +19,7 @@ import unittest
 from contextlib import contextmanager, redirect_stderr, redirect_stdout
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
+from html.parser import HTMLParser
 from unittest.mock import patch
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -2450,7 +2451,7 @@ class BearingsTests(unittest.TestCase):
             calls = []
             bearings = quarterdeck.build_bearings(
                 snapshots, runner=lambda selected_home, _data_dir: (calls.append(selected_home) or payload, ""))
-            task = next(item for item in bearings.underway if item.item_id == "kestrel/kestrel-work")
+            task = next(item for item in bearings.underway if item.item_id == "kestrel-work")
             self.assertEqual(task.title, "Willow Quay field guide")
             self.assertEqual(task.owner, child.spec.label)
             self.assertEqual(bearings.call[0].owner, child.spec.label)
@@ -4435,6 +4436,27 @@ ATTENTION_BACKLOG = """# Backlog
 """
 
 
+class AttentionPage(HTMLParser):
+    def __init__(self) -> None:
+        super().__init__()
+        self.collapsed: list[bool] = []
+        self.visible: list[str] = []
+        self.all_text: list[str] = []
+
+    def handle_starttag(self, tag: str, attrs: list) -> None:
+        if tag == "details":
+            self.collapsed.append("open" not in dict(attrs))
+
+    def handle_endtag(self, tag: str) -> None:
+        if tag == "details":
+            self.collapsed.pop()
+
+    def handle_data(self, data: str) -> None:
+        self.all_text.append(data)
+        if not any(self.collapsed):
+            self.visible.append(data)
+
+
 class AttentionTests(unittest.TestCase):
     """Contract tests: fixtures follow Firstmate's documented fleet ledger (v1) and fm-attention.v1 formats."""
 
@@ -4462,9 +4484,10 @@ class AttentionTests(unittest.TestCase):
         return quarterdeck.attention_view(homes, ATTENTION_NOW, **options)  # type: ignore[arg-type]
 
     def run_cli(self, *args: str) -> subprocess.CompletedProcess[str]:
-        env = dict(os.environ, XDG_CONFIG_HOME=tempfile.gettempdir() + "/quarterdeck-no-config")
-        return subprocess.run([sys.executable, str(ROOT / "quarterdeck.py"), "attention", *args],
-                              check=False, text=True, capture_output=True, env=env)
+        with tempfile.TemporaryDirectory() as private:
+            env = dict(os.environ, XDG_CONFIG_HOME=str(Path(private) / "config"), XDG_STATE_HOME=str(Path(private) / "state"))
+            return subprocess.run([sys.executable, str(ROOT / "quarterdeck.py"), "attention", *args],
+                                  check=False, text=True, capture_output=True, env=env)
 
     def test_windows_count_merged_started_and_answered_newest_first(self) -> None:
         with tempfile.TemporaryDirectory() as temp:
@@ -4510,28 +4533,6 @@ class AttentionTests(unittest.TestCase):
             self.assertEqual(listed[2]["key"], "api-shape", "feed members pass through unchanged")
 
     def test_decision_visibility_across_the_whole_page(self) -> None:
-        from html.parser import HTMLParser
-
-        class PageText(HTMLParser):
-            def __init__(self) -> None:
-                super().__init__()
-                self.collapsed: list[bool] = []
-                self.visible: list[str] = []
-                self.all_text: list[str] = []
-
-            def handle_starttag(self, tag: str, attrs: list) -> None:
-                if tag == "details":
-                    self.collapsed.append("open" not in dict(attrs))
-
-            def handle_endtag(self, tag: str) -> None:
-                if tag == "details":
-                    self.collapsed.pop()
-
-            def handle_data(self, data: str) -> None:
-                self.all_text.append(data)
-                if not any(self.collapsed):
-                    self.visible.append(data)
-
         with tempfile.TemporaryDirectory() as temp:
             home = self.make_home(Path(temp))
             rows = json.loads((ATTENTION_FIXTURES / "fm-attention.json").read_text())["open_decisions"][:5]
@@ -4564,7 +4565,7 @@ class AttentionTests(unittest.TestCase):
                 for row in (rows[0], rows[2], rows[3]):
                     self.assertEqual(exported_calls[row["title"]], "desk")
                 for show_all in (False, True):
-                    parser = PageText()
+                    parser = AttentionPage()
                     parser.feed(quarterdeck.build_html([snapshot], "Quarterdeck", bearings=bearings, show_all=show_all))
                     visible, all_text = " ".join(parser.visible), " ".join(parser.all_text)
                     for row in (rows[0], rows[2], rows[3]):
@@ -4708,6 +4709,172 @@ class AttentionTests(unittest.TestCase):
             self.assertIn("record version 2", result.stderr)
             self.assertNotIn("Traceback", result.stderr)
 
+    def test_unescalated_secondmate_calls_use_local_evidence_in_every_consumer(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            home = self.make_home(root)
+            child = root / "mate"
+            (child / "data").mkdir(parents=True)
+            (child / "state").mkdir()
+            (home / "data" / "secondmates.md").write_text(
+                f"- mate - Maintains fictional maps. (home: {child}; scope: Maps; projects: demo; added 2026-01-04)\n"
+            )
+            tasks = ("local-touch", "local-deferred", "local-quiet", "local-raised", "local-work", "local-ledger")
+            lines = []
+            for task in tasks:
+                extra = " (since: 2026-07-02T10:00:00Z)" if task == "local-raised" else ""
+                if task == "local-deferred":
+                    extra = " (hold-until: 2026-07-03T00:00:00Z)"
+                lines.append(f"- [ ] {task} - Choice {task} (held: true) (hold-kind: captain){extra}")
+            (child / "data" / "backlog.md").write_text("# Backlog\n\n## Held\n\n" + "\n".join(lines))
+            (child / "data" / "captain-board.json").write_text(json.dumps({
+                "version": 1, "updated_at": "2026-06-01T12:00:00Z", "items": [
+                    {"id": task, "task": task, "group": "decide", "title": f"Choice {task}", "ask": "Choose"}
+                    for task in tasks[:2]
+                ]
+            }))
+            for task in tasks[:2]:
+                touched = subprocess.run(
+                    [sys.executable, str(ROOT / "quarterdeck.py"), "board", "touch", task,
+                     "--data-dir", str(child / "data"), "--at", "2026-07-02T11:00:00Z"],
+                    capture_output=True, text=True, check=False,
+                )
+                self.assertEqual(touched.returncode, 0, touched.stderr)
+            event = {"v": 1, "ts": ATTENTION_NOW.timestamp() - 3600, "event": "task.status", "task": "local-ledger"}
+            (child / "state" / "fleet-ledger.jsonl").write_text(json.dumps(event) + "\n")
+            with (home / "state" / "fleet-ledger.jsonl").open("a") as ledger:
+                ledger.write(json.dumps(dict(event, task="mate/local-work")) + "\n")
+            homes = [quarterdeck.load_home_snapshot(quarterdeck.HomeSpec("invented", home), discover_secondmates=True)]
+            view = quarterdeck.attention_view(homes, ATTENTION_NOW, all_decisions=True)
+            self.assertTrue(view["ok"], view)
+            child_label = homes[0].children[0].spec.label
+            key = lambda task: quarterdeck.report_reference(child_label, task)
+            relevant = {row["task"]: row["relevance"] for row in view["homes"][0]["decisions"]["relevant"]}
+            for task, why in (("local-touch", "captain_activity"), ("local-raised", "raised"),
+                              ("local-work", "recent_work"), ("local-ledger", "recent_work")):
+                self.assertEqual(relevant[key(task)], why)
+            for task in ("local-deferred", "local-quiet"):
+                self.assertNotIn(key(task), relevant)
+            bearings = quarterdeck.build_bearings(homes, ATTENTION_NOW, use_snapshot=False)
+            bearings.attention = view
+            page = AttentionPage()
+            page.feed(quarterdeck.build_html(homes, "Quarterdeck", bearings=bearings, show_all=True))
+            for task in ("local-touch", "local-raised", "local-work", "local-ledger"):
+                self.assertIn(f"Choice {task}", " ".join(page.visible))
+            self.assertNotIn("Choice local-deferred", " ".join(page.all_text))
+            self.assertIn("Choice local-quiet", " ".join(page.all_text))
+            data = {**SNAPSHOT_JSON, "decisions_open": [], "landed": [], "secondmates": [],
+                    "in_flight": [{"id": f"mate/{task}", "name": f"Choice {task}"} for task in tasks[:3]],
+                    "gates": [{"id": f"mate/{task}", "owner": "mate", "title": f"Choice {task}"} for task in tasks[:3]]}
+            from_snapshot = quarterdeck.build_bearings(homes, ATTENTION_NOW, runner=lambda *_: (data, ""))
+            from_snapshot.attention = view
+            snapshot_page = AttentionPage()
+            snapshot_page.feed(quarterdeck.build_html(homes, "Quarterdeck", bearings=from_snapshot))
+            self.assertIn("Choice local-touch", " ".join(snapshot_page.visible))
+            self.assertNotIn("Choice local-quiet", " ".join(snapshot_page.visible))
+            self.assertIn("Choice local-quiet", " ".join(snapshot_page.all_text))
+            self.assertNotIn("Choice local-deferred", " ".join(snapshot_page.all_text))
+            exported = quarterdeck.build_snapshot(homes, "Quarterdeck", ATTENTION_NOW, attention=view)
+            bands = {row["id"]: row["band"] for row in exported["calls"]}
+            self.assertEqual(bands[key("local-touch")], "desk")
+            self.assertEqual(bands[key("local-quiet")], "parked")
+            self.assertNotIn(key("local-deferred"), bands)
+            due = quarterdeck.attention_view(homes, datetime(2026, 7, 4, 12, tzinfo=timezone.utc), all_decisions=True)
+            self.assertIn(key("local-deferred"), [row["task"] for row in due["homes"][0]["decisions"]["relevant"]])
+
+    def test_charted_underway_home_cards_and_totals_share_decision_visibility(self) -> None:
+        for representation in ("table", "bullet"):
+            with self.subTest(representation=representation), tempfile.TemporaryDirectory() as temp:
+                root = Path(temp)
+                home = self.make_home(root)
+                items = [(f"{age}-{state}", state, age) for age in ("quiet", "deferred", "live")
+                         for state in ("blocked", "in_flight")]
+                items += [("ordinary-flight", "in_flight", "ordinary")]
+                if representation == "table":
+                    source = "# Backlog\n\n| ID | Title | State | blocked_by | hold_set | hold_until |\n| --- | --- | --- | --- | --- | --- |\n"
+                    for task, state, age in items:
+                        touched = "2026-07-02T10:00:00Z" if age == "live" else "-"
+                        until = "2026-07-03T00:00:00Z" if age == "deferred" else "-"
+                        blocker = "captain" if age != "ordinary" else "-"
+                        source += f"| {task} | Choice {task} | {state} | {blocker} | {touched} | {until} |\n"
+                else:
+                    source = "# Backlog\n\n## Work\n\n"
+                    for task, state, age in items:
+                        extra = " (blocked-by: captain)" if age != "ordinary" else ""
+                        if age == "live":
+                            extra += " (hold-set: 2026-07-02T10:00:00Z)"
+                        if age == "deferred":
+                            extra += " (hold-until: 2026-07-03T00:00:00Z)"
+                        source += f"- [ ] {task} - Choice {task} (state: {state}){extra}\n"
+                (home / "data" / "backlog.md").write_text(source)
+                homes = [quarterdeck.load_home_snapshot(quarterdeck.HomeSpec("invented", home))]
+                for use_feed in (True, False):
+                    view = quarterdeck.attention_view(homes, ATTENTION_NOW, all_decisions=True, use_feed=use_feed,
+                                                      feed_runner=lambda *_: {"open_decisions": []})
+                    bearings = quarterdeck.build_bearings(homes, ATTENTION_NOW, use_snapshot=False)
+                    bearings.attention = view
+                    page = AttentionPage()
+                    rendered = quarterdeck.build_html(homes, "Quarterdeck", bearings=bearings)
+                    page.feed(rendered)
+                    visible, all_text = " ".join(page.visible), " ".join(page.all_text)
+                    for task, state, age in items:
+                        title = f"Choice {task}"
+                        if age in ("live", "ordinary"):
+                            self.assertIn(title, visible)
+                        elif age == "quiet":
+                            self.assertNotIn(title, visible)
+                            self.assertIn(title, all_text)
+                        else:
+                            self.assertNotIn(title, all_text)
+                    if representation == "table":
+                        self.assertIn('<div class="metric"><b>2</b><span>In-flight work</span></div>', rendered)
+                        self.assertIn('<div class="metric"><b>1</b><span>Blocked for captain/external</span></div>', rendered)
+                    exported = quarterdeck.build_snapshot(homes, "Quarterdeck", ATTENTION_NOW, attention=view)
+                    bands = {row["id"].split("/", 1)[1]: row["band"] for row in exported["calls"]}
+                    for task, state, age in items:
+                        if age == "live":
+                            self.assertEqual(bands[task], "desk")
+                        elif age == "quiet":
+                            self.assertEqual(bands[task], "parked")
+                        else:
+                            self.assertNotIn(task, bands)
+
+    def test_attention_cli_honors_stale_and_current_call_transitions(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            now = datetime.now(timezone.utc).isoformat()
+            feed = {"schema": "fm-attention.v1", "open_decisions": [
+                {"task": "fresh-call", "kind": "captain_hold", "title": "Choose a fictional signal",
+                 "bucket": "live", "opened_at": now, "last_touched_at": now}
+            ]}
+            home = self.make_home(root, feed=json.dumps(feed))
+            (home / "data" / "backlog.md").write_text(
+                "# Backlog\n\n- [ ] fresh-call - Choose a fictional signal (held: true) (hold-kind: captain)\n"
+            )
+            env = dict(os.environ, XDG_CONFIG_HOME=str(root / "config"), XDG_STATE_HOME=str(root / "review-state"))
+            def run(*args: str) -> subprocess.CompletedProcess:
+                return subprocess.run([sys.executable, str(ROOT / "quarterdeck.py"), *args, "--home", str(home)],
+                                      capture_output=True, text=True, check=False, env=env)
+            for state in ("stale", "current"):
+                changed = run("calls", "set-relevance", "fresh-call", state)
+                self.assertEqual(changed.returncode, 0, changed.stderr)
+                result = run("attention", "--json", "--all-decisions")
+                self.assertEqual(result.returncode, 0, result.stderr)
+                decisions = json.loads(result.stdout)["homes"][0]["decisions"]
+                self.assertEqual(bool(decisions["relevant"]), state == "current")
+                if state == "stale":
+                    self.assertEqual(decisions["background"][0]["relevance"], "stale")
+                output = root / f"{state}.html"
+                rendered = run("render", "--output", str(output))
+                self.assertEqual(rendered.returncode, 0, rendered.stderr)
+                page = AttentionPage()
+                page.feed(output.read_text())
+                self.assertEqual("Choose a fictional signal" in " ".join(page.visible), state == "current")
+                exported = run("export")
+                self.assertEqual(exported.returncode, 0, exported.stderr)
+                calls = json.loads(exported.stdout)["calls"]
+                self.assertEqual(calls[0]["band"], "stale" if state == "stale" else "desk")
+
     def test_unknown_ledger_version_is_refused_with_a_structured_error(self) -> None:
         with tempfile.TemporaryDirectory() as temp:
             ledger = (ATTENTION_FIXTURES / "fleet-ledger.jsonl").read_text(encoding="utf-8")
@@ -4816,7 +4983,7 @@ class AttentionTests(unittest.TestCase):
             self.assertEqual(result.returncode, 0, result.stderr)
             page = output.read_text(encoding="utf-8")
             self.assertIn('id="recent-work"', page)
-            self.assertIn("Decisions not read: the Firstmate scripts were skipped with --no-snapshot.", page)
+            self.assertIn("Attention feed not read: the Firstmate scripts were skipped with --no-snapshot.", page)
             self.assertNotIn('class="warning"', page.split('id="recent-work"')[1].split("</section>")[0])
 
 if __name__ == "__main__":

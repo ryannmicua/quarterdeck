@@ -12,17 +12,20 @@ quarterdeck attention --check [--home PATH] [--config FILE]
 ```
 
 Homes are selected as for `render`: `--home`, then the config's `homes`, then
-`FM_HOME`. Registered secondmates are not read separately; a secondmate's
-escalated keyed decisions arrive through the parent's feed.
+`FM_HOME`. Registered local secondmates contribute backlog decisions, board engagement,
+and ledger activity when their calls are absent from the parent's feed.
+Quarterdeck does not run additional scripts in those homes.
 
 ## Sources
 
-Quarterdeck computes the view from two documented Firstmate sources and
-nothing else:
+Quarterdeck computes the view from these recorded sources and its existing
+private review state:
 
 | Source | Read how | Understood version |
 | --- | --- | --- |
 | `state/fleet-ledger.jsonl` | read directly | record version `1` ([Firstmate fleet ledger contract](https://github.com/kunchenguid/firstmate/blob/main/docs/fleet-ledger.md)) |
+| `data/backlog.md` | read directly, including registered local secondmates | existing backlog formats |
+| Quarterdeck review state | read locally | existing call relevance marks |
 | `data/captain-board.json` | read directly, including registered local secondmate boards | board version `1`; engagement uses `touched_at` |
 | `bin/fm-attention.sh --json` | run with a 15-second timeout | schema `fm-attention.v1` |
 
@@ -115,17 +118,22 @@ else the backlog item's PR URL, else `null`.
 
 ### Decisions
 
-`decisions` has `source` (`fm-attention.v1`), `relevant`, `background_count`,
-and `background`. With `render --no-snapshot` the page skips the feed, and
-`decisions` is `{source: null, skipped: <reason>}` instead.
+`decisions` has `source` (`fm-attention.v1`, or `backlog` when no feed was
+read), `relevant`, `background_count`, and `background`. With
+`render --no-snapshot`, `skipped` records why the feed was skipped; local
+backlog decisions still use the same classification.
 
-Each row is the feed's `open_decisions` row unchanged, plus `relevance`. Rows
-keep the feed's newest-first order. A row is relevant when it is not deferred
+Feed rows preserve their fields and order, adding `relevance`. Calls absent
+from the feed are appended from local backlogs with `source: backlog` and a
+home-qualified `task`. Their dates and deferrals come from the backlog;
+activity comes from the local or parent ledger and board engagement.
+A row is relevant when it is neither deferred nor marked stale
 and, within the last 3 days (`DEFAULT_RECENT_DAYS` in `quarterdeck.py`):
 
 | `relevance` | Rule, first match wins |
 | --- | --- |
 | `deferred` | The feed's `bucket` is `dated`: held until a later date. Never relevant, whatever its activity. |
+| `stale` | Quarterdeck marks the call stale. Background regardless of activity. |
 | `raised` | Its `opened_at` falls in the window. |
 | `captain_activity` | Its `last_touched_at`, a board item's `touched_at` for the same task, or a ledger `captain.*` record falls in the window. |
 | `recent_work` | The ledger has any other record for its task in the window. |

@@ -72,3 +72,19 @@ routed and keyed identities without changing a same-named parent task.
 Export error regressions cover incompatible ledger and feed versions: stdout
 stays empty, existing JSON and artifact destinations stay unchanged, and the
 error identifies the failing source. No Firstmate update hook is installed.
+
+The same focused class covers un-escalated secondmate holds absent from the
+parent feed: board touches, backlog dates, local and parent ledger work,
+quiet calls, and a dated hold becoming due. It exercises table and bullet
+captain blockers in Underway and Charted Next, their collapsed background
+counts, matching home/header totals, and exported desk/parked bands.
+A real CLI stale → current transition verifies attention JSON, rendered
+visibility and exported stale/desk bands using disposable private state.
+
+For snapshot-owner normalization, include the four `BearingsTests` methods
+`test_snapshot_path_classifies_fields_and_enriches_from_backlog`,
+`test_snapshot_secondmate_work_uses_registered_home_label`,
+`test_snapshot_call_from_unregistered_secondmate_keeps_its_owner`, and
+`test_secondmate_summaries_do_not_duplicate_live_work` in the same focused run.
+Registered local Underway/gate rows use the child owner plus its local task
+ID, while unregistered routes keep their existing owner and routed ID.

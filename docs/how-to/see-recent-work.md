@@ -15,7 +15,10 @@ out of the way until you ask for them.
   the last 3 days;
 - a collapsed "background decisions" toggle with quiet decisions; dated decisions stay hidden until due.
 
-The board and Captain's Call use the same relevance rule.
+The board, Captain's Call, Underway, Charted Next, home cards and header
+totals use the same relevance rule. Calls marked stale remain in the
+background. Local secondmate calls missing from the parent feed use their
+recorded backlog dates, board engagement and ledger activity.
 
 A window the ledger does not fully cover says so. When a Firstmate source is
 missing or in a version Quarterdeck does not understand, the section shows a
@@ -23,7 +26,8 @@ warning instead of an empty view.
 
 The section needs the home's fleet ledger turned on (Firstmate's
 `config/fleet-ledger` flag) and Firstmate's `bin/fm-attention.sh`. With
-`--no-snapshot`, recent work still shows and the decisions are skipped.
+`--no-snapshot`, recent work and local backlog decisions still show; the
+Firstmate scripts are skipped.
 
 ## From the command line
 
