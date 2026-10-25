@@ -62,6 +62,13 @@ unknown keys are ignored by the page and kept by `quarterdeck board`.
 
 ## What the page does with it
 
+When the shared attention view supplies relevance, the desk shows decisions
+raised, acted on or worked on within its shared three-day window. It uses
+recorded activity times and activity-based labels rather than inferring
+conversation groups from worker events. Concrete dated hold notes stop
+deferring the call when due; independent task dependencies still apply.
+
+Without shared relevance, the board follows the conversation rules below.
 The board leads the page, ranked by what the captain touched recently rather
 than by group, so what they are working on comes first. When the board records
 operator activity, the desk follows the captain's conversation with Firstmate:

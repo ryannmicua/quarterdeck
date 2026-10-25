@@ -169,7 +169,11 @@ exists in several homes. `calls list` prints each call's ID, relevance and band.
 
 `export` writes the cloud artifact's data snapshot: JSON to standard output, to
 `--output`, and with `--artifact` an HTML page built from
-`templates/artifact.html.tmpl` with the snapshot embedded. Output paths must
+`templates/artifact.html.tmpl` with the snapshot embedded. Shared-relevance
+snapshots carry `decision_window_days`; their calls retain the real activity
+time in `touched_at` and identify its classification with `activity_reason`.
+Artifact cards and details label worker-only activity as "worked on" and do
+not claim captain-message recency. Output paths must
 be outside the checkout and selected homes. `--bodies` picks which waiting
 reports carry their Markdown: `all` (default), `desk` (only reports linked to
 a desk or this-week call, or related to the session) or `none`. `import` applies the artifact's

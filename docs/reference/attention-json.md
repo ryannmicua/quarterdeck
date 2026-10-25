@@ -123,7 +123,7 @@ read), `relevant`, `background_count`, and `background`. With
 `render --no-snapshot`, `skipped` records why the feed was skipped; local
 backlog decisions still use the same classification.
 
-Feed rows preserve their fields and order, adding `relevance`. Calls absent
+Feed rows preserve their fields and order, adding `relevance` and `activity_at`. Calls absent
 from the feed are appended from local backlogs with `source: backlog` and a
 home-qualified `task`. Their dates and deferrals come from the backlog;
 activity comes from the local or parent ledger and board engagement.
@@ -138,6 +138,10 @@ and, within the last 3 days (`DEFAULT_RECENT_DAYS` in `quarterdeck.py`):
 | `captain_activity` | Its `last_touched_at`, a board item's `touched_at` for the same task, or a ledger `captain.*` record falls in the window. |
 | `recent_work` | The ledger has any other record for its task in the window. |
 | `quiet` | None of the above. Background. |
+
+`activity_at` is the newest recorded timestamp supporting relevance, or
+`null` when no recent activity qualifies. Worker events retain their actual
+times and do not imply that the captain discussed the decision.
 
 `relevant` lists the `raised`, `captain_activity`, and `recent_work` rows.
 `background_count` counts the rest. `background` is `null` unless

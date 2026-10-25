@@ -4265,7 +4265,10 @@ const button = (c, text) => c.querySelectorAll('button').find(b => b.textContent
         parked = call("c3", "", "Parked detail")
         parked["band"] = "parked"
         snapshot["calls"] = [call("c1", "First heading", "Plain <b>text</b> detail"), call("c2", "Second heading", ""), parked]
-        snapshot["session"] = None
+        snapshot["session"] = {"idle": True}
+        snapshot["decision_window_days"] = 3
+        snapshot["calls"][0]["touched_at"] = "2026-07-02T08:00:00Z"
+        snapshot["calls"][0]["activity_reason"] = "recent_work"
         snapshot["reactions"] = []
         snapshot["delivered"] = []
         page = quarterdeck.artifact_page(snapshot)
@@ -4310,6 +4313,10 @@ const card = (root, title) => root.all('article').find(c => c.children.some(n =>
   assert.ok(buttons(root, 'Approve').length >= 2 && buttons(root, 'Approve').every(b => b.disabled));
   assert.ok(buttons(root, 'Discuss with Firstmate').every(b => b.disabled));
   assert.ok(root.textContent.includes('Connecting…'));
+  assert.ok(root.textContent.includes('raised, acted on or worked on in the last 3 days'));
+  assert.equal(root.textContent.includes('Open items from our last session'), false);
+  assert.ok(card(root, 'Title c1').textContent.includes('worked on '));
+  assert.equal(card(root, 'Title c1').textContent.includes('touched '), false);
   assert.ok(global.document.getElementById('sync').textContent.includes('Connecting'));
   // The desk badge counts the two cards, not the two sub-headings.
   const deskHead = root.all('section').find(s => s.id === 'desk').children[0];
@@ -4331,6 +4338,8 @@ const card = (root, title) => root.all('article').find(c => c.children.some(n =>
   buttons(card(root, 'Title c1'), 'View details')[0].listeners.click(); await flush();
   assert.ok(root.all('h2').some(h => h.textContent === 'Title c1'));
   assert.ok(root.textContent.includes('Plain <b>text</b> detail'));
+  assert.ok(root.textContent.includes('worked on '));
+  assert.equal(root.textContent.includes('touched '), false);
   assert.equal(root.all('b').length, 0);
   assert.ok(root.all('p').some(p => p.attrs.id === 'qd-banner'), 'the detail view shows the connection state too');
   assert.ok(buttons(root, 'Approve').length === 1 && !buttons(root, 'Approve')[0].disabled, 'reaction controls are in the detail view');
@@ -4724,7 +4733,7 @@ class AttentionTests(unittest.TestCase):
             for task in tasks:
                 extra = " (since: 2026-07-02T10:00:00Z)" if task == "local-raised" else ""
                 if task == "local-deferred":
-                    extra = " (hold-until: 2026-07-03T00:00:00Z)"
+                    extra = " (hold-until: 2026-07-03T00:00:00Z) (hold: Deferred until 2026-07-03T00:00:00Z)"
                 lines.append(f"- [ ] {task} - Choice {task} (held: true) (hold-kind: captain){extra}")
             (child / "data" / "backlog.md").write_text("# Backlog\n\n## Held\n\n" + "\n".join(lines))
             (child / "data" / "captain-board.json").write_text(json.dumps({
@@ -4874,6 +4883,105 @@ class AttentionTests(unittest.TestCase):
                 self.assertEqual(exported.returncode, 0, exported.stderr)
                 calls = json.loads(exported.stdout)["calls"]
                 self.assertEqual(calls[0]["band"], "stale" if state == "stale" else "desk")
+
+    def test_dated_hold_notes_expire_at_the_recorded_time(self) -> None:
+        for representation in ("table", "bullet"):
+            for until in ("2026-07-03", "2026-07-03T01:30:00+08:00", "2026-07-03 01:30:00+08:00"):
+                for structured in (False, True):
+                    with self.subTest(representation=representation, until=until, structured=structured), tempfile.TemporaryDirectory() as temp:
+                        home = self.make_home(Path(temp))
+                        due = datetime.fromisoformat(until)
+                        due = due.replace(tzinfo=timezone.utc) if due.tzinfo is None else due
+                        touched = (due - timedelta(hours=1)).isoformat()
+                        note = f"Deferred until {until}."
+                        if representation == "bullet":
+                            source = f"# Backlog\n\n- [ ] dated-call - Dated choice (held: true) (hold-kind: captain) (hold: {note})"
+                            if structured:
+                                source += f" (hold-until: {until})"
+                        else:
+                            source = ("| ID | Title | held | hold_kind | hold_reason | hold_until |\n"
+                                      "| --- | --- | --- | --- | --- | --- |\n"
+                                      f'| dated-call | Dated choice | yes | captain | {note} | {until if structured else "-"} |')
+                        (home / "data" / "backlog.md").write_text(source)
+                        (home / "data" / "captain-board.json").write_text(json.dumps({
+                            "version": 1, "updated_at": touched, "items": [
+                                {"id": "dated-call", "task": "dated-call", "group": "decide", "title": "Dated choice",
+                                 "ask": "Choose", "touched_at": touched}
+                            ]
+                        }))
+                        homes = [quarterdeck.load_home_snapshot(quarterdeck.HomeSpec("invented", home))]
+                        for offset in (-1, 0, 1):
+                            now = due + timedelta(seconds=offset)
+                            view = quarterdeck.attention_view(homes, now, all_decisions=True,
+                                                              feed_runner=lambda *_: {"open_decisions": []})
+                            decisions = view["homes"][0]["decisions"]
+                            self.assertEqual(bool(decisions["relevant"]), offset >= 0)
+                            bearings = quarterdeck.build_bearings(homes, now, use_snapshot=False)
+                            bearings.attention = view
+                            page = AttentionPage()
+                            page.feed(quarterdeck.build_html(homes, "Quarterdeck", bearings=bearings))
+                            self.assertEqual("Dated choice" in " ".join(page.all_text), offset >= 0)
+                            exported = quarterdeck.build_snapshot(homes, "Quarterdeck", now, attention=view)
+                            self.assertEqual(bool(exported["calls"]), offset >= 0)
+                        (home / "data" / "backlog.md").write_text(source + (
+                            " (blocked-by: dependency)\n- [ ] dependency - Still working" if representation == "bullet" else
+                            "\n| dependency | Still working | no | - | - | - |"
+                        ))
+                        if representation == "table":
+                            text = (home / "data" / "backlog.md").read_text().replace(note, note + " waits on dependency")
+                            (home / "data" / "backlog.md").write_text(text)
+                        homes = [quarterdeck.load_home_snapshot(quarterdeck.HomeSpec("invented", home))]
+                        view = quarterdeck.attention_view(homes, due + timedelta(days=1), all_decisions=True,
+                                                          feed_runner=lambda *_: {"open_decisions": []})
+                        self.assertFalse(view["homes"][0]["decisions"]["relevant"])
+
+    def test_worker_only_relevance_preserves_activity_time_without_message_labels(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            home = self.make_home(Path(temp), feed=json.dumps({"schema": "fm-attention.v1", "open_decisions": [
+                {"task": task, "title": f"Choice {task}", "kind": "captain_hold", "bucket": "live",
+                 "opened_at": opened, "last_touched_at": opened}
+                for task, opened in (("worker-only", None), ("worker-old", "2026-06-01T00:00:00Z"))
+            ]}))
+            (home / "data" / "backlog.md").write_text(
+                "# Backlog\n\n" + "\n".join(
+                    f"- [ ] {task} - Choice {task} (held: true) (hold-kind: captain)" for task in ("worker-only", "worker-old")
+                )
+            )
+            events = {task: ATTENTION_NOW - timedelta(hours=hours) for task, hours in (("worker-only", 4), ("worker-old", 3))}
+            (home / "state" / "fleet-ledger.jsonl").write_text("".join(
+                json.dumps({"v": 1, "ts": when.timestamp(), "event": "task.status", "task": task}) + "\n"
+                for task, when in events.items()
+            ))
+            for mode in ("active", "idle", "no-session"):
+                operator = {} if mode == "no-session" else {"operator": {
+                    "last_active_at": (ATTENTION_NOW - timedelta(hours=1 if mode == "active" else 12)).isoformat(),
+                    "session_started_at": (ATTENTION_NOW - timedelta(days=1)).isoformat(),
+                }}
+                (home / "data" / "captain-board.json").write_text(json.dumps({
+                    "version": 1, "updated_at": ATTENTION_NOW.isoformat(), **operator,
+                    "items": [{"id": "worker-only", "task": "worker-only", "group": "decide", "title": "Choice worker-only", "ask": "Choose"}],
+                }))
+                homes = [quarterdeck.load_home_snapshot(quarterdeck.HomeSpec("invented", home))]
+                view = quarterdeck.attention_view(homes, ATTENTION_NOW, all_decisions=True)
+                for row in view["homes"][0]["decisions"]["relevant"]:
+                    self.assertEqual(row["relevance"], "recent_work")
+                    self.assertEqual(quarterdeck.parse_board_time(row["activity_at"]), events[row["task"]])
+                exported = quarterdeck.build_snapshot(homes, "Quarterdeck", ATTENTION_NOW, attention=view)
+                self.assertEqual(exported["decision_window_days"], 3)
+                for call in exported["calls"]:
+                    self.assertEqual(quarterdeck.parse_board_time(call["touched_at"]), events[call["id"].split("/", 1)[1]])
+                    self.assertEqual(call["activity_reason"], "recent_work")
+                    self.assertEqual(call["desk_group"], "")
+                bearings = quarterdeck.build_bearings(homes, ATTENTION_NOW, use_snapshot=False)
+                bearings.attention = view
+                page = quarterdeck.build_html(homes, "Quarterdeck", bearings=bearings)
+                self.assertIn("worked on 4 hours ago", page)
+                self.assertIn("worked on 3 hours ago", page)
+                self.assertIn("raised, acted on or worked on in the last 3 days", page)
+                self.assertNotIn("Open items from your last message", page)
+                self.assertNotIn("Raised or discussed in this session", page)
+                self.assertNotIn("Open items from our last session", page)
+                self.assertNotIn("What you touched in the last 2 days", page)
 
     def test_unknown_ledger_version_is_refused_with_a_structured_error(self) -> None:
         with tempfile.TemporaryDirectory() as temp:

@@ -88,3 +88,13 @@ For snapshot-owner normalization, include the four `BearingsTests` methods
 `test_secondmate_summaries_do_not_duplicate_live_work` in the same focused run.
 Registered local Underway/gate rows use the child owner plus its local task
 ID, while unregistered routes keep their existing owner and routed ID.
+
+Dated-note regressions check bullet and table holds, with and without a
+structured hold-until field, immediately before, at, and after the due time.
+They include date-only and zoned ISO timestamps with both T and space
+separators, and confirm that independent dependencies still defer the call.
+Worker-only regressions check recorded activity times in attention JSON and
+board/export rows under active, idle and absent operator sessions. Shared
+relevance must never imply a captain message. The executable artifact test
+`DeskRelevanceTests.test_artifact_counts_cards_opens_details_and_reports_each_capability_state`
+checks matching labels on both the card and its detail view when Node is on PATH.

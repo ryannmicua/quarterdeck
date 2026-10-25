@@ -396,7 +396,7 @@ footer { border-top: 1px solid var(--line); margin-top: 3rem; padding-top: 1rem;
     if (call.project) chips.push(chip(call.project));
     if (call.topic) chips.push(chip(call.topic));
     if (call.home) chips.push(chip(call.home));
-    if (call.touched_at) chips.push(chip("touched " + ago(call.touched_at)));
+    if (call.touched_at) chips.push(chip((call.activity_reason === "recent_work" ? "worked on " : call.activity_reason ? "activity " : "touched ") + ago(call.touched_at)));
     if (call.deferred) chips.push(chip(call.deferred, "warn"));
     if (call.sweep) chips.push(chip("keep, defer or drop?", "warn"));
     if (call.recommendation) chips.push(chip("Recommend: " + call.recommendation, "rec"));
@@ -505,7 +505,7 @@ footer { border-top: 1px solid var(--line); margin-top: 3rem; padding-top: 1rem;
   function buildCallDetail(wrap, call) {
     var chips = [chip(call.group, "group")];
     [call.project, call.topic, call.home].forEach(function (value) { if (value) chips.push(chip(value)); });
-    if (call.touched_at) chips.push(chip("touched " + ago(call.touched_at)));
+    if (call.touched_at) chips.push(chip((call.activity_reason === "recent_work" ? "worked on " : call.activity_reason ? "activity " : "touched ") + ago(call.touched_at)));
     if (call.deferred) chips.push(chip(call.deferred, "warn"));
     if (call.sweep) chips.push(chip("keep, defer or drop?", "warn"));
     var heading = el("h2", { text: call.title });
@@ -619,10 +619,11 @@ footer { border-top: 1px solid var(--line); margin-top: 3rem; padding-top: 1rem;
       lastHeading = call.desk_group;
       nodes.push(callCard(call));
     });
-    var deskNote = session && session.idle ? "Open items from your last session. Everything else still open follows." :
-      "What you raised or touched recently.";
-    root.appendChild(openSection("desk", session && session.idle ? "Open items from our last session" : "On your desk", deskNote, nodes,
-      "Nothing from this session is waiting on you. Earlier work is below.", desk.length));
+    var sharedRelevance = snapshot.decision_window_days;
+    var deskNote = sharedRelevance ? "Open decisions raised, acted on or worked on in the last " + sharedRelevance + " days." :
+      session && session.idle ? "Open items from your last session. Everything else still open follows." : "What you raised or touched recently.";
+    root.appendChild(openSection("desk", !sharedRelevance && session && session.idle ? "Open items from our last session" : "On your desk", deskNote, nodes,
+      sharedRelevance ? "No decisions are in play. Background decisions are below." : "Nothing from this session is waiting on you. Earlier work is below.", desk.length));
 
     var related = (snapshot.related || []).map(function (item) { return guard("related " + item.id, function () { return relatedCard(item); }); }).filter(Boolean);
     function relatedCard(item) {

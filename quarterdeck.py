@@ -2737,21 +2737,23 @@ def decision_key(snapshot: HomeSnapshot, row: dict[str, object]) -> str:
 
 def decision_relevance(
     row: dict[str, object], records: list[dict[str, object]], since: float, board_touched: float | None = None,
-) -> str:
+) -> tuple[str, float | None]:
     if row.get("bucket") == "dated":
-        return "deferred"
+        return "deferred", None
     opened = feed_epoch(row.get("opened_at"))
-    if opened is not None and opened >= since:
-        return "raised"
     touched = feed_epoch(row.get("last_touched_at"))
+    task_records = [r for r in records if r["task"] == row["task"] and float(r["ts"]) >= since]
+    stamps = [opened, touched, board_touched, *(float(r["ts"]) for r in task_records)]
+    activity = max((stamp for stamp in stamps if stamp is not None and stamp >= since), default=None)
+    if opened is not None and opened >= since:
+        return "raised", activity
     if any(stamp is not None and stamp >= since for stamp in (touched, board_touched)):
-        return "captain_activity"
-    task_records = [r for r in records if r["task"] == row["task"] and float(r["ts"]) >= since]  # type: ignore[arg-type]
+        return "captain_activity", activity
     if any(str(r["event"]).startswith("captain.") for r in task_records):
-        return "captain_activity"
+        return "captain_activity", activity
     if task_records:
-        return "recent_work"
-    return "quiet"
+        return "recent_work", activity
+    return "quiet", None
 
 
 def home_attention(
@@ -2832,10 +2834,10 @@ def home_attention(
     state = snapshot.review_state or ReviewState()
     for row, task_records in candidates:
         key = decision_key(snapshot, row)
-        why = decision_relevance(row, task_records, since, (board_activity or {}).get(key))
+        why, activity = decision_relevance(row, task_records, since, (board_activity or {}).get(key))
         if why != "deferred" and state.relevance_of("call", key)[0] == "stale":
             why = "stale"
-        (relevant if why in RELEVANT_REASONS else background).append(dict(row, relevance=why))
+        (relevant if why in RELEVANT_REASONS else background).append(dict(row, relevance=why, activity_at=iso_seconds(activity) if activity is not None else None))
     if feed is not None or candidates or not use_feed:
         view["decisions"] = {
             "source": ATTENTION_FEED_SCHEMA if feed is not None else "backlog", "relevant": relevant,
@@ -2886,11 +2888,11 @@ def decision_rows(
     for call in calls or []:
         key = report_reference(call.owner, call.item_id)
         row = {"task": call.item_id, "opened_at": call.filed}
-        why = decision_relevance(row, [], since, activity.get(key))
+        why, stamp = decision_relevance(row, [], since, activity.get(key))
         owner = next((owner for owner in snapshots if owner.spec.label == call.owner), None)
         if owner and owner.review_state and owner.review_state.relevance_of("call", key)[0] == "stale":
             why = "stale"
-        rows[key] = dict(row, relevance=why)
+        rows[key] = dict(row, relevance=why, activity_at=iso_seconds(stamp) if stamp is not None else None)
     for home in view["homes"]:
         snapshot = next((s for s in snapshots if s.spec.label == home["label"]), None)
         decisions = home.get("decisions")
@@ -2959,8 +2961,10 @@ def attention_item_html(item: dict[str, object], now: datetime) -> str:
 
 
 def attention_decision_html(row: dict[str, object], now: datetime) -> str:
+    activity = parse_board_time(row.get("activity_at"))
     touched = parse_when(str(row.get("last_touched_at") or ""))
-    when = f" · touched {elapsed_text(touched, now)} ago" if touched else ""
+    when = (f" · activity {elapsed_text(activity, now)} ago" if activity else
+            f" · touched {elapsed_text(touched, now)} ago" if touched else "")
     why = RELEVANCE_TEXT.get(str(row.get("relevance")), str(row.get("relevance")))
     return (f'<li>{html.escape(str(row["title"]))} <span class="path">{html.escape(why)}{when}'
             f' · <code>{html.escape(str(row["task"]))}</code></span></li>')
@@ -3079,6 +3083,7 @@ class BoardEntry:
     number: int = 0
     refresh_key: str = ""
     touched: datetime | None = None
+    activity_reason: str = ""
     deferred: str = ""
     band: str = ""
     sweep: bool = False
@@ -3106,6 +3111,7 @@ class BoardView:
     multiple_homes: bool = False
     bands: dict[str, list[BoardEntry]] = field(default_factory=dict)
     session: DeskSession | None = None
+    shared_relevance: bool = False
     desk_groups: list[tuple[str, list[BoardEntry]]] = field(default_factory=list)  # (heading, entries)
     stale: list[BoardEntry] = field(default_factory=list)  # marked no longer relevant; hidden from the bands
 
@@ -3306,7 +3312,7 @@ GROUP_SHORT = {"merge": "Merge", "approve": "Approve", "decide": "Decide", "forw
 CAPTAIN_NOTE_RE = re.compile(r"\bCaptain (\d{4}-\d{2}-\d{2})\b")
 HOLD_SET_RE = re.compile(r"\bCaptain hold set:\s*(\d{4}-\d{2}-\d{2}[T ][^\s]+)")
 DEFERRED_HOLD_RE = re.compile(
-    r"(?i)\b(?:deferred\s+until|hold\s+off\b[^\n!?;]*?\buntil|(?:waits?|waiting)\s+until)\s+\S"
+    r"(?i)\b(?:deferred\s+until|hold\s+off\b[^\n!?;]*?\buntil|(?:waits?|waiting)\s+until)\s+(?P<until>\S+(?:\s+\d{2}:\d{2}(?::\d{2}(?:\.\d+)?)?(?:Z|[+-]\d{2}:?\d{2})?)?)"
 )
 HOLD_DEPENDENCY_RE = re.compile(r"(?i)\b(?:(?:waits|waiting)\s+(?:on|for)|after)\s+(\S+)")
 
@@ -3335,7 +3341,10 @@ def backlog_recency(item: BacklogItem, now: datetime, task_ids: Set[str]) -> tup
             deferred = f"deferred until {until.date().isoformat()}"
             break
     if not deferred and (
-        DEFERRED_HOLD_RE.search(item.hold_reason)
+        any(
+            (until := parse_board_time(match.group("until").rstrip(".,;:!?)]}\"'`"))) is None or until > now
+            for match in DEFERRED_HOLD_RE.finditer(item.hold_reason)
+        )
         or any(
             token != item.id and token in task_ids
             for value in [item.blocked_by, *(item.attrs.get(key, "") for key in (
@@ -3392,8 +3401,10 @@ def rank_entry(
         entry.band = "desk" if why in RELEVANT_REASONS else "parked"
         entry.deferred = "deferred" if why == "deferred" else ""
         entry.sweep = False
-        if entry.band == "desk" and entry.touched is None:
-            entry.touched = parse_when(str(decision.get("last_touched_at") or decision.get("opened_at") or "")) or now
+        if entry.band == "desk":
+            entry.activity_reason = str(why)
+            activity = parse_board_time(decision.get("activity_at"))
+            entry.touched = max((stamp for stamp in (entry.touched, activity) if stamp is not None), default=None)
 
 
 def desk_session(boards: list[CaptainBoard], now: datetime) -> DeskSession | None:
@@ -3427,9 +3438,11 @@ def desk_bucket(touched: datetime, session: DeskSession, now: datetime) -> tuple
     return 7, "Open items from earlier this session"
 
 
-def desk_groups(entries: list[BoardEntry], session: DeskSession | None, now: datetime) -> list[tuple[str, list[BoardEntry]]]:
+def desk_groups(
+    entries: list[BoardEntry], session: DeskSession | None, now: datetime, shared_relevance: bool = False,
+) -> list[tuple[str, list[BoardEntry]]]:
     """Split the desk band into headed groups: one for the 48-hour rule or an idle session, else by message recency."""
-    if session is None or session.idle:
+    if shared_relevance or session is None or session.idle:
         return [("", entries)] if entries else []
     buckets: dict[tuple[int, str], list[BoardEntry]] = {}
     for entry in entries:
@@ -3489,7 +3502,7 @@ def board_view(
     boarded = [home for home in snapshots if home.board is not None]
     if not boarded and not fallback:
         return None
-    view = BoardView({key: [] for key in BOARD_GROUP_KEYS}, [], 0, [], [])
+    view = BoardView({key: [] for key in BOARD_GROUP_KEYS}, [], 0, [], [], shared_relevance=bool(decisions))
     view.session = session = desk_session([home.board for home in boarded if home.board is not None], now)
     state = next((home.review_state for home in snapshots if home.review_state is not None), None) or ReviewState()
     cache: dict[int, dict[str, BacklogItem]] = {}
@@ -3568,7 +3581,7 @@ def board_view(
             view.unsorted.append(entry)
     view.multiple_homes = len({entry.home for entries in view.groups.values() for entry in entries} | {e.home for e in view.unsorted}) > 1
     view.bands = band_entries([*(e for key in BOARD_GROUP_KEYS for e in view.groups[key]), *view.unsorted])
-    view.desk_groups = desk_groups(view.bands["desk"], session, now)
+    view.desk_groups = desk_groups(view.bands["desk"], session, now, view.shared_relevance)
     view.bands["desk"] = [entry for _heading, entries in view.desk_groups for entry in entries]
     number = 0
     for band in BOARD_BAND_KEYS:
@@ -3605,7 +3618,8 @@ def board_status_html(view: BoardView, now: datetime) -> str:
 def touched_text(entry: BoardEntry, now: datetime) -> str:
     if entry.touched is None:
         return "touched time unknown"
-    return f"touched {elapsed_text(entry.touched, now)} ago"
+    label = "worked on" if entry.activity_reason == "recent_work" else "activity" if entry.activity_reason else "touched"
+    return f"{label} {elapsed_text(entry.touched, now)} ago"
 
 
 def board_entry_html(
@@ -3690,7 +3704,11 @@ def session_desk_html(
     session = view.session
     assert session is not None
     entries = view.bands["desk"]
-    if session.idle:
+    if view.shared_relevance:
+        title = "On your desk"
+        description = f"Open decisions raised, acted on or worked on in the last {DEFAULT_RECENT_DAYS} days."
+        empty = "No decisions are in play. Background decisions are below."
+    elif session.idle:
         title = "Open items from our last session"
         description = (
             f"Your last message to Firstmate was {elapsed_text(session.last_active, now)} ago. "
@@ -3750,6 +3768,8 @@ def board_html(
         return "".join(out)
     show_home = view.multiple_homes
     for key, title, description in BOARD_BANDS:
+        if key == "desk" and view.shared_relevance:
+            description = f"Open decisions raised, acted on or worked on in the last {DEFAULT_RECENT_DAYS} days."
         entries = view.bands[key]
         counts = band_counts(entries)
         head = (
@@ -3766,11 +3786,12 @@ def board_html(
             more = [] if show_all else entries[DESK_LIMIT:]
             body = "".join(board_entry_html(entry, show_home, now, reactions) for entry in shown)
             if not entries:
-                body = '<p class="empty">Nothing touched in the last 2 days. Older items are below.</p>'
+                body = ('<p class="empty">No decisions are in play. Background decisions are below.</p>' if view.shared_relevance
+                        else '<p class="empty">Nothing touched in the last 2 days. Older items are below.</p>')
             if more:
                 body += (
                     '<details class="board-more" id="board-desk-more" data-refresh-key="board-band:desk-more">'
-                    f'<summary>+{len(more)} more you touched recently</summary>'
+                    f'<summary>+{len(more)} more {"decisions in play" if view.shared_relevance else "you touched recently"}</summary>'
                     f'{"".join(board_entry_html(entry, show_home, now, reactions) for entry in more)}</details>'
                 )
             out.append(f'<div class="dashboard-section board-band" id="board-desk">{head}{body}</div>')
@@ -5505,6 +5526,7 @@ def call_snapshot(
         "id": entry.key, "title": item.title, "ask": item.ask, "group": item.group, "band": band,
         "desk_group": desk_heading, "home": entry.home, "project": item.project, "topic": item.topic,
         "detail": item.detail, "touched_at": iso_or_none(entry.touched), "deferred": entry.deferred,
+        **({"activity_reason": entry.activity_reason} if entry.activity_reason else {}),
         "sweep": entry.sweep, "recommendation": item.recommendation, "brief_url": item.brief_url,
         "links": [{"label": label, "url": url} for label, url in item.links],
         "relevance": entry.relevance, "relevance_reason": entry.reason,
@@ -5571,6 +5593,7 @@ def build_snapshot(
         "version": SNAPSHOT_VERSION, "title": title,
         "generated_at": now.astimezone(timezone.utc).isoformat(timespec="microseconds").replace("+00:00", "Z"),
         "session": session, "calls": calls, "reports": reports, "related": related,
+        **({"decision_window_days": DEFAULT_RECENT_DAYS} if view.shared_relevance else {}),
         "reactions": reactions, "delivered": delivered,
     }
 
