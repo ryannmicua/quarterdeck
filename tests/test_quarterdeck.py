@@ -4590,6 +4590,124 @@ class AttentionTests(unittest.TestCase):
                 decisions = self.view(home)["homes"][0]["decisions"]
                 self.assertEqual(bool(decisions["relevant"]), expected)
 
+    def test_board_touch_reactivates_quiet_decisions_without_overriding_deferral(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            home = self.make_home(root)
+            rows = json.loads((ATTENTION_FIXTURES / "fm-attention.json").read_text())["open_decisions"]
+            selected = [rows[1], rows[4]]
+            (home / "data" / "backlog.md").write_text(
+                "# Backlog\n\n| ID | Title | held | hold_kind |\n| --- | --- | --- | --- |\n" + "\n".join(
+                    f'| {row["task"]} | {row["title"]} | true | captain |' for row in selected
+                )
+            )
+            board = {"version": 1, "updated_at": "2026-06-01T12:00:00Z", "items": [
+                {"id": row["task"], "task": row["task"], "group": "decide", "title": row["title"],
+                 "ask": "Choose", "touched_at": "2026-06-01T12:00:00Z"} for row in selected
+            ]}
+            (home / "data" / "captain-board.json").write_text(json.dumps(board))
+            before = self.view(home)["homes"][0]["decisions"]
+            self.assertNotIn("rope-quiet", [row["task"] for row in before["relevant"]])
+            for row in selected:
+                result = subprocess.run(
+                    [sys.executable, str(ROOT / "quarterdeck.py"), "board", "touch", row["task"],
+                     "--at", "2026-07-02T12:00:00Z", "--data-dir", str(home / "data")],
+                    capture_output=True, text=True, check=False,
+                )
+                self.assertEqual(result.returncode, 0, result.stderr)
+            snapshot = quarterdeck.load_home_snapshot(quarterdeck.HomeSpec("invented", home))
+            view = quarterdeck.attention_view([snapshot], ATTENTION_NOW, all_decisions=True)
+            decisions = view["homes"][0]["decisions"]
+            relevant = {row["task"]: row["relevance"] for row in decisions["relevant"]}
+            self.assertEqual(relevant["rope-quiet"], "captain_activity")
+            self.assertNotIn("anchor-deferred", relevant)
+            board_view = quarterdeck.board_view([snapshot], ATTENTION_NOW, decisions=quarterdeck.decision_rows([snapshot], view))
+            self.assertEqual([entry.item.task for entry in board_view.bands["desk"]], ["rope-quiet"])
+            exported = quarterdeck.build_snapshot([snapshot], "Quarterdeck", ATTENTION_NOW, attention=view)
+            self.assertEqual([(call["id"], call["band"]) for call in exported["calls"]], [("invented/rope-quiet", "desk")])
+            bearings = quarterdeck.build_bearings([snapshot], ATTENTION_NOW, use_snapshot=False)
+            bearings.attention = view
+            page = quarterdeck.build_html([snapshot], "Quarterdeck", bearings=bearings)
+            calls = page.split('id="call"', 1)[1].split('id="landed"', 1)[0]
+            self.assertIn(rows[4]["title"], calls)
+            self.assertNotIn(rows[1]["title"], page)
+            expired = quarterdeck.attention_view([snapshot], datetime(2026, 7, 6, 12, tzinfo=timezone.utc))
+            self.assertNotIn("rope-quiet", [row["task"] for row in expired["homes"][0]["decisions"]["relevant"]])
+
+    def test_board_engagement_is_home_scoped_for_routed_and_keyed_calls(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            feed = json.loads((ATTENTION_FIXTURES / "fm-attention.json").read_text())
+            quiet = feed["open_decisions"][4]
+            feed["open_decisions"] = [quiet, dict(quiet, task="mate/rope-quiet"), feed["open_decisions"][5]]
+            home = self.make_home(root, feed=json.dumps(feed))
+            child = root / "mate"
+            (child / "data").mkdir(parents=True)
+            (child / "data" / "backlog.md").write_text("# Backlog\n")
+            (home / "data" / "secondmates.md").write_text(
+                f"- mate - Maintains fictional maps. (home: {child}; scope: Maps; projects: demo; added 2026-01-04)\n"
+            )
+            (child / "data" / "captain-board.json").write_text(json.dumps({
+                "version": 1, "updated_at": "2026-07-02T12:00:00Z", "items": [
+                    {"id": task, "task": task, "group": "decide", "title": task, "ask": "Choose",
+                     "touched_at": datetime.now(timezone.utc).isoformat()} for task in ("rope-quiet", "api-shape")
+                ]
+            }))
+            result = self.run_cli("--json", "--home", str(home))
+            self.assertEqual(result.returncode, 0, result.stderr)
+            relevant = {row["task"]: row["relevance"] for row in json.loads(result.stdout)["homes"][0]["decisions"]["relevant"]}
+            self.assertEqual(relevant, {"mate/rope-quiet": "captain_activity", "mate": "captain_activity"})
+
+    def test_export_refuses_attention_errors_before_writing_any_destination(self) -> None:
+        cases = (
+            {"ledger": '{"v":2,"ts":1782990400,"event":"task.status","task":"kelp-survey"}\n'},
+            {"feed": '{"schema":"fm-attention.v2","open_decisions":[]}'},
+        )
+        for options in cases:
+            with self.subTest(options=options), tempfile.TemporaryDirectory() as temp:
+                root = Path(temp)
+                home = self.make_home(root, **options)
+                view = self.view(home, all_decisions=True)
+                homes = [quarterdeck.load_home_snapshot(quarterdeck.HomeSpec("invented", home))]
+                with self.assertRaisesRegex(ValueError, "quarterdeck attention check: FAILED"):
+                    quarterdeck.build_snapshot(homes, "Quarterdeck", ATTENTION_NOW, attention=view)
+                output, artifact = root / "export.json", root / "export.html"
+                output.write_text("existing JSON")
+                artifact.write_text("existing artifact")
+                env = dict(os.environ, XDG_CONFIG_HOME=str(root / "config"), XDG_STATE_HOME=str(root / "review-state"))
+                for destinations in ([], ["--output", str(output)], ["--artifact", str(artifact)],
+                                     ["--output", str(output), "--artifact", str(artifact)]):
+                    result = subprocess.run(
+                        [sys.executable, str(ROOT / "quarterdeck.py"), "export", "--home", str(home), *destinations],
+                        capture_output=True, text=True, check=False, env=env,
+                    )
+                    self.assertNotEqual(result.returncode, 0)
+                    self.assertEqual(result.stdout, "")
+                    self.assertIn("quarterdeck attention check: FAILED", result.stderr)
+                    self.assertIn(view["homes"][0]["errors"][0]["message"], result.stderr)
+                    self.assertEqual(output.read_text(), "existing JSON")
+                    self.assertEqual(artifact.read_text(), "existing artifact")
+
+    def test_export_reports_failed_home_when_another_home_skips_the_feed(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            for name in ("good", "bad"):
+                (root / name).mkdir()
+            good = self.make_home(root / "good")
+            bad = self.make_home(root / "bad", ledger='{"v":2,"ts":1782990400,"event":"task.status","task":"kelp-survey"}\n')
+            config = root / "config.json"
+            config.write_text(json.dumps({"homes": [{"label": "good", "path": str(good)}, {"label": "bad", "path": str(bad)}]}))
+            env = dict(os.environ, XDG_CONFIG_HOME=str(root / "unused-config"), XDG_STATE_HOME=str(root / "review-state"))
+            result = subprocess.run(
+                [sys.executable, str(ROOT / "quarterdeck.py"), "export", "--config", str(config), "--no-snapshot"],
+                capture_output=True, text=True, check=False, env=env,
+            )
+            self.assertNotEqual(result.returncode, 0)
+            self.assertEqual(result.stdout, "")
+            self.assertIn("bad: ledger:", result.stderr)
+            self.assertIn("record version 2", result.stderr)
+            self.assertNotIn("Traceback", result.stderr)
+
     def test_unknown_ledger_version_is_refused_with_a_structured_error(self) -> None:
         with tempfile.TemporaryDirectory() as temp:
             ledger = (ATTENTION_FIXTURES / "fleet-ledger.jsonl").read_text(encoding="utf-8")

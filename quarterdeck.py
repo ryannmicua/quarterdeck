@@ -2703,14 +2703,23 @@ def recent_work(records: list[dict[str, object]] | None, snapshot: HomeSnapshot,
     return {"ledger_starts_at": iso_seconds(starts) if starts is not None else None, "windows": windows}
 
 
-def decision_relevance(row: dict[str, object], records: list[dict[str, object]], since: float) -> str:
+def decision_key(snapshot: HomeSnapshot, row: dict[str, object]) -> str:
+    if row.get("kind") == "keyed" and row.get("key"):
+        owner = next((child.spec.label for child in snapshot.children if child.spec.route_id == row["task"]), str(row["task"]))
+        return report_reference(owner, str(row["key"]))
+    return task_key(snapshot, str(row["task"]), all_snapshots([snapshot]))
+
+
+def decision_relevance(
+    row: dict[str, object], records: list[dict[str, object]], since: float, board_touched: float | None = None,
+) -> str:
     if row.get("bucket") == "dated":
         return "deferred"
     opened = feed_epoch(row.get("opened_at"))
     if opened is not None and opened >= since:
         return "raised"
     touched = feed_epoch(row.get("last_touched_at"))
-    if touched is not None and touched >= since:
+    if any(stamp is not None and stamp >= since for stamp in (touched, board_touched)):
         return "captain_activity"
     task_records = [r for r in records if r["task"] == row["task"] and float(r["ts"]) >= since]  # type: ignore[arg-type]
     if any(str(r["event"]).startswith("captain.") for r in task_records):
@@ -2723,6 +2732,7 @@ def decision_relevance(row: dict[str, object], records: list[dict[str, object]],
 def home_attention(
     snapshot: HomeSnapshot, now: datetime, all_decisions: bool = False,
     use_feed: bool = True, feed_runner: Callable[[Path, Path | None], dict[str, object]] = run_attention_feed,
+    board_activity: dict[str, float] | None = None,
 ) -> dict[str, object]:
     spec = snapshot.spec
     since = now.timestamp() - DEFAULT_RECENT_DAYS * 86400
@@ -2767,7 +2777,7 @@ def home_attention(
         relevant: list[dict[str, object]] = []
         background: list[dict[str, object]] = []
         for row in feed_rows:
-            why = decision_relevance(row, records or [], since)
+            why = decision_relevance(row, records or [], since, (board_activity or {}).get(decision_key(snapshot, row)))
             (relevant if why in RELEVANT_REASONS else background).append(dict(row, relevance=why))
         view["decisions"] = {
             "source": ATTENTION_FEED_SCHEMA, "relevant": relevant, "background_count": len(background),
@@ -2785,7 +2795,15 @@ def attention_view(
     feed_runner: Callable[[Path, Path | None], dict[str, object]] = run_attention_feed,
 ) -> dict[str, object]:
     now = now or datetime.now(timezone.utc)
-    views = [home_attention(snapshot, now, all_decisions, use_feed, feed_runner) for snapshot in homes]
+    snapshots = all_snapshots(homes)
+    board_activity: dict[str, float] = {}
+    for snapshot in snapshots:
+        if snapshot.board is not None and snapshot.board.supported:
+            for item in snapshot.board.items:
+                if item.touched_at is not None:
+                    key = task_key(snapshot, item.task, snapshots)
+                    board_activity[key] = max(board_activity.get(key, float("-inf")), item.touched_at.timestamp())
+    views = [home_attention(snapshot, now, all_decisions, use_feed, feed_runner, board_activity) for snapshot in homes]
     return {
         "schema": ATTENTION_SCHEMA, "generated": iso_seconds(now.timestamp()),
         "ok": all(view["ok"] for view in views), "homes": views,
@@ -2813,11 +2831,7 @@ def decision_rows(
                 if needs_captain(item):
                     rows.setdefault(task_key(owner, item.id, snapshots), {"relevance": "quiet"})
         for row in [*(decisions.get("background") or []), *decisions["relevant"]]:
-            if row.get("kind") == "keyed" and row.get("key"):
-                owner = next((child.spec.label for child in snapshot.children if child.spec.route_id == row["task"]), str(row["task"]))
-                key = report_reference(owner, str(row["key"]))
-            else:
-                key = task_key(snapshot, str(row["task"]), snapshots)
+            key = decision_key(snapshot, row)
             if rows.get(key, {}).get("relevance") not in RELEVANT_REASONS:
                 rows[key] = row
     return rows
@@ -2835,6 +2849,9 @@ def attention_check_line(view: dict[str, object]) -> str:
             ledger_text = f"ledger v{LEDGER_VERSION}, {ledger['records']} records from {work['ledger_starts_at'] or 'none'}"
         else:
             ledger_text = f"no {LEDGER_PATH} (recording off; recent work not covered)"
+        if decisions.get("skipped"):
+            parts.append(f"{home['label']}: {ledger_text}; decisions skipped: {decisions['skipped']}")
+            continue
         open_count = len(decisions["relevant"]) + decisions["background_count"]
         parts.append(f"{home['label']}: {ledger_text}; {ATTENTION_FEED_SCHEMA}, {open_count} open decisions")
     return f"quarterdeck attention check: {'ok' if view['ok'] else 'FAILED'} — " + "; ".join(parts)
@@ -2852,7 +2869,7 @@ def attention(args: argparse.Namespace) -> int:
     except (OSError, ValueError) as exc:
         print(f"quarterdeck: {exc}", file=sys.stderr)
         return 2
-    homes = [load_home_snapshot(spec) for spec in specs]
+    homes = [load_home_snapshot(spec, discover_secondmates=True) for spec in specs]
     view = attention_view(homes, all_decisions=args.all_decisions)
     if args.check:
         print(attention_check_line(view))
@@ -5433,6 +5450,8 @@ def build_snapshot(
     """The data the cloud artifact renders: the desk, this week, related items, the report list and the latest
     reaction per item. Nothing else. `bodies` picks which waiting reports carry their Markdown: "all" (the
     default), "desk" (only reports linked to a desk or this-week call, or related to the session) or "none"."""
+    if attention is not None and not attention["ok"]:
+        raise ValueError(attention_check_line(attention))
     if bodies not in BODIES_MODES:
         raise ValueError(f"unknown --bodies {bodies!r}; use one of {', '.join(BODIES_MODES)}")
     ambiguous = assign_report_ids(homes)

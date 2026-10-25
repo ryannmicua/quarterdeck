@@ -43,7 +43,8 @@ the [attention JSON reference](../reference/attention-json.md).
 
 ## After a Firstmate update
 
-Firstmate may change the formats Quarterdeck reads. Run:
+Firstmate may change the formats Quarterdeck reads. Firstmate runs this check
+after each Firstmate update:
 
 ```sh
 quarterdeck attention --check

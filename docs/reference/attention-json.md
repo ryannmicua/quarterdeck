@@ -23,6 +23,7 @@ nothing else:
 | Source | Read how | Understood version |
 | --- | --- | --- |
 | `state/fleet-ledger.jsonl` | read directly | record version `1` ([Firstmate fleet ledger contract](https://github.com/kunchenguid/firstmate/blob/main/docs/fleet-ledger.md)) |
+| `data/captain-board.json` | read directly, including registered local secondmate boards | board version `1`; engagement uses `touched_at` |
 | `bin/fm-attention.sh --json` | run with a 15-second timeout | schema `fm-attention.v1` |
 
 Titles come from the home's `data/backlog.md`, then the feed's decision and
@@ -126,7 +127,7 @@ and, within the last 3 days (`DEFAULT_RECENT_DAYS` in `quarterdeck.py`):
 | --- | --- |
 | `deferred` | The feed's `bucket` is `dated`: held until a later date. Never relevant, whatever its activity. |
 | `raised` | Its `opened_at` falls in the window. |
-| `captain_activity` | Its `last_touched_at` or a ledger `captain.*` record for its task falls in the window. |
+| `captain_activity` | Its `last_touched_at`, a board item's `touched_at` for the same task, or a ledger `captain.*` record falls in the window. |
 | `recent_work` | The ledger has any other record for its task in the window. |
 | `quiet` | None of the above. Background. |
 
@@ -148,4 +149,4 @@ quarterdeck attention check: ok — main: ledger v1, 340 records from 2026-07-01
 quarterdeck attention check: FAILED — main: ledger: <home>/state/fleet-ledger.jsonl line 16 has record version 2; Quarterdeck understands only version 1
 ```
 
-Run it after every Firstmate update; see [See recent work](../how-to/see-recent-work.md).
+Firstmate runs `quarterdeck attention --check` after each Firstmate update; see [See recent work](../how-to/see-recent-work.md).

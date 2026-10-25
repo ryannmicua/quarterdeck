@@ -63,3 +63,12 @@ Captain's Call, board-owned and unsorted calls, related calls, bullet and table
 home details, keyed calls, and exported board bands. Quiet decisions belong in
 collapsed sections; dated decisions must be absent even with `--all`.
 The CLI must reject the removed `--recent-days` option.
+
+Board-touch regressions use `quarterdeck board touch --at` on fictional old
+calls and verify shared attention, board bands, Captain's Call, and export
+output. Recent touches reactivate quiet decisions, expire after three days,
+and never override dated deferral. Registered secondmate boards exercise
+routed and keyed identities without changing a same-named parent task.
+Export error regressions cover incompatible ledger and feed versions: stdout
+stays empty, existing JSON and artifact destinations stay unchanged, and the
+error identifies the failing source. No Firstmate update hook is installed.
