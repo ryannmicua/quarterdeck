@@ -188,4 +188,7 @@ remains visible. Recent/Done ordering cases vary priority order and activity tim
 including a decision tier ahead of merged and started events. Preference cases
 load padded names/projects with a lowercase startup name through CLI readers,
 subsequent saves and the generated editor scripts. Reads must leave the file
-unchanged. No real home or browser state is changed.
+unchanged. Invalid section-type cases cover arrays, objects and other non-string
+JSON values through saved-preference reads, CLI errors, page fallback and the
+real views POST handler. Invalid POSTs return 409 without writing preferences;
+a subsequent valid save succeeds. No real home or browser state is changed.

@@ -5692,6 +5692,60 @@ class AttentionTests(unittest.TestCase):
             self.assertEqual(json.loads(prefs.read_text())["views"], definitions)
             self.assertEqual(json.loads(prefs.read_text())["default_view"], "Reef")
 
+    def test_briefing_regression_invalid_section_types_use_handled_errors(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            home, prefs = self.saved_views_home(root)
+            prefs.parent.mkdir(parents=True)
+            invalid_types = [[], {}, ["waiting"], {"name": "waiting"}, None, True, 1]
+            for kind in invalid_types:
+                with self.subTest(saved_type=kind):
+                    document = {"version": 1, "views": [{"name": "Broken", "sections": [{"type": kind}]}]}
+                    prefs.write_text(json.dumps(document))
+                    with self.assertRaisesRegex(ValueError, "unknown section type"):
+                        quarterdeck.read_saved_views(prefs)
+                    result = self.run_tool(root, "views", "list", "--json")
+                    self.assertEqual(result.returncode, 2, result.stderr)
+                    self.assertIn("unknown section type", result.stderr)
+                    output = root / "rendered.html"
+                    result = self.run_tool(root, "render", "--no-snapshot", "--home", str(home), "--output", str(output))
+                    self.assertEqual(result.returncode, 0, result.stderr)
+                    self.assertIn('data-view-panel="Morning"', output.read_text())
+                    self.assertEqual(json.loads(prefs.read_text()), document)
+            prefs.unlink()
+            args = argparse.Namespace(home=str(home), config=None, preferences=prefs)
+            cache = quarterdeck.SiteCache(lambda: {"index.html": "<p>ok</p>"})
+            server = quarterdeck.make_server("127.0.0.1", 0, quarterdeck.make_handler(
+                cache, None, None, lambda body: quarterdeck.save_view_request(args, body)))
+            thread = threading.Thread(target=server.serve_forever, daemon=True)
+            thread.start()
+            try:
+                with patch.dict(os.environ, {"XDG_CONFIG_HOME": str(root / "config")}):
+                    for kind in [*invalid_types, "waiting"]:
+                        with self.subTest(posted_type=kind):
+                            body = json.dumps({"name": "Mine", "sections": [{"type": kind}], "default": True}).encode()
+                            request = urllib.request.Request(
+                                f"http://127.0.0.1:{server.server_address[1]}/api/views", data=body, method="POST",
+                                headers={"Content-Type": "application/json"})
+                            if kind == "waiting":
+                                with urllib.request.urlopen(request) as response:
+                                    self.assertEqual(response.status, 200)
+                                    self.assertEqual(json.load(response)["default_view"], "Mine")
+                            else:
+                                with self.assertRaises(urllib.error.HTTPError) as failure:
+                                    urllib.request.urlopen(request)
+                                self.assertEqual(failure.exception.code, 409)
+                                self.assertIn("unknown section type", failure.exception.read().decode())
+                                failure.exception.close()
+                                self.assertFalse(prefs.exists())
+                definitions, startup = quarterdeck.read_saved_views(prefs)
+                self.assertEqual(startup, "Mine")
+                self.assertEqual(definitions[-1], {"name": "Mine", "sections": [{"type": "waiting"}]})
+            finally:
+                server.shutdown()
+                server.server_close()
+                thread.join()
+
     def test_briefing_regression_done_can_be_saved_built_and_claimed(self) -> None:
         with tempfile.TemporaryDirectory() as temp:
             root = Path(temp)

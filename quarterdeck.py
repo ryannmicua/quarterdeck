@@ -3026,7 +3026,7 @@ def clean_view(raw: object) -> dict[str, object]:
     for section in sections:
         kind = section.get("type") if isinstance(section, dict) else None
         project = section.get("project") if isinstance(section, dict) else None
-        if kind not in VIEW_SECTION_TITLES:
+        if not isinstance(kind, str) or kind not in VIEW_SECTION_TITLES:
             raise ValueError(f"unknown section type {kind!r}; use {', '.join(VIEW_SECTION_TITLES)}")
         if set(section) != ({"type", "project"} if kind == "project" else {"type"}):
             raise ValueError(f"section {kind!r} takes {'a project name' if kind == 'project' else 'no other fields'}")
