@@ -1,0 +1,19 @@
+{
+  "schema": "fm-attention.v1",
+  "generated": "2026-07-02T12:00:00Z",
+  "session": {"started_at": "2026-07-02T00:00:00Z", "source": "session_identity"},
+  "session_activity": [],
+  "session_activity_total": 0,
+  "session_activity_truncated": false,
+  "in_flight": [
+    {"task": "buoy-light", "title": "Buoy light refit", "repo": "harbor-app", "kind": "ship", "worker": "working", "last_event": null, "pr": null}
+  ],
+  "open_decisions": [
+    {"task": "fresh-call", "home": "main", "title": "Pick the new harbor map vendor", "kind": "captain_hold", "reason": "Two vendors quoted", "bucket": "live", "opened_at": "2026-07-01T09:00:00Z", "opened_precision": "second", "last_touched_at": "2026-07-01T09:00:00Z"},
+    {"task": "anchor-deferred", "home": "main", "title": "Replace the anchor chain", "kind": "captain_hold", "reason": "Deferred to winter", "bucket": "dated", "opened_at": "2026-06-01T09:00:00Z", "opened_precision": "second", "last_touched_at": "2026-07-02T11:05:00Z"},
+    {"task": "tide-call", "home": "main", "title": "Approve the tide table format", "kind": "captain_hold", "reason": "Format choice", "bucket": "live", "opened_at": "2026-06-10", "opened_precision": "day", "last_touched_at": "2026-07-01T23:00:10Z"},
+    {"task": "kelp-survey", "home": "main", "title": "Kelp survey scope", "kind": "captain_hold", "reason": "Scope question", "bucket": "aged", "opened_at": "2026-06-02T09:00:00Z", "opened_precision": "second", "last_touched_at": "2026-06-02T09:00:00Z"},
+    {"task": "rope-quiet", "home": "main", "title": "Choose a rope supplier", "kind": "captain_hold", "reason": "Old question", "bucket": "live", "opened_at": "2026-06-20T09:00:00Z", "opened_precision": "second", "last_touched_at": "2026-06-20T09:00:00Z"},
+    {"task": "mate", "home": "main", "title": "Second mate API shape", "kind": "keyed", "key": "api-shape", "reason": "choose the API shape", "bucket": null, "opened_at": null, "opened_precision": null, "last_touched_at": null}
+  ]
+}

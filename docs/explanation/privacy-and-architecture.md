@@ -20,15 +20,25 @@ bearings snapshot may still include remote secondmate rows collected through
 Firstmate's routes and cache. Quarterdeck itself makes no network calls and
 does not use SSH. This follows Firstmate's [secondmate route and home layout](https://github.com/kunchenguid/firstmate/blob/main/docs/configuration.md).
 
-Quarterdeck reads these files directly. The single exception is a home's own
+Quarterdeck reads these files directly. The first exception is a home's own
 `bin/fm-bearings-snapshot.sh --json`, run with a short timeout so the page
 agrees with Firstmate's `/bearings`; that script may refresh a parent-side
 Firstmate cache as part of its own operation. `--no-snapshot` skips it, and the
 page falls back to parsing the backlog when it is absent, fails, or times out.
 The wrapper may also read registered remote secondmate ledgers through
-Firstmate's routes and show the returned rows. Quarterdeck invokes no other
-Firstmate script directly, except one: a reaction (below) runs the home's own
-`bin/fm-inbox.sh note`. Quarterdeck makes no network calls itself. `render` and
+Firstmate's routes and show the returned rows.
+
+The "Last 48 hours" section and `quarterdeck attention` read the home's
+`state/fleet-ledger.jsonl` directly and run the home's own
+`bin/fm-attention.sh --json`, Firstmate's documented read-only feed of open
+decisions; `--no-snapshot` skips that script for the page. Both are versioned
+formats documented by Firstmate, and Quarterdeck refuses a version it does not
+understand rather than guess; see the
+[attention JSON reference](../reference/attention-json.md). This keeps the
+recent-work view an add-on: Firstmate itself is unchanged.
+
+Quarterdeck invokes no other Firstmate script directly, except one: a reaction
+(below) runs the home's own `bin/fm-inbox.sh note`. Quarterdeck makes no network calls itself. `render` and
 `serve` write nothing to a home directly.
 
 The one exception is the explicit `quarterdeck board` command, which Firstmate

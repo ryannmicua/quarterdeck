@@ -19,6 +19,7 @@ quarterdeck reports relate <report-id> --to <task-id> [--remove] [--home PATH] [
 quarterdeck calls list [--home PATH] [--config FILE]
 quarterdeck calls set-relevance <task-id> current|stale [--reason TEXT] [--home PATH] [--config FILE]
 quarterdeck calls relate <task-id> --to <task-id> [--remove] [--home PATH] [--config FILE]
+quarterdeck attention --json|--check [--all-decisions] [--recent-days N] [--home PATH] [--config FILE]
 quarterdeck export [--output FILE] [--artifact FILE] [--home PATH] [--config FILE] [--title TEXT] [--bodies all|desk|none] [--no-snapshot]
 quarterdeck import <actions.json|-> [--dry-run] [--home PATH] [--config FILE]
 quarterdeck board upsert <task-id> [--id ID] [--group GROUP] [--title TEXT] [--ask TEXT] [--detail TEXT] [--topic TEXT] [--project TEXT] [--brief-url URL] [--recommendation TEXT] [--link LABEL=URL ...] [--touch] [--touched-at ISO] [--home PATH] [--data-dir PATH]
@@ -67,15 +68,25 @@ For each configured home, Quarterdeck reads `data/backlog.md` and immediate
 child `*/report.md` files. It also reads the parent's optional
 `data/secondmates.md` registry and renders each registered local secondmate
 under that parent. It may run that home's
-`bin/fm-bearings-snapshot.sh --json` for the bearings view, unless
-`--no-snapshot` is set. Quarterdeck itself makes no network calls and invokes
-no other Firstmate script directly. The snapshot wrapper may read registered
+`bin/fm-bearings-snapshot.sh --json` for the bearings view and
+`bin/fm-attention.sh --json` for the "Last 48 hours" section, unless
+`--no-snapshot` is set, and it reads `state/fleet-ledger.jsonl` for that
+section. Quarterdeck itself makes no network calls and invokes no other
+Firstmate script directly, apart from `bin/fm-inbox.sh note` for reactions. The snapshot wrapper may read registered
 remote secondmate ledgers through Firstmate's routes and cache, and Quarterdeck
 shows the returned rows. A missing or unreadable home in a configured list
 gets a failure section;
 the other homes still render. The page links to readable HTML copies of
 selected reports and backlogs, generated beside the main page, and HTTPS links
 for GitHub pull requests.
+
+`attention --json` prints the last 12, 12–24 and 24–48 hours of work and the
+open decisions split into relevant and background (schema
+`quarterdeck-attention.v1`); `--all-decisions` lists the background ones and
+`--recent-days N` sets the relevance window (default 3). `attention --check`
+validates the Firstmate sources and prints one line. Both exit 1 with a
+structured error when a source is missing or in a version Quarterdeck does not
+understand. See the [attention JSON reference](attention-json.md).
 
 `reports list`, `reports read`, `reports mark-reviewed`, and
 `reports unmark-reviewed` use the selected homes in the config, or the single
@@ -115,7 +126,7 @@ for how marks affect the dashboard.
 | `--all` | Show every backlog item and report, including queued, finished, closed, and unlinked historical records. |
 | `--lavish` | Write a separate `*.lavish.html` review page with stable IDs on review cards, then open it with `lavish-axi` when available. Without Lavish, print a command hint and succeed. |
 
-| `--no-snapshot` | Do not run a home's `bin/fm-bearings-snapshot.sh`; classify from the backlog only. |
+| `--no-snapshot` | Do not run a home's `bin/fm-bearings-snapshot.sh` or `bin/fm-attention.sh`; classify from the backlog only, and show recent work without decisions. |
 
 `serve` re-renders the page and its readable pages at startup and on the first
 request after its 30-second cache expires. It serves them with `GET` by default

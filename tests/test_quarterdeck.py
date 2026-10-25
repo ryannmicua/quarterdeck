@@ -235,9 +235,9 @@ Use the compact format for the first release.
             self.assertRegex(page, r'<article class="card" id="review-report-[0-9a-f]{12}">')
             self.assertIn("Reports needing review", page)
             homes = [quarterdeck.load_home_snapshot(quarterdeck.HomeSpec(home.name, home), discover_secondmates=True)]
-            expected = quarterdeck.build_html(
-                homes, "Quarterdeck", lavish=True, bearings=quarterdeck.build_bearings(homes),
-            )
+            bearings = quarterdeck.build_bearings(homes)
+            bearings.attention = quarterdeck.attention_view(homes, bearings.generated, all_decisions=True)
+            expected = quarterdeck.build_html(homes, "Quarterdeck", lavish=True, bearings=bearings)
             stamp = re.compile(r"[Gg]enerated(?: at)? \d{4}-\d\d-\d\d \d\d:\d\d:\d\d UTC")
             self.assertEqual(stamp.sub("", page), stamp.sub("", expected))
 
@@ -4423,6 +4423,207 @@ class PrivacyGuardTests(unittest.TestCase):
             self.stage(root, "README.md", "Example task key: " + work_key + "\n")
             self.assertTrue(any("ticket-shaped" in item for item in privacy_guard.check_staged(root)))
 
+
+ATTENTION_FIXTURES = ROOT / "tests" / "fixtures" / "attention"
+ATTENTION_NOW = datetime(2026, 7, 2, 12, tzinfo=timezone.utc)
+ATTENTION_BACKLOG = """# Backlog
+
+## Done
+
+- [x] pier-fix - Fix the pier lights https://forge.example.test/acme/harbor-app/pulls/7 (repo: harbor-app) (kind: ship)
+- [ ] kelp-survey - Kelp survey: map the invented reef (repo: reef-demo) (kind: scout)
+"""
+
+
+class AttentionTests(unittest.TestCase):
+    """Contract tests: fixtures follow Firstmate's documented fleet ledger (v1) and fm-attention.v1 formats."""
+
+    def make_home(self, root: Path, ledger: str | None = None, feed: str | None = None, script: bool = True) -> Path:
+        home = root / "invented-home"
+        (home / "data").mkdir(parents=True)
+        (home / "data" / "backlog.md").write_text(ATTENTION_BACKLOG, encoding="utf-8")
+        (home / "state").mkdir()
+        if ledger is None:
+            ledger = (ATTENTION_FIXTURES / "fleet-ledger.jsonl").read_text(encoding="utf-8")
+        if ledger:
+            (home / "state" / "fleet-ledger.jsonl").write_text(ledger, encoding="utf-8")
+        if script:
+            feed_path = root / "feed.json"
+            feed_path.write_text(feed if feed is not None else (ATTENTION_FIXTURES / "fm-attention.json").read_text(encoding="utf-8"),
+                                 encoding="utf-8")
+            path = home / "bin" / "fm-attention.sh"
+            path.parent.mkdir()
+            path.write_text(f"#!/bin/sh\n[ \"$1\" = --json ] || exit 2\ncat {shlex.quote(str(feed_path))}\n", encoding="utf-8")
+            path.chmod(0o755)
+        return home
+
+    def view(self, home: Path, **options: object) -> dict:
+        homes = [quarterdeck.load_home_snapshot(quarterdeck.HomeSpec("invented", home))]
+        return quarterdeck.attention_view(homes, ATTENTION_NOW, **options)  # type: ignore[arg-type]
+
+    def run_cli(self, *args: str) -> subprocess.CompletedProcess[str]:
+        env = dict(os.environ, XDG_CONFIG_HOME=tempfile.gettempdir() + "/quarterdeck-no-config")
+        return subprocess.run([sys.executable, str(ROOT / "quarterdeck.py"), "attention", *args],
+                              check=False, text=True, capture_output=True, env=env)
+
+    def test_windows_count_merged_started_and_answered_newest_first(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            view = self.view(self.make_home(Path(temp)))
+            self.assertEqual(view["schema"], "quarterdeck-attention.v1")
+            self.assertTrue(view["ok"])
+            home = view["homes"][0]
+            self.assertEqual(home["ledger"]["records"], 14, "identical records count once")
+            work = home["recent_work"]
+            self.assertEqual(work["ledger_starts_at"], "2026-07-01T06:00:00Z")
+            last, middle, oldest = work["windows"]
+            self.assertEqual([w["window"] for w in work["windows"]], ["last_12h", "12h_to_24h", "24h_to_48h"])
+            self.assertEqual([w["coverage"] for w in work["windows"]], ["full", "full", "partial"])
+            self.assertEqual((last["merged_count"], last["started_count"], last["answered_count"]), (2, 1, 1))
+            self.assertEqual([m["task"] for m in last["merged"]], ["dock-notes", "pier-fix"])
+            pier = last["merged"][1]
+            self.assertEqual(pier["title"], "Fix the pier lights")
+            self.assertEqual(pier["project"], "harbor-app")
+            self.assertEqual(pier["via"], "pr")
+            self.assertEqual(pier["pr"], "https://forge.example.test/acme/harbor-app/pulls/7")
+            self.assertEqual(pier["at"], "2026-07-02T10:00:00Z")
+            self.assertEqual(last["merged"][0], {"at": "2026-07-02T11:03:00Z", "task": "dock-notes", "title": "dock-notes",
+                                                  "project": None, "pr": None, "via": "local"})
+            self.assertEqual(last["started"][0]["title"], "Buoy light refit", "falls back to the feed's in-flight title")
+            self.assertEqual(last["started"][0]["kind"], "ship")
+            self.assertEqual([s["task"] for s in middle["started"]], ["kelp-survey"])
+            self.assertEqual((middle["merged_count"], middle["answered_count"]), (0, 0))
+            self.assertEqual([s["task"] for s in oldest["started"]], ["pier-fix"])
+            self.assertEqual(oldest["started"][0]["pr"], "https://forge.example.test/acme/harbor-app/pulls/7")
+            self.assertEqual((oldest["from"], oldest["to"]), ("2026-06-30T12:00:00Z", "2026-07-01T12:00:00Z"))
+
+    def test_decisions_split_relevant_from_background(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            home = self.make_home(Path(temp))
+            decisions = self.view(home)["homes"][0]["decisions"]
+            self.assertEqual([(r["task"], r["relevance"]) for r in decisions["relevant"]],
+                             [("fresh-call", "raised"), ("tide-call", "captain_activity"), ("kelp-survey", "recent_work")])
+            self.assertEqual(decisions["background_count"], 3)
+            self.assertIsNone(decisions["background"], "background is a count unless asked for")
+            listed = self.view(home, all_decisions=True)["homes"][0]["decisions"]["background"]
+            self.assertEqual([(r["task"], r["relevance"]) for r in listed],
+                             [("anchor-deferred", "deferred"), ("rope-quiet", "quiet"), ("mate", "quiet")])
+            self.assertEqual(listed[2]["key"], "api-shape", "feed members pass through unchanged")
+            # A wider window brings older activity in, but a deferred call never becomes relevant.
+            wide = self.view(home, recent_days=30)["homes"][0]["decisions"]
+            self.assertIn("rope-quiet", [r["task"] for r in wide["relevant"]])
+            self.assertNotIn("anchor-deferred", [r["task"] for r in wide["relevant"]])
+
+    def test_unknown_ledger_version_is_refused_with_a_structured_error(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            ledger = (ATTENTION_FIXTURES / "fleet-ledger.jsonl").read_text(encoding="utf-8")
+            ledger += '{"v":2,"ts":1782990400,"event":"task.status","task":"pier-fix"}\n'
+            home = self.make_home(Path(temp), ledger=ledger)
+            result = self.run_cli("--json", "--home", str(home))
+            self.assertEqual(result.returncode, 1, result.stderr)
+            data = json.loads(result.stdout)
+            self.assertFalse(data["ok"])
+            entry = data["homes"][0]
+            self.assertIsNone(entry["recent_work"], "no partial guess from a ledger it does not understand")
+            self.assertEqual(entry["errors"][0]["code"], "ledger_version")
+            self.assertIn("line 16 has record version 2", entry["errors"][0]["message"])
+            check = self.run_cli("--check", "--home", str(home))
+            self.assertEqual(check.returncode, 1)
+            self.assertEqual(len(check.stdout.strip().splitlines()), 1)
+            self.assertTrue(check.stdout.startswith("quarterdeck attention check: FAILED — invented-home: ledger: "))
+
+    def test_ledger_shape_errors_and_an_unterminated_last_line(self) -> None:
+        cases = {
+            '{"ts":1,"event":"task.status","task":"a"}\n': "ledger_version",
+            'not json\n{"v":1,"ts":1,"event":"task.status","task":"a"}\n': "ledger_malformed",
+            '{"v":1,"ts":"soon","event":"task.status","task":"a"}\n': "ledger_malformed",
+            '[1]\n': "ledger_malformed",
+        }
+        for ledger, code in cases.items():
+            with self.subTest(ledger=ledger), tempfile.TemporaryDirectory() as temp:
+                entry = self.view(self.make_home(Path(temp), ledger=ledger))["homes"][0]
+                self.assertEqual([e["code"] for e in entry["errors"]], [code])
+        with tempfile.TemporaryDirectory() as temp:
+            torn = '{"v":1,"ts":1782990000,"event":"task.dispatched","task":"a"}\n{"v":1,"ts":17829'
+            entry = self.view(self.make_home(Path(temp), ledger=torn))["homes"][0]
+            self.assertEqual(entry["errors"], [])
+            self.assertEqual(entry["ledger"]["records"], 1)
+
+    def test_missing_ledger_is_reported_as_uncovered_not_empty(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            home = self.make_home(Path(temp), ledger="")
+            entry = self.view(home)["homes"][0]
+            self.assertTrue(entry["ok"])
+            self.assertFalse(entry["ledger"]["present"])
+            self.assertIsNone(entry["recent_work"]["ledger_starts_at"])
+            self.assertEqual({w["coverage"] for w in entry["recent_work"]["windows"]}, {"none"})
+            # Without ledger activity only freshly raised calls are relevant.
+            self.assertEqual([r["task"] for r in entry["decisions"]["relevant"]], ["fresh-call"])
+            check = self.run_cli("--check", "--home", str(home))
+            self.assertEqual(check.returncode, 0, check.stderr)
+            self.assertIn("no state/fleet-ledger.jsonl (recording off; recent work not covered)", check.stdout)
+
+    def test_feed_problems_are_errors_and_recent_work_still_shows(self) -> None:
+        bad_schema = json.dumps({"schema": "fm-attention.v2", "open_decisions": []})
+        bad_row = json.dumps({"schema": "fm-attention.v1", "open_decisions": [{"task": "a", "kind": "captain_hold"}]})
+        for feed, script, code in ((bad_schema, True, "feed_schema"), (bad_row, True, "feed_malformed"),
+                                   ("not json", True, "feed_malformed"), (None, False, "feed_missing")):
+            with self.subTest(code=code), tempfile.TemporaryDirectory() as temp:
+                entry = self.view(self.make_home(Path(temp), feed=feed, script=script))["homes"][0]
+                self.assertFalse(entry["ok"])
+                self.assertEqual([(e["source"], e["code"]) for e in entry["errors"]], [("decisions", code)])
+                self.assertIsNone(entry["decisions"])
+                self.assertEqual(len(entry["recent_work"]["windows"]), 3)
+
+    def test_check_and_json_commands_on_a_valid_home(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            home = self.make_home(Path(temp))
+            check = self.run_cli("--check", "--home", str(home))
+            self.assertEqual(check.returncode, 0, check.stderr)
+            self.assertEqual(check.stdout.strip(), "quarterdeck attention check: ok — invented-home: ledger v1, 14 records "
+                             "from 2026-07-01T06:00:00Z; fm-attention.v1, 6 open decisions")
+            result = self.run_cli("--json", "--all-decisions", "--recent-days", "30", "--home", str(home))
+            self.assertEqual(result.returncode, 0, result.stderr)
+            data = json.loads(result.stdout)
+            self.assertEqual(data["homes"][0]["decision_relevance"]["recent_days"], 30)
+            self.assertIsInstance(data["homes"][0]["decisions"]["background"], list)
+            self.assertEqual(self.run_cli("--home", str(home)).returncode, 2)
+            self.assertEqual(self.run_cli("--json", "--recent-days", "0", "--home", str(home)).returncode, 2)
+
+    def test_page_shows_windows_relevant_decisions_and_background_behind_a_toggle(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            page = quarterdeck.attention_html(self.view(self.make_home(Path(temp)), all_decisions=True))
+            self.assertIn('id="recent-work"', page)
+            for title in ("Last 12 hours", "12–24 hours ago", "24–48 hours ago"):
+                self.assertIn(title, page)
+            self.assertIn("2 merged · 1 started · 1 decision answered", page)
+            self.assertIn("Not fully covered: the ledger starts 2026-07-01 06:00 UTC.", page)
+            self.assertIn('<a href="https://forge.example.test/acme/harbor-app/pulls/7">PR</a>', page)
+            relevant, background = page.split('id="recent-background-0"')
+            self.assertIn("Pick the new harbor map vendor", relevant)
+            self.assertNotIn("Replace the anchor chain", relevant)
+            self.assertIn("3 background decisions", background)
+            self.assertIn("Replace the anchor chain", background)
+        with tempfile.TemporaryDirectory() as temp:
+            page = quarterdeck.attention_html(self.view(self.make_home(Path(temp), script=False)))
+            self.assertIn('class="warning"', page)
+            self.assertIn("decisions unavailable", page)
+            self.assertIn("quarterdeck attention --check", page)
+
+    def test_render_without_snapshot_skips_the_feed_but_keeps_recent_work(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            home = self.make_home(root)
+            (home / "bin" / "fm-attention.sh").write_text("#!/bin/sh\nexit 9\n", encoding="utf-8")
+            output = root / "out" / "index.html"
+            result = subprocess.run(
+                [sys.executable, str(ROOT / "quarterdeck.py"), "render", "--no-snapshot", "--home", str(home), "--output", str(output)],
+                check=False, text=True, capture_output=True, env=dict(os.environ, XDG_STATE_HOME=str(root / "state-home")),
+            )
+            self.assertEqual(result.returncode, 0, result.stderr)
+            page = output.read_text(encoding="utf-8")
+            self.assertIn('id="recent-work"', page)
+            self.assertIn("Decisions not read: the Firstmate scripts were skipped with --no-snapshot.", page)
+            self.assertNotIn('class="warning"', page.split('id="recent-work"')[1].split("</section>")[0])
 
 if __name__ == "__main__":
     unittest.main()

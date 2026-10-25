@@ -71,6 +71,12 @@ as a local artifact. Quarterdeck itself has no agent or build step.
 - Captain's Call cards include local hold context, options, and recommendations
   when available. Remote decisions show the snapshot summary and point to their
   secondmate home for the full background.
+- Last 48 hours: what merged and started in the last 12 hours, 12–24 hours
+  ago and 24–48 hours ago, from Firstmate's fleet ledger, and only the
+  decisions still in play; deferred and quiet decisions sit behind a toggle.
+  `quarterdeck attention --json` prints the same view for other readers, and
+  `quarterdeck attention --check` validates Firstmate's formats after an
+  update. See [See recent work](docs/how-to/see-recent-work.md).
 - Uses Firstmate's own `bin/fm-bearings-snapshot.sh --json` when a home has it,
   and says so when it falls back to parsing the backlog.
 - `quarterdeck serve` serves the page over HTTP. `quarterdeck service` can

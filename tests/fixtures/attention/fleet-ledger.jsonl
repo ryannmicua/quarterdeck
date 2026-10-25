@@ -1,0 +1,15 @@
+{"v":1,"ts":1782885600,"event":"task.dispatched","task":"pier-fix","kind":"ship","project":"harbor-app","harness":"claude","model":null}
+{"v":1,"ts":1782921600,"event":"task.status","task":"pier-fix","state":"working","key":null,"text":" bug reproduced"}
+{"v":1,"ts":1782946800,"event":"task.dispatched","task":"kelp-survey","kind":"scout","project":"reef-demo","harness":"codex","model":null}
+{"v":1,"ts":1782946810,"event":"captain.held","task":"tide-call"}
+{"v":1,"ts":1782975600,"event":"task.pr_ready","task":"pier-fix","pr":"https://forge.example.test/acme/harbor-app/pulls/7"}
+{"v":1,"ts":1782986400,"event":"task.merged","task":"pier-fix","via":"pr","pr":"https://forge.example.test/acme/harbor-app/pulls/7"}
+{"v":1,"ts":1782986400,"event":"task.merged","task":"pier-fix","via":"pr","pr":"https://forge.example.test/acme/harbor-app/pulls/7"}
+{"v":1,"ts":1782986460,"event":"task.cleaned_up","task":"pier-fix"}
+{"v":1,"ts":1782990000,"event":"task.dispatched","task":"buoy-light","kind":"ship","project":"harbor-app","harness":"claude","model":null}
+{"v":1,"ts":1782990060,"event":"captain.answered","task":"tide-call","mode":"done"}
+{"v":1,"ts":1782990120,"event":"captain.answered","task":"moot-call","mode":"reconciled"}
+{"v":1,"ts":1782990180,"event":"task.merged","task":"dock-notes","via":"local"}
+{"v":1,"ts":1782990200,"event":"task.future_event","task":"buoy-light","extra":"readers ignore unknown events"}
+{"v":1,"ts":1782990240,"event":"task.status","task":"anchor-deferred","state":"working","key":null,"text":" tidying while deferred"}
+{"v":1,"ts":1782990300,"event":"captain.deferred","task":"anchor-deferred","until":"2026-12-01"}

@@ -1280,6 +1280,7 @@ def build_html(
         bearings, collapse_reviews=board is not None, can_mark=allow_marks, ambiguous_ids=ambiguous_ids,
         report_resolution_incomplete=report_resolution_incomplete, reactions=reactions,
     ) if bearings else ""
+    attention_block = attention_html(bearings.attention) if bearings else ""
     reviewed_block = (
         reviewed_reports_html(homes, ambiguous_ids, report_resolution_incomplete, reactions) if allow_marks else ""
     ) + set_aside_reports_html(homes, ambiguous_ids, report_resolution_incomplete, allow_marks, reactions)
@@ -1572,6 +1573,7 @@ def build_html(
   </header>
   <main>
     {board_block}
+    {attention_block}
     {bearings_block}
     {reviewed_block}
     <h2 class="detail-heading">Details by home</h2>
@@ -1682,6 +1684,7 @@ class Bearings:
     generated: datetime = field(default_factory=lambda: datetime.now(timezone.utc))
     item_pages: dict[str, str] = field(default_factory=dict)
     linked_reports: set[Path] = field(default_factory=set)
+    attention: dict[str, object] | None = None
 
 
 HOLD_REASON_PREFIX = "fm-hold-v1:"
@@ -2464,6 +2467,428 @@ def bearings_html(
             for home, surface, reveal in bearings.omissions
         )
         out.append('<p class="source-note"><strong>Snapshot omissions</strong> — ' + omitted_notes + ".</p>")
+    return "".join(out)
+
+
+# --- Recent work and decision relevance ----------------------------------------
+# `quarterdeck attention` and the page's "Last 48 hours" section share one view, computed from two documented
+# Firstmate sources: state/fleet-ledger.jsonl (docs/fleet-ledger.md, record version 1), read directly, and the open
+# decisions from the home's own bin/fm-attention.sh --json (schema fm-attention.v1). A source in a shape this code
+# does not understand is an error the reader shows, never a guess and never an empty view.
+
+ATTENTION_SCHEMA = "quarterdeck-attention.v1"
+ATTENTION_SCRIPT = Path("bin") / "fm-attention.sh"
+ATTENTION_FEED_SCHEMA = "fm-attention.v1"
+ATTENTION_TIMEOUT_SECONDS = 15
+LEDGER_PATH = Path("state") / "fleet-ledger.jsonl"
+LEDGER_VERSION = 1
+RECENT_WINDOWS = (("last_12h", 0, 12), ("12h_to_24h", 12, 24), ("24h_to_48h", 24, 48))
+WINDOW_TITLES = {"last_12h": "Last 12 hours", "12h_to_24h": "12–24 hours ago", "24h_to_48h": "24–48 hours ago"}
+DEFAULT_RECENT_DAYS = 3
+RECENT_LIST_LIMIT = 6
+RELEVANT_REASONS = ("raised", "captain_activity", "recent_work")
+RELEVANCE_TEXT = {
+    "raised": "raised recently", "captain_activity": "you acted on it recently", "recent_work": "worked on recently",
+    "deferred": "deferred to a later date", "quiet": "quiet",
+}
+
+
+class AttentionSourceError(Exception):
+    def __init__(self, source: str, code: str, message: str) -> None:
+        super().__init__(message)
+        self.source = source
+        self.code = code
+        self.message = message
+
+    def as_dict(self) -> dict[str, str]:
+        return {"source": self.source, "code": self.code, "message": self.message}
+
+
+def iso_seconds(epoch: float) -> str:
+    return datetime.fromtimestamp(int(epoch), timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+
+def read_fleet_ledger(path: Path) -> list[dict[str, object]] | None:
+    """Return the ledger's distinct records, None when the home records no ledger, or raise AttentionSourceError."""
+    if not path.exists() and not path.is_symlink():
+        return None
+    if path.is_symlink() or not path.is_file():
+        raise AttentionSourceError("ledger", "ledger_unreadable", f"{path} is not a regular file")
+    try:
+        text = path.read_bytes().decode("utf-8")
+    except OSError as exc:
+        raise AttentionSourceError("ledger", "ledger_unreadable", f"cannot read {path}: {exc.strerror or exc}") from exc
+    except UnicodeDecodeError as exc:
+        raise AttentionSourceError("ledger", "ledger_malformed", f"{path} is not UTF-8 text") from exc
+    lines = text.split("\n")
+    records: list[dict[str, object]] = []
+    seen: set[str] = set()
+    for number, line in enumerate(lines, 1):
+        if not line.strip():
+            continue
+        try:
+            record = json.loads(line)
+        except json.JSONDecodeError as exc:
+            if number == len(lines):
+                continue  # an unterminated final line is an append still being written
+            raise AttentionSourceError("ledger", "ledger_malformed", f"{path} line {number} is not JSON") from exc
+        if not isinstance(record, dict):
+            raise AttentionSourceError("ledger", "ledger_malformed", f"{path} line {number} is not a JSON object")
+        version = record.get("v")
+        if type(version) is not int or version != LEDGER_VERSION:
+            raise AttentionSourceError(
+                "ledger", "ledger_version",
+                f"{path} line {number} has record version {json.dumps(version)}; "
+                f"Quarterdeck understands only version {LEDGER_VERSION}",
+            )
+        ts = record.get("ts")
+        if type(ts) not in (int, float) or not isinstance(record.get("event"), str) or not isinstance(record.get("task"), str):
+            raise AttentionSourceError(
+                "ledger", "ledger_malformed", f"{path} line {number} lacks a numeric ts, an event or a task"
+            )
+        identity = json.dumps(record, sort_keys=True)
+        if identity not in seen:  # the ledger may repeat a record after an interrupted capture
+            seen.add(identity)
+            records.append(record)
+    return records
+
+
+def run_attention_feed(
+    home: Path, data_dir: Path | None = None, timeout: float = ATTENTION_TIMEOUT_SECONDS
+) -> dict[str, object]:
+    """Run the home's own fm-attention.sh --json and check its fm-attention.v1 open decisions, or raise."""
+    script = home / ATTENTION_SCRIPT
+    if not script.is_file() or not os.access(script, os.X_OK):
+        raise AttentionSourceError("decisions", "feed_missing", f"no executable {ATTENTION_SCRIPT} in this home")
+    selected_data_dir = (data_dir or home / "data").expanduser().resolve()
+    env = dict(os.environ, FM_HOME=str(home), FM_DATA_OVERRIDE=str(selected_data_dir))
+    try:
+        process = subprocess.Popen(
+            [str(script), "--json"], cwd=home, env=env, stdin=subprocess.DEVNULL,
+            stdout=subprocess.PIPE, stderr=subprocess.PIPE, start_new_session=True,
+        )
+    except OSError as exc:
+        raise AttentionSourceError("decisions", "feed_failed", f"could not start {ATTENTION_SCRIPT}: {exc}") from exc
+    try:
+        stdout, _stderr = process.communicate(timeout=timeout)
+    except subprocess.TimeoutExpired as exc:
+        try:
+            os.killpg(process.pid, 9)
+        except OSError:
+            process.kill()
+        process.communicate()
+        raise AttentionSourceError(
+            "decisions", "feed_failed", f"{ATTENTION_SCRIPT} timed out after {timeout:g} seconds"
+        ) from exc
+    if process.returncode != 0:
+        raise AttentionSourceError("decisions", "feed_failed", f"{ATTENTION_SCRIPT} exited with status {process.returncode}")
+    try:
+        data = json.loads(stdout.decode("utf-8"))
+    except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+        raise AttentionSourceError("decisions", "feed_malformed", f"{ATTENTION_SCRIPT} did not print JSON") from exc
+    return check_attention_feed(data)
+
+
+def check_attention_feed(data: object) -> dict[str, object]:
+    if not isinstance(data, dict) or data.get("schema") != ATTENTION_FEED_SCHEMA:
+        schema = data.get("schema") if isinstance(data, dict) else None
+        raise AttentionSourceError(
+            "decisions", "feed_schema",
+            f"{ATTENTION_SCRIPT} printed schema {json.dumps(schema)}; Quarterdeck understands only {ATTENTION_FEED_SCHEMA}",
+        )
+    rows = data.get("open_decisions")
+    if not isinstance(rows, list):
+        raise AttentionSourceError("decisions", "feed_malformed", "the feed's open_decisions is not an array")
+    for index, row in enumerate(rows, 1):
+        if not isinstance(row, dict):
+            raise AttentionSourceError("decisions", "feed_malformed", f"open decision {index} is not an object")
+        for name in ("task", "kind", "title"):
+            if not isinstance(row.get(name), str) or not row[name].strip():
+                raise AttentionSourceError("decisions", "feed_malformed", f"open decision {index} has no {name}")
+        for name in ("bucket", "opened_at", "last_touched_at"):
+            if row.get(name) is not None and not isinstance(row[name], str):
+                raise AttentionSourceError("decisions", "feed_malformed", f"open decision {index} has an invalid {name}")
+    return data
+
+
+def feed_epoch(value: object) -> float | None:
+    if not isinstance(value, str):
+        return None
+    try:
+        parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    return (parsed if parsed.tzinfo else parsed.replace(tzinfo=timezone.utc)).timestamp()
+
+
+def plain_title(value: str) -> str:
+    """A backlog title without the links Firstmate appends to it."""
+    return re.sub(r"\s+", " ", re.sub(r"https?://\S+", " ", value)).strip(" -·")
+
+
+def recent_work(records: list[dict[str, object]] | None, snapshot: HomeSnapshot, feed_titles: dict[str, str],
+                now: datetime) -> dict[str, object]:
+    records = records or []
+    items: dict[str, BacklogItem] = {}
+    if snapshot.backlog_markdown is not None:
+        items = {item.id: item for item in backlog_items(snapshot.backlog_markdown, snapshot)}
+    ordered = sorted(records, key=lambda record: record["ts"])  # type: ignore[arg-type, return-value]
+    projects: dict[str, str] = {}
+    prs: dict[str, str] = {}
+    for record in ordered:
+        task = str(record["task"])
+        if record["event"] == "task.dispatched" and isinstance(record.get("project"), str):
+            projects[task] = str(record["project"])
+        if record["event"] in {"task.pr_ready", "task.merged"} and isinstance(record.get("pr"), str):
+            prs[task] = str(record["pr"])
+
+    def describe(record: dict[str, object]) -> dict[str, object]:
+        task = str(record["task"])
+        item = items.get(task)
+        pr = record.get("pr") if isinstance(record.get("pr"), str) else prs.get(task) or (item.pr_url if item else "")
+        return {
+            "at": iso_seconds(record["ts"]),  # type: ignore[arg-type]
+            "task": task,
+            "title": plain_title((item.title if item else "") or feed_titles.get(task) or "") or task,
+            "project": projects.get(task) or (item.project if item else "") or None,
+            "pr": pr or None,
+        }
+
+    starts = min((float(record["ts"]) for record in records), default=None)  # type: ignore[arg-type]
+    end = now.timestamp()
+    windows = []
+    for name, near, far in RECENT_WINDOWS:
+        start, stop = end - far * 3600, end - near * 3600
+        inside = [r for r in reversed(ordered) if float(r["ts"]) >= start and (near == 0 or float(r["ts"]) < stop)]  # type: ignore[arg-type]
+        merged = [describe(r) | {"via": r.get("via") if isinstance(r.get("via"), str) else None}
+                  for r in inside if r["event"] == "task.merged"]
+        started = [describe(r) | {"kind": r.get("kind") if isinstance(r.get("kind"), str) else None}
+                   for r in inside if r["event"] == "task.dispatched"]
+        answered = sum(1 for r in inside if r["event"] == "captain.answered" and r.get("mode") in {"done", "release"})
+        coverage = "none" if starts is None or starts >= stop else "partial" if starts > start else "full"
+        windows.append({
+            "window": name, "from": iso_seconds(start), "to": iso_seconds(stop), "coverage": coverage,
+            "merged_count": len(merged), "started_count": len(started), "answered_count": answered,
+            "merged": merged, "started": started,
+        })
+    return {"ledger_starts_at": iso_seconds(starts) if starts is not None else None, "windows": windows}
+
+
+def decision_relevance(row: dict[str, object], records: list[dict[str, object]], since: float) -> str:
+    if row.get("bucket") == "dated":
+        return "deferred"
+    opened = feed_epoch(row.get("opened_at"))
+    if opened is not None and opened >= since:
+        return "raised"
+    task_records = [r for r in records if r["task"] == row["task"] and float(r["ts"]) >= since]  # type: ignore[arg-type]
+    if any(str(r["event"]).startswith("captain.") for r in task_records):
+        return "captain_activity"
+    if task_records:
+        return "recent_work"
+    return "quiet"
+
+
+def home_attention(
+    snapshot: HomeSnapshot, now: datetime, recent_days: int = DEFAULT_RECENT_DAYS, all_decisions: bool = False,
+    use_feed: bool = True, feed_runner: Callable[[Path, Path | None], dict[str, object]] = run_attention_feed,
+) -> dict[str, object]:
+    spec = snapshot.spec
+    since = now.timestamp() - recent_days * 86400
+    errors: list[dict[str, str]] = []
+    view: dict[str, object] = {
+        "label": spec.label, "home": str(spec.home) if spec.home else None, "ok": True, "errors": errors,
+        "ledger": None, "recent_work": None,
+        "decision_relevance": {"recent_days": recent_days, "since": iso_seconds(since)}, "decisions": None,
+    }
+    if spec.home is None or spec.remote_host:
+        errors.append({"source": "home", "code": "home_not_local",
+                       "message": snapshot.error or "this home has no local path Quarterdeck can read"})
+        view["ok"] = False
+        return view
+    if snapshot.error:
+        errors.append({"source": "backlog", "code": "backlog_unreadable", "message": snapshot.error})
+    records: list[dict[str, object]] | None = None
+    ledger_ok = True
+    try:
+        records = read_fleet_ledger(spec.home / LEDGER_PATH)
+    except AttentionSourceError as exc:
+        errors.append(exc.as_dict())
+        ledger_ok = False
+    feed: dict[str, object] | None = None
+    if use_feed:
+        try:
+            feed = feed_runner(spec.home, snapshot.data_dir)
+        except AttentionSourceError as exc:
+            errors.append(exc.as_dict())
+    feed_rows = [row for row in (feed or {}).get("open_decisions", []) if isinstance(row, dict)]  # type: ignore[union-attr]
+    feed_titles = {str(row["task"]): str(row["title"]) for row in feed_rows}
+    for row in (feed or {}).get("in_flight", []) or []:  # type: ignore[union-attr]
+        if isinstance(row, dict) and isinstance(row.get("task"), str) and isinstance(row.get("title"), str):
+            feed_titles.setdefault(row["task"], row["title"])
+    if ledger_ok:
+        view["ledger"] = {
+            "path": str(LEDGER_PATH), "present": records is not None, "version": LEDGER_VERSION,
+            "records": len(records or []),
+        }
+        view["recent_work"] = recent_work(records, snapshot, feed_titles, now)
+    if feed is not None:
+        relevant: list[dict[str, object]] = []
+        background: list[dict[str, object]] = []
+        for row in feed_rows:
+            why = decision_relevance(row, records or [], since)
+            (relevant if why in RELEVANT_REASONS else background).append(dict(row, relevance=why))
+        view["decisions"] = {
+            "source": ATTENTION_FEED_SCHEMA, "relevant": relevant, "background_count": len(background),
+            "background": background if all_decisions else None,
+        }
+    elif not use_feed:
+        view["decisions"] = {"source": None, "skipped": "the Firstmate scripts were skipped with --no-snapshot"}
+    view["ok"] = not errors
+    return view
+
+
+def attention_view(
+    homes: list[HomeSnapshot], now: datetime | None = None, recent_days: int = DEFAULT_RECENT_DAYS,
+    all_decisions: bool = False, use_feed: bool = True,
+    feed_runner: Callable[[Path, Path | None], dict[str, object]] = run_attention_feed,
+) -> dict[str, object]:
+    now = now or datetime.now(timezone.utc)
+    views = [home_attention(snapshot, now, recent_days, all_decisions, use_feed, feed_runner) for snapshot in homes]
+    return {
+        "schema": ATTENTION_SCHEMA, "generated": iso_seconds(now.timestamp()),
+        "ok": all(view["ok"] for view in views), "homes": views,
+    }
+
+
+def attention_check_line(view: dict[str, object]) -> str:
+    parts = []
+    for home in view["homes"]:  # type: ignore[union-attr]
+        assert isinstance(home, dict)
+        if home["errors"]:
+            parts.append(f"{home['label']}: " + "; ".join(f"{e['source']}: {e['message']}" for e in home["errors"]))
+            continue
+        ledger, work, decisions = home["ledger"], home["recent_work"], home["decisions"]
+        if ledger["present"]:
+            ledger_text = f"ledger v{LEDGER_VERSION}, {ledger['records']} records from {work['ledger_starts_at'] or 'none'}"
+        else:
+            ledger_text = f"no {LEDGER_PATH} (recording off; recent work not covered)"
+        open_count = len(decisions["relevant"]) + decisions["background_count"]
+        parts.append(f"{home['label']}: {ledger_text}; {ATTENTION_FEED_SCHEMA}, {open_count} open decisions")
+    return f"quarterdeck attention check: {'ok' if view['ok'] else 'FAILED'} — " + "; ".join(parts)
+
+
+def attention(args: argparse.Namespace) -> int:
+    if not args.json and not args.check:
+        print("quarterdeck: attention needs --json or --check", file=sys.stderr)
+        return 2
+    if args.recent_days < 1:
+        print("quarterdeck: --recent-days must be at least 1", file=sys.stderr)
+        return 2
+    try:
+        if args.config is None:
+            default_path = default_config_path()
+            args.config = default_path if default_path.is_file() else None
+        specs, _legacy = resolve_home_specs(args, load_config(args.config))
+    except (OSError, ValueError) as exc:
+        print(f"quarterdeck: {exc}", file=sys.stderr)
+        return 2
+    homes = [load_home_snapshot(spec) for spec in specs]
+    view = attention_view(homes, recent_days=args.recent_days, all_decisions=args.all_decisions)
+    if args.check:
+        print(attention_check_line(view))
+    else:
+        print(json.dumps(view, indent=2))
+    return 0 if view["ok"] else 1
+
+
+def attention_item_html(item: dict[str, object], now: datetime) -> str:
+    pr = item.get("pr")
+    link = (f' · <a href="{html.escape(str(pr), quote=True)}">PR</a>'
+            if isinstance(pr, str) and pr.startswith("https://") else "")
+    at = parse_when(str(item["at"]))
+    project = f'{html.escape(str(item["project"]))} · ' if item.get("project") else ""
+    return (f'<li>{html.escape(str(item["title"]))} <span class="path">{project}'
+            f'{elapsed_text(at, now) + " ago" if at else ""}</span>{link}</li>')
+
+
+def attention_decision_html(row: dict[str, object], now: datetime) -> str:
+    touched = parse_when(str(row.get("last_touched_at") or ""))
+    when = f" · touched {elapsed_text(touched, now)} ago" if touched else ""
+    why = RELEVANCE_TEXT.get(str(row.get("relevance")), str(row.get("relevance")))
+    return (f'<li>{html.escape(str(row["title"]))} <span class="path">{html.escape(why)}{when}'
+            f' · <code>{html.escape(str(row["task"]))}</code></span></li>')
+
+
+def attention_html(view: dict[str, object] | None) -> str:
+    if view is None:
+        return ""
+    now = parse_when(str(view["generated"])) or datetime.now(timezone.utc)
+    homes = [home for home in view["homes"] if isinstance(home, dict)]  # type: ignore[union-attr]
+    out = ['<section class="dashboard-section recent-work" id="recent-work" aria-label="Last 48 hours">'
+           '<div class="section-head"><div><h2>Last 48 hours</h2>'
+           "<p>What merged and started, and the decisions still in play, from Firstmate's fleet ledger and "
+           "attention feed. Older and deferred decisions stay out of the way until you open them.</p></div></div>"]
+    for index, home in enumerate(homes):
+        label = f"{home['label']}: " if len(homes) > 1 else ""
+        for error in home["errors"]:
+            out.append(
+                f'<div class="warning"><p><strong>{html.escape(label)}{html.escape(str(error["source"]))} '
+                f'unavailable</strong> — {html.escape(str(error["message"]))}. Run <code>quarterdeck attention '
+                f'--check</code> and report this line.</p></div>'
+            )
+        work = home.get("recent_work")
+        if isinstance(work, dict):
+            starts = work.get("ledger_starts_at")
+            starts_moment = parse_when(str(starts or ""))
+            starts_text = starts_moment.strftime("%Y-%m-%d %H:%M UTC") if starts_moment else ""
+            cards = []
+            for window in work["windows"]:
+                coverage = window["coverage"]
+                note = ""
+                if coverage != "full":
+                    note = (f'<p class="stale">Not fully covered: the ledger starts {html.escape(starts_text)}.</p>'
+                            if starts else '<p class="stale">Not covered: this home has no fleet ledger records.</p>')
+                answered = window["answered_count"]
+                counts = (f'{window["merged_count"]} merged · {window["started_count"]} started · '
+                          f'{answered} decision{"s" if answered != 1 else ""} answered')
+                lists = ""
+                for heading, key in (("Merged", "merged"), ("Started", "started")):
+                    shown = [attention_item_html(item, now) for item in window[key]]
+                    if not shown:
+                        continue
+                    more = shown[RECENT_LIST_LIMIT:]
+                    lists += f'<p><strong>{heading}</strong></p><ul>{"".join(shown[:RECENT_LIST_LIMIT])}</ul>'
+                    if more:
+                        lists += (f'<details class="board-more" data-refresh-key="recent:{index}:{window["window"]}:{key}">'
+                                  f'<summary>+{len(more)} more</summary><ul>{"".join(more)}</ul></details>')
+                cards.append(
+                    f'<article class="card" data-window="{html.escape(window["window"], quote=True)}">'
+                    f'<p class="eyebrow">{html.escape(label)}{html.escape(WINDOW_TITLES[window["window"]])}</p>'
+                    f'<h3>{html.escape(counts)}</h3>{note}{lists}</article>'
+                )
+            out.append(f'<div class="cards">{"".join(cards)}</div>')
+        decisions = home.get("decisions")
+        if isinstance(decisions, dict) and decisions.get("skipped"):
+            out.append(f'<p class="source-note">{html.escape(label)}Decisions not read: '
+                       f'{html.escape(str(decisions["skipped"]))}.</p>')
+        elif isinstance(decisions, dict):
+            days = home["decision_relevance"]["recent_days"]  # type: ignore[index]
+            relevant = "".join(attention_decision_html(row, now) for row in decisions["relevant"])
+            out.append(f'<h3>{html.escape(label)}Decisions in play</h3>'
+                       + (f"<ul>{relevant}</ul>" if relevant else
+                          f'<p class="empty">No open decision was raised, acted on or worked on in the last {days} days.</p>'))
+            count = decisions["background_count"]
+            if count:
+                rows = decisions.get("background")
+                listed = ("<ul>" + "".join(attention_decision_html(row, now) for row in rows) + "</ul>"
+                          if isinstance(rows, list) else
+                          '<p class="path">List them with: quarterdeck attention --json --all-decisions</p>')
+                out.append(
+                    f'<details class="board-more" id="recent-background-{index}" data-refresh-key="recent-background:{index}">'
+                    f'<summary>{count} background decision{"s" if count != 1 else ""} '
+                    f'(deferred, or quiet for {days} days)</summary>{listed}</details>'
+                )
+    out.append("</section>")
     return "".join(out)
 
 
@@ -4318,6 +4743,7 @@ COMMAND_DOCS = {
     "add": ["how-to/configure-multiple-homes.md", "reference/cli-and-config.md"],
     "list": ["how-to/configure-multiple-homes.md", "reference/cli-and-config.md"],
     "remove": ["how-to/configure-multiple-homes.md", "reference/cli-and-config.md"],
+    "attention": ["how-to/see-recent-work.md", "reference/attention-json.md", "explanation/privacy-and-architecture.md"],
     "board": ["how-to/keep-the-board-current.md", "reference/captain-board.md", "explanation/privacy-and-architecture.md"],
     "install": ["how-to/install.md", "how-to/update.md", "how-to/uninstall.md"],
     "update": ["how-to/update.md", "reference/cli-and-config.md"],
@@ -5222,7 +5648,9 @@ def load_site(args: argparse.Namespace) -> tuple[dict[str, object], list[HomeSna
         raise ValueError(load_error)
     state_path = validate_review_state_location(homes)
     apply_review_marks(homes, load_review_state(state_path))
-    bearings = build_bearings(homes, use_snapshot=not getattr(args, "no_snapshot", False))
+    use_snapshot = not getattr(args, "no_snapshot", False)
+    bearings = build_bearings(homes, use_snapshot=use_snapshot)
+    bearings.attention = attention_view(homes, bearings.generated, all_decisions=True, use_feed=use_snapshot)
     return config, homes, bearings
 
 
@@ -5435,6 +5863,24 @@ def make_parser() -> argparse.ArgumentParser:
     calls_relate_parser.add_argument("--remove", action="store_true", help="remove the relation instead")
     report_target(calls_relate_parser)
     calls_relate_parser.set_defaults(handler=calls_relate)
+
+    attention_parser = subparsers.add_parser(
+        "attention", help="print recent work and the decisions still in play",
+        description=(
+            "Print the last 12, 12-24 and 24-48 hours of work from the home's fleet ledger, and the open decisions "
+            "split into relevant and background, as JSON (schema quarterdeck-attention.v1). Read-only. Exits 1 with "
+            "a structured error when a Firstmate source is missing or in a version Quarterdeck does not understand."
+        ),
+    )
+    command_parsers["attention"] = attention_parser
+    attention_parser.add_argument("--json", action="store_true", help="print the view as JSON")
+    attention_parser.add_argument("--check", action="store_true", help="validate the Firstmate sources and print a one-line summary")
+    attention_parser.add_argument("--all-decisions", action="store_true", help="also list the background decisions, not just their count")
+    attention_parser.add_argument("--recent-days", type=int, default=DEFAULT_RECENT_DAYS, metavar="N",
+                                  help=f"a decision is relevant when raised, acted on or worked on in the last N days (default {DEFAULT_RECENT_DAYS})")
+    attention_parser.add_argument("--home", help="use this Firstmate home instead of configured homes or FM_HOME")
+    attention_parser.add_argument("--config", type=Path, help="optional JSON config file")
+    attention_parser.set_defaults(handler=attention)
 
     export_parser = subparsers.add_parser(
         "export", help="write the data snapshot for the cloud artifact",
