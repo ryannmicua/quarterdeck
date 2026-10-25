@@ -62,8 +62,8 @@ unknown keys are ignored by the page and kept by `quarterdeck board`.
 
 ## What the page does with it
 
-When the shared attention view supplies relevance, the desk shows decisions
-raised, acted on or worked on within its shared three-day window. It uses
+When the shared attention view supplies relevance, decisions follow the
+[attention relevance contract](attention-json.md#decisions). The desk uses
 recorded activity times and activity-based labels rather than inferring
 conversation groups from worker events. Concrete dated hold notes stop
 deferring the call when due; independent task dependencies still apply.
@@ -82,7 +82,8 @@ touched   = newest of: touched_at,
                        the backlog item's "Captain hold set: <ISO time>"
 deferred  = the backlog item has (hold-until: <date>) in the future,
             or a blocked-by / waiting-on / waiting-for field names another task in the same backlog,
-            or its hold explicitly says "deferred until ...", "hold off ... until ...", or "waits until ...",
+            or its hold explicitly says "deferred until ...", "hold off ... until ...", or "waits until ..."
+               with a future date or an unparseable deadline (concrete dates stop deferring when due),
             or "waits/waiting on|for <token>" or "after <token>" in its hold names
                a different task in the same home's backlog (trailing punctuation stripped,
                task ids compared exactly; unknown tokens and self-references are not dependencies)

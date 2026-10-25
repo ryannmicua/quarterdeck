@@ -104,3 +104,12 @@ uses an absent parent ledger and an hour-old child worker event. It checks
 fallback, routed, home-qualified and keyed feed representations against the
 same relevance, event timestamp, page visibility and exported desk band;
 a same-named parent task must remain background.
+
+Manual CLI/browser check (2026-10-25): shift the attention fixtures' timestamps
+relative to the current time before running `serve`; the CLI has no clock override.
+Config home entries use `path`, not `home`. For gate runs that permit evidence
+storage, put disposable `XDG_STATE_HOME` there: review state inside the checkout
+is deliberately rejected. At `/`, scroll to `#recent-work`, expand
+`#recent-background-0`, and verify quiet calls appear while dated calls remain
+absent. Capture desktop/mobile screenshots and the incompatible-ledger warning.
+Stop the disposable server and remove fictional homes and private state afterward.

@@ -42,8 +42,9 @@ Each backlog record can appear in one attention section:
    captain or an external party.
 
 When more than one condition matches, a record appears once, in the first
-matching section above. Secondmate homes use the same rules and counts as their
-parent.
+matching section above. Classified decisions also follow the shared
+[decision relevance rules](../reference/attention-json.md#decisions). Secondmate
+homes use the same rules and counts as their parent.
 
 ## What does not appear by default
 
@@ -54,9 +55,10 @@ while its item is held for the captain or marked review-ready. Independently,
 any unreviewed report appears in the reports section. A quiet line may give
 counts for queued and finished or closed backlog records.
 
-Use `quarterdeck render --all` to restore an exhaustive view with every
-backlog record and report, including reports that have already been reviewed.
-Each report appears once with its review state.
+Use `quarterdeck render --all` to include other backlog records and every
+report, including reports that have already been reviewed. Decision relevance
+still applies: background decisions remain collapsed and deferred decisions
+remain hidden. Each report appears once with its review state.
 
 ## Counts
 

@@ -25,8 +25,10 @@ quarterdeck reports undiscard maple-harbor/amber-18
 
 ## Relevance: current or stale
 
-Reports and past captain calls also carry a relevance. Anything unclassified is
-**current**, so nothing disappears until someone says it should. **Stale**
+Reports and past captain calls also carry a relevance mark. Anything
+unclassified is **current**. Calls additionally follow the shared
+[decision relevance rules](../reference/attention-json.md#decisions), so a
+current mark does not by itself put a quiet or deferred call on the desk. **Stale**
 means a one-off or already decided. Stale reports are left off the review list
 and shown in a collapsed "Stale reports" section; stale calls leave the desk,
 this week and parked bands and show in a collapsed "Marked stale" section.
@@ -49,7 +51,7 @@ discard is your decision to stop reading it.
 ## Related to this session
 
 Below the desk (never on it) a collapsed "Related to this session" section
-lists older reports and deferred or held calls that connect to what the active
+lists older reports and captain calls that connect to what the active
 session is working on, most related first, then newest. The session is the
 desk's items plus in-flight backlog work. An item is related through:
 

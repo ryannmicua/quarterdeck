@@ -54,7 +54,9 @@ are ignored, as the contract requires.
 | `2` | Usage or configuration error, such as no home selected or neither `--json` nor `--check`. |
 
 A home with no ledger file is not an error: recording is off, every window's
-`coverage` is `none`, and only freshly raised decisions can be relevant.
+`coverage` is `none`. Decisions still use the recorded activity described
+[below](#decisions), including feed touches, board engagement and local
+secondmate ledgers.
 
 ## Object
 
@@ -77,7 +79,7 @@ members without changing the schema name.
 | `ledger` | `{path, present, version, records}`, or `null` when the ledger could not be read. `records` counts distinct records. |
 | `recent_work` | See below, or `null` when the ledger could not be read. |
 | `decision_relevance` | `{recent_days, since}`: the relevance window. |
-| `decisions` | See below, or `null` when the feed could not be read. |
+| `decisions` | See below, or `null` when no feed was read and no backlog candidates were found (except with `--no-snapshot`). Source failures remain in `errors` even if backlog decisions are available. |
 
 Error `source` is `home`, `backlog`, `ledger`, or `decisions`. Error `code` is
 one of `home_not_local`, `backlog_unreadable`, `ledger_unreadable`,
@@ -140,9 +142,11 @@ and, within the last 3 days (`DEFAULT_RECENT_DAYS` in `quarterdeck.py`):
 | `recent_work` | The ledger has any other record for its task in the window. |
 | `quiet` | None of the above. Background. |
 
-`activity_at` is the newest recorded timestamp supporting relevance, or
-`null` when no recent activity qualifies. Worker events retain their actual
-times and do not imply that the captain discussed the decision.
+`activity_at` is the newest recorded timestamp in the relevance window, or
+`null` when no recent activity qualifies or the decision is deferred. A stale
+mark can send a row to the background while retaining its activity timestamp.
+Worker events retain their actual times and do not imply that the captain
+discussed the decision.
 
 `relevant` lists the `raised`, `captain_activity`, and `recent_work` rows.
 `background_count` counts the rest. `background` is `null` unless

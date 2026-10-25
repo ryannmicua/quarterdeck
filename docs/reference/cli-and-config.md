@@ -85,7 +85,8 @@ open decisions split into relevant and background (schema
 `quarterdeck-attention.v1`); `--all-decisions` lists the background ones. The shared relevance window is 3 days. `attention --check`
 validates the Firstmate sources and prints one line. Both exit 1 with a
 structured error when a source is missing or in a version Quarterdeck does not
-understand. See the [attention JSON reference](attention-json.md).
+understand (a missing ledger is recording off, not an error). See the
+[attention JSON reference](attention-json.md) for source errors and output formats.
 
 `reports list`, `reports read`, `reports mark-reviewed`, and
 `reports unmark-reviewed` use the selected homes in the config, or the single
@@ -122,10 +123,9 @@ for how marks affect the dashboard.
 | `--output PATH` | Output HTML path; overrides `output_dir` in config. Keep it outside the repo and selected homes; those locations are refused. |
 | `--config FILE` | JSON config for this command; defaults to the private user config where documented above. It may supply homes, title, and output directory. |
 | `--title TEXT` | Page title; overrides `page_title` in config. |
-| `--all` | Show every backlog item and report, including queued, finished, closed, and unlinked historical records. |
+| `--all` | Include other backlog records and all reports; [decision relevance](attention-json.md#decisions) still applies. |
 | `--lavish` | Write a separate `*.lavish.html` review page with stable IDs on review cards, then open it with `lavish-axi` when available. Without Lavish, print a command hint and succeed. |
-
-| `--no-snapshot` | Do not run a home's `bin/fm-bearings-snapshot.sh` or `bin/fm-attention.sh`; classify from the backlog only, and show recent work without decisions. |
+| `--no-snapshot` | Do not run a home's `bin/fm-bearings-snapshot.sh` or `bin/fm-attention.sh`; use backlog decisions with recorded board and ledger activity, and show recent work from the ledger. |
 
 `serve` re-renders the page and its readable pages at startup and on the first
 request after its 30-second cache expires. It serves them with `GET` by default
@@ -174,7 +174,8 @@ snapshots carry `decision_window_days`; their calls retain the real activity
 time in `touched_at` and identify its classification with `activity_reason`.
 Artifact cards and details label worker-only activity as "worked on" and do
 not claim captain-message recency. Output paths must
-be outside the checkout and selected homes. `--bodies` picks which waiting
+be outside the checkout and selected homes. A failed attention view aborts
+export with status 2 before writing either output. `--bodies` picks which waiting
 reports carry their Markdown: `all` (default), `desk` (only reports linked to
 a desk or this-week call, or related to the session) or `none`. `import` applies the artifact's
 recorded mark and discard actions from a file (or `-` for standard input) to
