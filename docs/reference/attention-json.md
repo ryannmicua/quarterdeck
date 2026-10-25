@@ -7,7 +7,7 @@ object, so the page, `quarterdeck attention`, and any reader such as Cadence
 give the same answer.
 
 ```text
-quarterdeck attention --json [--all-decisions] [--home PATH] [--config FILE]
+quarterdeck attention --json [--all-decisions] [--project NAME] [--more] [--preferences FILE] [--home PATH] [--config FILE]
 quarterdeck attention --check [--home PATH] [--config FILE]
 ```
 
@@ -65,6 +65,8 @@ secondmate ledgers.
 | `schema` | `quarterdeck-attention.v1` |
 | `generated` | UTC time of the read, ISO 8601, second precision. Windows and relevance are measured back from it. |
 | `ok` | `true` when no home reported an error. |
+| `priority_projects` | The saved priority projects (up to three), in priority order. |
+| `requested_project` | The `--project` name, else `null`. |
 | `homes` | One entry per selected home, in selection order. |
 
 Readers must ignore members they do not recognize; later versions may add
@@ -79,6 +81,10 @@ members without changing the schema name.
 | `ledger` | `{path, present, version, records}`, or `null` when the ledger could not be read. `records` counts distinct records. |
 | `recent_work` | See below, or `null` when the ledger could not be read. |
 | `decision_relevance` | `{recent_days, since}`: the relevance window. |
+| `recent_work_6h` | Merged and started items of the last six hours, newest first; each is a recent-work item plus `event` (`merged` or `started`). `[]` when none or the ledger could not be read. |
+| `show_recent` | `true` only when `recent_work_6h` is not empty. Readers skip recent work otherwise. |
+| `waiting`, `waiting_scope`, `more_count` | See [Waiting](#waiting-and-priorities). |
+| `priorities` | See [Waiting](#waiting-and-priorities). |
 | `decisions` | See below, or `null` when no feed was read and no backlog candidates were found (except with `--no-snapshot`). Source failures remain in `errors` even if backlog decisions are available. |
 
 Error `source` is `home`, `backlog`, `ledger`, or `decisions`. Error `code` is
@@ -155,6 +161,32 @@ discussed the decision.
 Firstmate does not record the captain's chat messages, so only mentioning a
 call does not make it relevant; holding, deferring, or answering it does, and
 so does work on its task.
+
+### Waiting and priorities
+
+`waiting` has three lists, in the order to say them: `decisions` (open decisions
+still in play), `needs_you` (the rest of what needs the captain, from the
+desk: merge, approve, decide, forward and unsorted board and backlog items not
+already a decision), and `informational` (board `read` items). Each item has
+`kind`, `key`, `title`, `ask`, `group`, `project`, `at` and `priority` (index
+into the priority projects, or `null`).
+
+With priority projects set, items for them come first in priority order. When
+any exist, `waiting_scope` is `priority`, only those items are listed, and
+`more_count` counts the held-back items; `--more` lists everything and sets
+`waiting_scope` to `all`. When none exist for the priorities, or none are set,
+everything is listed (`waiting_scope` `all`, `more_count` `0`).
+
+`priorities` has one entry per priority project (or the single `--project`
+name): `project`, `nothing_waiting`, `waiting` (all matching items across the
+three lists, unaffected by scope) and `say`, a short sentence such as
+"harbor-app: nothing is waiting." Projects match case-insensitively on the
+recorded project name or the part after `owner/`.
+
+These members were added to schema `quarterdeck-attention.v1` without changing
+existing members. The preference file is
+`~/.config/quarterdeck/preferences.json`: `{"version": 1, "priority_projects": [...]}`;
+a file in another version, or with more than three names, exits 2.
 
 ## `--check`
 

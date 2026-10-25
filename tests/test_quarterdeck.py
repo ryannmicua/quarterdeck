@@ -5110,10 +5110,10 @@ class AttentionTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temp:
             page = quarterdeck.attention_html(self.view(self.make_home(Path(temp)), all_decisions=True))
             self.assertIn('id="recent-work"', page)
-            for title in ("Last 12 hours", "12–24 hours ago", "24–48 hours ago"):
-                self.assertIn(title, page)
-            self.assertIn("2 merged · 1 started · 1 decision answered", page)
-            self.assertIn("Not fully covered: the ledger starts 2026-07-01 06:00 UTC.", page)
+            self.assertIn("Last 6 hours", page)
+            self.assertNotIn("Last 48 hours", page)
+            self.assertIn("Merged · Fix the pier lights", page)
+            self.assertIn("Started · Buoy light refit", page)
             self.assertIn('<a href="https://forge.example.test/acme/harbor-app/pulls/7">PR</a>', page)
             relevant, background = page.split('id="recent-background-0"')
             self.assertIn("Pick the new harbor map vendor", relevant)
@@ -5138,9 +5138,87 @@ class AttentionTests(unittest.TestCase):
             )
             self.assertEqual(result.returncode, 0, result.stderr)
             page = output.read_text(encoding="utf-8")
-            self.assertIn('id="recent-work"', page)
+            self.assertIn('id="attention"', page)
             self.assertIn("Attention feed not read: the Firstmate scripts were skipped with --no-snapshot.", page)
-            self.assertNotIn('class="warning"', page.split('id="recent-work"')[1].split("</section>")[0])
+            self.assertNotIn('class="warning"', page.split('id="attention"')[1].split("</section>")[0])
+
+    def priority_home(self, root: Path) -> Path:
+        home = self.make_home(root)
+        for name in ("harbor-app", "reef-demo"):
+            (home / "projects" / name).mkdir(parents=True)
+        return home
+
+    def run_tool(self, root: Path, *args: str) -> subprocess.CompletedProcess[str]:
+        env = dict(os.environ, XDG_CONFIG_HOME=str(root / "config"), XDG_STATE_HOME=str(root / "state-home"))
+        return subprocess.run([sys.executable, str(ROOT / "quarterdeck.py"), *args], check=False, text=True,
+                              capture_output=True, env=env)
+
+    def test_recent_work_6h_is_newest_first_and_empty_when_older_than_six_hours(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            home = self.make_home(Path(temp))
+            entry = self.view(home)["homes"][0]
+            self.assertTrue(entry["show_recent"])
+            self.assertEqual([(i["event"], i["task"]) for i in entry["recent_work_6h"]],
+                             [("merged", "dock-notes"), ("started", "buoy-light"), ("merged", "pier-fix")])
+            snapshot = quarterdeck.load_home_snapshot(quarterdeck.HomeSpec("invented", home))
+            later = quarterdeck.attention_view([snapshot], ATTENTION_NOW + timedelta(hours=8))["homes"][0]
+            self.assertEqual((later["recent_work_6h"], later["show_recent"]), ([], False))
+            self.assertNotIn('id="recent-work"', quarterdeck.attention_html(
+                quarterdeck.attention_view([snapshot], ATTENTION_NOW + timedelta(hours=8))))
+
+    def test_waiting_puts_priority_projects_first_and_holds_back_the_rest(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            home = self.priority_home(Path(temp))
+            snapshot = quarterdeck.load_home_snapshot(quarterdeck.HomeSpec("invented", home))
+            plain = quarterdeck.attention_view([snapshot], ATTENTION_NOW)["homes"][0]
+            self.assertEqual((plain["waiting_scope"], plain["more_count"], plain["priorities"]), ("all", 0, []))
+            self.assertEqual(len(plain["waiting"]["decisions"]), 3)
+            view = quarterdeck.attention_view([snapshot], ATTENTION_NOW, priority_projects=["reef-demo", "harbor-app"])
+            entry = view["homes"][0]
+            self.assertEqual(view["priority_projects"], ["reef-demo", "harbor-app"])
+            self.assertEqual([i["title"] for i in entry["waiting"]["decisions"]], ["Kelp survey scope"])
+            self.assertEqual((entry["waiting_scope"], entry["more_count"]), ("priority", 2))
+            reef, harbor = entry["priorities"]
+            self.assertEqual((reef["project"], reef["nothing_waiting"]), ("reef-demo", False))
+            self.assertEqual(reef["say"], "reef-demo: 1 waiting. Kelp survey scope.")
+            self.assertEqual((harbor["nothing_waiting"], harbor["waiting"], harbor["say"]),
+                             (True, [], "harbor-app: nothing is waiting."))
+            more = quarterdeck.attention_view([snapshot], ATTENTION_NOW, priority_projects=["reef-demo"], show_more=True)
+            titles = [i["title"] for i in more["homes"][0]["waiting"]["decisions"]]
+            self.assertEqual(titles[0], "Kelp survey scope")
+            self.assertEqual((len(titles), more["homes"][0]["more_count"]), (3, 0))
+            quiet = quarterdeck.attention_view([snapshot], ATTENTION_NOW, priority_projects=["harbor-app"])["homes"][0]
+            self.assertEqual((quiet["waiting_scope"], len(quiet["waiting"]["decisions"])), ("all", 3),
+                             "nothing pending for the priorities shows the rest")
+            page = quarterdeck.attention_html(view)
+            self.assertIn("harbor-app</strong> <span class=\"path\">nothing is waiting", page)
+
+    def test_priorities_commands_validate_and_share_one_preference_file(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            home = self.priority_home(root)
+            prefs = root / "config" / "quarterdeck" / "preferences.json"
+            self.assertEqual(self.run_tool(root, "priorities", "show").stdout.strip(), "No priority projects are set.")
+            for bad in (["nope"], ["harbor-app", "reef-demo", "a", "b"]):
+                result = self.run_tool(root, "priorities", "set", *bad, "--home", str(home))
+                self.assertEqual(result.returncode, 2, result.stderr)
+            self.assertFalse(prefs.exists())
+            ok = self.run_tool(root, "priorities", "set", "Reef-Demo", "harbor-app", "--home", str(home))
+            self.assertEqual(ok.returncode, 0, ok.stderr)
+            self.assertEqual(json.loads(prefs.read_text()), {"version": 1, "priority_projects": ["reef-demo", "harbor-app"]})
+            self.assertEqual(self.run_tool(root, "priorities", "show").stdout.strip(), "Priority projects: reef-demo, harbor-app.")
+            data = json.loads(self.run_tool(root, "attention", "--json", "--home", str(home)).stdout)
+            self.assertEqual(data["priority_projects"], ["reef-demo", "harbor-app"])
+            self.assertEqual([e["project"] for e in data["homes"][0]["priorities"]], ["reef-demo", "harbor-app"])
+            one = json.loads(self.run_tool(root, "attention", "--json", "--project", "HARBOR-APP", "--home", str(home)).stdout)
+            self.assertEqual((one["requested_project"], [p["project"] for p in one["homes"][0]["priorities"]]),
+                             ("harbor-app", ["harbor-app"]))
+            self.assertEqual(self.run_tool(root, "attention", "--json", "--project", "nope", "--home", str(home)).returncode, 2)
+            self.assertEqual(self.run_tool(root, "priorities", "clear").returncode, 0)
+            self.assertEqual(json.loads(prefs.read_text())["priority_projects"], [])
+            prefs.write_text('{"version": 2}', encoding="utf-8")
+            self.assertEqual(self.run_tool(root, "attention", "--json", "--home", str(home)).returncode, 2)
+
 
 if __name__ == "__main__":
     unittest.main()

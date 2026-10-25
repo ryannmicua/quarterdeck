@@ -69,9 +69,10 @@ as a local artifact. Quarterdeck itself has no agent or build step.
 - Captain's Call cards include local hold context, options, and recommendations
   when available. Remote decisions show the snapshot summary and point to their
   secondmate home for the full background.
-- Last 48 hours: what merged and started in the last 12 hours, 12–24 hours
-  ago and 24–48 hours ago, from Firstmate's fleet ledger, and only the
-  decisions still in play. See the guide for background and deferred decisions.
+- Waiting on you: your priority projects first (set with
+  `quarterdeck priorities set`, up to three), the decisions still in play, and
+  the last six hours of merged and started work from Firstmate's fleet ledger,
+  shown only when there is some. See the guide for background and deferred decisions.
   `quarterdeck attention --json` prints the same view for other readers, and
   `quarterdeck attention --check` validates Firstmate's formats after an
   update. See [See recent work](docs/how-to/see-recent-work.md).

@@ -1,26 +1,28 @@
 # See recent work and the decisions still in play
 
-Quarterdeck answers "what have we worked on in the last 12, 24 and 48 hours?"
-and shows only the decisions still in play. Older and deferred decisions stay
+Quarterdeck answers "what have we worked on in the last six hours?" (shown only
+when there is some) and shows only the decisions still in play. Older and deferred decisions stay
 out of the way until you ask for them.
 
 ## On the page
 
-`render` and `serve` add a "Last 48 hours" section after the board. It has:
+`render` and `serve` add a "Waiting on you" section after the board. It has:
 
-- one card per window (last 12 hours, 12–24 hours ago, 24–48 hours ago) with
-  counts of merged work, started work and decisions you answered, then the
-  merged and started items, newest first, with their project and PR link;
+- "Priority projects": for each project you set (see below), its waiting items,
+  or "nothing is waiting";
 - "Decisions in play": open decisions raised, acted on by you, or worked on in
   the last 3 days;
-- a collapsed "background decisions" toggle with quiet decisions; dated decisions stay hidden until due.
+- a collapsed "background decisions" toggle with quiet decisions; dated decisions stay hidden until due;
+- "Last 6 hours": what merged and started in the last six hours, newest first,
+  with project and PR link. This part appears only when there is such work;
+  older work is skipped and only the waiting items show.
 
 The board, Captain's Call, Underway, Charted Next, home cards and header
 totals use the same relevance rule. Calls marked stale remain in the
 background. Local secondmate calls missing from the parent feed use their
 recorded backlog dates, board engagement and ledger activity.
 
-A window the ledger does not fully cover says so. When a Firstmate source is
+When a Firstmate source is
 missing or in a version Quarterdeck does not understand, the section shows a
 warning instead of an empty view.
 
@@ -58,3 +60,22 @@ It prints one line. `ok` means both sources are still in the versions
 Quarterdeck understands. `FAILED` names the source and the problem, and exits
 with status 1; report that line, and do not trust the page's recent-work
 section until Quarterdeck is updated.
+
+## Priority projects
+
+Name up to three important projects once; Quarterdeck and Cadence both read
+them from `~/.config/quarterdeck/preferences.json` (or under `XDG_CONFIG_HOME`).
+
+```sh
+quarterdeck priorities set harbor-app reef-demo
+quarterdeck priorities show
+quarterdeck priorities clear
+```
+
+`set` refuses more than three names and names that are not a directory under a
+selected home's `projects/`. With priorities set, `quarterdeck attention --json`
+lists the waiting items for those projects first, in priority order, and holds
+back the rest, reporting `more_count`; pass `--more` to include them. When
+nothing is waiting for the priority projects, the rest is shown. Each priority
+entry has a `say` sentence such as "harbor-app: nothing is waiting." Use
+`--project NAME` to ask about one project instead.

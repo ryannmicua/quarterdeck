@@ -69,7 +69,7 @@ child `*/report.md` files. It also reads the parent's optional
 `data/secondmates.md` registry and renders each registered local secondmate
 under that parent. It may run that home's
 `bin/fm-bearings-snapshot.sh --json` for the bearings view and
-`bin/fm-attention.sh --json` for the "Last 48 hours" section, unless
+`bin/fm-attention.sh --json` for the "Waiting on you" section, unless
 `--no-snapshot` is set, and it reads `state/fleet-ledger.jsonl` for that
 section. Quarterdeck itself makes no network calls and invokes no other
 Firstmate script directly, apart from `bin/fm-inbox.sh note` for reactions. The snapshot wrapper may read registered
@@ -80,7 +80,10 @@ the other homes still render. The page links to readable HTML copies of
 selected reports and backlogs, generated beside the main page, and HTTPS links
 for GitHub pull requests.
 
-`attention --json` prints the last 12, 12–24 and 24–48 hours of work and the
+`priorities show|set|clear` keeps up to three priority projects (each a directory
+under a selected home's `projects/`) in `~/.config/quarterdeck/preferences.json`
+(`--preferences FILE` overrides); `attention --json` reads it, and takes
+`--project NAME` and `--more`. `attention --json` prints the last 12, 12–24 and 24–48 hours of work and the
 open decisions split into relevant and background (schema
 `quarterdeck-attention.v1`); `--all-decisions` lists the background ones. The shared relevance window is 3 days. `attention --check`
 validates the Firstmate sources and prints one line. Both exit 1 with a

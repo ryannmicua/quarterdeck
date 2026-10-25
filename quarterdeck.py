@@ -2525,7 +2525,7 @@ def bearings_html(
 
 
 # --- Recent work and decision relevance ----------------------------------------
-# `quarterdeck attention` and the page's "Last 48 hours" section share one view, computed from two documented
+# `quarterdeck attention` and the page's "Waiting on you" section share one view, computed from two documented
 # Firstmate sources: state/fleet-ledger.jsonl (docs/fleet-ledger.md, record version 1), read directly, and the open
 # decisions from the home's own bin/fm-attention.sh --json (schema fm-attention.v1). A source in a shape this code
 # does not understand is an error the reader shows, never a guess and never an empty view.
@@ -2540,6 +2540,9 @@ RECENT_WINDOWS = (("last_12h", 0, 12), ("12h_to_24h", 12, 24), ("24h_to_48h", 24
 WINDOW_TITLES = {"last_12h": "Last 12 hours", "12h_to_24h": "12–24 hours ago", "24h_to_48h": "24–48 hours ago"}
 DEFAULT_RECENT_DAYS = 3
 RECENT_LIST_LIMIT = 6
+RECENT_HOURS = 6
+PRIORITY_LIMIT = 3
+PREFERENCES_VERSION = 1
 RELEVANT_REASONS = ("raised", "captain_activity", "recent_work")
 RELEVANCE_TEXT = {
     "raised": "raised recently", "captain_activity": "you acted on it recently", "recent_work": "worked on recently",
@@ -2725,7 +2728,14 @@ def recent_work(records: list[dict[str, object]] | None, snapshot: HomeSnapshot,
             "merged_count": len(merged), "started_count": len(started), "answered_count": answered,
             "merged": merged, "started": started,
         })
-    return {"ledger_starts_at": iso_seconds(starts) if starts is not None else None, "windows": windows}
+    latest = [r for r in reversed(ordered) if float(r["ts"]) >= end - RECENT_HOURS * 3600]  # type: ignore[arg-type]
+    last_6h = [
+        describe(r) | ({"event": "merged", "via": r.get("via") if isinstance(r.get("via"), str) else None}
+                       if r["event"] == "task.merged" else
+                       {"event": "started", "kind": r.get("kind") if isinstance(r.get("kind"), str) else None})
+        for r in latest if r["event"] in {"task.merged", "task.dispatched"}
+    ]
+    return {"ledger_starts_at": iso_seconds(starts) if starts is not None else None, "windows": windows, "last_6h": last_6h}
 
 
 def decision_key(snapshot: HomeSnapshot, row: dict[str, object]) -> str:
@@ -2759,14 +2769,14 @@ def decision_relevance(
 def home_attention(
     snapshot: HomeSnapshot, now: datetime, all_decisions: bool = False,
     use_feed: bool = True, feed_runner: Callable[[Path, Path | None], dict[str, object]] = run_attention_feed,
-    board_activity: dict[str, float] | None = None,
+    board_activity: dict[str, float] | None = None, projects_out: dict[str, str] | None = None,
 ) -> dict[str, object]:
     spec = snapshot.spec
     since = now.timestamp() - DEFAULT_RECENT_DAYS * 86400
     errors: list[dict[str, str]] = []
     view: dict[str, object] = {
         "label": spec.label, "home": str(spec.home) if spec.home else None, "ok": True, "errors": errors,
-        "ledger": None, "recent_work": None,
+        "ledger": None, "recent_work": None, "recent_work_6h": [], "show_recent": False,
         "decision_relevance": {"recent_days": DEFAULT_RECENT_DAYS, "since": iso_seconds(since)}, "decisions": None,
     }
     if spec.home is None or spec.remote_host:
@@ -2799,7 +2809,10 @@ def home_attention(
             "path": str(LEDGER_PATH), "present": records is not None, "version": LEDGER_VERSION,
             "records": len(records or []),
         }
-        view["recent_work"] = recent_work(records, snapshot, feed_titles, now)
+        work = recent_work(records, snapshot, feed_titles, now)
+        view["recent_work_6h"] = work.pop("last_6h")
+        view["show_recent"] = bool(view["recent_work_6h"])
+        view["recent_work"] = work
     snapshots = all_snapshots([snapshot])
     normalized: list[dict[str, object]] = []
     for owner in snapshots:
@@ -2813,6 +2826,15 @@ def home_attention(
                 errors.append(exc.as_dict())
                 local_records = []
         normalized.extend(dict(record, task=task_key(owner, str(record["task"]), snapshots)) for record in local_records)
+    if projects_out is not None:
+        for owner in snapshots:
+            if not owner.error and owner.backlog_markdown is not None:
+                for item in backlog_items(owner.backlog_markdown, owner):
+                    if item.project:
+                        projects_out[task_key(owner, item.id, snapshots)] = item.project
+        for record in sorted(normalized, key=lambda r: r["ts"]):  # type: ignore[arg-type, return-value]
+            if record["event"] == "task.dispatched" and isinstance(record.get("project"), str):
+                projects_out[str(record["task"])] = str(record["project"])
     candidates = list(feed_rows)
     represented = {decision_key(snapshot, row) for row in feed_rows}
     for owner in snapshots:
@@ -2861,17 +2883,104 @@ def board_engagement(homes: list[HomeSnapshot]) -> dict[str, float]:
     return activity
 
 
+def project_matches(value: object, name: str) -> bool:
+    """True when a recorded project (a name or owner/name) is the named project, ignoring case."""
+    if not isinstance(value, str) or not value.strip():
+        return False
+    wanted = name.strip().lower()
+    recorded = value.strip().lower()
+    return recorded == wanted or recorded.rsplit("/", 1)[-1] == wanted
+
+
+def waiting_item(kind: str, key: str, title: str, ask: str, project: str | None, group: str, at: str | None) -> dict[str, object]:
+    return {"kind": kind, "key": key, "title": title, "ask": ask, "group": group, "project": project or None, "at": at}
+
+
+def home_waiting(
+    snapshot: HomeSnapshot, view: dict[str, object], board: BoardView | None, projects: dict[str, str],
+) -> dict[str, list[dict[str, object]]]:
+    """What waits on the captain in one home: its decisions, the rest of what needs them, then informational items."""
+    labels = {owner.spec.label for owner in all_snapshots([snapshot])}
+    decisions = view.get("decisions")
+    rows = decisions["relevant"] if isinstance(decisions, dict) else []
+    waiting_decisions = []
+    seen: set[str] = set()
+    for row in rows:
+        key = decision_key(snapshot, row)
+        seen.add(key)
+        waiting_decisions.append(waiting_item(
+            "decision", key, str(row["title"]), str(row.get("reason") or ""), projects.get(key), "decision",
+            row.get("activity_at") or row.get("last_touched_at") or row.get("opened_at"),  # type: ignore[arg-type]
+        ))
+    needs_you: list[dict[str, object]] = []
+    informational: list[dict[str, object]] = []
+    for entry in (board.bands["desk"] if board is not None else []):
+        if entry.home not in labels or entry.key in seen:
+            continue
+        item = waiting_item(
+            "informational" if entry.item.group == "read" else "needs_you", entry.key, entry.item.title,
+            entry.item.ask, entry.item.project or projects.get(entry.key), entry.item.group,
+            iso_or_none(entry.touched),
+        )
+        (informational if entry.item.group == "read" else needs_you).append(item)
+    return {"decisions": waiting_decisions, "needs_you": needs_you, "informational": informational}
+
+
+def priority_entries(waiting: dict[str, list[dict[str, object]]], names: list[str]) -> list[dict[str, object]]:
+    """For each named project, its waiting items, or an explicit nothing_waiting flag and a sentence to say."""
+    everything = [*waiting["decisions"], *waiting["needs_you"], *waiting["informational"]]
+    entries = []
+    for name in names:
+        items = [item for item in everything if project_matches(item["project"], name)]
+        say = (f"{name}: nothing is waiting." if not items else
+               f"{name}: {len(items)} waiting. " + "; ".join(str(item["title"]) for item in items) + ".")
+        entries.append({"project": name, "nothing_waiting": not items, "waiting": items, "say": say})
+    return entries
+
+
+def scope_waiting(
+    waiting: dict[str, list[dict[str, object]]], names: list[str], show_more: bool,
+) -> tuple[dict[str, list[dict[str, object]]], dict[str, object]]:
+    """Put priority-project items first, in priority order; hold back the rest unless asked or nothing is pending for them."""
+    def rank(item: dict[str, object]) -> int | None:
+        return next((index for index, name in enumerate(names) if project_matches(item["project"], name)), None)
+
+    ranked = {kind: [dict(item, priority=rank(item)) for item in items] for kind, items in waiting.items()}
+    for items in ranked.values():
+        items.sort(key=lambda item: len(names) if item["priority"] is None else item["priority"])  # type: ignore[operator]
+    total = sum(len(items) for items in ranked.values())
+    mine = sum(1 for items in ranked.values() for item in items if item["priority"] is not None)
+    if not names or mine == 0 or show_more:
+        return ranked, {"scope": "all", "more_count": 0}
+    return (
+        {kind: [item for item in items if item["priority"] is not None] for kind, items in ranked.items()},
+        {"scope": "priority", "more_count": total - mine},
+    )
+
+
 def attention_view(
     homes: list[HomeSnapshot], now: datetime | None = None,
     all_decisions: bool = False, use_feed: bool = True,
     feed_runner: Callable[[Path, Path | None], dict[str, object]] = run_attention_feed,
+    priority_projects: list[str] | None = None, project: str | None = None, show_more: bool = False,
 ) -> dict[str, object]:
     now = now or datetime.now(timezone.utc)
     board_activity = board_engagement(homes)
-    views = [home_attention(snapshot, now, all_decisions, use_feed, feed_runner, board_activity) for snapshot in homes]
+    projects: dict[str, str] = {}
+    views = [home_attention(snapshot, now, all_decisions, use_feed, feed_runner, board_activity, projects) for snapshot in homes]
+    names = [project] if project else list(priority_projects or [])
+    shared = {"schema": ATTENTION_SCHEMA, "generated": iso_seconds(now.timestamp()), "homes": views}
+    board = board_view(homes, now, fallback=True, decisions=decision_rows(homes, shared))
+    for snapshot, view in zip(homes, views):
+        waiting = home_waiting(snapshot, view, board, projects)
+        view["priorities"] = priority_entries(waiting, names)
+        view["waiting"], scope = scope_waiting(waiting, names, show_more)
+        view["waiting_scope"] = scope["scope"]
+        view["more_count"] = scope["more_count"]
     return {
-        "schema": ATTENTION_SCHEMA, "generated": iso_seconds(now.timestamp()),
-        "ok": all(view["ok"] for view in views), "homes": views,
+        "schema": ATTENTION_SCHEMA, "generated": shared["generated"],
+        "ok": all(view["ok"] for view in views), "priority_projects": list(priority_projects or []),
+        "requested_project": project or None, "homes": views,
     }
 
 
@@ -2924,30 +3033,111 @@ def attention_check_line(view: dict[str, object]) -> str:
     return f"quarterdeck attention check: {'ok' if view['ok'] else 'FAILED'} — " + "; ".join(parts)
 
 
+def default_preferences_path() -> Path:
+    config_home = Path(os.environ.get("XDG_CONFIG_HOME") or "~/.config").expanduser()
+    return (config_home / "quarterdeck" / "preferences.json").resolve()
+
+
+def preferences_path(args: argparse.Namespace) -> Path:
+    chosen = getattr(args, "preferences", None)
+    return chosen.expanduser().resolve() if chosen else default_preferences_path()
+
+
+def read_preferences(path: Path) -> dict[str, object]:
+    """The shared preference document, empty when none was saved; ValueError when it cannot be understood."""
+    if not path.exists():
+        return {}
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as exc:
+        raise ValueError(f"could not read preferences {path}: {exc}") from exc
+    if not isinstance(data, dict) or data.get("version") != PREFERENCES_VERSION:
+        raise ValueError(f"preferences {path} must be a JSON object with version {PREFERENCES_VERSION}")
+    names = data.get("priority_projects", [])
+    if (not isinstance(names, list) or len(names) > PRIORITY_LIMIT or len(set(names)) != len(names)
+            or not all(isinstance(name, str) and name.strip() for name in names)):
+        raise ValueError(f"preferences {path}: priority_projects must be up to {PRIORITY_LIMIT} distinct project names")
+    return data
+
+
+def read_priority_projects(path: Path) -> list[str]:
+    return list(read_preferences(path).get("priority_projects", []))  # type: ignore[call-overload]
+
+
+def registered_projects(homes: list[HomeSnapshot]) -> list[str]:
+    """Project names a home has registered: the directories under its projects/, including secondmates'."""
+    names: set[str] = set()
+    for owner in all_snapshots(homes):
+        projects = owner.spec.home / "projects" if owner.spec.home and not owner.spec.remote_host else None
+        if projects is not None and projects.is_dir():
+            names.update(entry.name for entry in projects.iterdir() if entry.is_dir() and not entry.name.startswith("."))
+    return sorted(names, key=str.lower)
+
+
+def selected_homes(args: argparse.Namespace) -> list[HomeSnapshot]:
+    if args.config is None:
+        default_path = default_config_path()
+        args.config = default_path if default_path.is_file() else None
+    specs, _legacy = resolve_home_specs(args, load_config(args.config))
+    return [load_home_snapshot(spec, discover_secondmates=True) for spec in specs]
+
+
 def attention(args: argparse.Namespace) -> int:
     if not args.json and not args.check:
         print("quarterdeck: attention needs --json or --check", file=sys.stderr)
         return 2
     try:
-        if args.config is None:
-            default_path = default_config_path()
-            args.config = default_path if default_path.is_file() else None
-        specs, _legacy = resolve_home_specs(args, load_config(args.config))
-    except (OSError, ValueError) as exc:
-        print(f"quarterdeck: {exc}", file=sys.stderr)
-        return 2
-    homes = [load_home_snapshot(spec, discover_secondmates=True) for spec in specs]
-    try:
+        homes = selected_homes(args)
+        priorities = read_priority_projects(preferences_path(args))
+        if args.project:
+            known = registered_projects(homes)
+            match = next((name for name in known if name.lower() == args.project.strip().lower()), None)
+            if match is None:
+                raise ValueError(f"unknown project {args.project!r}; registered projects: {', '.join(known) or 'none'}")
+            args.project = match
         apply_review_marks(homes, load_review_state(validate_review_state_location(homes)))
     except (OSError, ValueError) as exc:
         print(f"quarterdeck: {exc}", file=sys.stderr)
         return 2
-    view = attention_view(homes, all_decisions=args.all_decisions)
+    view = attention_view(homes, all_decisions=args.all_decisions, priority_projects=priorities, project=args.project, show_more=args.more)
     if args.check:
         print(attention_check_line(view))
     else:
         print(json.dumps(view, indent=2))
     return 0 if view["ok"] else 1
+
+
+def priorities(args: argparse.Namespace) -> int:
+    path = preferences_path(args)
+    try:
+        current = read_priority_projects(path)
+        if args.priorities_command == "show":
+            if args.as_json:
+                print(json.dumps({"priority_projects": current, "limit": PRIORITY_LIMIT, "path": str(path)}, indent=2))
+            else:
+                print("Priority projects: " + ", ".join(current) + "." if current else "No priority projects are set.")
+            return 0
+        if args.priorities_command == "clear":
+            names: list[str] = []
+        else:
+            if len(args.projects) > PRIORITY_LIMIT:
+                raise ValueError(f"at most {PRIORITY_LIMIT} priority projects are allowed; got {len(args.projects)}")
+            known = registered_projects(selected_homes(args))
+            names = []
+            for raw in args.projects:
+                match = next((name for name in known if name.lower() == raw.strip().lower()), None)
+                if match is None:
+                    raise ValueError(f"unknown project {raw!r}; registered projects: {', '.join(known) or 'none'}")
+                if match not in names:
+                    names.append(match)
+        document = read_preferences(path)
+        document.update({"version": PREFERENCES_VERSION, "priority_projects": names})
+        write_config(path, document)
+    except (OSError, ValueError) as exc:
+        print(f"quarterdeck: {exc}", file=sys.stderr)
+        return 2
+    print("Priority projects: " + ", ".join(names) + "." if names else "Priority projects cleared.")
+    return 0
 
 
 def attention_item_html(item: dict[str, object], now: datetime) -> str:
@@ -2970,15 +3160,34 @@ def attention_decision_html(row: dict[str, object], now: datetime) -> str:
             f' · <code>{html.escape(str(row["task"]))}</code></span></li>')
 
 
+def priorities_panel_html(homes: list[dict[str, object]], now: datetime) -> str:
+    rows = []
+    for home in homes:
+        label = f"{home['label']}: " if len(homes) > 1 else ""
+        for entry in home.get("priorities") or []:  # type: ignore[union-attr]
+            if entry["nothing_waiting"]:
+                rows.append(f'<li><strong>{html.escape(label)}{html.escape(entry["project"])}</strong> '
+                            f'<span class="path">nothing is waiting</span></li>')
+                continue
+            titles = "".join(f'<li>{html.escape(str(item["title"]))}</li>' for item in entry["waiting"])
+            rows.append(f'<li><strong>{html.escape(label)}{html.escape(entry["project"])}</strong> '
+                        f'<span class="path">{len(entry["waiting"])} waiting</span><ul>{titles}</ul></li>')
+    if not rows:
+        return ""
+    return f'<div class="priority-projects" id="priority-projects"><h3>Priority projects</h3><ul>{"".join(rows)}</ul></div>'
+
+
 def attention_html(view: dict[str, object] | None) -> str:
     if view is None:
         return ""
     now = parse_when(str(view["generated"])) or datetime.now(timezone.utc)
     homes = [home for home in view["homes"] if isinstance(home, dict)]  # type: ignore[union-attr]
-    out = ['<section class="dashboard-section recent-work" id="recent-work" aria-label="Last 48 hours">'
-           '<div class="section-head"><div><h2>Last 48 hours</h2>'
-           "<p>What merged and started, and the decisions still in play, from Firstmate's fleet ledger and "
-           "attention feed. Quiet decisions stay collapsed; dated decisions stay hidden until due.</p></div></div>"]
+    out = ['<section class="dashboard-section recent-work" id="attention" aria-label="Waiting and recent work">'
+           '<div class="section-head"><div><h2>Waiting on you</h2>'
+           "<p>Your priority projects first, then the decisions still in play from Firstmate's attention feed. "
+           f"Work from the last {RECENT_HOURS} hours appears only when there is some. Quiet decisions stay collapsed; "
+           "dated decisions stay hidden until due.</p></div></div>"]
+    out.append(priorities_panel_html(homes, now))
     for index, home in enumerate(homes):
         label = f"{home['label']}: " if len(homes) > 1 else ""
         for error in home["errors"]:
@@ -2987,37 +3196,6 @@ def attention_html(view: dict[str, object] | None) -> str:
                 f'unavailable</strong> — {html.escape(str(error["message"]))}. Run <code>quarterdeck attention '
                 f'--check</code> and report this line.</p></div>'
             )
-        work = home.get("recent_work")
-        if isinstance(work, dict):
-            starts = work.get("ledger_starts_at")
-            starts_moment = parse_when(str(starts or ""))
-            starts_text = starts_moment.strftime("%Y-%m-%d %H:%M UTC") if starts_moment else ""
-            cards = []
-            for window in work["windows"]:
-                coverage = window["coverage"]
-                note = ""
-                if coverage != "full":
-                    note = (f'<p class="stale">Not fully covered: the ledger starts {html.escape(starts_text)}.</p>'
-                            if starts else '<p class="stale">Not covered: this home has no fleet ledger records.</p>')
-                answered = window["answered_count"]
-                counts = (f'{window["merged_count"]} merged · {window["started_count"]} started · '
-                          f'{answered} decision{"s" if answered != 1 else ""} answered')
-                lists = ""
-                for heading, key in (("Merged", "merged"), ("Started", "started")):
-                    shown = [attention_item_html(item, now) for item in window[key]]
-                    if not shown:
-                        continue
-                    more = shown[RECENT_LIST_LIMIT:]
-                    lists += f'<p><strong>{heading}</strong></p><ul>{"".join(shown[:RECENT_LIST_LIMIT])}</ul>'
-                    if more:
-                        lists += (f'<details class="board-more" data-refresh-key="recent:{index}:{window["window"]}:{key}">'
-                                  f'<summary>+{len(more)} more</summary><ul>{"".join(more)}</ul></details>')
-                cards.append(
-                    f'<article class="card" data-window="{html.escape(window["window"], quote=True)}">'
-                    f'<p class="eyebrow">{html.escape(label)}{html.escape(WINDOW_TITLES[window["window"]])}</p>'
-                    f'<h3>{html.escape(counts)}</h3>{note}{lists}</article>'
-                )
-            out.append(f'<div class="cards">{"".join(cards)}</div>')
         decisions = home.get("decisions")
         if isinstance(decisions, dict) and decisions.get("skipped"):
             out.append(f'<p class="source-note">{html.escape(label)}Attention feed not read: '
@@ -3037,6 +3215,17 @@ def attention_html(view: dict[str, object] | None) -> str:
                     f'<summary>{count} background decision{"s" if count != 1 else ""} '
                     f'(quiet for {days} days or marked stale)</summary>{listed}</details>'
                 )
+    recent = [(home, item) for home in homes for item in home.get("recent_work_6h") or []]  # type: ignore[union-attr]
+    if recent:
+        shown = "".join(
+            f'<li>{html.escape(str(home["label"]) + ": " if len(homes) > 1 else "")}{html.escape(str(item["event"]).capitalize())} · '
+            + attention_item_html(item, now)[4:] for home, item in recent[:RECENT_LIST_LIMIT]
+        )
+        more = recent[RECENT_LIST_LIMIT:]
+        extra = (f'<details class="board-more" data-refresh-key="recent-6h"><summary>+{len(more)} more</summary><ul>'
+                 + "".join(f'<li>{html.escape(str(item["event"]).capitalize())} · ' + attention_item_html(item, now)[4:]
+                           for _home, item in more) + "</ul></details>") if more else ""
+        out.append(f'<div id="recent-work"><h3>Last {RECENT_HOURS} hours</h3><ul>{shown}</ul>{extra}</div>')
     out.append("</section>")
     return "".join(out)
 
@@ -4924,6 +5113,7 @@ COMMAND_DOCS = {
     "add": ["how-to/configure-multiple-homes.md", "reference/cli-and-config.md"],
     "list": ["how-to/configure-multiple-homes.md", "reference/cli-and-config.md"],
     "remove": ["how-to/configure-multiple-homes.md", "reference/cli-and-config.md"],
+    "priorities": ["how-to/see-recent-work.md"],
     "attention": ["how-to/see-recent-work.md", "reference/attention-json.md", "explanation/privacy-and-architecture.md"],
     "board": ["how-to/keep-the-board-current.md", "reference/captain-board.md", "explanation/privacy-and-architecture.md"],
     "install": ["how-to/install.md", "how-to/update.md", "how-to/uninstall.md"],
@@ -5838,7 +6028,13 @@ def load_site(args: argparse.Namespace) -> tuple[dict[str, object], list[HomeSna
     apply_review_marks(homes, load_review_state(state_path))
     use_snapshot = not getattr(args, "no_snapshot", False)
     bearings = build_bearings(homes, use_snapshot=use_snapshot)
-    bearings.attention = attention_view(homes, bearings.generated, all_decisions=True, use_feed=use_snapshot)
+    try:
+        priorities_set = read_priority_projects(preferences_path(args))
+    except ValueError:
+        priorities_set = []  # a damaged preference file must not stop the page
+    bearings.attention = attention_view(
+        homes, bearings.generated, all_decisions=True, use_feed=use_snapshot, priority_projects=priorities_set,
+    )
     return config, homes, bearings
 
 
@@ -6064,9 +6260,41 @@ def make_parser() -> argparse.ArgumentParser:
     attention_parser.add_argument("--json", action="store_true", help="print the view as JSON")
     attention_parser.add_argument("--check", action="store_true", help="validate the Firstmate sources and print a one-line summary")
     attention_parser.add_argument("--all-decisions", action="store_true", help="also list the background decisions, not just their count")
+    attention_parser.add_argument("--project", help="show this project's waiting items instead of the saved priority projects")
+    attention_parser.add_argument("--more", action="store_true", help="also list the waiting items outside the priority projects")
+    attention_parser.add_argument("--preferences", type=Path, help="preferences file; defaults to ~/.config/quarterdeck/preferences.json")
     attention_parser.add_argument("--home", help="use this Firstmate home instead of configured homes or FM_HOME")
     attention_parser.add_argument("--config", type=Path, help="optional JSON config file")
     attention_parser.set_defaults(handler=attention)
+
+    priorities_parser = subparsers.add_parser(
+        "priorities", help="show, set or clear up to three priority projects",
+        description=(
+            "Keep the captain's priority projects (at most three, each a project registered in a selected home) in the "
+            "shared preferences file that Quarterdeck and Cadence both read. Writes only that file."
+        ),
+    )
+    command_parsers["priorities"] = priorities_parser
+    priorities_subparsers = priorities_parser.add_subparsers(dest="priorities_command", required=True)
+
+    def priorities_target(command_parser: argparse.ArgumentParser) -> None:
+        command_parser.add_argument("--preferences", type=Path, help="preferences file; defaults to ~/.config/quarterdeck/preferences.json")
+        command_parser.add_argument("--home", help="use this Firstmate home instead of configured homes or FM_HOME")
+        command_parser.add_argument("--config", type=Path, help="optional JSON config file")
+
+    priorities_show_parser = priorities_subparsers.add_parser("show", help="print the priority projects")
+    priorities_show_parser.add_argument("--json", dest="as_json", action="store_true", help="print JSON")
+    priorities_target(priorities_show_parser)
+    priorities_show_parser.set_defaults(handler=priorities)
+    priorities_set_parser = priorities_subparsers.add_parser(
+        "set", help="replace the priority projects", description="Replace the priority projects with one to three registered project names.",
+    )
+    priorities_set_parser.add_argument("projects", nargs="+", metavar="PROJECT", help=f"up to {PRIORITY_LIMIT} registered project names")
+    priorities_target(priorities_set_parser)
+    priorities_set_parser.set_defaults(handler=priorities)
+    priorities_clear_parser = priorities_subparsers.add_parser("clear", help="remove all priority projects")
+    priorities_target(priorities_clear_parser)
+    priorities_clear_parser.set_defaults(handler=priorities)
 
     export_parser = subparsers.add_parser(
         "export", help="write the data snapshot for the cloud artifact",
