@@ -254,7 +254,8 @@ that claims an item lists it and each later section that would have listed it
 counts it in `shown_above` ("1 shown above" in `say`), including recent work. `nothing_waiting` is `false` whenever
 the section lists something or counted something shown above.
 
-Items in `needs_you` and `information` have `key`, `kind`, `title`, `ask`,
+Outside `recent` and `done`, items in `needs_you` and `information` have
+`key`, `kind`, `title`, `ask`,
 `project`, `home` (the home label), `status`, `status_label`, `at` and
 `background`. Within a section they sort by status tier, then by priority
 project in the set order (others last), then newest first. The tiers, in
@@ -268,6 +269,7 @@ order, are:
 | `review_waiting` | Review waiting | a board `approve` item |
 | `result_ready` | Result ready | a board `read` item |
 | `in_flight` | In flight | a backlog task recorded as in flight |
+| `queued` | Queued | other open, noncancelled backlog work not already waiting on the captain; deferred decisions are excluded |
 
 The served page uses the same builder for every saved view; the page's data is
 not part of this JSON. Readers must ignore members they do not recognize.

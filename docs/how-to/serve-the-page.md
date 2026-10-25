@@ -19,7 +19,9 @@ quarterdeck serve
 Open `http://127.0.0.1:8765/`. The page shows a "Generated at" time and reloads
 itself every 60 seconds, restoring open items and sections after each refresh
 when browser session storage is available. Rendered pages are cached for 30
-seconds so rapid reloads stay cheap.
+seconds so rapid reloads stay cheap. Automatic refresh waits while a reaction
+is being written or sent, or the view editor has unsaved changes or a pending
+save.
 
 To see the serving address, run `quarterdeck url`. See the
 [CLI reference](../reference/cli-and-config.md) for how it determines the
@@ -66,9 +68,10 @@ request restrictions and review-mark storage. `quarterdeck service
 --allow-marks` writes the flag into the systemd unit. Backlog and board items
 cannot be marked.
 
-When you bind to a non-loopback address, everyone who can reach the page can
-change review marks (and only review marks). Use marks only on a network you
-trust, or put the server behind an authenticating TLS reverse proxy.
+When you bind to a non-loopback address with `--allow-marks`, everyone who can
+reach the page can change review marks, send reactions and edit saved views.
+Use marks only on a network you trust, or put the server behind an
+authenticating TLS reverse proxy.
 
 ## React to calls and reports from the page
 

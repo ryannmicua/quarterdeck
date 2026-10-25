@@ -168,8 +168,8 @@ schedule it; see
 
 The default is 127.0.0.1. A non-loopback `--host` exposes your real work data
 to that network with no login. Keep the default unless you control the network.
-With `--allow-marks`, anyone who can open the page can mark or unmark reports
-, send reactions to Firstmate and edit saved views; there is no key. See the
+With `--allow-marks`, anyone who can open the page can mark or unmark reports,
+send reactions to Firstmate and edit saved views; there is no key. See the
 [serving guide](docs/how-to/serve-the-page.md#mark-reports-reviewed-from-the-page).
 
 ### Does it cost tokens?

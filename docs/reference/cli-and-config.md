@@ -23,7 +23,8 @@ quarterdeck attention --json|--check [--all-decisions] [--project NAME] [--more]
 quarterdeck priorities show [--json] [--preferences FILE] [--home PATH] [--config FILE]
 quarterdeck priorities set PROJECT [PROJECT ...] [--preferences FILE] [--home PATH] [--config FILE]
 quarterdeck priorities clear [--preferences FILE] [--home PATH] [--config FILE]
-quarterdeck views list|show NAME [--json] [--preferences FILE]
+quarterdeck views list [--json] [--preferences FILE]
+quarterdeck views show NAME [--json] [--preferences FILE]
 quarterdeck views save NAME --section SECTION [--section SECTION ...] [--default] [--preferences FILE] [--home PATH] [--config FILE]
 quarterdeck views default NAME [--preferences FILE] [--home PATH] [--config FILE]
 quarterdeck export [--output FILE] [--artifact FILE] [--home PATH] [--config FILE] [--title TEXT] [--bodies all|desk|none] [--no-snapshot]
@@ -114,10 +115,13 @@ The preference file is
 it; page commands read the default file. Its JSON object has `version: 1` and
 `priority_projects`, a list of at most three distinct, nonempty strings, plus
 optionally `views` (a list of `{name, sections}`, sections being `{type}` or
-`{type: "project", project}`) and `default_view` (the name of one saved view);
-unknown members are preserved on writes. A missing file means no priorities. An
-unreadable or invalid file makes the priority and attention commands exit 2;
-the page ignores it and uses no priorities. Writes are atomic with mode `0600`
+`{type: "project", project}`) and `default_view` (the name of one saved view).
+View names and project-section names are trimmed on read; `default_view`
+matches ignoring case and is returned using the saved view's spelling.
+Unknown top-level members are preserved on writes. A missing file means no
+priorities and the seeded views. An unreadable or invalid file makes the
+priority, view and attention commands exit 2; the page ignores it and uses no
+priorities and the seeded views. Writes are atomic with mode `0600`
 and refuse destinations inside selected local homes or their data directories.
 
 `attention --json` prints the shared waiting and recent-work view;
@@ -173,8 +177,9 @@ on each repeatable `--host` address (default `127.0.0.1` only) and `--port`
 report review request, the reaction request and the saved-view request
 (`POST /api/views`, which writes only the preferences file) described in the
 [serving guide](../how-to/serve-the-page.md); all other writes remain refused.
-The served page reloads itself every 60 seconds, waiting while a reaction is
-being written or sent, and shows its generated-at time. `service` prints a systemd user unit that runs `serve` with the given
+The served page shows its generated-at time; see the
+[serving guide](../how-to/serve-the-page.md#run-it) for automatic refresh behavior.
+`service` prints a systemd user unit that runs `serve` with the given
 options, or with `--write` writes it to
 `${XDG_CONFIG_HOME:-~/.config}/systemd/user/quarterdeck.service`; it never runs
 `systemctl`. A non-loopback host exposes work data without a login. `url`
