@@ -49,3 +49,17 @@ The same class covers routed board/backlog/Bearings keys, missing-board call
 fallback, home-scoped session matching, inverse-action interleavings and HTTP
 responses for stale inverse actions. The focused tests mutate only fictional
 data and disposable state; their servers stop through test cleanup.
+
+## Recent work and shared decision visibility
+
+Run `PYTHONPATH=tests python3 -m unittest test_quarterdeck.AttentionTests -v`.
+The class creates fictional homes, feed scripts, and ledger files in disposable
+storage and removes them automatically. It never reads or writes a real home.
+
+Check the three-day boundary with and without ledger coverage: a recent feed
+`last_touched_at` keeps an old decision relevant, but a dated bucket stays
+hidden on the page until Firstmate reports it due. Whole-page checks exercise
+Captain's Call, board-owned and unsorted calls, related calls, bullet and table
+home details, keyed calls, and exported board bands. Quiet decisions belong in
+collapsed sections; dated decisions must be absent even with `--all`.
+The CLI must reject the removed `--recent-days` option.

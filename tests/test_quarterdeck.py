@@ -4508,10 +4508,87 @@ class AttentionTests(unittest.TestCase):
             self.assertEqual([(r["task"], r["relevance"]) for r in listed],
                              [("anchor-deferred", "deferred"), ("rope-quiet", "quiet"), ("mate", "quiet")])
             self.assertEqual(listed[2]["key"], "api-shape", "feed members pass through unchanged")
-            # A wider window brings older activity in, but a deferred call never becomes relevant.
-            wide = self.view(home, recent_days=30)["homes"][0]["decisions"]
-            self.assertIn("rope-quiet", [r["task"] for r in wide["relevant"]])
-            self.assertNotIn("anchor-deferred", [r["task"] for r in wide["relevant"]])
+
+    def test_decision_visibility_across_the_whole_page(self) -> None:
+        from html.parser import HTMLParser
+
+        class PageText(HTMLParser):
+            def __init__(self) -> None:
+                super().__init__()
+                self.collapsed: list[bool] = []
+                self.visible: list[str] = []
+                self.all_text: list[str] = []
+
+            def handle_starttag(self, tag: str, attrs: list) -> None:
+                if tag == "details":
+                    self.collapsed.append("open" not in dict(attrs))
+
+            def handle_endtag(self, tag: str) -> None:
+                if tag == "details":
+                    self.collapsed.pop()
+
+            def handle_data(self, data: str) -> None:
+                self.all_text.append(data)
+                if not any(self.collapsed):
+                    self.visible.append(data)
+
+        with tempfile.TemporaryDirectory() as temp:
+            home = self.make_home(Path(temp))
+            rows = json.loads((ATTENTION_FIXTURES / "fm-attention.json").read_text())["open_decisions"][:5]
+            backlog = "# Backlog\n\n## Held\n\n" + "\n".join(
+                f'- [ ] {row["task"]} - {row["title"]} (held: true) (hold-kind: captain)'
+                for row in rows
+            )
+            backlog += "\n\n| ID | Title | held | hold_kind |\n| --- | --- | --- | --- |\n" + "\n".join(
+                f'| {row["task"]} | {row["title"]} | true | captain |' for row in rows
+            )
+            (home / "data" / "backlog.md").write_text(backlog)
+            snapshot = quarterdeck.load_home_snapshot(quarterdeck.HomeSpec("invented", home))
+            snapshot.board = quarterdeck.CaptainBoard(
+                home / "data" / "captain-board.json", updated_at=ATTENTION_NOW,
+                last_active_at=ATTENTION_NOW, session_started_at=ATTENTION_NOW,
+                items=[quarterdeck.BoardItem(id=row["task"], task=row["task"], group="decide",
+                                            title=row["title"], ask="Choose", touched_at=ATTENTION_NOW) for row in rows[:3]],
+            )
+            for boarded in (True, False):
+                if not boarded:
+                    snapshot.board = None
+                bearings = quarterdeck.build_bearings([snapshot], now=ATTENTION_NOW, use_snapshot=False)
+                bearings.attention = quarterdeck.attention_view([snapshot], ATTENTION_NOW, all_decisions=True)
+                bearings.call.append(quarterdeck.BItem(title="Second mate API shape", owner="mate", item_id="api-shape"))
+                bearings.call.append(quarterdeck.BItem(title="Unrecorded old call", owner="invented", item_id="old-unrecorded"))
+                exported = quarterdeck.build_snapshot([snapshot], "Quarterdeck", ATTENTION_NOW, attention=bearings.attention)
+                exported_calls = {call["title"]: call["band"] for call in exported["calls"]}
+                self.assertNotIn(rows[1]["title"], exported_calls)
+                self.assertEqual(exported_calls[rows[4]["title"]], "parked")
+                for row in (rows[0], rows[2], rows[3]):
+                    self.assertEqual(exported_calls[row["title"]], "desk")
+                for show_all in (False, True):
+                    parser = PageText()
+                    parser.feed(quarterdeck.build_html([snapshot], "Quarterdeck", bearings=bearings, show_all=show_all))
+                    visible, all_text = " ".join(parser.visible), " ".join(parser.all_text)
+                    for row in (rows[0], rows[2], rows[3]):
+                        self.assertIn(row["title"], visible)
+                    if not show_all:
+                        self.assertNotIn(rows[4]["title"], visible)
+                    self.assertIn(rows[4]["title"], all_text)
+                    self.assertNotIn(rows[1]["title"], all_text)
+                    for title in ("Second mate API shape", "Unrecorded old call"):
+                        self.assertNotIn(title, visible)
+                        self.assertIn(title, all_text)
+
+    def test_touched_decision_boundary_without_ledger(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            feed = json.loads((ATTENTION_FIXTURES / "fm-attention.json").read_text())
+            row = dict(feed["open_decisions"][2])
+            feed["open_decisions"] = [row]
+            for touched, expected in (("2026-06-29T12:00:00Z", True), ("2026-06-29T11:59:59Z", False)):
+                row["last_touched_at"] = touched
+                root = Path(temp) / ("inside" if expected else "outside")
+                root.mkdir()
+                home = self.make_home(root, ledger="", feed=json.dumps(feed))
+                decisions = self.view(home)["homes"][0]["decisions"]
+                self.assertEqual(bool(decisions["relevant"]), expected)
 
     def test_unknown_ledger_version_is_refused_with_a_structured_error(self) -> None:
         with tempfile.TemporaryDirectory() as temp:
@@ -4556,8 +4633,7 @@ class AttentionTests(unittest.TestCase):
             self.assertFalse(entry["ledger"]["present"])
             self.assertIsNone(entry["recent_work"]["ledger_starts_at"])
             self.assertEqual({w["coverage"] for w in entry["recent_work"]["windows"]}, {"none"})
-            # Without ledger activity only freshly raised calls are relevant.
-            self.assertEqual([r["task"] for r in entry["decisions"]["relevant"]], ["fresh-call"])
+            self.assertEqual([r["task"] for r in entry["decisions"]["relevant"]], ["fresh-call", "tide-call"])
             check = self.run_cli("--check", "--home", str(home))
             self.assertEqual(check.returncode, 0, check.stderr)
             self.assertIn("no state/fleet-ledger.jsonl (recording off; recent work not covered)", check.stdout)
@@ -4581,10 +4657,10 @@ class AttentionTests(unittest.TestCase):
             self.assertEqual(check.returncode, 0, check.stderr)
             self.assertEqual(check.stdout.strip(), "quarterdeck attention check: ok — invented-home: ledger v1, 14 records "
                              "from 2026-07-01T06:00:00Z; fm-attention.v1, 6 open decisions")
-            result = self.run_cli("--json", "--all-decisions", "--recent-days", "30", "--home", str(home))
+            result = self.run_cli("--json", "--all-decisions", "--home", str(home))
             self.assertEqual(result.returncode, 0, result.stderr)
             data = json.loads(result.stdout)
-            self.assertEqual(data["homes"][0]["decision_relevance"]["recent_days"], 30)
+            self.assertEqual(data["homes"][0]["decision_relevance"]["recent_days"], 3)
             self.assertIsInstance(data["homes"][0]["decisions"]["background"], list)
             self.assertEqual(self.run_cli("--home", str(home)).returncode, 2)
             self.assertEqual(self.run_cli("--json", "--recent-days", "0", "--home", str(home)).returncode, 2)
@@ -4601,8 +4677,8 @@ class AttentionTests(unittest.TestCase):
             relevant, background = page.split('id="recent-background-0"')
             self.assertIn("Pick the new harbor map vendor", relevant)
             self.assertNotIn("Replace the anchor chain", relevant)
-            self.assertIn("3 background decisions", background)
-            self.assertIn("Replace the anchor chain", background)
+            self.assertIn("2 background decisions", background)
+            self.assertNotIn("Replace the anchor chain", background)
         with tempfile.TemporaryDirectory() as temp:
             page = quarterdeck.attention_html(self.view(self.make_home(Path(temp), script=False)))
             self.assertIn('class="warning"', page)

@@ -795,7 +795,10 @@ def section_html(title: str, description: str, cards: list[str], empty: str) -> 
     return f'<div class="dashboard-section"><div class="section-head"><div><h3>{html.escape(title)}</h3><p>{html.escape(description)}</p></div><span class="count">{len(cards)}</span></div><div class="cards">{content}</div></div>'
 
 
-def home_panel(snapshot: HomeSnapshot, lavish: bool = False, show_all: bool = False) -> str:
+def home_panel(
+    snapshot: HomeSnapshot, lavish: bool = False, show_all: bool = False,
+    decisions: dict[str, dict[str, object]] | None = None,
+) -> str:
     spec = snapshot.spec
     if spec.parent_label:
         role = f"Secondmate · registered by {spec.parent_label}"
@@ -821,7 +824,23 @@ def home_panel(snapshot: HomeSnapshot, lavish: bool = False, show_all: bool = Fa
         )
     else:
         groups = attention_groups(snapshot, show_all)
-        counts = snapshot_counts(snapshot, show_all)
+        background = []
+        for category, records in groups.items():
+            kept = []
+            for record in records:
+                bullet = BULLET_ITEM_RE.match("- [ ] " + record.title)
+                identifier = value_for(record.fields, "id") or (bullet.group("id") if bullet else "")
+                key = report_reference(snapshot.spec.label, identifier)
+                why = (decisions or {}).get(key, {}).get("relevance")
+                if why == "quiet":
+                    background.append(card(record, snapshot, "Background decision", category, lavish, True))
+                elif why != "deferred":
+                    kept.append(record)
+            groups[category] = kept
+        counts = tuple(len(groups[name]) for name in ("held", "reviews", "in_flight", "blocked", "other")) + (len(snapshot.reports),)
+        if background:
+            body.append('<details class="dashboard-section"><summary>'
+                        f'{len(background)} background decisions</summary>' + "".join(background) + '</details>')
         home_count_labels = [
             f"{counts[0]} held for captain",
             f"{counts[1]} review-ready PRs",
@@ -879,7 +898,7 @@ def home_panel(snapshot: HomeSnapshot, lavish: bool = False, show_all: bool = Fa
         )
     if snapshot.children:
         body.append('<div class="secondmates"><h3>Registered secondmates</h3>')
-        body.extend(home_panel(child, lavish, show_all) for child in snapshot.children)
+        body.extend(home_panel(child, lavish, show_all, decisions) for child in snapshot.children)
         body.append('</div>')
     return ''.join(heading + body + ['</section>'])
 
@@ -1267,18 +1286,19 @@ def build_html(
     metric_labels.append("Reports needing review")
     generated = bearings.generated if bearings else datetime.now(timezone.utc)
     timestamp = generated.strftime("%Y-%m-%d %H:%M:%S UTC")
-    board = board_view(homes, generated)
+    decisions = decision_rows(homes, bearings.attention if bearings else None, bearings.call if bearings else [])
+    board = board_view(homes, generated, decisions=decisions)
     review_state = next((s.review_state for s in snapshots if s.review_state is not None), None) or ReviewState()
     reactions = ReactionContext(enabled=allow_marks, latest=review_state.reactions, now=generated)
     related_block = related_html(
-        related_items(homes, board), generated, can_mark=allow_marks, ambiguous_ids=ambiguous_ids,
+        related_items(homes, board, decisions=decisions), generated, can_mark=allow_marks, ambiguous_ids=ambiguous_ids,
         report_resolution_incomplete=report_resolution_incomplete, reactions=reactions,
     )
     board_block = board_html(board, generated, show_all, related_block, reactions) if board else related_block
     board_status = board_status_html(board, generated) if board else ""
     bearings_block = bearings_html(
         bearings, collapse_reviews=board is not None, can_mark=allow_marks, ambiguous_ids=ambiguous_ids,
-        report_resolution_incomplete=report_resolution_incomplete, reactions=reactions,
+        report_resolution_incomplete=report_resolution_incomplete, reactions=reactions, decisions=decisions,
     ) if bearings else ""
     attention_block = attention_html(bearings.attention) if bearings else ""
     reviewed_block = (
@@ -1580,7 +1600,7 @@ def build_html(
     <div class="summary" aria-label="Review counts">
       {metrics}
     </div>
-    {''.join(home_panel(home, lavish, show_all) for home in homes)}
+    {''.join(home_panel(home, lavish, show_all, decisions) for home in homes)}
     <footer>{html.escape(introductory_text)} {footer_label} · generated {timestamp} · source files open as readable pages beside this one.</footer>
   </main>
   {lavish_script}{refresh_script}{mark_script}{reaction_script}
@@ -2385,12 +2405,17 @@ def bearings_html(
     bearings: Bearings, collapse_reviews: bool = False, can_mark: bool = False,
     ambiguous_ids: set[str] | None = None,
     report_resolution_incomplete: bool = False, reactions: ReactionContext | None = None,
+    decisions: dict[str, dict[str, object]] | None = None,
 ) -> str:
     ambiguous_ids = ambiguous_ids or set()
+    decisions = decisions or {}
     now = bearings.generated
+    calls = [item for item in bearings.call if decisions.get(report_reference(item.owner, item.item_id), {}).get("relevance") != "deferred"]
+    background = [item for item in calls if decisions.get(report_reference(item.owner, item.item_id), {}).get("relevance") == "quiet"]
+    calls = [item for item in calls if item not in background]
     sections = [
         ("call", "Captain's Call", "Decisions and reviews waiting on you, with everything needed to answer.",
-         bearings.call, "Nothing is waiting on a captain decision."),
+         calls, "Nothing is waiting on a captain decision."),
         ("landed", "Recently Landed", "Merged pull requests and finished work.",
          bearings.landed, "Nothing has landed recently."),
         ("underway", "Underway", "Work that is live right now.", bearings.underway, "Nothing is underway."),
@@ -2454,6 +2479,10 @@ def bearings_html(
             f'<p>{html.escape(description)}</p></div><span class="count">{len(items)}</span></div>'
             f'<div class="cards">{cards}</div></div>'
         )
+    if background:
+        out.append('<details class="dashboard-section" id="call-background"><summary>'
+                   f'{len(background)} background decisions</summary><div class="cards">'
+                   + "".join(bearings_item_html(item, now, "call") for item in background) + '</div></details>')
     notes = []
     for source in bearings.sources:
         if source.mode == "snapshot":
@@ -2680,6 +2709,9 @@ def decision_relevance(row: dict[str, object], records: list[dict[str, object]],
     opened = feed_epoch(row.get("opened_at"))
     if opened is not None and opened >= since:
         return "raised"
+    touched = feed_epoch(row.get("last_touched_at"))
+    if touched is not None and touched >= since:
+        return "captain_activity"
     task_records = [r for r in records if r["task"] == row["task"] and float(r["ts"]) >= since]  # type: ignore[arg-type]
     if any(str(r["event"]).startswith("captain.") for r in task_records):
         return "captain_activity"
@@ -2689,16 +2721,16 @@ def decision_relevance(row: dict[str, object], records: list[dict[str, object]],
 
 
 def home_attention(
-    snapshot: HomeSnapshot, now: datetime, recent_days: int = DEFAULT_RECENT_DAYS, all_decisions: bool = False,
+    snapshot: HomeSnapshot, now: datetime, all_decisions: bool = False,
     use_feed: bool = True, feed_runner: Callable[[Path, Path | None], dict[str, object]] = run_attention_feed,
 ) -> dict[str, object]:
     spec = snapshot.spec
-    since = now.timestamp() - recent_days * 86400
+    since = now.timestamp() - DEFAULT_RECENT_DAYS * 86400
     errors: list[dict[str, str]] = []
     view: dict[str, object] = {
         "label": spec.label, "home": str(spec.home) if spec.home else None, "ok": True, "errors": errors,
         "ledger": None, "recent_work": None,
-        "decision_relevance": {"recent_days": recent_days, "since": iso_seconds(since)}, "decisions": None,
+        "decision_relevance": {"recent_days": DEFAULT_RECENT_DAYS, "since": iso_seconds(since)}, "decisions": None,
     }
     if spec.home is None or spec.remote_host:
         errors.append({"source": "home", "code": "home_not_local",
@@ -2748,16 +2780,47 @@ def home_attention(
 
 
 def attention_view(
-    homes: list[HomeSnapshot], now: datetime | None = None, recent_days: int = DEFAULT_RECENT_DAYS,
+    homes: list[HomeSnapshot], now: datetime | None = None,
     all_decisions: bool = False, use_feed: bool = True,
     feed_runner: Callable[[Path, Path | None], dict[str, object]] = run_attention_feed,
 ) -> dict[str, object]:
     now = now or datetime.now(timezone.utc)
-    views = [home_attention(snapshot, now, recent_days, all_decisions, use_feed, feed_runner) for snapshot in homes]
+    views = [home_attention(snapshot, now, all_decisions, use_feed, feed_runner) for snapshot in homes]
     return {
         "schema": ATTENTION_SCHEMA, "generated": iso_seconds(now.timestamp()),
         "ok": all(view["ok"] for view in views), "homes": views,
     }
+
+
+def decision_rows(
+    homes: list[HomeSnapshot], view: dict[str, object] | None, calls: list[BItem] | None = None,
+) -> dict[str, dict[str, object]]:
+    rows: dict[str, dict[str, object]] = {}
+    if view is None:
+        return rows
+    snapshots = all_snapshots(homes)
+    for home in view["homes"]:
+        snapshot = next((s for s in snapshots if s.spec.label == home["label"]), None)
+        decisions = home.get("decisions")
+        if snapshot is None or not isinstance(decisions, dict) or decisions.get("skipped"):
+            continue
+        labels = {owner.spec.label for owner in all_snapshots([snapshot])}
+        for call in calls or []:
+            if call.owner in labels:
+                rows.setdefault(report_reference(call.owner, call.item_id), {"relevance": "quiet"})
+        for owner in all_snapshots([snapshot]):
+            for item in backlog_items(owner.backlog_markdown or "", owner):
+                if needs_captain(item):
+                    rows.setdefault(task_key(owner, item.id, snapshots), {"relevance": "quiet"})
+        for row in [*(decisions.get("background") or []), *decisions["relevant"]]:
+            if row.get("kind") == "keyed" and row.get("key"):
+                owner = next((child.spec.label for child in snapshot.children if child.spec.route_id == row["task"]), str(row["task"]))
+                key = report_reference(owner, str(row["key"]))
+            else:
+                key = task_key(snapshot, str(row["task"]), snapshots)
+            if rows.get(key, {}).get("relevance") not in RELEVANT_REASONS:
+                rows[key] = row
+    return rows
 
 
 def attention_check_line(view: dict[str, object]) -> str:
@@ -2781,9 +2844,6 @@ def attention(args: argparse.Namespace) -> int:
     if not args.json and not args.check:
         print("quarterdeck: attention needs --json or --check", file=sys.stderr)
         return 2
-    if args.recent_days < 1:
-        print("quarterdeck: --recent-days must be at least 1", file=sys.stderr)
-        return 2
     try:
         if args.config is None:
             default_path = default_config_path()
@@ -2793,7 +2853,7 @@ def attention(args: argparse.Namespace) -> int:
         print(f"quarterdeck: {exc}", file=sys.stderr)
         return 2
     homes = [load_home_snapshot(spec) for spec in specs]
-    view = attention_view(homes, recent_days=args.recent_days, all_decisions=args.all_decisions)
+    view = attention_view(homes, all_decisions=args.all_decisions)
     if args.check:
         print(attention_check_line(view))
     else:
@@ -2827,7 +2887,7 @@ def attention_html(view: dict[str, object] | None) -> str:
     out = ['<section class="dashboard-section recent-work" id="recent-work" aria-label="Last 48 hours">'
            '<div class="section-head"><div><h2>Last 48 hours</h2>'
            "<p>What merged and started, and the decisions still in play, from Firstmate's fleet ledger and "
-           "attention feed. Older and deferred decisions stay out of the way until you open them.</p></div></div>"]
+           "attention feed. Quiet decisions stay collapsed; dated decisions stay hidden until due.</p></div></div>"]
     for index, home in enumerate(homes):
         label = f"{home['label']}: " if len(homes) > 1 else ""
         for error in home["errors"]:
@@ -2877,16 +2937,14 @@ def attention_html(view: dict[str, object] | None) -> str:
             out.append(f'<h3>{html.escape(label)}Decisions in play</h3>'
                        + (f"<ul>{relevant}</ul>" if relevant else
                           f'<p class="empty">No open decision was raised, acted on or worked on in the last {days} days.</p>'))
-            count = decisions["background_count"]
+            rows = [row for row in decisions.get("background") or [] if row["relevance"] != "deferred"]
+            count = len(rows)
             if count:
-                rows = decisions.get("background")
-                listed = ("<ul>" + "".join(attention_decision_html(row, now) for row in rows) + "</ul>"
-                          if isinstance(rows, list) else
-                          '<p class="path">List them with: quarterdeck attention --json --all-decisions</p>')
+                listed = "<ul>" + "".join(attention_decision_html(row, now) for row in rows) + "</ul>"
                 out.append(
                     f'<details class="board-more" id="recent-background-{index}" data-refresh-key="recent-background:{index}">'
                     f'<summary>{count} background decision{"s" if count != 1 else ""} '
-                    f'(deferred, or quiet for {days} days)</summary>{listed}</details>'
+                    f'(quiet for {days} days)</summary>{listed}</details>'
                 )
     out.append("</section>")
     return "".join(out)
@@ -3210,7 +3268,7 @@ def backlog_recency(item: BacklogItem, now: datetime, task_ids: Set[str]) -> tup
 
 def rank_entry(
     entry: BoardEntry, backlog_item: BacklogItem | None, now: datetime, task_ids: Set[str],
-    session: DeskSession | None = None,
+    session: DeskSession | None = None, decision: dict[str, object] | None = None,
 ) -> None:
     """Set the entry's touched time, deferral, band, and sweep flag from the board and backlog.
 
@@ -3241,6 +3299,14 @@ def rank_entry(
     else:
         entry.band = "parked"
         entry.sweep = age is not None and age > SWEEP_DAYS * 86400
+
+    if decision is not None:
+        why = decision["relevance"]
+        entry.band = "desk" if why in RELEVANT_REASONS else "parked"
+        entry.deferred = "deferred" if why == "deferred" else ""
+        entry.sweep = False
+        if entry.band == "desk" and entry.touched is None:
+            entry.touched = parse_when(str(decision.get("last_touched_at") or decision.get("opened_at") or "")) or now
 
 
 def desk_session(boards: list[CaptainBoard], now: datetime) -> DeskSession | None:
@@ -3328,6 +3394,7 @@ def task_key(snapshot: HomeSnapshot, task: str, snapshots: list[HomeSnapshot]) -
 
 def board_view(
     homes: list[HomeSnapshot], now: datetime | None = None, *, fallback: bool = False,
+    decisions: dict[str, dict[str, object]] | None = None,
 ) -> BoardView | None:
     """Merge the homes' boards, drop settled items, add backlog items the boards miss, and rank them by recency."""
     now = now or datetime.now(timezone.utc)
@@ -3385,7 +3452,9 @@ def board_view(
                     ):
                         item = replace(item, links=[*item.links, ("Pull request", pr_url)])
             entry = BoardEntry(item, label, refresh_key=f"{board.path}:{item.id}", key=report_reference(target.spec.label, task_id))
-            rank_entry(entry, backlog_item, now, items_of(target).keys(), session)
+            rank_entry(entry, backlog_item, now, items_of(target).keys(), session, (decisions or {}).get(entry.key))
+            if entry.deferred and (decisions or {}).get(entry.key):
+                continue
             entry.refs = frozenset(task_key(target, ref, snapshots) for ref in entry.refs)
             if settle_relevance(entry, state, view):
                 continue
@@ -3403,7 +3472,9 @@ def board_view(
                 refresh_key=f"{snapshot.backlog_path}:{backlog_item.id}",
                 key=report_reference(snapshot.spec.label, backlog_item.id),
             )
-            rank_entry(entry, backlog_item, now, items_of(snapshot).keys(), session)
+            rank_entry(entry, backlog_item, now, items_of(snapshot).keys(), session, (decisions or {}).get(entry.key))
+            if entry.deferred and (decisions or {}).get(entry.key):
+                continue
             entry.refs = frozenset(task_key(snapshot, ref, snapshots) for ref in entry.refs)
             if settle_relevance(entry, state, view):
                 continue
@@ -3665,7 +3736,9 @@ def dependency_tokens(item: BacklogItem) -> set[str]:
     return {value.rstrip(".,;:!?)]}\"'`").strip() for value in values if value.strip()} - {item.id}
 
 
-def related_items(homes: list[HomeSnapshot], view: BoardView | None) -> list[RelatedItem]:
+def related_items(
+    homes: list[HomeSnapshot], view: BoardView | None, *, decisions: dict[str, dict[str, object]] | None = None,
+) -> list[RelatedItem]:
     """Reports and deferred or held captain calls that relate to the active session, most related first.
 
     The session is the desk's items plus in-flight backlog work. A candidate relates through an explicit relation
@@ -3674,7 +3747,7 @@ def related_items(homes: list[HomeSnapshot], view: BoardView | None) -> list[Rel
     """
     snapshots = all_snapshots(homes)
     if view is None:
-        view = board_view(homes, fallback=True)
+        view = board_view(homes, fallback=True, decisions=decisions)
     context_tasks: dict[str, str] = {}
     context_projects: dict[str, str] = {}
     context_topics: dict[str, str] = {}
@@ -5353,7 +5426,10 @@ def call_snapshot(
     }
 
 
-def build_snapshot(homes: list[HomeSnapshot], title: str, now: datetime, bodies: str = "all") -> dict[str, object]:
+def build_snapshot(
+    homes: list[HomeSnapshot], title: str, now: datetime, bodies: str = "all", *,
+    attention: dict[str, object] | None = None,
+) -> dict[str, object]:
     """The data the cloud artifact renders: the desk, this week, related items, the report list and the latest
     reaction per item. Nothing else. `bodies` picks which waiting reports carry their Markdown: "all" (the
     default), "desk" (only reports linked to a desk or this-week call, or related to the session) or "none"."""
@@ -5361,7 +5437,7 @@ def build_snapshot(homes: list[HomeSnapshot], title: str, now: datetime, bodies:
         raise ValueError(f"unknown --bodies {bodies!r}; use one of {', '.join(BODIES_MODES)}")
     ambiguous = assign_report_ids(homes)
     state = next((s.review_state for s in all_snapshots(homes) if s.review_state is not None), None) or ReviewState()
-    view = board_view(homes, now, fallback=True)
+    view = board_view(homes, now, fallback=True, decisions=decision_rows(homes, attention))
     calls: list[dict[str, object]] = []
     session: dict[str, object] | None = None
     assert view is not None
@@ -5424,10 +5500,10 @@ def artifact_page(snapshot: dict[str, object]) -> str:
 
 def export_snapshot(args: argparse.Namespace) -> int:
     try:
-        config, homes, _bearings = load_site(args)
+        config, homes, bearings = load_site(args)
         configured_title = config.get("page_title")
         title = args.title or (configured_title if isinstance(configured_title, str) else None) or DEFAULT_TITLE
-        snapshot = build_snapshot(homes, title, datetime.now(timezone.utc), args.bodies)
+        snapshot = build_snapshot(homes, title, bearings.generated, args.bodies, attention=bearings.attention)
         document = json.dumps(snapshot, indent=2, ensure_ascii=False) + "\n"
         outputs: list[Path] = []
         if args.artifact:
@@ -5876,8 +5952,6 @@ def make_parser() -> argparse.ArgumentParser:
     attention_parser.add_argument("--json", action="store_true", help="print the view as JSON")
     attention_parser.add_argument("--check", action="store_true", help="validate the Firstmate sources and print a one-line summary")
     attention_parser.add_argument("--all-decisions", action="store_true", help="also list the background decisions, not just their count")
-    attention_parser.add_argument("--recent-days", type=int, default=DEFAULT_RECENT_DAYS, metavar="N",
-                                  help=f"a decision is relevant when raised, acted on or worked on in the last N days (default {DEFAULT_RECENT_DAYS})")
     attention_parser.add_argument("--home", help="use this Firstmate home instead of configured homes or FM_HOME")
     attention_parser.add_argument("--config", type=Path, help="optional JSON config file")
     attention_parser.set_defaults(handler=attention)

@@ -13,7 +13,9 @@ out of the way until you ask for them.
   merged and started items, newest first, with their project and PR link;
 - "Decisions in play": open decisions raised, acted on by you, or worked on in
   the last 3 days;
-- a collapsed "background decisions" toggle with the deferred and quiet ones.
+- a collapsed "background decisions" toggle with quiet decisions; dated decisions stay hidden until due.
+
+The board and Captain's Call use the same relevance rule.
 
 A window the ledger does not fully cover says so. When a Firstmate source is
 missing or in a version Quarterdeck does not understand, the section shows a
@@ -36,7 +38,7 @@ to go through the background decisions too:
 quarterdeck attention --json --all-decisions
 ```
 
-`--recent-days N` widens or narrows the relevance window. The fields are in
+The shared relevance window is 3 days (`DEFAULT_RECENT_DAYS` in `quarterdeck.py`). The fields are in
 the [attention JSON reference](../reference/attention-json.md).
 
 ## After a Firstmate update

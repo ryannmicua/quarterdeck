@@ -19,7 +19,7 @@ quarterdeck reports relate <report-id> --to <task-id> [--remove] [--home PATH] [
 quarterdeck calls list [--home PATH] [--config FILE]
 quarterdeck calls set-relevance <task-id> current|stale [--reason TEXT] [--home PATH] [--config FILE]
 quarterdeck calls relate <task-id> --to <task-id> [--remove] [--home PATH] [--config FILE]
-quarterdeck attention --json|--check [--all-decisions] [--recent-days N] [--home PATH] [--config FILE]
+quarterdeck attention --json|--check [--all-decisions] [--home PATH] [--config FILE]
 quarterdeck export [--output FILE] [--artifact FILE] [--home PATH] [--config FILE] [--title TEXT] [--bodies all|desk|none] [--no-snapshot]
 quarterdeck import <actions.json|-> [--dry-run] [--home PATH] [--config FILE]
 quarterdeck board upsert <task-id> [--id ID] [--group GROUP] [--title TEXT] [--ask TEXT] [--detail TEXT] [--topic TEXT] [--project TEXT] [--brief-url URL] [--recommendation TEXT] [--link LABEL=URL ...] [--touch] [--touched-at ISO] [--home PATH] [--data-dir PATH]
@@ -82,8 +82,7 @@ for GitHub pull requests.
 
 `attention --json` prints the last 12, 12–24 and 24–48 hours of work and the
 open decisions split into relevant and background (schema
-`quarterdeck-attention.v1`); `--all-decisions` lists the background ones and
-`--recent-days N` sets the relevance window (default 3). `attention --check`
+`quarterdeck-attention.v1`); `--all-decisions` lists the background ones. The shared relevance window is 3 days. `attention --check`
 validates the Firstmate sources and prints one line. Both exit 1 with a
 structured error when a source is missing or in a version Quarterdeck does not
 understand. See the [attention JSON reference](attention-json.md).

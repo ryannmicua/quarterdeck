@@ -7,7 +7,7 @@ object, so the page, `quarterdeck attention`, and any reader such as Cadence
 give the same answer.
 
 ```text
-quarterdeck attention --json [--all-decisions] [--recent-days N] [--home PATH] [--config FILE]
+quarterdeck attention --json [--all-decisions] [--home PATH] [--config FILE]
 quarterdeck attention --check [--home PATH] [--config FILE]
 ```
 
@@ -120,13 +120,13 @@ and `background`. With `render --no-snapshot` the page skips the feed, and
 
 Each row is the feed's `open_decisions` row unchanged, plus `relevance`. Rows
 keep the feed's newest-first order. A row is relevant when it is not deferred
-and, within the last `--recent-days` days (default 3):
+and, within the last 3 days (`DEFAULT_RECENT_DAYS` in `quarterdeck.py`):
 
 | `relevance` | Rule, first match wins |
 | --- | --- |
 | `deferred` | The feed's `bucket` is `dated`: held until a later date. Never relevant, whatever its activity. |
 | `raised` | Its `opened_at` falls in the window. |
-| `captain_activity` | The ledger has a `captain.*` record for its task in the window. |
+| `captain_activity` | Its `last_touched_at` or a ledger `captain.*` record for its task falls in the window. |
 | `recent_work` | The ledger has any other record for its task in the window. |
 | `quiet` | None of the above. Background. |
 
