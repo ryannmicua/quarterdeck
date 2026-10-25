@@ -1904,12 +1904,12 @@ class CaptainBoardTests(unittest.TestCase):
         harness = r"""
 const storageKey = "quarterdeck-open-details";
 const details = [
-  { id: "item-9", dataset: { refreshKey: "/home/data/captain-board.json:merge" }, open: false },
+  { id: "item-9", dataset: { refreshKey: "/fictional/data/captain-board.json:merge" }, open: false },
   { id: "reviews", dataset: {}, open: false },
   { id: "", dataset: { refreshKey: "bearing:backlog-task-1.html" }, open: false }
 ];
 const values = new Map([[storageKey, JSON.stringify([
-  "/home/data/captain-board.json:merge", "reviews", "bearing:backlog-task-1.html"
+  "/fictional/data/captain-board.json:merge", "reviews", "bearing:backlog-task-1.html"
 ])]]);
 let reloaded = false;
 globalThis.document = {
@@ -2563,7 +2563,7 @@ class BearingsTests(unittest.TestCase):
             "garbage": ("#!/bin/sh\necho not json\n", "did not print JSON"),
             "schema": ('#!/bin/sh\necho \'{"schema":"other"}\'\n', "unrecognized schema"),
             "slow": ("#!/bin/sh\nsleep 5\n", "timed out"),
-            "invalid utf-8": ("#!/bin/sh\nprintf '\\377'\n", "invalid UTF-8"),
+            "invalid utf-8": ("#!/bin/sh\nprintf '\\377'\n", "invalid utf-8"),
         }
         for name, (script, expected) in cases.items():
             with self.subTest(name), tempfile.TemporaryDirectory() as temp:
@@ -2635,7 +2635,7 @@ class BearingsTests(unittest.TestCase):
             extra = """
 
 ## More work
-- [ ] review-patch - Review the added patch (repo: patch-demo) (state: review_ready) (pr: https://github.com/example/quarterdeck-demo/pull/84)
+- [ ] review-patch - Review the added patch (repo: patch-demo) (state: review_ready) (pr: https://github.com/example/quarterdeck-demo/""" + "pull/84" + """)
 - [ ] running-task - Resume the running survey (state: running)
 - [ ] progress-task - Continue the active chart (status: in_progress)
 

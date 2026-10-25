@@ -1725,7 +1725,7 @@ HOLD_REASON_PREFIX = "fm-hold-v1:"
 
 
 def decode_hold_reason(value: str) -> str:
-    """Decode Firstmate's reversible hold-reason encoding (fm-hold-v1: + base64 UTF-8); other text is unchanged."""
+    """Decode Firstmate's reversible hold-reason encoding (fm-hold-v1: + base64 utf-8); other text is unchanged."""
     if not value.startswith(HOLD_REASON_PREFIX):
         return value
     payload = value[len(HOLD_REASON_PREFIX):]
@@ -1984,7 +1984,7 @@ def run_bearings_snapshot(
     try:
         data = json.loads(stdout.decode("utf-8"))
     except UnicodeDecodeError:
-        return None, "the snapshot script printed invalid UTF-8"
+        return None, "the snapshot script printed invalid utf-8"
     except json.JSONDecodeError:
         return None, "the snapshot script did not print JSON"
     if not isinstance(data, dict) or data.get("schema") != "fm-bearings.v1":
@@ -2573,7 +2573,7 @@ def read_fleet_ledger(path: Path) -> list[dict[str, object]] | None:
     except OSError as exc:
         raise AttentionSourceError("ledger", "ledger_unreadable", f"cannot read {path}: {exc.strerror or exc}") from exc
     except UnicodeDecodeError as exc:
-        raise AttentionSourceError("ledger", "ledger_malformed", f"{path} is not UTF-8 text") from exc
+        raise AttentionSourceError("ledger", "ledger_malformed", f"{path} is not utf-8 text") from exc
     lines = text.split("\n")
     records: list[dict[str, object]] = []
     seen: set[str] = set()
