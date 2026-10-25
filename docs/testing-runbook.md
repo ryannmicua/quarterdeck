@@ -140,3 +140,13 @@ newest event stays visible. Qualified project names from both registry entries
 and waiting items must work with set and explicit project queries. Empty project
 results report unknown status when feed, ledger, home, backlog, child, registry,
 or board data is unavailable, or when the feed is deliberately skipped.
+
+
+Board-completeness regressions exercise real reads of malformed JSON, non-object
+boards, missing or invalid item lists, skipped records, ignored project metadata,
+invalid UTF-8, and a directory at the board-file path. Run each against parent
+and child homes: empty project summaries must say status unavailable, while a
+valid empty board may confirm nothing is waiting. Project-query regressions use
+two qualified projects sharing a short name and compare explicit query output
+with saved-priority output, including previously saved short names, `--more`,
+and exact-name precedence.

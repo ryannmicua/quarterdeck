@@ -5452,6 +5452,98 @@ class AttentionTests(unittest.TestCase):
             self.assertIn("older-home-5", all_text)
             self.assertNotIn("older-home-5", visible)
 
+    def test_board_read_and_parse_warnings_prevent_project_completion_claims(self) -> None:
+        raw_item = {"id": "choice", "task": "choice", "group": "decide", "title": "Board choice", "ask": "Choose", "project": "board-project"}
+        good_board = {"version": 1, "updated_at": ATTENTION_NOW.isoformat(), "items": [raw_item]}
+        cases = {
+            "valid": json.dumps(good_board),
+            "empty": json.dumps(dict(good_board, items=[])),
+            "malformed": "{",
+            "non-object": "[]",
+            "missing-items": json.dumps({"version": 1, "updated_at": ATTENTION_NOW.isoformat()}),
+            "invalid-items": json.dumps(dict(good_board, items={})),
+            "skipped-record": json.dumps(dict(good_board, items=[dict(raw_item, ask=None)])),
+            "non-object-record": json.dumps(dict(good_board, items=[None])),
+            "ignored-project": json.dumps(dict(good_board, items=[dict(raw_item, project=[])])),
+            "invalid-utf8": b"\xff",
+            "unreadable": None,
+        }
+        for case, content in cases.items():
+            for child_board in (False, True):
+                with self.subTest(case=case, child=child_board), tempfile.TemporaryDirectory() as temp:
+                    root = Path(temp)
+                    home = self.make_home(root, ledger="", feed=json.dumps({"schema": "fm-attention.v1", "open_decisions": []}))
+                    data = home / "data"
+                    if child_board:
+                        data = root / "child" / "data"
+                        data.mkdir(parents=True)
+                    (data / "backlog.md").write_text(
+                        "# Backlog\n\n## Held\n\n- [ ] choice - Pending choice (held: true) (hold-kind: captain)\n"
+                    )
+                    path = data / "captain-board.json"
+                    if content is None:
+                        path.mkdir()
+                    elif isinstance(content, bytes):
+                        path.write_bytes(content)
+                    else:
+                        path.write_text(content)
+                    snapshot = quarterdeck.load_home_snapshot(quarterdeck.HomeSpec("invented", home))
+                    if child_board:
+                        snapshot.children = [quarterdeck.load_home_snapshot(quarterdeck.HomeSpec("child", data.parent))]
+                    view = quarterdeck.attention_view([snapshot], ATTENTION_NOW, priority_projects=["board-project"])
+                    entry = view["homes"][0]["priorities"][0]
+                    page = quarterdeck.attention_html(view)
+                    if case == "valid":
+                        self.assertIs(entry["nothing_waiting"], False)
+                        self.assertEqual(len(entry["waiting"]), 1)
+                        self.assertIn("Board choice", page)
+                    elif case == "empty":
+                        self.assertIs(entry["nothing_waiting"], True)
+                        self.assertIn("nothing is waiting", page)
+                    else:
+                        self.assertIsNone(entry["nothing_waiting"])
+                        self.assertIn("waiting status unavailable", entry["say"])
+                        self.assertIn("waiting status unavailable", page)
+                        self.assertNotIn("nothing is waiting", page)
+
+    def test_short_project_queries_resolve_before_filtering(self) -> None:
+        for exact_short in (False, True):
+            with self.subTest(exact_short=exact_short), tempfile.TemporaryDirectory() as temp:
+                root = Path(temp)
+                home = self.make_home(root, ledger="", feed=json.dumps({"schema": "fm-attention.v1", "open_decisions": []}))
+                projects = ["acme/harbor", "beta/harbor", *(["harbor"] if exact_short else [])]
+                (home / "data" / "backlog.md").write_text(
+                    "# Backlog\n\n## Held\n\n" + "\n".join(
+                        f"- [ ] choice-{index} - Choice for {project} (repo: {project}) (held: true) (hold-kind: captain)"
+                        for index, project in enumerate(projects)
+                    )
+                )
+                canonical = "harbor" if exact_short else "acme/harbor"
+                saved = self.run_tool(root, "priorities", "set", "harbor", "--home", str(home))
+                self.assertEqual(saved.returncode, 0, saved.stderr)
+                prefs = json.loads((root / "config" / "quarterdeck" / "preferences.json").read_text())
+                self.assertEqual(prefs["priority_projects"], [canonical])
+                for more in (False, True):
+                    result = self.run_tool(root, "attention", "--json", "--project", "harbor", "--home", str(home), *(["--more"] if more else []))
+                    self.assertEqual(result.returncode, 0, result.stderr)
+                    view = json.loads(result.stdout)
+                    self.assertEqual(view["requested_project"], canonical)
+                    priority = view["homes"][0]["priorities"][0]
+                    expected = [canonical]
+                    self.assertEqual(priority["project"], canonical)
+                    self.assertEqual([item["project"] for item in priority["waiting"]], expected)
+                    self.assertIn(f"{canonical}: {len(expected)} waiting.", priority["say"])
+                    plain = self.run_tool(root, "attention", "--json", "--home", str(home), *(["--more"] if more else []))
+                    self.assertEqual(plain.returncode, 0, plain.stderr)
+                    self.assertEqual(view["homes"][0]["waiting"], json.loads(plain.stdout)["homes"][0]["waiting"])
+                prefs_path = root / "config" / "quarterdeck" / "preferences.json"
+                prefs_path.write_text(json.dumps({"version": 1, "priority_projects": ["harbor"]}))
+                plain = self.run_tool(root, "attention", "--json", "--home", str(home))
+                self.assertEqual(plain.returncode, 0, plain.stderr)
+                saved_home = json.loads(plain.stdout)["homes"][0]
+                self.assertEqual(saved_home["priorities"][0]["project"], canonical)
+                self.assertEqual([item["project"] for item in saved_home["waiting"]["decisions"]], [canonical])
+
 
 if __name__ == "__main__":
     unittest.main()

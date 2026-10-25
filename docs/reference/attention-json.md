@@ -185,8 +185,10 @@ name): `project`, `nothing_waiting`, `waiting` (all matching items across the
 three lists, unaffected by scope) and `say`, a short sentence such as
 "harbor-app: nothing is waiting." When required sources fail or the feed is
 skipped, an empty result has `nothing_waiting: null` and says "waiting status
-unavailable" instead. Projects match case-insensitively on the
-recorded project name or the part after `owner/`.
+unavailable" instead. Project names match case-insensitively. The set command and explicit project
+queries resolve short names to a recorded name before filtering; an exact
+recorded name takes precedence, followed by the first matching `owner/name`
+in alphabetical order. Scoping then matches that full recorded name.
 
 These members were added to schema `quarterdeck-attention.v1` without changing
 existing members. The preference file is

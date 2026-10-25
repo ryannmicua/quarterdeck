@@ -2881,12 +2881,12 @@ def board_engagement(homes: list[HomeSnapshot]) -> dict[str, float]:
 
 
 def project_matches(value: object, name: str) -> bool:
-    """True when a recorded project (a name or owner/name) is the named project, ignoring case."""
+    """True when a recorded project is the canonical named project, ignoring case."""
     if not isinstance(value, str) or not value.strip():
         return False
     wanted = name.strip().lower()
     recorded = value.strip().lower()
-    return recorded == wanted or recorded.rsplit("/", 1)[-1] == wanted
+    return recorded == wanted
 
 
 def waiting_item(kind: str, key: str, title: str, ask: str, project: str | None, group: str, at: str | None) -> dict[str, object]:
@@ -2979,16 +2979,25 @@ def attention_view(
     board_activity = board_engagement(homes)
     projects: dict[str, str] = {}
     views = [home_attention(snapshot, now, True, use_feed, feed_runner, board_activity, projects) for snapshot in homes]
-    names = [project] if project else list(priority_projects or [])
     shared = {"schema": ATTENTION_SCHEMA, "generated": iso_seconds(now.timestamp()), "homes": views}
     board = board_view(homes, now, fallback=True, decisions=decision_rows(homes, shared))
     waiting_by_home = [home_waiting(snapshot, view, board, projects) for snapshot, view in zip(homes, views)]
+    known = registered_projects(homes, waiting_by_home) if project or priority_projects else []
+    if project:
+        project = resolve_project(project, known)
+    names = [project] if project else []
+    if not project:
+        for name in priority_projects or []:
+            try:
+                names.append(resolve_project(name, known))
+            except ValueError:
+                names.append(name)
     has_priority = any(project_matches(item["project"], name)
                        for waiting in waiting_by_home for items in waiting.values() for item in items for name in names)
     for snapshot, view, waiting in zip(homes, views, waiting_by_home):
         complete = use_feed and bool(view["ok"]) and not any(
             owner.registry_error or (not owner.spec.remote_host and owner.error)
-            or (owner.board is not None and not owner.board.supported)
+            or (owner.board is not None and (not owner.board.supported or owner.board.warnings))
             for owner in all_snapshots([snapshot])
         )
         view["priorities"] = priority_entries(waiting, names, complete)
@@ -3091,11 +3100,13 @@ def read_priority_projects(path: Path) -> list[str]:
     return list(read_preferences(path).get("priority_projects", []))  # type: ignore[call-overload]
 
 
-def registered_projects(homes: list[HomeSnapshot], view: dict[str, object] | None = None) -> list[str]:
+def registered_projects(
+    homes: list[HomeSnapshot], waiting: list[dict[str, list[dict[str, object]]]] | None = None,
+) -> list[str]:
     """Project names recorded in route registries or on pending work."""
     names: set[str] = set()
     for owner in all_snapshots(homes):
-        if owner.spec.home is None or owner.spec.remote_host:
+        if owner.spec.home is None or owner.spec.remote_host or owner.registry_error:
             continue
         try:
             registry = (owner.spec.home / "data" / "secondmates.md").read_text(encoding="utf-8")
@@ -3106,11 +3117,20 @@ def registered_projects(homes: list[HomeSnapshot], view: dict[str, object] | Non
             projects = re.search(r"(?:^|;\s*)projects:\s*([^;]+)", route.group("attributes"), re.I) if route else None
             if projects:
                 names.update(name.strip("`") for name in re.split(r"[,\s]+", projects[1].strip()) if name.strip("`"))
-    view = view if view is not None else attention_view(homes)
-    for home in view["homes"]:
-        for items in [*home["waiting"].values(), *home["waiting_more"].values()]:
+    if waiting is None:
+        waiting = [home["waiting"] for home in attention_view(homes)["homes"]]
+    for queues in waiting:
+        for items in queues.values():
             names.update(str(item["project"]) for item in items if item["project"])
     return sorted(names, key=str.lower)
+
+
+def resolve_project(raw: str, known: list[str]) -> str:
+    match = next((name for name in known if name.lower() == raw.strip().lower()), None)
+    match = match or next((name for name in known if project_matches(name.rsplit("/", 1)[-1], raw)), None)
+    if match is None:
+        raise ValueError(f"unknown project {raw!r}; recorded projects: {', '.join(known) or 'none'}")
+    return match
 
 
 def write_preferences(path: Path, document: dict[str, object], homes: list[HomeSnapshot]) -> None:
@@ -3141,17 +3161,6 @@ def attention(args: argparse.Namespace) -> int:
         priorities = read_priority_projects(preferences_path(args))
         apply_review_marks(homes, load_review_state(validate_review_state_location(homes)))
         view = attention_view(homes, all_decisions=args.all_decisions, priority_projects=priorities, project=args.project, show_more=args.more)
-        if args.project:
-            known = registered_projects(homes, view)
-            match = next((name for name in known if name.lower() == args.project.strip().lower()), None)
-            match = match or next((name for name in known if project_matches(name, args.project)), None)
-            if match is None:
-                raise ValueError(f"unknown project {args.project!r}; recorded projects: {', '.join(known) or 'none'}")
-            view["requested_project"] = match
-            for home in view["homes"]:
-                for entry in home["priorities"]:
-                    entry["project"] = match
-                    entry["say"] = str(entry["say"]).replace(args.project, match, 1)
     except (OSError, ValueError) as exc:
         print(f"quarterdeck: {exc}", file=sys.stderr)
         return 2
@@ -3181,10 +3190,7 @@ def priorities(args: argparse.Namespace) -> int:
             known = registered_projects(homes)
             names = []
             for raw in args.projects:
-                match = next((name for name in known if name.lower() == raw.strip().lower()), None)
-                match = match or next((name for name in known if project_matches(name, raw)), None)
-                if match is None:
-                    raise ValueError(f"unknown project {raw!r}; registered projects: {', '.join(known) or 'none'}")
+                match = resolve_project(raw, known)
                 if match not in names:
                     names.append(match)
         document = read_preferences(path)
