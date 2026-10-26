@@ -6,10 +6,10 @@
 
 Quarterdeck turns running Firstmate homes' backlogs and scout reports into one
 local HTML review page. Serving is read-only by default; report review marks are
-available as an opt-in. When any selected home or registered secondmate has
-a captain board, the board leads the page. The shared
+available as an opt-in. Activity cards lead the page, followed by the captain
+board when any selected home or registered secondmate has one. The shared
 [decision relevance rules](docs/reference/attention-json.md#decisions) determine
-which decisions appear. Without a board, the waiting view leads, followed by
+which decisions appear. Without a board, the waiting view follows the cards, then
 Captain's Call, Underway, and Charted Next from Firstmate's `/bearings` digest. See
 [See recent work](docs/how-to/see-recent-work.md) for the waiting queues and
 recent-work display. Reports waiting on your
@@ -24,7 +24,14 @@ as a local artifact. Quarterdeck itself has no agent or build step.
 
 ## Features
 
-- Captain board: when a home has `data/captain-board.json`, the page leads with
+- Activity cards: the served page leads with a Cadence-style feed of what
+  Firstmate is doing, newest first, with a label, age, title and first line; tap
+  a card to read it. Decisions, merges and anything else waiting on you are
+  distinct "Needs you" cards that open to the ask, options and links and use the
+  desk's reaction controls. New cards slide in and are marked New until seen,
+  without a reload. See
+  [Watch Firstmate's activity as cards](docs/how-to/watch-activity-cards.md).
+- Captain board: when a home has `data/captain-board.json`, the desk groups
   decisions still in play, with background items collapsed. Items
   are cross-checked against the live backlog and can carry a decision-brief link
   and recommendation chip. Backlog items missing from the board still appear,
@@ -65,7 +72,7 @@ as a local artifact. Quarterdeck itself has no agent or build step.
   reports tied to the desk. A status line in the header and at the top of the
   desk says whether reactions are connected. See
   [Use the cloud artifact](docs/how-to/use-the-cloud-artifact.md).
-- Compact header: the page opens straight on the desk.
+- Compact header: the page opens straight on the activity cards.
 - Bearings-shaped page: Captain's Call, Underway, and Charted Next, each
   rendered with an empty-state sentence. Recent work uses the six-hour feed.
 - Captain's Call cards include local hold context, options, and recommendations

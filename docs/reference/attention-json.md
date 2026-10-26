@@ -81,6 +81,7 @@ members without changing the schema name.
 | `recent_work` | See below, or `null` when the ledger could not be read. |
 | `decision_relevance` | `{recent_days, since}`: the relevance window. |
 | `recent_work_6h` | Merged and started items of the last six hours, newest first; each is a recent-work item plus `event` (`merged` or `started`). `[]` when none or the ledger could not be read. |
+| `done_recent` | Completions for the activity cards, including registered local secondmates; see [Recent completions](#recent-completions). |
 | `show_recent` | `true` only when `recent_work_6h` is not empty. Readers skip recent work otherwise. |
 | `waiting`, `waiting_more`, `waiting_scope`, `more_count` | See [Waiting](#waiting-and-priorities). |
 | `priorities` | See [Waiting](#waiting-and-priorities). |
@@ -90,6 +91,23 @@ Error `source` is `home`, `backlog`, `ledger`, or `decisions`. Error `code` is
 one of `home_not_local`, `backlog_unreadable`, `ledger_unreadable`,
 `ledger_malformed`, `ledger_version`, `feed_missing`, `feed_failed`,
 `feed_malformed`, or `feed_schema`. Show `message` to the reader as it is.
+
+### Recent completions
+
+`done_recent` includes `task.merged` events and `captain.answered` events with
+mode `done`, `release`, or `reconciled`, within the inclusive six-hour window
+ending at `generated`. It keeps the latest qualifying event per task per home.
+A finished backlog item without such an event contributes a completion when
+its first parseable `merged`, `done`, or `closed` attribute falls in that window.
+Homes whose ledger cannot be read contribute no completions; a missing ledger
+still permits dated backlog completions. The list is empty when none qualify.
+
+Items have `at`, `task`, `title`, `project`, `pr`, `home` (the owning home's label),
+and `event`: `merged`, `answered`, `closed` (mode `reconciled`), or `finished`
+(backlog completion). Ledger-derived items also have `via`. Task IDs remain
+local to their owning home. This list is independent of waiting priority scope
+and is not globally sorted; the activity feed sorts it for display. It does not
+change the saved briefing view's `done` section described below.
 
 ### Recent work
 

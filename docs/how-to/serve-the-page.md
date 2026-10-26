@@ -16,7 +16,9 @@ rules. Serving costs no tokens and needs no Firstmate session.
 quarterdeck serve
 ```
 
-Open `http://127.0.0.1:8765/`. The page shows a "Generated at" time and reloads
+Open `http://127.0.0.1:8765/`. The page leads with an activity-card feed
+(see [Watch Firstmate's activity as cards](watch-activity-cards.md) for polling
+and unread behavior). The page shows a "Generated at" time and reloads
 itself every 60 seconds, restoring open items and sections after each refresh
 when browser session storage is available. Rendered pages are cached for 30
 seconds so rapid reloads stay cheap. Automatic refresh waits while a reaction
@@ -37,8 +39,8 @@ address and for its JSON output.
 | `--no-snapshot` | off | Skip the Firstmate snapshot script and always parse backlogs. |
 | `--allow-marks` | off | Enable the "Mark reviewed", "Unmark", "Discard" and "Undiscard" buttons for reports, reactions sent to Firstmate, and saving briefing views from the page. |
 
-By default the server only answers `GET` for the main page and the generated
-report, backlog and backlog-item pages. It has no write endpoints. With
+By default the server only answers `GET` for the main page, `cards.json` (the
+feed's cards) and the generated report, backlog and backlog-item pages. It has no write endpoints. With
 `--allow-marks` it also accepts a `POST` that marks or
 unmarks a known report, a `POST` that sends a reaction (see below) and a `POST`
 that saves a briefing view to the preferences file;

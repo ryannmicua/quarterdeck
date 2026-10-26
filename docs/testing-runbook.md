@@ -209,3 +209,47 @@ captain holds without activity can contribute additional background decisions,
 so count the complete fixture when checking the older-decision card. Keep all
 mutations fictional, retain CLI JSON and desktop/mobile screenshots as evidence,
 then stop servers, close test tabs and remove fixture/state directories.
+
+
+### Activity card reconciliation
+
+Run `PYTHONPATH=tests python3 -m unittest test_quarterdeck.ActivityCardTests -v`.
+The fixtures use disposable fictional homes; set `TMPDIR` to a directory inside
+the worktree when file writes must stay within it. Node.js on PATH executes the
+generated polling script against DOM controls and scripted fetch responses.
+Checks cover drafts, focus, selected reactions and pending sends during removal,
+replacement and section changes; idle cards reorder and move without losing open
+details, and an empty payload keeps a busy card visible until it becomes idle.
+Python cases check timestamp revisions, stable desk links after renumbering,
+uncapped section counts, and ledger/backlog completions from registered homes.
+The executable check also exercises desk navigation to present and missing
+targets, including guarded reloads during replies, sends and view edits.
+Observer cases cover below-half visibility, interrupted dwell time, hidden tabs,
+returning to the tab, explicit opening, and removing or replacing a timed card.
+The DOM harness queues toggle events when open state changes: restoring an
+offscreen expanded card must leave its new revision unseen, while closing and
+reopening it explicitly acknowledges that revision. Reaction cases cross the
+one-hour age boundary with reply controls enabled and disabled; unchanged
+records keep their revision, while changed text, choice, source or absolute
+timestamp and reaction removal change it.
+The harness checks the header and Cards-heading unread counts on arrival and
+acknowledgement, and checks that arrival, acknowledgement, replacement and
+removal preserve the page title. Seen persistence is asserted through executed
+localStorage writes.
+No real home data or reaction endpoint is modified. Temporary homes clean up
+automatically; remove the empty TMPDIR directory after the run.
+
+Manual gate check (2026-10-26): serve `AttentionTests.make_home` with fixture
+feed and ledger timestamps shifted to the current time. Board-backed calls also
+need open backlog rows; otherwise the board correctly treats them as settled.
+Use disposable XDG config and state outside the checkout/home, and only a
+fictional `fm-inbox.sh note` receiver for reaction delivery. Observe an actual
+15-second poll after the 30-second server cache expires. Keep a real reply draft
+open when proving polling independently of the normal 60-second page reload.
+Check an expanded card updated offscreen remains New, then scroll it to about
+10% visibility for longer than 1.2 seconds. For native hidden-tab timing in
+headless Chrome, tab selection may leave every page visible: CDP
+`Browser.setWindowBounds` with `windowState: minimized` produces a real
+`document.hidden` transition; restore `normal` and require a fresh dwell.
+Capture desktop/mobile details and Done recently screenshots. Stop the isolated
+server/browser and remove fictional data, profile and private state afterward.

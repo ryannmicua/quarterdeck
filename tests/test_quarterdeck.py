@@ -6054,5 +6054,472 @@ class AttentionTests(unittest.TestCase):
             self.assertEqual(json.loads(prefs.read_text())["views"][2]["sections"], [{"type": "information"}, {"type": "waiting"}])
 
 
+class ActivityCardTests(unittest.TestCase):
+    """The feed is derived from the attention view on each render; nothing about it is stored."""
+
+    def site(self, root: Path, allow_marks: bool = False) -> tuple[list, quarterdeck.Bearings]:
+        home = AttentionTests().make_home(root)
+        snapshots = [quarterdeck.load_home_snapshot(quarterdeck.HomeSpec("invented", home))]
+        bearings = quarterdeck.build_bearings(snapshots, ATTENTION_NOW, use_snapshot=False)
+        bearings.attention = quarterdeck.attention_view(snapshots, ATTENTION_NOW, all_decisions=True)
+        return snapshots, bearings
+
+    def test_cards_are_grouped_newest_first_with_needs_you_first(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            snapshots, bearings = self.site(Path(temp))
+            cards = quarterdeck.site_cards(snapshots, bearings, False)
+            self.assertEqual([(card["section"], card["title"]) for card in cards], [
+                ("needs_you", "Approve the tide table format"), ("needs_you", "Kelp survey scope"),
+                ("needs_you", "Pick the new harbor map vendor"), ("recent", "Started: Buoy light refit"),
+                ("done", "Merged: dock-notes"), ("done", "Closed: moot-call"),
+                ("done", "Answered: Approve the tide table format"), ("done", "Merged: Fix the pier lights"),
+            ])
+            self.assertEqual([card["at"] for card in cards[:3]], sorted((card["at"] for card in cards[:3]), reverse=True))
+            self.assertEqual(cards[0]["summary"], "Format choice", "the first line of the ask sits under the title")
+            self.assertEqual(cards[0]["status"], "Decision waiting")
+
+    def test_sections_do_not_silently_truncate_cards(self) -> None:
+        homes = [{"label": "invented", "waiting": {
+            kind: [{"key": f"{kind}-{index}", "title": f"Call {index}", "at": None}
+                   for index in range(65)] for kind in ("decisions", "informational")},
+            "recent_work_6h": [{"event": "started", "task": str(index), "title": "Work", "at": "2026-07-02T11:00:00Z"}
+                                for index in range(65)],
+            "done_recent": [{"event": "finished", "task": str(index), "title": "Done", "at": "2026-07-02T11:00:00Z"}
+                            for index in range(65)]}]
+        cards = quarterdeck.activity_cards({"homes": homes}, None, None)
+        self.assertEqual({section: sum(card["section"] == section for card in cards)
+                          for section, _ in quarterdeck.CARD_SECTIONS},
+                         {"needs_you": 65, "recent": 65, "information": 65, "done": 65})
+
+    def test_timestamp_changes_revision_but_elapsed_time_does_not(self) -> None:
+        card = {"id": "a", "section": "needs_you", "label": "Needs you", "title": "Choice",
+                "summary": "Choose", "status": "", "body": "", "at": "2026-07-02T10:00:00Z"}
+        before = quarterdeck.card_html(card, ATTENTION_NOW)
+        self.assertEqual(before[0], quarterdeck.card_html(card, ATTENTION_NOW + timedelta(hours=1))[0])
+        after = quarterdeck.card_html(dict(card, at="2026-07-02T11:00:00Z"), ATTENTION_NOW)
+        self.assertNotEqual(before[0], after[0])
+        self.assertIn('datetime="2026-07-02T11:00:00Z"', after[1])
+
+    def test_reaction_revisions_track_records_instead_of_elapsed_age(self) -> None:
+        item = {"key": "invented/choice", "title": "Choose a map", "ask": "Which map?", "group": "decide",
+                "at": "2026-07-02T10:00:00Z"}
+        attention = {"homes": [{"label": "invented", "waiting": {"decisions": [item]}}]}
+        reaction = {"id": "reaction-1", "at": "2026-07-02T11:01:00Z", "source": "page",
+                    "reaction": "hold", "text": "Wait for review"}
+
+        def payload(now: datetime, latest: dict | None, enabled: bool) -> dict:
+            context = quarterdeck.ReactionContext(enabled=enabled, now=now,
+                                                  latest={("call", item["key"]): latest} if latest else {})
+            cards = quarterdeck.activity_cards(attention, None, context)
+            return json.loads(quarterdeck.cards_payload(cards, now))["cards"][0]
+
+        for enabled in (False, True):
+            with self.subTest(enabled=enabled):
+                before = payload(ATTENTION_NOW, reaction, enabled)
+                later = payload(ATTENTION_NOW + timedelta(minutes=2), reaction, enabled)
+                self.assertEqual(before["rev"], later["rev"])
+                self.assertIn(reaction["at"], before["html"])
+                self.assertIn("Wait for review", before["html"])
+                for changed in (None, dict(reaction, text="Review complete"), dict(reaction, reaction="approve"),
+                                dict(reaction, source="artifact"), dict(reaction, at="2026-07-02T11:02:00Z")):
+                    self.assertNotEqual(before["rev"], payload(ATTENTION_NOW, changed, enabled)["rev"])
+
+    def test_polling_preserves_busy_cards_and_reconciles_idle_cards(self) -> None:
+        node = shutil.which("node")
+        if node is None:
+            self.skipTest("Node.js is not available to execute the generated cards script")
+        harness = r"""
+const assert = require('node:assert/strict');
+const feedEvents = {}, documentEvents = {};
+let now = 0, timerId = 0, reloads = 0, saved = {}, editorDirty = false;
+const pendingTimers = new Map();
+globalThis.setTimeout = (callback, delay) => {
+  const id = ++timerId; pendingTimers.set(id, {callback, due: now + delay}); return id;
+};
+globalThis.clearTimeout = id => pendingTimers.delete(id);
+function tick(ms) {
+  const until = now + ms;
+  while (true) {
+    const next = [...pendingTimers].filter(([, timer]) => timer.due <= until).sort((a, b) => a[1].due - b[1].due)[0];
+    if (!next) break;
+    now = next[1].due; pendingTimers.delete(next[0]); next[1].callback();
+  }
+  now = until;
+}
+let observer;
+globalThis.IntersectionObserver = class {
+  constructor(callback) { this.callback = callback; this.watched = new Set(); observer = this; }
+  observe(card) { this.watched.add(card); }
+  unobserve(card) { this.watched.delete(card); }
+  disconnect() { this.watched.clear(); }
+  emit(card, ratio) { this.callback([{target: card, isIntersecting: ratio > 0, intersectionRatio: ratio}]); }
+};
+class Card {
+  constructor(id, rev) {
+    this.dataset = {cardId: id, cardRev: rev};
+    this.classes = new Set();
+    this.classList = {contains: x => this.classes.has(x), add: x => this.classes.add(x), remove: x => this.classes.delete(x)};
+    let open = false;
+    this.details = {closest: () => this};
+    Object.defineProperty(this.details, 'open', {
+      get: () => open,
+      set: value => {
+        if (value === open) return;
+        open = value;
+        setTimeout(() => feedEvents.toggle?.({target: this.details}), 0);
+      }
+    });
+    this.field = {value: '', matches: () => true};
+    this.selected = false;
+    this.sending = false;
+  }
+  contains(field) { return this.field === field; }
+  querySelectorAll(selector) { return selector === '.reaction-text' ? [this.field] : []; }
+  querySelector(selector) {
+    if (selector === 'details') return this.details;
+    return this.selected || this.sending ? {} : null;
+  }
+  get nextElementSibling() { return this.parentElement?.children[this.parentElement.children.indexOf(this) + 1] || null; }
+  remove() {
+    if (this.parentElement) this.parentElement.children.splice(this.parentElement.children.indexOf(this), 1);
+    this.parentElement = null;
+  }
+  replaceWith(fresh) {
+    const parent = this.parentElement, index = parent.children.indexOf(this);
+    this.remove(); parent.children.splice(index, 0, fresh); fresh.parentElement = parent;
+  }
+  after(card) {
+    const parent = this.parentElement;
+    card.remove(); parent.children.splice(parent.children.indexOf(this) + 1, 0, card); card.parentElement = parent;
+  }
+  addEventListener() {}
+}
+const lists = Object.fromEntries(['needs_you', 'recent', 'information', 'done'].map(name => [name, {
+  children: [],
+  get firstElementChild() { return this.children[0] || null; },
+  prepend(card) { card.remove(); this.children.unshift(card); card.parentElement = this; }
+}]));
+const all = () => Object.values(lists).flatMap(list => list.children);
+const sections = Object.values(lists).map(list => ({querySelector: () => list.children[0] || null}));
+const feed = {
+  dataset: {live: '1', poll: '15', endpoint: 'cards.json'},
+  querySelectorAll(selector) {
+    if (selector === '.act-card') return all();
+    if (selector === '.act-card.unseen') return all().filter(card => card.classes.has('unseen'));
+    if (selector === '.act-section') return sections;
+    return [];
+  },
+  querySelector(selector) { return lists[selector.match(/"([^"]+)"/)[1]]; },
+  addEventListener(name, callback) { feedEvents[name] = callback; }
+};
+const controls = Object.fromEntries(['cards-count', 'cards-new', 'cards-empty'].map(id => [id, {}]));
+globalThis.document = {
+  title: 'Quarterdeck', hidden: false, activeElement: null,
+  getElementById(id) { return id === 'cards' ? feed : controls[id]; },
+  addEventListener(name, callback) { (documentEvents[name] ||= []).push(callback); },
+  querySelectorAll(selector) { return selector === '.reaction-text' ? all().map(card => card.field) : []; },
+  querySelector() { return editorDirty || all().some(card => card.selected || card.sending) ? {} : null; },
+  createElement() {
+    return {content: {}, set innerHTML(html) {
+      this.content.firstElementChild = new Card(html.match(/data-card-id="([^"]+)"/)[1], html.match(/data-card-rev="([^"]+)"/)[1]);
+    }};
+  }
+};
+globalThis.window = {IntersectionObserver};
+globalThis.location = {protocol: 'http:', hash: '', reload() { reloads++; }};
+globalThis.localStorage = {getItem: () => null, setItem(key, value) { saved = JSON.parse(value); }};
+let poll, payload;
+globalThis.setInterval = (callback, delay) => { if (delay === 15000) poll = callback; };
+globalThis.fetch = async () => ({ok: true, json: async () => payload});
+const spec = (id, rev = '1', section = 'needs_you') => ({id, rev, section,
+  html: '<article data-card-id="' + id + '" data-card-rev="' + rev + '"></article>'});
+async function update(cards) { payload = {schema: 'quarterdeck-cards.v1', cards}; await poll(); }
+const ids = section => lists[section].children.map(card => card.dataset.cardId);
+function visibility(hidden) {
+  document.hidden = hidden;
+  for (const callback of documentEvents.visibilitychange || []) callback();
+}
+function clickDesk(hash, extra = {}) {
+  let prevented = false;
+  const link = {hash};
+  feedEvents.click({target: {closest: selector => selector === '[data-desk-link]' ? link : null}, button: 0,
+    preventDefault() { prevented = true; }, ...extra});
+  return prevented;
+}
+function openCard(card) {
+  const summary = {parentElement: card.details, closest: () => card};
+  feedEvents.click({target: {closest: selector => selector === '.act-card > details > summary' ? summary : null}, button: 0});
+  card.details.open = !card.details.open;
+}
+"""
+        verify = r"""
+(async () => {
+  await update([spec('a'), spec('b')]);
+  assert.equal(document.title, 'Quarterdeck');
+  assert.equal(controls['cards-count'].textContent, '2');
+  assert.equal(controls['cards-count'].hidden, false);
+  assert.equal(controls['cards-new'].textContent, '2 new');
+  assert.equal(controls['cards-new'].hidden, false);
+  const a = lists.needs_you.children[0], b = lists.needs_you.children[1];
+  controls['item-present'] = {open: false};
+  assert.equal(clickDesk('#item-present'), false);
+  assert.equal(controls['item-present'].open, true);
+  assert.equal(reloads, 0);
+  assert.equal(clickDesk('#item-absent', {ctrlKey: true}), false);
+  assert.equal(reloads, 0);
+  assert.equal(clickDesk('#item-new-call'), true);
+  assert.equal(location.hash, '#item-new-call');
+  assert.equal(reloads, 1);
+  for (const mode of ['focus', 'text', 'selected', 'sending', 'editor']) {
+    document.activeElement = mode === 'focus' ? a.field : null;
+    a.field.value = mode === 'text' ? 'Draft' : '';
+    a.selected = mode === 'selected'; a.sending = mode === 'sending'; editorDirty = mode === 'editor';
+    const before = reloads;
+    assert.equal(clickDesk('#item-promoted-call'), true);
+    tick(1000);
+    assert.equal(reloads, before, mode + ' failed to defer navigation reload');
+    document.activeElement = null; a.field.value = ''; a.selected = false; a.sending = false; editorDirty = false;
+    tick(1000);
+    assert.equal(reloads, before + 1);
+    assert.equal(location.hash, '#item-promoted-call');
+  }
+  await update([spec('b'), spec('a')]);
+  assert.deepEqual(ids('needs_you'), ['b', 'a']);
+  assert.equal(lists.needs_you.children[0], b);
+  for (const mode of ['focus', 'text', 'selected', 'sending']) {
+    document.activeElement = mode === 'focus' ? a.field : null;
+    a.field.value = mode === 'text' ? 'Unsent reply' : '';
+    a.selected = mode === 'selected'; a.sending = mode === 'sending';
+    await update([spec('b')]);
+    assert.ok(all().includes(a), mode + ' removed the active reply');
+    await update([spec('a', '2', 'done'), spec('b')]);
+    assert.equal(a.parentElement, lists.needs_you, mode + ' moved the active reply');
+    assert.equal(a.dataset.cardRev, '1', mode + ' replaced the active reply');
+    await update([spec('a', '2'), spec('b')]);
+    assert.equal(a.dataset.cardRev, '1');
+  }
+  document.activeElement = null; a.field.value = ''; a.selected = false; a.sending = false;
+  a.details.open = true;
+  await update([spec('a', '2', 'done'), spec('b')]);
+  assert.deepEqual(ids('needs_you'), ['b']);
+  assert.deepEqual(ids('done'), ['a']);
+  assert.equal(lists.done.children[0].dataset.cardRev, '2');
+  assert.equal(lists.done.children[0].details.open, true);
+  await update([spec('b', '1', 'done'), spec('a', '2', 'done')]);
+  assert.deepEqual(ids('needs_you'), []);
+  assert.deepEqual(ids('done'), ['b', 'a']);
+  lists.done.children[0].field.value = 'Keep me';
+  await update([]);
+  assert.deepEqual(ids('done'), ['b']);
+  assert.equal(controls['cards-empty'].hidden, true);
+  lists.done.children[0].field.value = '';
+  await update([]);
+  assert.deepEqual(all(), []);
+  assert.equal(controls['cards-empty'].hidden, false);
+  await update([spec('visible')]);
+  let visible = lists.needs_you.children[0];
+  observer.emit(visible, 0.1); tick(1200);
+  assert.equal(saved.visible, undefined);
+  observer.emit(visible, 0.5); tick(1199);
+  assert.equal(saved.visible, undefined);
+  observer.emit(visible, 0.1); tick(1);
+  assert.equal(saved.visible, undefined);
+  observer.emit(visible, 0.5); tick(600);
+  visibility(true); tick(1200);
+  assert.equal(saved.visible, undefined);
+  openCard(visible);
+  assert.equal(saved.visible, undefined);
+  visibility(false);
+  assert.ok(observer.watched.has(visible));
+  observer.emit(visible, 0.5); tick(1199);
+  assert.equal(saved.visible, undefined);
+  tick(1);
+  assert.equal(saved.visible, '1');
+  assert.equal(controls['cards-count'].hidden, true);
+  assert.equal(controls['cards-new'].hidden, true);
+  assert.equal(document.title, 'Quarterdeck');
+  await update([spec('visible', '2')]);
+  assert.equal(document.title, 'Quarterdeck');
+  assert.equal(controls['cards-count'].textContent, '1');
+  assert.equal(controls['cards-new'].textContent, '1 new');
+  visible = lists.needs_you.children[0];
+  observer.emit(visible, 0.5); tick(600);
+  await update([spec('visible', '3')]); tick(1200);
+  assert.equal(saved.visible, '1');
+  visible = lists.needs_you.children[0];
+  assert.equal(visible.details.open, true);
+  assert.equal(saved.visible, '1', 'restoring an offscreen open card acknowledged its changed revision');
+  openCard(visible);
+  assert.equal(saved.visible, '1', 'closing acknowledged the changed revision');
+  openCard(visible);
+  assert.equal(saved.visible, '3');
+  await update([spec('removed')]);
+  observer.emit(lists.needs_you.children[0], 0.5);
+  await update([]); tick(1200);
+  assert.equal(saved.removed, undefined);
+  assert.equal(document.title, 'Quarterdeck');
+})().catch(error => { console.error(error); process.exitCode = 1; });
+"""
+        script = re.search(r"<script>(.*?)</script>", quarterdeck.ACTIVITY_SCRIPT, re.S)[1]
+        page = quarterdeck.build_html([], "Quarterdeck")
+        reload_script = next(script for script in re.findall(r"<script>(.*?)</script>", page, re.S)
+                             if "function quarterdeckReload()" in script)
+        result = subprocess.run([node, "-e", harness + reload_script + script + verify], text=True, capture_output=True)
+        self.assertEqual(result.returncode, 0, result.stderr)
+
+    def test_desk_links_keep_the_same_target_after_renumbering(self) -> None:
+        entry = quarterdeck.BoardEntry(
+            quarterdeck.BoardItem(id="choice", task="choice", group="decide", title="Choose a map", ask="Which map?"),
+            "invented", number=1, refresh_key="/fictional/captain-board.json:choice", key="invented/choice")
+        board = quarterdeck.BoardView(groups={}, unsorted=[], hidden=0, warnings=[], status=[], bands={"desk": [entry]})
+        item = {"key": entry.key, "title": entry.item.title, "ask": entry.item.ask, "group": "decide"}
+        attention = {"homes": [{"label": "invented", "waiting": {"decisions": [item]}}]}
+        card = quarterdeck.activity_cards(attention, board, None)[0]
+        target = re.search(r'href="#([^"]+)"', card["body"])[1]
+        original = quarterdeck.board_entry_html(entry, False, ATTENTION_NOW)
+        entry.number += 12
+        renumbered = quarterdeck.board_entry_html(entry, False, ATTENTION_NOW)
+        updated = quarterdeck.activity_cards(attention, board, None)[0]
+        self.assertIn(f'id="{target}"', original)
+        self.assertIn(f'id="{target}"', renumbered)
+        self.assertIn(f'href="#{target}"', updated["body"])
+
+    def test_done_records_use_existing_ledger_and_dated_backlog(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            home = AttentionTests().make_home(root, feed=json.dumps({"schema": "fm-attention.v1", "open_decisions": []}))
+            with (home / "data" / "backlog.md").open("a") as backlog:
+                backlog.write("\n- [x] filed - Filed notes (done: 2026-07-02T09:00:00Z)\n"
+                              "- [x] old - Old notes (done: 2026-07-01)\n"
+                              "- [x] future - Future notes (done: 2026-07-03)\n"
+                              "- [x] unknown - Undated notes\n")
+            child = AttentionTests().make_home(root / "child", ledger="", feed=json.dumps({"schema": "fm-attention.v1", "open_decisions": []}))
+            (child / "data" / "backlog.md").write_text(
+                "# Backlog\n\n## Done\n\n- [x] child-filed - Child notes (closed: 2026-07-02T10:00:00Z)\n")
+            (home / "data" / "secondmates.md").write_text(
+                f"# Second Mates\n\n- mate - Fictional notes. (home: {child}; projects: notes; added 2026-01-04)\n")
+            snapshots = [quarterdeck.load_home_snapshot(quarterdeck.HomeSpec("invented", home), discover_secondmates=True)]
+            attention = quarterdeck.attention_view(snapshots, ATTENTION_NOW, all_decisions=True)
+            done = [card for card in quarterdeck.activity_cards(attention, None, None) if card["section"] == "done"]
+            self.assertEqual({card["title"] for card in done}, {
+                "Merged: dock-notes", "Merged: Fix the pier lights", "Answered: tide-call", "Closed: moot-call",
+                "Finished: Filed notes", "Finished: Child notes"})
+            self.assertEqual([card["at"] for card in done], sorted((card["at"] for card in done), reverse=True))
+            self.assertFalse(any('data-reaction-kind' in card["body"] for card in done))
+
+    def test_page_shows_cards_with_label_time_title_first_line_and_full_text(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            snapshots, bearings = self.site(Path(temp))
+            page = quarterdeck.build_html(snapshots, "Quarterdeck", bearings=bearings, refresh_seconds=60)
+            self.assertLess(page.index('id="cards"'), page.index("Waiting on you"), "the feed leads the page")
+            article = re.search(r'<article class="act-card act-need".*?</article>', page, re.S).group(0)
+            self.assertIn('<span class="act-label">Needs you</span>', article)
+            self.assertIn('<time class="act-time" datetime="2026-07-02T11:01:00Z">under an hour ago</time>', article)
+            self.assertIn('<span class="act-title">Approve the tide table format</span>', article)
+            self.assertIn('<span class="act-line">Format choice</span>', article)
+            self.assertIn('<div class="act-body">', article)
+            self.assertIn('data-live="1"', page)
+            self.assertIn('id="cards-new"', page)
+            self.assertIn("Merged: Fix the pier lights", page)
+            self.assertNotIn("<reaction", page)
+            self.assertNotIn("data-reaction-kind", article, "no reply controls unless marks are allowed")
+
+    def test_needs_you_card_opens_to_ask_options_links_and_reaction_controls(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            home = AttentionTests().make_home(Path(temp), ledger="")
+            (home / "data" / "backlog.md").write_text(
+                "# Backlog\n\n## Held\n\n- [ ] merge-tides - Merge the tide table (held: true) (hold-kind: captain) (since: 2026-07-02T10:00:00Z)\n")
+            (home / "data" / "captain-board.json").write_text(json.dumps({
+                "version": 1, "updated_at": ATTENTION_NOW.isoformat(), "items": [{
+                    "id": "merge-tides", "task": "merge-tides", "group": "merge", "title": "Merge the tide table",
+                    "ask": "Merge it? Options: merge now, wait for the second review. Recommend: merge now.",
+                    "detail": "The tide table passed review.",
+                    "links": [{"label": "Pull request", "url": "https://forge.example.test/acme/tides/pulls/9"}],
+                    "touched_at": ATTENTION_NOW.isoformat()}]}))
+            snapshots = [quarterdeck.load_home_snapshot(quarterdeck.HomeSpec("invented", home))]
+            bearings = quarterdeck.build_bearings(snapshots, ATTENTION_NOW, use_snapshot=False)
+            bearings.attention = quarterdeck.attention_view(snapshots, ATTENTION_NOW, all_decisions=True)
+            for allow_marks in (False, True):
+                page = quarterdeck.build_html(snapshots, "Quarterdeck", bearings=bearings, refresh_seconds=60, allow_marks=allow_marks)
+                article = re.search(r'<article class="act-card act-need" data-card-id="call:invented/merge-tides".*?</article>', page, re.S).group(0)
+                self.assertIn("PR ready to merge", article)
+                self.assertIn("Merge it?", article)
+                self.assertIn("<b>Options</b> merge now, wait for the second review", article)
+                self.assertIn("<b>Recommend</b> merge now", article)
+                self.assertIn("The tide table passed review.", article)
+                self.assertIn('href="https://forge.example.test/acme/tides/pulls/9"', article)
+                self.assertIn('href="#item-', article)
+                self.assertEqual('data-reaction-item="invented/merge-tides"' in article, allow_marks)
+
+    def test_payload_carries_every_card_with_a_revision_that_ignores_age(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            snapshots, bearings = self.site(Path(temp))
+            cards = quarterdeck.site_cards(snapshots, bearings, False)
+            first = json.loads(quarterdeck.cards_payload(cards, ATTENTION_NOW))
+            later = json.loads(quarterdeck.cards_payload(cards, ATTENTION_NOW + timedelta(hours=3)))
+            self.assertEqual(first["schema"], "quarterdeck-cards.v1")
+            self.assertEqual([card["id"] for card in first["cards"]], [card["id"] for card in later["cards"]])
+            self.assertEqual([card["rev"] for card in first["cards"]], [card["rev"] for card in later["cards"]])
+            self.assertEqual(len(first["cards"]), len(cards))
+            self.assertIn("3 hours ago", later["cards"][0]["html"])
+            changed = [dict(card, summary="Changed ask") if card["id"] == cards[0]["id"] else card for card in cards]
+            revisions = {card["id"]: card["rev"] for card in json.loads(quarterdeck.cards_payload(changed, ATTENTION_NOW))["cards"]}
+            self.assertNotEqual(revisions[cards[0]["id"]], first["cards"][0]["rev"])
+            self.assertEqual(revisions[cards[1]["id"]], first["cards"][1]["rev"])
+
+    def test_quiet_decisions_and_the_priority_scope_keep_cards_out(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            snapshots, bearings = self.site(Path(temp))
+            titles = " ".join(str(card["title"]) for card in quarterdeck.site_cards(snapshots, bearings, False))
+            self.assertNotIn("Rope", titles)
+            self.assertNotIn("anchor", titles.lower())
+            bearings.attention = quarterdeck.attention_view(snapshots, ATTENTION_NOW, all_decisions=True, priority_projects=["no-such-project"])
+            waiting = bearings.attention["homes"][0]["waiting"]
+            shown = [item for kind in ("decisions", "needs_you") for item in waiting[kind] if item.get("relevance") not in {"quiet", "stale"}]
+            self.assertEqual(sum(1 for card in quarterdeck.site_cards(snapshots, bearings, False) if card["section"] == "needs_you"), len(shown))
+
+    def test_empty_feed_says_so_and_a_failed_source_is_shown(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            home = AttentionTests().make_home(Path(temp), ledger="", feed=json.dumps({"schema": "fm-attention.v1", "open_decisions": []}))
+            snapshots = [quarterdeck.load_home_snapshot(quarterdeck.HomeSpec("invented", home))]
+            bearings = quarterdeck.build_bearings(snapshots, ATTENTION_NOW, use_snapshot=False)
+            bearings.attention = quarterdeck.attention_view(snapshots, ATTENTION_NOW, all_decisions=True)
+            page = quarterdeck.build_html(snapshots, "Quarterdeck", bearings=bearings, refresh_seconds=60)
+            self.assertIn('<p class="empty" id="cards-empty">Nothing new from Firstmate.</p>', page)
+            self.assertEqual(page.count('class="act-section" data-section='), 4)
+            self.assertEqual(page.count("act-section\" data-section=\"needs_you\" hidden"), 1)
+            bad = AttentionTests().make_home(Path(temp) / "bad", feed="not json")
+            snapshots = [quarterdeck.load_home_snapshot(quarterdeck.HomeSpec("invented", bad))]
+            bearings.attention = quarterdeck.attention_view(snapshots, ATTENTION_NOW, all_decisions=True)
+            self.assertIn("unavailable", quarterdeck.cards_html([], bearings.attention, ATTENTION_NOW, True))
+
+    def test_static_render_and_served_feed_modes(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            snapshots, bearings = self.site(Path(temp))
+            static = quarterdeck.build_html(snapshots, "Quarterdeck", bearings=bearings)
+            self.assertIn('data-live="0"', static)
+            self.assertIn("Reload to see new cards.", static)
+            served = quarterdeck.build_html(snapshots, "Quarterdeck", bearings=bearings, refresh_seconds=60)
+            self.assertIn('data-endpoint="cards.json"', served)
+
+    def test_served_page_publishes_cards_json_read_only(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            snapshots, bearings = self.site(Path(temp))
+            serve = ServeTests()
+            site = ({}, snapshots, bearings)
+            with patch.object(quarterdeck, "load_site", return_value=site):
+                pages = quarterdeck.site_builder(serve.make_args(snapshots[0].spec.home))()
+            cache = quarterdeck.SiteCache(lambda: pages, 30)
+            port = serve.start.__func__(serve, cache)  # type: ignore[attr-defined]
+            status, headers, body = serve.fetch(port, "/cards.json")
+            self.assertEqual(status, 200)
+            self.assertIn("application/json", headers["Content-Type"])
+            self.assertEqual(headers["Cache-Control"], "no-store")
+            self.assertEqual(json.loads(body)["schema"], "quarterdeck-cards.v1")
+            self.assertEqual(serve.fetch(port, "/other.json")[0], 404)
+            self.assertEqual(serve.fetch(port, "/cards.json", "POST")[0], 405)
+            self.assertEqual(serve.fetch(port, "/cards.json", headers={"Host": "evil.example"})[0], 403)
+
+
 if __name__ == "__main__":
     unittest.main()
