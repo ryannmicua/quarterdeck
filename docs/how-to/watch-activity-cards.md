@@ -25,7 +25,8 @@ Sections show every eligible card without a hidden count limit.
 
 A needs-you card opens to the ask, its options and recommendation when the text
 states them, the decision brief and other links, and a link to the item on the
-desk. With `serve --allow-marks`, it also carries the usual Approve, Hold, Not
+desk. If the desk has changed since the page loaded, that link refreshes the
+page once pending replies and view edits are finished. With `serve --allow-marks`, it also carries the usual Approve, Hold, Not
 now and Question buttons and reply box, which send a note through
 `bin/fm-inbox.sh` exactly as on the desk. A card never acts by itself: a merge or
 anything destructive still waits for your reaction, and Firstmate does the work.
@@ -34,8 +35,9 @@ anything destructive still waits for your reaction, and Firstmate does the work.
 
 While the page is open it fetches `cards.json` from the same server every 15
 seconds (the server re-reads its homes at most every 30 seconds), and a new card slides in at its place with a short highlight. A card
-stays marked **New** until it has been at least half on screen for 1.2 seconds or
-you open it. The **Cards** heading, a "N new" link in the page header, and the
+stays marked **New** until it has been at least half on screen for 1.2 continuous
+seconds in the active tab or you open it there. Returning to the tab starts a
+fresh visibility check. The **Cards** heading, a "N new" link in the page header, and the
 browser tab title count the cards you have not seen. A card whose text changes
 becomes New again.
 

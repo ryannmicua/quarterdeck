@@ -222,5 +222,9 @@ replacement and section changes; idle cards reorder and move without losing open
 details, and an empty payload keeps a busy card visible until it becomes idle.
 Python cases check timestamp revisions, stable desk links after renumbering,
 uncapped section counts, and ledger/backlog completions from registered homes.
+The executable check also exercises desk navigation to present and missing
+targets, including guarded reloads during replies, sends and view edits.
+Observer cases cover below-half visibility, interrupted dwell time, hidden tabs,
+returning to the tab, explicit opening, and removing or replacing a timed card.
 No real home data or reaction endpoint is modified. Temporary homes clean up
 automatically; remove the empty TMPDIR directory after the run.

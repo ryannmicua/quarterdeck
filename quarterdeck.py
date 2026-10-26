@@ -6436,7 +6436,7 @@ def need_card(
             f'<li><a href="{html.escape(url, quote=True)}">{html.escape(label)}</a> '
             f'<span class="path">{html.escape(url)}</span></li>' for label, url in links) + "</ul>")
     if entry and entry.number:
-        parts.append(f'<p class="links"><a href="#{board_anchor(entry)}">Show on the desk</a></p>')
+        parts.append(f'<p class="links"><a href="#{board_anchor(entry)}" data-desk-link>Show on the desk</a></p>')
     if section == "needs_you":
         parts.append(reaction_html(reactions, "call", key))
     title = str(item["title"])
@@ -6580,7 +6580,8 @@ ACTIVITY_SCRIPT = """
       const watch = "IntersectionObserver" in window ? new IntersectionObserver(entries => {
         for (const entry of entries) {
           clearTimeout(timers.get(entry.target));
-          if (entry.isIntersecting && !document.hidden) {
+          timers.delete(entry.target);
+          if (entry.isIntersecting && entry.intersectionRatio >= 0.5 && !document.hidden) {
             timers.set(entry.target, setTimeout(() => markSeen(entry.target), SEEN_MS));
           }
         }
@@ -6594,11 +6595,16 @@ ACTIVITY_SCRIPT = """
         if (top) { top.textContent = unseen + " new"; top.hidden = unseen === 0; }
         document.title = (unseen ? "(" + unseen + ") " : "") + baseTitle;
       }
+      function unwatch(card) {
+        clearTimeout(timers.get(card));
+        timers.delete(card);
+        if (watch) watch.unobserve(card);
+      }
       function markSeen(card) {
-        if (!card.classList.contains("unseen")) return;
+        if (document.hidden || !card.classList.contains("unseen")) return;
         seen[card.dataset.cardId] = card.dataset.cardRev;
         card.classList.remove("unseen");
-        if (watch) watch.unobserve(card);
+        unwatch(card);
         save();
         count();
       }
@@ -6612,6 +6618,15 @@ ACTIVITY_SCRIPT = """
           card.addEventListener("animationend", () => card.classList.remove("arrived"), { once: true });
         }
       }
+      feed.addEventListener("click", event => {
+        const link = event.target.closest("[data-desk-link]");
+        if (!link || event.defaultPrevented || event.button !== 0 || event.metaKey || event.ctrlKey || event.shiftKey || event.altKey) return;
+        const target = document.getElementById(link.hash.slice(1));
+        if (target) { target.open = true; return; }
+        event.preventDefault();
+        location.hash = link.hash;
+        quarterdeckReload();
+      });
       feed.addEventListener("toggle", event => {
         const card = event.target.closest && event.target.closest(".act-card");
         if (card && event.target.open) markSeen(card);
@@ -6638,7 +6653,7 @@ ACTIVITY_SCRIPT = """
         const existing = new Map(cards().map(card => [card.dataset.cardId, card]));
         const wanted = new Set(payload.cards.map(card => card.id));
         for (const [id, card] of existing) {
-          if (!wanted.has(id) && !busy(card)) { if (watch) watch.unobserve(card); card.remove(); delete seen[id]; }
+          if (!wanted.has(id) && !busy(card)) { unwatch(card); card.remove(); delete seen[id]; }
         }
         const anchors = {};
         for (const spec of payload.cards) {
@@ -6647,7 +6662,7 @@ ACTIVITY_SCRIPT = """
           if (card && busy(card)) continue;
           if (list && card && card.dataset.cardRev !== spec.rev) {
             const fresh = build(spec.html), open = card.querySelector("details").open;
-            if (watch) watch.unobserve(card);
+            unwatch(card);
             card.replaceWith(fresh);
             if (open) fresh.querySelector("details").open = true;
             attach(fresh, false);
@@ -6682,6 +6697,16 @@ ACTIVITY_SCRIPT = """
       for (const card of cards()) attach(card, false);
       times();
       count();
+      document.addEventListener("visibilitychange", () => {
+        for (const timer of timers.values()) clearTimeout(timer);
+        timers.clear();
+        if (watch) {
+          watch.disconnect();
+          if (!document.hidden) for (const card of cards()) {
+            if (card.classList.contains("unseen")) watch.observe(card);
+          }
+        }
+      });
       if (feed.dataset.live === "1" && /^https?:$/.test(location.protocol)) {
         setInterval(poll, Number(feed.dataset.poll) * 1000);
         setInterval(times, 60000);

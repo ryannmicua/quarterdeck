@@ -6106,6 +6106,30 @@ class ActivityCardTests(unittest.TestCase):
             self.skipTest("Node.js is not available to execute the generated cards script")
         harness = r"""
 const assert = require('node:assert/strict');
+const feedEvents = {}, documentEvents = {};
+let now = 0, timerId = 0, reloads = 0, saved = {}, editorDirty = false;
+const pendingTimers = new Map();
+globalThis.setTimeout = (callback, delay) => {
+  const id = ++timerId; pendingTimers.set(id, {callback, due: now + delay}); return id;
+};
+globalThis.clearTimeout = id => pendingTimers.delete(id);
+function tick(ms) {
+  const until = now + ms;
+  while (true) {
+    const next = [...pendingTimers].filter(([, timer]) => timer.due <= until).sort((a, b) => a[1].due - b[1].due)[0];
+    if (!next) break;
+    now = next[1].due; pendingTimers.delete(next[0]); next[1].callback();
+  }
+  now = until;
+}
+let observer;
+globalThis.IntersectionObserver = class {
+  constructor(callback) { this.callback = callback; this.watched = new Set(); observer = this; }
+  observe(card) { this.watched.add(card); }
+  unobserve(card) { this.watched.delete(card); }
+  disconnect() { this.watched.clear(); }
+  emit(card, ratio) { this.callback([{target: card, isIntersecting: ratio > 0, intersectionRatio: ratio}]); }
+};
 class Card {
   constructor(id, rev) {
     this.dataset = {cardId: id, cardRev: rev};
@@ -6153,22 +6177,24 @@ const feed = {
     return [];
   },
   querySelector(selector) { return lists[selector.match(/"([^"]+)"/)[1]]; },
-  addEventListener() {}
+  addEventListener(name, callback) { feedEvents[name] = callback; }
 };
 const controls = Object.fromEntries(['cards-count', 'cards-new', 'cards-empty'].map(id => [id, {}]));
 globalThis.document = {
   title: 'Quarterdeck', hidden: false, activeElement: null,
   getElementById(id) { return id === 'cards' ? feed : controls[id]; },
-  addEventListener() {},
+  addEventListener(name, callback) { (documentEvents[name] ||= []).push(callback); },
+  querySelectorAll(selector) { return selector === '.reaction-text' ? all().map(card => card.field) : []; },
+  querySelector() { return editorDirty || all().some(card => card.selected || card.sending) ? {} : null; },
   createElement() {
     return {content: {}, set innerHTML(html) {
       this.content.firstElementChild = new Card(html.match(/data-card-id="([^"]+)"/)[1], html.match(/data-card-rev="([^"]+)"/)[1]);
     }};
   }
 };
-globalThis.window = {};
-globalThis.location = {protocol: 'http:'};
-globalThis.localStorage = {getItem: () => null, setItem() {}};
+globalThis.window = {IntersectionObserver};
+globalThis.location = {protocol: 'http:', hash: '', reload() { reloads++; }};
+globalThis.localStorage = {getItem: () => null, setItem(key, value) { saved = JSON.parse(value); }};
 let poll, payload;
 globalThis.setInterval = (callback, delay) => { if (delay === 15000) poll = callback; };
 globalThis.fetch = async () => ({ok: true, json: async () => payload});
@@ -6176,11 +6202,44 @@ const spec = (id, rev = '1', section = 'needs_you') => ({id, rev, section,
   html: '<article data-card-id="' + id + '" data-card-rev="' + rev + '"></article>'});
 async function update(cards) { payload = {schema: 'quarterdeck-cards.v1', cards}; await poll(); }
 const ids = section => lists[section].children.map(card => card.dataset.cardId);
+function visibility(hidden) {
+  document.hidden = hidden;
+  for (const callback of documentEvents.visibilitychange || []) callback();
+}
+function clickDesk(hash, extra = {}) {
+  let prevented = false;
+  const link = {hash};
+  feedEvents.click({target: {closest: () => link}, button: 0,
+    preventDefault() { prevented = true; }, ...extra});
+  return prevented;
+}
 """
         verify = r"""
 (async () => {
   await update([spec('a'), spec('b')]);
   const a = lists.needs_you.children[0], b = lists.needs_you.children[1];
+  controls['item-present'] = {open: false};
+  assert.equal(clickDesk('#item-present'), false);
+  assert.equal(controls['item-present'].open, true);
+  assert.equal(reloads, 0);
+  assert.equal(clickDesk('#item-absent', {ctrlKey: true}), false);
+  assert.equal(reloads, 0);
+  assert.equal(clickDesk('#item-new-call'), true);
+  assert.equal(location.hash, '#item-new-call');
+  assert.equal(reloads, 1);
+  for (const mode of ['focus', 'text', 'selected', 'sending', 'editor']) {
+    document.activeElement = mode === 'focus' ? a.field : null;
+    a.field.value = mode === 'text' ? 'Draft' : '';
+    a.selected = mode === 'selected'; a.sending = mode === 'sending'; editorDirty = mode === 'editor';
+    const before = reloads;
+    assert.equal(clickDesk('#item-promoted-call'), true);
+    tick(1000);
+    assert.equal(reloads, before, mode + ' failed to defer navigation reload');
+    document.activeElement = null; a.field.value = ''; a.selected = false; a.sending = false; editorDirty = false;
+    tick(1000);
+    assert.equal(reloads, before + 1);
+    assert.equal(location.hash, '#item-promoted-call');
+  }
   await update([spec('b'), spec('a')]);
   assert.deepEqual(ids('needs_you'), ['b', 'a']);
   assert.equal(lists.needs_you.children[0], b);
@@ -6214,10 +6273,45 @@ const ids = section => lists[section].children.map(card => card.dataset.cardId);
   await update([]);
   assert.deepEqual(all(), []);
   assert.equal(controls['cards-empty'].hidden, false);
+  await update([spec('visible')]);
+  let visible = lists.needs_you.children[0];
+  observer.emit(visible, 0.1); tick(1200);
+  assert.equal(saved.visible, undefined);
+  observer.emit(visible, 0.5); tick(1199);
+  assert.equal(saved.visible, undefined);
+  observer.emit(visible, 0.1); tick(1);
+  assert.equal(saved.visible, undefined);
+  observer.emit(visible, 0.5); tick(600);
+  visibility(true); tick(1200);
+  assert.equal(saved.visible, undefined);
+  feedEvents.toggle({target: {open: true, closest: () => visible}});
+  assert.equal(saved.visible, undefined);
+  visibility(false);
+  assert.ok(observer.watched.has(visible));
+  observer.emit(visible, 0.5); tick(1199);
+  assert.equal(saved.visible, undefined);
+  tick(1);
+  assert.equal(saved.visible, '1');
+  assert.equal(controls['cards-count'].hidden, true);
+  await update([spec('visible', '2')]);
+  visible = lists.needs_you.children[0];
+  observer.emit(visible, 0.5); tick(600);
+  await update([spec('visible', '3')]); tick(1200);
+  assert.equal(saved.visible, '1');
+  visible = lists.needs_you.children[0];
+  feedEvents.toggle({target: {open: true, closest: () => visible}});
+  assert.equal(saved.visible, '3');
+  await update([spec('removed')]);
+  observer.emit(lists.needs_you.children[0], 0.5);
+  await update([]); tick(1200);
+  assert.equal(saved.removed, undefined);
 })().catch(error => { console.error(error); process.exitCode = 1; });
 """
         script = re.search(r"<script>(.*?)</script>", quarterdeck.ACTIVITY_SCRIPT, re.S)[1]
-        result = subprocess.run([node, "-e", harness + script + verify], text=True, capture_output=True)
+        page = quarterdeck.build_html([], "Quarterdeck")
+        reload_script = next(script for script in re.findall(r"<script>(.*?)</script>", page, re.S)
+                             if "function quarterdeckReload()" in script)
+        result = subprocess.run([node, "-e", harness + reload_script + script + verify], text=True, capture_output=True)
         self.assertEqual(result.returncode, 0, result.stderr)
 
     def test_desk_links_keep_the_same_target_after_renumbering(self) -> None:
