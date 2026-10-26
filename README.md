@@ -24,6 +24,13 @@ as a local artifact. Quarterdeck itself has no agent or build step.
 
 ## Features
 
+- Activity cards: the served page leads with a Cadence-style feed of what
+  Firstmate is doing, newest first, with a label, age, title and first line; tap
+  a card to read it. Decisions, merges and anything else waiting on you are
+  distinct "Needs you" cards that open to the ask, options and links and use the
+  desk's reaction controls. New cards slide in and are marked New until seen,
+  without a reload. See
+  [Watch Firstmate's activity as cards](docs/how-to/watch-activity-cards.md).
 - Captain board: when a home has `data/captain-board.json`, the page leads with
   decisions still in play, with background items collapsed. Items
   are cross-checked against the live backlog and can carry a decision-brief link

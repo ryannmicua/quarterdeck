@@ -55,7 +55,9 @@ or `serve`, and has no HTTP endpoint. It writes atomically under a lock on the
 data directory and refuses to overwrite a board it cannot read.
 
 `quarterdeck serve` adds an HTTP listener. By default it answers only `GET` for
-generated pages, has no write endpoints and no login, and binds 127.0.0.1.
+generated pages and `cards.json` (the page's activity cards, built from the same data and fetched
+by the page every 15 seconds), has no write endpoints and no login, and binds 127.0.0.1.
+Which cards you have seen stays in your browser's `localStorage`; Quarterdeck stores nothing about it.
 Binding another address exposes real work data to that network.
 
 `quarterdeck serve --allow-marks` enables the write endpoint

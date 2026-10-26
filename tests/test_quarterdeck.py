@@ -6054,5 +6054,140 @@ class AttentionTests(unittest.TestCase):
             self.assertEqual(json.loads(prefs.read_text())["views"][2]["sections"], [{"type": "information"}, {"type": "waiting"}])
 
 
+class ActivityCardTests(unittest.TestCase):
+    """The feed is derived from the attention view on each render; nothing about it is stored."""
+
+    def site(self, root: Path, allow_marks: bool = False) -> tuple[list, quarterdeck.Bearings]:
+        home = AttentionTests().make_home(root)
+        snapshots = [quarterdeck.load_home_snapshot(quarterdeck.HomeSpec("invented", home))]
+        bearings = quarterdeck.build_bearings(snapshots, ATTENTION_NOW, use_snapshot=False)
+        bearings.attention = quarterdeck.attention_view(snapshots, ATTENTION_NOW, all_decisions=True)
+        return snapshots, bearings
+
+    def test_cards_are_grouped_newest_first_with_needs_you_first(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            snapshots, bearings = self.site(Path(temp))
+            cards = quarterdeck.site_cards(snapshots, bearings, False)
+            self.assertEqual([(card["section"], card["title"]) for card in cards], [
+                ("needs_you", "Approve the tide table format"), ("needs_you", "Kelp survey scope"),
+                ("needs_you", "Pick the new harbor map vendor"), ("recent", "Merged: dock-notes"),
+                ("recent", "Started: Buoy light refit"), ("recent", "Merged: Fix the pier lights"),
+            ])
+            self.assertEqual([card["at"] for card in cards[:3]], sorted((card["at"] for card in cards[:3]), reverse=True))
+            self.assertEqual(cards[0]["summary"], "Format choice", "the first line of the ask sits under the title")
+            self.assertEqual(cards[0]["status"], "Decision waiting")
+
+    def test_page_shows_cards_with_label_time_title_first_line_and_full_text(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            snapshots, bearings = self.site(Path(temp))
+            page = quarterdeck.build_html(snapshots, "Quarterdeck", bearings=bearings, refresh_seconds=60)
+            self.assertLess(page.index('id="cards"'), page.index("Waiting on you"), "the feed leads the page")
+            article = re.search(r'<article class="act-card act-need".*?</article>', page, re.S).group(0)
+            self.assertIn('<span class="act-label">Needs you</span>', article)
+            self.assertIn('<time class="act-time" datetime="2026-07-02T11:01:00Z">under an hour ago</time>', article)
+            self.assertIn('<span class="act-title">Approve the tide table format</span>', article)
+            self.assertIn('<span class="act-line">Format choice</span>', article)
+            self.assertIn('<div class="act-body">', article)
+            self.assertIn('data-live="1"', page)
+            self.assertIn('id="cards-new"', page)
+            self.assertIn("Merged: Fix the pier lights", page)
+            self.assertNotIn("<reaction", page)
+            self.assertNotIn("data-reaction-kind", article, "no reply controls unless marks are allowed")
+
+    def test_needs_you_card_opens_to_ask_options_links_and_reaction_controls(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            home = AttentionTests().make_home(Path(temp), ledger="")
+            (home / "data" / "backlog.md").write_text(
+                "# Backlog\n\n## Held\n\n- [ ] merge-tides - Merge the tide table (held: true) (hold-kind: captain) (since: 2026-07-02T10:00:00Z)\n")
+            (home / "data" / "captain-board.json").write_text(json.dumps({
+                "version": 1, "updated_at": ATTENTION_NOW.isoformat(), "items": [{
+                    "id": "merge-tides", "task": "merge-tides", "group": "merge", "title": "Merge the tide table",
+                    "ask": "Merge it? Options: merge now, wait for the second review. Recommend: merge now.",
+                    "detail": "The tide table passed review.",
+                    "links": [{"label": "Pull request", "url": "https://forge.example.test/acme/tides/pulls/9"}],
+                    "touched_at": ATTENTION_NOW.isoformat()}]}))
+            snapshots = [quarterdeck.load_home_snapshot(quarterdeck.HomeSpec("invented", home))]
+            bearings = quarterdeck.build_bearings(snapshots, ATTENTION_NOW, use_snapshot=False)
+            bearings.attention = quarterdeck.attention_view(snapshots, ATTENTION_NOW, all_decisions=True)
+            for allow_marks in (False, True):
+                page = quarterdeck.build_html(snapshots, "Quarterdeck", bearings=bearings, refresh_seconds=60, allow_marks=allow_marks)
+                article = re.search(r'<article class="act-card act-need" data-card-id="call:invented/merge-tides".*?</article>', page, re.S).group(0)
+                self.assertIn("PR ready to merge", article)
+                self.assertIn("Merge it?", article)
+                self.assertIn("<b>Options</b> merge now, wait for the second review", article)
+                self.assertIn("<b>Recommend</b> merge now", article)
+                self.assertIn("The tide table passed review.", article)
+                self.assertIn('href="https://forge.example.test/acme/tides/pulls/9"', article)
+                self.assertIn('href="#item-', article)
+                self.assertEqual('data-reaction-item="invented/merge-tides"' in article, allow_marks)
+
+    def test_payload_carries_every_card_with_a_revision_that_ignores_age(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            snapshots, bearings = self.site(Path(temp))
+            cards = quarterdeck.site_cards(snapshots, bearings, False)
+            first = json.loads(quarterdeck.cards_payload(cards, ATTENTION_NOW))
+            later = json.loads(quarterdeck.cards_payload(cards, ATTENTION_NOW + timedelta(hours=3)))
+            self.assertEqual(first["schema"], "quarterdeck-cards.v1")
+            self.assertEqual([card["id"] for card in first["cards"]], [card["id"] for card in later["cards"]])
+            self.assertEqual([card["rev"] for card in first["cards"]], [card["rev"] for card in later["cards"]])
+            self.assertEqual(len(first["cards"]), len(cards))
+            self.assertIn("3 hours ago", later["cards"][0]["html"])
+            changed = [dict(card, summary="Changed ask") if card["id"] == cards[0]["id"] else card for card in cards]
+            revisions = {card["id"]: card["rev"] for card in json.loads(quarterdeck.cards_payload(changed, ATTENTION_NOW))["cards"]}
+            self.assertNotEqual(revisions[cards[0]["id"]], first["cards"][0]["rev"])
+            self.assertEqual(revisions[cards[1]["id"]], first["cards"][1]["rev"])
+
+    def test_quiet_decisions_and_the_priority_scope_keep_cards_out(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            snapshots, bearings = self.site(Path(temp))
+            titles = " ".join(str(card["title"]) for card in quarterdeck.site_cards(snapshots, bearings, False))
+            self.assertNotIn("Rope", titles)
+            self.assertNotIn("anchor", titles.lower())
+            bearings.attention = quarterdeck.attention_view(snapshots, ATTENTION_NOW, all_decisions=True, priority_projects=["no-such-project"])
+            waiting = bearings.attention["homes"][0]["waiting"]
+            shown = [item for kind in ("decisions", "needs_you") for item in waiting[kind] if item.get("relevance") not in {"quiet", "stale"}]
+            self.assertEqual(sum(1 for card in quarterdeck.site_cards(snapshots, bearings, False) if card["section"] == "needs_you"), len(shown))
+
+    def test_empty_feed_says_so_and_a_failed_source_is_shown(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            home = AttentionTests().make_home(Path(temp), ledger="", feed=json.dumps({"schema": "fm-attention.v1", "open_decisions": []}))
+            snapshots = [quarterdeck.load_home_snapshot(quarterdeck.HomeSpec("invented", home))]
+            bearings = quarterdeck.build_bearings(snapshots, ATTENTION_NOW, use_snapshot=False)
+            bearings.attention = quarterdeck.attention_view(snapshots, ATTENTION_NOW, all_decisions=True)
+            page = quarterdeck.build_html(snapshots, "Quarterdeck", bearings=bearings, refresh_seconds=60)
+            self.assertIn('<p class="empty" id="cards-empty">Nothing new from Firstmate.</p>', page)
+            self.assertEqual(page.count('class="act-section" data-section='), 3)
+            self.assertEqual(page.count("act-section\" data-section=\"needs_you\" hidden"), 1)
+            bad = AttentionTests().make_home(Path(temp) / "bad", feed="not json")
+            snapshots = [quarterdeck.load_home_snapshot(quarterdeck.HomeSpec("invented", bad))]
+            bearings.attention = quarterdeck.attention_view(snapshots, ATTENTION_NOW, all_decisions=True)
+            self.assertIn("unavailable", quarterdeck.cards_html([], bearings.attention, ATTENTION_NOW, True))
+
+    def test_static_render_does_not_poll_and_the_script_is_in_the_page(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            snapshots, bearings = self.site(Path(temp))
+            static = quarterdeck.build_html(snapshots, "Quarterdeck", bearings=bearings)
+            self.assertIn('data-live="0"', static)
+            self.assertIn("Reload to see new cards.", static)
+            served = quarterdeck.build_html(snapshots, "Quarterdeck", bearings=bearings, refresh_seconds=60)
+            self.assertIn('data-endpoint="cards.json"', served)
+            self.assertIn('quarterdeck-cards-seen', served)
+
+    def test_served_page_publishes_cards_json_read_only(self) -> None:
+        with tempfile.TemporaryDirectory() as temp, patch.dict(os.environ, {"XDG_STATE_HOME": str(Path(temp) / "state")}):
+            home = AttentionTests().make_home(Path(temp))
+            serve = ServeTests()
+            cache = quarterdeck.SiteCache(quarterdeck.site_builder(serve.make_args(home)), 30)
+            port = serve.start.__func__(serve, cache)  # type: ignore[attr-defined]
+            status, headers, body = serve.fetch(port, "/cards.json")
+            self.assertEqual(status, 200)
+            self.assertIn("application/json", headers["Content-Type"])
+            self.assertEqual(headers["Cache-Control"], "no-store")
+            self.assertEqual(json.loads(body)["schema"], "quarterdeck-cards.v1")
+            self.assertEqual(serve.fetch(port, "/other.json")[0], 404)
+            self.assertEqual(serve.fetch(port, "/cards.json", "POST")[0], 405)
+            self.assertEqual(serve.fetch(port, "/cards.json", headers={"Host": "evil.example"})[0], 403)
+
+
 if __name__ == "__main__":
     unittest.main()

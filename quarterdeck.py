@@ -1315,6 +1315,10 @@ def build_html(
         report_resolution_incomplete=report_resolution_incomplete, reactions=reactions, decisions=decisions,
     ) if bearings else ""
     attention_block = attention_html(bearings.attention, allow_marks) if bearings else ""
+    cards = activity_cards(bearings.attention, board, reactions) if bearings else []
+    cards_block = cards_html(cards, bearings.attention, generated, bool(refresh_seconds)) if bearings else ""
+    cards_script = ACTIVITY_SCRIPT if cards_block else ""
+    cards_link = '<a class="cards-new" id="cards-new" href="#cards" hidden></a>' if cards_block else ""
     reviewed_block = (
         reviewed_reports_html(homes, ambiguous_ids, report_resolution_incomplete, reactions) if allow_marks else ""
     ) + set_aside_reports_html(homes, ambiguous_ids, report_resolution_incomplete, allow_marks, reactions)
@@ -1606,7 +1610,7 @@ def build_html(
     details.dashboard-section:not(.board-band) > summary h2 {{ display: inline; }}
     details.dashboard-section:not(.board-band) > summary h2::before {{ content: "▸ "; color: var(--gold); }}
     details.dashboard-section:not(.board-band)[open] > summary h2::before {{ content: "▾ "; }}
-    @media (prefers-color-scheme: dark) {{
+{ACTIVITY_CSS}    @media (prefers-color-scheme: dark) {{
       :root {{ --navy: #a9cdee; --sea: #5fc2b9; --sand: #11181f; --paper: #1a242d; --ink: #e3e8ec; --muted: #9aa8b3; --line: #33434f; --gold: #e0a24e; --head: #0d2438; --soft: #ffffff10; --warn-bg: #2d2412; --warn-ink: #f0d9a8; --fail-bg: #331b17; --fail-ink: #f3c4bb; --chip: #1f3a37; }}
       .board-num {{ color: #0b1a18; }}
     }}
@@ -1624,8 +1628,10 @@ def build_html(
     <h1>⚓ {html.escape(title)}</h1>
     <p class="generated">Generated at {timestamp}{refresh_note}</p>
     {board_status}
+    {cards_link}
   </header>
   <main>
+    {cards_block}
     {board_block}
     {attention_block}
     {bearings_block}
@@ -1637,7 +1643,7 @@ def build_html(
     {''.join(home_panel(home, lavish, show_all, decisions) for home in homes)}
     <footer>{html.escape(introductory_text)} {footer_label} · generated {timestamp} · source files open as readable pages beside this one.</footer>
   </main>
-  {lavish_script}{refresh_script}{reload_script}{mark_script}{reaction_script}
+  {lavish_script}{refresh_script}{reload_script}{mark_script}{reaction_script}{cards_script}
 </body>
 </html>
 '''
@@ -5299,6 +5305,7 @@ def site_builder(args: argparse.Namespace, allow_marks: bool = False) -> Callabl
         pages["index.html"] = build_html(
             homes, title, bearings=bearings, refresh_seconds=DEFAULT_REFRESH_SECONDS, allow_marks=allow_marks
         )
+        pages[CARDS_PAGE] = cards_payload(site_cards(homes, bearings, allow_marks), bearings.generated)
         return pages
     return build
 
@@ -5332,7 +5339,7 @@ def make_handler(
                 return
             path = unquote(urlparse(self.path).path)
             name = "index.html" if path in {"/", "/index.html"} else path.lstrip("/")
-            if "/" in name or not name.endswith(".html"):
+            if "/" in name or not name.endswith((".html", ".json")):
                 self.send_text(404, "Not found\n")
                 return
             try:
@@ -5343,7 +5350,7 @@ def make_handler(
             if name not in pages:
                 self.send_text(404, "Not found\n")
                 return
-            self.send_text(200, pages[name], "text/html; charset=utf-8")
+            self.send_text(200, pages[name], "application/json; charset=utf-8" if name.endswith(".json") else "text/html; charset=utf-8")
 
         def host_allowed(self) -> bool:
             return not (is_loopback(str(self.server.server_address[0])) and not request_host_is_loopback(
@@ -6308,6 +6315,345 @@ def reaction_html(ctx: ReactionContext | None, kind: str, item_id: str, availabl
         f'<button class="request-lavish reaction-send" type="button">Send</button>'
         f'<span class="request-status reaction-status" aria-live="polite"></span></div></div>'
     )
+
+
+# --- Activity cards ----------------------------------------------------------
+# The served page shows what Firstmate is doing as Cadence-style cards: newest first, a label, the time, the title and
+# its first line, and a tap to read the rest. They are derived on each render from the attention view and the desk,
+# the same data as "Waiting on you"; nothing is stored here except, in the viewer's own browser, which cards were seen.
+
+CARDS_SCHEMA = "quarterdeck-cards.v1"
+CARDS_PAGE = "cards.json"
+CARDS_POLL_SECONDS = 15
+CARD_SECTIONS = (
+    ("needs_you", "Needs you"), ("recent", f"Recent work, last {RECENT_HOURS} hours"),
+    ("information", "For your information"),
+)
+CARD_LIMITS = {"needs_you": 50, "recent": 20, "information": 15}
+CARD_LINE_LIMIT = 160
+
+
+def first_line(text: str, limit: int = CARD_LINE_LIMIT) -> str:
+    for line in text.splitlines():
+        line = re.sub(r"\s+", " ", markdown_text(line)).strip()
+        if line:
+            return line if len(line) <= limit else line[: limit - 1].rstrip() + "…"
+    return ""
+
+
+def card_facts(*facts: tuple[str, str]) -> str:
+    return '<ul class="act-facts">' + "".join(
+        f"<li><b>{html.escape(name)}</b> {value}</li>" for name, value in facts if value
+    ) + "</ul>"
+
+
+def work_card(item: dict[str, object], home: str, multi_home: bool) -> dict[str, object]:
+    merged = item["event"] == "merged"
+    verb = "Merged" if merged else "Started"
+    title = str(item["title"])
+    pr = item.get("pr")
+    link = (f'<a href="{html.escape(str(pr), quote=True)}">{html.escape(str(pr))}</a>'
+            if isinstance(pr, str) and pr.startswith("https://") else "")
+    via = str(item.get("via") or "")
+    when = parse_when(str(item["at"]))
+    where = [part for part in (home if multi_home else "", str(item.get("project") or "")) if part]
+    body = card_facts(
+        ("Task", html.escape(str(item["task"]))), ("Project", html.escape(str(item.get("project") or ""))),
+        ("Landed", html.escape(f"through {via}") if merged and via else ""),
+        ("Kind", html.escape(str(item.get("kind") or "")) if not merged else ""),
+        ("When", html.escape(when.strftime("%Y-%m-%d %H:%M UTC")) if when else ""), ("Pull request", link),
+    )
+    summary = " · ".join(where + ([f"via {via}"] if merged and via else []))
+    return {
+        "id": f"work:{home}:{item['event']}:{item['task']}:{item['at']}", "section": "recent",
+        "label": verb, "at": str(item["at"]), "title": f"{verb}: {title}",
+        "summary": summary or str(item["task"]), "status": "", "body": body,
+    }
+
+
+def need_card(
+    item: dict[str, object], entry: BoardEntry | None, home: str, multi_home: bool, reactions: ReactionContext | None,
+    section: str,
+) -> dict[str, object]:
+    key = str(item["key"])
+    ask = str(item.get("ask") or "")
+    group = str(item.get("group") or "")
+    status = STATUS_LABELS.get(GROUP_STATUS.get(group, ""), "")
+    chips = [f'<span class="chip chip-group">{html.escape(GROUP_SHORT.get(group, group.replace("_", " ").title()))}</span>']
+    for text in ((home if multi_home else ""), str(item.get("project") or "")):
+        if text:
+            chips.append(f'<span class="chip">{html.escape(text)}</span>')
+    parts = [f'<p class="board-chips">{"".join(chips)}</p>']
+    if ask:
+        parts.append(f'<p class="act-ask">{html.escape(ask)}</p>')
+    detail = entry.item.detail if entry else ""
+    if detail:
+        try:
+            parts.append(f'<div class="body">{render_markdown(detail)}</div>')
+        except ValueError:
+            parts.append(f'<div class="body">{html.escape(detail)}</div>')
+    options, found = options_and_recommendation(ask)
+    recommendation = (entry.item.recommendation if entry else "") or found
+    if options:
+        parts.append(f'<p><b>Options</b> {html.escape(options)}</p>')
+    if recommendation:
+        parts.append(f'<p><b>Recommend</b> {html.escape(recommendation)}</p>')
+    links = []
+    if entry:
+        links = ([("Decision brief", entry.item.brief_url)] if entry.item.brief_url else []) + [
+            (label, url) for label, url in entry.item.links if url != entry.item.brief_url
+        ]
+    if links:
+        parts.append('<ul class="board-links">' + "".join(
+            f'<li><a href="{html.escape(url, quote=True)}">{html.escape(label)}</a> '
+            f'<span class="path">{html.escape(url)}</span></li>' for label, url in links) + "</ul>")
+    if entry and entry.number:
+        parts.append(f'<p class="links"><a href="#item-{entry.number}">Show on the desk</a></p>')
+    if section == "needs_you":
+        parts.append(reaction_html(reactions, "call", key))
+    title = str(item["title"])
+    return {
+        "id": f"call:{key}", "section": section, "label": "Needs you" if section == "needs_you" else "For your information",
+        "at": item.get("at"), "title": title, "summary": first_line(ask) or status, "status": status, "body": "".join(parts),
+    }
+
+
+def activity_cards(
+    attention: dict[str, object] | None, board: BoardView | None, reactions: ReactionContext | None,
+) -> list[dict[str, object]]:
+    """The cards for the feed: what needs the captain first, then recent work, information and what was done."""
+    if attention is None:
+        return []
+    homes = [home for home in attention["homes"] if isinstance(home, dict)]  # type: ignore[union-attr]
+    multi_home = len(homes) > 1
+    entries = {entry.key: entry for entry in (
+        [*(entry for items in board.bands.values() for entry in items), *board.stale] if board else []
+    ) if not entry.deferred}
+    cards: list[dict[str, object]] = []
+    taken: set[str] = set()
+    for home in homes:
+        label = str(home["label"])
+        waiting = home.get("waiting") or {}
+        for kind, section in (("decisions", "needs_you"), ("needs_you", "needs_you"), ("informational", "information")):
+            for item in waiting.get(kind, []):
+                if item["key"] in taken or item.get("relevance") in {"quiet", "stale"}:
+                    continue
+                taken.add(str(item["key"]))
+                cards.append(need_card(item, entries.get(str(item["key"])), label, multi_home, reactions, section))
+        for item in home.get("recent_work_6h") or []:
+            cards.append(work_card(item, label, multi_home))
+    ranked: list[dict[str, object]] = []
+    for section, _title in CARD_SECTIONS:
+        chosen = [card for card in cards if card["section"] == section]
+        chosen.sort(key=lambda card: str(card["at"] or ""), reverse=True)
+        ranked.extend(chosen[: CARD_LIMITS[section]])
+    return ranked
+
+
+def card_html(card: dict[str, object], now: datetime) -> tuple[str, str]:
+    """One card as (revision, markup). The revision changes when anything but the age changes."""
+    title, summary, status = (html.escape(str(card[name])) for name in ("title", "summary", "status"))
+    at = parse_when(str(card["at"])) if card["at"] else None
+    stamp = (f'<time class="act-time" datetime="{html.escape(str(card["at"]), quote=True)}">'
+             f'{elapsed_text(at, now)} ago</time>') if at else ""
+    rev = hashlib.sha1(json.dumps([card["title"], card["summary"], card["status"], card["body"], card["label"]]).encode()).hexdigest()[:12]
+    need = card["section"] == "needs_you"
+    chip = f'<span class="chip act-status">{status}</span>' if status else ""
+    return rev, (
+        f'<article class="act-card{" act-need" if need else ""}" data-card-id="{html.escape(str(card["id"]), quote=True)}" '
+        f'data-card-rev="{rev}"><details data-refresh-key="card:{html.escape(str(card["id"]), quote=True)}"><summary>'
+        f'<span class="act-top"><span class="act-label">{html.escape(str(card["label"]))}</span>{stamp}'
+        f'<span class="act-new">New</span></span><span class="act-title">{title}</span>'
+        f'<span class="act-line">{summary}</span>{chip}</summary><div class="act-body">{card["body"]}</div></details></article>'
+    )
+
+
+def cards_payload(cards: list[dict[str, object]], now: datetime) -> str:
+    out = []
+    for card in cards:
+        rev, markup = card_html(card, now)
+        out.append({"id": card["id"], "rev": rev, "section": card["section"], "at": card["at"], "html": markup})
+    return json.dumps({"schema": CARDS_SCHEMA, "generated": iso_seconds(now.timestamp()), "cards": out}) + "\n"
+
+
+def cards_html(cards: list[dict[str, object]], attention: dict[str, object] | None, now: datetime, live: bool) -> str:
+    if attention is None:
+        return ""
+    homes = [home for home in attention["homes"] if isinstance(home, dict)]  # type: ignore[union-attr]
+    sections = []
+    for section, title in CARD_SECTIONS:
+        markup = "".join(card_html(card, now)[1] for card in cards if card["section"] == section)
+        sections.append(
+            f'<div class="act-section" data-section="{section}"{"" if markup else " hidden"}>'
+            f'<h3 class="act-group">{html.escape(title)}</h3><div class="act-list" data-section-list="{section}">{markup}</div></div>'
+        )
+    return (
+        f'<section class="dashboard-section cards-feed" id="cards" data-live="{1 if live else 0}" data-poll="{CARDS_POLL_SECONDS}" '
+        f'data-endpoint="{CARDS_PAGE}" aria-label="Activity cards"><div class="section-head"><div>'
+        '<h2>Cards <span class="count" id="cards-count" hidden>0</span></h2>'
+        "<p>What Firstmate is doing, newest first. Tap a card to read it. "
+        + ("New cards slide in here without a reload." if live else "Reload to see new cards.") + "</p></div></div>"
+        + "".join(attention_errors_html(homes))
+        + f'<p class="empty" id="cards-empty"{" hidden" if cards else ""}>Nothing new from Firstmate.</p>'
+        + "".join(sections) + "</section>"
+    )
+
+
+def site_cards(homes: list[HomeSnapshot], bearings: Bearings, allow_marks: bool) -> list[dict[str, object]]:
+    """The feed's cards computed from scratch, for the cards.json the page polls."""
+    snapshots = all_snapshots(homes)
+    decisions = decision_rows(homes, bearings.attention, bearings.call)
+    board = board_view(homes, bearings.generated, decisions=decisions)
+    state = next((s.review_state for s in snapshots if s.review_state is not None), None) or ReviewState()
+    return activity_cards(bearings.attention, board, ReactionContext(enabled=allow_marks, latest=state.reactions, now=bearings.generated))
+
+
+ACTIVITY_CSS = """
+    .cards-feed .section-head h2 { margin: 0; }
+    #cards-count, .cards-new { background: var(--gold); border-color: var(--gold); color: #1b1305; }
+    .cards-new { border-radius: 999px; padding: .1rem .6rem; font-size: .8rem; font-weight: 700; text-decoration: none; }
+    .cards-new[hidden], #cards-count[hidden], .act-section[hidden], #cards-empty[hidden] { display: none; }
+    .act-group { margin: 1.1rem 0 .3rem; color: var(--muted); font: 700 .78rem system-ui, sans-serif; text-transform: uppercase; letter-spacing: .09em; }
+    .act-card { background: var(--paper); border: 1px solid var(--line); border-left: 4px solid var(--sea); border-radius: 12px; margin: .5rem 0; }
+    .act-card.act-need { border-left: 7px solid var(--gold); }
+    .act-card summary { display: block; min-height: 44px; padding: .65rem 1rem; cursor: pointer; list-style: none; }
+    .act-card summary::-webkit-details-marker { display: none; }
+    .act-card summary:focus-visible { outline: 3px solid var(--gold); outline-offset: 2px; }
+    .act-top { display: flex; align-items: center; gap: .6rem; color: var(--muted); font-size: .75rem; text-transform: uppercase; letter-spacing: .07em; font-weight: 700; }
+    .act-need .act-label { color: var(--gold); }
+    .act-time { text-transform: none; letter-spacing: 0; font-weight: 400; }
+    .act-new { display: none; margin-left: auto; padding: 0 .55rem; border-radius: 999px; background: var(--gold); color: #1b1305; letter-spacing: .03em; }
+    .act-card.unseen .act-new { display: inline-block; }
+    .act-title { display: block; margin-top: .15rem; color: var(--navy); font-weight: 700; overflow-wrap: anywhere; }
+    .act-line { display: block; color: var(--muted); overflow-wrap: anywhere; }
+    .act-status { margin-top: .3rem; }
+    .act-body { border-top: 1px solid var(--line); padding: .3rem 1rem 1rem; overflow-wrap: anywhere; }
+    .act-ask { font-weight: 650; }
+    .act-facts { margin: .4rem 0; padding-left: 1.1rem; }
+    .act-card.arrived { animation: act-in .45s ease-out, act-glow 3s ease-out; }
+    @keyframes act-in { from { opacity: 0; transform: translateY(-14px); } to { opacity: 1; transform: none; } }
+    @keyframes act-glow { from { box-shadow: 0 0 0 3px var(--gold); } to { box-shadow: 0 0 0 0 transparent; } }
+    @media (prefers-reduced-motion: reduce) { .act-card.arrived { animation: none; } }
+"""
+
+ACTIVITY_SCRIPT = """
+  <script>
+    (function () {
+      const feed = document.getElementById("cards");
+      if (!feed) return;
+      const KEY = "quarterdeck-cards-seen", SEEN_MS = 1200, baseTitle = document.title;
+      let seen = {};
+      try { seen = JSON.parse(localStorage.getItem(KEY) || "{}") || {}; } catch (_) { seen = {}; }
+      const save = () => { try { localStorage.setItem(KEY, JSON.stringify(seen)); } catch (_) {} };
+      const timers = new Map();
+      const watch = "IntersectionObserver" in window ? new IntersectionObserver(entries => {
+        for (const entry of entries) {
+          clearTimeout(timers.get(entry.target));
+          if (entry.isIntersecting && !document.hidden) {
+            timers.set(entry.target, setTimeout(() => markSeen(entry.target), SEEN_MS));
+          }
+        }
+      }, { threshold: 0.5 }) : null;
+      const cards = () => Array.from(feed.querySelectorAll(".act-card"));
+      function count() {
+        const unseen = feed.querySelectorAll(".act-card.unseen").length;
+        const badge = document.getElementById("cards-count"), top = document.getElementById("cards-new");
+        badge.textContent = String(unseen);
+        badge.hidden = unseen === 0;
+        if (top) { top.textContent = unseen + " new"; top.hidden = unseen === 0; }
+        document.title = (unseen ? "(" + unseen + ") " : "") + baseTitle;
+      }
+      function markSeen(card) {
+        if (!card.classList.contains("unseen")) return;
+        seen[card.dataset.cardId] = card.dataset.cardRev;
+        card.classList.remove("unseen");
+        if (watch) watch.unobserve(card);
+        save();
+        count();
+      }
+      function attach(card, arrived) {
+        if (seen[card.dataset.cardId] !== card.dataset.cardRev) {
+          card.classList.add("unseen");
+          if (watch) watch.observe(card);
+        }
+        if (arrived) {
+          card.classList.add("arrived");
+          card.addEventListener("animationend", () => card.classList.remove("arrived"), { once: true });
+        }
+      }
+      feed.addEventListener("toggle", event => {
+        const card = event.target.closest && event.target.closest(".act-card");
+        if (card && event.target.open) markSeen(card);
+      }, true);
+      function ago(iso) {
+        const seconds = Math.max(0, (Date.now() - Date.parse(iso)) / 1000);
+        const days = Math.floor(seconds / 86400), hours = Math.floor(seconds / 3600);
+        return (days >= 1 ? days + " day" + (days !== 1 ? "s" : "") : hours >= 1 ? hours + " hour" + (hours !== 1 ? "s" : "") : "under an hour") + " ago";
+      }
+      function times() {
+        for (const time of feed.querySelectorAll("time[datetime]")) if (!isNaN(Date.parse(time.getAttribute("datetime")))) time.textContent = ago(time.getAttribute("datetime"));
+      }
+      function busy(card) {
+        return card.contains(document.activeElement) && document.activeElement.matches("input, textarea") ||
+          Array.from(card.querySelectorAll(".reaction-text")).some(field => field.value) ||
+          !!card.querySelector("[data-reaction-choice][aria-pressed=true], .reaction-send:disabled");
+      }
+      function build(html) {
+        const holder = document.createElement("template");
+        holder.innerHTML = html.trim();
+        return holder.content.firstElementChild;
+      }
+      function update(payload) {
+        const existing = new Map(cards().map(card => [card.dataset.cardId, card]));
+        const wanted = new Set(payload.cards.map(card => card.id));
+        for (const [id, card] of existing) {
+          if (!wanted.has(id)) { if (watch) watch.unobserve(card); card.remove(); delete seen[id]; }
+        }
+        const anchors = {};
+        for (const spec of payload.cards) {
+          const list = feed.querySelector('[data-section-list="' + spec.section + '"]');
+          let card = existing.get(spec.id);
+          if (list && card && card.parentElement !== list) { card.remove(); card = null; existing.delete(spec.id); }
+          if (list && card && card.dataset.cardRev !== spec.rev && !busy(card)) {
+            const fresh = build(spec.html), open = card.querySelector("details").open;
+            if (watch) watch.unobserve(card);
+            card.replaceWith(fresh);
+            if (open) fresh.querySelector("details").open = true;
+            attach(fresh, false);
+            card = fresh;
+          } else if (list && !card) {
+            card = build(spec.html);
+            if (anchors[spec.section]) anchors[spec.section].after(card); else list.prepend(card);
+            attach(card, true);
+          }
+          if (card) anchors[spec.section] = card;
+        }
+        for (const section of feed.querySelectorAll(".act-section")) section.hidden = !section.querySelector(".act-card");
+        document.getElementById("cards-empty").hidden = payload.cards.length > 0;
+        times();
+        count();
+        save();
+      }
+      async function poll() {
+        if (document.hidden) return;
+        try {
+          const response = await fetch(feed.dataset.endpoint, { cache: "no-store" });
+          if (!response.ok) return;
+          const payload = await response.json();
+          if (payload && payload.schema === "quarterdeck-cards.v1") update(payload);
+        } catch (_) {}
+      }
+      for (const card of cards()) attach(card, false);
+      times();
+      count();
+      if (feed.dataset.live === "1" && /^https?:$/.test(location.protocol)) {
+        setInterval(poll, Number(feed.dataset.poll) * 1000);
+        setInterval(times, 60000);
+        document.addEventListener("visibilitychange", poll);
+      }
+    })();
+  </script>"""
+
 
 
 # --- Snapshot export and action import (the cloud artifact round trip) -------
