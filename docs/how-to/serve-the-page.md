@@ -17,8 +17,8 @@ quarterdeck serve
 ```
 
 Open `http://127.0.0.1:8765/`. The page leads with an activity-card feed
-(see [Watch Firstmate's activity as cards](watch-activity-cards.md)), which
-fetches `cards.json` every 15 seconds so new cards arrive without a reload. The page shows a "Generated at" time and reloads
+(see [Watch Firstmate's activity as cards](watch-activity-cards.md) for polling
+and unread behavior). The page shows a "Generated at" time and reloads
 itself every 60 seconds, restoring open items and sections after each refresh
 when browser session storage is available. Rendered pages are cached for 30
 seconds so rapid reloads stay cheap. Automatic refresh waits while a reaction

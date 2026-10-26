@@ -18,9 +18,10 @@ render. Quarterdeck keeps no card store and runs no new script.
 | Done recently | Recently merged work, answered or closed captain calls, and dated finished tasks. | The fleet ledger and backlog, including registered homes. |
 
 Sections appear in that order, and cards are newest first within each. Quiet and
-stale decisions, dated decisions that are not yet due, and items outside your
-priority projects stay out, the same as on "Waiting on you". Work older than six
-hours is not shown as cards. Done recently uses the same six-hour window.
+stale decisions and dated decisions that are not yet due stay out. Needs-you and
+information cards follow the [waiting queue's priority scope](see-recent-work.md);
+recent and done cards include work across projects. Only Recent work and Done
+recently use the six-hour window; waiting items can be older.
 Sections show every eligible card without a hidden count limit.
 
 A needs-you card opens to the ask, its options and recommendation when the text
