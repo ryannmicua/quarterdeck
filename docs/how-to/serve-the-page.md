@@ -19,7 +19,9 @@ quarterdeck serve
 Open `http://127.0.0.1:8765/`. The page shows a "Generated at" time and reloads
 itself every 60 seconds, restoring open items and sections after each refresh
 when browser session storage is available. Rendered pages are cached for 30
-seconds so rapid reloads stay cheap.
+seconds so rapid reloads stay cheap. Automatic refresh waits while a reaction
+is being written or sent, or the view editor has unsaved changes or a pending
+save.
 
 To see the serving address, run `quarterdeck url`. See the
 [CLI reference](../reference/cli-and-config.md) for how it determines the
@@ -33,12 +35,13 @@ address and for its JSON output.
 | `--config FILE` | private user config, if present | Select homes with the same rules as `render`. |
 | `--title TEXT` | configured title | Override the page title. |
 | `--no-snapshot` | off | Skip the Firstmate snapshot script and always parse backlogs. |
-| `--allow-marks` | off | Enable the "Mark reviewed", "Unmark", "Discard" and "Undiscard" buttons for reports, and reactions sent to Firstmate. |
+| `--allow-marks` | off | Enable the "Mark reviewed", "Unmark", "Discard" and "Undiscard" buttons for reports, reactions sent to Firstmate, and saving briefing views from the page. |
 
 By default the server only answers `GET` for the main page and the generated
 report, backlog and backlog-item pages. It has no write endpoints. With
 `--allow-marks` it also accepts a `POST` that marks or
-unmarks a known report and a `POST` that sends a reaction (see below);
+unmarks a known report, a `POST` that sends a reaction (see below) and a `POST`
+that saves a briefing view to the preferences file;
 everything else is still refused. When
 snapshots are enabled, Firstmate's wrapper may refresh its cache and read
 registered remote secondmate ledgers through its own routes; `--no-snapshot`
@@ -65,9 +68,10 @@ request restrictions and review-mark storage. `quarterdeck service
 --allow-marks` writes the flag into the systemd unit. Backlog and board items
 cannot be marked.
 
-When you bind to a non-loopback address, everyone who can reach the page can
-change review marks (and only review marks). Use marks only on a network you
-trust, or put the server behind an authenticating TLS reverse proxy.
+When you bind to a non-loopback address with `--allow-marks`, everyone who can
+reach the page can change review marks, send reactions and edit saved views.
+Use marks only on a network you trust, or put the server behind an
+authenticating TLS reverse proxy.
 
 ## React to calls and reports from the page
 

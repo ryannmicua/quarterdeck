@@ -144,7 +144,7 @@ or board data is unavailable, or when the feed is deliberately skipped.
 
 Board-completeness regressions exercise real reads of malformed JSON, non-object
 boards, missing or invalid item lists, skipped records, ignored project metadata,
-invalid UTF-8, and a directory at the board-file path. Run each against parent
+invalid `utf-8`, and a directory at the board-file path. Run each against parent
 and child homes: empty project summaries must say status unavailable, while a
 valid empty board may confirm nothing is waiting. Project-query regressions use
 two qualified projects sharing a short name and compare explicit query output
@@ -155,7 +155,7 @@ and exact-name precedence.
 Priority-board regressions keep a report linked to an active task under the
 collapsed Related to this session section, both with matching priorities and
 with the empty-priority fallback. Child-registry failure cases cover permission
-denial, a directory at the registry path, and invalid UTF-8. Readable pending
+denial, a directory at the registry path, and invalid `utf-8`. Readable pending
 work must survive page and snapshot generation; the failed child retains its
 registry error and empty priority summaries remain unavailable. The same check
 exercises project discovery used by priority writes.
@@ -169,3 +169,43 @@ Reload after replacing the ledger with only a seven-hour-old event: `#recent-wor
 must disappear while waiting queues remain. A directory at a registered child's
 `data/secondmates.md` exercises the real read-failure path without OS permission
 simulation. Stop the server, close the test tab, and remove fictional homes.
+
+
+### Saved briefing view regressions
+
+Run `PYTHONPATH=tests python3 -m unittest test_quarterdeck.AttentionTests -k briefing_regression -v`
+for queued work in information/project sections, first-section task claiming
+across recent work and queues, and saving/building Done recently. Fictional homes
+and preferences are disposable. The editor regression needs Node.js on PATH
+and executes the generated page scripts with DOM controls and a held save
+response: both priority checkboxes must be available, and edits, moves and pending
+saves must defer automatic refresh. While a save is pending, inputs, ordering
+buttons and view switches must be disabled; failure restores them and success
+keeps the submitted name. Deferred-decision cases exercise feed and backlog
+sources, bullet/table records, routed children, both section orders and expiry:
+deferred tasks stay out of information/project queues while ordinary queued work
+remains visible. Recent/Done ordering cases vary priority order and activity time,
+including a decision tier ahead of merged and started events. Preference cases
+load padded names/projects with a lowercase startup name through CLI readers,
+subsequent saves and the generated editor scripts. Reads must leave the file
+unchanged. Invalid section-type cases cover arrays, objects and other non-string
+JSON values through saved-preference reads, CLI errors, page fallback and the
+real views POST handler. Invalid POSTs return 409 without writing preferences;
+a subsequent valid save succeeds. No real home or browser state is changed.
+
+Manual gate check (2026-10-26): serve a fictional home on loopback with isolated
+XDG config/state and `--allow-marks`. Use the normal feed-enabled mode to check
+populated waiting sections; `--no-snapshot` deliberately skips the attention
+feed. Save a named project-first view with **Use at startup**, then check its
+reloaded panel and the later waiting section's **1 shown above** at 1280px and
+375px. Trigger `quarterdeckReload()` after an editor input event to verify dirty
+edits survive. Delay delivery of a real save response in the browser to verify
+inputs and view switches stay disabled until completion. A second server
+without `--allow-marks` must refuse POST `/api/views` with 405.
+
+For CLI ordering fixtures, include `task.dispatched` records carrying the project
+before `task.merged`; use both priority orders and vary timestamps. Old backlog
+captain holds without activity can contribute additional background decisions,
+so count the complete fixture when checking the older-decision card. Keep all
+mutations fictional, retain CLI JSON and desktop/mobile screenshots as evidence,
+then stop servers, close test tabs and remove fixture/state directories.

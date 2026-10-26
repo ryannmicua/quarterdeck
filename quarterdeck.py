@@ -1314,22 +1314,25 @@ def build_html(
         bearings, collapse_reviews=board is not None, can_mark=allow_marks, ambiguous_ids=ambiguous_ids,
         report_resolution_incomplete=report_resolution_incomplete, reactions=reactions, decisions=decisions,
     ) if bearings else ""
-    attention_block = attention_html(bearings.attention) if bearings else ""
+    attention_block = attention_html(bearings.attention, allow_marks) if bearings else ""
     reviewed_block = (
         reviewed_reports_html(homes, ambiguous_ids, report_resolution_incomplete, reactions) if allow_marks else ""
     ) + set_aside_reports_html(homes, ambiguous_ids, report_resolution_incomplete, allow_marks, reactions)
-    mark_script = f"""
+    reload_script = """
   <script>
-    function quarterdeckReload() {{
+    function quarterdeckReload() {
       const editing = Array.from(document.querySelectorAll(".reaction-text")).some(
         field => field.value || field === document.activeElement
       );
-      if (editing || document.querySelector('[data-reaction-choice][aria-pressed=true], .reaction-send:disabled')) {{
+      if (editing || document.querySelector('[data-reaction-choice][aria-pressed=true], .reaction-send:disabled, #view-editor[data-dirty=true], #view-save:disabled[data-saving=true]')) {
         setTimeout(quarterdeckReload, 1000);
         return;
-      }}
+      }
       location.reload();
-    }}
+    }
+  </script>"""
+    mark_script = f"""
+  <script>
     document.addEventListener("click", async (event) => {{
       const button = event.target.closest("[data-mark-report]");
       if (!button || button.disabled) return;
@@ -1438,13 +1441,13 @@ def build_html(
           ).filter(Boolean);
           sessionStorage.setItem(storageKey, JSON.stringify(openKeys));
         }} catch (_) {{}}
-        {"quarterdeckReload();" if allow_marks else "location.reload();"}
+        quarterdeckReload();
       }}, {int(refresh_seconds) * 1000});
     }})();
   </script>""" if refresh_seconds else ""
     )
     footer_label = (
-        "Read-only snapshot except report review marks and reactions sent to Firstmate" if allow_marks
+        "Read-only snapshot except report review marks, reactions sent to Firstmate and saved views" if allow_marks
         else "Read-only snapshot"
     )
     refresh_note = f" · reloads every {int(refresh_seconds)} seconds" if refresh_seconds else ""
@@ -1583,6 +1586,18 @@ def build_html(
     details.board-band[open] > summary h2::before {{ content: "▾ "; }}
     details.board-band > summary:focus-visible, .board-more > summary:focus-visible {{ outline: 3px solid var(--gold); outline-offset: 2px; }}
     .board-more > summary {{ display: flex; align-items: center; min-height: 44px; padding: 0 1rem; cursor: pointer; list-style: none; color: var(--sea); font-weight: 700; border: 1px dashed var(--line); border-radius: 12px; }}
+    .views {{ display: grid; grid-template-columns: 11rem minmax(0, 1fr); gap: 1.2rem; align-items: start; }}
+    .views-rail {{ display: flex; flex-direction: column; gap: .4rem; }}
+    .views-rail button, .view-editor button {{ min-height: 44px; padding: 0 .9rem; border: 1px solid var(--line); border-radius: 10px; background: var(--paper); color: var(--ink); font: inherit; font-weight: 700; text-align: left; cursor: pointer; }}
+    .views-rail button[aria-pressed=true] {{ border-color: var(--sea); box-shadow: inset 4px 0 0 var(--sea); color: var(--sea); }}
+    .views-rail button:focus-visible, .view-editor button:focus-visible {{ outline: 3px solid var(--gold); outline-offset: 2px; }}
+    .view-section {{ margin: 0 0 1.4rem; }}
+    .view-section h4 {{ margin: .8rem 0 .2rem; color: var(--muted); font-size: .85rem; text-transform: uppercase; letter-spacing: .04em; }}
+    .view-editor {{ margin-top: 1rem; }}
+    .view-editor ul {{ list-style: none; padding: 0; }}
+    .view-editor li {{ display: flex; gap: .5rem; align-items: center; min-height: 44px; }}
+    .view-editor li label {{ flex: 1 1 auto; }}
+    .view-editor input[type=text] {{ min-height: 44px; padding: 0 .6rem; border: 1px solid var(--line); border-radius: 8px; background: var(--paper); color: var(--ink); font: inherit; }}
     .desk-group {{ margin: .9rem 0 .4rem; font-size: .95rem; color: var(--sea); }}
     .sweep {{ margin: .2rem 0 .6rem; padding: .6rem .8rem; border: 1px solid var(--gold); border-radius: 10px; background: var(--warn-bg); color: var(--warn-ink); }}
     .stale {{ color: #ffd48a; }}
@@ -1595,7 +1610,12 @@ def build_html(
       :root {{ --navy: #a9cdee; --sea: #5fc2b9; --sand: #11181f; --paper: #1a242d; --ink: #e3e8ec; --muted: #9aa8b3; --line: #33434f; --gold: #e0a24e; --head: #0d2438; --soft: #ffffff10; --warn-bg: #2d2412; --warn-ink: #f0d9a8; --fail-bg: #331b17; --fail-ink: #f3c4bb; --chip: #1f3a37; }}
       .board-num {{ color: #0b1a18; }}
     }}
-    @media (max-width: 640px) {{ .summary {{ grid-template-columns: repeat(2, 1fr); }} }}
+    @media (max-width: 640px) {{
+      .summary {{ grid-template-columns: repeat(2, 1fr); }}
+      .views {{ grid-template-columns: minmax(0, 1fr); }}
+      .views-rail {{ flex-direction: row; flex-wrap: wrap; }}
+      .views-rail button {{ text-align: center; flex: 1 1 auto; }}
+    }}
     @media print {{ body {{ background: #fff; }} header {{ padding: 1.2rem; }} main {{ width: 100%; margin: 1rem 0; }} .card {{ break-inside: avoid; }} }}
   </style>
 </head>
@@ -1617,7 +1637,7 @@ def build_html(
     {''.join(home_panel(home, lavish, show_all, decisions) for home in homes)}
     <footer>{html.escape(introductory_text)} {footer_label} · generated {timestamp} · source files open as readable pages beside this one.</footer>
   </main>
-  {lavish_script}{refresh_script}{mark_script}{reaction_script}
+  {lavish_script}{refresh_script}{reload_script}{mark_script}{reaction_script}
 </body>
 </html>
 '''
@@ -2540,6 +2560,26 @@ RECENT_LIST_LIMIT = 6
 RECENT_HOURS = 6
 PRIORITY_LIMIT = 3
 PREFERENCES_VERSION = 1
+VIEW_LIMIT = 8
+VIEW_NAME_LIMIT = 40
+VIEW_SECTION_TITLES = {
+    "waiting": "Waiting on you", "recent": f"Recent work, last {RECENT_HOURS} hours",
+    "priorities": "Priority projects", "project": "Project", "information": "For your information",
+    "done": "Done recently",
+}
+SEEDED_VIEWS: tuple[dict[str, object], ...] = (
+    {"name": "Morning", "sections": [{"type": "waiting"}, {"type": "recent"}, {"type": "information"}]},
+    {"name": "Priorities", "sections": [{"type": "priorities"}, {"type": "waiting"}]},
+)
+STATUS_LABELS = {
+    "decision_waiting": "Decision waiting", "blocked": "Blocked", "pr_ready": "PR ready to merge",
+    "review_waiting": "Review waiting", "result_ready": "Result ready", "in_flight": "In flight", "queued": "Queued",
+}
+GROUP_STATUS = {
+    "decision": "decision_waiting", "decide": "decision_waiting", "unsorted": "decision_waiting",
+    "forward": "blocked", "merge": "pr_ready", "approve": "review_waiting", "read": "result_ready",
+    "in_flight": "in_flight", "queued": "queued",
+}
 RELEVANT_REASONS = ("raised", "captain_activity", "recent_work")
 RELEVANCE_TEXT = {
     "raised": "raised recently", "captain_activity": "you acted on it recently", "recent_work": "worked on recently",
@@ -2969,18 +3009,199 @@ def scope_waiting(
     )
 
 
+def plural(count: int, one: str, many: str) -> str:
+    return f"{count} {one if count == 1 else many}"
+
+
+def clean_view(raw: object) -> dict[str, object]:
+    """A saved view as {name, sections}; ValueError when it is not one Quarterdeck can build."""
+    if not isinstance(raw, dict) or set(raw) != {"name", "sections"}:
+        raise ValueError("a view is an object with a name and sections")
+    name, sections = raw["name"], raw["sections"]
+    if not isinstance(name, str) or not name.strip() or len(name.strip()) > VIEW_NAME_LIMIT:
+        raise ValueError(f"a view name is 1 to {VIEW_NAME_LIMIT} characters")
+    if not isinstance(sections, list) or not 1 <= len(sections) <= len(VIEW_SECTION_TITLES) + PRIORITY_LIMIT:
+        raise ValueError(f"view {name.strip()!r} needs one or more sections")
+    cleaned: list[dict[str, str]] = []
+    for section in sections:
+        kind = section.get("type") if isinstance(section, dict) else None
+        project = section.get("project") if isinstance(section, dict) else None
+        if not isinstance(kind, str) or kind not in VIEW_SECTION_TITLES:
+            raise ValueError(f"unknown section type {kind!r}; use {', '.join(VIEW_SECTION_TITLES)}")
+        if set(section) != ({"type", "project"} if kind == "project" else {"type"}):
+            raise ValueError(f"section {kind!r} takes {'a project name' if kind == 'project' else 'no other fields'}")
+        if kind == "project" and (not isinstance(project, str) or not project.strip()):
+            raise ValueError("a project section needs a project name")
+        entry = {"type": kind, **({"project": project.strip()} if kind == "project" else {})}  # type: ignore[union-attr]
+        if entry in cleaned:
+            raise ValueError(f"view {name.strip()!r} lists the {kind} section twice")
+        cleaned.append(entry)
+    return {"name": name.strip(), "sections": cleaned}
+
+
+def effective_views(document: dict[str, object]) -> tuple[list[dict[str, object]], str]:
+    """The saved views and the startup view's name; the seeded Morning and Priorities views when none are saved."""
+    views = [dict(view) for view in document.get("views") or SEEDED_VIEWS]  # type: ignore[attr-defined]
+    return views, str(document.get("default_view") or views[0]["name"])
+
+
+def find_view(views: list[dict[str, object]], name: str) -> dict[str, object]:
+    match = next((view for view in views if str(view["name"]).lower() == name.strip().lower()), None)
+    if match is None:
+        raise ValueError(f"unknown view {name!r}; saved views: {', '.join(str(view['name']) for view in views)}")
+    return match
+
+
+def view_item(item: dict[str, object], home: str, rank: Callable[[object], int]) -> dict[str, object]:
+    status = GROUP_STATUS.get(str(item.get("group"))) or (
+        "result_ready" if item["kind"] == "informational" else "decision_waiting")
+    when = parse_when(str(item["at"])) if item.get("at") else None
+    return {
+        "key": item["key"], "kind": item["kind"], "title": item["title"], "ask": item.get("ask") or "",
+        "project": item["project"], "home": home, "status": status, "status_label": STATUS_LABELS[status],
+        "at": item.get("at"), "background": item.get("relevance") in {"quiet", "stale"},
+        "_order": (list(STATUS_LABELS).index(status), rank(item["project"]), -(when.timestamp() if when else 0)),
+    }
+
+
+def build_view(
+    definition: dict[str, object], default: bool, homes: list[dict[str, object]], names: list[str],
+) -> dict[str, object]:
+    """Stack a saved view's sections; the first section to claim an item shows it and later ones count it as shown above."""
+    def rank(project: object) -> int:
+        return next((index for index, name in enumerate(names) if project_matches(project, name)), len(names))
+
+    needs: list[dict[str, object]] = []
+    info: list[dict[str, object]] = []
+    recent: list[dict[str, object]] = []
+    for home in homes:
+        for kind in ("decisions", "needs_you", "informational"):
+            (info if kind == "informational" else needs).extend(
+                view_item(item, str(home["label"]), rank) for item in home["waiting"][kind])  # type: ignore[index]
+        info.extend(view_item(item, str(home["label"]), rank) for item in home["open_work"])  # type: ignore[union-attr]
+        recent.extend(dict(item, home=home["label"]) for item in home["recent_work_6h"])  # type: ignore[union-attr]
+    complete = all(home["complete"] for home in homes)
+    for pool in (needs, info):
+        pool.sort(key=lambda item: item["_order"])  # type: ignore[arg-type, return-value]
+
+    wanted: list[dict[str, str]] = []
+    for section in definition["sections"]:  # type: ignore[union-attr]
+        for entry in ([{"type": "project", "project": name} for name in names]
+                      if section["type"] == "priorities" else [section]):
+            if not any(entry == other or (entry.get("project") and project_matches(entry["project"], other.get("project", "")))
+                       for other in wanted):
+                wanted.append(entry)
+    status_order = {item["key"]: item["_order"][0] for item in [*needs, *info]}
+    claimed: set[object] = set()
+    sections: list[dict[str, object]] = []
+    for entry in wanted:
+        kind, project = entry["type"], entry.get("project")
+        if kind in {"recent", "done"}:
+            candidates = sorted((item for item in recent if kind == "recent" or item["event"] == "merged"),
+                                key=lambda item: (
+                                    status_order.get(item["key"], list(STATUS_LABELS).index(
+                                        "result_ready" if item["event"] == "merged" else "in_flight")),
+                                    rank(item["project"]), -parse_when(str(item["at"])).timestamp(),
+                                ))
+            if candidates or kind == "done":
+                shown = []
+                above_keys = set()
+                for item in candidates:
+                    if item["key"] in claimed:
+                        above_keys.add(item["key"])
+                    elif not any(other["key"] == item["key"] for other in shown):
+                        shown.append(item)
+                claimed.update(item["key"] for item in shown)
+                merged = sum(item["event"] == "merged" for item in shown)
+                started = len(shown) - merged
+                say = (f"In the last six hours, {merged} merged and {started} started." if kind == "recent" else
+                       f"{len(shown)} done in the last six hours.")
+                if above_keys:
+                    say += f" {len(above_keys)} shown above."
+                sections.append({
+                    "type": kind, "title": VIEW_SECTION_TITLES[kind], "needs_you": [], "information": shown,
+                    "background": None, "shown_above": len(above_keys), "nothing_waiting": not shown and not above_keys, "say": say,
+                })
+            continue
+        title = str(project) if project else VIEW_SECTION_TITLES[str(kind)]  # type: ignore[arg-type]
+        mine = [item for item in needs if kind in {"waiting", "project"}
+                and (not project or project_matches(item["project"], str(project)))]
+        notes = [item for item in info if kind in {"information", "project"}
+                 and (not project or project_matches(item["project"], str(project)))]
+        above = sum(item["key"] in claimed for item in [*mine, *notes])
+        mine = [item for item in mine if item["key"] not in claimed]
+        notes = [item for item in notes if item["key"] not in claimed]
+        claimed.update(item["key"] for item in [*mine, *notes])
+        older = [item for item in mine if item["background"]] if kind == "waiting" else []
+        mine = [item for item in mine if item not in older]
+        shown = len(mine) + len(notes) + len(older)
+        nothing = True if complete and not shown and not above else None if not shown and not above else False
+        if kind == "project":
+            if nothing:
+                say = f"Nothing waiting on {project}."
+            elif nothing is None:
+                say = f"{project}: waiting status unavailable."
+            else:
+                say = f"{project}: " + (f"{plural(len(mine), 'thing needs', 'things need')} you. First, {mine[0]['title']}: {mine[0]['status_label']}."
+                                        if mine else "nothing needs you.")
+                say += f" {len(notes)} for your information." if notes else ""
+        elif kind == "waiting":
+            say = ("Nothing is waiting on you." if nothing else "Waiting status unavailable." if nothing is None else
+                   (f"{plural(len(mine), 'thing needs', 'things need')} you. First, {mine[0]['title']}: {mine[0]['status_label']}."
+                    if mine else "Nothing new needs you."))
+            say += f" {plural(len(older), 'older decision', 'older decisions')} waiting." if older else ""
+        else:
+            say = f"{len(notes)} for your information." if notes else "Nothing else for your information."
+        say += f" {above} shown above." if above else ""
+        section = {
+            "type": kind, "title": title, "needs_you": mine, "information": notes,
+            "background": {"count": len(older), "say": f"{plural(len(older), 'older decision', 'older decisions')} waiting",
+                           "items": older} if older else None,
+            "shown_above": above, "nothing_waiting": nothing, "say": say.strip(),
+        }
+        if project:
+            section["project"] = project
+        sections.append(section)
+    for section in sections:
+        for item in (*section["needs_you"], *section["information"], *((section["background"] or {}).get("items") or [])):  # type: ignore[union-attr, index]
+            item.pop("_order", None)  # type: ignore[union-attr]
+    return {"name": definition["name"], "default": default, "layout": definition["sections"], "sections": sections}
+
+
+def informational_work(snapshot: HomeSnapshot, taken: set[object]) -> list[dict[str, object]]:
+    """Open backlog tasks not already waiting on the captain."""
+    snapshots = all_snapshots([snapshot])
+    items: list[dict[str, object]] = []
+    for owner in snapshots:
+        if owner.error or owner.backlog_markdown is None:
+            continue
+        for item in backlog_items(owner.backlog_markdown, owner):
+            key = task_key(owner, item.id, snapshots)
+            if item.done or is_cancelled_state(item.state) or key in taken:
+                continue
+            when = parse_when(item.filed)
+            group = "in_flight" if is_in_flight_state(item.state) else "queued"
+            items.append(dict(
+                waiting_item("informational", key, item.title, "", item.project, group, iso_or_none(when)),
+                group=group,
+            ))
+    return items
+
+
 def attention_view(
     homes: list[HomeSnapshot], now: datetime | None = None,
     all_decisions: bool = False, use_feed: bool = True,
     feed_runner: Callable[[Path, Path | None], dict[str, object]] = run_attention_feed,
     priority_projects: list[str] | None = None, project: str | None = None, show_more: bool = False,
+    saved_views: tuple[list[dict[str, object]], str] | None = None, view_name: str | None = None, all_views: bool = False,
 ) -> dict[str, object]:
     now = now or datetime.now(timezone.utc)
     board_activity = board_engagement(homes)
     projects: dict[str, str] = {}
     views = [home_attention(snapshot, now, True, use_feed, feed_runner, board_activity, projects) for snapshot in homes]
     shared = {"schema": ATTENTION_SCHEMA, "generated": iso_seconds(now.timestamp()), "homes": views}
-    board = board_view(homes, now, fallback=True, decisions=decision_rows(homes, shared))
+    decisions = decision_rows(homes, shared)
+    board = board_view(homes, now, fallback=True, decisions=decisions)
     waiting_by_home = [home_waiting(snapshot, view, board, projects) for snapshot, view in zip(homes, views)]
     known = registered_projects(homes, waiting_by_home) if project or priority_projects else []
     if project:
@@ -2994,6 +3215,7 @@ def attention_view(
                 names.append(name)
     has_priority = any(project_matches(item["project"], name)
                        for waiting in waiting_by_home for items in waiting.values() for item in items for name in names)
+    view_homes: list[dict[str, object]] = []
     for snapshot, view, waiting in zip(homes, views, waiting_by_home):
         complete = use_feed and bool(view["ok"]) and not any(
             owner.registry_error or (not owner.spec.remote_host and owner.error)
@@ -3007,13 +3229,32 @@ def attention_view(
                                 for kind, items in waiting.items()}
         view["waiting_scope"] = scope["scope"]
         view["more_count"] = scope["more_count"]
+        if view_name is not None or all_views:
+            taken = set(decisions).union(item["key"] for items in waiting.values() for item in items)
+            view_homes.append({
+                "label": view["label"], "waiting": waiting, "complete": complete,
+                "open_work": informational_work(snapshot, taken),
+                "recent_work_6h": [dict(item, key=task_key(snapshot, str(item["task"]), all_snapshots([snapshot])))
+                                   for item in view["recent_work_6h"]],
+            })
         if not all_decisions and isinstance(view["decisions"], dict):
             view["decisions"]["background"] = None
-    return {
+    result = {
         "schema": ATTENTION_SCHEMA, "generated": shared["generated"],
         "ok": all(view["ok"] for view in views), "priority_projects": list(priority_projects or []),
         "requested_project": project or None, "homes": views,
     }
+    if view_name is not None or all_views:
+        definitions, startup = saved_views or effective_views({})
+        build = lambda definition: build_view(  # noqa: E731
+            definition, str(definition["name"]) == startup, view_homes, names)
+        if all_views:
+            result["views"] = [build(definition) for definition in definitions]
+            result["default_view"] = startup
+        else:
+            result["view"] = build(find_view(definitions, view_name or startup))
+            result["view"]["available"] = [str(definition["name"]) for definition in definitions]  # type: ignore[index]
+    return result
 
 
 def decision_rows(
@@ -3093,7 +3334,55 @@ def read_preferences(path: Path) -> dict[str, object]:
     if (not isinstance(names, list) or len(names) > PRIORITY_LIMIT
             or not all(isinstance(name, str) and name.strip() for name in names) or len(set(names)) != len(names)):
         raise ValueError(f"preferences {path}: priority_projects must be up to {PRIORITY_LIMIT} distinct project names")
+    if "views" in data or "default_view" in data:
+        try:
+            views = data.get("views")
+            if not isinstance(views, list) or not 1 <= len(views) <= VIEW_LIMIT:
+                raise ValueError(f"views must list 1 to {VIEW_LIMIT} views")
+            views = [clean_view(view) for view in views]
+            labels = [view["name"].lower() for view in views]  # type: ignore[union-attr]
+            if len(set(labels)) != len(labels):
+                raise ValueError("view names must be distinct")
+            if data.get("default_view") is not None:
+                default = str(data["default_view"]).strip().lower()
+                if default not in labels:
+                    raise ValueError("default_view must name a saved view")
+                data["default_view"] = views[labels.index(default)]["name"]
+            data["views"] = views
+        except ValueError as exc:
+            raise ValueError(f"preferences {path}: {exc}") from exc
     return data
+
+
+def read_saved_views(path: Path) -> tuple[list[dict[str, object]], str]:
+    return effective_views(read_preferences(path))
+
+
+def store_view(
+    path: Path, homes: list[HomeSnapshot], name: str | None, sections: list[dict[str, str]], make_default: bool,
+) -> tuple[list[dict[str, object]], str]:
+    """Save one view (or only change the startup view when sections is empty); project sections must be registered."""
+    document = read_preferences(path)
+    views, startup = effective_views(document)
+    if not sections:
+        startup = str(find_view(views, name or "")["name"])
+    else:
+        known = registered_projects(homes) if any(section.get("type") == "project" for section in sections) else []
+        resolved = [dict(section, project=resolve_project(str(section.get("project") or ""), known))
+                    if section.get("type") == "project" else section for section in sections]
+        view = clean_view({"name": name or "", "sections": resolved})
+        index = next((i for i, other in enumerate(views) if str(other["name"]).lower() == str(view["name"]).lower()), None)
+        if index is None and len(views) >= VIEW_LIMIT:
+            raise ValueError(f"at most {VIEW_LIMIT} views can be saved")
+        if index is None:
+            views.append(view)
+        else:
+            views[index] = view
+        if make_default or startup.lower() == str(view["name"]).lower():
+            startup = str(view["name"])
+    document.update({"version": PREFERENCES_VERSION, "views": views, "default_view": startup})
+    write_preferences(path, document, homes)
+    return views, startup
 
 
 def read_priority_projects(path: Path) -> list[str]:
@@ -3162,9 +3451,13 @@ def attention(args: argparse.Namespace) -> int:
         return 2
     try:
         homes = selected_homes(args)
-        priorities = read_priority_projects(preferences_path(args))
+        document = read_preferences(preferences_path(args))
+        priorities = list(document.get("priority_projects", []))  # type: ignore[call-overload]
         apply_review_marks(homes, load_review_state(validate_review_state_location(homes)))
-        view = attention_view(homes, all_decisions=args.all_decisions, priority_projects=priorities, project=args.project, show_more=args.more)
+        view = attention_view(
+            homes, all_decisions=args.all_decisions, priority_projects=priorities, project=args.project, show_more=args.more,
+            saved_views=effective_views(document), view_name=args.view,
+        )
     except (OSError, ValueError) as exc:
         print(f"quarterdeck: {exc}", file=sys.stderr)
         return 2
@@ -3173,6 +3466,39 @@ def attention(args: argparse.Namespace) -> int:
     else:
         print(json.dumps(view, indent=2))
     return 0 if view["ok"] else 1
+
+
+def view_spec(text: str) -> dict[str, str]:
+    kind, _, project = text.partition(":")
+    return {"type": kind.strip().lower(), "project": project.strip()} if kind.strip().lower() == "project" else {"type": kind.strip().lower()}
+
+
+def views(args: argparse.Namespace) -> int:
+    path = preferences_path(args)
+    try:
+        saved, startup = read_saved_views(path)
+        if args.views_command in {"list", "show"}:
+            chosen = [find_view(saved, args.name)] if args.views_command == "show" else saved
+            if args.as_json:
+                print(json.dumps({"views": chosen, "default_view": startup, "path": str(path)}, indent=2))
+            else:
+                for view in chosen:
+                    parts = [f"project {s['project']}" if s["type"] == "project" else VIEW_SECTION_TITLES[s["type"]] for s in view["sections"]]  # type: ignore[index, union-attr]
+                    print(f"{view['name']}{' (startup)' if view['name'] == startup else ''}: " + ", ".join(parts) + ".")
+            return 0
+        homes = selected_homes(args)
+        if args.views_command == "save":
+            store_view(path, homes, args.name, [view_spec(text) for text in args.section], args.default)
+        else:
+            store_view(path, homes, args.name, [], True)
+    except (OSError, ValueError) as exc:
+        print(f"quarterdeck: {exc}", file=sys.stderr)
+        return 2
+    if args.views_command == "save":
+        print(f"Saved view {args.name.strip()}." + (" It opens at startup." if args.default else ""))
+    else:
+        print(f"{find_view(read_saved_views(path)[0], args.name)['name']} is now your startup view.")
+    return 0
 
 
 def priorities(args: argparse.Namespace) -> int:
@@ -3242,20 +3568,11 @@ def priorities_panel_html(homes: list[dict[str, object]]) -> str:
     return f'<div class="priority-projects" id="priority-projects"><h3>Priority projects</h3><ul>{"".join(rows)}</ul></div>'
 
 
-def attention_html(view: dict[str, object] | None) -> str:
-    if view is None:
-        return ""
-    now = parse_when(str(view["generated"])) or datetime.now(timezone.utc)
-    homes = [home for home in view["homes"] if isinstance(home, dict)]  # type: ignore[union-attr]
-    out = ['<section class="dashboard-section recent-work" id="attention" aria-label="Waiting and recent work">'
-           '<div class="section-head"><div><h2>Waiting on you</h2>'
-           "<p>Waiting decisions, then needs you and information, with your priority projects first. "
-           f"Work from the last {RECENT_HOURS} hours appears only when there is some. "
-           "Dated decisions stay hidden until due.</p></div></div>"]
-    out.append(priorities_panel_html(homes))
+def attention_errors_html(homes: list[dict[str, object]]) -> list[str]:
+    out = []
     for home in homes:
         label = f"{home['label']}: " if len(homes) > 1 else ""
-        for error in home["errors"]:
+        for error in home["errors"]:  # type: ignore[union-attr]
             out.append(
                 f'<div class="warning"><p><strong>{html.escape(label)}{html.escape(str(error["source"]))} '
                 f'unavailable</strong> — {html.escape(str(error["message"]))}. Run <code>quarterdeck attention '
@@ -3265,6 +3582,193 @@ def attention_html(view: dict[str, object] | None) -> str:
         if isinstance(decisions, dict) and decisions.get("skipped"):
             out.append(f'<p class="source-note">{html.escape(label)}Attention feed not read: '
                        f'{html.escape(str(decisions["skipped"]))}.</p>')
+    return out
+
+
+def view_item_html(item: dict[str, object], multi_home: bool) -> str:
+    ask = f' — {html.escape(str(item["ask"]))}' if item.get("ask") else ""
+    where = " · ".join(html.escape(str(part)) for part in (
+        item["home"] if multi_home else None, item.get("project")) if part)
+    return (f'<li>{html.escape(str(item["title"]))}{ask} <span class="chip">{html.escape(str(item["status_label"]))}</span>'
+            f'{f" <span class=path>{where}</span>" if where else ""}</li>')
+
+
+def view_section_html(section: dict[str, object], now: datetime, multi_home: bool) -> str:
+    out = [f'<section class="view-section" data-section="{html.escape(str(section["type"]))}">'
+           f'<h3>{html.escape(str(section["title"]))}</h3>']
+    if section["type"] in {"recent", "done"}:
+        items = section["information"]
+        lines = [f'<li>{html.escape(str(item["event"]).capitalize())} · ' + attention_item_html(item, now)[4:]
+                 for item in items]  # type: ignore[union-attr]
+        out.append(f'<p class="source-note">{html.escape(str(section["say"]))}</p><ul>{"".join(lines[:RECENT_LIST_LIMIT])}</ul>')
+        if lines[RECENT_LIST_LIMIT:]:
+            out.append(f'<details class="board-more"><summary>+{len(lines) - RECENT_LIST_LIMIT} more</summary><ul>'
+                       f'{"".join(lines[RECENT_LIST_LIMIT:])}</ul></details>')
+    else:
+        for key, heading in (("needs_you", "Needs you"), ("information", "For your information")):
+            if section[key]:
+                out.append(f'<h4>{heading}</h4><ul>' + "".join(
+                    view_item_html(item, multi_home) for item in section[key]) + '</ul>')  # type: ignore[union-attr]
+        background = section["background"]
+        if isinstance(background, dict):
+            out.append(f'<details class="board-more"><summary>{html.escape(str(background["say"]))}</summary><ul>'
+                       + "".join(view_item_html(item, multi_home) for item in background["items"]) + '</ul></details>')
+        if not (section["needs_you"] or section["information"] or background):
+            out.append(f'<p class="empty">{html.escape(str(section["say"]))}</p>')
+        elif section["shown_above"]:
+            out.append(f'<p class="source-note">{section["shown_above"]} shown above</p>')
+    out.append("</section>")
+    return "".join(out)
+
+
+def view_editor_html(allow_marks: bool) -> str:
+    note = ("" if allow_marks else '<p class="source-note">Saving from this page needs <code>quarterdeck serve '
+            '--allow-marks</code>. Otherwise use <code>quarterdeck views save</code>.</p>')
+    return (
+        '<details class="view-editor board-more" id="view-editor" data-refresh-key="view-editor"><summary>Edit view</summary>'
+        '<p><label>Name <input type="text" id="view-name" maxlength="40"></label></p>'
+        '<ul id="view-sections"></ul>'
+        '<p><label><input type="checkbox" id="view-startup"> Use at startup</label></p>'
+        f'<p><button type="button" id="view-save"{"" if allow_marks else " disabled"}>Save view</button> '
+        f'<span id="view-status" role="status"></span></p>{note}</details>'
+    )
+
+
+def views_html(view: dict[str, object], homes: list[dict[str, object]], now: datetime, allow_marks: bool) -> str:
+    """The Views rail, one panel per saved view with the startup view open, and the editor."""
+    built = [entry for entry in view["views"] if isinstance(entry, dict)]  # type: ignore[union-attr]
+    startup = str(view["default_view"])
+    multi_home = len(homes) > 1
+    data = {
+        "default": startup, "endpoint": VIEWS_ENDPOINT if allow_marks else "", "titles": VIEW_SECTION_TITLES,
+        "views": [{"name": entry["name"], "sections": entry["layout"]} for entry in built],
+        "priorities": view["priority_projects"],
+    }
+    rail = "".join(
+        f'<button type="button" data-view-button="{html.escape(str(entry["name"]), quote=True)}" '
+        f'aria-pressed="{str(entry["name"] == startup).lower()}">{html.escape(str(entry["name"]))}</button>' for entry in built)
+    panels = "".join(
+        f'<div class="view-panel" data-view-panel="{html.escape(str(entry["name"]), quote=True)}"'
+        f'{"" if entry["name"] == startup else " hidden"}>'
+        + "".join(view_section_html(section, now, multi_home) for section in entry["sections"])  # type: ignore[union-attr]
+        + "</div>" for entry in built)
+    payload = json.dumps(data).replace("<", "\\u003c").replace(">", "\\u003e").replace("&", "\\u0026")
+    script = f"""<script type="application/json" id="views-data">{payload}</script>
+<script>
+(function() {{
+  const data = JSON.parse(document.getElementById("views-data").textContent);
+  const buttons = Array.from(document.querySelectorAll("[data-view-button]"));
+  const panels = Array.from(document.querySelectorAll("[data-view-panel]"));
+  const list = document.getElementById("view-sections");
+  const nameField = document.getElementById("view-name");
+  const startup = document.getElementById("view-startup");
+  const status = document.getElementById("view-status");
+  const save = document.getElementById("view-save");
+  const editor = document.getElementById("view-editor");
+  const dirty = () => {{ editor.dataset.dirty = "true"; }};
+  editor.addEventListener("input", dirty);
+  editor.addEventListener("change", dirty);
+  let current = data.default;
+  try {{
+    const kept = sessionStorage.getItem("quarterdeck-view");
+    if (kept && data.views.some(entry => entry.name === kept)) current = kept;
+  }} catch (_) {{}}
+  const key = section => section.type === "project" ? "project:" + section.project : section.type;
+  const label = section => section.type === "project" ? section.project : data.titles[section.type];
+  function row(section, checked) {{
+    const item = document.createElement("li");
+    item.dataset.section = JSON.stringify(section);
+    const box = document.createElement("input");
+    box.type = "checkbox"; box.checked = checked; box.id = "view-section-" + key(section);
+    const text = document.createElement("label");
+    text.htmlFor = box.id; text.textContent = label(section);
+    item.append(box, text);
+    for (const [name, move] of [["Up", -1], ["Down", 1]]) {{
+      const button = document.createElement("button");
+      button.type = "button"; button.textContent = name;
+      button.setAttribute("aria-label", "Move " + label(section) + " " + name.toLowerCase());
+      button.addEventListener("click", () => {{
+        const other = move < 0 ? item.previousElementSibling : item.nextElementSibling;
+        if (other) {{
+          move < 0 ? list.insertBefore(item, other) : list.insertBefore(other, item);
+          dirty();
+        }}
+      }});
+      item.append(button);
+    }}
+    return item;
+  }}
+  function edit(entry) {{
+    editor.dataset.dirty = "false";
+    nameField.value = entry.name;
+    startup.checked = entry.name === data.default;
+    list.replaceChildren();
+    const selected = entry.sections.flatMap(section => section.type === "priorities"
+      ? data.priorities.map(project => ({{type: "project", project}})) : [section]);
+    const all = [{{type: "waiting"}}, {{type: "recent"}}, {{type: "information"}}, {{type: "done"}},
+      ...data.priorities.map(project => ({{type: "project", project}}))];
+    for (const other of data.views) for (const section of other.sections) if (section.type === "project") all.push(section);
+    const seen = new Set();
+    for (const section of selected) if (!seen.has(key(section))) {{ seen.add(key(section)); list.append(row(section, true)); }}
+    for (const section of all) if (!seen.has(key(section))) {{ seen.add(key(section)); list.append(row(section, false)); }}
+  }}
+  function show(name) {{
+    current = name;
+    for (const button of buttons) button.setAttribute("aria-pressed", String(button.dataset.viewButton === name));
+    for (const panel of panels) panel.hidden = panel.dataset.viewPanel !== name;
+    edit(data.views.find(entry => entry.name === name));
+    try {{ sessionStorage.setItem("quarterdeck-view", name); }} catch (_) {{}}
+  }}
+  for (const button of buttons) button.addEventListener("click", () => show(button.dataset.viewButton));
+  show(current);
+  save.addEventListener("click", async () => {{
+    const sections = Array.from(list.children).filter(item => item.querySelector("input").checked)
+      .map(item => JSON.parse(item.dataset.section));
+    if (!sections.length) {{ status.textContent = "Pick at least one section."; return; }}
+    const submitted = {{name: nameField.value, sections: sections, default: startup.checked}};
+    const controls = [...editor.querySelectorAll("input, button"), ...buttons];
+    for (const control of controls) control.disabled = true;
+    save.dataset.saving = "true";
+    status.textContent = "Saving…";
+    try {{
+      const response = await fetch(data.endpoint, {{
+        method: "POST", headers: {{"Content-Type": "application/json"}},
+        body: JSON.stringify(submitted),
+      }});
+      if (!response.ok) throw new Error((await response.text()).trim() || response.statusText);
+      try {{ sessionStorage.setItem("quarterdeck-view", submitted.name.trim()); }} catch (_) {{}}
+      status.textContent = "Saved";
+      editor.dataset.dirty = "false";
+      location.reload();
+    }} catch (error) {{
+      status.textContent = "Not saved: " + error.message;
+    }} finally {{
+      for (const control of controls) control.disabled = false;
+      save.dataset.saving = "false";
+    }}
+  }});
+}})();
+</script>"""
+    return (f'<div class="views" id="views"><nav class="views-rail" aria-label="Briefing views">{rail}</nav>'
+            f'<div class="views-body">{panels}{view_editor_html(allow_marks)}</div></div>{script}')
+
+
+def attention_html(view: dict[str, object] | None, allow_marks: bool = False) -> str:
+    if view is None:
+        return ""
+    now = parse_when(str(view["generated"])) or datetime.now(timezone.utc)
+    homes = [home for home in view["homes"] if isinstance(home, dict)]  # type: ignore[union-attr]
+    out = ['<section class="dashboard-section recent-work" id="attention" aria-label="Waiting and recent work">'
+           '<div class="section-head"><div><h2>Waiting on you</h2>'
+           "<p>Waiting decisions, then needs you and information, with your priority projects first. "
+           f"Work from the last {RECENT_HOURS} hours appears only when there is some. "
+           "Dated decisions stay hidden until due.</p></div></div>"]
+    out.extend(attention_errors_html(homes))
+    if view.get("views"):
+        out.append(views_html(view, homes, now, allow_marks))
+        out.append("</section>")
+        return "".join(out)
+    out.append(priorities_panel_html(homes))
     for kind, title in (("decisions", "Waiting decisions"), ("needs_you", "Needs you"), ("informational", "For your information")):
         for index, home in enumerate(homes):
             label = f"{home['label']}: " if len(homes) > 1 else ""
@@ -4806,8 +5310,9 @@ def make_handler(
     cache: SiteCache,
     set_mark: Callable[[str, str, str], Report] | None = None,
     send_reaction_to: Callable[[dict[str, object]], dict[str, str]] | None = None,
+    save_view_to: Callable[[dict[str, object]], dict[str, object]] | None = None,
 ) -> type[BaseHTTPRequestHandler]:
-    """Build the request handler; POST is refused unless set_mark or send_reaction_to is given."""
+    """Build the request handler; POST is refused unless set_mark, send_reaction_to or save_view_to is given."""
     class Handler(BaseHTTPRequestHandler):
         server_version = "Quarterdeck"
 
@@ -4864,6 +5369,9 @@ def make_handler(
             if send_reaction_to is not None and path == REACTION_ENDPOINT:
                 self.post_reaction(send_reaction_to)
                 return
+            if save_view_to is not None and path == VIEWS_ENDPOINT:
+                self.post_view(save_view_to)
+                return
             if set_mark is None or path != MARK_ENDPOINT:
                 self.refuse()
                 return
@@ -4901,6 +5409,35 @@ def make_handler(
                 }) + "\n",
                 "application/json; charset=utf-8",
             )
+
+        def post_view(self, save: Callable[[dict[str, object]], dict[str, object]]) -> None:
+            problem = self.mark_request_problem()
+            if problem:
+                self.send_text(*problem)
+                return
+            try:
+                length = int(self.headers.get("Content-Length") or "")
+                if not 0 < length <= MARK_BODY_LIMIT:
+                    raise ValueError
+                body = json.loads(self.rfile.read(length).decode("utf-8"))
+                if (not isinstance(body, dict) or set(body) != {"name", "sections", "default"}
+                        or not isinstance(body["name"], str) or not isinstance(body["sections"], list)
+                        or not isinstance(body["default"], bool)):
+                    raise ValueError
+            except (ValueError, UnicodeDecodeError):
+                self.send_text(400, "Expected JSON {\"name\": ..., \"sections\": [{\"type\": \"waiting\" | \"recent\" | "
+                               "\"done\" | \"priorities\" | \"information\" | \"project\", \"project\": ...}], \"default\": true | false}\n")
+                return
+            try:
+                saved = save(body)
+            except ValueError as exc:
+                self.send_text(409, f"{exc}\n")
+                return
+            except OSError as exc:
+                self.send_text(500, f"Quarterdeck could not save the view: {exc}\n")
+                return
+            cache.invalidate()
+            self.send_text(200, json.dumps(saved) + "\n", "application/json; charset=utf-8")
 
         def post_reaction(self, deliver: Callable[[dict[str, object]], dict[str, str]]) -> None:
             problem = self.mark_request_problem()
@@ -5000,6 +5537,15 @@ def make_server(host: str, port: int, handler: type[BaseHTTPRequestHandler]) -> 
     return Server((host, port), handler)
 
 
+def save_view_request(args: argparse.Namespace, body: dict[str, object]) -> dict[str, object]:
+    """Save one view from the page's editor, as `quarterdeck views save` would."""
+    sections = [dict(section) for section in body["sections"] if isinstance(section, dict)]  # type: ignore[union-attr]
+    if len(sections) != len(body["sections"]):  # type: ignore[arg-type]
+        raise ValueError("every section is an object")
+    saved, startup = store_view(preferences_path(args), selected_homes(args), str(body["name"]), sections, bool(body["default"]))
+    return {"views": [view["name"] for view in saved], "default_view": startup}
+
+
 def serve(args: argparse.Namespace) -> int:
     servers: list[ThreadingHTTPServer] = []
     try:
@@ -5011,9 +5557,12 @@ def serve(args: argparse.Namespace) -> int:
         send_reaction_to: Callable[[dict[str, object]], dict[str, str]] | None = None
         if getattr(args, "allow_marks", False):
             send_reaction_to = lambda raw: send_reaction(args, raw)  # noqa: E731
+        save_view_to: Callable[[dict[str, object]], dict[str, object]] | None = None
+        if getattr(args, "allow_marks", False):
+            save_view_to = lambda raw: save_view_request(args, raw)  # noqa: E731
         cache = SiteCache(site_builder(args, getattr(args, "allow_marks", False)))
         cache.get()
-        handler = make_handler(cache, set_mark, send_reaction_to)
+        handler = make_handler(cache, set_mark, send_reaction_to, save_view_to)
         port = args.port
         for host in bind_hosts(args):
             server = make_server(host, port, handler)
@@ -5027,7 +5576,7 @@ def serve(args: argparse.Namespace) -> int:
     for server in servers:
         host = str(server.server_address[0])
         shown = f"[{host}]" if ":" in host else host
-        access = "report review marks and reactions enabled" if getattr(args, "allow_marks", False) else "read-only"
+        access = "report review marks, reactions and view saves enabled" if getattr(args, "allow_marks", False) else "read-only"
         print(f"Serving Quarterdeck at http://{shown}:{port}/ ({access}; Ctrl+C to stop)", flush=True)
     exposed = [host for host in bind_hosts(args) if not is_loopback(host)]
     if exposed:
@@ -5209,6 +5758,7 @@ COMMAND_DOCS = {
     "list": ["how-to/configure-multiple-homes.md", "reference/cli-and-config.md"],
     "remove": ["how-to/configure-multiple-homes.md", "reference/cli-and-config.md"],
     "priorities": ["how-to/see-recent-work.md"],
+    "views": ["how-to/see-recent-work.md", "reference/cli-and-config.md"],
     "attention": ["how-to/see-recent-work.md", "reference/attention-json.md", "explanation/privacy-and-architecture.md"],
     "board": ["how-to/keep-the-board-current.md", "reference/captain-board.md", "explanation/privacy-and-architecture.md"],
     "install": ["how-to/install.md", "how-to/update.md", "how-to/uninstall.md"],
@@ -5523,6 +6073,7 @@ def calls_list(args: argparse.Namespace) -> int:
 # state's rows are exactly the delivered reactions. fm-inbox.sh dedupes on the request id, so a retry is harmless.
 
 REACTION_ENDPOINT = "/api/reactions"
+VIEWS_ENDPOINT = "/api/views"
 REACTION_BODY_LIMIT = 8192
 REACTION_TEXT_LIMIT = 1000
 REACTIONS_VERSION = 1
@@ -6124,11 +6675,13 @@ def load_site(args: argparse.Namespace) -> tuple[dict[str, object], list[HomeSna
     use_snapshot = not getattr(args, "no_snapshot", False)
     bearings = build_bearings(homes, use_snapshot=use_snapshot)
     try:
-        priorities_set = read_priority_projects(preferences_path(args))
+        document = read_preferences(preferences_path(args))
     except ValueError:
-        priorities_set = []  # a damaged preference file must not stop the page
+        document = {}  # a damaged preference file must not stop the page
     bearings.attention = attention_view(
-        homes, bearings.generated, all_decisions=True, use_feed=use_snapshot, priority_projects=priorities_set,
+        homes, bearings.generated, all_decisions=True, use_feed=use_snapshot,
+        priority_projects=list(document.get("priority_projects", [])),  # type: ignore[call-overload]
+        saved_views=effective_views(document), all_views=True,
     )
     return config, homes, bearings
 
@@ -6181,7 +6734,7 @@ def render(args: argparse.Namespace) -> int:
 def add_serve_options(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--host", action="append", metavar="ADDRESS", help=f"address to bind; repeat to listen on several, all on the same port (default {DEFAULT_HOST} only; a non-loopback address exposes your work data without a login)")
     parser.add_argument("--port", type=port_number, default=DEFAULT_PORT, help=f"port to listen on (default {DEFAULT_PORT})")
-    parser.add_argument("--allow-marks", action="store_true", help="enable report marks and reactions to Firstmate (default: read-only; no key, anyone who can open the page can mark or react)")
+    parser.add_argument("--allow-marks", action="store_true", help="enable report marks, reactions to Firstmate and saved-view edits (default: read-only; no key, anyone who can open the page can mark, react or edit views)")
     parser.add_argument("--home", help="serve this Firstmate home instead of configured homes or FM_HOME")
     parser.add_argument("--config", type=Path, help="optional JSON config file")
 
@@ -6206,7 +6759,7 @@ def make_parser() -> argparse.ArgumentParser:
 
     serve_parser = subparsers.add_parser(
         "serve", help="serve the always-current bearings page over HTTP",
-        description="Serve the bearings page and its readable report and backlog pages, re-rendered from the homes on request. Read-only by default: GET only, no login. With --allow-marks the only writes are a request to mark, unmark, discard or undiscard a known report, and a reaction sent to Firstmate through the home's bin/fm-inbox.sh. Binds loopback by default.",
+        description="Serve the bearings page and its readable report and backlog pages, re-rendered from the homes on request. Read-only by default: GET only, no login. With --allow-marks the only writes are a request to mark, unmark, discard or undiscard a known report, a reaction sent to Firstmate through the home's bin/fm-inbox.sh, and saving a briefing view to the preferences file. Binds loopback by default.",
     )
     command_parsers["serve"] = serve_parser
     add_serve_options(serve_parser)
@@ -6356,6 +6909,7 @@ def make_parser() -> argparse.ArgumentParser:
     attention_parser.add_argument("--check", action="store_true", help="validate the Firstmate sources and print a one-line summary")
     attention_parser.add_argument("--all-decisions", action="store_true", help="also list the background decisions, not just their count")
     attention_parser.add_argument("--project", help="show this project's waiting items instead of the saved priority projects")
+    attention_parser.add_argument("--view", nargs="?", const="", metavar="NAME", help="also build this saved view's sections (the startup view when no name is given)")
     attention_parser.add_argument("--more", action="store_true", help="also list the waiting items outside the priority projects")
     attention_parser.add_argument("--preferences", type=Path, help="preferences file; defaults to ~/.config/quarterdeck/preferences.json")
     attention_parser.add_argument("--home", help="use this Firstmate home instead of configured homes or FM_HOME")
@@ -6390,6 +6944,43 @@ def make_parser() -> argparse.ArgumentParser:
     priorities_clear_parser = priorities_subparsers.add_parser("clear", help="remove all priority projects")
     priorities_target(priorities_clear_parser)
     priorities_clear_parser.set_defaults(handler=priorities)
+
+    views_parser = subparsers.add_parser(
+        "views", help="list, show, save or choose the startup briefing view",
+        description=(
+            "Keep saved briefing views (ordered sections: waiting, recent, done, priorities, project:NAME, information) beside "
+            "the priority projects in the preferences file, and choose the one that opens at startup. Writes only that file."
+        ),
+    )
+    command_parsers["views"] = views_parser
+    views_subparsers = views_parser.add_subparsers(dest="views_command", required=True)
+
+    def views_target(command_parser: argparse.ArgumentParser, homes: bool = False) -> None:
+        command_parser.add_argument("--preferences", type=Path, help="preferences file; defaults to ~/.config/quarterdeck/preferences.json")
+        if homes:
+            command_parser.add_argument("--home", help="use this Firstmate home instead of configured homes or FM_HOME")
+            command_parser.add_argument("--config", type=Path, help="optional JSON config file")
+
+    for command, text in (("list", "print the saved views"), ("show", "print one saved view")):
+        views_read_parser = views_subparsers.add_parser(command, help=text)
+        if command == "show":
+            views_read_parser.add_argument("name", metavar="NAME", help="saved view name")
+        views_read_parser.add_argument("--json", dest="as_json", action="store_true", help="print JSON")
+        views_target(views_read_parser)
+        views_read_parser.set_defaults(handler=views)
+    views_save_parser = views_subparsers.add_parser(
+        "save", help="save a view", description="Save a view (replacing one with the same name) from ordered sections.",
+    )
+    views_save_parser.add_argument("name", metavar="NAME", help=f"view name, up to {VIEW_NAME_LIMIT} characters")
+    views_save_parser.add_argument("--section", action="append", required=True, metavar="SECTION",
+                                   help="waiting, recent, done, priorities, information or project:NAME; repeat, top first")
+    views_save_parser.add_argument("--default", action="store_true", help="also open this view at startup")
+    views_target(views_save_parser, homes=True)
+    views_save_parser.set_defaults(handler=views)
+    views_default_parser = views_subparsers.add_parser("default", help="choose the startup view")
+    views_default_parser.add_argument("name", metavar="NAME", help="saved view name")
+    views_target(views_default_parser, homes=True)
+    views_default_parser.set_defaults(handler=views)
 
     export_parser = subparsers.add_parser(
         "export", help="write the data snapshot for the cloud artifact",

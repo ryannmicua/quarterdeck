@@ -19,10 +19,14 @@ quarterdeck reports relate <report-id> --to <task-id> [--remove] [--home PATH] [
 quarterdeck calls list [--home PATH] [--config FILE]
 quarterdeck calls set-relevance <task-id> current|stale [--reason TEXT] [--home PATH] [--config FILE]
 quarterdeck calls relate <task-id> --to <task-id> [--remove] [--home PATH] [--config FILE]
-quarterdeck attention --json|--check [--all-decisions] [--project NAME] [--more] [--preferences FILE] [--home PATH] [--config FILE]
+quarterdeck attention --json|--check [--all-decisions] [--project NAME] [--more] [--view [NAME]] [--preferences FILE] [--home PATH] [--config FILE]
 quarterdeck priorities show [--json] [--preferences FILE] [--home PATH] [--config FILE]
 quarterdeck priorities set PROJECT [PROJECT ...] [--preferences FILE] [--home PATH] [--config FILE]
 quarterdeck priorities clear [--preferences FILE] [--home PATH] [--config FILE]
+quarterdeck views list [--json] [--preferences FILE]
+quarterdeck views show NAME [--json] [--preferences FILE]
+quarterdeck views save NAME --section SECTION [--section SECTION ...] [--default] [--preferences FILE] [--home PATH] [--config FILE]
+quarterdeck views default NAME [--preferences FILE] [--home PATH] [--config FILE]
 quarterdeck export [--output FILE] [--artifact FILE] [--home PATH] [--config FILE] [--title TEXT] [--bodies all|desk|none] [--no-snapshot]
 quarterdeck import <actions.json|-> [--dry-run] [--home PATH] [--config FILE]
 quarterdeck board upsert <task-id> [--id ID] [--group GROUP] [--title TEXT] [--ask TEXT] [--detail TEXT] [--topic TEXT] [--project TEXT] [--brief-url URL] [--recommendation TEXT] [--link LABEL=URL ...] [--touch] [--touched-at ISO] [--home PATH] [--data-dir PATH]
@@ -89,14 +93,35 @@ recorded in selected homes' route registry project entries or waiting items.
 empty list. Names resolve as described in the
 [attention JSON reference](attention-json.md#waiting-and-priorities).
 
+`views` keeps saved briefing views beside the priorities. A view has a name
+(up to 40 characters, unique ignoring case) and one or more ordered sections:
+`waiting` (Waiting on you), `recent` (the last six hours of merged and started
+work), `done` (Done recently, merged work in the last six hours), `priorities` (one section per priority project, in set order),
+`project:NAME` (one named project) and `information` (For your information). A
+section may appear once per view; unknown section types and unregistered
+projects are refused with exit 2. `views save` replaces a view of the same name
+(or adds one, up to eight views) and `--default` also makes it the startup view;
+`views default NAME` only changes the startup view; `views list` and `show`
+print the saved views (`--json` includes the startup view and file path). With
+no views saved, Quarterdeck uses two seeded views and writes nothing until you
+save: Morning (`waiting`, `recent`, `information`, the startup view) and
+Priorities (`priorities`, `waiting`). Saving the first view writes the seeded
+views too. See [Briefing views](attention-json.md#briefing-views) for what each
+section holds.
+
 The preference file is
 `${XDG_CONFIG_HOME:-~/.config}/quarterdeck/preferences.json`.
-`priorities` subcommands and `attention` accept `--preferences FILE` to override
+`priorities` and `views` subcommands and `attention` accept `--preferences FILE` to override
 it; page commands read the default file. Its JSON object has `version: 1` and
-`priority_projects`, a list of at most three distinct, nonempty strings; unknown
-members are preserved on writes. A missing file means no priorities. An
-unreadable or invalid file makes the priority and attention commands exit 2;
-the page ignores it and uses no priorities. Writes are atomic with mode `0600`
+`priority_projects`, a list of at most three distinct, nonempty strings, plus
+optionally `views` (a list of `{name, sections}`, sections being `{type}` or
+`{type: "project", project}`) and `default_view` (the name of one saved view).
+View names and project-section names are trimmed on read; `default_view`
+matches ignoring case and is returned using the saved view's spelling.
+Unknown top-level members are preserved on writes. A missing file means no
+priorities and the seeded views. An unreadable or invalid file makes the
+priority, view and attention commands exit 2; the page ignores it and uses no
+priorities and the seeded views. Writes are atomic with mode `0600`
 and refuse destinations inside selected local homes or their data directories.
 
 `attention --json` prints the shared waiting and recent-work view;
@@ -149,10 +174,12 @@ for how marks affect the dashboard.
 request after its 30-second cache expires. It serves them with `GET` by default
 on each repeatable `--host` address (default `127.0.0.1` only) and `--port`
 (default 8765; valid ports are 1 through 65535). `--allow-marks` enables the
-report review request and the reaction request described in the
+report review request, the reaction request and the saved-view request
+(`POST /api/views`, which writes only the preferences file) described in the
 [serving guide](../how-to/serve-the-page.md); all other writes remain refused.
-The served page reloads itself every 60 seconds, waiting while a reaction is
-being written or sent, and shows its generated-at time. `service` prints a systemd user unit that runs `serve` with the given
+The served page shows its generated-at time; see the
+[serving guide](../how-to/serve-the-page.md#run-it) for automatic refresh behavior.
+`service` prints a systemd user unit that runs `serve` with the given
 options, or with `--write` writes it to
 `${XDG_CONFIG_HOME:-~/.config}/systemd/user/quarterdeck.service`; it never runs
 `systemctl`. A non-loopback host exposes work data without a login. `url`

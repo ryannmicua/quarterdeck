@@ -58,7 +58,7 @@ data directory and refuses to overwrite a board it cannot read.
 generated pages, has no write endpoints and no login, and binds 127.0.0.1.
 Binding another address exposes real work data to that network.
 
-`quarterdeck serve --allow-marks` adds exactly one write endpoint,
+`quarterdeck serve --allow-marks` enables the write endpoint
 `POST /api/reports/review`, which marks, unmarks, discards or undiscards one
 known report ID. It runs the same code, storage and fingerprint as `quarterdeck
 reports mark-reviewed`, `unmark-reviewed`, `discard` and `undiscard`. Each
@@ -67,7 +67,8 @@ directory, never a Firstmate home.
 A request must include the fingerprint shown on the page, be `application/json`,
 come from the page's own origin (cross-origin `Origin` or `Sec-Fetch-Site`
 values are refused), and name an existing, unambiguous report whose content has
-not changed since the page loaded. Every other route and method stays refused.
+not changed since the page loaded. The other allowed writes are described below;
+all remaining routes and methods stay refused.
 There is no key or login: anyone who can open the served page can mark or
 unmark or discard reports, so on a non-loopback bind that means anyone on that
 network.
@@ -75,7 +76,12 @@ The endpoint grants no other write access. Use marks only on a network you
 trust, or put the server behind an authenticating TLS reverse proxy.
 The static `render` output never contains the buttons.
 
-`serve --allow-marks` also enables a second endpoint, `POST /api/reactions`, for
+`serve --allow-marks` also enables `POST /api/views`, which saves one briefing
+view (and optionally the startup view) to the preferences file. It applies the
+same origin, content-type and no-key rules, validates the view exactly as
+`quarterdeck views save` does, and writes only that file, never a home.
+
+`serve --allow-marks` also enables `POST /api/reactions` for
 reactions: a quick Approve, Hold, Not now or Question, and a short reply, on a
 desk call, a related item or a report. It applies the same origin, content-type
 and no-key rules as the mark endpoint, and accepts only an item that exists. It
