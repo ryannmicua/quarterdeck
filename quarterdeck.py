@@ -6573,7 +6573,7 @@ ACTIVITY_SCRIPT = """
     (function () {
       const feed = document.getElementById("cards");
       if (!feed) return;
-      const KEY = "quarterdeck-cards-seen", SEEN_MS = 1200, baseTitle = document.title;
+      const KEY = "quarterdeck-cards-seen", SEEN_MS = 1200;
       let seen = {};
       try { seen = JSON.parse(localStorage.getItem(KEY) || "{}") || {}; } catch (_) { seen = {}; }
       const save = () => { try { localStorage.setItem(KEY, JSON.stringify(seen)); } catch (_) {} };
@@ -6594,7 +6594,6 @@ ACTIVITY_SCRIPT = """
         badge.textContent = String(unseen);
         badge.hidden = unseen === 0;
         if (top) { top.textContent = unseen + " new"; top.hidden = unseen === 0; }
-        document.title = (unseen ? "(" + unseen + ") " : "") + baseTitle;
       }
       function unwatch(card) {
         clearTimeout(timers.get(card));

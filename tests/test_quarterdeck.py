@@ -6255,6 +6255,11 @@ function openCard(card) {
         verify = r"""
 (async () => {
   await update([spec('a'), spec('b')]);
+  assert.equal(document.title, 'Quarterdeck');
+  assert.equal(controls['cards-count'].textContent, '2');
+  assert.equal(controls['cards-count'].hidden, false);
+  assert.equal(controls['cards-new'].textContent, '2 new');
+  assert.equal(controls['cards-new'].hidden, false);
   const a = lists.needs_you.children[0], b = lists.needs_you.children[1];
   controls['item-present'] = {open: false};
   assert.equal(clickDesk('#item-present'), false);
@@ -6331,7 +6336,12 @@ function openCard(card) {
   tick(1);
   assert.equal(saved.visible, '1');
   assert.equal(controls['cards-count'].hidden, true);
+  assert.equal(controls['cards-new'].hidden, true);
+  assert.equal(document.title, 'Quarterdeck');
   await update([spec('visible', '2')]);
+  assert.equal(document.title, 'Quarterdeck');
+  assert.equal(controls['cards-count'].textContent, '1');
+  assert.equal(controls['cards-new'].textContent, '1 new');
   visible = lists.needs_you.children[0];
   observer.emit(visible, 0.5); tick(600);
   await update([spec('visible', '3')]); tick(1200);
@@ -6347,6 +6357,7 @@ function openCard(card) {
   observer.emit(lists.needs_you.children[0], 0.5);
   await update([]); tick(1200);
   assert.equal(saved.removed, undefined);
+  assert.equal(document.title, 'Quarterdeck');
 })().catch(error => { console.error(error); process.exitCode = 1; });
 """
         script = re.search(r"<script>(.*?)</script>", quarterdeck.ACTIVITY_SCRIPT, re.S)[1]
@@ -6482,7 +6493,7 @@ function openCard(card) {
             bearings.attention = quarterdeck.attention_view(snapshots, ATTENTION_NOW, all_decisions=True)
             self.assertIn("unavailable", quarterdeck.cards_html([], bearings.attention, ATTENTION_NOW, True))
 
-    def test_static_render_does_not_poll_and_the_script_is_in_the_page(self) -> None:
+    def test_static_render_and_served_feed_modes(self) -> None:
         with tempfile.TemporaryDirectory() as temp:
             snapshots, bearings = self.site(Path(temp))
             static = quarterdeck.build_html(snapshots, "Quarterdeck", bearings=bearings)
@@ -6490,7 +6501,6 @@ function openCard(card) {
             self.assertIn("Reload to see new cards.", static)
             served = quarterdeck.build_html(snapshots, "Quarterdeck", bearings=bearings, refresh_seconds=60)
             self.assertIn('data-endpoint="cards.json"', served)
-            self.assertIn('quarterdeck-cards-seen', served)
 
     def test_served_page_publishes_cards_json_read_only(self) -> None:
         with tempfile.TemporaryDirectory() as temp:

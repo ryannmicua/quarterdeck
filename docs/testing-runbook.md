@@ -232,5 +232,9 @@ reopening it explicitly acknowledges that revision. Reaction cases cross the
 one-hour age boundary with reply controls enabled and disabled; unchanged
 records keep their revision, while changed text, choice, source or absolute
 timestamp and reaction removal change it.
+The harness checks the header and Cards-heading unread counts on arrival and
+acknowledgement, and checks that arrival, acknowledgement, replacement and
+removal preserve the page title. Seen persistence is asserted through executed
+localStorage writes.
 No real home data or reaction endpoint is modified. Temporary homes clean up
 automatically; remove the empty TMPDIR directory after the run.

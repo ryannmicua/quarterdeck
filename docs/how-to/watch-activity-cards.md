@@ -37,8 +37,8 @@ While the page is open it fetches `cards.json` from the same server every 15
 seconds (the server re-reads its homes at most every 30 seconds), and a new card slides in at its place with a short highlight. A card
 stays marked **New** until it has been at least half on screen for 1.2 continuous
 seconds in the active tab or you open it there. Returning to the tab starts a
-fresh visibility check. The **Cards** heading, a "N new" link in the page header, and the
-browser tab title count the cards you have not seen. A card whose text changes
+fresh visibility check. The **Cards** heading and an "N new" link in the page
+header count the cards you have not seen. A card whose text changes
 becomes New again. Restoring an expanded card after a poll does not mark its
 changed content as seen. Card reactions show their absolute sent timestamp, so
 the passage of time alone does not make a card New.
