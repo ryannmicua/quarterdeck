@@ -6317,7 +6317,8 @@ def reaction_latest_text(reaction: dict[str, str] | None, now: datetime | None) 
     if not reaction:
         return ""
     when = parse_board_time(reaction["at"])
-    ago = f" · {elapsed_text(when, now)} ago" if when and now and when <= now else ""
+    ago = (f" · {reaction['at']}" if now is None else
+           f" · {elapsed_text(when, now)} ago" if when and when <= now else "")
     sent = "from the artifact" if reaction["source"] == "artifact" else "from this page"
     return f"Latest reaction: {reaction_summary(reaction)} ({sent}{ago})"
 
@@ -6438,7 +6439,7 @@ def need_card(
     if entry and entry.number:
         parts.append(f'<p class="links"><a href="#{board_anchor(entry)}" data-desk-link>Show on the desk</a></p>')
     if section == "needs_you":
-        parts.append(reaction_html(reactions, "call", key))
+        parts.append(reaction_html(replace(reactions, now=None) if reactions else None, "call", key))
     title = str(item["title"])
     return {
         "id": f"call:{key}", "section": section, "label": "Needs you" if section == "needs_you" else "For your information",
@@ -6619,6 +6620,10 @@ ACTIVITY_SCRIPT = """
         }
       }
       feed.addEventListener("click", event => {
+        const summary = event.target.closest(".act-card > details > summary");
+        if (summary && !event.defaultPrevented && event.button === 0 && !summary.parentElement.open) {
+          markSeen(summary.closest(".act-card"));
+        }
         const link = event.target.closest("[data-desk-link]");
         if (!link || event.defaultPrevented || event.button !== 0 || event.metaKey || event.ctrlKey || event.shiftKey || event.altKey) return;
         const target = document.getElementById(link.hash.slice(1));
@@ -6627,10 +6632,6 @@ ACTIVITY_SCRIPT = """
         location.hash = link.hash;
         quarterdeckReload();
       });
-      feed.addEventListener("toggle", event => {
-        const card = event.target.closest && event.target.closest(".act-card");
-        if (card && event.target.open) markSeen(card);
-      }, true);
       function ago(iso) {
         const seconds = Math.max(0, (Date.now() - Date.parse(iso)) / 1000);
         const days = Math.floor(seconds / 86400), hours = Math.floor(seconds / 3600);

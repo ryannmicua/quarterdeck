@@ -6100,6 +6100,30 @@ class ActivityCardTests(unittest.TestCase):
         self.assertNotEqual(before[0], after[0])
         self.assertIn('datetime="2026-07-02T11:00:00Z"', after[1])
 
+    def test_reaction_revisions_track_records_instead_of_elapsed_age(self) -> None:
+        item = {"key": "invented/choice", "title": "Choose a map", "ask": "Which map?", "group": "decide",
+                "at": "2026-07-02T10:00:00Z"}
+        attention = {"homes": [{"label": "invented", "waiting": {"decisions": [item]}}]}
+        reaction = {"id": "reaction-1", "at": "2026-07-02T11:01:00Z", "source": "page",
+                    "reaction": "hold", "text": "Wait for review"}
+
+        def payload(now: datetime, latest: dict | None, enabled: bool) -> dict:
+            context = quarterdeck.ReactionContext(enabled=enabled, now=now,
+                                                  latest={("call", item["key"]): latest} if latest else {})
+            cards = quarterdeck.activity_cards(attention, None, context)
+            return json.loads(quarterdeck.cards_payload(cards, now))["cards"][0]
+
+        for enabled in (False, True):
+            with self.subTest(enabled=enabled):
+                before = payload(ATTENTION_NOW, reaction, enabled)
+                later = payload(ATTENTION_NOW + timedelta(minutes=2), reaction, enabled)
+                self.assertEqual(before["rev"], later["rev"])
+                self.assertIn(reaction["at"], before["html"])
+                self.assertIn("Wait for review", before["html"])
+                for changed in (None, dict(reaction, text="Review complete"), dict(reaction, reaction="approve"),
+                                dict(reaction, source="artifact"), dict(reaction, at="2026-07-02T11:02:00Z")):
+                    self.assertNotEqual(before["rev"], payload(ATTENTION_NOW, changed, enabled)["rev"])
+
     def test_polling_preserves_busy_cards_and_reconciles_idle_cards(self) -> None:
         node = shutil.which("node")
         if node is None:
@@ -6135,7 +6159,16 @@ class Card {
     this.dataset = {cardId: id, cardRev: rev};
     this.classes = new Set();
     this.classList = {contains: x => this.classes.has(x), add: x => this.classes.add(x), remove: x => this.classes.delete(x)};
-    this.details = {open: false};
+    let open = false;
+    this.details = {closest: () => this};
+    Object.defineProperty(this.details, 'open', {
+      get: () => open,
+      set: value => {
+        if (value === open) return;
+        open = value;
+        setTimeout(() => feedEvents.toggle?.({target: this.details}), 0);
+      }
+    });
     this.field = {value: '', matches: () => true};
     this.selected = false;
     this.sending = false;
@@ -6209,9 +6242,14 @@ function visibility(hidden) {
 function clickDesk(hash, extra = {}) {
   let prevented = false;
   const link = {hash};
-  feedEvents.click({target: {closest: () => link}, button: 0,
+  feedEvents.click({target: {closest: selector => selector === '[data-desk-link]' ? link : null}, button: 0,
     preventDefault() { prevented = true; }, ...extra});
   return prevented;
+}
+function openCard(card) {
+  const summary = {parentElement: card.details, closest: () => card};
+  feedEvents.click({target: {closest: selector => selector === '.act-card > details > summary' ? summary : null}, button: 0});
+  card.details.open = !card.details.open;
 }
 """
         verify = r"""
@@ -6284,7 +6322,7 @@ function clickDesk(hash, extra = {}) {
   observer.emit(visible, 0.5); tick(600);
   visibility(true); tick(1200);
   assert.equal(saved.visible, undefined);
-  feedEvents.toggle({target: {open: true, closest: () => visible}});
+  openCard(visible);
   assert.equal(saved.visible, undefined);
   visibility(false);
   assert.ok(observer.watched.has(visible));
@@ -6299,7 +6337,11 @@ function clickDesk(hash, extra = {}) {
   await update([spec('visible', '3')]); tick(1200);
   assert.equal(saved.visible, '1');
   visible = lists.needs_you.children[0];
-  feedEvents.toggle({target: {open: true, closest: () => visible}});
+  assert.equal(visible.details.open, true);
+  assert.equal(saved.visible, '1', 'restoring an offscreen open card acknowledged its changed revision');
+  openCard(visible);
+  assert.equal(saved.visible, '1', 'closing acknowledged the changed revision');
+  openCard(visible);
   assert.equal(saved.visible, '3');
   await update([spec('removed')]);
   observer.emit(lists.needs_you.children[0], 0.5);

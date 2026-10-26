@@ -226,5 +226,11 @@ The executable check also exercises desk navigation to present and missing
 targets, including guarded reloads during replies, sends and view edits.
 Observer cases cover below-half visibility, interrupted dwell time, hidden tabs,
 returning to the tab, explicit opening, and removing or replacing a timed card.
+The DOM harness queues toggle events when open state changes: restoring an
+offscreen expanded card must leave its new revision unseen, while closing and
+reopening it explicitly acknowledges that revision. Reaction cases cross the
+one-hour age boundary with reply controls enabled and disabled; unchanged
+records keep their revision, while changed text, choice, source or absolute
+timestamp and reaction removal change it.
 No real home data or reaction endpoint is modified. Temporary homes clean up
 automatically; remove the empty TMPDIR directory after the run.
