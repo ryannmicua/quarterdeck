@@ -209,3 +209,18 @@ captain holds without activity can contribute additional background decisions,
 so count the complete fixture when checking the older-decision card. Keep all
 mutations fictional, retain CLI JSON and desktop/mobile screenshots as evidence,
 then stop servers, close test tabs and remove fixture/state directories.
+
+
+### Activity card reconciliation
+
+Run `PYTHONPATH=tests python3 -m unittest test_quarterdeck.ActivityCardTests -v`.
+The fixtures use disposable fictional homes; set `TMPDIR` to a directory inside
+the worktree when file writes must stay within it. Node.js on PATH executes the
+generated polling script against DOM controls and scripted fetch responses.
+Checks cover drafts, focus, selected reactions and pending sends during removal,
+replacement and section changes; idle cards reorder and move without losing open
+details, and an empty payload keeps a busy card visible until it becomes idle.
+Python cases check timestamp revisions, stable desk links after renumbering,
+uncapped section counts, and ledger/backlog completions from registered homes.
+No real home data or reaction endpoint is modified. Temporary homes clean up
+automatically; remove the empty TMPDIR directory after the run.

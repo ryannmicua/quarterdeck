@@ -2778,7 +2778,29 @@ def recent_work(records: list[dict[str, object]] | None, snapshot: HomeSnapshot,
                        {"event": "started", "kind": r.get("kind") if isinstance(r.get("kind"), str) else None})
         for r in latest if r["event"] in {"task.merged", "task.dispatched"}
     ]
-    return {"ledger_starts_at": iso_seconds(starts) if starts is not None else None, "windows": windows, "last_6h": last_6h}
+    done = {}
+    for record in latest:
+        event = record["event"]
+        mode = record.get("mode")
+        if event != "task.merged" and not (event == "captain.answered" and mode in {"done", "release", "reconciled"}):
+            continue
+        task = str(record["task"])
+        done.setdefault(task, describe(record) | {
+            "event": "merged" if event == "task.merged" else "closed" if mode == "reconciled" else "answered",
+            "via": record.get("via"), "home": snapshot.spec.label,
+        })
+    for task, item in items.items():
+        if not item.done or task in done:
+            continue
+        when = next((parsed for name in ("merged", "done", "closed")
+                     if (parsed := parse_when(item.attrs.get(name, ""))) is not None), None)
+        if when is not None and end - RECENT_HOURS * 3600 <= when.timestamp() <= end:
+            done[task] = {
+                "task": task, "title": plain_title(item.title), "project": item.project, "pr": item.pr_url,
+                "at": iso_seconds(when.timestamp()), "event": "finished", "home": snapshot.spec.label,
+            }
+    return {"ledger_starts_at": iso_seconds(starts) if starts is not None else None, "windows": windows,
+            "last_6h": last_6h, "done_recent": list(done.values())}
 
 
 def decision_key(snapshot: HomeSnapshot, row: dict[str, object]) -> str:
@@ -2819,7 +2841,7 @@ def home_attention(
     errors: list[dict[str, str]] = []
     view: dict[str, object] = {
         "label": spec.label, "home": str(spec.home) if spec.home else None, "ok": True, "errors": errors,
-        "ledger": None, "recent_work": None, "recent_work_6h": [], "show_recent": False,
+        "ledger": None, "recent_work": None, "recent_work_6h": [], "done_recent": [], "show_recent": False,
         "decision_relevance": {"recent_days": DEFAULT_RECENT_DAYS, "since": iso_seconds(since)}, "decisions": None,
     }
     if spec.home is None or spec.remote_host:
@@ -2854,6 +2876,7 @@ def home_attention(
         }
         work = recent_work(records, snapshot, feed_titles, now)
         view["recent_work_6h"] = work.pop("last_6h")
+        view["done_recent"] = work.pop("done_recent")
         view["show_recent"] = bool(view["recent_work_6h"])
         view["recent_work"] = work
     snapshots = all_snapshots([snapshot])
@@ -2868,6 +2891,7 @@ def home_attention(
             except AttentionSourceError as exc:
                 errors.append(exc.as_dict())
                 local_records = []
+            view["done_recent"].extend(recent_work(local_records, owner, {}, now)["done_recent"])
         normalized.extend(dict(record, task=task_key(owner, str(record["task"]), snapshots)) for record in local_records)
     if projects_out is not None:
         for owner in snapshots:
@@ -4394,6 +4418,10 @@ def touched_text(entry: BoardEntry, now: datetime) -> str:
     return f"{label} {elapsed_text(entry.touched, now)} ago"
 
 
+def board_anchor(entry: BoardEntry) -> str:
+    return "item-" + hashlib.sha256(entry.refresh_key.encode()).hexdigest()[:20]
+
+
 def board_entry_html(
     entry: BoardEntry, show_home: bool, now: datetime, reactions: ReactionContext | None = None,
 ) -> str:
@@ -4450,7 +4478,7 @@ def board_entry_html(
         )
     parts.append(reaction)
     return (
-        f'<details class="board-item" id="item-{entry.number}" '
+        f'<details class="board-item" id="{board_anchor(entry)}" '
         f'data-refresh-key="{html.escape(entry.refresh_key, quote=True)}"><summary>'
         f'<span class="board-num" aria-label="Number {entry.number}">{entry.number}</span>'
         f'<span class="board-text"><span class="board-title">{html.escape(item.title)}</span>'
@@ -6327,9 +6355,8 @@ CARDS_PAGE = "cards.json"
 CARDS_POLL_SECONDS = 15
 CARD_SECTIONS = (
     ("needs_you", "Needs you"), ("recent", f"Recent work, last {RECENT_HOURS} hours"),
-    ("information", "For your information"),
+    ("information", "For your information"), ("done", "Done recently"),
 )
-CARD_LIMITS = {"needs_you": 50, "recent": 20, "information": 15}
 CARD_LINE_LIMIT = 160
 
 
@@ -6349,7 +6376,8 @@ def card_facts(*facts: tuple[str, str]) -> str:
 
 def work_card(item: dict[str, object], home: str, multi_home: bool) -> dict[str, object]:
     merged = item["event"] == "merged"
-    verb = "Merged" if merged else "Started"
+    verb = {"merged": "Merged", "started": "Started", "answered": "Answered",
+            "closed": "Closed", "finished": "Finished"}[str(item["event"])]
     title = str(item["title"])
     pr = item.get("pr")
     link = (f'<a href="{html.escape(str(pr), quote=True)}">{html.escape(str(pr))}</a>'
@@ -6365,7 +6393,7 @@ def work_card(item: dict[str, object], home: str, multi_home: bool) -> dict[str,
     )
     summary = " · ".join(where + ([f"via {via}"] if merged and via else []))
     return {
-        "id": f"work:{home}:{item['event']}:{item['task']}:{item['at']}", "section": "recent",
+        "id": f"work:{home}:{item['event']}:{item['task']}:{item['at']}", "section": "recent" if item["event"] == "started" else "done",
         "label": verb, "at": str(item["at"]), "title": f"{verb}: {title}",
         "summary": summary or str(item["task"]), "status": "", "body": body,
     }
@@ -6408,7 +6436,7 @@ def need_card(
             f'<li><a href="{html.escape(url, quote=True)}">{html.escape(label)}</a> '
             f'<span class="path">{html.escape(url)}</span></li>' for label, url in links) + "</ul>")
     if entry and entry.number:
-        parts.append(f'<p class="links"><a href="#item-{entry.number}">Show on the desk</a></p>')
+        parts.append(f'<p class="links"><a href="#{board_anchor(entry)}">Show on the desk</a></p>')
     if section == "needs_you":
         parts.append(reaction_html(reactions, "call", key))
     title = str(item["title"])
@@ -6441,22 +6469,25 @@ def activity_cards(
                 taken.add(str(item["key"]))
                 cards.append(need_card(item, entries.get(str(item["key"])), label, multi_home, reactions, section))
         for item in home.get("recent_work_6h") or []:
-            cards.append(work_card(item, label, multi_home))
+            if item["event"] == "started":
+                cards.append(work_card(item, label, multi_home))
+        for item in home.get("done_recent") or []:
+            cards.append(work_card(item, str(item.get("home") or label), multi_home))
     ranked: list[dict[str, object]] = []
     for section, _title in CARD_SECTIONS:
         chosen = [card for card in cards if card["section"] == section]
         chosen.sort(key=lambda card: str(card["at"] or ""), reverse=True)
-        ranked.extend(chosen[: CARD_LIMITS[section]])
+        ranked.extend(chosen)
     return ranked
 
 
 def card_html(card: dict[str, object], now: datetime) -> tuple[str, str]:
-    """One card as (revision, markup). The revision changes when anything but the age changes."""
+    """One card as (revision, markup). The revision changes when the content or event timestamp changes."""
     title, summary, status = (html.escape(str(card[name])) for name in ("title", "summary", "status"))
     at = parse_when(str(card["at"])) if card["at"] else None
     stamp = (f'<time class="act-time" datetime="{html.escape(str(card["at"]), quote=True)}">'
              f'{elapsed_text(at, now)} ago</time>') if at else ""
-    rev = hashlib.sha1(json.dumps([card["title"], card["summary"], card["status"], card["body"], card["label"]]).encode()).hexdigest()[:12]
+    rev = hashlib.sha1(json.dumps([card["title"], card["summary"], card["status"], card["body"], card["label"], card["at"]]).encode()).hexdigest()[:12]
     need = card["section"] == "needs_you"
     chip = f'<span class="chip act-status">{status}</span>' if status else ""
     return rev, (
@@ -6607,14 +6638,14 @@ ACTIVITY_SCRIPT = """
         const existing = new Map(cards().map(card => [card.dataset.cardId, card]));
         const wanted = new Set(payload.cards.map(card => card.id));
         for (const [id, card] of existing) {
-          if (!wanted.has(id)) { if (watch) watch.unobserve(card); card.remove(); delete seen[id]; }
+          if (!wanted.has(id) && !busy(card)) { if (watch) watch.unobserve(card); card.remove(); delete seen[id]; }
         }
         const anchors = {};
         for (const spec of payload.cards) {
           const list = feed.querySelector('[data-section-list="' + spec.section + '"]');
           let card = existing.get(spec.id);
-          if (list && card && card.parentElement !== list) { card.remove(); card = null; existing.delete(spec.id); }
-          if (list && card && card.dataset.cardRev !== spec.rev && !busy(card)) {
+          if (card && busy(card)) continue;
+          if (list && card && card.dataset.cardRev !== spec.rev) {
             const fresh = build(spec.html), open = card.querySelector("details").open;
             if (watch) watch.unobserve(card);
             card.replaceWith(fresh);
@@ -6623,13 +6654,18 @@ ACTIVITY_SCRIPT = """
             card = fresh;
           } else if (list && !card) {
             card = build(spec.html);
-            if (anchors[spec.section]) anchors[spec.section].after(card); else list.prepend(card);
             attach(card, true);
           }
-          if (card) anchors[spec.section] = card;
+          if (list && card) {
+            const anchor = anchors[spec.section];
+            if (anchor ? anchor.nextElementSibling !== card : list.firstElementChild !== card) {
+              if (anchor) anchor.after(card); else list.prepend(card);
+            }
+            anchors[spec.section] = card;
+          }
         }
         for (const section of feed.querySelectorAll(".act-section")) section.hidden = !section.querySelector(".act-card");
-        document.getElementById("cards-empty").hidden = payload.cards.length > 0;
+        document.getElementById("cards-empty").hidden = cards().length > 0;
         times();
         count();
         save();

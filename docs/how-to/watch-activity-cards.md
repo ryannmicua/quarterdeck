@@ -13,13 +13,15 @@ render. Quarterdeck keeps no card store and runs no new script.
 | Section | Cards | Source |
 | --- | --- | --- |
 | Needs you | One per decision, merge or review waiting on you. Distinct gold edge and a status chip such as "Decision waiting" or "PR ready to merge". | The attention feed and the captain board. |
-| Recent work, last 6 hours | One per task merged or started. | `state/fleet-ledger.jsonl`. |
+| Recent work, last 6 hours | One per task started. | `state/fleet-ledger.jsonl`. |
 | For your information | One per result to read. | The attention feed and the captain board. |
+| Done recently | Recently merged work, answered or closed captain calls, and dated finished tasks. | The fleet ledger and backlog, including registered homes. |
 
 Sections appear in that order, and cards are newest first within each. Quiet and
 stale decisions, dated decisions that are not yet due, and items outside your
 priority projects stay out, the same as on "Waiting on you". Work older than six
-hours is not shown as cards.
+hours is not shown as cards. Done recently uses the same six-hour window.
+Sections show every eligible card without a hidden count limit.
 
 A needs-you card opens to the ask, its options and recommendation when the text
 states them, the decision brief and other links, and a link to the item on the
@@ -40,7 +42,9 @@ becomes New again.
 Which cards you have seen is kept only in your browser (`localStorage`), so each
 browser and device tracks its own. If the browser blocks storage, cards simply
 start New on each load. A card you are replying to is never replaced under you:
-Quarterdeck waits until the reply box is empty and unfocused.
+Quarterdeck defers removal, replacement and movement until the reply box is
+empty and unfocused, no reaction choice is selected, and no send is pending.
+Idle cards follow the latest order and timestamps on each poll.
 
 A page saved with `quarterdeck render` is a snapshot. It shows the cards but does
 not poll; reload it to see changes.
