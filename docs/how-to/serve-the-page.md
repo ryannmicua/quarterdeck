@@ -37,7 +37,8 @@ address and for its JSON output.
 | `--config FILE` | private user config, if present | Select homes with the same rules as `render`. |
 | `--title TEXT` | configured title | Override the page title. |
 | `--no-snapshot` | off | Skip the Firstmate snapshot script and always parse backlogs. |
-| `--allow-marks` | off | Enable the "Mark reviewed", "Unmark", "Discard" and "Undiscard" buttons for reports, reactions sent to Firstmate, and saving briefing views from the page. |
+| `--allow-marks` | off | Enable the "Mark reviewed", "Unmark", "Discard" and "Undiscard" buttons for reports, reactions sent to Firstmate, saving briefing views from the page, and "Discard this wait" on captain-wait cards. |
+| `--watch-waits` | off | Also run the captain-wait watcher in the background; see [Track what is waiting on you](track-captain-waits.md). |
 
 By default the server only answers `GET` for the main page, `cards.json` (the
 feed's cards) and the generated report, backlog and backlog-item pages. It has no write endpoints. With
@@ -89,6 +90,12 @@ the card says "Not sent" and nothing is recorded; send it again.
 
 As with marks, there is no key: anyone who can open the page can send
 reactions as you, so use `--allow-marks` only on a network you trust.
+
+With `--allow-marks` and the captain-wait watcher, a card for a task held for
+you also has **Discard this wait**. After you confirm, Quarterdeck sends the
+home's Firstmate a note through the same `bin/fm-inbox.sh note` asking it to
+drop the hold, and hides the card once the note is delivered. See
+[Track what is waiting on you](track-captain-waits.md#discard-a-wait).
 
 ## Where the sections come from
 

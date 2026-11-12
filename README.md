@@ -31,6 +31,13 @@ as a local artifact. Quarterdeck itself has no agent or build step.
   desk's reaction controls. New cards slide in and are marked New until seen,
   without a reload. See
   [Watch Firstmate's activity as cards](docs/how-to/watch-activity-cards.md).
+- Captain waits: with `serve --watch-waits` (or `quarterdeck waits watch`), each
+  task Firstmate holds for you gets a card saying what kind of ask it is (look at
+  a screen, give the word to merge, pick an option, provide a login) with a
+  one-line summary, and opens to Firstmate's first briefing and the
+  clarifications it gave when you asked, with dates. Cards are released when the
+  hold is gone; Discard asks Firstmate to drop a wait. Nothing changes in
+  Firstmate. See [Track what is waiting on you](docs/how-to/track-captain-waits.md).
 - Captain board: when a home has `data/captain-board.json`, the desk groups
   decisions still in play, with background items collapsed. Items
   are cross-checked against the live backlog and can carry a decision-brief link

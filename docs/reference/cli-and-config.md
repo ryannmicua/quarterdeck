@@ -4,8 +4,8 @@
 
 ```text
 quarterdeck render [--home PATH] [--output PATH] [--config FILE] [--title TEXT] [--all] [--lavish] [--no-snapshot]
-quarterdeck serve [--host ADDRESS ...] [--port N] [--home PATH] [--config FILE] [--title TEXT] [--no-snapshot] [--allow-marks]
-quarterdeck service [--write] [--allow-marks] [--host ADDRESS ...] [--port N] [--home PATH] [--config FILE]
+quarterdeck serve [--host ADDRESS ...] [--port N] [--home PATH] [--config FILE] [--title TEXT] [--no-snapshot] [--allow-marks] [--watch-waits]
+quarterdeck service [--write] [--allow-marks] [--watch-waits] [--host ADDRESS ...] [--port N] [--home PATH] [--config FILE]
 quarterdeck url [--json]
 quarterdeck reactions import FILE|- [--dry-run] [--home PATH] [--config FILE]
 quarterdeck reports list [--home PATH] [--config FILE]
@@ -34,6 +34,10 @@ quarterdeck board touch <task-id> [--at ISO] [--home PATH] [--data-dir PATH]
 quarterdeck board remove <task-id> [--id ID] [--home PATH] [--data-dir PATH]
 quarterdeck board active [--new-session] [--home PATH] [--data-dir PATH]
 quarterdeck board list [--json] [--home PATH] [--data-dir PATH]
+quarterdeck waits sync [--no-helper] [--home PATH] [--config FILE]
+quarterdeck waits watch [--interval SECONDS] [--home PATH] [--config FILE]
+quarterdeck waits list [--all] [--json] [--home PATH] [--config FILE]
+quarterdeck waits discard <home-label-slug/task-id> [--home PATH] [--config FILE]
 quarterdeck add <firstmate-home> [--label LABEL] [--config FILE]
 quarterdeck list [--config FILE]
 quarterdeck remove <label-or-path> [--config FILE]
@@ -79,7 +83,10 @@ under that parent. It may run that home's
 `bin/fm-attention.sh --json` for the "Waiting on you" section, unless
 `--no-snapshot` is set, and it reads `state/fleet-ledger.jsonl` for that
 section. Quarterdeck itself makes no network calls and invokes no other
-Firstmate script directly, apart from `bin/fm-inbox.sh note` for reactions. The snapshot wrapper may read registered
+Firstmate script directly, apart from `bin/fm-inbox.sh note` for reactions and
+for discarding a captain wait. The captain-wait watcher also reads the home's
+saved Claude Code sessions and runs the configured helper command; see
+[Captain waits](#captain-waits). The snapshot wrapper may read registered
 remote secondmate ledgers through Firstmate's routes and cache, and Quarterdeck
 shows the returned rows. A missing or unreadable home in a configured list
 gets a failure section;
@@ -175,9 +182,12 @@ request after its 30-second cache expires. It serves them, and `cards.json` (the
 activity cards, schema `quarterdeck-cards.v1`), with `GET` by default
 on each repeatable `--host` address (default `127.0.0.1` only) and `--port`
 (default 8765; valid ports are 1 through 65535). `--allow-marks` enables the
-report review request, the reaction request and the saved-view request
+report review request, the reaction request, the saved-view request
 (`POST /api/views`, which writes only the preferences file) described in the
-[serving guide](../how-to/serve-the-page.md); all other writes remain refused.
+[serving guide](../how-to/serve-the-page.md), and the captain-wait discard
+request (`POST /api/waits/discard`, body `{"key", "hold_set"}`); all other
+writes remain refused. `--watch-waits` also runs the captain-wait watcher in a
+background thread; see [Captain waits](#captain-waits).
 The served page shows its generated-at time; see the
 [serving guide](../how-to/serve-the-page.md#run-it) for automatic refresh behavior.
 `service` prints a systemd user unit that runs `serve` with the given
@@ -264,12 +274,15 @@ keys are accepted:
 | --- | --- | --- | --- |
 | `page_title` | string | `Quarterdeck` | Heading and browser title. |
 | `output_dir` | string path | `${XDG_STATE_HOME:-~/.local/state}/quarterdeck` | Directory for `index.html`; `~` is expanded and relative paths use the current working directory. |
-| `homes` | array of objects | unset | Homes to render together. Each object has `path` (required), `label` (optional), and `data_dir` (optional). |
+| `homes` | array of objects | unset | Homes to render together. Each object has `path` (required), `label` (optional), `data_dir` (optional) and `transcripts` (optional). |
+| `captain_waits` | object | unset | Settings for the captain-wait watcher; see [Captain waits](#captain-waits). |
 
 Each home object's `path` is the Firstmate home. `label` is shown above its
 review sections; if omitted, Quarterdeck uses the last path component. An
 optional `data_dir` replaces that home's `<path>/data` for its backlog and
-reports. Home `path` and `data_dir` values expand `~`; relative values resolve
+reports. An optional `transcripts` names the folder of the home's saved Claude
+Code sessions for the captain-wait watcher. Home `path`, `data_dir` and
+`transcripts` values expand `~`; relative values resolve
 from the config file's directory. Relative `output_dir` keeps its original
 behavior and resolves from the current working directory.
 
@@ -296,6 +309,38 @@ for the read-only model.
 Start from [`quarterdeck.example.json`](../../quarterdeck.example.json). It
 contains invented example values only. Keep a real config file outside the repo
 or name it `.quarterdeck.json`, which is ignored by Git.
+
+## Captain waits
+
+`waits` keeps one card per task held for the captain; see
+[Track what is waiting on you](../how-to/track-captain-waits.md) for the
+lifecycle. `waits sync` runs one watcher pass (`--no-helper` updates the cards
+without running the helper); `waits watch` repeats passes every `--interval`
+seconds, else `poll_seconds`, until Ctrl+C; `serve --watch-waits` does the same
+in the background and refreshes the page after each pass. A failed pass is
+reported on standard error and the next one still runs. `waits list` prints the
+waiting cards as `<key>: <kind>: <summary>`; `--all` adds released and
+discarded cards and `--json` prints `{store, waits}`, each wait shaped like the
+attention view's [`wait` member](attention-json.md#captain-waits).
+`waits discard KEY` runs the home's `bin/fm-inbox.sh note --request-id
+qd-wait-<hash> --json -- <one line>` asking Firstmate to drop the hold, then
+hides the card; it exits 2 when the wait is unknown, already released, or the
+note was not delivered. The keys of `captain_waits` are:
+
+| Key | Type | Default | Meaning |
+| --- | --- | --- | --- |
+| `store_dir` | string path | `${XDG_STATE_HOME:-~/.local/state}/quarterdeck/captain-waits` | Card store directory; must be outside the checkout, every selected home and its data directory. Relative paths resolve from the config file's directory. |
+| `helper_command` | array of strings | headless `claude -p` with tools, MCP servers, slash commands and settings off, model `sonnet` | Command that reads the prompt on standard input and prints the JSON answer. |
+| `helper_timeout_seconds` | positive integer | `180` | Time limit for one helper run; the process group is killed after it. |
+| `poll_seconds` | positive integer | `60` | Time between watcher passes. |
+| `window_before_minutes` | positive integer | `20` | How far before the hold the briefing reads Firstmate's messages. |
+| `window_after_minutes` | positive integer | `10` | How far after the hold it reads; the briefing runs once this has passed. |
+
+A home's transcript folder defaults to
+`${CLAUDE_CONFIG_DIR:-~/.claude}/projects/<home path with every character other
+than a letter or digit replaced by ->`. The store's `waits.json` is written
+atomically under a lock with mode 0600; per-wait lock files live in `locks/`
+and the helper runs in `work/`.
 
 ## Data shown
 

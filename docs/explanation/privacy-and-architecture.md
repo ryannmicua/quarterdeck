@@ -42,7 +42,8 @@ homes or their data directories. See the
 and overrides.
 
 Quarterdeck invokes no other Firstmate script directly, except one: a reaction
-(below) runs the home's own `bin/fm-inbox.sh note`. Quarterdeck makes no network calls itself. `render` and
+or a captain-wait discard (below) runs the home's own `bin/fm-inbox.sh note`.
+Quarterdeck makes no network calls itself. `render` and
 `serve` write nothing to a home directly.
 
 The one exception is the explicit `quarterdeck board` command, which Firstmate
@@ -99,6 +100,34 @@ is recorded. `quarterdeck reactions import FILE` runs the same delivery for the
 reactions recorded in the cloud artifact, skipping ids already delivered.
 Each configured home is loaded independently. A missing or unreadable home
 shows its own error while other sections still render.
+
+The captain-wait watcher (`quarterdeck waits sync|watch`, or `serve
+--watch-waits`) is opt-in. Besides the backlog it reads the home's saved Claude
+Code sessions, by default `~/.claude/projects/<encoded home path>/*.jsonl`,
+keeping only the messages the captain typed and Firstmate's text replies, and
+only from sessions where the captain typed something. It never writes those
+files or the home. To brief a card it runs one configured helper command, by
+default a headless Claude Code run with every tool, MCP server, slash command
+and saved setting turned off. That run sends the prompt to the same model
+service that already runs Firstmate's sessions; Quarterdeck itself still makes
+no network calls. The prompt holds the item's task id, title and hold note and
+Firstmate's messages around the hold, or the captain's question naming the item
+and Firstmate's answer. The helper only prints JSON naming paragraph numbers,
+a kind and a summary; Quarterdeck validates it and copies the chosen
+paragraphs into its own card store, by default
+`${XDG_STATE_HOME:-~/.local/state}/quarterdeck/captain-waits/waits.json` (mode
+0600). The store holds Firstmate's explanations and the captain's questions
+that named an item, so Quarterdeck refuses a store inside its checkout, a
+selected home or a home's data directory. Each helper run has a time limit,
+runs in the store's `work/` folder, and at most one runs per wait.
+
+`serve --allow-marks` also enables `POST /api/waits/discard` (body `{key,
+hold_set}`), and `quarterdeck waits discard` does the same from a terminal. With
+the same origin, content-type and no-key rules as reactions, it runs the owning
+home's `bin/fm-inbox.sh note --request-id qd-wait-<hash> --json -- <one line>`
+asking Firstmate to drop the hold, and only after that succeeds marks the card
+hidden in the card store. Discard never changes the backlog; the card is
+released when Firstmate drops the hold.
 
 The page may include task names, recommendations, and local paths from every
 selected home. Its default location is under

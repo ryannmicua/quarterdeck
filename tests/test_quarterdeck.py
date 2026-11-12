@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 import base64
+import dataclasses
 import json
 import html
 import io
@@ -6523,3 +6524,481 @@ function openCard(card) {
 
 if __name__ == "__main__":
     unittest.main()
+
+
+WAIT_NOW = datetime(2026, 7, 2, 12, tzinfo=timezone.utc)
+
+
+def held_row(task: str, title: str, reason: str, stamp: str | None) -> str:
+    row = f"- [ ] {task} - {title} (repo: harbor-app) (hold: {reason}) (hold-kind: captain)"
+    return row + (f"\n  Captain hold set: {stamp}" if stamp else "")
+
+
+def wait_record(kind: str, uuid: str, at: str, text: str = "", **extra: object) -> str:
+    record: dict[str, object] = {"uuid": uuid, "timestamp": at, "sessionId": "session-a", "isSidechain": False}
+    if kind == "owner":
+        record.update(type="user", origin={"kind": "human"}, message={"role": "user", "content": text})
+    elif kind == "notice":
+        record.update(type="user", origin={"kind": "task-notification"}, message={"role": "user", "content": text})
+    elif kind == "tool":
+        record.update(type="user", message={"role": "user", "content": [{"type": "tool_result", "content": text}]})
+    else:
+        record.update(type="assistant", message={"role": "assistant", "content": [{"type": "text", "text": text}]})
+    record.update(extra)
+    return json.dumps(record, separators=(",", ":")) + "\n"
+
+
+class CaptainWaitTests(unittest.TestCase):
+    """Captain waits: every lifecycle decision is code; the helper only picks numbered paragraphs, kind and summary."""
+
+    def setUp(self) -> None:
+        self.temp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.temp.cleanup)
+        self.root = Path(self.temp.name)
+        self.home = self.root / "harbor-home"
+        (self.home / "data").mkdir(parents=True)
+        self.transcripts = self.root / "transcripts"
+        self.transcripts.mkdir()
+        self.settings = quarterdeck.WaitSettings(
+            store=self.root / "store", command=["unused"], timeout=5, poll=1,
+            before=timedelta(minutes=20), after=timedelta(minutes=10),
+        )
+        quarterdeck._TRANSCRIPT_CACHE.clear()
+        self.prompts: list[str] = []
+        self.replies: list[object] = []
+
+    def backlog(self, *rows: str) -> None:
+        (self.home / "data" / "backlog.md").write_text("# Backlog\n\n## Held\n\n" + "\n".join(rows) + "\n", encoding="utf-8")
+
+    def homes(self) -> list:
+        return [quarterdeck.load_home_snapshot(quarterdeck.HomeSpec("Harbor", self.home, transcripts=self.transcripts))]
+
+    def transcript(self, name: str, *lines: str) -> Path:
+        path = self.transcripts / name
+        with path.open("a", encoding="utf-8") as stream:
+            stream.write("".join(lines))
+        return path
+
+    def runner(self, _settings: object, prompt: str) -> str:
+        self.prompts.append(prompt)
+        reply = self.replies.pop(0) if self.replies else {"kind": "other", "summary": "", "paragraphs": []}
+        if isinstance(reply, Exception):
+            raise reply
+        return reply if isinstance(reply, str) else json.dumps(reply)
+
+    def run_pass(self, now: datetime = WAIT_NOW, helpers: bool = True) -> int:
+        return quarterdeck.wait_pass(self.settings, self.homes(), now, self.runner, run_helpers=helpers)
+
+    def cards(self) -> dict:
+        return quarterdeck.read_waits(self.settings.store)["cards"]
+
+    def test_a_new_hold_opens_a_card_and_its_release_keeps_the_record(self) -> None:
+        self.backlog(held_row("tide-merge", "Tide table merge", "Merge word for PR 7", "2026-07-02T10:00:00Z"),
+                     held_row("kelp-call", "Kelp survey scope", "Pick a scope", "2026-07-02T09:00:00Z"),
+                     "- [ ] buoy-refit - Buoy light refit (repo: harbor-app)")
+        self.replies = [{"kind": "merge", "summary": "Say whether to merge PR 7", "paragraphs": []}] * 2
+        self.run_pass()
+        cards = self.cards()
+        self.assertEqual(sorted(cards), ["harbor/kelp-call", "harbor/tide-merge"], "only captain holds open cards")
+        tide = cards["harbor/tide-merge"]
+        self.assertEqual((tide["status"], tide["hold_set"], tide["refs"]), ("waiting", "2026-07-02T10:00:00Z", ["pr:7"]))
+        self.assertEqual((tide["kind"], tide["summary"], tide["briefed_hold"]), ("merge", "Say whether to merge PR 7", "2026-07-02T10:00:00Z"))
+        self.backlog(held_row("tide-merge", "Tide table merge", "Merge word for PR 7", "2026-07-02T10:00:00Z").replace("- [ ]", "- [x]"),
+                     "- [ ] kelp-call - Kelp survey scope (repo: harbor-app)")
+        self.run_pass(WAIT_NOW + timedelta(hours=1))
+        cards = self.cards()
+        self.assertEqual((cards["harbor/tide-merge"]["status"], cards["harbor/tide-merge"]["release_reason"]), ("done", "task closed"))
+        self.assertEqual(cards["harbor/kelp-call"]["release_reason"], "hold lifted")
+        self.assertEqual(cards["harbor/tide-merge"]["kind"], "merge", "a released card keeps its record")
+        self.backlog("- [ ] other - Other work (repo: harbor-app)")
+        self.run_pass(WAIT_NOW + timedelta(hours=2))
+        self.assertEqual(self.cards()["harbor/tide-merge"]["release_reason"], "task closed", "a released card stays released")
+
+    def test_an_unreadable_backlog_releases_nothing(self) -> None:
+        self.backlog(held_row("tide-merge", "Tide table merge", "Merge word", "2026-07-02T10:00:00Z"))
+        self.run_pass(helpers=False)
+        (self.home / "data" / "backlog.md").unlink()
+        self.run_pass(WAIT_NOW + timedelta(hours=1), helpers=False)
+        self.assertEqual(self.cards()["harbor/tide-merge"]["status"], "waiting")
+
+    def test_re_holding_with_a_new_stamp_gives_a_new_briefing_and_refreshes_kind_and_summary(self) -> None:
+        self.backlog(held_row("tide-merge", "Tide table merge", "Merge word", "2026-07-02T10:00:00Z"))
+        self.transcript("a.jsonl", wait_record("owner", "o1", "2026-07-02T09:59:00Z", "What is left on the tide table?"),
+                        wait_record("mate", "m1", "2026-07-02T10:00:05Z", "Tide table PR 7 is ready.\n\nIt needs your merge word."))
+        self.replies = [{"kind": "merge", "summary": "Merge PR 7", "paragraphs": [1, 2]}]
+        self.run_pass()
+        self.backlog(held_row("tide-merge", "Tide table merge", "Pick a layout", "2026-07-02T13:00:00Z"))
+        self.run_pass(WAIT_NOW + timedelta(hours=1, minutes=5), helpers=False)
+        card = self.cards()["harbor/tide-merge"]
+        view = quarterdeck.wait_view(card)
+        self.assertEqual((card["status"], card["hold_set"], view["briefing"]), ("waiting", "2026-07-02T13:00:00Z", "pending"))
+        self.assertEqual((view["kind"], view["summary"]), (None, "Pick a layout"), "the old ask is not shown for the new hold")
+        self.assertEqual(view["entries"], [])
+        self.assertEqual([entry["type"] for entry in view["earlier_entries"]], ["briefing"])
+        self.replies = [{"kind": "choice", "summary": "Pick the tide table layout", "paragraphs": []}]
+        self.run_pass(WAIT_NOW + timedelta(hours=1, minutes=11))
+        view = quarterdeck.wait_view(self.cards()["harbor/tide-merge"])
+        self.assertEqual((view["kind"], view["kind_label"], view["summary"], view["briefing"]),
+                         ("choice", "Pick an option", "Pick the tide table layout", "ready"))
+
+    def test_transcripts_keep_the_owners_sessions_and_tell_owner_firstmate_and_notices_apart(self) -> None:
+        self.transcript("helper.jsonl", wait_record("mate", "h1", "2026-07-02T10:00:00Z", "A headless helper's answer."))
+        first = self.transcript(
+            "main.jsonl",
+            wait_record("owner", "o1", "2026-07-02T10:00:00Z", "Merge tide-merge please."),
+            wait_record("owner", "c1", "2026-07-02T10:00:30Z", "<command-name>/ahoy</command-name>"),
+            wait_record("tool", "t1", "2026-07-02T10:01:00Z", "tool output"),
+            wait_record("mate", "s1", "2026-07-02T10:01:30Z", "Sidechain text.", isSidechain=True),
+            wait_record("mate", "m1", "2026-07-02T10:02:00Z", "Merged."),
+            wait_record("notice", "n1", "2026-07-02T10:03:00Z", "<task-notification>wake</task-notification>"),
+        )
+        self.transcript("resumed.jsonl", wait_record("owner", "o1", "2026-07-02T10:00:00Z", "Merge tide-merge please."),
+                        wait_record("mate", "m2", "2026-07-02T10:04:00Z", "Anything else?"))
+        turns = quarterdeck.transcript_turns(self.transcripts)
+        self.assertEqual([(turn.uuid, turn.role) for turn in turns],
+                         [("o1", "owner"), ("c1", "notice"), ("m1", "firstmate"), ("n1", "notice"), ("m2", "firstmate")])
+        with first.open("a", encoding="utf-8") as stream:
+            stream.write(wait_record("mate", "m3", "2026-07-02T10:05:00Z", "Appended."))
+            stream.write('{"type":"assistant","partial')
+        self.assertEqual(quarterdeck.transcript_turns(self.transcripts)[-1].uuid, "m3", "appends are read; a partial line waits")
+        self.assertEqual([turn.uuid for turn in quarterdeck.transcript_turns(self.transcripts, WAIT_NOW)], [])
+        helper = self.transcripts / "helper.jsonl"
+        with helper.open("a", encoding="utf-8") as stream:
+            stream.write(wait_record("owner", "o9", "2026-07-02T10:06:00Z", "Owner typed here after all."))
+        self.assertIn("h1", [turn.uuid for turn in quarterdeck.transcript_turns(self.transcripts)],
+                      "a session where the owner writes later is read from the start")
+
+    def test_default_transcript_dir_follows_claude_code_naming(self) -> None:
+        with patch.dict(os.environ, {"CLAUDE_CONFIG_DIR": str(self.root / "claude")}):
+            self.assertEqual(quarterdeck.default_transcript_dir(Path("/srv/fm.home/main")),
+                             self.root / "claude" / "projects" / "-srv-fm-home-main")
+
+    def test_the_briefing_numbers_firstmates_paragraphs_around_the_hold_and_copies_the_chosen_ones(self) -> None:
+        self.backlog(held_row("tide-merge", "Tide table merge", "Merge word for PR 7", "2026-07-02T10:00:00Z"))
+        self.transcript(
+            "main.jsonl",
+            wait_record("mate", "m0", "2026-07-02T09:20:00Z", "Too early to count."),
+            wait_record("owner", "o1", "2026-07-02T09:55:00Z", "Where is the tide table?"),
+            wait_record("mate", "m1", "2026-07-02T10:00:05Z", "Kelp survey is underway.\n\n**Tide table PR 7** is ready:\n- 19 checks pass"),
+            wait_record("notice", "n1", "2026-07-02T10:03:00Z", "wake"),
+            wait_record("mate", "m2", "2026-07-02T10:04:00Z", "It needs your merge word."),
+            wait_record("mate", "m3", "2026-07-02T10:30:00Z", "Too late to count."),
+        )
+        self.replies = [{"kind": "teleport", "summary": "Merge " + "x" * 300, "paragraphs": [2, 3, 3, 9, True]}]
+        self.run_pass()
+        prompt = self.prompts[0]
+        self.assertIn("[P1] Kelp survey is underway.", prompt)
+        self.assertIn("[P2] **Tide table PR 7** is ready:\n- 19 checks pass", prompt)
+        self.assertIn("[P3] It needs your merge word.", prompt)
+        self.assertIn("Where is the tide table?", prompt)
+        self.assertIn("(automatic notice)", prompt)
+        self.assertNotIn("Too early", prompt)
+        self.assertNotIn("Too late", prompt)
+        card = self.cards()["harbor/tide-merge"]
+        self.assertEqual(card["kind"], "other", "an unknown kind becomes other")
+        self.assertLessEqual(len(card["summary"]), quarterdeck.WAIT_SUMMARY_LIMIT)
+        briefing = card["entries"][0]
+        self.assertEqual([p["text"] for p in briefing["paragraphs"]],
+                         ["**Tide table PR 7** is ready:\n- 19 checks pass", "It needs your merge word."])
+        self.assertEqual([p["at"] for p in briefing["paragraphs"]], ["2026-07-02T10:00:05Z", "2026-07-02T10:04:00Z"])
+
+    def test_the_briefing_waits_until_the_window_after_the_hold_has_passed(self) -> None:
+        self.backlog(held_row("tide-merge", "Tide table merge", "Merge word", "2026-07-02T11:55:00Z"))
+        self.run_pass()
+        self.assertEqual(self.prompts, [])
+        self.run_pass(WAIT_NOW + timedelta(minutes=5))
+        self.assertEqual(len(self.prompts), 1)
+
+    def clarify_setup(self) -> None:
+        self.backlog(held_row("tide-merge", "Tide table merge", "Merge word for PR 7", "2026-07-02T08:00:00Z"),
+                     held_row("kelp-call", "Kelp survey scope", "Pick a scope; see PR 9", "2026-07-02T08:00:00Z"),
+                     held_row("pier-call", "Pier lights vendor", "Vendor choice; see PR 9", "2026-07-02T08:00:00Z"))
+        self.replies = [{"kind": "other", "summary": "", "paragraphs": []}] * 3
+        self.run_pass(WAIT_NOW - timedelta(hours=3))
+        self.prompts.clear()
+
+    def test_only_owner_questions_naming_one_waiting_item_become_clarifications(self) -> None:
+        self.clarify_setup()
+        self.transcript(
+            "main.jsonl",
+            wait_record("notice", "n1", "2026-07-02T09:30:00Z", "wake"),
+            wait_record("mate", "m1", "2026-07-02T09:30:05Z", "Recap: tide-merge still waits on you."),
+            wait_record("owner", "o1", "2026-07-02T09:40:00Z", "How is the weather?"),
+            wait_record("mate", "m2", "2026-07-02T09:40:05Z", "Calm. tide-merge still waits."),
+            wait_record("owner", "o2", "2026-07-02T09:50:00Z", "What does Tide-Merge change?"),
+            wait_record("mate", "m3", "2026-07-02T09:50:05Z", "It changes the tide table.\n\nUnrelated note."),
+            wait_record("owner", "o3", "2026-07-02T10:00:00Z", "And PR 9?"),
+            wait_record("mate", "m4", "2026-07-02T10:00:05Z", "PR 9 is shared."),
+            wait_record("owner", "o4", "2026-07-02T10:10:00Z", "Tell me about pr7"),
+            wait_record("mate", "m5", "2026-07-02T10:10:05Z", "PR 7 is green."),
+            wait_record("owner", "o5", "2026-07-02T10:20:00Z", "Status of the kelp survey scope please"),
+            wait_record("mate", "m6", "2026-07-02T10:20:05Z", "Kelp scope needs a pick."),
+            wait_record("owner", "o6", "2026-07-02T11:55:00Z", "tide-merge: any risk?"),
+            wait_record("mate", "m7", "2026-07-02T11:55:05Z", "Low risk."),
+        )
+        self.replies = [{"paragraphs": [1]}, {"paragraphs": [1]}, {"paragraphs": [1]}]
+        self.run_pass()
+        cards = self.cards()
+        tide = [(entry["asked"], [p["text"] for p in entry["paragraphs"]])
+                for entry in cards["harbor/tide-merge"]["entries"] if entry["type"] == "clarification"]
+        self.assertEqual(tide, [("What does Tide-Merge change?", ["It changes the tide table."]),
+                                ("Tell me about pr7", ["PR 7 is green."])])
+        self.assertEqual([entry["asked"] for entry in cards["harbor/kelp-call"]["entries"] if entry["type"] == "clarification"],
+                         ["Status of the kelp survey scope please"], "a full title names the item")
+        self.assertEqual([entry for entry in cards["harbor/pier-call"]["entries"] if entry["type"] == "clarification"], [],
+                         "a PR number two waiting items share is unclear, so nothing is recorded")
+        self.assertIn("Unrelated note.", self.prompts[0], "the helper sees the whole answer, numbered")
+        self.assertEqual(cards["harbor/tide-merge"]["clarified_to"], "2026-07-02T10:20:00.000Z",
+                         "an exchange that may still be answered is left for a later pass")
+        self.replies = [{"paragraphs": [1]}]
+        self.run_pass(WAIT_NOW + timedelta(minutes=10))
+        tide = [entry["asked"] for entry in self.cards()["harbor/tide-merge"]["entries"] if entry["type"] == "clarification"]
+        self.assertEqual(tide[-1], "tide-merge: any risk?")
+        self.run_pass(WAIT_NOW + timedelta(minutes=20))
+        self.assertEqual(len([entry for entry in self.cards()["harbor/tide-merge"]["entries"] if entry["type"] == "clarification"]), 3,
+                         "each owner message is recorded once")
+
+    def test_back_to_back_owner_messages_count_as_one_and_repeated_paragraphs_are_skipped(self) -> None:
+        self.clarify_setup()
+        self.transcript(
+            "main.jsonl",
+            wait_record("owner", "o1", "2026-07-02T09:50:00Z", "About tide-merge"),
+            wait_record("owner", "o2", "2026-07-02T09:50:10Z", "what is the risk?"),
+            wait_record("mate", "m1", "2026-07-02T09:50:15Z", "Risk is low."),
+            wait_record("owner", "o3", "2026-07-02T10:00:00Z", "tide-merge again?"),
+            wait_record("mate", "m2", "2026-07-02T10:00:05Z", "Risk  is low."),
+            wait_record("notice", "n1", "2026-07-02T10:05:00Z", "wake"),
+        )
+        self.replies = [{"paragraphs": [1]}, {"paragraphs": [1]}]
+        self.run_pass()
+        entries = [entry for entry in self.cards()["harbor/tide-merge"]["entries"] if entry["type"] == "clarification"]
+        self.assertEqual([entry["asked"] for entry in entries], ["About tide-merge"])
+        self.assertIn("what is the risk?", self.prompts[0])
+
+    def test_a_failed_helper_is_retried_later_and_one_wait_runs_one_helper_at_a_time(self) -> None:
+        self.backlog(held_row("tide-merge", "Tide table merge", "Merge word", "2026-07-02T10:00:00Z"))
+        self.replies = [ValueError("the helper timed out after 5 seconds")]
+        self.run_pass()
+        job = self.cards()["harbor/tide-merge"]["jobs"][0]
+        self.assertEqual((job["attempts"], job["next_at"], job["error"]),
+                         (1, "2026-07-02T12:01:00Z", "the helper timed out after 5 seconds"))
+        view = quarterdeck.wait_view(self.cards()["harbor/tide-merge"])
+        self.assertEqual((view["briefing"], view["briefing_next_at"]), ("retrying", "2026-07-02T12:01:00Z"))
+        self.run_pass(WAIT_NOW + timedelta(seconds=30))
+        self.assertEqual(len(self.prompts), 1, "not retried before its time")
+        self.replies = ["no json here"]
+        self.run_pass(WAIT_NOW + timedelta(minutes=1))
+        job = self.cards()["harbor/tide-merge"]["jobs"][0]
+        self.assertEqual((job["attempts"], job["next_at"]), (2, "2026-07-02T12:06:00Z"))
+        with quarterdeck.wait_job_lock(self.settings.store, "harbor/tide-merge") as mine:
+            self.assertTrue(mine)
+            with quarterdeck.wait_job_lock(self.settings.store, "harbor/tide-merge") as again:
+                self.assertFalse(again)
+            self.assertEqual(self.run_pass(WAIT_NOW + timedelta(minutes=7)), 0, "another watcher holds this wait")
+        self.replies = [{"kind": "merge", "summary": "Merge it", "paragraphs": []}]
+        self.run_pass(WAIT_NOW + timedelta(minutes=7))
+        self.assertEqual(self.cards()["harbor/tide-merge"]["jobs"], [])
+
+    def test_the_helper_command_runs_bounded_in_the_store_and_its_output_is_checked(self) -> None:
+        script = self.root / "helper.py"
+        script.write_text(
+            "import os, sys, time\nprompt = sys.stdin.read()\n"
+            "if 'SLEEP' in prompt: time.sleep(30)\n"
+            "if 'FAIL' in prompt: sys.stderr.write('boom\\n'); sys.exit(3)\n"
+            "print('Here you go:\\n{\"paragraphs\": [1], \"cwd\": \"' + os.getcwd() + '\"}')\n", encoding="utf-8")
+        settings = dataclasses.replace(self.settings, command=[sys.executable, str(script)], timeout=1)
+        out = quarterdeck.run_wait_helper(settings, "hello")
+        self.assertIn(str(self.settings.store / "work"), out)
+        self.assertEqual(quarterdeck.parse_helper_output(out, 2, False), {"paragraphs": [1]})
+        with self.assertRaisesRegex(ValueError, "timed out after 1 seconds"):
+            quarterdeck.run_wait_helper(settings, "SLEEP")
+        with self.assertRaisesRegex(ValueError, "status 3: boom"):
+            quarterdeck.run_wait_helper(settings, "FAIL")
+        with self.assertRaisesRegex(ValueError, "paragraphs list"):
+            quarterdeck.parse_helper_output('{"kind": "merge"}', 2, True)
+
+    def inbox(self, status: int = 0) -> Path:
+        log = self.root / "inbox.log"
+        script = self.home / "bin" / "fm-inbox.sh"
+        script.parent.mkdir(exist_ok=True)
+        script.write_text(f'#!/bin/sh\nfor arg in "$@"; do printf "%s\\n" "$arg" >> {shlex.quote(str(log))}; done\nexit {status}\n',
+                          encoding="utf-8")
+        script.chmod(0o755)
+        return log
+
+    def discard(self, key: str, hold_set: str | None = None) -> dict:
+        config = self.root / "config.json"
+        config.write_text(json.dumps({"homes": [{"label": "Harbor", "path": str(self.home), "transcripts": str(self.transcripts)}],
+                                      "captain_waits": {"store_dir": str(self.settings.store)}}), encoding="utf-8")
+        args = argparse.Namespace(home=None, config=config)
+        return quarterdeck.discard_wait(args, key, hold_set)
+
+    def test_discard_asks_firstmate_to_drop_the_hold_hides_the_card_and_release_follows_the_hold(self) -> None:
+        self.backlog(held_row("tide-merge", "Tide table merge", "Merge word", "2026-07-02T10:00:00Z"))
+        self.run_pass(helpers=False)
+        log = self.inbox(status=1)
+        with self.assertRaisesRegex(ValueError, "fm-inbox.sh exited with status 1"):
+            self.discard("harbor/tide-merge")
+        self.assertIsNone(self.cards()["harbor/tide-merge"]["discarded"], "an undelivered note hides nothing")
+        log.unlink()
+        self.inbox()
+        with self.assertRaisesRegex(ValueError, "held again"):
+            self.discard("harbor/tide-merge", "2026-07-01T00:00:00Z")
+        self.discard("harbor/tide-merge", "2026-07-02T10:00:00Z")
+        lines = log.read_text(encoding="utf-8").splitlines()
+        self.assertEqual(lines[:2], ["note", "--request-id"])
+        self.assertTrue(lines[2].startswith("qd-wait-"))
+        self.assertIn("discarded the wait on task tide-merge", lines[-1])
+        self.assertIn("2026-07-02T10:00:00Z", lines[-1])
+        self.discard("harbor/tide-merge")
+        self.assertEqual(len(log.read_text(encoding="utf-8").splitlines()), len(lines), "a repeated discard sends nothing")
+        cards = self.cards()
+        waiting = {"decisions": [{"key": "harbor/tide-merge", "title": "Tide table merge"}, {"key": "harbor/other", "title": "Other"}]}
+        self.assertEqual([item["key"] for item in quarterdeck.apply_waits(waiting, cards)["decisions"]], ["harbor/other"])
+        self.run_pass(WAIT_NOW + timedelta(minutes=5), helpers=False)
+        self.assertEqual(self.cards()["harbor/tide-merge"]["status"], "waiting", "the card stays until the hold is gone")
+        self.backlog("- [ ] tide-merge - Tide table merge (repo: harbor-app)")
+        self.run_pass(WAIT_NOW + timedelta(minutes=10), helpers=False)
+        self.assertEqual(self.cards()["harbor/tide-merge"]["release_reason"], "discarded")
+        with self.assertRaisesRegex(ValueError, "already released"):
+            self.discard("harbor/tide-merge")
+        with self.assertRaisesRegex(ValueError, "no captain wait matches"):
+            self.discard("harbor/nothing")
+
+    def test_cards_show_the_kind_of_ask_and_summary_and_open_to_the_dated_briefing(self) -> None:
+        card = {
+            "key": "harbor/tide-merge", "task": "tide-merge", "home": "Harbor", "hold_set": "2026-07-02T10:00:00Z",
+            "status": "waiting", "kind": "merge", "summary": "Merge PR 7 with one check waived",
+            "briefed_hold": "2026-07-02T10:00:00Z", "hold_reason": "Merge word", "jobs": [], "discarded": None,
+            "entries": [
+                {"type": "clarification", "hold_set": "2026-07-02T10:00:00Z", "at": "2026-07-02T11:00:00Z",
+                 "asked": "Is it safe?", "paragraphs": [{"text": "Yes, **safe**.", "at": "2026-07-02T11:00:00Z"}]},
+                {"type": "briefing", "hold_set": "2026-07-02T10:00:00Z", "at": "2026-07-02T10:00:05Z",
+                 "paragraphs": [{"text": "PR 7 is ready.", "at": "2026-07-02T10:00:05Z"}]},
+            ],
+        }
+        item = {"key": "harbor/tide-merge", "title": "Tide table merge", "ask": "Merge word", "group": "decision",
+                "at": "2026-07-02T10:00:00Z"}
+        waiting = quarterdeck.apply_waits({"decisions": [item]}, {"harbor/tide-merge": card})
+        attention = {"homes": [{"label": "Harbor", "waiting": waiting}]}
+        for enabled in (False, True):
+            context = quarterdeck.ReactionContext(enabled=enabled, now=WAIT_NOW)
+            built = quarterdeck.activity_cards(attention, None, context)[0]
+            self.assertEqual(built["summary"], "Give the word to merge: Merge PR 7 with one check waived")
+            body = built["body"]
+            self.assertLess(body.index("Firstmate&#x27;s briefing, 2026-07-02 10:00 UTC"),
+                            body.index("Clarification, 2026-07-02 11:00 UTC"))
+            self.assertIn("<strong>safe</strong>", body)
+            self.assertIn("You asked: “Is it safe?”", body)
+            self.assertEqual("wait-discard" in body, enabled, "Discard appears only when the page may write")
+        self.assertIn("Tide table merge — Give the word to merge: Merge PR 7", quarterdeck.waiting_item_html(waiting["decisions"][0]))
+        self.assertEqual(waiting["decisions"][0]["wait"]["entries"][0]["type"], "briefing")
+
+    def test_config_validates_captain_waits_and_keeps_the_store_out_of_homes(self) -> None:
+        config = self.root / "config.json"
+        for bad, message in (
+            ({"captain_waits": []}, "must be an object"),
+            ({"captain_waits": {"helper": "x"}}, "unsupported key"),
+            ({"captain_waits": {"helper_command": []}}, "helper_command"),
+            ({"captain_waits": {"helper_timeout_seconds": 0}}, "positive whole number"),
+            ({"homes": [{"path": str(self.home), "transcripts": ""}]}, "transcripts must be"),
+        ):
+            config.write_text(json.dumps(bad), encoding="utf-8")
+            with self.assertRaisesRegex(ValueError, message):
+                quarterdeck.load_config(config)
+        config.write_text(json.dumps({"homes": [{"path": str(self.home), "transcripts": "talk"}],
+                                      "captain_waits": {"store_dir": "waits", "window_before_minutes": 5}}), encoding="utf-8")
+        loaded = quarterdeck.load_config(config)
+        settings = quarterdeck.wait_settings(loaded, config)
+        self.assertEqual((settings.store, settings.before), (self.root / "waits", timedelta(minutes=5)))
+        self.assertEqual(settings.command[:2], ["claude", "-p"])
+        specs, _ = quarterdeck.resolve_home_specs(argparse.Namespace(home=None, config=config), loaded)
+        self.assertEqual(specs[0].transcripts, self.root / "talk")
+        with self.assertRaisesRegex(ValueError, "outside the Quarterdeck checkout"):
+            quarterdeck.validate_wait_store(self.home / "data" / "waits", self.homes())
+
+    def test_waits_cli_lists_and_syncs_with_a_fake_helper(self) -> None:
+        self.backlog(held_row("tide-merge", "Tide table merge", "Merge word for PR 7", "2026-07-01T10:00:00Z"))
+        script = self.root / "helper.py"
+        script.write_text('print(\'{"kind": "merge", "summary": "Merge PR 7", "paragraphs": []}\')\n', encoding="utf-8")
+        config = self.root / "config.json"
+        config.write_text(json.dumps({"homes": [{"label": "Harbor", "path": str(self.home), "transcripts": str(self.transcripts)}],
+                                      "captain_waits": {"store_dir": str(self.settings.store),
+                                                        "helper_command": [sys.executable, str(script)]}}), encoding="utf-8")
+        env = dict(os.environ, XDG_CONFIG_HOME=str(self.root / "xdg"), XDG_STATE_HOME=str(self.root / "state"))
+
+        def cli(*args: str) -> subprocess.CompletedProcess[str]:
+            return subprocess.run([sys.executable, str(ROOT / "quarterdeck.py"), "waits", *args, "--config", str(config)],
+                                  check=False, text=True, capture_output=True, env=env)
+
+        synced = cli("sync")
+        self.assertEqual(synced.returncode, 0, synced.stderr)
+        self.assertIn("ran 1 helper job.", synced.stdout)
+        listed = cli("list")
+        self.assertIn("harbor/tide-merge: Give the word to merge: Merge PR 7", listed.stdout)
+        data = json.loads(cli("list", "--json").stdout)
+        self.assertEqual(data["waits"][0]["kind"], "merge")
+        self.assertEqual(oct(stat.S_IMODE((self.settings.store / "waits.json").stat().st_mode)), "0o600")
+
+    def test_the_discard_endpoint_checks_the_request_and_maps_failures(self) -> None:
+        from http.server import ThreadingHTTPServer
+        import http.client
+        calls: list[dict] = []
+
+        def discard(body: dict) -> dict:
+            calls.append(body)
+            if body["key"] == "harbor/missing":
+                raise ValueError("no captain wait matches: harbor/missing")
+            if body["key"] == "harbor/offline":
+                raise ValueError("fm-inbox.sh exited with status 1")
+            if body["key"] == "harbor/stale":
+                raise ValueError("the wait on stale was held again since this page loaded; reload and try again")
+            return {"key": body["key"], "hold_set": body["hold_set"], "discarded": True}
+
+        cache = quarterdeck.SiteCache(lambda: {"index.html": "ok"})
+        server = ThreadingHTTPServer(("127.0.0.1", 0), quarterdeck.make_handler(cache, discard_wait_to=discard))
+        threading.Thread(target=server.serve_forever, daemon=True).start()
+        self.addCleanup(lambda: (server.shutdown(), server.server_close()))
+
+        def post(body: object, headers: dict[str, str] | None = None) -> tuple[int, str]:
+            connection = http.client.HTTPConnection("127.0.0.1", server.server_address[1], timeout=10)
+            connection.request("POST", quarterdeck.WAITS_DISCARD_ENDPOINT, json.dumps(body),
+                               {"Content-Type": "application/json", **(headers or {})})
+            response = connection.getresponse()
+            text = response.read().decode("utf-8")
+            connection.close()
+            return response.status, text
+
+        good = {"key": "harbor/tide-merge", "hold_set": "2026-07-02T10:00:00Z"}
+        self.assertEqual(post(good), (200, json.dumps({**good, "discarded": True}) + "\n"))
+        for body in ({"key": "harbor/tide-merge"}, {**good, "extra": "x"}, {**good, "key": ""}, {**good, "hold_set": 5}):
+            self.assertEqual(post(body)[0], 400, body)
+        self.assertEqual(post(good, {"Origin": "http://evil.example"})[0], 403)
+        self.assertEqual(post({**good, "key": "harbor/missing"})[0], 404)
+        self.assertEqual(post({**good, "key": "harbor/offline"})[0], 502)
+        self.assertEqual(post({**good, "key": "harbor/stale"})[0], 409)
+        self.assertEqual(len(calls), 4, "refused requests never reach the store")
+        read_only = ThreadingHTTPServer(("127.0.0.1", 0), quarterdeck.make_handler(cache))
+        threading.Thread(target=read_only.serve_forever, daemon=True).start()
+        self.addCleanup(lambda: (read_only.shutdown(), read_only.server_close()))
+        connection = http.client.HTTPConnection("127.0.0.1", read_only.server_address[1], timeout=10)
+        connection.request("POST", quarterdeck.WAITS_DISCARD_ENDPOINT, json.dumps(good), {"Content-Type": "application/json"})
+        self.assertEqual(connection.getresponse().status, 405, "without --allow-marks the page cannot discard")
+        connection.close()
+
+    def test_the_page_hides_a_discarded_wait_everywhere_it_lists_waits(self) -> None:
+        self.backlog(held_row("tide-merge", "Tide table merge", "Merge word", "2026-07-02T10:00:00Z"),
+                     held_row("kelp-call", "Kelp survey scope", "Pick a scope", "2026-07-02T10:00:00Z"))
+        self.run_pass(helpers=False)
+        self.inbox()
+        self.discard("harbor/tide-merge")
+        args = argparse.Namespace(home=None, config=self.root / "config.json", no_snapshot=True, title=None)
+        with patch.dict(os.environ, {"XDG_STATE_HOME": str(self.root / "state"), "XDG_CONFIG_HOME": str(self.root / "xdg")}):
+            _config, _homes, bearings = quarterdeck.load_site(args)
+        self.assertEqual([item.item_id for item in bearings.call], ["kelp-call"])
+        waiting = bearings.attention["homes"][0]["waiting"]
+        keys = [item["key"] for items in waiting.values() for item in items]
+        self.assertIn("harbor/kelp-call", keys)
+        self.assertNotIn("harbor/tide-merge", keys)
+        kelp = next(item for items in waiting.values() for item in items if item["key"] == "harbor/kelp-call")
+        self.assertEqual((kelp["wait"]["briefing"], kelp["wait"]["summary"]), ("pending", "Pick a scope"))
