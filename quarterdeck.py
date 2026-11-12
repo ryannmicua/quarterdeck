@@ -6640,7 +6640,7 @@ def write_waits(store: Path, data: dict[str, object]) -> None:
 
 
 def load_wait_cards(settings: WaitSettings, snapshots: list[HomeSnapshot]) -> tuple[dict[str, dict[str, object]], str]:
-    """The stored cards for the page and attention view, or ({}, why) when the store cannot be read."""
+    """The stored cards for the page and attention view, or ({}, why) when the store is refused or cannot be read."""
     try:
         store = validate_wait_store(settings.store, snapshots)
         path = store / WAITS_FILE

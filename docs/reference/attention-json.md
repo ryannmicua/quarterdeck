@@ -67,7 +67,7 @@ secondmate ledgers.
 | `priority_projects` | The saved priority projects (up to three), in priority order. |
 | `requested_project` | The resolved recorded name for `--project`, else `null`. |
 | `homes` | One entry per selected home, in selection order. |
-| `waits_error` | Present only when the captain-wait store exists but could not be read; the items then carry no `wait`, the page shows the error as a warning and `--check` appends it. See [Captain waits](#captain-waits). |
+| `waits_error` | Present when the captain-wait store was refused (inside the checkout, a selected home or its data directory, or selected homes share a label or key namespace) or could not be read; the items then carry no `wait`, the page shows the error as a warning and `--check` appends it. See [Captain waits](#captain-waits). |
 
 Readers must ignore members they do not recognize; later versions may add
 members without changing the schema name.
