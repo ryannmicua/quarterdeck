@@ -7,6 +7,7 @@
 - [Refresh on a schedule](schedule-refresh.md)
 - [Serve the always-current bearings page](serve-the-page.md)
 - [Watch Firstmate's activity as cards](watch-activity-cards.md)
+- [Track what is waiting on you](track-captain-waits.md)
 - [View in Lavish](view-in-lavish.md)
 - [Request a Lavish page](request-lavish-page.md)
 - [Read and track report reviews](review-reports.md)

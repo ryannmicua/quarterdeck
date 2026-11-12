@@ -8,7 +8,9 @@ of its text. Tap a card to read the rest.
 ## What the cards are
 
 Cards come from the same data as the "Waiting on you" section, read on each
-render. Quarterdeck keeps no card store and runs no new script.
+render. The feed itself keeps no store and runs no new script; a needs-you card
+for a task held for the captain also shows what the
+[captain-wait watcher](track-captain-waits.md) recorded, when it runs.
 
 | Section | Cards | Source |
 | --- | --- | --- |
@@ -24,7 +26,11 @@ recent and done cards include work across projects. Only Recent work and Done
 recently use the six-hour window; waiting items can be older.
 Sections show every eligible card without a hidden count limit.
 
-A needs-you card opens to the ask, its options and recommendation when the text
+A needs-you card for a task held for the captain shows the kind of ask and a
+one-line summary under its title once the captain-wait watcher has briefed it,
+and opens to Firstmate's dated briefing and clarifications first, with
+**Discard this wait** under `serve --allow-marks`; see
+[Track what is waiting on you](track-captain-waits.md). A needs-you card opens to the ask, its options and recommendation when the text
 states them, the decision brief and other links, and a link to the item on the
 desk. If the desk has changed since the page loaded, that link refreshes the
 page once pending replies and view edits are finished. With `serve --allow-marks`, it also carries the usual Approve, Hold, Not

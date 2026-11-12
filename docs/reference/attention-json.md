@@ -67,6 +67,7 @@ secondmate ledgers.
 | `priority_projects` | The saved priority projects (up to three), in priority order. |
 | `requested_project` | The resolved recorded name for `--project`, else `null`. |
 | `homes` | One entry per selected home, in selection order. |
+| `waits_error` | Present when the captain-wait store was refused (inside the checkout, a selected home or its data directory, or selected homes share a label or key namespace) or could not be read; the items then carry no `wait`, the page shows the error as a warning and `--check` appends it. See [Captain waits](#captain-waits). |
 
 Readers must ignore members they do not recognize; later versions may add
 members without changing the schema name.
@@ -194,7 +195,9 @@ already a decision), and `informational` (board `read` items). Each item has
 into the effective project list, or `null`). `kind` is `decision`, `needs_you`,
 or `informational`. Items projected from decisions also
 retain `relevance`, so quiet decisions can remain collapsed without affecting
-the pending-work count.
+the pending-work count. An item with a captain-wait card also has `wait`; see
+[Captain waits](#captain-waits). An item whose wait the captain discarded is
+left out while its hold remains.
 
 With priority projects set, items for them come first in priority order. When
 any exist across the selected homes, `waiting_scope` is `priority`, only those items are listed, and
@@ -221,6 +224,27 @@ in alphabetical order. Scoping then matches that full recorded name.
 These members were added to schema `quarterdeck-attention.v1` without changing
 existing members. See the [CLI and configuration reference](cli-and-config.md)
 for preference storage, validation, and command options.
+
+## Captain waits
+
+When the [captain-wait watcher](../how-to/track-captain-waits.md) has a card for
+a waiting item's key, the item carries `wait`:
+
+| `wait` member | Meaning |
+| --- | --- |
+| `key`, `task`, `home` | The card's key (`<home-label-slug>/<task-id>`), task id and home label. |
+| `hold_set` | The `Captain hold set:` stamp of the current hold (or `filed <date>` for an unstamped legacy hold). |
+| `status` | `waiting`, or `done` once released (only in `quarterdeck waits list --all`). |
+| `kind`, `kind_label` | `screen` (Look at a screen), `merge` (Give the word to merge), `choice` (Pick an option), `login` (Provide a login) or `other` (Other ask); `null` until the current hold's briefing is collected. |
+| `summary` | One line saying what is asked; the hold note's first line until the briefing is collected. |
+| `briefing` | `ready`, `pending`, or `retrying` (then `briefing_error` and `briefing_next_at` say why and when). |
+| `entries` | The current hold's briefing, then its clarifications, oldest first. Each has `type` (`briefing` or `clarification`), `hold_set`, `at`, `paragraphs` (`{text, at}`, Firstmate's words copied as written) and, for a clarification, `asked` (the first line of the captain's message) and `asked_at`. |
+| `earlier_entries` | Entries from earlier holds of the same task. |
+| `released_at`, `release_reason` | When and why a card was released (`hold lifted`, `task closed`, `no longer in the backlog` or `discarded`); `null` while waiting. |
+| `discarded` | `true` when the captain discarded the current hold; such items are not listed. |
+
+Briefing view items carry the same line in `ask` (`<kind label>: <summary>`)
+and the kind in `ask_kind` (`null` without a card or before the briefing).
 
 ## Briefing views
 

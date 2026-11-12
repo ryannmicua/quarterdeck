@@ -1,5 +1,37 @@
 # Targeted testing
 
+## Captain wait transcript and home boundaries
+
+Run `PYTHONPATH=tests python3 -m unittest test_quarterdeck.CaptainWaitTests -v`.
+The tests use fictional disposable homes, session JSONL, helper responses and
+inbox scripts; no real Firstmate home or helper is needed. Temporary fixtures
+clean up automatically. Keep the temporary store outside the checkout and
+fixture homes, as required by the store's privacy boundary.
+
+Regression cases check owner questions at and during new/reset hold windows,
+answers arriving after the briefing window, and briefing paragraph deduplication.
+Interleaved sessions must keep replies with their own question and settle
+independently; resumed UUID copies count once. A shared store must preserve
+pending briefing and clarification jobs for unselected or unreadable homes,
+then complete them with the right transcript once selected and readable.
+Both ordinary and `--all` JSON listing must contain only selected homes.
+
+Clarification regressions also check an unsettled session alongside a completed
+one, and replies appended after an earlier answer was recorded. Reply UUIDs
+deduplicate both pending jobs and completed work; scanning stays anchored at the
+hold rather than moving past questions that may receive more replies. Injected
+directory, metadata and file-read errors must leave jobs and scan state unchanged;
+after access recovers, both briefing and clarification content must be collected.
+Read failures report the affected home on stderr and leave other homes' helper
+jobs runnable, regardless of home order. An absent transcript directory counts
+as no saved messages. Duplicate labels and normalized key namespaces must refuse
+sync, list and discard before mutation or inbox delivery, and page loading must
+return no attachable wait cards with a clear error. Include registered children
+and punctuation-only labels that share the default namespace.
+Paragraph cases exercise both helper completion orders, repeats within a single
+selection, and briefing retries that remove overlapping clarification paragraphs
+or their entire empty entry while preserving the remaining detail's timestamp.
+
 ## Keyless report review marks
 
 Last tested: 2026-10-12 with a disposable CLI server and headless Chrome.
