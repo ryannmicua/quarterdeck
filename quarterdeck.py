@@ -6512,10 +6512,17 @@ def args_wait_settings(args: argparse.Namespace) -> WaitSettings:
 
 
 def validate_wait_store(store: Path, snapshots: list[HomeSnapshot]) -> Path:
-    """The card store holds captain words and Firstmate's explanations: keep it out of the checkout and every home."""
+    """Require unique home identities and a card store outside the checkout and every home."""
     resolved = store.expanduser().resolve()
     roots = [Path(__file__).resolve().parent]
+    namespaces: dict[str, str] = {}
     for snapshot in all_snapshots(snapshots):
+        label = snapshot.spec.label
+        namespace = report_reference(label, "").rstrip("/")
+        if namespace in namespaces:
+            raise ValueError(f"ambiguous captain-wait home labels: {namespaces[namespace]!r} and {label!r} "
+                             f"share key namespace {namespace!r}")
+        namespaces[namespace] = label
         if snapshot.spec.remote_host is not None or snapshot.spec.home is None:
             continue
         roots.append(snapshot.spec.home.resolve())
@@ -6777,9 +6784,13 @@ def transcript_turns(directory: Path | None, since: datetime | None = None) -> l
     """
     if directory is None:
         return []
+    try:
+        paths = sorted(directory.iterdir())
+    except FileNotFoundError:
+        return []
     seen: set[str] = set()
     turns: list[Turn] = []
-    for path in sorted(directory.iterdir()):
+    for path in paths:
         if path.suffix != ".jsonl":
             continue
         info = path.stat()
@@ -7170,12 +7181,16 @@ def wait_pass(
                           for card in read_waits(settings.store)["cards"].values())  # type: ignore[union-attr]
         if not pending:
             continue
-        turns = turns_for(label)
+        try:
+            turns = turns_for(label)
+        except OSError as exc:
+            print(f"quarterdeck: captain waits: {label}: could not read saved conversation: {exc}", file=sys.stderr)
+            continue
         with waits_lock(settings.store):
             doc = read_waits(settings.store)
             scan_clarifications([card for card in doc["cards"].values() if card.get("home") == label], turns, now)  # type: ignore[union-attr]
             write_waits(settings.store, doc)
-    return run_wait_jobs(settings, turns_for, now, {owner.spec.label for owner in snapshots}, runner) if run_helpers else 0
+    return run_wait_jobs(settings, turns_for, now, set(cache), runner) if run_helpers else 0
 
 
 # -- discard --

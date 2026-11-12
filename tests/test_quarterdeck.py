@@ -6941,8 +6941,10 @@ class CaptainWaitTests(unittest.TestCase):
                 return original(path, *args, **kwargs)
 
             with self.subTest(operation=operation), patch.object(Path, operation, fail):
-                with self.assertRaisesRegex(OSError, "fictional transcript unavailable"):
-                    self.run_pass()
+                with redirect_stderr(io.StringIO()) as errors:
+                    self.assertEqual(self.run_pass(), 0)
+                self.assertIn("Harbor: could not read saved conversation", errors.getvalue())
+                self.assertIn("fictional transcript unavailable", errors.getvalue())
             self.assertEqual(self.cards(), before)
             self.assertEqual(self.prompts, [])
         self.replies = [{"kind": "merge", "summary": "Merge it", "paragraphs": [1]},
@@ -6954,6 +6956,108 @@ class CaptainWaitTests(unittest.TestCase):
         self.assertEqual([(entry["type"], [p["text"] for p in entry["paragraphs"]]) for entry in card["entries"]],
                          [("briefing", ["The tide table is ready."]),
                           ("clarification", ["The migration preserves rows."])])
+
+    def test_transcript_failures_do_not_starve_other_homes(self) -> None:
+        """Home isolation requires healthy jobs to finish while unreadable-home work stays intact."""
+        self.backlog(held_row("tide-merge", "Tide table merge", "Merge word", "2026-07-02T10:00:00Z"))
+        unreadable = self.transcript("main.jsonl",
+                        wait_record("owner", "q1", "2026-07-02T09:59:00Z", "Status?"),
+                        wait_record("mate", "a1", "2026-07-02T10:01:00Z", "The tide table is ready."),
+                        wait_record("owner", "q2", "2026-07-02T10:20:00Z", "tide-merge risk?"),
+                        wait_record("mate", "a2", "2026-07-02T10:21:00Z", "The migration preserves rows."))
+        other = self.root / "cove-home"
+        (other / "data").mkdir(parents=True)
+        (other / "data" / "backlog.md").write_text(
+            "# Backlog\n\n## Held\n\n" + held_row("kelp-call", "Kelp scope", "Choose scope", "2026-07-02T10:00:00Z"),
+            encoding="utf-8")
+        other_transcripts = self.root / "cove-transcripts"
+        other_transcripts.mkdir()
+        (other_transcripts / "main.jsonl").write_text(
+            wait_record("owner", "cq", "2026-07-02T09:59:00Z", "Status?")
+            + wait_record("mate", "ca", "2026-07-02T10:01:00Z", "Choose the smaller kelp survey."), encoding="utf-8")
+        cove = quarterdeck.load_home_snapshot(quarterdeck.HomeSpec("Cove", other, transcripts=other_transcripts))
+        for operation, blocked in (("iterdir", self.transcripts), ("stat", unreadable), ("open", unreadable)):
+            for reverse in (False, True):
+                with self.subTest(operation=operation, reverse=reverse):
+                    self.settings = dataclasses.replace(self.settings, store=self.root / f"isolation-{operation}-{reverse}")
+                    homes = [*self.homes(), cove]
+                    if reverse:
+                        homes.reverse()
+                    quarterdeck.wait_pass(self.settings, homes, WAIT_NOW, self.runner, run_helpers=False)
+                    before = self.cards()["harbor/tide-merge"]
+                    original = getattr(Path, operation)
+
+                    def fail(path: Path, *args: object, **kwargs: object):
+                        if path == blocked:
+                            raise PermissionError("fictional transcript unavailable")
+                        return original(path, *args, **kwargs)
+
+                    self.replies = [{"kind": "choice", "summary": "Choose scope", "paragraphs": [1]}]
+                    with patch.object(Path, operation, fail), redirect_stderr(io.StringIO()) as errors:
+                        self.assertEqual(quarterdeck.wait_pass(self.settings, homes, WAIT_NOW, self.runner), 1)
+                    self.assertIn("Harbor: could not read saved conversation", errors.getvalue())
+                    self.assertEqual(self.cards()["harbor/tide-merge"], before)
+                    self.assertEqual(self.cards()["cove/kelp-call"]["jobs"], [])
+                    self.assertEqual(self.cards()["cove/kelp-call"]["entries"][0]["paragraphs"][0]["text"],
+                                     "Choose the smaller kelp survey.")
+                    self.replies = [{"kind": "merge", "summary": "Merge it", "paragraphs": [1]}, {"paragraphs": [1]}]
+                    self.assertEqual(quarterdeck.wait_pass(self.settings, homes, WAIT_NOW, self.runner), 2)
+                    self.assertEqual(self.cards()["harbor/tide-merge"]["jobs"], [])
+                    self.assertEqual([p["text"] for entry in self.cards()["harbor/tide-merge"]["entries"]
+                                      for p in entry["paragraphs"]],
+                                     ["The tide table is ready.", "The migration preserves rows."])
+
+    def test_an_absent_transcript_directory_means_no_saved_messages(self) -> None:
+        """An unused transcript location is empty input, so a hold can still receive its fallback briefing."""
+        self.transcripts.rmdir()
+        self.backlog(held_row("tide-merge", "Tide table merge", "Merge word", "2026-07-02T10:00:00Z"))
+        with redirect_stderr(io.StringIO()) as errors:
+            self.assertEqual(self.run_pass(), 1)
+        self.assertEqual(errors.getvalue(), "")
+        card = self.cards()["harbor/tide-merge"]
+        self.assertEqual(card["briefed_hold"], "2026-07-02T10:00:00Z")
+        self.assertEqual(card["entries"][0]["paragraphs"], [])
+        self.assertEqual(card["jobs"], [])
+
+    def test_ambiguous_home_names_refuse_wait_operations_without_mutation_or_delivery(self) -> None:
+        """Wait ownership requires unique labels and normalized namespaces, including registered children."""
+        self.backlog(held_row("tide-merge", "Tide table merge", "Merge word", "2026-07-02T10:00:00Z"))
+        self.run_pass(helpers=False)
+        before = self.cards()
+        other = self.root / "other-home"
+        (other / "data").mkdir(parents=True)
+        (other / "data" / "backlog.md").write_text(
+            "# Backlog\n\n## Held\n\n" + held_row("tide-merge", "Another tide table", "Choose layout", "2026-07-02T11:00:00Z"),
+            encoding="utf-8")
+        deliveries: list[tuple] = []
+        for labels in (("Harbor", "Harbor"), ("Harbor", "HARBOR"), ("North Shore", "North-Shore"), ("!!!", "???")):
+            with self.subTest(labels=labels):
+                specs = [quarterdeck.HomeSpec(labels[0], self.home, transcripts=self.transcripts),
+                         quarterdeck.HomeSpec(labels[1], other, transcripts=self.transcripts)]
+                homes = [quarterdeck.load_home_snapshot(spec) for spec in specs]
+                with self.assertRaisesRegex(ValueError, "ambiguous captain-wait home labels"):
+                    quarterdeck.wait_pass(self.settings, homes, WAIT_NOW, self.runner)
+                cards, error = quarterdeck.load_wait_cards(self.settings, homes)
+                self.assertEqual(cards, {}, "a page must not attach or hide cards from ambiguous homes")
+                self.assertIn("ambiguous captain-wait home labels", error)
+                homes[0].children = [homes[1]]
+                cards, error = quarterdeck.load_wait_cards(self.settings, homes[:1])
+                self.assertEqual(cards, {})
+                self.assertIn("ambiguous captain-wait home labels", error)
+                config = self.root / "ambiguous.json"
+                config.write_text(json.dumps({"homes": [{"label": spec.label, "path": str(spec.home)} for spec in specs],
+                                              "captain_waits": {"store_dir": str(self.settings.store)}}), encoding="utf-8")
+                args = argparse.Namespace(home=None, config=config, no_helper=True, all=True, json=True)
+                for command in (quarterdeck.waits_sync, quarterdeck.waits_list):
+                    with redirect_stderr(io.StringIO()) as errors, redirect_stdout(io.StringIO()) as output:
+                        self.assertEqual(command(args), 2)
+                    self.assertIn("ambiguous captain-wait home labels", errors.getvalue())
+                    self.assertEqual(output.getvalue(), "")
+                with self.assertRaisesRegex(ValueError, "ambiguous captain-wait home labels"):
+                    quarterdeck.discard_wait(args, "harbor/tide-merge", deliver=lambda *args: deliveries.append(args))
+                self.assertEqual(self.cards(), before)
+                self.assertEqual(deliveries, [])
+                self.assertEqual(self.prompts, [])
 
     def test_paragraphs_are_unique_with_briefing_precedence_in_either_completion_order(self) -> None:
         """Card contract: normalized text appears once per hold even after a briefing retry."""

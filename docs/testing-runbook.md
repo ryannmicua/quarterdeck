@@ -22,6 +22,12 @@ deduplicate both pending jobs and completed work; scanning stays anchored at the
 hold rather than moving past questions that may receive more replies. Injected
 directory, metadata and file-read errors must leave jobs and scan state unchanged;
 after access recovers, both briefing and clarification content must be collected.
+Read failures report the affected home on stderr and leave other homes' helper
+jobs runnable, regardless of home order. An absent transcript directory counts
+as no saved messages. Duplicate labels and normalized key namespaces must refuse
+sync, list and discard before mutation or inbox delivery, and page loading must
+return no attachable wait cards with a clear error. Include registered children
+and punctuation-only labels that share the default namespace.
 Paragraph cases exercise both helper completion orders, repeats within a single
 selection, and briefing retries that remove overlapping clarification paragraphs
 or their entire empty entry while preserving the remaining detail's timestamp.
