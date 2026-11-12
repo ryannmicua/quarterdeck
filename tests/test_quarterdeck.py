@@ -6748,8 +6748,8 @@ class CaptainWaitTests(unittest.TestCase):
         self.assertEqual([entry for entry in cards["harbor/pier-call"]["entries"] if entry["type"] == "clarification"], [],
                          "a PR number two waiting items share is unclear, so nothing is recorded")
         self.assertIn("Unrelated note.", self.prompts[0], "the helper sees the whole answer, numbered")
-        self.assertEqual(cards["harbor/tide-merge"]["clarified_to"], "2026-07-02T10:20:00.000Z",
-                         "an exchange that may still be answered is left for a later pass")
+        self.assertEqual(cards["harbor/tide-merge"]["sources"], ["m3", "m5"],
+                         "only queued reply turns are consumed; an unsettled answer stays eligible")
         self.replies = [{"paragraphs": [1]}]
         self.run_pass(WAIT_NOW + timedelta(minutes=10))
         tide = [entry["asked"] for entry in self.cards()["harbor/tide-merge"]["entries"] if entry["type"] == "clarification"]
@@ -6875,6 +6875,114 @@ class CaptainWaitTests(unittest.TestCase):
         self.assertEqual(card["briefed_hold"], "2026-07-02T10:00:00Z")
         self.assertEqual([p["text"] for p in card["entries"][0]["paragraphs"]], ["The tide table is ready."])
         self.assertEqual([p["text"] for p in card["entries"][1]["paragraphs"]], ["The migration preserves rows."])
+
+    def test_an_open_session_does_not_block_another_sessions_completed_clarification(self) -> None:
+        """Independent-session contract: record B now and retain A until its answer settles."""
+        self.clarify_setup()
+        self.transcript("a.jsonl",
+                        wait_record("owner", "qa", "2026-07-02T11:00:00Z", "Explain tide-merge?", sessionId="a"),
+                        wait_record("mate", "a1", "2026-07-02T11:59:00Z", "Tide explanation.", sessionId="a"))
+        self.transcript("b.jsonl",
+                        wait_record("owner", "qb", "2026-07-02T11:05:00Z", "Explain kelp-call?", sessionId="b"),
+                        wait_record("mate", "b1", "2026-07-02T11:06:00Z", "Kelp explanation.", sessionId="b"))
+        self.replies = [{"paragraphs": [1]}]
+        self.run_pass()
+        cards = self.cards()
+        self.assertEqual([p["text"] for entry in cards["harbor/kelp-call"]["entries"]
+                          if entry["type"] == "clarification" for p in entry["paragraphs"]], ["Kelp explanation."])
+        self.assertEqual(cards["harbor/tide-merge"]["sources"], [])
+        self.backlog(held_row("tide-merge", "Tide table merge", "Merge word for PR 7", "2026-07-02T08:00:00Z"))
+        self.replies = [{"paragraphs": [1]}]
+        self.run_pass(WAIT_NOW + timedelta(minutes=10))
+        self.assertEqual([p["text"] for entry in self.cards()["harbor/tide-merge"]["entries"]
+                          if entry["type"] == "clarification" for p in entry["paragraphs"]], ["Tide explanation."])
+        self.assertEqual(self.cards()["harbor/kelp-call"]["status"], "done")
+
+    def test_a_late_reply_to_a_recorded_question_is_collected_once(self) -> None:
+        """Late-answer contract: recording an initial reply cannot consume the question forever."""
+        self.clarify_setup()
+        question = wait_record("owner", "q", "2026-07-02T10:09:00Z", "Explain tide-merge?")
+        first = wait_record("mate", "a1", "2026-07-02T10:09:30Z", "Initial explanation.")
+        self.transcript("main.jsonl", question, first)
+        self.replies = [{"paragraphs": [1]}]
+        self.run_pass(WAIT_NOW.replace(hour=10, minute=20))
+        self.transcript("resumed.jsonl", question, first,
+                        wait_record("mate", "a2", "2026-07-02T10:22:00Z", "The operation finished safely."))
+        self.replies = [{"paragraphs": [1]}]
+        self.run_pass(WAIT_NOW.replace(hour=10, minute=33), helpers=False)
+        self.run_pass(WAIT_NOW.replace(hour=10, minute=34), helpers=False)
+        card = self.cards()["harbor/tide-merge"]
+        self.assertEqual(len(card["jobs"]), 1, "repeated scans must not duplicate a queued late reply")
+        self.run_pass()
+        self.run_pass(WAIT_NOW + timedelta(minutes=10))
+        entries = [entry for entry in self.cards()["harbor/tide-merge"]["entries"] if entry["type"] == "clarification"]
+        self.assertEqual([(entry["asked"], [p["text"] for p in entry["paragraphs"]]) for entry in entries],
+                         [("Explain tide-merge?", ["Initial explanation."]),
+                          ("Explain tide-merge?", ["The operation finished safely."])])
+        self.assertEqual(len(self.prompts), 2)
+
+    def test_transcript_read_errors_leave_jobs_and_scan_state_pending_until_recovery(self) -> None:
+        """Incomplete-input contract: filesystem failures cannot turn partial transcripts into completed work."""
+        self.backlog(held_row("tide-merge", "Tide table merge", "Merge word", "2026-07-02T10:00:00Z"))
+        self.run_pass(helpers=False)
+        self.transcript("a.jsonl",
+                        wait_record("owner", "q1", "2026-07-02T10:01:00Z", "Explain tide-merge?"),
+                        wait_record("mate", "a1", "2026-07-02T10:02:00Z", "The tide table is ready."))
+        unreadable = self.transcript("z.jsonl",
+                        wait_record("owner", "q2", "2026-07-02T10:20:00Z", "tide-merge risk?"),
+                        wait_record("mate", "a2", "2026-07-02T10:21:00Z", "The migration preserves rows."))
+        before = self.cards()
+        for operation, blocked in (("iterdir", self.transcripts), ("stat", unreadable), ("open", unreadable)):
+            original = getattr(Path, operation)
+
+            def fail(path: Path, *args: object, **kwargs: object):
+                if path == blocked:
+                    raise PermissionError("fictional transcript unavailable")
+                return original(path, *args, **kwargs)
+
+            with self.subTest(operation=operation), patch.object(Path, operation, fail):
+                with self.assertRaisesRegex(OSError, "fictional transcript unavailable"):
+                    self.run_pass()
+            self.assertEqual(self.cards(), before)
+            self.assertEqual(self.prompts, [])
+        self.replies = [{"kind": "merge", "summary": "Merge it", "paragraphs": [1]},
+                        {"paragraphs": [1]}, {"paragraphs": [1]}]
+        self.run_pass()
+        card = self.cards()["harbor/tide-merge"]
+        self.assertEqual(card["jobs"], [])
+        self.assertEqual(card["briefed_hold"], "2026-07-02T10:00:00Z")
+        self.assertEqual([(entry["type"], [p["text"] for p in entry["paragraphs"]]) for entry in card["entries"]],
+                         [("briefing", ["The tide table is ready."]),
+                          ("clarification", ["The migration preserves rows."])])
+
+    def test_paragraphs_are_unique_with_briefing_precedence_in_either_completion_order(self) -> None:
+        """Card contract: normalized text appears once per hold even after a briefing retry."""
+        for fail_briefing, late_detail in ((False, True), (True, True), (True, False)):
+            with self.subTest(fail_briefing=fail_briefing, late_detail=late_detail):
+                self.settings = dataclasses.replace(self.settings, store=self.root / f"order-{fail_briefing}-{late_detail}")
+                self.transcripts = self.root / f"order-transcripts-{fail_briefing}-{late_detail}"
+                self.transcripts.mkdir()
+                self.backlog(held_row("tide-merge", "Tide table merge", "Merge word", "2026-07-02T10:00:00Z"))
+                self.transcript("main.jsonl",
+                                wait_record("owner", "q", "2026-07-02T10:01:00Z", "Explain tide-merge?"),
+                                wait_record("mate", "a1", "2026-07-02T10:02:00Z", "Shared explanation.\n\nShared   explanation."),
+                                wait_record("mate", "a2", "2026-07-02T10:12:00Z",
+                                            "Late detail.\n\nLate  detail." if late_detail
+                                            else "Shared explanation.\n\nShared   explanation."))
+                briefing = {"kind": "merge", "summary": "Merge it", "paragraphs": [1, 2]}
+                self.replies = [ValueError("fictional failure") if fail_briefing else briefing,
+                                {"paragraphs": [1, 2, 3, 4]}]
+                self.run_pass(WAIT_NOW.replace(hour=10, minute=30))
+                if fail_briefing:
+                    self.replies = [briefing]
+                    self.run_pass(WAIT_NOW.replace(hour=10, minute=31))
+                entries = self.cards()["harbor/tide-merge"]["entries"]
+                by_type = {entry["type"]: entry for entry in entries}
+                self.assertEqual(len(entries), 2 if late_detail else 1)
+                self.assertEqual([p["text"] for p in by_type["briefing"]["paragraphs"]], ["Shared explanation."])
+                if late_detail:
+                    self.assertEqual([p["text"] for p in by_type["clarification"]["paragraphs"]], ["Late detail."])
+                    self.assertEqual(by_type["clarification"]["at"], "2026-07-02T10:12:00Z")
 
     def test_a_failed_helper_is_retried_later_and_one_wait_runs_one_helper_at_a_time(self) -> None:
         self.backlog(held_row("tide-merge", "Tide table merge", "Merge word", "2026-07-02T10:00:00Z"))

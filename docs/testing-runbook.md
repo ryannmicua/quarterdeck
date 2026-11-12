@@ -16,6 +16,16 @@ pending briefing and clarification jobs for unselected or unreadable homes,
 then complete them with the right transcript once selected and readable.
 Both ordinary and `--all` JSON listing must contain only selected homes.
 
+Clarification regressions also check an unsettled session alongside a completed
+one, and replies appended after an earlier answer was recorded. Reply UUIDs
+deduplicate both pending jobs and completed work; scanning stays anchored at the
+hold rather than moving past questions that may receive more replies. Injected
+directory, metadata and file-read errors must leave jobs and scan state unchanged;
+after access recovers, both briefing and clarification content must be collected.
+Paragraph cases exercise both helper completion orders, repeats within a single
+selection, and briefing retries that remove overlapping clarification paragraphs
+or their entire empty entry while preserving the remaining detail's timestamp.
+
 ## Keyless report review marks
 
 Last tested: 2026-10-12 with a disposable CLI server and headless Chrome.

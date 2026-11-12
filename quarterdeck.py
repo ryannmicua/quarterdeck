@@ -6668,19 +6668,17 @@ def sync_wait_cards(
         items = {task_key(owner, item.id, snapshots): item for item in backlog_items(owner.backlog_markdown, owner)}
         for key, (item, stamp) in holds.items():
             card = cards.get(key)
-            held = parse_board_time(stamp)
-            start = wait_time(held or now)
             if card is None:
                 card = cards[key] = {
                     "key": key, "home": label, "task": item.id, "hold_set": stamp, "status": "waiting",
                     "opened_at": wait_time(now), "released_at": None, "release_reason": None,
                     "kind": None, "summary": None, "briefed_hold": None, "entries": [], "sources": [],
-                    "jobs": [briefing_job(stamp, now, settings)], "clarified_to": start, "discarded": None,
+                    "jobs": [briefing_job(stamp, now, settings)], "discarded": None,
                 }
             elif card.get("hold_set") != stamp:
                 card.update(
                     hold_set=stamp, status="waiting", opened_at=wait_time(now), released_at=None, release_reason=None,
-                    jobs=[briefing_job(stamp, now, settings)], clarified_to=start,
+                    jobs=[briefing_job(stamp, now, settings)], sources=[],
                 )
             elif card.get("status") != "waiting":
                 card.update(status="waiting", released_at=None, release_reason=None)
@@ -6777,18 +6775,18 @@ def transcript_turns(directory: Path | None, since: datetime | None = None) -> l
     A home's transcript directory also holds headless helper sessions. Only sessions where the owner typed a message
     count; turns copied into a resumed session are read once.
     """
-    if directory is None or not directory.is_dir():
+    if directory is None:
         return []
     seen: set[str] = set()
     turns: list[Turn] = []
-    for path in sorted(directory.glob("*.jsonl")):
-        try:
-            if not path.is_file() or (since is not None and
-                                      datetime.fromtimestamp(path.stat().st_mtime, timezone.utc) < since):
-                continue
-            file_turns, has_owner = transcript_file_turns(path)
-        except OSError:
+    for path in sorted(directory.iterdir()):
+        if path.suffix != ".jsonl":
             continue
+        info = path.stat()
+        if not stat.S_ISREG(info.st_mode) or (since is not None and
+                                            datetime.fromtimestamp(info.st_mtime, timezone.utc) < since):
+            continue
+        file_turns, has_owner = transcript_file_turns(path)
         if not has_owner:
             continue
         for turn in file_turns:
@@ -6863,38 +6861,38 @@ def scan_clarifications(
     """Queue a clarification job for each closed exchange the owner started by naming a still-waiting item.
 
     Exchanges started by a notice (automatic wakes, artifact comments, slash commands) are recaps and never count, nor
-    does an owner message that names no item. Each card moves its own cursor forward only over closed exchanges.
+    does an owner message that names no item. Each reply turn is queued once per hold.
     """
     open_cards = [card for card in cards if card.get("status") == "waiting" and not wait_is_hidden(card)]
     if not open_cards:
         return
     convo = exchanges(turns, now)
     for card in open_cards:
-        start = parse_board_time(card.get("clarified_to")) or now
+        start = parse_board_time(card.get("hold_set")) or parse_board_time(card.get("opened_at")) or now
         for exchange in convo:
             if exchange.starter.at < start:
                 continue
             if not exchange.closed:
-                break
-            card["clarified_to"] = reaction_time(exchange.starter.at)
+                continue
             if exchange.starter.role != "owner" or not exchange.replies:
                 continue
             if card["key"] not in mentioned_keys(exchange.starter.text, open_cards):
                 continue
             sources: list[str] = card.setdefault("sources", [])  # type: ignore[assignment]
-            if exchange.starter.uuid in sources:
+            fresh_turns = [turn for turn in exchange.replies if turn.uuid not in sources]
+            if not fresh_turns:
                 continue
-            sources.append(exchange.starter.uuid)
+            sources.extend(turn.uuid for turn in fresh_turns)
             reply: list[dict[str, str]] = []
             room = WAIT_INPUT_LIMIT
-            for turn in exchange.replies:
+            for turn in fresh_turns:
                 for text in paragraphs_of(turn.text):
                     if room - len(text[:WAIT_PARAGRAPH_CHARS]) < 0:
                         break
                     room -= len(text[:WAIT_PARAGRAPH_CHARS])
                     reply.append({"text": text[:WAIT_PARAGRAPH_CHARS], "at": wait_time(turn.at)})
             card.setdefault("jobs", []).append({  # type: ignore[union-attr]
-                "id": f"clarify:{exchange.starter.uuid}", "type": "clarification", "hold_set": card["hold_set"],
+                "id": f"clarify:{exchange.starter.uuid}:{fresh_turns[0].uuid}", "type": "clarification", "hold_set": card["hold_set"],
                 "attempts": 0, "next_at": wait_time(now), "asked": exchange.starter.text[:WAIT_OWNER_TEXT_LIMIT],
                 "asked_at": wait_time(exchange.starter.at), "reply": reply,
             })
@@ -7042,11 +7040,25 @@ def apply_wait_result(card: dict[str, object], job: dict[str, object], result: d
                       paragraphs: list[dict[str, str]]) -> None:
     entries: list[dict[str, object]] = card.setdefault("entries", [])  # type: ignore[assignment]
     stamp = str(job["hold_set"])
-    picked = [paragraphs[number - 1] for number in result["paragraphs"]]  # type: ignore[union-attr]
+    picked: list[dict[str, str]] = []
+    selected: set[str] = set()
+    for number in result["paragraphs"]:  # type: ignore[union-attr]
+        paragraph = paragraphs[number - 1]
+        text = " ".join(paragraph["text"].split())
+        if text not in selected:
+            picked.append(paragraph)
+            selected.add(text)
     if job["type"] == "briefing":
         reason = first_line(str(card.get("hold_reason") or ""), WAIT_SUMMARY_LIMIT)
         card.update(kind=result["kind"], summary=result["summary"] or reason or card.get("title"), briefed_hold=stamp)
         entries[:] = [entry for entry in entries if not (entry.get("type") == "briefing" and entry.get("hold_set") == stamp)]
+        for entry in entries:
+            if entry.get("hold_set") == stamp:
+                entry["paragraphs"] = [paragraph for paragraph in entry.get("paragraphs") or []  # type: ignore[union-attr]
+                                       if " ".join(str(paragraph["text"]).split()) not in selected]
+                if entry["paragraphs"]:
+                    entry["at"] = entry["paragraphs"][0]["at"]
+        entries[:] = [entry for entry in entries if entry.get("hold_set") != stamp or entry.get("paragraphs")]
         entries.append({"type": "briefing", "hold_set": stamp, "at": picked[0]["at"] if picked else stamp,
                         "paragraphs": picked})
         return
@@ -7139,8 +7151,10 @@ def wait_pass(
                          if card.get("home") == label and card.get("status") == "waiting"]
             starts: list[datetime] = []
             for card in cards:
-                clarified, held = parse_board_time(card.get("clarified_to")), parse_board_time(card.get("hold_set"))
-                starts.extend(moment for moment in (clarified, held - settings.before if held else None) if moment)
+                held = parse_board_time(card.get("hold_set"))
+                start = held - settings.before if held else parse_board_time(card.get("opened_at"))
+                if start is not None:
+                    starts.append(start)
             since = min(starts) if starts else now
             cache[label] = transcript_turns(transcript_dir(owner.spec), since)
         return cache[label]
