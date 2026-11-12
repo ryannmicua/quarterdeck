@@ -154,7 +154,9 @@ a new card appears.
 Cards live in `${XDG_STATE_HOME:-~/.local/state}/quarterdeck/captain-waits/waits.json`
 (mode 0600), or in `captain_waits.store_dir`. Cards are kept per home under
 the home's resolved path, so two homes with the same label never see, reuse or
-discard each other's cards; the label is only shown. A store from an earlier
+discard each other's cards; the label is only shown. Selecting two such homes
+in one command is refused, because their card keys (such as `maple-harbor/tide-merge`) would
+collide; give them labels that differ in letters or digits. A store from an earlier
 version, kept by label, is dropped once and rebuilt from the backlogs (its
 briefings, clarifications and discards are not carried over). The store holds
 Firstmate's explanations and your questions that named an item, so Quarterdeck
