@@ -46,7 +46,7 @@ Each pass of the watcher:
    sent back to back before Firstmate answers count as one. Which items a
    message names is decided once, when Firstmate's answer settles, and kept;
    a question skipped as unclear stays skipped after the other item is
-   released.
+   released, even when an item is held again with its old stamp.
 
 A failed or timed-out helper run is retried after 1, 5, 15 and then every 60
 minutes. Only one helper runs for a wait at a time, even with several watchers.

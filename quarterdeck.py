@@ -6920,10 +6920,12 @@ def scan_clarifications(
     if not open_cards:
         return
     starts = {str(card["key"]): parse_board_time(card.get("hold_set")) or parse_board_time(card.get("opened_at")) or now
-              for card in open_cards}
-    earliest = min(starts.values())
+              for card in cards.values()}
+    open_keys = {str(card["key"]) for card in open_cards}
+    earliest = min(starts[key] for key in open_keys)
+    kept_from = min(starts.values())
     for uuid in [uuid for uuid, decision in decided.items()
-                 if (parse_board_time(decision.get("at")) or now) < earliest]:  # type: ignore[union-attr]
+                 if (parse_board_time(decision.get("at")) or now) < kept_from]:  # type: ignore[union-attr]
         del decided[uuid]
     for exchange in exchanges(turns, now):
         if (exchange.starter.at < earliest or not exchange.closed or exchange.starter.role != "owner"
@@ -6936,7 +6938,7 @@ def scan_clarifications(
                 "at": wait_time(exchange.starter.at), "cards": [key for key in named if starts[key] <= exchange.starter.at],
             }
         for key in decision.get("cards") or []:
-            if key not in starts or starts[key] > exchange.starter.at:
+            if key not in open_keys or starts[key] > exchange.starter.at:
                 continue
             card = cards[key]
             sources: list[str] = card.setdefault("sources", [])  # type: ignore[assignment]

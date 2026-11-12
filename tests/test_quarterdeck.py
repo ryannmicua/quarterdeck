@@ -7336,6 +7336,24 @@ class CaptainWaitTests(unittest.TestCase):
         self.assertEqual((cards["harbor/kelp-call"]["jobs"], cards["harbor/kelp-call"]["sources"]), ([], []))
         self.assertEqual(self.prompts, [], "no helper ran for the earlier, ambiguous question")
 
+    def test_an_ambiguous_question_stays_unassigned_when_an_item_is_held_again_with_its_old_stamp(self) -> None:
+        """A later hold moving the open window forward must not forget a decision a same-stamp re-hold can reach again."""
+        self.clarify_setup()
+        self.transcript("main.jsonl",
+                        wait_record("owner", "o1", "2026-07-02T10:00:00Z", "What about PR 9?"),
+                        wait_record("mate", "m1", "2026-07-02T10:00:05Z", "PR 9 needs a vendor pick."))
+        self.run_pass()
+        kelp = held_row("kelp-call", "Kelp survey scope", "Pick a scope; see PR 9", "2026-07-02T08:00:00Z")
+        later = held_row("buoy-call", "Buoy refit window", "Pick a week", "2026-07-02T11:00:00Z")
+        self.backlog(later, "- [ ] kelp-call - Kelp survey scope (repo: harbor-app)",
+                     "- [ ] pier-call - Pier lights vendor (repo: harbor-app)", "- [ ] tide-merge - Tide table merge (repo: harbor-app)")
+        self.run_pass(WAIT_NOW + timedelta(minutes=5), helpers=False)
+        self.backlog(later, kelp)
+        self.run_pass(WAIT_NOW + timedelta(minutes=10), helpers=False)
+        card = self.cards()["harbor/kelp-call"]
+        self.assertEqual((card["status"], card["hold_set"]), ("waiting", "2026-07-02T08:00:00Z"))
+        self.assertEqual((card["jobs"], card["sources"]), ([], []), "the old ambiguous answer is not queued for kelp-call")
+
     def test_cards_belong_to_the_home_path_not_its_label(self) -> None:
         """Two homes labelled alike in separate runs never see, reuse or discard each other's cards."""
         self.backlog(held_row("tide-merge", "Tide table merge", "Merge word", "2026-07-02T10:00:00Z"))
