@@ -6669,7 +6669,7 @@ def sync_wait_cards(
         for key, (item, stamp) in holds.items():
             card = cards.get(key)
             held = parse_board_time(stamp)
-            start = wait_time(held + settings.after if held else now)
+            start = wait_time(held or now)
             if card is None:
                 card = cards[key] = {
                     "key": key, "home": label, "task": item.id, "hold_set": stamp, "status": "waiting",
@@ -6704,6 +6704,7 @@ class Turn:
     at: datetime
     role: str  # "owner" (the captain typed it), "firstmate" (assistant text) or "notice" (anything automatic)
     text: str = ""
+    session_id: str = ""
 
 
 _TRANSCRIPT_CACHE: dict[Path, tuple[tuple[int, int], int, list[Turn], bool]] = {}
@@ -6721,6 +6722,7 @@ def transcript_line_turns(line: bytes) -> list[Turn]:
     if not isinstance(record, dict) or record.get("isSidechain") or record.get("isMeta"):
         return []
     kind, uuid, at = record.get("type"), record.get("uuid"), parse_board_time(record.get("timestamp"))
+    session_id = str(record.get("sessionId") or "")
     message = record.get("message")
     if kind not in ("user", "assistant") or not isinstance(uuid, str) or at is None or not isinstance(message, dict):
         return []
@@ -6729,14 +6731,14 @@ def transcript_line_turns(line: bytes) -> list[Turn]:
     blocks = [block for block in blocks if isinstance(block, dict)]
     text = "\n\n".join(str(block.get("text") or "") for block in blocks if block.get("type") == "text").strip()
     if kind == "assistant":
-        return [Turn(uuid, at, "firstmate", text)] if text else []
+        return [Turn(uuid, at, "firstmate", text, session_id)] if text else []
     if blocks and all(block.get("type") == "tool_result" for block in blocks):
         return []
     origin = record.get("origin")
     human = isinstance(origin, dict) and origin.get("kind") == "human"
     if human and text and not text.lstrip().startswith(("<command-", "<local-command")):
-        return [Turn(uuid, at, "owner", text)]
-    return [Turn(uuid, at, "notice")]
+        return [Turn(uuid, at, "owner", text, session_id)]
+    return [Turn(uuid, at, "notice", session_id=session_id)]
 
 
 def transcript_file_turns(path: Path) -> tuple[list[Turn], bool]:
@@ -6792,7 +6794,7 @@ def transcript_turns(directory: Path | None, since: datetime | None = None) -> l
         for turn in file_turns:
             if turn.uuid not in seen and (since is None or turn.at >= since):
                 seen.add(turn.uuid)
-                turns.append(turn)
+                turns.append(turn if turn.session_id else replace(turn, session_id=path.stem))
     turns.sort(key=lambda turn: turn.at)
     return turns
 
@@ -6810,21 +6812,24 @@ def exchanges(turns: list[Turn], now: datetime) -> list[Exchange]:
     Owner messages sent back to back before Firstmate answers count as one message.
     """
     result: list[Exchange] = []
+    latest: dict[str, Exchange] = {}
     for turn in turns:
+        last = latest.get(turn.session_id)
         if turn.role == "firstmate":
-            if result:
-                result[-1].replies.append(turn)
+            if last is not None:
+                last.replies.append(turn)
             continue
-        last = result[-1] if result else None
         if (turn.role == "owner" and last is not None and last.starter.role == "owner" and not last.replies):
-            last.starter = Turn(last.starter.uuid, turn.at, "owner", f"{last.starter.text}\n\n{turn.text}")
+            last.starter = replace(last.starter, at=turn.at, text=f"{last.starter.text}\n\n{turn.text}")
             continue
         if last is not None:
             last.closed = True
         result.append(Exchange(turn, [], False))
-    if result:
-        last_at = max([result[-1].starter.at, *(turn.at for turn in result[-1].replies)])
-        result[-1].closed = now - last_at >= WAIT_SETTLE
+        latest[turn.session_id] = result[-1]
+    for last in latest.values():
+        last_at = max([last.starter.at, *(turn.at for turn in last.replies)])
+        last.closed = now - last_at >= WAIT_SETTLE
+    result.sort(key=lambda exchange: exchange.starter.at)
     return result
 
 
@@ -6867,7 +6872,7 @@ def scan_clarifications(
     for card in open_cards:
         start = parse_board_time(card.get("clarified_to")) or now
         for exchange in convo:
-            if exchange.starter.at <= start:
+            if exchange.starter.at < start:
                 continue
             if not exchange.closed:
                 break
@@ -7055,7 +7060,7 @@ def apply_wait_result(card: dict[str, object], job: dict[str, object], result: d
 
 
 def run_wait_jobs(
-    settings: WaitSettings, turns_for: Callable[[str], list[Turn]], now: datetime,
+    settings: WaitSettings, turns_for: Callable[[str], list[Turn]], now: datetime, home_labels: set[str],
     runner: Callable[[WaitSettings, str], str] = run_wait_helper, limit: int = WAIT_JOBS_PER_PASS,
 ) -> int:
     """Run up to `limit` due helper jobs, one at a time; a failure is retried later with a growing delay."""
@@ -7063,7 +7068,7 @@ def run_wait_jobs(
         doc = read_waits(settings.store)
     due: list[tuple[str, dict[str, object]]] = []
     for key, card in doc["cards"].items():  # type: ignore[union-attr]
-        if card.get("status") != "waiting" or wait_is_hidden(card):
+        if card.get("home") not in home_labels or card.get("status") != "waiting" or wait_is_hidden(card):
             continue
         for job in card.get("jobs") or []:
             when = parse_board_time(job.get("next_at"))
@@ -7122,12 +7127,13 @@ def wait_pass(
     now = now or datetime.now(timezone.utc)
     validate_wait_store(settings.store, homes)
     snapshots = [owner for owner in all_snapshots(homes)
-                 if not owner.error and owner.spec.home is not None and not owner.spec.remote_host]
+                 if not owner.error and owner.backlog_markdown is not None
+                 and owner.spec.home is not None and not owner.spec.remote_host]
     cache: dict[str, list[Turn]] = {}
 
     def turns_for(label: str) -> list[Turn]:
         if label not in cache:
-            owner = next((owner for owner in snapshots if owner.spec.label == label), None)
+            owner = next(owner for owner in snapshots if owner.spec.label == label)
             with waits_lock(settings.store):
                 cards = [card for card in read_waits(settings.store)["cards"].values()  # type: ignore[union-attr]
                          if card.get("home") == label and card.get("status") == "waiting"]
@@ -7136,7 +7142,7 @@ def wait_pass(
                 clarified, held = parse_board_time(card.get("clarified_to")), parse_board_time(card.get("hold_set"))
                 starts.extend(moment for moment in (clarified, held - settings.before if held else None) if moment)
             since = min(starts) if starts else now
-            cache[label] = transcript_turns(transcript_dir(owner.spec), since) if owner else []
+            cache[label] = transcript_turns(transcript_dir(owner.spec), since)
         return cache[label]
 
     with waits_lock(settings.store):
@@ -7155,7 +7161,7 @@ def wait_pass(
             doc = read_waits(settings.store)
             scan_clarifications([card for card in doc["cards"].values() if card.get("home") == label], turns, now)  # type: ignore[union-attr]
             write_waits(settings.store, doc)
-    return run_wait_jobs(settings, turns_for, now, runner) if run_helpers else 0
+    return run_wait_jobs(settings, turns_for, now, {owner.spec.label for owner in snapshots}, runner) if run_helpers else 0
 
 
 # -- discard --
@@ -7355,8 +7361,9 @@ def waits_list(args: argparse.Namespace) -> int:
     except (OSError, ValueError) as exc:
         print(f"quarterdeck: {exc}", file=sys.stderr)
         return 2
-    views = [wait_view(card) for card in cards.values() if args.all or (  # type: ignore[union-attr]
-        card.get("status") == "waiting" and not wait_is_hidden(card))]
+    labels = {owner.spec.label for owner in all_snapshots(homes)}
+    views = [wait_view(card) for card in cards.values() if card.get("home") in labels and (args.all or (  # type: ignore[union-attr]
+        card.get("status") == "waiting" and not wait_is_hidden(card)))]
     views.sort(key=lambda view: (view["status"] != "waiting", str(view["hold_set"])))
     if args.json:
         print(json.dumps({"store": str(settings.store), "waits": views}, indent=2, ensure_ascii=False))

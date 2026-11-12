@@ -1,5 +1,21 @@
 # Targeted testing
 
+## Captain wait transcript and home boundaries
+
+Run `PYTHONPATH=tests python3 -m unittest test_quarterdeck.CaptainWaitTests -v`.
+The tests use fictional disposable homes, session JSONL, helper responses and
+inbox scripts; no real Firstmate home or helper is needed. Temporary fixtures
+clean up automatically. Keep the temporary store outside the checkout and
+fixture homes, as required by the store's privacy boundary.
+
+Regression cases check owner questions at and during new/reset hold windows,
+answers arriving after the briefing window, and briefing paragraph deduplication.
+Interleaved sessions must keep replies with their own question and settle
+independently; resumed UUID copies count once. A shared store must preserve
+pending briefing and clarification jobs for unselected or unreadable homes,
+then complete them with the right transcript once selected and readable.
+Both ordinary and `--all` JSON listing must contain only selected homes.
+
 ## Keyless report review marks
 
 Last tested: 2026-10-12 with a disposable CLI server and headless Chrome.

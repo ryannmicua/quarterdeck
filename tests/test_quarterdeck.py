@@ -6775,6 +6775,107 @@ class CaptainWaitTests(unittest.TestCase):
         self.assertEqual([entry["asked"] for entry in entries], ["About tide-merge"])
         self.assertIn("what is the risk?", self.prompts[0])
 
+    def test_questions_during_new_and_reset_hold_windows_keep_later_answers(self) -> None:
+        """The hold-window contract keeps late answers and records briefing paragraphs only once."""
+        for reset, question_time in ((False, "10:09:00"), (True, "10:00:00")):
+            with self.subTest(reset=reset):
+                self.settings = dataclasses.replace(self.settings, store=self.root / f"store-{reset}")
+                self.transcripts = self.root / f"window-{reset}"
+                self.transcripts.mkdir()
+                if reset:
+                    self.backlog(held_row("tide-merge", "Tide table merge", "Merge word", "2026-07-02T08:00:00Z"))
+                    self.run_pass(helpers=False)
+                self.backlog(held_row("tide-merge", "Tide table merge", "Merge word", "2026-07-02T10:00:00Z"))
+                path = self.transcripts / "window.jsonl"
+                path.write_text(
+                    wait_record("owner", f"q-{reset}", f"2026-07-02T{question_time}Z", "Explain tide-merge?")
+                    + wait_record("mate", f"early-{reset}", "2026-07-02T10:09:30Z", "The tide table is ready."),
+                    encoding="utf-8")
+                self.replies = [{"kind": "merge", "summary": "Merge the tide table", "paragraphs": [1]}]
+                self.run_pass(WAIT_NOW.replace(hour=10, minute=10))
+                self.transcript("window.jsonl", wait_record("mate", f"late-{reset}", "2026-07-02T10:12:00Z",
+                                                           "The migration preserves existing rows."))
+                self.replies = [{"paragraphs": [1, 2]}]
+                self.run_pass()
+                self.run_pass(WAIT_NOW + timedelta(minutes=10))
+                entries = self.cards()["harbor/tide-merge"]["entries"]
+                self.assertEqual([(entry["type"], [p["text"] for p in entry["paragraphs"]]) for entry in entries],
+                                 [("briefing", ["The tide table is ready."]),
+                                  ("clarification", ["The migration preserves existing rows."])])
+
+    def test_interleaved_sessions_keep_answers_with_their_own_questions(self) -> None:
+        """Independent conversations cannot steal replies; resumed UUID copies count once."""
+        self.clarify_setup()
+        question = wait_record("owner", "qa", "2026-07-02T09:00:00Z", "Explain tide-merge?", sessionId="a")
+        self.transcript("a.jsonl", question,
+                        wait_record("mate", "a1", "2026-07-02T09:01:00Z", "The tide table is ready.", sessionId="a"))
+        self.transcript("b.jsonl",
+                        wait_record("owner", "qb", "2026-07-02T09:02:00Z", "How is the weather?", sessionId="b"),
+                        wait_record("mate", "b1", "2026-07-02T09:04:00Z", "Calm weather.", sessionId="b"))
+        self.transcript("resumed.jsonl", question,
+                        wait_record("mate", "a2", "2026-07-02T09:03:00Z", "The migration preserves rows.", sessionId="a"))
+        self.replies = [{"paragraphs": [1, 2]}]
+        self.run_pass()
+        entries = [entry for entry in self.cards()["harbor/tide-merge"]["entries"] if entry["type"] == "clarification"]
+        self.assertEqual([(entry["asked"], [p["text"] for p in entry["paragraphs"]]) for entry in entries],
+                         [("Explain tide-merge?", ["The tide table is ready.", "The migration preserves rows."])])
+        self.assertEqual(len(self.prompts), 1)
+
+    def test_other_sessions_do_not_close_an_unsettled_answer(self) -> None:
+        """Only the same session's next message or the settle interval closes its exchange."""
+        self.clarify_setup()
+        self.transcript("a.jsonl",
+                        wait_record("owner", "qa", "2026-07-02T11:55:00Z", "Explain tide-merge?", sessionId="a"),
+                        wait_record("mate", "a1", "2026-07-02T11:56:00Z", "Initial explanation.", sessionId="a"))
+        self.transcript("b.jsonl", wait_record("owner", "qb", "2026-07-02T11:57:00Z", "Weather?", sessionId="b"))
+        self.run_pass()
+        self.assertEqual(self.prompts, [])
+        self.transcript("a.jsonl", wait_record("mate", "a2", "2026-07-02T12:01:00Z", "Further explanation.", sessionId="a"))
+        self.replies = [{"paragraphs": [1, 2]}]
+        self.run_pass(WAIT_NOW + timedelta(minutes=12))
+        entries = [entry for entry in self.cards()["harbor/tide-merge"]["entries"] if entry["type"] == "clarification"]
+        self.assertEqual([p["text"] for p in entries[0]["paragraphs"]], ["Initial explanation.", "Further explanation."])
+
+    def test_helper_jobs_and_listing_respect_selected_readable_homes(self) -> None:
+        """A shared store must leave excluded/unreadable homes pending and list only selected homes."""
+        self.backlog(held_row("tide-merge", "Tide table merge", "Merge word", "2026-07-02T10:00:00Z"))
+        self.transcript("a.jsonl", wait_record("owner", "q", "2026-07-02T09:59:00Z", "Status?"),
+                        wait_record("mate", "a", "2026-07-02T10:01:00Z", "The tide table is ready."),
+                        wait_record("owner", "q2", "2026-07-02T10:20:00Z", "Explain tide-merge?"),
+                        wait_record("mate", "a2", "2026-07-02T10:21:00Z", "The migration preserves rows."))
+        self.run_pass(helpers=False)
+        other = self.root / "cove-home"
+        other_transcripts = self.root / "cove-transcripts"
+        other_transcripts.mkdir()
+        (other / "data").mkdir(parents=True)
+        (other / "data" / "backlog.md").write_text(
+            "# Backlog\n\n## Held\n\n" + held_row("kelp-call", "Kelp scope", "Choose scope", "2026-07-02T10:00:00Z"),
+            encoding="utf-8")
+        cove = quarterdeck.load_home_snapshot(quarterdeck.HomeSpec("Cove", other, transcripts=other_transcripts))
+        quarterdeck.wait_pass(self.settings, [cove], WAIT_NOW, self.runner)
+        self.assertIsNone(self.cards()["harbor/tide-merge"]["briefed_hold"])
+        self.assertEqual(len(self.cards()["harbor/tide-merge"]["jobs"]), 2)
+        (self.home / "data" / "backlog.md").unlink()
+        prompts = len(self.prompts)
+        quarterdeck.wait_pass(self.settings, [*self.homes(), cove], WAIT_NOW, self.runner)
+        self.assertEqual(len(self.prompts), prompts)
+        self.assertIsNone(self.cards()["harbor/tide-merge"]["briefed_hold"])
+        self.assertEqual(len(self.cards()["harbor/tide-merge"]["jobs"]), 2)
+        config = self.root / "selected.json"
+        config.write_text(json.dumps({"homes": [{"label": "Cove", "path": str(other)}],
+                                      "captain_waits": {"store_dir": str(self.settings.store)}}), encoding="utf-8")
+        for include_all in (False, True):
+            with self.subTest(include_all=include_all), redirect_stdout(io.StringIO()) as output:
+                self.assertEqual(quarterdeck.waits_list(argparse.Namespace(home=None, config=config, all=include_all, json=True)), 0)
+                self.assertEqual([view["key"] for view in json.loads(output.getvalue())["waits"]], ["cove/kelp-call"])
+        self.backlog(held_row("tide-merge", "Tide table merge", "Merge word", "2026-07-02T10:00:00Z"))
+        self.replies = [{"kind": "merge", "summary": "Merge the tide table", "paragraphs": [1]}, {"paragraphs": [1]}]
+        self.run_pass()
+        card = self.cards()["harbor/tide-merge"]
+        self.assertEqual(card["briefed_hold"], "2026-07-02T10:00:00Z")
+        self.assertEqual([p["text"] for p in card["entries"][0]["paragraphs"]], ["The tide table is ready."])
+        self.assertEqual([p["text"] for p in card["entries"][1]["paragraphs"]], ["The migration preserves rows."])
+
     def test_a_failed_helper_is_retried_later_and_one_wait_runs_one_helper_at_a_time(self) -> None:
         self.backlog(held_row("tide-merge", "Tide table merge", "Merge word", "2026-07-02T10:00:00Z"))
         self.replies = [ValueError("the helper timed out after 5 seconds")]
