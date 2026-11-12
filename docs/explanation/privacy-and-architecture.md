@@ -116,7 +116,8 @@ and Firstmate's answer. The helper only prints JSON naming paragraph numbers,
 a kind and a summary; Quarterdeck validates it and copies the chosen
 paragraphs into its own card store, by default
 `${XDG_STATE_HOME:-~/.local/state}/quarterdeck/captain-waits/waits.json` (mode
-0600). The store holds Firstmate's explanations and the captain's questions
+0600), keyed by each home's resolved path so a command reads, shows and
+discards only the selected homes' cards. The store holds Firstmate's explanations and the captain's questions
 that named an item, so Quarterdeck refuses a store inside its checkout, a
 selected home or a home's data directory. Each helper run has a time limit,
 runs in the store's `work/` folder, and at most one runs per wait.

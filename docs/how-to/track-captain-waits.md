@@ -43,7 +43,10 @@ Each pass of the watcher:
    "Naming" an item means your message contains its task id, its full title,
    or a pull request or issue number (such as `PR 26`, `pr26` or `issue 75`)
    that only that waiting item mentions in its title or hold note. Messages
-   sent back to back before Firstmate answers count as one.
+   sent back to back before Firstmate answers count as one. Which items a
+   message names is decided once, when Firstmate's answer settles, and kept;
+   a question skipped as unclear stays skipped after the other item is
+   released.
 
 A failed or timed-out helper run is retried after 1, 5, 15 and then every 60
 minutes. Only one helper runs for a wait at a time, even with several watchers.
@@ -149,7 +152,13 @@ a new card appears.
 ## Where the cards are kept
 
 Cards live in `${XDG_STATE_HOME:-~/.local/state}/quarterdeck/captain-waits/waits.json`
-(mode 0600), or in `captain_waits.store_dir`. The store holds Firstmate's
-explanations and your questions that named an item, so Quarterdeck refuses a
-store inside its checkout, a selected home, or a home's data directory. See
+(mode 0600), or in `captain_waits.store_dir`. Cards are kept per home under
+the home's resolved path, so two homes with the same label never see, reuse or
+discard each other's cards; the label is only shown. A store from an earlier
+version, kept by label, is dropped once and rebuilt from the backlogs (its
+briefings, clarifications and discards are not carried over). The store holds
+Firstmate's explanations and your questions that named an item, so Quarterdeck
+refuses a store inside its checkout, a selected home, or a home's data
+directory. If the store cannot be read, the page shows a "Captain waits
+unavailable" warning and `quarterdeck attention --check` reports it. See
 [Privacy and architecture](../explanation/privacy-and-architecture.md).

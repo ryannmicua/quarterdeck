@@ -6590,7 +6590,8 @@ class CaptainWaitTests(unittest.TestCase):
         return quarterdeck.wait_pass(self.settings, self.homes(), now, self.runner, run_helpers=helpers)
 
     def cards(self) -> dict:
-        return quarterdeck.read_waits(self.settings.store)["cards"]
+        return {key: card for section in quarterdeck.read_waits(self.settings.store)["homes"].values()
+                for key, card in section["cards"].items()}
 
     def test_a_new_hold_opens_a_card_and_its_release_keeps_the_record(self) -> None:
         self.backlog(held_row("tide-merge", "Tide table merge", "Merge word for PR 7", "2026-07-02T10:00:00Z"),
@@ -7103,9 +7104,9 @@ class CaptainWaitTests(unittest.TestCase):
         self.run_pass(WAIT_NOW + timedelta(minutes=1))
         job = self.cards()["harbor/tide-merge"]["jobs"][0]
         self.assertEqual((job["attempts"], job["next_at"]), (2, "2026-07-02T12:06:00Z"))
-        with quarterdeck.wait_job_lock(self.settings.store, "harbor/tide-merge") as mine:
+        with quarterdeck.wait_job_lock(self.settings.store, str(self.home.resolve()), "harbor/tide-merge") as mine:
             self.assertTrue(mine)
-            with quarterdeck.wait_job_lock(self.settings.store, "harbor/tide-merge") as again:
+            with quarterdeck.wait_job_lock(self.settings.store, str(self.home.resolve()), "harbor/tide-merge") as again:
                 self.assertFalse(again)
             self.assertEqual(self.run_pass(WAIT_NOW + timedelta(minutes=7)), 0, "another watcher holds this wait")
         self.replies = [{"kind": "merge", "summary": "Merge it", "paragraphs": []}]
@@ -7315,3 +7316,79 @@ class CaptainWaitTests(unittest.TestCase):
         self.assertNotIn("harbor/tide-merge", keys)
         kelp = next(item for items in waiting.values() for item in items if item["key"] == "harbor/kelp-call")
         self.assertEqual((kelp["wait"]["briefing"], kelp["wait"]["summary"]), ("pending", "Pick a scope"))
+
+    def test_an_ambiguous_question_stays_unassigned_after_the_other_candidate_leaves(self) -> None:
+        """An exchange is matched once; releasing one of two items naming PR 9 must not hand the old answer to the other."""
+        self.clarify_setup()
+        self.transcript("main.jsonl",
+                        wait_record("owner", "o1", "2026-07-02T10:00:00Z", "What about PR 9?"),
+                        wait_record("mate", "m1", "2026-07-02T10:00:05Z", "PR 9 needs a vendor pick."))
+        self.run_pass()
+        self.assertEqual([entry for card in self.cards().values() for entry in card["entries"]
+                          if entry["type"] == "clarification"], [], "a PR number two items share names neither")
+        self.backlog(held_row("tide-merge", "Tide table merge", "Merge word for PR 7", "2026-07-02T08:00:00Z"),
+                     held_row("kelp-call", "Kelp survey scope", "Pick a scope; see PR 9", "2026-07-02T08:00:00Z"),
+                     "- [ ] pier-call - Pier lights vendor (repo: harbor-app)")
+        self.replies = [{"paragraphs": [1]}]
+        self.run_pass(WAIT_NOW + timedelta(minutes=5))
+        cards = self.cards()
+        self.assertEqual(cards["harbor/pier-call"]["status"], "done")
+        self.assertEqual((cards["harbor/kelp-call"]["jobs"], cards["harbor/kelp-call"]["sources"]), ([], []))
+        self.assertEqual(self.prompts, [], "no helper ran for the earlier, ambiguous question")
+
+    def test_cards_belong_to_the_home_path_not_its_label(self) -> None:
+        """Two homes labelled alike in separate runs never see, reuse or discard each other's cards."""
+        self.backlog(held_row("tide-merge", "Tide table merge", "Merge word", "2026-07-02T10:00:00Z"))
+        self.replies = [{"kind": "merge", "summary": "Merge the harbor tide table", "paragraphs": []}]
+        self.run_pass()
+        other = self.root / "elsewhere" / "harbor-home"
+        (other / "data").mkdir(parents=True)
+        (other / "data" / "backlog.md").write_text("# Backlog\n\n## Held\n\n" + held_row(
+            "tide-merge", "Another tide table", "Choose layout", "2026-07-02T11:00:00Z"), encoding="utf-8")
+        twin = [quarterdeck.load_home_snapshot(quarterdeck.HomeSpec("Harbor", other, transcripts=self.transcripts))]
+        cards, error = quarterdeck.load_wait_cards(self.settings, twin)
+        self.assertEqual((cards, error), ({}, ""), "the twin home sees none of Harbor's saved explanations")
+        log = self.inbox()
+        config = self.root / "twin.json"
+        config.write_text(json.dumps({"homes": [{"label": "Harbor", "path": str(other)}],
+                                      "captain_waits": {"store_dir": str(self.settings.store)}}), encoding="utf-8")
+        args = argparse.Namespace(home=None, config=config, all=True, json=True)
+        with self.assertRaisesRegex(ValueError, "no captain wait matches"):
+            quarterdeck.discard_wait(args, "harbor/tide-merge", deliver=lambda *rest: self.fail("nothing may be delivered"))
+        self.assertFalse(log.exists())
+        with redirect_stdout(io.StringIO()) as output:
+            self.assertEqual(quarterdeck.waits_list(args), 0)
+        self.assertEqual(json.loads(output.getvalue())["waits"], [])
+        self.replies = [{"kind": "choice", "summary": "Pick the other layout", "paragraphs": []}]
+        quarterdeck.wait_pass(self.settings, twin, WAIT_NOW, self.runner)
+        twin_card = quarterdeck.load_wait_cards(self.settings, twin)[0]["harbor/tide-merge"]
+        own_card = quarterdeck.load_wait_cards(self.settings, self.homes())[0]["harbor/tide-merge"]
+        self.assertEqual((twin_card["hold_set"], twin_card["summary"]), ("2026-07-02T11:00:00Z", "Pick the other layout"))
+        self.assertEqual((own_card["hold_set"], own_card["summary"]), ("2026-07-02T10:00:00Z", "Merge the harbor tide table"))
+
+    def test_a_label_keyed_store_is_dropped_once_and_rebuilt_from_the_backlog(self) -> None:
+        self.settings.store.mkdir()
+        (self.settings.store / "waits.json").write_text(json.dumps({"version": 1, "cards": {"harbor/old": {"key": "harbor/old"}}}),
+                                                        encoding="utf-8")
+        self.backlog(held_row("tide-merge", "Tide table merge", "Merge word", "2026-07-02T10:00:00Z"))
+        self.run_pass(helpers=False)
+        self.assertEqual(sorted(self.cards()), ["harbor/tide-merge"])
+        self.assertEqual(json.loads((self.settings.store / "waits.json").read_text(encoding="utf-8"))["version"], 2)
+
+    def test_an_unreadable_wait_store_is_shown_on_the_page_and_in_the_check_line(self) -> None:
+        self.backlog(held_row("tide-merge", "Tide table merge", "Merge word", "2026-07-02T10:00:00Z"))
+        self.settings.store.mkdir()
+        (self.settings.store / "waits.json").write_text("{not json", encoding="utf-8")
+        config = self.root / "config.json"
+        config.write_text(json.dumps({"homes": [{"label": "Harbor", "path": str(self.home), "transcripts": str(self.transcripts)}],
+                                      "captain_waits": {"store_dir": str(self.settings.store)}}), encoding="utf-8")
+        args = argparse.Namespace(home=None, config=config, no_snapshot=True, title=None)
+        with patch.dict(os.environ, {"XDG_STATE_HOME": str(self.root / "state"), "XDG_CONFIG_HOME": str(self.root / "xdg")}):
+            _config, _homes, bearings = quarterdeck.load_site(args)
+        attention = bearings.attention
+        self.assertIn("could not read", attention["waits_error"])
+        for markup in (quarterdeck.attention_html(attention), quarterdeck.cards_html([], attention, WAIT_NOW, False)):
+            self.assertIn("Captain waits unavailable", markup)
+            self.assertIn("could not read", markup)
+        self.assertIn("captain waits: could not read", quarterdeck.attention_check_line(attention))
+

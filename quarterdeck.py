@@ -3344,6 +3344,8 @@ def attention_check_line(view: dict[str, object]) -> str:
             continue
         open_count = len(decisions["relevant"]) + decisions["background_count"]
         parts.append(f"{home['label']}: {ledger_text}; {ATTENTION_FEED_SCHEMA}, {open_count} open decisions")
+    if view.get("waits_error"):
+        parts.append(f"captain waits: {view['waits_error']}")
     return f"quarterdeck attention check: {'ok' if view['ok'] else 'FAILED'} — " + "; ".join(parts)
 
 
@@ -3611,8 +3613,12 @@ def priorities_panel_html(homes: list[dict[str, object]]) -> str:
     return f'<div class="priority-projects" id="priority-projects"><h3>Priority projects</h3><ul>{"".join(rows)}</ul></div>'
 
 
-def attention_errors_html(homes: list[dict[str, object]]) -> list[str]:
+def attention_errors_html(view: dict[str, object]) -> list[str]:
+    homes = [home for home in view["homes"] if isinstance(home, dict)]  # type: ignore[union-attr]
     out = []
+    if view.get("waits_error"):
+        out.append(f'<div class="warning"><p><strong>Captain waits unavailable</strong> — '
+                   f'{html.escape(str(view["waits_error"]))}.</p></div>')
     for home in homes:
         label = f"{home['label']}: " if len(homes) > 1 else ""
         for error in home["errors"]:  # type: ignore[union-attr]
@@ -3806,7 +3812,7 @@ def attention_html(view: dict[str, object] | None, allow_marks: bool = False) ->
            "<p>Waiting decisions, then needs you and information, with your priority projects first. "
            f"Work from the last {RECENT_HOURS} hours appears only when there is some. "
            "Dated decisions stay hidden until due.</p></div></div>"]
-    out.extend(attention_errors_html(homes))
+    out.extend(attention_errors_html(view))
     if view.get("views"):
         out.append(views_html(view, homes, now, allow_marks))
         out.append("</section>")
@@ -6423,7 +6429,7 @@ def reaction_html(ctx: ReactionContext | None, kind: str, item_id: str, availabl
 # numbered paragraphs explain the item, the kind of ask and a one-line summary; it prints JSON, and Quarterdeck copies
 # the chosen paragraphs verbatim into the card store, which lives in Quarterdeck's own state directory.
 
-WAITS_VERSION = 1
+WAITS_VERSION = 2
 WAITS_FILE = "waits.json"
 WAIT_KINDS = {
     "screen": "Look at a screen", "merge": "Give the word to merge", "choice": "Pick an option",
@@ -6552,7 +6558,37 @@ def transcript_dir(spec: HomeSpec) -> Path | None:
 # -- the store --
 
 def empty_waits() -> dict[str, object]:
-    return {"version": WAITS_VERSION, "cards": {}}
+    return {"version": WAITS_VERSION, "homes": {}}
+
+
+def wait_home_id(snapshot: HomeSnapshot) -> str | None:
+    """The resolved home path a local home's cards are stored under; remote and pathless homes keep no cards."""
+    if snapshot.spec.home is None or snapshot.spec.remote_host:
+        return None
+    return str(snapshot.spec.home.resolve())
+
+
+def home_waits(doc: dict[str, object], home: str) -> dict[str, dict[str, object]]:
+    """One home's part of the store: its cards and the decided owner exchanges, created when missing."""
+    section = doc["homes"].setdefault(home, {})  # type: ignore[union-attr]
+    section.setdefault("cards", {})
+    section.setdefault("exchanges", {})
+    return section
+
+
+def stored_cards(doc: dict[str, object], snapshot: HomeSnapshot) -> dict[str, dict[str, object]]:
+    home = wait_home_id(snapshot)
+    section = doc["homes"].get(home) if home else None  # type: ignore[union-attr]
+    cards = section.get("cards") if isinstance(section, dict) else None
+    return cards if isinstance(cards, dict) else {}
+
+
+def selected_cards(doc: dict[str, object], snapshots: list[HomeSnapshot]) -> dict[str, dict[str, object]]:
+    """The cards of the selected homes only, by task key."""
+    cards: dict[str, dict[str, object]] = {}
+    for snapshot in all_snapshots(snapshots):
+        cards.update(stored_cards(doc, snapshot))
+    return cards
 
 
 @contextmanager
@@ -6578,7 +6614,9 @@ def read_waits(store: Path) -> dict[str, object]:
         return empty_waits()
     except (OSError, UnicodeDecodeError, ValueError) as exc:
         raise ValueError(f"could not read {path}: {exc}") from exc
-    if not isinstance(data, dict) or data.get("version") != WAITS_VERSION or not isinstance(data.get("cards"), dict):
+    if isinstance(data, dict) and data.get("version") == 1:
+        return empty_waits()  # the label-keyed layout is dropped once and rebuilt from the backlogs
+    if not isinstance(data, dict) or data.get("version") != WAITS_VERSION or not isinstance(data.get("homes"), dict):
         raise ValueError(f"{path} is not a version {WAITS_VERSION} captain-wait store")
     return data
 
@@ -6608,7 +6646,7 @@ def load_wait_cards(settings: WaitSettings, snapshots: list[HomeSnapshot]) -> tu
         path = store / WAITS_FILE
         if not path.exists():
             return {}, ""
-        return read_waits(store)["cards"], ""  # type: ignore[return-value]
+        return selected_cards(read_waits(store), snapshots), ""
     except (OSError, ValueError) as exc:
         return {}, str(exc)
 
@@ -6666,11 +6704,12 @@ def sync_wait_cards(
 ) -> None:
     """Create, re-hold and release cards from each readable backlog. A home that could not be read changes nothing."""
     snapshots = all_snapshots(homes)
-    cards: dict[str, dict[str, object]] = doc["cards"]  # type: ignore[assignment]
     for owner in snapshots:
-        if owner.error or owner.backlog_markdown is None or owner.spec.home is None or owner.spec.remote_host:
+        home = wait_home_id(owner)
+        if owner.error or owner.backlog_markdown is None or home is None:
             continue
         label = owner.spec.label
+        cards = home_waits(doc, home)["cards"]
         holds = captain_holds(owner, snapshots)
         items = {task_key(owner, item.id, snapshots): item for item in backlog_items(owner.backlog_markdown, owner)}
         for key, (item, stamp) in holds.items():
@@ -6693,7 +6732,7 @@ def sync_wait_cards(
                     card["jobs"] = [briefing_job(stamp, now, settings)]
             card.update(home=label, task=item.id, title=item.title, hold_reason=item.hold_reason, refs=item_refs(item))
         for key, card in cards.items():
-            if card.get("home") != label or card.get("status") != "waiting" or key in holds:
+            if card.get("status") != "waiting" or key in holds:
                 continue
             item = items.get(key)
             reason = ("discarded" if wait_is_hidden(card) else "no longer in the backlog" if item is None
@@ -6867,28 +6906,39 @@ def paragraphs_of(text: str) -> list[str]:
 
 
 def scan_clarifications(
-    cards: list[dict[str, object]], turns: list[Turn], now: datetime,
+    section: dict[str, dict[str, object]], turns: list[Turn], now: datetime,
 ) -> None:
     """Queue a clarification job for each closed exchange the owner started by naming a still-waiting item.
 
     Exchanges started by a notice (automatic wakes, artifact comments, slash commands) are recaps and never count, nor
-    does an owner message that names no item. Each reply turn is queued once per hold.
+    does an owner message that names no item. Which items an exchange names is decided once, when it closes, and kept
+    in the home's `exchanges`, so later changes to the waiting cards never reassign it. Each reply turn is queued once
+    per hold.
     """
-    open_cards = [card for card in cards if card.get("status") == "waiting" and not wait_is_hidden(card)]
+    cards, decided = section["cards"], section["exchanges"]
+    open_cards = [card for card in cards.values() if card.get("status") == "waiting" and not wait_is_hidden(card)]
     if not open_cards:
         return
-    convo = exchanges(turns, now)
-    for card in open_cards:
-        start = parse_board_time(card.get("hold_set")) or parse_board_time(card.get("opened_at")) or now
-        for exchange in convo:
-            if exchange.starter.at < start:
+    starts = {str(card["key"]): parse_board_time(card.get("hold_set")) or parse_board_time(card.get("opened_at")) or now
+              for card in open_cards}
+    earliest = min(starts.values())
+    for uuid in [uuid for uuid, decision in decided.items()
+                 if (parse_board_time(decision.get("at")) or now) < earliest]:  # type: ignore[union-attr]
+        del decided[uuid]
+    for exchange in exchanges(turns, now):
+        if (exchange.starter.at < earliest or not exchange.closed or exchange.starter.role != "owner"
+                or not exchange.replies):
+            continue
+        decision = decided.get(exchange.starter.uuid)
+        if not isinstance(decision, dict):
+            named = mentioned_keys(exchange.starter.text, open_cards)
+            decision = decided[exchange.starter.uuid] = {
+                "at": wait_time(exchange.starter.at), "cards": [key for key in named if starts[key] <= exchange.starter.at],
+            }
+        for key in decision.get("cards") or []:
+            if key not in starts or starts[key] > exchange.starter.at:
                 continue
-            if not exchange.closed:
-                continue
-            if exchange.starter.role != "owner" or not exchange.replies:
-                continue
-            if card["key"] not in mentioned_keys(exchange.starter.text, open_cards):
-                continue
+            card = cards[key]
             sources: list[str] = card.setdefault("sources", [])  # type: ignore[assignment]
             fresh_turns = [turn for turn in exchange.replies if turn.uuid not in sources]
             if not fresh_turns:
@@ -7030,11 +7080,11 @@ def parse_helper_output(text: str, count: int, briefing: bool) -> dict[str, obje
 
 
 @contextmanager
-def wait_job_lock(store: Path, key: str) -> Iterator[bool]:
+def wait_job_lock(store: Path, home: str, key: str) -> Iterator[bool]:
     """At most one helper per wait, across every watcher sharing the store."""
     locks = store / "locks"
     locks.mkdir(parents=True, exist_ok=True, mode=0o700)
-    path = locks / (hashlib.sha256(key.encode("utf-8")).hexdigest()[:32] + ".lock")
+    path = locks / (hashlib.sha256(f"{home}\n{key}".encode("utf-8")).hexdigest()[:32] + ".lock")
     descriptor = os.open(path, os.O_RDWR | os.O_CREAT, 0o600)
     try:
         try:
@@ -7083,30 +7133,31 @@ def apply_wait_result(card: dict[str, object], job: dict[str, object], result: d
 
 
 def run_wait_jobs(
-    settings: WaitSettings, turns_for: Callable[[str], list[Turn]], now: datetime, home_labels: set[str],
+    settings: WaitSettings, turns_for: Callable[[str], list[Turn]], now: datetime, homes: set[str],
     runner: Callable[[WaitSettings, str], str] = run_wait_helper, limit: int = WAIT_JOBS_PER_PASS,
 ) -> int:
-    """Run up to `limit` due helper jobs, one at a time; a failure is retried later with a growing delay."""
+    """Run up to `limit` due helper jobs of the given homes, one at a time; a failure is retried later with a growing delay."""
     with waits_lock(settings.store):
         doc = read_waits(settings.store)
-    due: list[tuple[str, dict[str, object]]] = []
-    for key, card in doc["cards"].items():  # type: ignore[union-attr]
-        if card.get("home") not in home_labels or card.get("status") != "waiting" or wait_is_hidden(card):
-            continue
-        for job in card.get("jobs") or []:
-            when = parse_board_time(job.get("next_at"))
-            if job.get("hold_set") == card.get("hold_set") and (when is None or when <= now):
-                due.append((key, job))
-    due.sort(key=lambda pair: (pair[1]["type"] != "briefing", str(pair[1].get("next_at"))))
+    due: list[tuple[str, str, dict[str, object]]] = []
+    for home in sorted(homes):
+        for key, card in home_waits(doc, home)["cards"].items():
+            if card.get("status") != "waiting" or wait_is_hidden(card):
+                continue
+            for job in card.get("jobs") or []:  # type: ignore[union-attr]
+                when = parse_board_time(job.get("next_at"))
+                if job.get("hold_set") == card.get("hold_set") and (when is None or when <= now):
+                    due.append((home, key, job))
+    due.sort(key=lambda entry: (entry[2]["type"] != "briefing", str(entry[2].get("next_at"))))
     ran = 0
-    for key, job in due[:limit]:
-        with wait_job_lock(settings.store, key) as mine:
+    for home, key, job in due[:limit]:
+        with wait_job_lock(settings.store, home, key) as mine:
             if not mine:
                 continue
-            card = doc["cards"][key]  # type: ignore[index]
+            card = home_waits(doc, home)["cards"][key]
             if job["type"] == "briefing":
                 held = parse_board_time(job["hold_set"])
-                window = [turn for turn in turns_for(str(card["home"])) if held is not None
+                window = [turn for turn in turns_for(home) if held is not None
                           and held - settings.before <= turn.at <= held + settings.after]
                 material, paragraphs = briefing_material(window, held)
                 prompt = BRIEFING_PROMPT.format(task=card["task"], title=card.get("title") or card["task"],
@@ -7126,7 +7177,7 @@ def run_wait_jobs(
             ran += 1
             with waits_lock(settings.store):
                 doc = read_waits(settings.store)
-                card = doc["cards"].get(key)  # type: ignore[union-attr]
+                card = home_waits(doc, home)["cards"].get(key)
                 jobs = card.setdefault("jobs", []) if isinstance(card, dict) else []
                 current = next((item for item in jobs if item.get("id") == job["id"]), None)
                 if card is None or current is None or card.get("hold_set") != job["hold_set"]:
@@ -7150,16 +7201,15 @@ def wait_pass(
     now = now or datetime.now(timezone.utc)
     validate_wait_store(settings.store, homes)
     snapshots = [owner for owner in all_snapshots(homes)
-                 if not owner.error and owner.backlog_markdown is not None
-                 and owner.spec.home is not None and not owner.spec.remote_host]
+                 if not owner.error and owner.backlog_markdown is not None and wait_home_id(owner) is not None]
     cache: dict[str, list[Turn]] = {}
 
-    def turns_for(label: str) -> list[Turn]:
-        if label not in cache:
-            owner = next(owner for owner in snapshots if owner.spec.label == label)
+    def turns_for(home: str) -> list[Turn]:
+        if home not in cache:
+            owner = next(owner for owner in snapshots if wait_home_id(owner) == home)
             with waits_lock(settings.store):
-                cards = [card for card in read_waits(settings.store)["cards"].values()  # type: ignore[union-attr]
-                         if card.get("home") == label and card.get("status") == "waiting"]
+                cards = [card for card in home_waits(read_waits(settings.store), home)["cards"].values()
+                         if card.get("status") == "waiting"]
             starts: list[datetime] = []
             for card in cards:
                 held = parse_board_time(card.get("hold_set"))
@@ -7167,28 +7217,28 @@ def wait_pass(
                 if start is not None:
                     starts.append(start)
             since = min(starts) if starts else now
-            cache[label] = transcript_turns(transcript_dir(owner.spec), since)
-        return cache[label]
+            cache[home] = transcript_turns(transcript_dir(owner.spec), since)
+        return cache[home]
 
     with waits_lock(settings.store):
         doc = read_waits(settings.store)
         sync_wait_cards(doc, homes, now, settings)
         write_waits(settings.store, doc)
     for owner in snapshots:
-        label = owner.spec.label
+        label, home = owner.spec.label, str(wait_home_id(owner))
         with waits_lock(settings.store):
-            pending = any(card.get("home") == label and card.get("status") == "waiting"
-                          for card in read_waits(settings.store)["cards"].values())  # type: ignore[union-attr]
+            pending = any(card.get("status") == "waiting"
+                          for card in home_waits(read_waits(settings.store), home)["cards"].values())
         if not pending:
             continue
         try:
-            turns = turns_for(label)
+            turns = turns_for(home)
         except OSError as exc:
             print(f"quarterdeck: captain waits: {label}: could not read saved conversation: {exc}", file=sys.stderr)
             continue
         with waits_lock(settings.store):
             doc = read_waits(settings.store)
-            scan_clarifications([card for card in doc["cards"].values() if card.get("home") == label], turns, now)  # type: ignore[union-attr]
+            scan_clarifications(home_waits(doc, home), turns, now)
             write_waits(settings.store, doc)
     return run_wait_jobs(settings, turns_for, now, set(cache), runner) if run_helpers else 0
 
@@ -7211,8 +7261,10 @@ def discard_wait(args: argparse.Namespace, key: str, hold_set: str | None = None
     settings = args_wait_settings(args)
     store = validate_wait_store(settings.store, homes)
     with waits_lock(store):
-        card = read_waits(store)["cards"].get(key)  # type: ignore[union-attr]
-    if not isinstance(card, dict):
+        doc = read_waits(store)
+    owner = next((member for member in all_snapshots(homes) if key in stored_cards(doc, member)), None)
+    card = stored_cards(doc, owner)[key] if owner is not None else None
+    if owner is None or not isinstance(card, dict):
         raise ValueError(f"no captain wait matches: {key}")
     if card.get("status") != "waiting":
         raise ValueError(f"the wait on {card['task']} is already released")
@@ -7220,14 +7272,12 @@ def discard_wait(args: argparse.Namespace, key: str, hold_set: str | None = None
         raise ValueError(f"the wait on {card['task']} was held again since this page loaded; reload and try again")
     if wait_is_hidden(card):
         return {"key": key, "hold_set": card["hold_set"], "discarded": True}
-    top = next((s for s in homes if any(member.spec.label == card["home"] for member in all_snapshots([s]))), None)
-    if top is None:
-        raise ValueError(f"no home matches the wait's home: {card['home']}")
+    top = next(s for s in homes if any(member is owner for member in all_snapshots([s])))
     request = "qd-wait-" + hashlib.sha256(f"{key}\n{card['hold_set']}".encode("utf-8")).hexdigest()[:24]
     deliver(top.spec, request, wait_discard_note(card))
     with waits_lock(store):
         doc = read_waits(store)
-        current = doc["cards"].get(key)  # type: ignore[union-attr]
+        current = stored_cards(doc, owner).get(key)
         if isinstance(current, dict) and current.get("hold_set") == card["hold_set"]:
             current["discarded"] = {"hold_set": card["hold_set"], "at": wait_time(datetime.now(timezone.utc))}
             current["jobs"] = []
@@ -7386,13 +7436,12 @@ def waits_list(args: argparse.Namespace) -> int:
     try:
         homes, settings = waits_homes_and_settings(args)
         with waits_lock(settings.store):
-            cards = read_waits(settings.store)["cards"]
+            cards = selected_cards(read_waits(settings.store), homes)
     except (OSError, ValueError) as exc:
         print(f"quarterdeck: {exc}", file=sys.stderr)
         return 2
-    labels = {owner.spec.label for owner in all_snapshots(homes)}
-    views = [wait_view(card) for card in cards.values() if card.get("home") in labels and (args.all or (  # type: ignore[union-attr]
-        card.get("status") == "waiting" and not wait_is_hidden(card)))]
+    views = [wait_view(card) for card in cards.values() if args.all or (
+        card.get("status") == "waiting" and not wait_is_hidden(card))]
     views.sort(key=lambda view: (view["status"] != "waiting", str(view["hold_set"])))
     if args.json:
         print(json.dumps({"store": str(settings.store), "waits": views}, indent=2, ensure_ascii=False))
@@ -7586,7 +7635,6 @@ def cards_payload(cards: list[dict[str, object]], now: datetime) -> str:
 def cards_html(cards: list[dict[str, object]], attention: dict[str, object] | None, now: datetime, live: bool) -> str:
     if attention is None:
         return ""
-    homes = [home for home in attention["homes"] if isinstance(home, dict)]  # type: ignore[union-attr]
     sections = []
     for section, title in CARD_SECTIONS:
         markup = "".join(card_html(card, now)[1] for card in cards if card["section"] == section)
@@ -7600,7 +7648,7 @@ def cards_html(cards: list[dict[str, object]], attention: dict[str, object] | No
         '<h2>Cards <span class="count" id="cards-count" hidden>0</span></h2>'
         "<p>What Firstmate is doing, newest first. Tap a card to read it. "
         + ("New cards slide in here without a reload." if live else "Reload to see new cards.") + "</p></div></div>"
-        + "".join(attention_errors_html(homes))
+        + "".join(attention_errors_html(attention))
         + f'<p class="empty" id="cards-empty"{" hidden" if cards else ""}>Nothing new from Firstmate.</p>'
         + "".join(sections) + "</section>"
     )
