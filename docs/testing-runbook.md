@@ -1,5 +1,22 @@
 # Targeted testing
 
+## Background cache and write responses
+
+Run `PYTHONPATH=tests python3 -m unittest test_quarterdeck.ServeTests -v`.
+The cache regressions use controlled clocks and blocked builders to check stale
+reads, single concurrent builds, failed-refresh cooldowns, and invalidations
+arriving during a failed build. Waiting invalidations must still report their
+own build failures. HTTP regressions check that marks, views, wait discards and
+reactions return successful mutation results even when the following render
+fails, while GET retains the previous page. These tests use fictional callbacks
+and loopback servers; they do not mutate real homes or deliver inbox notes.
+Servers and disposable fixtures clean up automatically.
+`ServeTests.test_reaction_response_does_not_wait_for_rendering` checks call
+reactions and report replies with idle and already rebuilding caches: the HTTP
+response must arrive while rendering is blocked, and releasing the builder must
+eventually publish updated pages. Reaction page assertions poll for that
+background publication rather than requiring it before acknowledgement.
+
 ## Captain wait transcript and home boundaries
 
 Run `PYTHONPATH=tests python3 -m unittest test_quarterdeck.CaptainWaitTests -v`.
@@ -276,7 +293,9 @@ feed and ledger timestamps shifted to the current time. Board-backed calls also
 need open backlog rows; otherwise the board correctly treats them as settled.
 Use disposable XDG config and state outside the checkout/home, and only a
 fictional `fm-inbox.sh note` receiver for reaction delivery. Observe an actual
-15-second poll after the 30-second server cache expires. Keep a real reply draft
+15-second polling cycle through a background rebuild and the subsequent poll
+that receives the new cards; see the [serving guide](how-to/serve-the-page.md#run-it)
+for cache timing. Keep a real reply draft
 open when proving polling independently of the normal 60-second page reload.
 Check an expanded card updated offscreen remains New, then scroll it to about
 10% visibility for longer than 1.2 seconds. For native hidden-tab timing in
@@ -285,3 +304,22 @@ headless Chrome, tab selection may leave every page visible: CDP
 `document.hidden` transition; restore `normal` and require a fresh dwell.
 Capture desktop/mobile details and Done recently screenshots. Stop the isolated
 server/browser and remove fictional data, profile and private state afterward.
+
+Manual cache gate check (2026-11-13): run the real `serve --allow-marks`
+CLI against a fictional home with 340 reports, isolated XDG config/state, and
+snapshot/attention scripts delayed six/one seconds. Wait 31 seconds after build
+completion, change the configured page title, and request `/`, a linked report
+and `/cards.json` concurrently. Old pages must return during exactly one build;
+the changed title must appear after completion. Allow for TCP accept delays in
+large connection bursts; compare latency against the deliberately slow build.
+Send call reactions and report replies with idle and rebuilding caches: delivery
+must acknowledge before rendering finishes. Capture the actual browser's loaded
+page and **Sent to Firstmate** state. To exercise render failure after real writes,
+a positive but overflowing `captain_waits.window_before_minutes` passes config
+validation and fails during rendering; marks, views and reactions must still
+persist and return 200. For wait discard, have the fictional inbox receiver set
+that fault only after accepting its note. Cached GETs must remain usable without
+per-request retries, retry after the TTL, and recover after valid config returns.
+Inspect persisted SQLite/preferences/wait state and the fictional inbox log.
+Stop server/browser children, wait for helper completion, and remove disposable
+homes, profiles and private state. Keep only synthetic screenshots and transcripts.

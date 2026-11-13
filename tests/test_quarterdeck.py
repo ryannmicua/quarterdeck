@@ -2795,7 +2795,13 @@ class ServeTests(unittest.TestCase):
         connection.close()
         return response.status, response.headers, body
 
-    def test_cache_reuses_render_until_ttl_then_rerenders(self) -> None:
+    def wait_for(self, condition, timeout: float = 5.0) -> None:
+        deadline = time.monotonic() + timeout
+        while not condition():
+            self.assertLess(time.monotonic(), deadline, "timed out waiting for the background rebuild")
+            time.sleep(0.01)
+
+    def test_cache_reuses_render_until_ttl_then_rebuilds_in_background(self) -> None:
         calls: list[int] = []
         clock = [100.0]
         cache = quarterdeck.SiteCache(lambda: calls.append(1) or {"index.html": str(len(calls))}, 30, lambda: clock[0])
@@ -2803,8 +2809,218 @@ class ServeTests(unittest.TestCase):
         clock[0] += 29
         self.assertEqual(cache.get()["index.html"], "1")
         clock[0] += 1
-        self.assertEqual(cache.get()["index.html"], "2")
+        self.assertEqual(cache.get()["index.html"], "1")  # stale: old pages now, rebuild behind
+        self.wait_for(lambda: cache.get()["index.html"] == "2")
         self.assertEqual(len(calls), 2)
+
+    def test_stale_get_serves_old_pages_without_waiting_and_runs_one_build_at_a_time(self) -> None:
+        release = threading.Event()
+        started = threading.Semaphore(0)
+        calls: list[int] = []
+
+        def build() -> dict[str, str]:
+            calls.append(1)
+            if len(calls) > 1:
+                started.release()
+                release.wait(10)
+            return {"index.html": str(len(calls))}
+
+        clock = [0.0]
+        cache = quarterdeck.SiteCache(build, 30, lambda: clock[0])
+        self.assertEqual(cache.get()["index.html"], "1")
+        clock[0] += 31
+        for _ in range(5):  # a blocked rebuild never blocks readers
+            self.assertEqual(cache.get()["index.html"], "1")
+        self.assertTrue(started.acquire(timeout=5))
+        cache.invalidate()
+        self.assertEqual(cache.get()["index.html"], "1")
+        self.assertEqual(len(calls), 2)  # still the single in-flight build
+        release.set()
+        self.wait_for(lambda: cache.get()["index.html"] != "1")
+        # The invalidation that arrived mid-build schedules one more build.
+        self.wait_for(lambda: len(calls) == 3 and not cache.building)
+        self.assertEqual(cache.get()["index.html"], "3")
+
+    def test_failed_rebuild_keeps_old_pages_and_logs(self) -> None:
+        outcomes = [{"index.html": "good"}, ValueError("broken home")]
+        clock = [0.0]
+
+        def build() -> dict[str, str]:
+            outcome = outcomes.pop(0) if outcomes else {"index.html": "recovered"}
+            if isinstance(outcome, Exception):
+                raise outcome
+            return outcome
+
+        cache = quarterdeck.SiteCache(build, 30, lambda: clock[0])
+        self.assertEqual(cache.get()["index.html"], "good")
+        clock[0] += 31
+        with patch("sys.stderr", new=io.StringIO()) as err:
+            self.assertEqual(cache.get()["index.html"], "good")
+            self.wait_for(lambda: not cache.building and "broken home" in err.getvalue())
+            self.assertEqual(cache.get()["index.html"], "good")
+        clock[0] += 31
+        cache.get()
+        self.wait_for(lambda: cache.get()["index.html"] == "recovered")
+
+    def test_invalidate_wait_returns_after_a_fresh_rebuild(self) -> None:
+        version = [0]
+        cache = quarterdeck.SiteCache(lambda: version.append(0) or {"index.html": str(len(version))}, 30)
+        self.assertEqual(cache.get()["index.html"], "2")
+        cache.invalidate(wait=True)
+        self.assertEqual(cache.get()["index.html"], "3")
+
+    def test_failed_invalidated_rebuild_respects_ttl_and_allows_new_invalidations(self) -> None:
+        calls = []
+        clock = [0.0]
+
+        def build() -> dict[str, str]:
+            calls.append(1)
+            if len(calls) in {2, 3}:
+                raise ValueError("broken home")
+            return {"index.html": str(len(calls))}
+
+        cache = quarterdeck.SiteCache(build, 30, lambda: clock[0])
+        self.assertEqual(cache.get()["index.html"], "1")
+        with redirect_stderr(io.StringIO()):
+            with self.assertRaisesRegex(ValueError, "broken home"):
+                cache.invalidate(wait=True)
+            for _ in range(5):
+                self.assertEqual(cache.get()["index.html"], "1")
+            with cache.cond:
+                self.assertFalse(cache.building)
+            self.assertEqual(len(calls), 2)
+            clock[0] = 29
+            self.assertEqual(cache.get()["index.html"], "1")
+            with cache.cond:
+                self.assertFalse(cache.building)
+            self.assertEqual(len(calls), 2)
+            clock[0] = 30
+            cache.get()
+            self.wait_for(lambda: not cache.building)
+            self.assertEqual(len(calls), 3)
+            self.assertEqual(cache.get()["index.html"], "1")
+            cache.invalidate(wait=True)
+        self.assertEqual(cache.get()["index.html"], "4")
+
+    def test_waiting_invalidation_retries_after_an_older_build_fails(self) -> None:
+        started = threading.Event()
+        release = threading.Event()
+        self.addCleanup(release.set)
+        calls = []
+
+        def build() -> dict[str, str]:
+            calls.append(1)
+            if len(calls) == 2:
+                started.set()
+                if not release.wait(5):
+                    raise RuntimeError("test did not release the build")
+                raise ValueError("older build failed")
+            return {"index.html": str(len(calls))}
+
+        cache = quarterdeck.SiteCache(build)
+        self.assertEqual(cache.get()["index.html"], "1")
+        with redirect_stderr(io.StringIO()):
+            cache.invalidate()
+            self.assertTrue(started.wait(5))
+            with cache.cond:
+                release.set()
+                cache.invalidate(wait=True)
+        self.assertEqual(cache.get()["index.html"], "3")
+
+    def test_successful_writes_return_success_when_refresh_fails(self) -> None:
+        mutations = []
+        builds = []
+
+        def build() -> dict[str, str]:
+            builds.append(1)
+            if len(builds) > 1:
+                raise ValueError("broken home")
+            return {"index.html": "previous page"}
+
+        report = quarterdeck.Report("Fictional report", Path("report.md"), None, "", "a" * 64,
+                                    report_id="report-1", reviewed=True)
+
+        def mark(report_id, action, fingerprint):
+            mutations.append((report_id, action, fingerprint))
+            return report
+
+        def save(body):
+            mutations.append(body)
+            return {"saved": True}
+
+        cache = quarterdeck.SiteCache(build)
+        port = self.start_handler(quarterdeck.make_handler(cache, mark, save, save, save))
+        self.assertEqual(self.fetch(port, "/")[2], "previous page")
+        cases = [
+            (quarterdeck.MARK_ENDPOINT,
+             {"report_id": "report-1", "fingerprint": "a" * 64, "action": "mark"},
+             {"report_id": "report-1", "reviewed": True, "state": "reviewed"}),
+            (quarterdeck.VIEWS_ENDPOINT, {"name": "Mine", "sections": [], "default": False}, {"saved": True}),
+            (quarterdeck.WAITS_DISCARD_ENDPOINT, {"key": "harbor/task", "hold_set": "hold-1"}, {"saved": True}),
+            (quarterdeck.REACTION_ENDPOINT,
+             {"id": "reply-0001", "kind": "call", "item_id": "harbor/task", "reaction": "approve", "text": ""},
+             {"saved": True}),
+        ]
+        with redirect_stderr(io.StringIO()):
+            for index, (endpoint, payload, expected) in enumerate(cases, 1):
+                with self.subTest(endpoint=endpoint):
+                    status, body = self.post_mark(port, payload, path=endpoint)
+                    self.assertEqual(status, 200)
+                    self.assertEqual(json.loads(body), expected)
+                    self.assertEqual(len(mutations), index)
+                    self.assertEqual(self.fetch(port, "/")[2], "previous page")
+            self.wait_for(lambda: not cache.building)
+        self.assertEqual(len(builds), 5)
+
+    def test_reaction_response_does_not_wait_for_rendering(self) -> None:
+        import http.client
+
+        for already_building in (False, True):
+            for kind in ("call", "report"):
+                with self.subTest(already_building=already_building, kind=kind):
+                    release = threading.Event()
+                    started = threading.Event()
+                    builds = []
+                    delivered = []
+
+                    def build() -> dict[str, str]:
+                        builds.append(1)
+                        if len(builds) == 1:
+                            return {"index.html": "previous page"}
+                        started.set()
+                        if not release.wait(10):
+                            raise RuntimeError("test did not release rendering")
+                        return {"index.html": "updated page"}
+
+                    def deliver(body):
+                        delivered.append(body)
+                        return {**body, "source": "page"}
+
+                    cache = quarterdeck.SiteCache(build)
+                    port = self.start_handler(quarterdeck.make_handler(cache, send_reaction_to=deliver))
+                    self.assertEqual(cache.get()["index.html"], "previous page")
+                    connection = http.client.HTTPConnection("127.0.0.1", port, timeout=2)
+                    payload = {"id": "reply-0001", "kind": kind, "item_id": "harbor/task",
+                               "reaction": "approve" if kind == "call" else "", "text": "Received."}
+                    try:
+                        if already_building:
+                            cache.invalidate()
+                            self.assertTrue(started.wait(5))
+                        connection.request("POST", quarterdeck.REACTION_ENDPOINT, json.dumps(payload),
+                                           {"Content-Type": "application/json"})
+                        response = connection.getresponse()
+                        self.assertEqual(response.status, 200)
+                        self.assertEqual(json.loads(response.read()), {**payload, "source": "page"})
+                        self.assertEqual(delivered, [payload])
+                        self.assertTrue(started.wait(5))
+                        self.assertFalse(release.is_set())
+                        self.assertEqual(self.fetch(port, "/")[2], "previous page")
+                    finally:
+                        release.set()
+                        connection.close()
+                        self.wait_for(lambda: not cache.building)
+                    self.wait_for(lambda: cache.get()["index.html"] == "updated page")
+                    self.wait_for(lambda: not cache.building)
 
     def test_server_renders_per_request_and_serves_linked_pages_read_only(self) -> None:
         with tempfile.TemporaryDirectory() as temp, patch.dict(os.environ, {"XDG_STATE_HOME": str(Path(temp) / "state")}):
@@ -2830,6 +3046,8 @@ class ServeTests(unittest.TestCase):
                                encoding="utf-8")
             self.assertIn("Later work: sort", self.fetch(port, "/")[2])
             clock[0] += 31
+            self.fetch(port, "/")  # stale: served at once, rebuild starts behind it
+            self.wait_for(lambda: "Renamed work: sort" in self.fetch(port, "/index.html?x=1")[2])
             fresh = self.fetch(port, "/index.html?x=1")[2]
             self.assertIn("Renamed work: sort", fresh)
             self.assertNotIn("Later work: sort", fresh)
@@ -3965,8 +4183,7 @@ async function click(report, text) {
             self.assertIn(part, note)
         self.assertEqual(lines[6], f"home={self.home}")
         self.assertEqual(self.review_state().reactions[("call", "invented-home/harbor-hold")]["id"], sent["id"])
-        page = request("GET", "/")[1]
-        self.assertIn("Latest reaction: Approve: Go with teal. (from this page", page)
+        ServeTests().wait_for(lambda: "Latest reaction: Approve: Go with teal. (from this page" in request("GET", "/")[1])
 
     def test_reports_can_be_reacted_to_and_a_reply_needs_no_reaction(self) -> None:
         request = self.serve()
@@ -3976,7 +4193,7 @@ async function click(report, text) {
         })
         self.assertEqual(status, 200, body)
         self.assertIn("reply on report invented-home/lone-report (task lone-report)", self.logged()[5])
-        self.assertIn("Latest reaction: Why option A?", request("GET", "/")[1])
+        ServeTests().wait_for(lambda: "Latest reaction: Why option A?" in request("GET", "/")[1])
 
     def test_a_report_reaction_names_the_backlog_task_that_owns_the_report(self) -> None:
         backlog = self.home / "data" / "backlog.md"

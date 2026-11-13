@@ -1,7 +1,7 @@
 # Serve the always-current review page
 
 `quarterdeck serve` runs a small local web server. It reads your Firstmate homes
-at startup and again on the first page request after its 30-second cache expires.
+at startup and keeps serving the last built pages while refreshing them.
 When any selected home or registered secondmate has a captain board, its
 list leads the page; otherwise the shared waiting view leads, followed by
 Firstmate's `/bearings` sections (Captain's Call, Underway, Charted Next).
@@ -20,10 +20,23 @@ Open `http://127.0.0.1:8765/`. The page leads with an activity-card feed
 (see [Watch Firstmate's activity as cards](watch-activity-cards.md) for polling
 and unread behavior). The page shows a "Generated at" time and reloads
 itself every 60 seconds, restoring open items and sections after each refresh
-when browser session storage is available. Rendered pages are cached for 30
-seconds so rapid reloads stay cheap. Automatic refresh waits while a reaction
+when browser session storage is available. Automatic refresh waits while a reaction
 is being written or sent, or the view editor has unsaved changes or a pending
 save.
+
+The server finishes its first build before accepting requests. After that,
+the first request at least 30 seconds after a build finishes starts a background rebuild
+and immediately receives the previous pages. Other requests also receive those
+pages until the rebuild finishes; only one build runs at a time. Captain-wait
+watcher updates also request a background rebuild. A failed rebuild logs the
+error and keeps the previous pages, with another attempt on a request after
+30 seconds unless a new invalidation requests one sooner.
+
+With `--allow-marks`, report marks, saved views and wait discards wait for a
+rebuild before responding so the page can reload with the change. A render
+failure still returns the successful write result and leaves the previous pages
+available. Reactions acknowledge delivery without waiting for rendering; the
+card updates from the response while the server refreshes pages in the background.
 
 To see the serving address, run `quarterdeck url`. See the
 [CLI reference](../reference/cli-and-config.md) for how it determines the

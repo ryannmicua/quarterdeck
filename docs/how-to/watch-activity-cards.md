@@ -41,7 +41,8 @@ anything destructive still waits for your reaction, and Firstmate does the work.
 ## How new cards arrive
 
 While the page is open it fetches `cards.json` from the same server every 15
-seconds (the server re-reads its homes at most every 30 seconds), and a new card slides in at its place with a short highlight. A card
+seconds, and a new card slides in at its place with a short highlight. Server
+refresh timing is described in the [serving guide](serve-the-page.md#run-it). A card
 stays marked **New** until it has been at least half on screen for 1.2 continuous
 seconds in the active tab or you open it there. Returning to the tab starts a
 fresh visibility check. The **Cards** heading and an "N new" link in the page
