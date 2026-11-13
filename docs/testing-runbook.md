@@ -1,5 +1,17 @@
 # Targeted testing
 
+## Background cache and write responses
+
+Run `PYTHONPATH=tests python3 -m unittest test_quarterdeck.ServeTests -v`.
+The cache regressions use controlled clocks and blocked builders to check stale
+reads, single concurrent builds, failed-refresh cooldowns, and invalidations
+arriving during a failed build. Waiting invalidations must still report their
+own build failures. HTTP regressions check that marks, views, wait discards and
+reactions return successful mutation results even when the following render
+fails, while GET retains the previous page. These tests use fictional callbacks
+and loopback servers; they do not mutate real homes or deliver inbox notes.
+Servers and disposable fixtures clean up automatically.
+
 ## Captain wait transcript and home boundaries
 
 Run `PYTHONPATH=tests python3 -m unittest test_quarterdeck.CaptainWaitTests -v`.

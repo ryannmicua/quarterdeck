@@ -2869,6 +2869,108 @@ class ServeTests(unittest.TestCase):
         cache.invalidate(wait=True)
         self.assertEqual(cache.get()["index.html"], "3")
 
+    def test_failed_invalidated_rebuild_respects_ttl_and_allows_new_invalidations(self) -> None:
+        calls = []
+        clock = [0.0]
+
+        def build() -> dict[str, str]:
+            calls.append(1)
+            if len(calls) in {2, 3}:
+                raise ValueError("broken home")
+            return {"index.html": str(len(calls))}
+
+        cache = quarterdeck.SiteCache(build, 30, lambda: clock[0])
+        self.assertEqual(cache.get()["index.html"], "1")
+        with redirect_stderr(io.StringIO()):
+            with self.assertRaisesRegex(ValueError, "broken home"):
+                cache.invalidate(wait=True)
+            for _ in range(5):
+                self.assertEqual(cache.get()["index.html"], "1")
+            with cache.cond:
+                self.assertFalse(cache.building)
+            self.assertEqual(len(calls), 2)
+            clock[0] = 29
+            self.assertEqual(cache.get()["index.html"], "1")
+            with cache.cond:
+                self.assertFalse(cache.building)
+            self.assertEqual(len(calls), 2)
+            clock[0] = 30
+            cache.get()
+            self.wait_for(lambda: not cache.building)
+            self.assertEqual(len(calls), 3)
+            self.assertEqual(cache.get()["index.html"], "1")
+            cache.invalidate(wait=True)
+        self.assertEqual(cache.get()["index.html"], "4")
+
+    def test_waiting_invalidation_retries_after_an_older_build_fails(self) -> None:
+        started = threading.Event()
+        release = threading.Event()
+        self.addCleanup(release.set)
+        calls = []
+
+        def build() -> dict[str, str]:
+            calls.append(1)
+            if len(calls) == 2:
+                started.set()
+                if not release.wait(5):
+                    raise RuntimeError("test did not release the build")
+                raise ValueError("older build failed")
+            return {"index.html": str(len(calls))}
+
+        cache = quarterdeck.SiteCache(build)
+        self.assertEqual(cache.get()["index.html"], "1")
+        with redirect_stderr(io.StringIO()):
+            cache.invalidate()
+            self.assertTrue(started.wait(5))
+            with cache.cond:
+                release.set()
+                cache.invalidate(wait=True)
+        self.assertEqual(cache.get()["index.html"], "3")
+
+    def test_successful_writes_return_success_when_refresh_fails(self) -> None:
+        mutations = []
+        builds = []
+
+        def build() -> dict[str, str]:
+            builds.append(1)
+            if len(builds) > 1:
+                raise ValueError("broken home")
+            return {"index.html": "previous page"}
+
+        report = quarterdeck.Report("Fictional report", Path("report.md"), None, "", "a" * 64,
+                                    report_id="report-1", reviewed=True)
+
+        def mark(report_id, action, fingerprint):
+            mutations.append((report_id, action, fingerprint))
+            return report
+
+        def save(body):
+            mutations.append(body)
+            return {"saved": True}
+
+        cache = quarterdeck.SiteCache(build)
+        port = self.start_handler(quarterdeck.make_handler(cache, mark, save, save, save))
+        self.assertEqual(self.fetch(port, "/")[2], "previous page")
+        cases = [
+            (quarterdeck.MARK_ENDPOINT,
+             {"report_id": "report-1", "fingerprint": "a" * 64, "action": "mark"},
+             {"report_id": "report-1", "reviewed": True, "state": "reviewed"}),
+            (quarterdeck.VIEWS_ENDPOINT, {"name": "Mine", "sections": [], "default": False}, {"saved": True}),
+            (quarterdeck.WAITS_DISCARD_ENDPOINT, {"key": "harbor/task", "hold_set": "hold-1"}, {"saved": True}),
+            (quarterdeck.REACTION_ENDPOINT,
+             {"id": "reply-0001", "kind": "call", "item_id": "harbor/task", "reaction": "approve", "text": ""},
+             {"saved": True}),
+        ]
+        with redirect_stderr(io.StringIO()):
+            for index, (endpoint, payload, expected) in enumerate(cases, 1):
+                with self.subTest(endpoint=endpoint):
+                    status, body = self.post_mark(port, payload, path=endpoint)
+                    self.assertEqual(status, 200)
+                    self.assertEqual(json.loads(body), expected)
+                    self.assertEqual(len(mutations), index)
+                    self.assertEqual(self.fetch(port, "/")[2], "previous page")
+        self.assertEqual(len(builds), 5)
+
     def test_server_renders_per_request_and_serves_linked_pages_read_only(self) -> None:
         with tempfile.TemporaryDirectory() as temp, patch.dict(os.environ, {"XDG_STATE_HOME": str(Path(temp) / "state")}):
             home = BearingsTests().make_home(Path(temp))

@@ -5340,6 +5340,7 @@ class SiteCache:
         self.pages: dict[str, str] | None = None
         self.stale_seq = 0  # bumped by every invalidation
         self.built_seq = 0  # newest stale_seq that a finished build started after
+        self.attempted_seq = -1
         self.building = False
         self.last_error: Exception | None = None
 
@@ -5353,7 +5354,7 @@ class SiteCache:
             while wait and self.built_seq < target:
                 self.cond.wait()
                 if self.built_seq < target and not self.building:
-                    if self.last_error is not None:
+                    if self.last_error is not None and self.attempted_seq >= target:
                         raise self.last_error
                     self._start_build()
 
@@ -5369,7 +5370,7 @@ class SiteCache:
                             raise self.last_error
                         self._start_build()
                 return self.pages
-            if self.built_seq < self.stale_seq or self.built_at is None or self.clock() - self.built_at >= self.ttl:
+            if self.attempted_seq < self.stale_seq or self.built_at is None or self.clock() - self.built_at >= self.ttl:
                 self._start_build()
             return self.pages
 
@@ -5391,6 +5392,7 @@ class SiteCache:
             error = exc
         with self.cond:
             self.building = False
+            self.attempted_seq = seq
             if pages is not None:
                 self.pages = pages
                 self.last_error = None
@@ -5520,7 +5522,7 @@ def make_handler(
             except OSError as exc:
                 self.send_text(500, f"Quarterdeck could not save the mark: {exc}\n")
                 return
-            cache.invalidate(wait=True)
+            self.refresh_after_write()
             self.send_text(
                 200, json.dumps({
                     "report_id": report.report_id, "reviewed": report.reviewed,
@@ -5528,6 +5530,12 @@ def make_handler(
                 }) + "\n",
                 "application/json; charset=utf-8",
             )
+
+        def refresh_after_write(self) -> None:
+            try:
+                cache.invalidate(wait=True)
+            except Exception:
+                pass
 
         def post_view(self, save: Callable[[dict[str, object]], dict[str, object]]) -> None:
             problem = self.mark_request_problem()
@@ -5555,7 +5563,7 @@ def make_handler(
             except OSError as exc:
                 self.send_text(500, f"Quarterdeck could not save the view: {exc}\n")
                 return
-            cache.invalidate(wait=True)
+            self.refresh_after_write()
             self.send_text(200, json.dumps(saved) + "\n", "application/json; charset=utf-8")
 
         def post_wait_discard(self, discard: Callable[[dict[str, object]], dict[str, object]]) -> None:
@@ -5584,7 +5592,7 @@ def make_handler(
             except OSError as exc:
                 self.send_text(500, f"Quarterdeck could not discard the wait: {exc}\n")
                 return
-            cache.invalidate(wait=True)
+            self.refresh_after_write()
             self.send_text(200, json.dumps(result) + "\n", "application/json; charset=utf-8")
 
         def post_reaction(self, deliver: Callable[[dict[str, object]], dict[str, str]]) -> None:
@@ -5617,7 +5625,7 @@ def make_handler(
             except OSError as exc:
                 self.send_text(500, f"Quarterdeck could not send the reaction: {exc}\n")
                 return
-            cache.invalidate(wait=True)
+            self.refresh_after_write()
             self.send_text(200, json.dumps(reaction) + "\n", "application/json; charset=utf-8")
 
         def refuse(self) -> None:
