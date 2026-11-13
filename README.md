@@ -148,9 +148,9 @@ commands.
 
 Firstmate runs the crew and stores its backlog and scout reports in a home.
 Quarterdeck reads those files and creates a convenient review surface alongside
-that workflow. It does not extend Firstmate or send answers back to it.
-Regeneration happens when `quarterdeck render` runs or `quarterdeck serve`
-receives its first page request after the 30-second cache expires.
+that workflow. Run `quarterdeck render` to regenerate a saved page; see the
+[serving guide](docs/how-to/serve-the-page.md#run-it) for live refresh behavior
+and optional reactions sent back to Firstmate.
 
 ## Privacy model
 

@@ -5325,7 +5325,7 @@ def port_number(value: str) -> int:
 class SiteCache:
     """Serve the last built site and rebuild it in one background thread when it goes stale.
 
-    Only a request that arrives before any build has finished waits for a build. After that, `get`
+    Only a request that arrives before any build has succeeded waits for a build. After that, `get`
     always returns the previous pages at once, a stale or invalidated cache starts at most one
     background rebuild, and a failed rebuild keeps the previous pages and logs the error.
     """
@@ -5339,7 +5339,7 @@ class SiteCache:
         self.built_at: float | None = None
         self.pages: dict[str, str] | None = None
         self.stale_seq = 0  # bumped by every invalidation
-        self.built_seq = 0  # newest stale_seq that a finished build started after
+        self.built_seq = 0  # newest stale_seq that a successful build started after
         self.attempted_seq = -1
         self.building = False
         self.last_error: Exception | None = None
@@ -5532,6 +5532,7 @@ def make_handler(
             )
 
         def refresh_after_write(self) -> None:
+            # The mutation is already saved; a logged render failure must not undo its response.
             try:
                 cache.invalidate(wait=True)
             except Exception:

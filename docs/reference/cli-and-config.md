@@ -177,8 +177,8 @@ for how marks affect the dashboard.
 | `--lavish` | Write a separate `*.lavish.html` review page with stable IDs on review cards, then open it with `lavish-axi` when available. Without Lavish, print a command hint and succeed. |
 | `--no-snapshot` | Do not run a home's `bin/fm-bearings-snapshot.sh` or `bin/fm-attention.sh`; use backlog decisions with recorded board and ledger activity, and show recent work from the ledger. |
 
-`serve` re-renders the page and its readable pages at startup and on the first
-request after its 30-second cache expires. It serves them, and `cards.json` (the
+`serve` builds the page and its readable pages with the refresh behavior in the
+[serving guide](../how-to/serve-the-page.md#run-it). It serves them, and `cards.json` (the
 activity cards, schema `quarterdeck-cards.v1`), with `GET` by default
 on each repeatable `--host` address (default `127.0.0.1` only) and `--port`
 (default 8765; valid ports are 1 through 65535). `--allow-marks` enables the
