@@ -11,6 +11,11 @@ reactions return successful mutation results even when the following render
 fails, while GET retains the previous page. These tests use fictional callbacks
 and loopback servers; they do not mutate real homes or deliver inbox notes.
 Servers and disposable fixtures clean up automatically.
+`ServeTests.test_reaction_response_does_not_wait_for_rendering` checks call
+reactions and report replies with idle and already rebuilding caches: the HTTP
+response must arrive while rendering is blocked, and releasing the builder must
+eventually publish updated pages. Reaction page assertions poll for that
+background publication rather than requiring it before acknowledgement.
 
 ## Captain wait transcript and home boundaries
 

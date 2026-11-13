@@ -2969,7 +2969,58 @@ class ServeTests(unittest.TestCase):
                     self.assertEqual(json.loads(body), expected)
                     self.assertEqual(len(mutations), index)
                     self.assertEqual(self.fetch(port, "/")[2], "previous page")
+            self.wait_for(lambda: not cache.building)
         self.assertEqual(len(builds), 5)
+
+    def test_reaction_response_does_not_wait_for_rendering(self) -> None:
+        import http.client
+
+        for already_building in (False, True):
+            for kind in ("call", "report"):
+                with self.subTest(already_building=already_building, kind=kind):
+                    release = threading.Event()
+                    started = threading.Event()
+                    builds = []
+                    delivered = []
+
+                    def build() -> dict[str, str]:
+                        builds.append(1)
+                        if len(builds) == 1:
+                            return {"index.html": "previous page"}
+                        started.set()
+                        if not release.wait(10):
+                            raise RuntimeError("test did not release rendering")
+                        return {"index.html": "updated page"}
+
+                    def deliver(body):
+                        delivered.append(body)
+                        return {**body, "source": "page"}
+
+                    cache = quarterdeck.SiteCache(build)
+                    port = self.start_handler(quarterdeck.make_handler(cache, send_reaction_to=deliver))
+                    self.assertEqual(cache.get()["index.html"], "previous page")
+                    connection = http.client.HTTPConnection("127.0.0.1", port, timeout=2)
+                    payload = {"id": "reply-0001", "kind": kind, "item_id": "harbor/task",
+                               "reaction": "approve" if kind == "call" else "", "text": "Received."}
+                    try:
+                        if already_building:
+                            cache.invalidate()
+                            self.assertTrue(started.wait(5))
+                        connection.request("POST", quarterdeck.REACTION_ENDPOINT, json.dumps(payload),
+                                           {"Content-Type": "application/json"})
+                        response = connection.getresponse()
+                        self.assertEqual(response.status, 200)
+                        self.assertEqual(json.loads(response.read()), {**payload, "source": "page"})
+                        self.assertEqual(delivered, [payload])
+                        self.assertTrue(started.wait(5))
+                        self.assertFalse(release.is_set())
+                        self.assertEqual(self.fetch(port, "/")[2], "previous page")
+                    finally:
+                        release.set()
+                        connection.close()
+                        self.wait_for(lambda: not cache.building)
+                    self.wait_for(lambda: cache.get()["index.html"] == "updated page")
+                    self.wait_for(lambda: not cache.building)
 
     def test_server_renders_per_request_and_serves_linked_pages_read_only(self) -> None:
         with tempfile.TemporaryDirectory() as temp, patch.dict(os.environ, {"XDG_STATE_HOME": str(Path(temp) / "state")}):
@@ -4132,8 +4183,7 @@ async function click(report, text) {
             self.assertIn(part, note)
         self.assertEqual(lines[6], f"home={self.home}")
         self.assertEqual(self.review_state().reactions[("call", "invented-home/harbor-hold")]["id"], sent["id"])
-        page = request("GET", "/")[1]
-        self.assertIn("Latest reaction: Approve: Go with teal. (from this page", page)
+        ServeTests().wait_for(lambda: "Latest reaction: Approve: Go with teal. (from this page" in request("GET", "/")[1])
 
     def test_reports_can_be_reacted_to_and_a_reply_needs_no_reaction(self) -> None:
         request = self.serve()
@@ -4143,7 +4193,7 @@ async function click(report, text) {
         })
         self.assertEqual(status, 200, body)
         self.assertIn("reply on report invented-home/lone-report (task lone-report)", self.logged()[5])
-        self.assertIn("Latest reaction: Why option A?", request("GET", "/")[1])
+        ServeTests().wait_for(lambda: "Latest reaction: Why option A?" in request("GET", "/")[1])
 
     def test_a_report_reaction_names_the_backlog_task_that_owns_the_report(self) -> None:
         backlog = self.home / "data" / "backlog.md"

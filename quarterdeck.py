@@ -5625,7 +5625,7 @@ def make_handler(
             except OSError as exc:
                 self.send_text(500, f"Quarterdeck could not send the reaction: {exc}\n")
                 return
-            self.refresh_after_write()
+            cache.invalidate()
             self.send_text(200, json.dumps(reaction) + "\n", "application/json; charset=utf-8")
 
         def refuse(self) -> None:
