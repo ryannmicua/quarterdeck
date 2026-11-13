@@ -2795,7 +2795,13 @@ class ServeTests(unittest.TestCase):
         connection.close()
         return response.status, response.headers, body
 
-    def test_cache_reuses_render_until_ttl_then_rerenders(self) -> None:
+    def wait_for(self, condition, timeout: float = 5.0) -> None:
+        deadline = time.monotonic() + timeout
+        while not condition():
+            self.assertLess(time.monotonic(), deadline, "timed out waiting for the background rebuild")
+            time.sleep(0.01)
+
+    def test_cache_reuses_render_until_ttl_then_rebuilds_in_background(self) -> None:
         calls: list[int] = []
         clock = [100.0]
         cache = quarterdeck.SiteCache(lambda: calls.append(1) or {"index.html": str(len(calls))}, 30, lambda: clock[0])
@@ -2803,8 +2809,65 @@ class ServeTests(unittest.TestCase):
         clock[0] += 29
         self.assertEqual(cache.get()["index.html"], "1")
         clock[0] += 1
-        self.assertEqual(cache.get()["index.html"], "2")
+        self.assertEqual(cache.get()["index.html"], "1")  # stale: old pages now, rebuild behind
+        self.wait_for(lambda: cache.get()["index.html"] == "2")
         self.assertEqual(len(calls), 2)
+
+    def test_stale_get_serves_old_pages_without_waiting_and_runs_one_build_at_a_time(self) -> None:
+        release = threading.Event()
+        started = threading.Semaphore(0)
+        calls: list[int] = []
+
+        def build() -> dict[str, str]:
+            calls.append(1)
+            if len(calls) > 1:
+                started.release()
+                release.wait(10)
+            return {"index.html": str(len(calls))}
+
+        clock = [0.0]
+        cache = quarterdeck.SiteCache(build, 30, lambda: clock[0])
+        self.assertEqual(cache.get()["index.html"], "1")
+        clock[0] += 31
+        for _ in range(5):  # a blocked rebuild never blocks readers
+            self.assertEqual(cache.get()["index.html"], "1")
+        self.assertTrue(started.acquire(timeout=5))
+        cache.invalidate()
+        self.assertEqual(cache.get()["index.html"], "1")
+        self.assertEqual(len(calls), 2)  # still the single in-flight build
+        release.set()
+        self.wait_for(lambda: cache.get()["index.html"] != "1")
+        # The invalidation that arrived mid-build schedules one more build.
+        self.wait_for(lambda: len(calls) == 3 and not cache.building)
+        self.assertEqual(cache.get()["index.html"], "3")
+
+    def test_failed_rebuild_keeps_old_pages_and_logs(self) -> None:
+        outcomes = [{"index.html": "good"}, ValueError("broken home")]
+        clock = [0.0]
+
+        def build() -> dict[str, str]:
+            outcome = outcomes.pop(0) if outcomes else {"index.html": "recovered"}
+            if isinstance(outcome, Exception):
+                raise outcome
+            return outcome
+
+        cache = quarterdeck.SiteCache(build, 30, lambda: clock[0])
+        self.assertEqual(cache.get()["index.html"], "good")
+        clock[0] += 31
+        with patch("sys.stderr", new=io.StringIO()) as err:
+            self.assertEqual(cache.get()["index.html"], "good")
+            self.wait_for(lambda: not cache.building and "broken home" in err.getvalue())
+            self.assertEqual(cache.get()["index.html"], "good")
+        clock[0] += 31
+        cache.get()
+        self.wait_for(lambda: cache.get()["index.html"] == "recovered")
+
+    def test_invalidate_wait_returns_after_a_fresh_rebuild(self) -> None:
+        version = [0]
+        cache = quarterdeck.SiteCache(lambda: version.append(0) or {"index.html": str(len(version))}, 30)
+        self.assertEqual(cache.get()["index.html"], "2")
+        cache.invalidate(wait=True)
+        self.assertEqual(cache.get()["index.html"], "3")
 
     def test_server_renders_per_request_and_serves_linked_pages_read_only(self) -> None:
         with tempfile.TemporaryDirectory() as temp, patch.dict(os.environ, {"XDG_STATE_HOME": str(Path(temp) / "state")}):
@@ -2830,6 +2893,8 @@ class ServeTests(unittest.TestCase):
                                encoding="utf-8")
             self.assertIn("Later work: sort", self.fetch(port, "/")[2])
             clock[0] += 31
+            self.fetch(port, "/")  # stale: served at once, rebuild starts behind it
+            self.wait_for(lambda: "Renamed work: sort" in self.fetch(port, "/index.html?x=1")[2])
             fresh = self.fetch(port, "/index.html?x=1")[2]
             self.assertIn("Renamed work: sort", fresh)
             self.assertNotIn("Later work: sort", fresh)

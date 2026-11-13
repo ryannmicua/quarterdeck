@@ -5323,28 +5323,85 @@ def port_number(value: str) -> int:
 
 
 class SiteCache:
-    """Re-render the site from the homes on request, reusing the result for a short time."""
+    """Serve the last built site and rebuild it in one background thread when it goes stale.
+
+    Only a request that arrives before any build has finished waits for a build. After that, `get`
+    always returns the previous pages at once, a stale or invalidated cache starts at most one
+    background rebuild, and a failed rebuild keeps the previous pages and logs the error.
+    """
 
     def __init__(self, build: Callable[[], dict[str, str]], ttl: float = DEFAULT_CACHE_SECONDS,
                  clock: Callable[[], float] = time.monotonic) -> None:
         self.build = build
         self.ttl = ttl
         self.clock = clock
-        self.lock = threading.Lock()
+        self.cond = threading.Condition()
         self.built_at: float | None = None
-        self.pages: dict[str, str] = {}
+        self.pages: dict[str, str] | None = None
+        self.stale_seq = 0  # bumped by every invalidation
+        self.built_seq = 0  # newest stale_seq that a finished build started after
+        self.building = False
+        self.last_error: Exception | None = None
 
-    def invalidate(self) -> None:
-        with self.lock:
-            self.built_at = None
+    def invalidate(self, wait: bool = False) -> None:
+        """Mark the pages stale and rebuild in the background; with `wait`, return once a rebuild
+        that started after this call has finished (raising its error if it failed)."""
+        with self.cond:
+            self.stale_seq += 1
+            target = self.stale_seq
+            self._start_build()
+            while wait and self.built_seq < target:
+                self.cond.wait()
+                if self.built_seq < target and not self.building:
+                    if self.last_error is not None:
+                        raise self.last_error
+                    self._start_build()
 
     def get(self) -> dict[str, str]:
-        with self.lock:
-            now = self.clock()
-            if self.built_at is None or now - self.built_at >= self.ttl:
-                self.pages = self.build()
-                self.built_at = now
+        with self.cond:
+            if self.pages is None:
+                # No build has succeeded yet: wait for the first one.
+                self._start_build()
+                while self.pages is None:
+                    self.cond.wait()
+                    if self.pages is None and not self.building:
+                        if self.last_error is not None:
+                            raise self.last_error
+                        self._start_build()
+                return self.pages
+            if self.built_seq < self.stale_seq or self.built_at is None or self.clock() - self.built_at >= self.ttl:
+                self._start_build()
             return self.pages
+
+    def _start_build(self) -> None:
+        # Caller holds self.cond.
+        if self.building:
+            return
+        self.building = True
+        threading.Thread(target=self._run_build, daemon=True).start()
+
+    def _run_build(self) -> None:
+        with self.cond:
+            seq = self.stale_seq
+        pages: dict[str, str] | None = None
+        error: Exception | None = None
+        try:
+            pages = self.build()
+        except Exception as exc:  # noqa: BLE001 - a failed rebuild must never kill the server
+            error = exc
+        with self.cond:
+            self.building = False
+            if pages is not None:
+                self.pages = pages
+                self.last_error = None
+                self.built_seq = seq
+            else:
+                self.last_error = error
+                print(f"quarterdeck: site rebuild failed, keeping the previous pages: {error}",
+                      file=sys.stderr, flush=True)
+            # A failure also restarts the ttl so a broken home is retried at the ttl pace, not per request.
+            self.built_at = self.clock()
+            self.cond.notify_all()
 
 
 def site_builder(args: argparse.Namespace, allow_marks: bool = False) -> Callable[[], dict[str, str]]:
@@ -5463,7 +5520,7 @@ def make_handler(
             except OSError as exc:
                 self.send_text(500, f"Quarterdeck could not save the mark: {exc}\n")
                 return
-            cache.invalidate()
+            cache.invalidate(wait=True)
             self.send_text(
                 200, json.dumps({
                     "report_id": report.report_id, "reviewed": report.reviewed,
@@ -5498,7 +5555,7 @@ def make_handler(
             except OSError as exc:
                 self.send_text(500, f"Quarterdeck could not save the view: {exc}\n")
                 return
-            cache.invalidate()
+            cache.invalidate(wait=True)
             self.send_text(200, json.dumps(saved) + "\n", "application/json; charset=utf-8")
 
         def post_wait_discard(self, discard: Callable[[dict[str, object]], dict[str, object]]) -> None:
@@ -5527,7 +5584,7 @@ def make_handler(
             except OSError as exc:
                 self.send_text(500, f"Quarterdeck could not discard the wait: {exc}\n")
                 return
-            cache.invalidate()
+            cache.invalidate(wait=True)
             self.send_text(200, json.dumps(result) + "\n", "application/json; charset=utf-8")
 
         def post_reaction(self, deliver: Callable[[dict[str, object]], dict[str, str]]) -> None:
@@ -5560,7 +5617,7 @@ def make_handler(
             except OSError as exc:
                 self.send_text(500, f"Quarterdeck could not send the reaction: {exc}\n")
                 return
-            cache.invalidate()
+            cache.invalidate(wait=True)
             self.send_text(200, json.dumps(reaction) + "\n", "application/json; charset=utf-8")
 
         def refuse(self) -> None:
