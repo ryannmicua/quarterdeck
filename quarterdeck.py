@@ -1589,7 +1589,7 @@ def build_html(
           typeof quarterdeckDraftSaved !== "function" || !quarterdeckDraftSaved(field)
         )
       );
-      return editing || document.querySelector('[data-reaction-choice][aria-pressed=true], .reaction-send:disabled, #view-editor[data-dirty=true], #view-save:disabled[data-saving=true], [data-undo]');
+      return editing || document.querySelector('[data-reaction-choice][aria-pressed=true], .reaction-send:disabled, #view-editor[data-dirty=true], #view-save:disabled[data-saving=true], [data-undo], [data-mutation-pending]');
     }
     var quarterdeckRefreshing = false;
     function quarterdeckReload() {
@@ -2773,6 +2773,7 @@ MARK_SCRIPT = """
       const undoing = button.hasAttribute("data-undo");
       if (undoing) clearTimeout(undoTimers.get(button));
       button.disabled = true;
+      button.dataset.mutationPending = "true";
       if (status) status.textContent = "Saving…";
       try {
         const response = await fetch("__ENDPOINT__", {
@@ -2785,6 +2786,7 @@ MARK_SCRIPT = """
           }),
         });
         if (!response.ok) throw new Error((await response.text()).trim() || response.statusText);
+        delete button.dataset.mutationPending;
         const row = button.parentElement;
         if (undoing) {
           button.remove();
@@ -2810,6 +2812,7 @@ MARK_SCRIPT = """
           undoTimers.set(undo, setTimeout(() => { undo.remove(); quarterdeckReload(); }, UNDO_SECONDS * 1000));
         }
       } catch (error) {
+        delete button.dataset.mutationPending;
         button.disabled = false;
         if (status) status.textContent = "Could not save: " + error.message;
       }
@@ -8953,6 +8956,7 @@ WAIT_SCRIPT = """
       const status = button.parentElement.querySelector(".wait-status");
       if (!confirm("Discard this wait? Quarterdeck hides it and asks Firstmate to drop the hold.")) return;
       button.disabled = true;
+      button.dataset.mutationPending = "true";
       status.textContent = "Discarding…";
       try {
         const response = await fetch("__ENDPOINT__", {
@@ -8961,11 +8965,13 @@ WAIT_SCRIPT = """
           body: JSON.stringify({key: button.dataset.waitKey, hold_set: button.dataset.waitHold}),
         });
         if (!response.ok) throw new Error((await response.text()).trim() || response.statusText);
+        delete button.dataset.mutationPending;
         status.textContent = "Discarded. Firstmate was asked to drop the hold.";
         const card = button.closest(".act-card");
         if (card) card.hidden = true;
         quarterdeckReload();
       } catch (error) {
+        delete button.dataset.mutationPending;
         button.disabled = false;
         status.textContent = "Not discarded: " + error.message;
       }

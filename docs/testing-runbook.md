@@ -523,3 +523,11 @@ retry; disposable CLI fixtures check persisted report state independently.
 No real homes or inbox deliveries are used; fixtures clean up automatically.
 Replacement reuses the window: global script bindings must allow reexecution,
 and the replacement event stops outgoing page timers and card observations.
+
+For refresh races with mutations, run
+`PYTHONPATH=tests python3 -m unittest -v test_quarterdeck.PhoneFixTests.test_refresh_waits_for_report_and_wait_mutations_to_settle`.
+The generated refresh, report and wait handlers run together with delayed GET
+bodies and POST responses. Every report action, both Undo actions and wait
+discard must retain the page while pending, then release refresh on success,
+HTTP failure or network failure. Mark and discard must show Undo on the retained
+row; permanently disabled saved buttons must not prevent later refreshes.

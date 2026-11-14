@@ -9273,6 +9273,108 @@ const click = button => handlers.click({target: {closest: () => button}});
         self.assertEqual(result.returncode, 0, result.stderr)
 
     @unittest.skipUnless(shutil.which("node"), "Node is required to execute the generated scripts")
+    def test_refresh_waits_for_report_and_wait_mutations_to_settle(self) -> None:
+        page = quarterdeck.build_html([], "Q", refresh_seconds=60, allow_marks=True)
+        scripts = re.findall(r"<script>(.*?)</script>", page, re.S)
+        reload_script = next(script for script in scripts if "function quarterdeckReload" in script)
+        mark_script = re.search(r"<script>(.*?)</script>", quarterdeck.MARK_SCRIPT, re.S)[1]
+        wait_script = re.search(r"<script>(.*?)</script>", quarterdeck.WAIT_SCRIPT, re.S)[1]
+        harness = r"""
+const assert = require('node:assert/strict');
+const handlers = [], timers = [], writes = [];
+let row = null, finishBody, finishPost, getRequests = 0;
+class Button {
+  constructor(dataset = {}) { this.dataset = dataset; this.disabled = false; }
+  get parentElement() { return row; }
+  hasAttribute(name) { return name === 'data-undo' && 'undo' in this.dataset; }
+  remove() { row.buttons = row.buttons.filter(button => button !== this); }
+  closest(selector) {
+    if (selector === '[data-mark-report]') return 'markReport' in this.dataset ? this : null;
+    if (selector === '.wait-discard') return 'waitKey' in this.dataset ? this : null;
+    return selector === '.act-card' ? row : null;
+  }
+}
+globalThis.document = {
+  addEventListener(name, fn) { if (name === 'click') handlers.push(fn); },
+  createElement: () => new Button(),
+  querySelectorAll: () => [],
+  querySelector(selector) {
+    return row && row.buttons.find(button =>
+      selector.includes('[data-mutation-pending]') && 'mutationPending' in button.dataset ||
+      selector.includes('[data-undo]') && 'undo' in button.dataset);
+  },
+  getElementById: () => null,
+  dispatchEvent() {}, open() {}, write(page) { writes.push(page); }, close() {}
+};
+globalThis.location = {protocol: 'http:', href: 'http://localhost/', reload() { throw Error('unexpected navigation'); }};
+globalThis.history = {replaceState() {}};
+globalThis.confirm = () => true;
+globalThis.setTimeout = (fn, ms) => { const timer = {fn, ms}; timers.push(timer); return timer; };
+globalThis.clearTimeout = timer => { if (timer) timer.fn = () => {}; };
+globalThis.fetch = (_url, options) => {
+  if (options.method === 'POST') return new Promise((resolve, reject) => { finishPost = {resolve, reject}; });
+  getRequests++;
+  return Promise.resolve({ok: true, text: () => new Promise(resolve => { finishBody = resolve; })});
+};
+const settle = () => new Promise(resolve => setImmediate(resolve));
+const click = button => Promise.all(handlers.map(handler => handler({target: button})));
+"""
+        verify = r"""
+(async () => {
+  for (const [action, undoing] of [['mark', false], ['discard', false], ['unmark', false],
+      ['undiscard', false], ['unmark', true], ['undiscard', true], ['wait', false]]) {
+    for (const outcome of ['success', 'http-error', 'network-error']) {
+      row = null;
+      writes.length = 0;
+      quarterdeckReload(); await settle();
+      const button = new Button(action === 'wait' ? {waitKey: 'fictional', waitHold: 'hold'} :
+        {markReport: 'fictional/report', markFingerprint: 'f', markAction: action, ...(undoing ? {undo: ''} : {})});
+      const status = {textContent: '', after(other) { row.buttons.push(other); }};
+      row = {buttons: [button], querySelector: () => status, querySelectorAll() { return this.buttons; }, lastChild: status};
+      const pending = click(button);
+      finishBody('<p>stale page</p>'); await settle();
+      assert.deepEqual(writes, [], action + ': replacement must wait for the pending mutation');
+      const before = getRequests;
+      quarterdeckReload(); await settle();
+      assert.equal(getRequests, before, action + ': pending mutation also blocks a fresh request');
+      if (outcome === 'network-error') finishPost.reject(new Error('offline'));
+      else finishPost.resolve({ok: outcome === 'success', text: async () => 'denied'});
+      await pending; await settle();
+      if (outcome !== 'success') {
+        assert.equal(button.disabled, false, action + ': failed mutation can be retried');
+        assert.match(status.textContent, /Could not save|Not discarded/);
+        if (undoing) {
+          quarterdeckReload(); await settle();
+          assert.equal(getRequests, before, 'failed Undo stays available and continues to protect the row');
+          const retry = click(button);
+          finishPost.resolve({ok: true});
+          await retry; await settle();
+          assert.equal(status.textContent, 'Undone');
+        }
+      } else {
+        assert.match(status.textContent, /Saved|Undone|Discarded/);
+        if (action === 'mark' || action === 'discard') {
+          const undo = row.buttons.find(other => other.hasAttribute('data-undo'));
+          assert.ok(undo, action + ': Saved must offer Undo on the retained row');
+          quarterdeckReload(); await settle();
+          assert.deepEqual(writes, [], 'the saved row stays visible during the Undo window');
+          const expiry = timers.findLast(timer => timer.ms === 15000);
+          expiry.fn();
+        }
+      }
+      quarterdeckReload(); await settle();
+      assert.ok(getRequests > before, action + ': settled mutation releases refresh even if its button stays disabled');
+      finishBody('<p>fresh page</p>'); await settle();
+      assert.deepEqual(writes, ['<p>fresh page</p>'], action + ': refresh resumes after settlement');
+    }
+  }
+})().catch(error => { console.error(error); process.exitCode = 1; });
+"""
+        result = subprocess.run(["node", "-e", harness + reload_script + mark_script + wait_script + verify],
+                                capture_output=True, text=True)
+        self.assertEqual(result.returncode, 0, result.stderr)
+
+    @unittest.skipUnless(shutil.which("node"), "Node is required to execute the generated scripts")
     def test_failed_fetch_keeps_the_page_and_says_how_old_it_is(self) -> None:
         page = quarterdeck.build_html([], "Q", refresh_seconds=60)
         script = next(script for script in re.findall(r"<script>(.*?)</script>", page, re.S)
