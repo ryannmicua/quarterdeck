@@ -33,6 +33,9 @@ watcher updates also request a background rebuild. A failed rebuild logs the
 error and keeps the previous pages, with another attempt on a request after
 30 seconds unless a new invalidation requests one sooner.
 
+For feed failures within a completed rebuild, see the
+[failed-feed refresh contract](../reference/attention-json.md#failed-feed-refreshes).
+
 With `--allow-marks`, report marks, saved views and wait discards wait for a
 rebuild before responding so the page can reload with the change. A render
 failure still returns the successful write result and leaves the previous pages

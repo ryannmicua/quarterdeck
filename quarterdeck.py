@@ -2979,7 +2979,7 @@ ATTENTION_SCHEMA = "quarterdeck-attention.v1"
 ATTENTION_SCRIPT = Path("bin") / "fm-attention.sh"
 ATTENTION_FEED_SCHEMA = "fm-attention.v1"
 ATTENTION_TIMEOUT_SECONDS = 60
-# The last feed that read cleanly, by home, so a failed refresh keeps showing it instead of "unavailable".
+# Retain feeds by home and resolved data directory; reuse does not establish completeness.
 LAST_GOOD_FEEDS: dict[tuple[Path, Path], tuple[float, dict[str, object]]] = {}
 LEDGER_PATH = Path("state") / "fleet-ledger.jsonl"
 LEDGER_VERSION = 1

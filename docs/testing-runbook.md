@@ -3,13 +3,10 @@
 ## Attention feed refresh failures
 
 Run `PYTHONPATH=tests python3 -m unittest -v test_quarterdeck.AttentionTests.test_failed_refresh_keeps_last_good_needs_you_list test_quarterdeck.AttentionTests.test_empty_cached_feed_stays_incomplete_until_refresh_recovers test_quarterdeck.AttentionTests.test_only_decisions_errors_collapse_diagnostics`.
-The fallback contract requires cached decisions to stay visible while a failed
-refresh marks the home and aggregate unhealthy. The empty-cache regression
-checks incomplete priorities, single/all saved views, status and live-card
-empty wording, then recovery to a confirmed all-clear after a successful read.
-The display contract hides only decisions-feed diagnostics behind Details;
-other source errors and their check commands must remain visible. The HTML
-parser checks rendered text visibility, including escaped diagnostic content.
+These cover the [failed-feed refresh contract](reference/attention-json.md#failed-feed-refreshes),
+including empty-cache priorities, single/all saved views, status and live-card
+empty wording, and recovery. The HTML parser checks rendered text visibility,
+including escaped diagnostic content.
 Fixtures are fictional and disposable; no real home scripts or inboxes run.
 
 Run `PYTHONPATH=tests python3 -m unittest -v test_quarterdeck.AttentionTests.test_cached_feed_is_scoped_to_home_and_resolved_data_directory`
@@ -17,6 +14,22 @@ for cache identity. A failed read after changing data directories must not show
 the previous directory's decisions. Returning to a previously read directory,
 including an equivalent resolved path, must recover only that directory's list;
 a different home sharing the directory must not inherit it.
+
+Manual CLI/server gate check (2026-11-14): use fictional homes with executable
+`fm-attention.sh --json` and snapshot scripts, private XDG config/state, and feed
+rows timestamped at the current time. A 17-second attention script reproduces
+the old 15-second failure and must succeed with the 60-second timeout; a
+65-second script must exit unavailable at approximately 60 seconds. For `serve`,
+wait 31 seconds between builds to exercise the real cache TTL. Change the page
+title per build to distinguish the old response from the completed refresh;
+GET must return the previous page promptly during a 17-second refresh.
+Then fail the feed after populated and empty successes: preserve cached items,
+show unknown status, and never claim an all clear until recovery. Change the
+configured data directory before failure, then test an equivalent resolved path
+and a second home sharing that directory; cached decisions must not cross
+identities. Capture mobile screenshots and served HTML. Review state must live
+outside the checkout (the gate evidence directory is suitable); keep all home,
+config and browser-profile fixtures disposable and stop every child on cleanup.
 
 ## Background cache and write responses
 
