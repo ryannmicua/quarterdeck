@@ -241,11 +241,15 @@ status is 0 when the file was read, even if some actions were skipped, and 2
 for an unreadable file or invalid action. See
 [Use the cloud artifact](../how-to/use-the-cloud-artifact.md).
 
+<a id="reactions"></a>
+
 `reactions import` delivers the reactions recorded in the cloud artifact
 (collection `qd-inbox`; a JSON list, or `{"version": 1, "reactions": [...]}`,
 of documents with `id`, `kind` of `call` or `report`, `item_id`, `reaction` one
-of `approve`, `hold`, `not-now`, `question` or empty, `text` up to 1000
-characters, and `at`). Oldest first, each is sent as a note through the item's
+of `approve`, `hold`, `not-now`, `question` or empty, `text` up to 20,000
+Unicode code points, and `at`). The same text limit applies to served-page and
+cloud-artifact replies. Delivery collapses whitespace into a single line.
+Oldest first, each is sent as a note through the item's
 home's `bin/fm-inbox.sh note --request-id qd-<id>`; delivered ids are kept in
 the local state, so none is sent twice. A reaction for an unknown item, an
 invalid document, or a failed delivery is skipped and listed (a failed one

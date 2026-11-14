@@ -131,7 +131,10 @@ filter database documents before saving such a list to avoid replaying old click
 ## React and discuss
 
 Each call, related item and report card has **Approve**, **Hold**, **Not now**
-and **Question** buttons, a short reply box and **Send**. Pick a reaction,
+and **Question** buttons, a reply box that grows as you type (the
+[reaction text limit](../reference/cli-and-config.md#reactions) applies;
+a counter appears near the limit and **Send** refuses a longer reply)
+and **Send**. Pick a reaction,
 write a reply, or both. Send writes one document per reaction to the
 artifact's own database (collection `qd-inbox`) with a unique `id`, the item ID,
 `kind` (`call` or `report`), the reaction, the text, and a time. The task is

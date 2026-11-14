@@ -315,7 +315,7 @@ reopening it explicitly acknowledges that revision. Reaction cases cross the
 one-hour age boundary with reply controls enabled and disabled; unchanged
 records keep their revision, while changed text, choice, source or absolute
 timestamp and reaction removal change it.
-The harness checks the header and Cards-heading unread counts on arrival and
+The harness checks the header and Needs-you-heading unread counts on arrival and
 acknowledgement, and checks that arrival, acknowledgement, replacement and
 removal preserve the page title. Seen persistence is asserted through executed
 localStorage writes.
@@ -390,7 +390,7 @@ Q1 is the oracle for counting active needs across priority-scoped waiting lists
 and homes, deduplicating keys and excluding quiet/stale background decisions.
 The status must also withhold an all-clear when a healthy feed accompanies an
 unreadable registry, child backlog or captain board, or when feed reading is
-skipped. Its Cards destination must include active items held in waiting_more;
+skipped. Its Needs-you destination must include active items held in waiting_more;
 page rendering and live responses share the same card builder. Informational
 cards remain scoped to priority projects. Oldest age uses the request opening
 time even after a recent touch, across feed decisions, needs-you classifications,
@@ -409,3 +409,65 @@ Confirm the report header title is visible, tap targets measure at least 44 px,
 and the four reaction choices occupy two rows and two columns at both widths.
 A later overriding CSS rule must be judged by those rendered results; source
 substring assertions cannot establish these properties.
+
+## Reply drafts and Unicode limits
+
+Run the focused reply regressions with Python and Node:
+
+```sh
+PYTHONPATH=tests python3 -m unittest -v \
+  test_quarterdeck.DeskRelevanceTests.test_reply_box_grows_counts_refuses_a_too_long_reply_and_keeps_a_draft_across_reloads \
+  test_quarterdeck.DeskRelevanceTests.test_a_twenty_thousand_character_reply_is_delivered_whole_and_the_page_offers_a_text_area \
+  test_quarterdeck.DeskRelevanceTests.test_artifact_sends_reactions_to_the_inbox_collection_and_opens_the_composer
+```
+
+The emitted page scripts execute against disposable browser-boundary doubles.
+The draft contract requires restoration in card, desk and arriving composers,
+expiry after seven days, retaining drafts on failed sends, clearing every copy
+of the sent item and kind, and allowing refresh for saved, unfocused replies.
+Blocked or full browser storage must defer refresh for unfocused edited text;
+a later successful save must release that guard. Edits mirror in both directions
+between card, desk and arriving composers for the same item and kind, including
+when storage writes fail. Reload checks the current stored text: deleting or
+overwriting that draft, or making storage unreadable, must preserve page text.
+Arriving composers inherit unsaved text from an existing composer. A delayed
+successful send clears only text unchanged since submission: edits made from
+another composer while sending must survive in every mirrored box and storage.
+The regression covers card, desk and arriving senders, whitespace-only edits,
+new composers during sends, and an independently overwritten stored draft.
+The independent length oracle is Python's 20,000-code-point server limit:
+19,999 ASCII characters plus one emoji must send whole; 20,000 ASCII characters
+plus one emoji must be refused. Both page and artifact counters follow it.
+Fixtures and inbox receivers are fictional, cleanup is automatic, and these
+checks do not send messages to real homes.
+
+For opening-time order and live empty states, run:
+
+```sh
+PYTHONPATH=tests python3 -m unittest -v \
+  test_quarterdeck.ActivityCardTests.test_needs_you_cards_come_first_oldest_wait_first_and_the_rest_newest_first \
+  test_quarterdeck.ActivityCardTests.test_needs_you_order_uses_parsed_opening_times_with_activity_fallback \
+  test_quarterdeck.ActivityCardTests.test_polling_preserves_busy_cards_and_reconciles_idle_cards
+```
+
+The ordering oracle is elapsed wait since opening, even after recent activity;
+missing or invalid openings fall back to activity, with unknown times last.
+Offset timestamps compare as instants. Initial HTML and cards JSON must agree,
+including decisions and other needs-you items from priority and overflow lists.
+Polling without completeness evidence must replace an old all-clear with a
+neutral empty message, while preserving active replies during reconciliation.
+
+
+Live browser recipe for this flow: serve the fictional attention fixture with
+isolated XDG config/state and `--allow-marks`, shifting fixture timestamps to
+now so the six-hour activity window remains populated. Use a named browser
+session with a disposable profile. At 375px and desktop width, check that
+Needs you comes first and the Activity jump link opens the collapsed section.
+For a delayed-send check, delay the fictional inbox for three seconds (holding
+it indefinitely hits the delivery timeout); edit the matching desk composer
+while the card send is pending and verify the later text survives success.
+To check the poll empty state, start with a feed-only decision and valid empty
+backlog/board, then corrupt the fictional feed. Allow the 30-second site cache
+and 15-second card poll to run before the 60-second page reload; verify neutral
+empty wording on the original page. Stop browser/server children and remove
+fictional homes, profiles and state after capturing screenshots and responses.

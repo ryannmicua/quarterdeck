@@ -1390,6 +1390,14 @@ def load_report_context(args: argparse.Namespace) -> tuple[list[HomeSnapshot], P
     return snapshots, state_path, state
 
 
+def needs_unread(attention: dict[str, object]) -> bool:
+    """True when the needs-you feed could not be read in full, so "nothing needs you" would be a guess."""
+    homes = [home for home in attention.get("homes", []) if isinstance(home, dict)]  # type: ignore[union-attr]
+    return not attention.get("ok", True) or bool(attention.get("waits_error")) or any(
+        home.get("complete") is False or home.get("errors") or (isinstance(home.get("decisions"), dict) and home["decisions"].get("skipped"))
+        for home in homes)
+
+
 def status_line_html(
     attention: dict[str, object] | None, underway: int | None, reports: int,
     now: datetime,
@@ -1407,9 +1415,7 @@ def status_line_html(
                    for kind in ("decisions", "needs_you")
                    for item in (home.get(field) or {}).get(kind, [])
                    if item.get("relevance") not in {"quiet", "stale"}}
-        unread = not attention.get("ok", True) or bool(attention.get("waits_error")) or any(
-            home.get("complete") is False or home.get("errors") or (isinstance(home.get("decisions"), dict) and home["decisions"].get("skipped"))
-            for home in homes)
+        unread = needs_unread(attention)
         if unread:
             text, need = "Needs-you status unavailable", "unknown"
         elif not waiting:
@@ -1427,12 +1433,13 @@ def status_line_html(
 
 
 JUMP_SECTIONS = (
-    ("cards", "Cards"), ("board", "Desk"), ("attention", "Waiting"), ("reviews", "Reports"),
+    ("cards", "Needs you"), ("board", "Desk"), ("attention", "Waiting"), ("reviews", "Reports"),
     ("call", "Captain's Call"), ("underway", "Underway"), ("charted", "Charted Next"),
     ("call-background", "Background decisions"), ("related", "Related items"),
     ("board-desk", "On your desk"), ("board-week", "This week"), ("board-parked", "Parked"),
     ("board-stale", "Stale decisions"), ("reviewed", "Reviewed reports"),
-    ("stale-reports", "Stale reports"), ("discarded", "Discarded reports"), ("details", "Details"),
+    ("stale-reports", "Stale reports"), ("discarded", "Discarded reports"), ("activity", "Activity"),
+    ("details", "Details"),
 )
 
 
@@ -1515,6 +1522,9 @@ def build_html(
     attention_block = attention_html(bearings.attention, allow_marks) if bearings else ""
     cards = activity_cards(bearings.attention, board, reactions, home_data_dirs(homes), bearings.item_pages, bearings.main_href) if bearings else []
     cards_block = cards_html(cards, bearings.attention, generated, bool(refresh_seconds)) if bearings else ""
+    activity_block = activity_html(cards, bearings.attention, generated) if bearings else ""
+    if activity_block:
+        section_counts["activity"] = sum(card["section"] != "needs_you" for card in cards)
     cards_script = ACTIVITY_SCRIPT if cards_block else ""
     cards_link = '<a class="cards-new" id="cards-new" href="#cards" hidden></a>' if cards_block else ""
     metrics_html = "".join(
@@ -1530,7 +1540,7 @@ def build_html(
         f'<div class="summary" aria-label="Review counts">{metrics_html}</div>'
         + "".join(home_panel(home, lavish, show_all, decisions) for home in homes) + "</details>"
     )
-    body_markup = cards_block + board_block + attention_block + bearings_block + reviewed_block + details_block
+    body_markup = cards_block + board_block + attention_block + bearings_block + reviewed_block + activity_block + details_block
     status_block = status_line_html(
         bearings.attention if bearings else None, section_counts.get("underway") if bearings else None,
         counts[-1], generated,
@@ -1545,7 +1555,9 @@ def build_html(
     }
     function quarterdeckReload() {
       const editing = Array.from(document.querySelectorAll(".reaction-text")).some(
-        field => field.value || field === document.activeElement
+        field => field === document.activeElement || field.value && (
+          typeof quarterdeckDraftSaved !== "function" || !quarterdeckDraftSaved(field)
+        )
       );
       if (editing || document.querySelector('[data-reaction-choice][aria-pressed=true], .reaction-send:disabled, #view-editor[data-dirty=true], #view-save:disabled[data-saving=true]')) {
         setTimeout(quarterdeckReload, 1000);
@@ -1570,8 +1582,75 @@ def build_html(
       }}
       return box.dataset.reactionId;
     }}
+    const DRAFT_PREFIX = "quarterdeck-draft:", DRAFT_MS = 7 * 86400000;
+    function draftKey(box) {{ return DRAFT_PREFIX + box.dataset.reactionKind + ":" + box.dataset.reactionItem; }}
+    function growField(field) {{
+      if (!field.offsetParent) return;
+      field.style.height = "auto";
+      field.style.height = (field.scrollHeight + 2) + "px";
+    }}
+    function showCount(field) {{
+      const note = field.closest(".reaction").querySelector(".reaction-count");
+      const limit = Number(field.dataset.limit), length = Array.from(field.value.trim()).length;
+      note.classList.toggle("over", length > limit);
+      note.hidden = length < limit * 0.8;
+      note.textContent = length > limit
+        ? "This reply is " + length.toLocaleString() + " characters and the limit is " + limit.toLocaleString() + ". Shorten it by " + (length - limit).toLocaleString() + " to send it."
+        : length.toLocaleString() + " of " + limit.toLocaleString() + " characters";
+    }}
+    function saveDraft(box, field) {{
+      try {{
+        if (field.value) localStorage.setItem(draftKey(box), JSON.stringify({{text: field.value, at: Date.now()}}));
+        else localStorage.removeItem(draftKey(box));
+      }} catch (_) {{}}
+    }}
+    function readDraft(box) {{
+      try {{
+        const raw = localStorage.getItem(draftKey(box));
+        if (!raw) return null;
+        const draft = JSON.parse(raw);
+        if (draft && typeof draft.text === "string" && Number.isFinite(draft.at)
+            && draft.at <= Date.now() && Date.now() - draft.at < DRAFT_MS) return draft;
+        localStorage.removeItem(draftKey(box));
+      }} catch (_) {{}}
+      return null;
+    }}
+    function quarterdeckDraftSaved(field) {{
+      const draft = readDraft(field.closest(".reaction"));
+      return draft && draft.text === field.value;
+    }}
+    function restoreDrafts(root) {{
+      for (const field of (root || document).querySelectorAll(".reaction-text")) {{
+        if (!field.value) {{
+          const box = field.closest(".reaction");
+          const peer = Array.from(document.querySelectorAll(".reaction-text")).find(
+            other => other !== field && other.value && draftKey(other.closest(".reaction")) === draftKey(box)
+          );
+          const draft = peer ? null : readDraft(box);
+          field.value = peer ? peer.value : draft ? draft.text : "";
+        }}
+        growField(field);
+        showCount(field);
+      }}
+    }}
+    window.quarterdeckRestoreDrafts = restoreDrafts;
+    restoreDrafts(document);
+    document.addEventListener("toggle", event => {{
+      if (event.target.open) for (const field of event.target.querySelectorAll(".reaction-text")) growField(field);
+    }}, true);
+    window.addEventListener("resize", () => {{ for (const field of document.querySelectorAll(".reaction-text")) growField(field); }});
     document.addEventListener("input", event => {{
-      if (event.target.matches(".reaction-text")) delete event.target.closest(".reaction").dataset.reactionId;
+      if (!event.target.matches(".reaction-text")) return;
+      const box = event.target.closest(".reaction");
+      for (const copy of document.querySelectorAll(".reaction-text")) {{
+        const other = copy.closest(".reaction");
+        if (draftKey(other) !== draftKey(box)) continue;
+        copy.value = event.target.value;
+        delete other.dataset.reactionId;
+        growField(copy);
+        showCount(copy);
+      }}
+      saveDraft(box, event.target);
     }});
     document.addEventListener("click", async (event) => {{
       const choice = event.target.closest("[data-reaction-choice]");
@@ -1590,8 +1669,10 @@ def build_html(
       const field = box.querySelector(".reaction-text");
       const picked = box.querySelector("[data-reaction-choice][aria-pressed=true]");
       const reaction = picked ? picked.dataset.reactionChoice : "";
-      const text = field.value.trim();
+      const submittedText = field.value;
+      const text = submittedText.trim();
       if (!reaction && !text) {{ status.textContent = "Pick a reaction or write a reply first."; return; }}
+      if (Array.from(text).length > Number(field.dataset.limit)) {{ showCount(field); status.textContent = "Not sent: the reply is too long. Shorten it and send again."; return; }}
       const controls = [send, field, ...box.querySelectorAll("[data-reaction-choice]")];
       for (const control of controls) control.disabled = true;
       status.textContent = "Sending…";
@@ -1610,7 +1691,18 @@ def build_html(
           node.textContent = (node.tagName === "P" ? "Latest reaction: " : "") + summary + " (from this page · just now)";
           node.hidden = false;
         }}
-        field.value = "";
+        for (const copy of document.querySelectorAll(".reaction-text")) {{
+          const other = copy.closest(".reaction");
+          if (draftKey(other) !== draftKey(box) || copy.value !== submittedText) continue;
+          copy.value = "";
+          delete other.dataset.reactionId;
+          growField(copy);
+          showCount(copy);
+        }}
+        try {{
+          const draft = readDraft(box);
+          if (draft && draft.text === submittedText) localStorage.removeItem(draftKey(box));
+        }} catch (_) {{}}
         if (picked) picked.setAttribute("aria-pressed", "false");
         delete box.dataset.reactionId;
         status.textContent = "Sent to Firstmate";
@@ -1728,7 +1820,13 @@ def build_html(
     .request-status {{ color: var(--muted); font-size: .82rem; }}
     .reaction {{ margin-top: .6rem; }}
     .reaction-latest {{ margin: .3rem 0; color: var(--muted); font-size: .85rem; }}
-    .reaction-text {{ flex: 1 1 14rem; min-width: 0; min-height: 44px; padding: 0 .6rem; border: 1px solid var(--line); border-radius: 7px; background: var(--paper); color: var(--ink); font: inherit; font-size: .9rem; }}
+    .reaction-reply {{ display: block; }}
+    .reaction-text {{ display: block; box-sizing: border-box; width: 100%; min-width: 0; min-height: 5.5rem; max-height: 60vh; padding: .55rem .6rem; border: 1px solid var(--line); border-radius: 7px; background: var(--paper); color: var(--ink); font: inherit; font-size: 1rem; line-height: 1.4; resize: vertical; overflow-y: auto; }}
+    .reaction-text:focus-visible {{ outline: 3px solid var(--gold); outline-offset: 2px; }}
+    .reaction-count {{ display: block; margin-top: .25rem; color: var(--muted); font-size: .82rem; }}
+    .reaction-count[hidden] {{ display: none; }}
+    .reaction-count.over {{ color: #b3261e; font-weight: 700; }}
+    .reaction-latest {{ overflow-wrap: anywhere; }}
     .reaction-choices {{ display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: .5rem; }}
     .reaction-choice[aria-pressed=true] {{ background: var(--sea); color: var(--paper); }}
     .chip-reaction {{ color: var(--ink); border-color: var(--gold); }}
@@ -1848,6 +1946,7 @@ def build_html(
     {attention_block}
     {bearings_block}
     {reviewed_block}
+    {activity_block}
     {details_block}
     <footer>{html.escape(introductory_text)} {footer_label} · generated {timestamp} · source files open as readable pages beside this one.</footer>
   </main>
@@ -6922,8 +7021,11 @@ def calls_list(args: argparse.Namespace) -> int:
 
 REACTION_ENDPOINT = "/api/reactions"
 VIEWS_ENDPOINT = "/api/views"
-REACTION_BODY_LIMIT = 8192
-REACTION_TEXT_LIMIT = 1000
+# A reply may be a long dictated ramble. The text limit counts characters; the body limit leaves room for the
+# worst-case JSON escaping (six bytes a character) and the other fields. The note reaches fm-inbox.sh as one
+# argument, and 20,000 characters in UTF8 encoding stay under the 128 KiB single-argument limit.
+REACTION_TEXT_LIMIT = 20_000
+REACTION_BODY_LIMIT = 6 * REACTION_TEXT_LIMIT + 4096
 REACTIONS_VERSION = 1
 REACTION_LABELS = {"approve": "Approve", "hold": "Hold", "not-now": "Not now", "question": "Question"}
 REACTION_KINDS = ("call", "report")
@@ -7158,9 +7260,11 @@ def reaction_html(ctx: ReactionContext | None, kind: str, item_id: str, availabl
     return (
         f'<div class="reaction" data-reaction-kind="{kind}" data-reaction-item="{html.escape(item_id, quote=True)}">'
         f'{latest}<div class="request-row reaction-choices">{buttons}</div>'
-        f'<div class="request-row"><input class="reaction-text" type="text" maxlength="{REACTION_TEXT_LIMIT}" '
-        f'placeholder="Reply to Firstmate (optional)" aria-label="Reply to Firstmate">'
-        f'<button class="request-lavish reaction-send" type="button">Send</button>'
+        f'<div class="request-row reaction-reply"><textarea class="reaction-text" rows="2" data-limit="{REACTION_TEXT_LIMIT}" '
+        f'placeholder="Reply to Firstmate (optional)" aria-label="Reply to Firstmate" '
+        f'autocapitalize="sentences" enterkeyhint="enter"></textarea>'
+        f'<span class="reaction-count" aria-live="polite" hidden></span></div>'
+        f'<div class="request-row"><button class="request-lavish reaction-send" type="button">Send</button>'
         f'<span class="request-status reaction-status" aria-live="polite"></span></div></div>'
     )
 
@@ -8429,7 +8533,8 @@ def need_card(
     title = str(item["title"])
     return {
         "id": f"call:{key}", "section": section, "label": "Needs you" if section == "needs_you" else "For your information",
-        "at": item.get("at"), "title": title, "hold_set": wait.get("hold_set") if wait else None,
+        "at": item.get("at"), "opened_at": item.get("opened_at"), "title": title,
+        "hold_set": wait.get("hold_set") if wait else None,
         "summary": first_line(wait_ask_line(wait)) if wait else first_line(ask) or status,  # type: ignore[arg-type]
         "status": status, "body": "".join(parts),
     }
@@ -8487,7 +8592,13 @@ def activity_cards(
     ranked: list[dict[str, object]] = []
     for section, _title in CARD_SECTIONS:
         chosen = [card for card in cards if card["section"] == section]
-        chosen.sort(key=lambda card: str(card["at"] or ""), reverse=True)
+        if section == "needs_you":  # the longest wait first; a card with no time goes last
+            chosen.sort(key=lambda card: (
+                parse_when(str(card.get("opened_at") or "")) or parse_when(str(card.get("at") or ""))
+                or datetime.max.replace(tzinfo=timezone.utc)
+            ))
+        else:
+            chosen.sort(key=lambda card: str(card["at"] or ""), reverse=True)
         ranked.extend(chosen)
     return ranked
 
@@ -8518,25 +8629,47 @@ def cards_payload(cards: list[dict[str, object]], now: datetime) -> str:
     return json.dumps({"schema": CARDS_SCHEMA, "generated": iso_seconds(now.timestamp()), "cards": out}) + "\n"
 
 
-def cards_html(cards: list[dict[str, object]], attention: dict[str, object] | None, now: datetime, live: bool) -> str:
-    if attention is None:
-        return ""
-    sections = []
-    for section, title in CARD_SECTIONS:
+def card_section_html(cards: list[dict[str, object]], now: datetime, sections: tuple[tuple[str, str], ...]) -> str:
+    out = []
+    for section, title in sections:
         markup = "".join(card_html(card, now)[1] for card in cards if card["section"] == section)
-        sections.append(
+        out.append(
             f'<div class="act-section" data-section="{section}"{"" if markup else " hidden"}>'
             f'<h3 class="act-group">{html.escape(title)}</h3><div class="act-list" data-section-list="{section}">{markup}</div></div>'
         )
+    return "".join(out)
+
+
+def cards_html(cards: list[dict[str, object]], attention: dict[str, object] | None, now: datetime, live: bool) -> str:
+    """The first section of the page: only what needs the captain, longest wait first."""
+    if attention is None:
+        return ""
+    needs = sum(card["section"] == "needs_you" for card in cards)
+    empty = ("Could not read everything that might need you, so this is not a confirmed all clear."
+             if needs_unread(attention) else "Nothing needs you right now.")
     return (
         f'<section class="dashboard-section cards-feed" id="cards" data-live="{1 if live else 0}" data-poll="{CARDS_POLL_SECONDS}" '
-        f'data-endpoint="{CARDS_PAGE}" aria-label="Activity cards"><div class="section-head"><div>'
-        '<h2>Cards <span class="count" id="cards-count" hidden>0</span></h2>'
-        "<p>What Firstmate is doing, newest first. Tap a card to read it. "
+        f'data-endpoint="{CARDS_PAGE}" aria-label="Needs you"><div class="section-head"><div>'
+        '<h2>Needs you <span class="count" id="cards-count" hidden>0</span></h2>'
+        "<p>What is waiting on you, longest wait first. Tap a card to read it. "
         + ("New cards slide in here without a reload." if live else "Reload to see new cards.") + "</p></div></div>"
         + "".join(attention_errors_html(attention))
-        + f'<p class="empty" id="cards-empty"{" hidden" if cards else ""}>Nothing new from Firstmate.</p>'
-        + "".join(sections) + "</section>"
+        + f'<p class="empty" id="cards-empty"{" hidden" if needs else ""}>{empty}</p>'
+        + card_section_html(cards, now, CARD_SECTIONS[:1]) + "</section>"
+    )
+
+
+def activity_html(cards: list[dict[str, object]], attention: dict[str, object] | None, now: datetime) -> str:
+    """What Firstmate started, merged and finished: a collapsed section lower on the page, never the first thing."""
+    if attention is None:
+        return ""
+    count = sum(card["section"] != "needs_you" for card in cards)
+    return (
+        '<details class="dashboard-section cards-feed" id="activity" data-refresh-key="activity"><summary>'
+        f'<h2>Activity</h2><span class="count" id="activity-count">{count}</span></summary>'
+        "<p>What Firstmate started, merged and finished lately, and information to read. Nothing here needs an answer.</p>"
+        f'<p class="empty" id="activity-empty"{" hidden" if count else ""}>Nothing new from Firstmate.</p>'
+        + card_section_html(cards, now, CARD_SECTIONS[1:]) + "</details>"
     )
 
 
@@ -8554,6 +8687,9 @@ def site_cards(homes: list[HomeSnapshot], bearings: Bearings, allow_marks: bool)
 
 ACTIVITY_CSS = """
     .cards-feed .section-head h2 { margin: 0; }
+    #cards .act-group { display: none; }
+    #activity > summary { display: flex; align-items: center; gap: .6rem; min-height: 44px; cursor: pointer; }
+    #activity > summary h2 { margin: 0; }
     #cards-count, .cards-new { background: var(--gold); border-color: var(--gold); color: #1b1305; }
     .cards-new { border-radius: 999px; padding: .1rem .6rem; font-size: .8rem; font-weight: 700; text-decoration: none; }
     .cards-new[hidden], #cards-count[hidden], .act-section[hidden], #cards-empty[hidden] { display: none; }
@@ -8636,7 +8772,7 @@ ACTIVITY_SCRIPT = """
           }
         }
       }, { threshold: 0.5 }) : null;
-      const cards = () => Array.from(feed.querySelectorAll(".act-card"));
+      const cards = () => Array.from(document.querySelectorAll(".act-card"));
       function count() {
         const unseen = feed.querySelectorAll(".act-card.unseen").length;
         const badge = document.getElementById("cards-count"), top = document.getElementById("cards-new");
@@ -8667,7 +8803,7 @@ ACTIVITY_SCRIPT = """
           card.addEventListener("animationend", () => card.classList.remove("arrived"), { once: true });
         }
       }
-      feed.addEventListener("click", event => {
+      document.addEventListener("click", event => {
         const summary = event.target.closest(".act-card > details > summary");
         if (summary && !event.defaultPrevented && event.button === 0 && !summary.parentElement.open) {
           markSeen(summary.closest(".act-card"));
@@ -8686,7 +8822,7 @@ ACTIVITY_SCRIPT = """
         return (days >= 1 ? days + " day" + (days !== 1 ? "s" : "") : hours >= 1 ? hours + " hour" + (hours !== 1 ? "s" : "") : "under an hour") + " ago";
       }
       function times() {
-        for (const time of feed.querySelectorAll("time[datetime]")) if (!isNaN(Date.parse(time.getAttribute("datetime")))) time.textContent = ago(time.getAttribute("datetime"));
+        for (const time of document.querySelectorAll(".act-card time[datetime]")) if (!isNaN(Date.parse(time.getAttribute("datetime")))) time.textContent = ago(time.getAttribute("datetime"));
       }
       function busy(card) {
         return card.contains(document.activeElement) && document.activeElement.matches("input, textarea") ||
@@ -8704,21 +8840,23 @@ ACTIVITY_SCRIPT = """
         for (const [id, card] of existing) {
           if (!wanted.has(id) && !busy(card)) { unwatch(card); card.remove(); delete seen[id]; }
         }
-        const anchors = {};
+        const anchors = {}, fresh = [];
         for (const spec of payload.cards) {
-          const list = feed.querySelector('[data-section-list="' + spec.section + '"]');
+          const list = document.querySelector('[data-section-list="' + spec.section + '"]');
           let card = existing.get(spec.id);
           if (card && busy(card)) continue;
           if (list && card && card.dataset.cardRev !== spec.rev) {
-            const fresh = build(spec.html), open = card.querySelector("details").open;
+            const next = build(spec.html), open = card.querySelector("details").open;
             unwatch(card);
-            card.replaceWith(fresh);
-            if (open) fresh.querySelector("details").open = true;
-            attach(fresh, false);
-            card = fresh;
+            card.replaceWith(next);
+            if (open) next.querySelector("details").open = true;
+            attach(next, false);
+            card = next;
+            fresh.push(card);
           } else if (list && !card) {
             card = build(spec.html);
             attach(card, true);
+            fresh.push(card);
           }
           if (list && card) {
             const anchor = anchors[spec.section];
@@ -8728,8 +8866,17 @@ ACTIVITY_SCRIPT = """
             anchors[spec.section] = card;
           }
         }
-        for (const section of feed.querySelectorAll(".act-section")) section.hidden = !section.querySelector(".act-card");
-        document.getElementById("cards-empty").hidden = cards().length > 0;
+        if (window.quarterdeckRestoreDrafts) for (const card of fresh) window.quarterdeckRestoreDrafts(card);
+        for (const section of document.querySelectorAll(".act-section")) section.hidden = !section.querySelector(".act-card");
+        const needs = cards().filter(card => card.closest("#cards")).length;
+        const empty = document.getElementById("cards-empty");
+        empty.textContent = "No needs-you cards in this update. Reload to check the full status.";
+        empty.hidden = needs > 0;
+        const activity = document.getElementById("activity-count");
+        if (activity) {
+          activity.textContent = String(cards().length - needs);
+          document.getElementById("activity-empty").hidden = cards().length > needs;
+        }
         times();
         count();
         save();

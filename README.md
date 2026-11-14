@@ -6,7 +6,7 @@
 
 Quarterdeck turns running Firstmate homes' backlogs and scout reports into one
 local HTML review page. Serving is read-only by default; report review marks are
-available as an opt-in. Activity cards lead the page, followed by the captain
+available as an opt-in. What needs you leads the page, followed by the captain
 board when any selected home or registered secondmate has one. The shared
 [decision relevance rules](docs/reference/attention-json.md#decisions) determine
 which decisions appear. Without a board, the waiting view follows the cards, then
@@ -24,12 +24,13 @@ as a local artifact. Quarterdeck itself has no agent or build step.
 
 ## Features
 
-- Activity cards: the served page leads with a Cadence-style feed of what
-  Firstmate is doing, newest first, with a label, age, title and first line; tap
-  a card to read it. Decisions, merges and anything else waiting on you are
-  distinct "Needs you" cards that open to the ask, options and links and use the
-  desk's reaction controls. New cards slide in and are marked New until seen,
-  without a reload. See
+- Needs-you cards and activity: the served page leads with the decisions,
+  merges and anything else waiting on you, each a card that
+  opens to the ask, options and links and uses the desk's
+  [reaction controls and growing reply box](docs/how-to/serve-the-page.md#react-to-calls-and-reports-from-the-page). What
+  Firstmate started, merged and finished sits in a collapsed Activity section
+  lower on the page. New cards slide in and are marked New until seen, without a
+  reload. See
   [Watch Firstmate's activity as cards](docs/how-to/watch-activity-cards.md).
 - Captain waits: with `serve --watch-waits` (or `quarterdeck waits watch`), each
   task Firstmate holds for you gets a card saying what kind of ask it is (look at
@@ -81,7 +82,7 @@ as a local artifact. Quarterdeck itself has no agent or build step.
   [Use the cloud artifact](docs/how-to/use-the-cloud-artifact.md).
 - Compact header: the page opens on one status line (what needs you, how many
   are underway, how many reports wait, each linking to its section), then a
-  sticky strip of section links, then the activity cards.
+  sticky strip of section links, then the cards that need you.
 - Bearings-shaped page: Captain's Call, Underway, and Charted Next, each
   rendered with an empty-state sentence. Charted Next and Details by home start
   collapsed; Underway says how long each task has run. Recent work uses the
