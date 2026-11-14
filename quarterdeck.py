@@ -1669,7 +1669,8 @@ def build_html(
       const field = box.querySelector(".reaction-text");
       const picked = box.querySelector("[data-reaction-choice][aria-pressed=true]");
       const reaction = picked ? picked.dataset.reactionChoice : "";
-      const text = field.value.trim();
+      const submittedText = field.value;
+      const text = submittedText.trim();
       if (!reaction && !text) {{ status.textContent = "Pick a reaction or write a reply first."; return; }}
       if (Array.from(text).length > Number(field.dataset.limit)) {{ showCount(field); status.textContent = "Not sent: the reply is too long. Shorten it and send again."; return; }}
       const controls = [send, field, ...box.querySelectorAll("[data-reaction-choice]")];
@@ -1692,13 +1693,16 @@ def build_html(
         }}
         for (const copy of document.querySelectorAll(".reaction-text")) {{
           const other = copy.closest(".reaction");
-          if (draftKey(other) !== draftKey(box)) continue;
+          if (draftKey(other) !== draftKey(box) || copy.value !== submittedText) continue;
           copy.value = "";
           delete other.dataset.reactionId;
           growField(copy);
           showCount(copy);
         }}
-        try {{ localStorage.removeItem(draftKey(box)); }} catch (_) {{}}
+        try {{
+          const draft = readDraft(box);
+          if (draft && draft.text === submittedText) localStorage.removeItem(draftKey(box));
+        }} catch (_) {{}}
         if (picked) picked.setAttribute("aria-pressed", "false");
         delete box.dataset.reactionId;
         status.textContent = "Sent to Firstmate";

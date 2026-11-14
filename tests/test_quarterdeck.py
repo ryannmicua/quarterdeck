@@ -4265,7 +4265,8 @@ function addCopy(kind = 'call', item = 'home/task') {
   const copy = {...field, value: '', dataset: {...field.dataset}, style: {}};
   const otherNote = {...note, classList: {...note.classList}};
   const other = {dataset: {reactionKind: kind, reactionItem: item},
-    querySelector: s => s === '.reaction-count' ? otherNote : null};
+    querySelector: s => s === '.reaction-count' ? otherNote : s === '.reaction-status' ? {textContent: ''} : s === '.reaction-text' ? copy : null,
+    querySelectorAll: () => []};
   copy.closest = () => other;
   fields.push(copy);
   return copy;
@@ -4281,10 +4282,11 @@ globalThis.location = {protocol: 'file:', reload() { reloaded++; }};
 globalThis.setTimeout = () => { deferred++; };
 globalThis.window = {addEventListener() {}};
 globalThis.crypto = {getRandomValues: a => a};
-let posted = 0, fail = false, sentText;
+let posted = 0, fail = false, sentText, responseGate = null;
 globalThis.fetch = async (_url, options) => {
   if (fail) throw new Error('offline');
   posted++; sentText = JSON.parse(options.body).text;
+  if (responseGate) await responseGate;
   return {ok: true, json: async () => ({reaction: '', text: 'ok'})};
 };
 store['quarterdeck-draft:call:home/task'] = JSON.stringify({text: 'unsent dictation', at: Date.now()});
@@ -4376,6 +4378,37 @@ store['quarterdeck-draft:call:home/expired'] = JSON.stringify({text: 'old reply'
   assert.ok(store['quarterdeck-draft:report:home/task']);
   reload();
   assert.equal(reloaded, beforeFailure + 2, 'an unrelated saved draft does not block refresh');
+  for (const sender of [field, desk, arriving]) {
+    sender.value = 'Reply A'; handlers.input({target: sender});
+    let finish;
+    responseGate = new Promise(resolve => { finish = resolve; });
+    const senderButton = {disabled: false, closest: () => sender.closest()};
+    const pending = handlers.click({target: {closest: s => s === '.reaction-send' ? senderButton : null}});
+    assert.equal(sentText, 'Reply A');
+    const editor = sender === desk ? field : desk;
+    editor.value = 'Reply A  '; handlers.input({target: editor});
+    const duringSend = addCopy();
+    window.quarterdeckRestoreDrafts({querySelectorAll: () => [duringSend]});
+    assert.equal(duringSend.value, 'Reply A  ');
+    finish(); await pending;
+    responseGate = null;
+    for (const copy of [field, desk, arriving, duringSend]) {
+      assert.equal(copy.value, 'Reply A  ', 'send completion preserves later edits in every composer');
+    }
+    assert.equal(JSON.parse(store['quarterdeck-draft:call:home/task']).text, 'Reply A  ', 'send completion preserves the newer stored draft');
+    assert.equal(senderButton.disabled, false);
+    await handlers.click({target: {closest: s => s === '.reaction-send' ? senderButton : null}});
+    for (const copy of [field, desk, arriving, duringSend]) assert.equal(copy.value, '', 'sending unchanged text clears every composer');
+    assert.equal(store['quarterdeck-draft:call:home/task'], undefined);
+  }
+  field.value = 'Page reply'; handlers.input({target: field});
+  let finish;
+  responseGate = new Promise(resolve => { finish = resolve; });
+  const pending = handlers.click({target: {closest: s => s === '.reaction-send' ? send : null}});
+  store['quarterdeck-draft:call:home/task'] = JSON.stringify({text: 'New stored reply', at: Date.now()});
+  finish(); await pending;
+  assert.equal(field.value, '', 'unchanged submitted text clears');
+  assert.equal(JSON.parse(store['quarterdeck-draft:call:home/task']).text, 'New stored reply', 'a newer stored draft survives independently');
 })().catch(error => { process.stderr.write(error.stack); process.exitCode = 1; });
 """
         result = subprocess.run(["node", "-e", harness], input=script, capture_output=True, text=True, check=False)

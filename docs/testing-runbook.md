@@ -430,7 +430,11 @@ a later successful save must release that guard. Edits mirror in both directions
 between card, desk and arriving composers for the same item and kind, including
 when storage writes fail. Reload checks the current stored text: deleting or
 overwriting that draft, or making storage unreadable, must preserve page text.
-Arriving composers inherit unsaved text from an existing composer.
+Arriving composers inherit unsaved text from an existing composer. A delayed
+successful send clears only text unchanged since submission: edits made from
+another composer while sending must survive in every mirrored box and storage.
+The regression covers card, desk and arriving senders, whitespace-only edits,
+new composers during sends, and an independently overwritten stored draft.
 The independent length oracle is Python's 20,000-code-point server limit:
 19,999 ASCII characters plus one emoji must send whole; 20,000 ASCII characters
 plus one emoji must be refused. Both page and artifact counters follow it.
