@@ -5986,18 +5986,20 @@ class AttentionTests(unittest.TestCase):
             self.assertEqual(recent["shown_above"], 2)
             self.assertIn("Done recently", quarterdeck.view_section_html(done, ATTENTION_NOW, False))
 
-    def test_briefing_regression_open_queued_work_reaches_information_and_project(self) -> None:
+    def test_briefing_regression_open_in_flight_work_reaches_information_and_project_but_queued_work_does_not(self) -> None:
         with tempfile.TemporaryDirectory() as temp:
             home, _ = self.saved_views_home(Path(temp))
             with (home / "data" / "backlog.md").open("a") as out:
-                out.write("\n## Queued\n\n- [ ] queued-chart - Draw the chart (repo: harbor-app)\n")
+                out.write("\n## Queued\n\n- [ ] queued-chart - Draw the chart (repo: harbor-app)\n"
+                          "- [ ] live-chart - Print the chart (repo: harbor-app) (state: working)\n")
             for order in (("information", "project"), ("project", "information")):
                 definition = {"name": "Queue", "sections": [
                     {"type": kind, **({"project": "harbor-app"} if kind == "project" else {})} for kind in order]}
                 view = self.view(home, saved_views=([definition], "Queue"), view_name="")["view"]
                 first, second = view["sections"]
-                row = next(item for item in first["information"] if item["title"] == "Draw the chart")
-                self.assertEqual(row["status_label"], "Queued")
+                self.assertNotIn("Draw the chart", [item["title"] for item in first["information"] + second["information"]])
+                row = next(item for item in first["information"] if item["title"] == "Print the chart")
+                self.assertEqual(row["status_label"], "In flight")
                 self.assertFalse(first["nothing_waiting"])
                 self.assertGreaterEqual(second["shown_above"], 1)
                 self.assertNotIn(row["key"], [item["key"] for item in second["information"]])
@@ -6020,13 +6022,13 @@ class AttentionTests(unittest.TestCase):
                                   "- [ ] dated-choice - Deferred choice (repo: harbor-app) (held: true) "
                                   "(hold-kind: captain) (hold-until: 2026-07-03)\n"
                                   "- [ ] feed-choice - Feed choice (repo: harbor-app)\n"
-                                  "- [ ] chart - Draw chart (repo: harbor-app)\n")
+                                  "- [ ] chart - Draw chart (repo: harbor-app) (state: working)\n")
                     else:
-                        source = ("| ID | Title | repo | held | hold_kind | hold_until |\n"
-                                  "| --- | --- | --- | --- | --- | --- |\n"
-                                  "| dated-choice | Deferred choice | harbor-app | yes | captain | 2026-07-03 |\n"
-                                  "| feed-choice | Feed choice | harbor-app | no | - | - |\n"
-                                  "| chart | Draw chart | harbor-app | no | - | - |\n")
+                        source = ("| ID | Title | repo | held | hold_kind | hold_until | state |\n"
+                                  "| --- | --- | --- | --- | --- | --- | --- |\n"
+                                  "| dated-choice | Deferred choice | harbor-app | yes | captain | 2026-07-03 | - |\n"
+                                  "| feed-choice | Feed choice | harbor-app | no | - | - | - |\n"
+                                  "| chart | Draw chart | harbor-app | no | - | - | working |\n")
                     (owner / "data" / "backlog.md").write_text(source)
                     snapshots = [quarterdeck.load_home_snapshot(quarterdeck.HomeSpec("invented", home), discover_secondmates=True)]
                     for use_feed in (False, True):
@@ -6302,9 +6304,9 @@ class ActivityCardTests(unittest.TestCase):
         homes = [{"label": "invented", "waiting": {
             kind: [{"key": f"{kind}-{index}", "title": f"Call {index}", "at": None}
                    for index in range(65)] for kind in ("decisions", "informational")},
-            "recent_work_6h": [{"event": "started", "task": str(index), "title": "Work", "at": "2026-07-02T11:00:00Z"}
+            "recent_work_6h": [{"event": "started", "task": str(index), "title": f"Work {index}", "at": "2026-07-02T11:00:00Z"}
                                 for index in range(65)],
-            "done_recent": [{"event": "finished", "task": str(index), "title": "Done", "at": "2026-07-02T11:00:00Z"}
+            "done_recent": [{"event": "finished", "task": str(index), "title": f"Done {index}", "at": "2026-07-02T11:00:00Z"}
                             for index in range(65)]}]
         cards = quarterdeck.activity_cards({"homes": homes}, None, None)
         self.assertEqual({section: sum(card["section"] == section for card in cards)
@@ -8299,3 +8301,162 @@ assert.equal(request.hash, '#cards');
         pages = quarterdeck.source_pages(self.homes, bearings=bearings)
         self.assertIn('href="index.html"', pages["adoption.html"])
         self.assertIn("viewport", pages["adoption.html"])
+
+
+class QuickWinTests(unittest.TestCase):
+    """The phone-first quick wins: status line, sticky jump bar, collapsed long sections, document pages, ages, taps, folds."""
+
+    def site_page(self, root: Path, allow_marks: bool = False) -> tuple[str, list, quarterdeck.Bearings]:
+        home = AttentionTests().make_home(root)
+        snapshots = [quarterdeck.load_home_snapshot(quarterdeck.HomeSpec("invented", home))]
+        quarterdeck.apply_review_marks(snapshots, quarterdeck.ReviewState())
+        bearings = quarterdeck.build_bearings(snapshots, ATTENTION_NOW, use_snapshot=False)
+        bearings.attention = quarterdeck.attention_view(snapshots, ATTENTION_NOW, all_decisions=True)
+        page = quarterdeck.build_html(snapshots, "Invented", bearings=bearings, allow_marks=allow_marks)
+        return page, snapshots, bearings
+
+    def reports_site(self, root: Path) -> tuple[list, quarterdeck.Bearings]:
+        home = QuarterdeckTests().make_home(root)
+        snapshots = [quarterdeck.load_home_snapshot(quarterdeck.HomeSpec("invented", home))]
+        quarterdeck.apply_review_marks(snapshots, quarterdeck.ReviewState())
+        return snapshots, quarterdeck.build_bearings(snapshots, ATTENTION_NOW, use_snapshot=False)
+
+    def test_status_line_leads_and_each_part_links_to_its_section(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            page, _snapshots, _bearings = self.site_page(Path(temp))
+        line = page[page.index('<p class="status-line"'):]
+        line = line[:line.index("</p>")]
+        self.assertRegex(line, r'<a href="#cards" data-need="some">3 need you · oldest [^<]+</a>')
+        self.assertRegex(line, r'<a href="#underway">\d+ underway</a>')
+        self.assertRegex(line, r'<a href="#reviews">\d+ reports? to review</a>')
+        self.assertLess(page.index('class="status-line"'), page.index('id="cards"'))
+        self.assertLess(page.index("</header>"), page.index('class="status-line"'))
+        for anchor in ("cards", "underway", "reviews"):
+            self.assertIn(f'id="{anchor}"', page)
+
+    def test_status_line_says_nothing_needs_you_only_when_the_feed_was_read(self) -> None:
+        now = ATTENTION_NOW
+        self.assertIn(">Nothing needs you<", quarterdeck.status_line_html([], {"ok": True}, 6, 177, now))
+        self.assertIn("177 reports to review", quarterdeck.status_line_html([], {"ok": True}, 6, 177, now))
+        self.assertIn("1 report to review", quarterdeck.status_line_html([], {"ok": True}, 0, 1, now))
+        for unread in ({"ok": True, "waits_error": "x"}, {"ok": True, "homes": [{"errors": [{"source": "s"}]}]},
+                       {"ok": True, "homes": [{"errors": [], "decisions": {"skipped": "no feed"}}]}):
+            self.assertIn("Needs-you status unavailable", quarterdeck.status_line_html([], unread, 6, 1, now))
+        unknown = quarterdeck.status_line_html([], {"ok": False}, 6, 177, now)
+        self.assertIn("Needs-you status unavailable", unknown)
+        self.assertNotIn("Nothing needs you", unknown)
+        cards = [{"section": "needs_you", "at": "2026-06-29T12:00:00Z"}, {"section": "needs_you", "at": None}]
+        self.assertIn("2 need you · oldest 3 days", quarterdeck.status_line_html(cards, {"ok": True}, 0, 0, now))
+        self.assertIn("1 needs you", quarterdeck.status_line_html(cards[:1], {"ok": True}, 0, 0, now))
+
+    def test_jump_bar_is_sticky_at_the_top_and_lists_every_section_after_top(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            page, _snapshots, _bearings = self.site_page(Path(temp))
+        nav = page[page.index('<nav class="jump"'):]
+        nav = nav[:nav.index("</nav>")]
+        labels = re.findall(r'<a href="#([\w-]+)">', nav)
+        self.assertEqual(labels[0], "top")
+        for anchor in labels:
+            self.assertIn(f'id="{anchor}"', page, anchor)
+        self.assertEqual(labels[-3:], ["underway", "charted", "details"])
+        self.assertLess(page.index('<nav class="jump"'), page.index("<main>"))
+        self.assertEqual(page.count('<nav class="jump"'), 1)
+        self.assertRegex(page, r"\.jump \{[^}]*position: sticky; top: 0")
+
+    def test_charted_next_and_details_by_home_are_collapsed_by_default(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            page, _snapshots, _bearings = self.site_page(Path(temp))
+        for anchor, heading in (("charted", "Charted Next"), ("details", "Details by home")):
+            opening = re.search(rf'<details class="dashboard-section" id="{anchor}"[^>]*>', page)
+            self.assertIsNotNone(opening, anchor)
+            self.assertNotIn(" open", opening.group(0))
+            self.assertIn(f"<summary><h2>{heading}</h2>", page)
+        self.assertIn('data-refresh-key="charted"', page)
+
+    def test_header_timestamps_fold_into_updated_ago_on_a_phone(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            page, _snapshots, _bearings = self.site_page(Path(temp))
+        header = page[page.index("<header>"):page.index("</header>")]
+        self.assertIn('<time class="stamp-short" id="updated"', header)
+        self.assertIn("Generated at ", header)
+        self.assertIn("Updated ", page[page.index("function updated()"):])
+        self.assertRegex(page, r"@media \(max-width: 640px\) \{\s*\.stamp-long")
+
+    def test_document_page_header_title_is_visible_and_reports_carry_review_buttons(self) -> None:
+        plain = quarterdeck.source_page_html("A title", "data/x/report.md", "# Body\n\ntext")
+        self.assertRegex(plain, r"header h1 \{[^}]*color: #fffdf8")
+        self.assertNotRegex(plain, r"(?m)^h1,h2")
+        self.assertNotIn("review-actions\" aria-label", plain)
+        with tempfile.TemporaryDirectory() as temp:
+            snapshots, bearings = self.reports_site(Path(temp))
+            marked = quarterdeck.source_pages(snapshots, bearings=bearings, allow_marks=True)
+            unmarked = quarterdeck.source_pages(snapshots, bearings=bearings)
+        reports = {name: page for name, page in marked.items() if name.startswith("report-")}
+        self.assertTrue(reports)
+        for name, page in reports.items():
+            self.assertIn('data-mark-action="mark"', page, name)
+            self.assertIn('data-mark-action="discard"', page, name)
+            self.assertIn("Mark reviewed", page)
+            self.assertIn('id="qd-saved-back"', page)
+            self.assertIn("/api/reports/review", page)
+            self.assertNotIn("data-mark-report", unmarked[name])
+
+    def test_reviewed_and_discarded_report_pages_offer_the_way_back_to_needs_review(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            snapshots, _bearings = self.reports_site(Path(temp))
+        report = snapshots[0].reports[0]
+        report.reviewed = True
+        self.assertIn('data-mark-action="unmark"', quarterdeck.report_page_actions(report, set(), False))
+        report.reviewed, report.discarded = False, True
+        self.assertIn('data-mark-action="undiscard"', quarterdeck.report_page_actions(report, set(), False))
+        report.discarded = False
+        self.assertIn("disabled", quarterdeck.report_page_actions(report, {report.report_id}, False))
+
+    def test_underway_age_says_started_or_running_never_waiting(self) -> None:
+        now = datetime(2026, 11, 14, 5, 14, tzinfo=timezone.utc)
+        text = quarterdeck.running_text
+        self.assertEqual(text("2026-11-14T05:10:00Z", now), "started 4 min ago")
+        self.assertEqual(text("2026-11-14T05:14:00Z", now), "started just now")
+        self.assertEqual(text("2026-11-14T02:10:00Z", now), "started 3 hours ago")
+        self.assertEqual(text("2026-11-09T05:00:00Z", now), "running 5 days")
+        self.assertEqual(text("2026-11-09", now), "running 5 days")
+        self.assertEqual(text("2026-11-14", now), "started today", "a date-only value is never read as midnight")
+        self.assertEqual(text("2026-11-13", now), "running 1 day")
+        self.assertEqual(text("", now), "")
+        underway = quarterdeck.bearings_item_html(
+            quarterdeck.BItem(title="Chart", filed="2026-11-14"), now, "underway")
+        self.assertIn("started today", underway)
+        self.assertNotIn("waiting", underway)
+        queued = quarterdeck.bearings_item_html(quarterdeck.BItem(title="Chart", filed="2026-11-09"), now, "charted")
+        self.assertIn("waiting 5 days", queued)
+
+    def test_tap_targets_are_44px_and_reactions_form_a_two_by_two_grid(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            page, _snapshots, _bearings = self.site_page(Path(temp), allow_marks=True)
+        css = page[page.index("<style>"):page.index("</style>")]
+        self.assertRegex(css, r"\.request-lavish \{[^}]*min-height: 44px")
+        self.assertRegex(css, r"\.reaction-text \{[^}]*min-height: 44px")
+        self.assertRegex(css, r"\.links a \{[^}]*min-height: 44px")
+        self.assertRegex(css, r"\.reaction-choices \{[^}]*grid-template-columns: repeat\(2, minmax\(0, 1fr\)\)")
+        self.assertIn('class="request-row reaction-choices"', page)
+        self.assertEqual(page.count('data-reaction-choice="'), 4 * page.count('class="request-row reaction-choices"'))
+
+    def test_repeated_runs_of_one_task_fold_into_one_counted_card(self) -> None:
+        runs = [{"event": "finished", "task": f"sync-{index}", "title": "Doc sync run", "project": "docs",
+                 "at": f"2026-07-02T0{index}:00:00Z", "home": "invented", "pr": None} for index in range(4)]
+        other = {"event": "finished", "task": "lone", "title": "A different task", "at": "2026-07-02T09:00:00Z",
+                 "home": "invented", "pr": None}
+        cards = quarterdeck.work_cards([*runs, other], "invented", False)
+        self.assertEqual([card["label"] for card in cards], ["Finished ×4", "Finished"])
+        folded = cards[0]
+        self.assertEqual(folded["at"], "2026-07-02T03:00:00Z", "the card carries the newest run")
+        self.assertEqual(folded["title"], "Finished: Doc sync run")
+        self.assertIn("4 runs, newest first", folded["summary"])
+        self.assertLess(folded["body"].index("sync-3"), folded["body"].index("sync-0"))
+        self.assertEqual(folded["body"].count("<li>"), 4)
+        again = quarterdeck.work_cards([*runs[:2], *runs[2:]], "invented", False)[0]
+        self.assertEqual(again["id"], folded["id"], "the id is stable while the count changes")
+        fewer = quarterdeck.work_cards(runs[:2], "invented", False)[0]
+        self.assertEqual(fewer["id"], folded["id"])
+        self.assertNotEqual(fewer["label"], folded["label"])
+        self.assertEqual(quarterdeck.work_cards([runs[0]], "invented", False)[0]["label"], "Finished")

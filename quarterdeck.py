@@ -663,25 +663,44 @@ def inject_nav(page: str, raw_href: str, main_href: str = "index.html") -> str:
 
 def source_page_html(
     title: str, source_path: str, markdown: str, raw_href: str | None = None,
-    main_href: str | None = "index.html",
+    main_href: str | None = "index.html", actions: str = "",
 ) -> str:
+    """A readable document page. `actions` is optional review-control markup shown above the document."""
     nav = qd_nav_html(raw_href, fixed=False, main_href=main_href) if main_href is not None else ""
+    review = ""
+    if actions:
+        back = (
+            f'<a id="qd-saved-back" href="{html.escape(main_href, quote=True)}" hidden>&larr; Back to Quarterdeck</a>'
+            if main_href is not None else ""
+        )
+        review = (
+            f'<section class="review-actions" aria-label="Review this report">{actions}{back}</section>'
+            f"<script>{DOC_MARK_SCRIPT}</script>{MARK_SCRIPT.replace('__ENDPOINT__', MARK_ENDPOINT)}"
+        )
     return f'''<!doctype html>
 <html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
 <meta name="quarterdeck-{'gen' + 'erated'}" content="read-only source page"><title>{html.escape(title)} · Quarterdeck source</title>
 <style>
 body {{ margin: 0; background: #f3eddf; color: #20303d; font: 16px/1.65 system-ui, sans-serif; }}
-header {{ background: #17324d; color: #fffdf8; padding: 1.6rem max(1.2rem, calc((100vw - 850px) / 2)); border-bottom: 4px solid #c98635; }}
-header p {{ margin: .35rem 0 0; color: #d8c49b; overflow-wrap: anywhere; }}
-main {{ max-width: 850px; margin: 2rem auto 4rem; padding: 0 1.2rem; }}
+header {{ background: #17324d; color: #fffdf8; padding: .6rem max(1.2rem, calc((100vw - 850px) / 2)); border-bottom: 4px solid #c98635; }}
+header h1 {{ margin: 0; color: #fffdf8; font: 700 1.2rem/1.3 Georgia, serif; overflow-wrap: anywhere; }}
+header p {{ margin: .15rem 0 0; color: #d8c49b; font-size: .82rem; line-height: 1.35; overflow-wrap: anywhere; }}
+main {{ max-width: 850px; margin: 1.2rem auto 4rem; padding: 0 1.2rem; }}
 article {{ background: #fffdf8; border: 1px solid #d8d3c8; border-radius: 12px; padding: clamp(1.1rem, 4vw, 2.2rem); overflow-wrap: anywhere; }}
-h1,h2,h3,h4,h5,h6 {{ color: #17324d; line-height: 1.25; }}
+article h1, article h2, article h3, article h4, article h5, article h6 {{ color: #17324d; line-height: 1.25; }}
+.review-actions {{ max-width: 850px; margin: 1rem auto 0; padding: 0 1.2rem; }}
+.review-actions .request-row {{ display: flex; flex-wrap: wrap; align-items: center; gap: .65rem; margin: 0; }}
+.review-actions button {{ min-height: 44px; padding: 0 1rem; border: 1px solid #176b69; border-radius: 8px; background: #e6f1ee; color: #20303d; font: 700 .95rem system-ui, sans-serif; cursor: pointer; }}
+.review-actions button:disabled {{ opacity: .7; cursor: default; }}
+.review-actions .request-status {{ color: #52616d; font-size: .85rem; }}
+.review-actions #qd-saved-back {{ display: inline-block; margin-top: .4rem; min-height: 44px; line-height: 44px; }}
+.review-actions #qd-saved-back[hidden] {{ display: none; }}
 pre {{ overflow-x: auto; padding: 1rem; background: #172b3b; color: #f7f3e9; border-radius: 8px; }}
 code {{ font-family: ui-monospace, SFMono-Regular, Consolas, monospace; background: #eee8da; padding: .1em .25em; border-radius: 4px; }}
 pre code {{ background: transparent; padding: 0; }}
 .table-wrap {{ overflow-x: auto; }} table {{ border-collapse: collapse; min-width: 100%; }} th,td {{ border: 1px solid #d8d3c8; padding: .5rem .7rem; text-align: left; vertical-align: top; }}
 th {{ background: #e8e2d5; color: #17324d; }} a {{ color: #176b69; }} blockquote {{ border-left: 3px solid #c98635; margin-left: 0; padding-left: 1rem; color: #52616d; }}
-</style></head><body>{nav}<header><h1>{html.escape(title)}</h1><p>{html.escape(source_path)}</p></header><main><article>{render_markdown(markdown)}</article></main></body></html>'''
+</style></head><body>{nav}<header><h1>{html.escape(title)}</h1><p>{html.escape(source_path)}</p></header>{review}<main><article>{render_markdown(markdown)}</article></main></body></html>'''
 
 
 def write_generated_page(path: Path, content: str) -> None:
@@ -701,10 +720,23 @@ def write_generated_page(path: Path, content: str) -> None:
         raise
 
 
-def source_pages(homes: list[HomeSnapshot], show_all: bool = False, bearings: Bearings | None = None) -> dict[str, str]:
+def report_page_actions(report: Report, ambiguous_ids: set[str], report_resolution_incomplete: bool) -> str:
+    """The review buttons a report page carries: mark or discard, unmark, or undiscard, matching its state."""
+    actions = ["undiscard"] if report.discarded else ["unmark"] if report.reviewed else ["mark", "discard"]
+    return mark_buttons(
+        report.report_id, actions, report.fingerprint,
+        report_mark_unavailable_reason(report.report_id, ambiguous_ids, report_resolution_incomplete),
+    )
+
+
+def source_pages(
+    homes: list[HomeSnapshot], show_all: bool = False, bearings: Bearings | None = None, allow_marks: bool = False,
+) -> dict[str, str]:
     """Build every readable report, backlog and backlog-item page, keyed by file name."""
     pages: dict[str, str] = {}
     main_href = bearings.main_href if bearings else "index.html"
+    ambiguous_ids = assign_report_ids(homes) if allow_marks else set()
+    incomplete = allow_marks and bool(local_report_resolution_errors(homes))
     for snapshot in all_snapshots(homes):
         if snapshot.spec.home is None:
             continue
@@ -726,7 +758,11 @@ def source_pages(homes: list[HomeSnapshot], show_all: bool = False, bearings: Be
             if report.path not in linked_reports:
                 continue
             name = source_page_filename("report", snapshot.spec.home, report.path)
-            pages[name] = source_page_html(report.title, display_path(report.path, snapshot.spec.home), report.markdown, main_href=main_href)
+            actions = report_page_actions(report, ambiguous_ids, incomplete) if allow_marks else ""
+            pages[name] = source_page_html(
+                report.title, display_path(report.path, snapshot.spec.home), report.markdown,
+                main_href=main_href, actions=actions,
+            )
     if bearings is not None:
         pages.update(bearings.item_pages)
     pages[ADOPTION_PAGE] = adoption_page_html(adoption_summary(homes, bearings.generated if bearings else datetime.now(timezone.utc)), main_href)
@@ -734,9 +770,10 @@ def source_pages(homes: list[HomeSnapshot], show_all: bool = False, bearings: Be
 
 
 def write_source_pages(
-    homes: list[HomeSnapshot], output_dir: Path, show_all: bool = False, bearings: Bearings | None = None
+    homes: list[HomeSnapshot], output_dir: Path, show_all: bool = False, bearings: Bearings | None = None,
+    allow_marks: bool = False,
 ) -> None:
-    for name, content in source_pages(homes, show_all, bearings).items():
+    for name, content in source_pages(homes, show_all, bearings, allow_marks).items():
         write_generated_page(output_dir / name, content)
 
 
@@ -1353,6 +1390,86 @@ def load_report_context(args: argparse.Namespace) -> tuple[list[HomeSnapshot], P
     return snapshots, state_path, state
 
 
+def status_line_html(
+    cards: list[dict[str, object]], attention: dict[str, object] | None, underway: int | None, reports: int,
+    now: datetime,
+) -> str:
+    """The first line of the page: does anything need the captain, what is underway, how many reports wait.
+
+    Each part links to its section. When the needs-you feed could not be read the line says so instead of
+    claiming that nothing needs the captain.
+    """
+    parts: list[str] = []
+    if attention is not None:
+        waiting = [card for card in cards if card["section"] == "needs_you"]
+        homes = [home for home in attention.get("homes", []) if isinstance(home, dict)]  # type: ignore[union-attr]
+        unread = not attention.get("ok", True) or bool(attention.get("waits_error")) or any(
+            home.get("errors") or (isinstance(home.get("decisions"), dict) and home["decisions"].get("skipped"))
+            for home in homes)
+        if unread:
+            text, need = "Needs-you status unavailable", "unknown"
+        elif not waiting:
+            text, need = "Nothing needs you", "none"
+        else:
+            times = [when for card in waiting if card["at"] and (when := parse_when(str(card["at"]))) is not None]
+            oldest = f" · oldest {elapsed_text(min(times), now)}" if times else ""
+            text, need = f"{len(waiting)} {'needs' if len(waiting) == 1 else 'need'} you{oldest}", "some"
+        parts.append(f'<a href="#cards" data-need="{need}">{html.escape(text)}</a>')
+    if underway is not None:
+        parts.append(f'<a href="#underway">{underway} underway</a>')
+    parts.append(f'<a href="#reviews">{plural(reports, "report", "reports")} to review</a>')
+    return f'<p class="status-line" id="status-line" role="status">{" · ".join(parts)}</p>'
+
+
+JUMP_SECTIONS = (
+    ("cards", "Cards"), ("board", "Desk"), ("attention", "Waiting"), ("reviews", "Reports"),
+    ("call", "Captain's Call"), ("underway", "Underway"), ("charted", "Charted Next"), ("details", "Details"),
+)
+
+
+def jump_nav_html(markup: str, counts: dict[str, int]) -> str:
+    """The sticky strip of links to every section the page actually has, starting with Top."""
+    links = ['<a href="#top">Top</a>']
+    for anchor, label in JUMP_SECTIONS:
+        if f'id="{anchor}"' not in markup:
+            continue
+        count = f" <b>{counts[anchor]}</b>" if anchor in counts else ""
+        links.append(f'<a href="#{anchor}">{html.escape(label)}{count}</a>')
+    return f'<nav class="jump" aria-label="Sections">{"".join(links)}</nav>'
+
+
+NAV_SCRIPT = """
+  <script>
+    (function () {
+      function reveal() {
+        const target = location.hash.length > 1 ? document.getElementById(decodeURIComponent(location.hash.slice(1))) : null;
+        for (let node = target; node; node = node.parentElement && node.parentElement.closest("details")) {
+          if (node.tagName === "DETAILS") node.open = true;
+        }
+        if (target) target.scrollIntoView();
+      }
+      document.addEventListener("click", event => {
+        const link = event.target.closest('.jump a[href^="#"], .status-line a[href^="#"]');
+        if (!link || event.defaultPrevented || event.button !== 0 || event.metaKey || event.ctrlKey || event.shiftKey || event.altKey) return;
+        const target = document.getElementById(link.hash.slice(1));
+        if (!target) return;
+        event.preventDefault();
+        history.replaceState(null, "", link.hash);
+        reveal();
+      });
+      window.addEventListener("hashchange", reveal);
+      if (location.hash) reveal();
+      const stamp = document.getElementById("updated");
+      function updated() {
+        const minutes = Math.max(0, Math.floor((Date.now() - Date.parse(stamp.getAttribute("datetime"))) / 60000));
+        stamp.textContent = "Updated " + (minutes < 1 ? "just now" : minutes < 60 ? minutes + " min ago" :
+          minutes < 1440 ? Math.floor(minutes / 60) + " hr ago" : Math.floor(minutes / 1440) + " days ago");
+      }
+      if (stamp && !isNaN(Date.parse(stamp.getAttribute("datetime")))) { updated(); setInterval(updated, 20000); }
+    })();
+  </script>"""
+
+
 def build_html(
     homes: list[HomeSnapshot], title: str, lavish: bool = False, show_all: bool = False,
     bearings: Bearings | None = None, refresh_seconds: int | None = None, allow_marks: bool = False,
@@ -1378,18 +1495,36 @@ def build_html(
     )
     board_block = board_html(board, generated, show_all, related_block, reactions, bearings.attention if bearings else None) if board else related_block
     board_status = board_status_html(board, generated) if board else ""
+    section_counts: dict[str, int] = {}
     bearings_block = bearings_html(
         bearings, collapse_reviews=board is not None, can_mark=allow_marks, ambiguous_ids=ambiguous_ids,
         report_resolution_incomplete=report_resolution_incomplete, reactions=reactions, decisions=decisions,
+        counts=section_counts,
     ) if bearings else ""
     attention_block = attention_html(bearings.attention, allow_marks) if bearings else ""
     cards = activity_cards(bearings.attention, board, reactions, home_data_dirs(homes), bearings.item_pages, bearings.main_href) if bearings else []
     cards_block = cards_html(cards, bearings.attention, generated, bool(refresh_seconds)) if bearings else ""
     cards_script = ACTIVITY_SCRIPT if cards_block else ""
     cards_link = '<a class="cards-new" id="cards-new" href="#cards" hidden></a>' if cards_block else ""
+    metrics_html = "".join(
+        f'<div class="metric"><b>{count}</b><span>{html.escape(label)}</span></div>'
+        for count, label in zip(counts, metric_labels)
+    )
     reviewed_block = (
         reviewed_reports_html(homes, ambiguous_ids, report_resolution_incomplete, reactions) if allow_marks else ""
     ) + set_aside_reports_html(homes, ambiguous_ids, report_resolution_incomplete, allow_marks, reactions)
+    details_block = (
+        '<details class="dashboard-section" id="details" data-refresh-key="details"><summary>'
+        f'<h2>Details by home</h2><span class="count">{len(homes)}</span></summary>'
+        f'<div class="summary" aria-label="Review counts">{metrics_html}</div>'
+        + "".join(home_panel(home, lavish, show_all, decisions) for home in homes) + "</details>"
+    )
+    body_markup = cards_block + board_block + attention_block + bearings_block + reviewed_block + details_block
+    status_block = status_line_html(
+        cards, bearings.attention if bearings else None, section_counts.get("underway") if bearings else None,
+        counts[-1], generated,
+    )
+    jump_block = jump_nav_html(body_markup, section_counts)
     reload_script = """
   <script>
     if (location.protocol === "http:" || location.protocol === "https:") {
@@ -1413,33 +1548,7 @@ def build_html(
       location.reload();
     }
   </script>"""
-    mark_script = f"""
-  <script>
-    document.addEventListener("click", async (event) => {{
-      const button = event.target.closest("[data-mark-report]");
-      if (!button || button.disabled) return;
-      const status = button.parentElement.querySelector(".request-status");
-      button.disabled = true;
-      if (status) status.textContent = "Saving…";
-      try {{
-        const response = await fetch("{MARK_ENDPOINT}", {{
-          method: "POST",
-          headers: {{"Content-Type": "application/json"}},
-          body: JSON.stringify({{
-            report_id: button.dataset.markReport,
-            fingerprint: button.dataset.markFingerprint,
-            action: button.dataset.markAction
-          }}),
-        }});
-        if (!response.ok) throw new Error((await response.text()).trim() || response.statusText);
-        if (status) status.textContent = "Saved";
-        quarterdeckReload();
-      }} catch (error) {{
-        button.disabled = false;
-        if (status) status.textContent = "Could not save: " + error.message;
-      }}
-    }});
-  </script>""" if allow_marks else ""
+    mark_script = MARK_SCRIPT.replace("__ENDPOINT__", MARK_ENDPOINT) if allow_marks else ""
     wait_script = WAIT_SCRIPT.replace("__ENDPOINT__", WAITS_DISCARD_ENDPOINT) if allow_marks else ""
     reaction_script = f"""
   <script>
@@ -1534,10 +1643,6 @@ def build_html(
         else "Read-only snapshot"
     )
     refresh_note = f" · reloads every {int(refresh_seconds)} seconds" if refresh_seconds else ""
-    metrics = "".join(
-        f'<div class="metric"><b>{count}</b><span>{html.escape(label)}</span></div>'
-        for count, label in zip(counts, metric_labels)
-    )
     introductory_text = (
         "Exhaustive snapshot of configured homes, reports needing review, and their registered secondmates."
         if show_all else
@@ -1575,7 +1680,7 @@ def build_html(
   <meta name="quarterdeck-{'gen' + 'erated'}" content="read-only review page">
   <title>{html.escape(title)} · Firstmate review</title>
   <style>
-    :root {{ color-scheme: light dark; --navy: #17324d; --sea: #176b69; --sand: #f3eddf; --paper: #fffdf8; --ink: #20303d; --muted: #657482; --line: #d8d3c8; --gold: #c98635; --head: #17324d; --soft: #ffffff70; --warn-bg: #fff8e9; --warn-ink: #624313; --fail-bg: #fff2ee; --fail-ink: #6f251b; --chip: #e6f1ee; }}
+    :root {{ color-scheme: light dark; --navy: #17324d; --sea: #176b69; --sand: #f3eddf; --paper: #fffdf8; --ink: #20303d; --muted: #657482; --line: #d8d3c8; --gold: #c98635; --gold-ink: #9a5f1a; --head: #17324d; --soft: #ffffff70; --warn-bg: #fff8e9; --warn-ink: #624313; --fail-bg: #fff2ee; --fail-ink: #6f251b; --chip: #e6f1ee; }}
     * {{ box-sizing: border-box; }}
     body {{ margin: 0; background: var(--sand); color: var(--ink); font: 16px/1.55 system-ui, -apple-system, Segoe UI, sans-serif; }}
     header {{ background: var(--head); color: #fffdf8; padding: .55rem max(1.2rem, calc((100vw - 1080px) / 2)); border-bottom: 3px solid var(--gold); display: flex; flex-wrap: wrap; align-items: baseline; gap: .1rem 1rem; }}
@@ -1604,14 +1709,16 @@ def build_html(
     .card p {{ margin: .4rem 0; }}
     .eyebrow {{ color: var(--muted); font-size: .73rem; text-transform: uppercase; letter-spacing: .09em; font-weight: 700; }}
     .links {{ margin-top: .8rem !important; font-size: .9rem; }}
+    .links a {{ display: inline-flex; align-items: center; min-height: 44px; padding: .2rem 0; }}
     .request-row {{ display: flex; flex-wrap: wrap; align-items: center; gap: .65rem; margin-top: .8rem; }}
-    .request-lavish {{ border: 1px solid var(--sea); border-radius: 7px; background: var(--chip); color: var(--ink); padding: .45rem .7rem; font: inherit; font-size: .86rem; font-weight: 700; cursor: pointer; }}
+    .request-lavish {{ border: 1px solid var(--sea); border-radius: 7px; background: var(--chip); color: var(--ink); padding: .45rem .9rem; min-height: 44px; font: inherit; font-size: .86rem; font-weight: 700; cursor: pointer; }}
     .request-lavish:focus-visible {{ outline: 3px solid var(--gold); outline-offset: 2px; }}
     .request-lavish:disabled {{ opacity: .7; cursor: default; }}
     .request-status {{ color: var(--muted); font-size: .82rem; }}
     .reaction {{ margin-top: .6rem; }}
     .reaction-latest {{ margin: .3rem 0; color: var(--muted); font-size: .85rem; }}
-    .reaction-text {{ flex: 1 1 14rem; min-width: 0; min-height: 2.2rem; padding: 0 .6rem; border: 1px solid var(--line); border-radius: 7px; background: var(--paper); color: var(--ink); font: inherit; font-size: .9rem; }}
+    .reaction-text {{ flex: 1 1 14rem; min-width: 0; min-height: 44px; padding: 0 .6rem; border: 1px solid var(--line); border-radius: 7px; background: var(--paper); color: var(--ink); font: inherit; font-size: .9rem; }}
+    .reaction-choices {{ display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: .5rem; }}
     .reaction-choice[aria-pressed=true] {{ background: var(--sea); color: var(--paper); }}
     .chip-reaction {{ color: var(--ink); border-color: var(--gold); }}
     .chip-reaction[hidden], .reaction-latest[hidden] {{ display: none; }}
@@ -1627,15 +1734,22 @@ def build_html(
     .secondmates {{ margin: 1.7rem 0 0; padding-left: 1rem; border-left: 3px solid var(--line); }}
     .secondmates > h3 {{ margin: 0 0 .8rem; color: var(--navy); font: 700 1.2rem Georgia, serif; }}
     .secondmates .home {{ margin: 1rem 0; background: var(--paper); }}
-    .jump {{ display: flex; flex-wrap: wrap; gap: .5rem; margin: 0 0 1.5rem; }}
-    .jump a {{ border: 1px solid var(--line); background: var(--paper); border-radius: 999px; padding: .3rem .8rem; text-decoration: none; }}
-    .jump b {{ color: var(--gold); }}
+    html {{ scroll-padding-top: 4.2rem; }}
+    .status-line {{ margin: 0; padding: 0 max(1.2rem, calc((100vw - 1080px) / 2)); background: var(--paper); border-bottom: 1px solid var(--line); font: 700 1rem/1.3 Georgia, serif; display: flex; flex-wrap: wrap; align-items: center; column-gap: .45rem; }}
+    .status-line a {{ display: inline-flex; align-items: center; min-height: 44px; color: var(--navy); text-decoration-thickness: 1px; }}
+    .status-line a[data-need=some] {{ color: var(--gold-ink); }}
+    .status-line a[data-need=unknown] {{ color: var(--fail-ink); }}
+    .jump {{ position: sticky; top: 0; z-index: 20; display: flex; flex-wrap: nowrap; gap: .4rem; margin: 0; padding: .35rem max(1.2rem, calc((100vw - 1080px) / 2)); background: var(--sand); border-bottom: 1px solid var(--line); overflow-x: auto; scrollbar-width: none; }}
+    .jump::-webkit-scrollbar {{ display: none; }}
+    .jump a {{ flex: none; display: inline-flex; align-items: center; min-height: 44px; border: 1px solid var(--line); background: var(--paper); border-radius: 999px; padding: 0 .9rem; text-decoration: none; white-space: nowrap; }}
+    .jump b {{ margin-left: .35rem; color: var(--gold-ink); }}
+    .stamp-short, .board-ok-short {{ display: none; }}
     .dashboard-section h2 {{ margin: 0; color: var(--navy); font: 700 1.5rem Georgia, serif; }}
     .reviews {{ border: 2px solid var(--gold); border-radius: 14px; padding: 1rem; background: var(--warn-bg); }}
     .detail-heading {{ margin: 3rem 0 1rem; color: var(--navy); font: 700 1.5rem Georgia, serif; }}
     .when {{ color: var(--muted); font-size: .88rem; }}
     .bearing details {{ margin: .6rem 0; }}
-    .bearing summary {{ cursor: pointer; color: var(--sea); font-weight: 650; }}
+    .bearing summary {{ display: flex; align-items: center; min-height: 44px; cursor: pointer; color: var(--sea); font-weight: 650; }}
     .bearing .body {{ border-left: 3px solid var(--line); padding-left: .8rem; overflow-wrap: anywhere; }}
     .generated, .source-note {{ color: #d8c49b; font-size: .85rem; }}
     .adoption-link {{ display: inline-flex; align-items: center; min-height: 44px; color: #fffdf8; }}
@@ -1691,10 +1805,16 @@ def build_html(
     details.dashboard-section:not(.board-band) > summary h2::before {{ content: "▸ "; color: var(--gold); }}
     details.dashboard-section:not(.board-band)[open] > summary h2::before {{ content: "▾ "; }}
 {ACTIVITY_CSS}    @media (prefers-color-scheme: dark) {{
-      :root {{ --navy: #a9cdee; --sea: #5fc2b9; --sand: #11181f; --paper: #1a242d; --ink: #e3e8ec; --muted: #9aa8b3; --line: #33434f; --gold: #e0a24e; --head: #0d2438; --soft: #ffffff10; --warn-bg: #2d2412; --warn-ink: #f0d9a8; --fail-bg: #331b17; --fail-ink: #f3c4bb; --chip: #1f3a37; }}
+      :root {{ --navy: #a9cdee; --sea: #5fc2b9; --sand: #11181f; --paper: #1a242d; --ink: #e3e8ec; --muted: #9aa8b3; --line: #33434f; --gold: #e0a24e; --gold-ink: #e0a24e; --head: #0d2438; --soft: #ffffff10; --warn-bg: #2d2412; --warn-ink: #f0d9a8; --fail-bg: #331b17; --fail-ink: #f3c4bb; --chip: #1f3a37; }}
       .board-num {{ color: #0b1a18; }}
     }}
+    @media (min-width: 641px) {{
+      .reaction-choices {{ grid-template-columns: repeat(4, minmax(0, 1fr)); }}
+    }}
     @media (max-width: 640px) {{
+      .stamp-long, .generated.board-ok {{ display: none; }}
+      .stamp-short {{ display: inline; }}
+      header {{ padding-top: .4rem; padding-bottom: .4rem; }}
       .summary {{ grid-template-columns: repeat(2, 1fr); }}
       .views {{ grid-template-columns: minmax(0, 1fr); }}
       .views-rail {{ flex-direction: row; flex-wrap: wrap; }}
@@ -1704,27 +1824,26 @@ def build_html(
   </style>
 </head>
 <body>
+  <span id="top"></span>
   <header>
     <h1>⚓ {html.escape(title)}</h1>
-    <p class="generated">Generated at {timestamp}{refresh_note}</p>
+    <p class="generated"><span class="stamp-long">Generated at {timestamp}{refresh_note}</span><time class="stamp-short" id="updated" datetime="{iso_seconds(generated.timestamp())}">Updated {generated.strftime("%H:%M")} UTC</time></p>
     {board_status}
     {cards_link}
     <p class="generated"><a class="adoption-link" href="{ADOPTION_PAGE}">Adoption this week</a></p>
   </header>
+  {status_block}
+  {jump_block}
   <main>
     {cards_block}
     {board_block}
     {attention_block}
     {bearings_block}
     {reviewed_block}
-    <h2 class="detail-heading">Details by home</h2>
-    <div class="summary" aria-label="Review counts">
-      {metrics}
-    </div>
-    {''.join(home_panel(home, lavish, show_all, decisions) for home in homes)}
+    {details_block}
     <footer>{html.escape(introductory_text)} {footer_label} · generated {timestamp} · source files open as readable pages beside this one.</footer>
   </main>
-  {lavish_script}{refresh_script}{reload_script}{mark_script}{reaction_script}{wait_script}{cards_script}
+  {lavish_script}{NAV_SCRIPT}{refresh_script}{reload_script}{mark_script}{reaction_script}{wait_script}{cards_script}
 </body>
 </html>
 '''
@@ -2015,6 +2134,34 @@ def waited_text(filed: str, now: datetime) -> str:
     if then is None:
         return ""
     return elapsed_text(then, now)
+
+
+def is_date_only(value: str) -> bool:
+    """True when the first date in the text carries no time of day, so it names a whole day rather than a moment."""
+    match = DATE_RE.search(value or "")
+    return bool(match) and len(match.group(0)) == 10
+
+
+def running_text(started: str, now: datetime) -> str:
+    """How long work has run, from a start that may be only a date: "started 4 min ago" or "running 5 days".
+
+    A date-only start is read as a whole day, never as midnight, so it never yields a made-up count of hours.
+    """
+    then = parse_when(started)
+    if then is None:
+        return ""
+    if is_date_only(started):
+        days = max(0, (now.astimezone(timezone.utc).date() - then.date()).days)
+        return "started today" if days == 0 else f"running {days} day{'s' if days != 1 else ''}"
+    seconds = max(0, int((now - then).total_seconds()))
+    if seconds >= 86400:
+        days = seconds // 86400
+        return f"running {days} day{'s' if days != 1 else ''}"
+    if seconds >= 3600:
+        hours = seconds // 3600
+        return f"started {hours} hour{'s' if hours != 1 else ''} ago"
+    minutes = seconds // 60
+    return "started just now" if minutes < 1 else f"started {minutes} min ago"
 
 
 def elapsed_text(then: datetime, now: datetime) -> str:
@@ -2371,7 +2518,12 @@ def bearings_item_html(item: BItem, now: datetime, section: str) -> str:
     parts = [f'<article class="card bearing"><p class="eyebrow">{" · ".join(chips)}</p>',
              f"<h3>{html.escape(item.title)}</h3>"]
     when = []
-    if item.filed:
+    if item.filed and section == "underway":
+        running = running_text(item.filed, now)
+        when.append(f"Filed {html.escape(item.filed[:16].replace('T', ' '))}")
+        if running:
+            when.append(html.escape(running))
+    elif item.filed:
         waited = waited_text(item.filed, now)
         when.append(f"Filed {html.escape(item.filed[:16].replace('T', ' '))}")
         if waited:
@@ -2416,6 +2568,41 @@ def bearings_item_html(item: BItem, now: datetime, section: str) -> str:
 
 
 MARK_ENDPOINT = "/api/reports/review"
+MARK_SCRIPT = """
+  <script>
+    document.addEventListener("click", async (event) => {
+      const button = event.target.closest("[data-mark-report]");
+      if (!button || button.disabled) return;
+      const status = button.parentElement.querySelector(".request-status");
+      button.disabled = true;
+      if (status) status.textContent = "Saving…";
+      try {
+        const response = await fetch("__ENDPOINT__", {
+          method: "POST",
+          headers: {"Content-Type": "application/json"},
+          body: JSON.stringify({
+            report_id: button.dataset.markReport,
+            fingerprint: button.dataset.markFingerprint,
+            action: button.dataset.markAction
+          }),
+        });
+        if (!response.ok) throw new Error((await response.text()).trim() || response.statusText);
+        if (status) status.textContent = "Saved";
+        if (typeof quarterdeckSaved === "function") quarterdeckSaved(button); else quarterdeckReload();
+      } catch (error) {
+        button.disabled = false;
+        if (status) status.textContent = "Could not save: " + error.message;
+      }
+    });
+  </script>"""
+# A document page has no list to reload: after a save it offers the way back instead.
+DOC_MARK_SCRIPT = """
+function quarterdeckSaved(button) {
+  for (const other of button.parentElement.querySelectorAll("[data-mark-report]")) other.disabled = true;
+  const back = document.getElementById("qd-saved-back");
+  if (back) back.hidden = false;
+}
+"""
 
 
 def report_mark_unavailable_reason(
@@ -2531,8 +2718,9 @@ def bearings_html(
     bearings: Bearings, collapse_reviews: bool = False, can_mark: bool = False,
     ambiguous_ids: set[str] | None = None,
     report_resolution_incomplete: bool = False, reactions: ReactionContext | None = None,
-    decisions: dict[str, dict[str, object]] | None = None,
+    decisions: dict[str, dict[str, object]] | None = None, counts: dict[str, int] | None = None,
 ) -> str:
+    """The Bearings sections. When `counts` is given it receives each section's visible item count by anchor id."""
     ambiguous_ids = ambiguous_ids or set()
     decisions = decisions or {}
     now = bearings.generated
@@ -2556,6 +2744,8 @@ def bearings_html(
                 visible.append(item)
         visible_sections.append((key, title, description, visible, empty))
     sections = visible_sections
+    if counts is not None:
+        counts.update({key: len(items) for key, _title, _d, items, _e in sections})
     review_cards = []
     for snapshot, report in bearings.reports:
         home = snapshot.spec.home or Path(".")
@@ -2586,11 +2776,9 @@ def bearings_html(
                 not report_mark_unavailable_reason(report.report_id, ambiguous_ids, report_resolution_incomplete),
             ) + '</article>'
         )
-    nav = "".join(
-        f'<a href="#{key}">{html.escape(title)} <b>{len(items)}</b></a>' for key, title, _d, items, _e in sections
-    )
-    nav = f'<a href="#reviews">Reports to review <b>{len(review_cards)}</b></a>' + nav
-    out = [f'<nav class="jump" aria-label="Sections">{nav}</nav>']
+    if counts is not None:
+        counts["reviews"] = len(review_cards)
+    out = []
     reviews_cards = "".join(review_cards) or '<p class="empty">No reports are waiting on your review.</p>'
     if collapse_reviews:
         out.append(
@@ -2608,6 +2796,13 @@ def bearings_html(
         cards = "".join(bearings_item_html(item, now, key) for item in items)
         if not cards:
             cards = f'<p class="empty">{html.escape(empty)}</p>'
+        if key == "charted":  # the longest queue: closed until the captain opens it
+            out.append(
+                f'<details class="dashboard-section" id="{key}" data-refresh-key="{key}"><summary>'
+                f'<h2>{html.escape(title)}</h2><span class="count">{len(items)}</span></summary>'
+                f'<p>{html.escape(description)}</p><div class="cards">{cards}</div></details>'
+            )
+            continue
         out.append(
             f'<div class="dashboard-section" id="{key}"><div class="section-head"><div><h2>{html.escape(title)}</h2>'
             f'<p>{html.escape(description)}</p></div><span class="count">{len(items)}</span></div>'
@@ -3197,7 +3392,9 @@ def build_view(
         for kind in ("decisions", "needs_you", "informational"):
             (info if kind == "informational" else needs).extend(
                 view_item(item, str(home["label"]), rank) for item in home["waiting"][kind])  # type: ignore[index]
-        info.extend(view_item(item, str(home["label"]), rank) for item in home["open_work"])  # type: ignore[union-attr]
+        # Queued work already has its own section; this list shows only work in flight and results to read.
+        info.extend(view_item(item, str(home["label"]), rank) for item in home["open_work"]  # type: ignore[union-attr]
+                    if item["group"] == "in_flight")
         recent.extend(dict(item, home=home["label"]) for item in home["recent_work_6h"])  # type: ignore[union-attr]
     complete = all(home["complete"] for home in homes)
     for pool in (needs, info):
@@ -4510,7 +4707,8 @@ def board_status_html(view: BoardView, now: datetime) -> str:
         prefix = f"{html.escape(label)}: " if len(view.status) > 1 else ""
         stamp = f" ({updated.astimezone(timezone.utc).strftime('%Y-%m-%d %H:%M UTC')})" if updated else ""
         flag = f' <strong class="stale">⚠ Board may be out of date: {html.escape(stale)}.</strong>' if stale else ""
-        lines.append(f'<p class="generated">{prefix}Board updated {html.escape(board_age_text(updated, now))}{stamp}{flag}</p>')
+        quiet = "" if stale else " board-ok"  # a plain timestamp folds into "Updated … ago" on a phone; a warning stays
+        lines.append(f'<p class="generated{quiet}">{prefix}Board updated {html.escape(board_age_text(updated, now))}{stamp}{flag}</p>')
     return "".join(lines)
 
 
@@ -5505,7 +5703,7 @@ def site_builder(args: argparse.Namespace, allow_marks: bool = False) -> Callabl
             except (sqlite3.Error, OSError, ValueError) as exc:
                 print(f"quarterdeck: could not record adoption arrivals: {exc}", file=sys.stderr, flush=True)
         cards = cards_payload(activity, bearings.generated)
-        pages = source_pages(homes, show_all=False, bearings=bearings)  # after the cards: they register document pages
+        pages = source_pages(homes, show_all=False, bearings=bearings, allow_marks=allow_marks)  # after the cards: they register document pages
         pages["index.html"] = index
         pages[CARDS_PAGE] = cards
         return pages
@@ -6920,7 +7118,7 @@ def reaction_html(ctx: ReactionContext | None, kind: str, item_id: str, availabl
     )
     return (
         f'<div class="reaction" data-reaction-kind="{kind}" data-reaction-item="{html.escape(item_id, quote=True)}">'
-        f'{latest}<div class="request-row">{buttons}</div>'
+        f'{latest}<div class="request-row reaction-choices">{buttons}</div>'
         f'<div class="request-row"><input class="reaction-text" type="text" maxlength="{REACTION_TEXT_LIMIT}" '
         f'placeholder="Reply to Firstmate (optional)" aria-label="Reply to Firstmate">'
         f'<button class="request-lavish reaction-send" type="button">Send</button>'
@@ -8028,6 +8226,38 @@ def work_card(item: dict[str, object], home: str, multi_home: bool) -> dict[str,
     }
 
 
+def work_cards(items: list[dict[str, object]], home: str, multi_home: bool) -> list[dict[str, object]]:
+    """One card per work item, except that repeated runs of one task (same event and title) fold into one counted card."""
+    groups: dict[tuple[str, str, str], list[dict[str, object]]] = {}
+    for item in items:
+        groups.setdefault((str(item.get("home") or home), str(item["event"]), str(item["title"])), []).append(item)
+    cards: list[dict[str, object]] = []
+    for (owner, event, title), runs in groups.items():
+        if len(runs) == 1:
+            cards.append(work_card(runs[0], owner, multi_home))
+            continue
+        runs.sort(key=lambda run: str(run["at"]), reverse=True)
+        card = work_card(runs[0], owner, multi_home)
+        verb = str(card["label"])
+        project = str(runs[0].get("project") or "")
+        lines = []
+        for run in runs:
+            when = parse_when(str(run["at"]))
+            pr = run.get("pr")
+            link = (f' · <a href="{html.escape(str(pr), quote=True)}">{html.escape(str(pr))}</a>'
+                    if isinstance(pr, str) and pr.startswith("https://") else "")
+            lines.append(f"<li><b>{html.escape(str(run['task']))}</b> "
+                         f"{html.escape(when.strftime('%Y-%m-%d %H:%M UTC')) if when else ''}{link}</li>")
+        digest = hashlib.sha256(title.encode("utf-8")).hexdigest()[:12]
+        card.update({
+            "id": f"work:{owner}:{event}:runs:{digest}", "label": f"{verb} ×{len(runs)}",
+            "summary": " · ".join(part for part in (owner if multi_home else "", project, f"{len(runs)} runs, newest first") if part),
+            "body": ('<ul class="act-facts">' + "".join(lines) + "</ul>"),
+        })
+        cards.append(card)
+    return cards
+
+
 DOC_PATH_RE = re.compile(r"(?<![\w./-])data/([\w.-]+)/([\w.-]+\.(?:md|html))(?![\w-])")
 DOC_BARE_RE = re.compile(r"(?<![\w./-])([\w-][\w.-]*\.(?:md|html))(?![\w-])")
 DOC_PAGE_LIMIT = 2_000_000
@@ -8211,11 +8441,9 @@ def activity_cards(
                     item, entry, owner, multi_home, reactions, section,
                     (data_dirs or {}).get(owner) if len(owners) == 1 else None, doc_pages, main_href,
                 ))
-        for item in home.get("recent_work_6h") or []:
-            if item["event"] == "started":
-                cards.append(work_card(item, label, multi_home))
-        for item in home.get("done_recent") or []:
-            cards.append(work_card(item, str(item.get("home") or label), multi_home))
+        cards.extend(work_cards(
+            [item for item in home.get("recent_work_6h") or [] if item["event"] == "started"], label, multi_home))
+        cards.extend(work_cards(list(home.get("done_recent") or []), label, multi_home))
     ranked: list[dict[str, object]] = []
     for section, _title in CARD_SECTIONS:
         chosen = [card for card in cards if card["section"] == section]
