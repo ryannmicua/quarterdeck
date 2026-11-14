@@ -287,7 +287,7 @@ sentence fit to be read aloud.
   priority-project order, then newest activity, using the same task identities
   and first-section claiming as every other section.
 - `project` holds that project's `needs_you` items, then its `information`
-  items. When nothing is waiting on it, both lists are empty,
+  items, including the project's queued backlog work. When nothing is waiting on it, both lists are empty,
   `nothing_waiting` is `true` and `say` is "Nothing waiting on <project>.";
   `nothing_waiting` is `null` with "<project>: waiting status unavailable."
   when a required source failed, as for `priorities`.
@@ -315,6 +315,7 @@ order, are:
 | `review_waiting` | Review waiting | a board `approve` item |
 | `result_ready` | Result ready | a board `read` item |
 | `in_flight` | In flight | a backlog task recorded as in flight |
+| `queued` | Queued | other open, noncancelled backlog work not already waiting on the captain, listed only in `project` sections; deferred decisions are excluded |
 
 The served page uses the same builder for every saved view; the page's data is
 not part of this JSON. Readers must ignore members they do not recognize.

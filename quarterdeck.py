@@ -1931,6 +1931,7 @@ class BItem:
     waits_on: str = ""
     status: str = ""
     detail: str = ""
+    started: str = ""
 
 
 @dataclass
@@ -2333,6 +2334,22 @@ class BearingsBuilder:
             setattr(target, "_items", items)
         return target, items.get(item_id), item_id
 
+    def started(self, snapshot: HomeSnapshot, task: str) -> str:
+        """When the home's fleet ledger last recorded the task as dispatched, or "" when it has no such record."""
+        starts = getattr(snapshot, "_starts", None)
+        if starts is None:
+            starts = {}
+            if snapshot.spec.home is not None and not snapshot.spec.remote_host and not snapshot.error:
+                try:
+                    records = read_fleet_ledger(snapshot.spec.home / LEDGER_PATH) or []
+                except AttentionSourceError:
+                    records = []
+                for record in sorted(records, key=lambda r: r["ts"]):  # type: ignore[arg-type, return-value]
+                    if record["event"] == "task.dispatched":
+                        starts[str(record["task"])] = iso_seconds(record["ts"])  # type: ignore[arg-type]
+            setattr(snapshot, "_starts", starts)
+        return starts.get(task, "")
+
     def home_label(self, snapshot: HomeSnapshot, owner: str) -> str:
         if not owner or owner == "(main)":
             return snapshot.spec.label
@@ -2419,7 +2436,7 @@ class BearingsBuilder:
                 owner=target.spec.label if resolved else self.home_label(snapshot, owner),
                 item_id=task if resolved else item_id,
                 project=_blank(_text(row.get("repo"))), status=_text(row.get("state")),
-                detail=_blank(_text(row.get("doing"))),
+                detail=_blank(_text(row.get("doing"))), started=self.started(target, task),
             ))
         for row in _rows(data, "secondmates"):
             state = normalized_state(_text(row.get("state")))
@@ -2470,6 +2487,7 @@ class BearingsBuilder:
             elif is_in_flight_state(item.state):
                 bitem.status = "in flight"
                 bitem.detail = item.hold_reason
+                bitem.started = self.started(snapshot, item.id)
                 self.result.underway.append(bitem)
             else:
                 bitem.waits_on = item.blocked_by or item.hold_reason or "queue order"
@@ -2526,9 +2544,10 @@ def bearings_item_html(item: BItem, now: datetime, section: str) -> str:
     parts = [f'<article class="card bearing"><p class="eyebrow">{" · ".join(chips)}</p>',
              f"<h3>{html.escape(item.title)}</h3>"]
     when = []
-    if item.filed and section == "underway":
-        running = running_text(item.filed, now)
-        when.append(f"Filed {html.escape(item.filed[:16].replace('T', ' '))}")
+    if section == "underway":
+        if item.filed:
+            when.append(f"Filed {html.escape(item.filed[:16].replace('T', ' '))}")
+        running = running_text(item.started, now)
         if running:
             when.append(html.escape(running))
     elif item.filed:
@@ -3409,9 +3428,7 @@ def build_view(
         for kind in ("decisions", "needs_you", "informational"):
             (info if kind == "informational" else needs).extend(
                 view_item(item, str(home["label"]), rank) for item in home["waiting"][kind])  # type: ignore[index]
-        # Queued work already has its own section; this list shows only work in flight and results to read.
-        info.extend(view_item(item, str(home["label"]), rank) for item in home["open_work"]  # type: ignore[union-attr]
-                    if item["group"] == "in_flight")
+        info.extend(view_item(item, str(home["label"]), rank) for item in home["open_work"])  # type: ignore[union-attr]
         recent.extend(dict(item, home=home["label"]) for item in home["recent_work_6h"])  # type: ignore[union-attr]
     complete = all(home["complete"] for home in homes)
     for pool in (needs, info):
@@ -3460,6 +3477,7 @@ def build_view(
         mine = [item for item in needs if kind in {"waiting", "project"}
                 and (not project or project_matches(item["project"], str(project)))]
         notes = [item for item in info if kind in {"information", "project"}
+                 and (kind == "project" or item["status"] != "queued")
                  and (not project or project_matches(item["project"], str(project)))]
         above = sum(item["key"] in claimed for item in [*mine, *notes])
         mine = [item for item in mine if item["key"] not in claimed]

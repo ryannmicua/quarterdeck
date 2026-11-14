@@ -2406,6 +2406,26 @@ class BearingsTests(unittest.TestCase):
                       "Reports waiting on your review"):
             self.assertIn(title, page)
 
+    def test_underway_age_comes_from_the_ledger_dispatch_not_the_filing_date(self) -> None:
+        now = datetime(2026, 10, 4, 12, tzinfo=timezone.utc)
+        for script in ("#!/bin/sh\ncat <<'JSON'\n" + json.dumps(SNAPSHOT_JSON) + "\nJSON\n", None):
+            for ledger in (True, False):
+                with self.subTest(snapshot=script is not None, ledger=ledger), tempfile.TemporaryDirectory() as temp:
+                    home = self.make_home(Path(temp), script)
+                    if ledger:
+                        (home / "state").mkdir()
+                        dispatched = datetime(2026, 10, 4, 9, 30, tzinfo=timezone.utc).timestamp()
+                        (home / "state" / "fleet-ledger.jsonl").write_text(json.dumps(
+                            {"v": 1, "ts": dispatched, "event": "task.dispatched", "task": "harbor-chart"}) + "\n")
+                    bearings = quarterdeck.build_bearings(self.snapshots(home), now=now, use_snapshot=script is not None)
+                    [item] = bearings.underway
+                    card = quarterdeck.bearings_item_html(item, now, "underway")
+                    if ledger:
+                        self.assertIn("started 2 hours ago", card)
+                    else:
+                        self.assertNotIn("started", card)
+                    self.assertNotIn("running", card, "the backlog's since date is not when the work started")
+
     def test_snapshot_path_classifies_fields_and_enriches_from_backlog(self) -> None:
         with tempfile.TemporaryDirectory() as temp:
             home = self.make_home(Path(temp), "#!/bin/sh\ncat <<'JSON'\n" + json.dumps(SNAPSHOT_JSON) + "\nJSON\n")
@@ -5986,7 +6006,7 @@ class AttentionTests(unittest.TestCase):
             self.assertEqual(recent["shown_above"], 2)
             self.assertIn("Done recently", quarterdeck.view_section_html(done, ATTENTION_NOW, False))
 
-    def test_briefing_regression_open_in_flight_work_reaches_information_and_project_but_queued_work_does_not(self) -> None:
+    def test_briefing_regression_open_in_flight_work_reaches_information_and_project_but_queued_work_only_project(self) -> None:
         with tempfile.TemporaryDirectory() as temp:
             home, _ = self.saved_views_home(Path(temp))
             with (home / "data" / "backlog.md").open("a") as out:
@@ -5997,7 +6017,10 @@ class AttentionTests(unittest.TestCase):
                     {"type": kind, **({"project": "harbor-app"} if kind == "project" else {})} for kind in order]}
                 view = self.view(home, saved_views=([definition], "Queue"), view_name="")["view"]
                 first, second = view["sections"]
-                self.assertNotIn("Draw the chart", [item["title"] for item in first["information"] + second["information"]])
+                sections = {section["type"]: section for section in view["sections"]}
+                self.assertNotIn("Draw the chart", [item["title"] for item in sections["information"]["information"]])
+                queued = [item for item in sections["project"]["information"] if item["title"] == "Draw the chart"]
+                self.assertEqual([item["status_label"] for item in queued], ["Queued"])
                 row = next(item for item in first["information"] if item["title"] == "Print the chart")
                 self.assertEqual(row["status_label"], "In flight")
                 self.assertFalse(first["nothing_waiting"])
@@ -8507,9 +8530,13 @@ class QuickWinTests(unittest.TestCase):
         self.assertEqual(text("2026-11-13", now), "running 1 day")
         self.assertEqual(text("", now), "")
         underway = quarterdeck.bearings_item_html(
-            quarterdeck.BItem(title="Chart", filed="2026-11-14"), now, "underway")
-        self.assertIn("started today", underway)
+            quarterdeck.BItem(title="Chart", filed="2026-10-15", started="2026-11-14T04:14:00Z"), now, "underway")
+        self.assertIn("started 1 hour ago", underway)
         self.assertNotIn("waiting", underway)
+        self.assertNotIn("running", underway, "the filing date is not when the work started")
+        unknown = quarterdeck.bearings_item_html(quarterdeck.BItem(title="Chart", filed="2026-10-15"), now, "underway")
+        self.assertNotIn("running", unknown)
+        self.assertNotIn("started", unknown)
         queued = quarterdeck.bearings_item_html(quarterdeck.BItem(title="Chart", filed="2026-11-09"), now, "charted")
         self.assertIn("waiting 5 days", queued)
 
