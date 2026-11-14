@@ -8346,12 +8346,13 @@ class QuickWinTests(unittest.TestCase):
         unknown = quarterdeck.status_line_html({"ok": False}, 6, 177, now)
         self.assertIn("Needs-you status unavailable", unknown)
         self.assertNotIn("Nothing needs you", unknown)
-        items = [{"key": "invented/a", "at": "2026-06-29T12:00:00Z"}, {"key": "invented/b", "at": None}]
+        items = [{"key": "invented/a", "at": "2026-06-29T12:00:00Z", "opened_at": "2026-06-29T12:00:00Z"}, {"key": "invented/b", "at": None}]
         self.assertIn("2 need you · oldest 3 days", quarterdeck.status_line_html({"ok": True, "homes": [{"waiting": {"decisions": items}}]}, 0, 0, now))
         self.assertIn("1 needs you", quarterdeck.status_line_html({"ok": True, "homes": [{"waiting": {"needs_you": items[:1]}}]}, 0, 0, now))
 
     def test_status_counts_active_waiting_across_priority_scope_and_homes(self) -> None:
-        decision = {"key": "invented/decision", "at": "2026-06-29T12:00:00Z", "project": "other"}
+        decision = {"key": "invented/decision", "at": "2026-06-29T12:00:00Z",
+                    "opened_at": "2026-06-29T12:00:00Z", "project": "other"}
         need = {"key": "child/help", "at": None, "project": "other"}
         waiting, _scope = quarterdeck.scope_waiting(
             {"decisions": [decision], "needs_you": [],
@@ -8411,7 +8412,7 @@ class QuickWinTests(unittest.TestCase):
         self.assertCountEqual([card["id"] for card in cards if card["section"] == "needs_you"],
                               ["call:invented/decision", "call:child/help"])
         self.assertCountEqual([card["id"] for card in cards if card["section"] == "information"],
-                              ["call:invented/info", "call:invented/result"])
+                              ["call:invented/info"])
         line = quarterdeck.status_line_html(attention, 0, 0, ATTENTION_NOW)
         self.assertIn('href="#cards" data-need="some">2 need you', line)
         destination = quarterdeck.cards_html(cards, attention, ATTENTION_NOW, False)
@@ -8564,3 +8565,38 @@ class QuickWinTests(unittest.TestCase):
             self.assertIn(f"{project}-0", card["body"])
             self.assertIn(f"{project}-1", card["body"])
             self.assertNotIn(f"{other}-", card["body"])
+
+    def test_status_oldest_uses_opening_time_across_waiting_sources_and_scope(self) -> None:
+        opened = "2026-06-29T12:00:00Z"
+        touched = "2026-07-02T11:59:00Z"
+        snapshot = quarterdeck.HomeSnapshot(quarterdeck.HomeSpec("invented", Path(".")),
+            backlog_markdown="# Backlog\n\n## Underway\n\n"
+                             "- [ ] board-only - Approve chart (since: 2026-06-29)\n")
+        for source in ("decision", "feed-needs-you", "board-only", "unknown"):
+            for scoped in (False, True):
+                with self.subTest(source=source, scoped=scoped):
+                    task = "board-only" if source == "board-only" else "choose"
+                    key = f"invented/{task}"
+                    entry = quarterdeck.BoardEntry(
+                        quarterdeck.BoardItem(task, "approve", "Approve chart", "Which chart?", task=task),
+                        "invented", touched=quarterdeck.parse_when(touched), key=key)
+                    board = quarterdeck.BoardView({}, [], 0, [], [], bands={"desk": [entry]})
+                    rows = [{"task": task, "title": "Choose chart", "opened_at": opened,
+                             "last_touched_at": touched, "activity_at": touched, "relevance": "captain_activity"}]
+                    waiting = quarterdeck.home_waiting(snapshot,
+                        {"decisions": {"relevant": rows if source in {"decision", "feed-needs-you"} else []}},
+                        None if source == "decision" else board, {})
+                    waiting = quarterdeck.apply_waits(waiting, {})
+                    original = waiting["decisions" if source == "decision" else "needs_you"][0]
+                    self.assertEqual(original["at"], touched, "card ordering still uses activity")
+                    if scoped:
+                        visible, _scope = quarterdeck.scope_waiting(waiting, ["priority"], False, True)
+                        home = {"waiting": visible, "waiting_more": waiting}
+                    else:
+                        home = {"waiting": waiting}
+                    line = quarterdeck.status_line_html({"ok": True, "homes": [home]}, 0, 0, ATTENTION_NOW)
+                    if source == "unknown":
+                        self.assertIn(">1 needs you<", line)
+                        self.assertNotIn("oldest", line)
+                    else:
+                        self.assertIn("1 needs you · oldest 3 days", line)

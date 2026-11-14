@@ -1415,7 +1415,8 @@ def status_line_html(
         elif not waiting:
             text, need = "Nothing needs you", "none"
         else:
-            times = [when for item in waiting.values() if item.get("at") and (when := parse_when(str(item["at"]))) is not None]
+            times = [when for item in waiting.values()
+                     if item.get("opened_at") and (when := parse_when(str(item["opened_at"]))) is not None]
             oldest = f" · oldest {elapsed_text(min(times), now)}" if times else ""
             text, need = f"{len(waiting)} {'needs' if len(waiting) == 1 else 'need'} you{oldest}", "some"
         parts.append(f'<a href="#cards" data-need="{need}">{html.escape(text)}</a>')
@@ -3247,15 +3248,22 @@ def project_matches(value: object, name: str) -> bool:
     return recorded == wanted
 
 
-def waiting_item(kind: str, key: str, title: str, ask: str, project: str | None, group: str, at: str | None) -> dict[str, object]:
-    return {"kind": kind, "key": key, "title": title, "ask": ask, "group": group, "project": project or None, "at": at}
+def waiting_item(
+    kind: str, key: str, title: str, ask: str, project: str | None, group: str, at: str | None,
+    opened_at: str | None = None,
+) -> dict[str, object]:
+    return {"kind": kind, "key": key, "title": title, "ask": ask, "group": group,
+            "project": project or None, "at": at, "opened_at": opened_at}
 
 
 def home_waiting(
     snapshot: HomeSnapshot, view: dict[str, object], board: BoardView | None, projects: dict[str, str],
 ) -> dict[str, list[dict[str, object]]]:
     """What waits on the captain in one home: its decisions, the rest of what needs them, then informational items."""
-    labels = {owner.spec.label for owner in all_snapshots([snapshot])}
+    owners = all_snapshots([snapshot])
+    labels = {owner.spec.label for owner in owners}
+    filed = {report_reference(owner.spec.label, item.id): item.filed
+             for owner in owners for item in backlog_items(owner.backlog_markdown or "", owner)}
     decisions = view.get("decisions")
     rows = [*decisions["relevant"], *(decisions.get("background") or [])] if isinstance(decisions, dict) else []
     entries = {entry.key: entry for entry in (
@@ -3281,6 +3289,7 @@ def home_waiting(
             entry.item.ask if entry else str(row.get("reason") or ""),
             (entry.item.project if entry else None) or projects.get(key), group,
             row.get("activity_at") or row.get("last_touched_at") or row.get("opened_at"),
+            row.get("opened_at") or filed.get(key) or None,
         ), relevance=row.get("relevance")))
     for entry in entries.values():
         if entry.key in seen:
@@ -3289,6 +3298,7 @@ def home_waiting(
         queues[kind].append(waiting_item(
             kind, entry.key, entry.item.title, entry.item.ask,
             entry.item.project or projects.get(entry.key), entry.item.group, iso_or_none(entry.touched),
+            filed.get(entry.key) or None,
         ))
     return {"decisions": waiting_decisions, "needs_you": needs_you, "informational": informational}
 
@@ -8437,7 +8447,8 @@ def activity_cards(
         label = str(home["label"])
         waiting = home.get("waiting") or {}
         for kind, section in (("decisions", "needs_you"), ("needs_you", "needs_you"), ("informational", "information")):
-            for item in [*waiting.get(kind, []), *(home.get("waiting_more") or {}).get(kind, [])]:
+            more = (home.get("waiting_more") or {}).get(kind, []) if section == "needs_you" else []
+            for item in [*waiting.get(kind, []), *more]:
                 if item["key"] in taken or item.get("relevance") in {"quiet", "stale"}:
                     continue
                 taken.add(str(item["key"]))
