@@ -7761,7 +7761,7 @@ def activity_cards(
                 taken.add(str(item["key"]))
                 entry = entries.get(str(item["key"]))
                 namespace, separator, _task = str(item["key"]).partition("/")
-                owner = entry.home if entry else owner_labels.get(namespace, namespace if separator else label)
+                owner = owner_labels.get(namespace, namespace if separator else label)
                 cards.append(need_card(
                     item, entry, owner, multi_home, reactions, section,
                     (data_dirs or {}).get(owner), doc_pages,

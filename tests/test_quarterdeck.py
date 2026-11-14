@@ -6353,18 +6353,35 @@ class ActivityCardTests(unittest.TestCase):
                     with self.subTest(kind=kind, with_board=with_board):
                         item = {"key": "child-mate/choice", "title": "Choose", "at": None,
                                 "ask": "See data/review/report.md", "group": "read" if kind == "informational" else "decide"}
-                        entry = quarterdeck.BoardEntry(quarterdeck.BoardItem(
-                            id="choice", title="Choose", ask=item["ask"], group=item["group"]),
-                            "Child Mate", key=item["key"])
-                        board = quarterdeck.BoardView({}, [], 0, [], [], bands={"desk": [entry]}) if with_board else None
-                        attention = {"homes": [{"label": "Parent", "waiting": {kind: [item]}}]}
+                        child = quarterdeck.HomeSnapshot(
+                            quarterdeck.HomeSpec("Child Mate", directories["Child Mate"].parent, route_id="route"),
+                            backlog_markdown=("# Backlog\n\n## Held\n\n"
+                                              "- [ ] choice - Choose (held: true) (hold-kind: captain) "
+                                              "(since: 2026-07-02T10:00:00Z)\n"))
+                        parent = quarterdeck.HomeSnapshot(
+                            quarterdeck.HomeSpec("Parent", directories["Parent"].parent), children=[child],
+                            board=quarterdeck.CaptainBoard(directories["Parent"] / "captain-board.json", ATTENTION_NOW, [
+                                quarterdeck.BoardItem(id="choice", task="route/choice", title="Choose",
+                                                      ask=item["ask"], group=item["group"]),
+                            ]))
+                        board = quarterdeck.board_view([parent], ATTENTION_NOW) if with_board else None
+                        if board:
+                            entry = next(entry for entries in board.bands.values() for entry in entries)
+                            self.assertEqual((entry.home, entry.key), ("Parent", "child-mate/choice"))
+                        attention = {"homes": [{"label": "Parent", "errors": [], "waiting": {kind: [item]}}]}
                         pages: dict[str, str] = {}
                         cards = quarterdeck.activity_cards(attention, board, None, directories, pages)
-                        link = re.search(r'href="(doc-[0-9a-f]{12}\.html)"', cards[0]["body"])[1]
-                        self.assertIn("<h1>Child Mate report</h1>", pages[link])
-                        self.assertNotIn("Parent report", pages[link])
-                        unavailable = quarterdeck.activity_cards(attention, board, None, {"Parent": directories["Parent"]}, {})
+                        outputs = [quarterdeck.cards_html(cards, attention, ATTENTION_NOW, False),
+                                   json.loads(quarterdeck.cards_payload(cards, ATTENTION_NOW))["cards"][0]["html"]]
+                        for output in outputs:
+                            link = re.search(r'href="(doc-[0-9a-f]{12}\.html)"', output)[1]
+                            self.assertIn("<h1>Child Mate report</h1>", pages[link])
+                            self.assertNotIn("Parent report", pages[link])
+                        unavailable_pages: dict[str, str] = {}
+                        unavailable = quarterdeck.activity_cards(
+                            attention, board, None, {"Parent": directories["Parent"]}, unavailable_pages)
                         self.assertNotIn("Referenced documents", unavailable[0]["body"])
+                        self.assertEqual(unavailable_pages, {})
 
     def test_card_documents_include_briefings_questions_and_recommendation(self) -> None:
         with tempfile.TemporaryDirectory() as raw:

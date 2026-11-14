@@ -265,7 +265,9 @@ then stop servers, close test tabs and remove fixture/state directories.
 Run `PYTHONPATH=tests python3 -m unittest test_quarterdeck.ActivityCardTests -v`.
 Document-link regressions check child-owned cards in all waiting queues, with
 and without board entries, against different parent/child documents at the same
-relative path. An unavailable child directory must never select the parent's
+relative path. Parent-board items routed to child tasks are built through
+`board_view()` to preserve the distinction between board home and task owner.
+An unavailable child directory must never select the parent's
 file. Initial card markup and polling payloads must link references in current
 and earlier briefing paragraphs, clarification questions and board recommendations.
 The fixtures use disposable fictional homes; set `TMPDIR` to a directory inside
