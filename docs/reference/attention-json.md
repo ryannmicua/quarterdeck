@@ -287,10 +287,11 @@ sentence fit to be read aloud.
   priority-project order, then newest activity, using the same task identities
   and first-section claiming as every other section.
 - `project` holds that project's `needs_you` items, then its `information`
-  items, including the project's queued backlog work. When nothing is waiting on it, both lists are empty,
-  `nothing_waiting` is `true` and `say` is "Nothing waiting on <project>.";
-  `nothing_waiting` is `null` with "<project>: waiting status unavailable."
-  when a required source failed, as for `priorities`.
+  items, including the project's queued backlog work. When nothing is waiting
+  on it, both lists are empty, `nothing_waiting` is `true` and `say` is
+  "Nothing waiting on <project>."; `nothing_waiting` is `null` with
+  "<project>: waiting status unavailable." when a required source failed, as
+  for `priorities`.
 - `information` holds the informational (board `read`) items and work recorded
   as in flight in a home's backlog that is not already waiting on the captain.
   Queued work is left out; it appears under Charted Next.

@@ -84,7 +84,8 @@ as a local artifact. Quarterdeck itself has no agent or build step.
   sticky strip of section links, then the activity cards.
 - Bearings-shaped page: Captain's Call, Underway, and Charted Next, each
   rendered with an empty-state sentence. Charted Next and Details by home start
-  collapsed; Underway says how long each task has run. Recent work uses the six-hour feed.
+  collapsed; Underway says how long each task has run. Recent work uses the
+  six-hour feed.
 - Captain's Call cards include local hold context, options, and recommendations
   when available. Remote decisions show the snapshot summary and point to their
   secondmate home for the full background.

@@ -23,8 +23,8 @@ Sections appear in that order, and cards are newest first within each. Quiet and
 stale decisions and dated decisions that are not yet due stay out. Information
 cards follow the [waiting queue's priority scope](see-recent-work.md); needs-you
 cards include every waiting decision and needs-you item, in priority projects or
-not, and recent and done cards include work across projects. Only Recent work and Done
-recently use the six-hour window; waiting items can be older.
+not, and recent and done cards include work across projects. Only Recent work
+and Done recently use the six-hour window; waiting items can be older.
 Sections show every eligible card without a hidden count limit. Repeated runs of
 one task (same home, project, event and title) fold into one card labelled with
 a count, such as "Finished ×4", that lists each run newest first.
