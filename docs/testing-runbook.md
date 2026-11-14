@@ -12,6 +12,12 @@ other source errors and their check commands must remain visible. The HTML
 parser checks rendered text visibility, including escaped diagnostic content.
 Fixtures are fictional and disposable; no real home scripts or inboxes run.
 
+Run `PYTHONPATH=tests python3 -m unittest -v test_quarterdeck.AttentionTests.test_cached_feed_is_scoped_to_home_and_resolved_data_directory`
+for cache identity. A failed read after changing data directories must not show
+the previous directory's decisions. Returning to a previously read directory,
+including an equivalent resolved path, must recover only that directory's list;
+a different home sharing the directory must not inherit it.
+
 ## Background cache and write responses
 
 Run `PYTHONPATH=tests python3 -m unittest test_quarterdeck.ServeTests -v`.

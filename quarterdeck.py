@@ -2980,7 +2980,7 @@ ATTENTION_SCRIPT = Path("bin") / "fm-attention.sh"
 ATTENTION_FEED_SCHEMA = "fm-attention.v1"
 ATTENTION_TIMEOUT_SECONDS = 60
 # The last feed that read cleanly, by home, so a failed refresh keeps showing it instead of "unavailable".
-LAST_GOOD_FEEDS: dict[str, tuple[float, dict[str, object]]] = {}
+LAST_GOOD_FEEDS: dict[tuple[Path, Path], tuple[float, dict[str, object]]] = {}
 LEDGER_PATH = Path("state") / "fleet-ledger.jsonl"
 LEDGER_VERSION = 1
 RECENT_WINDOWS = (("last_12h", 0, 12), ("12h_to_24h", 12, 24), ("24h_to_48h", 24, 48))
@@ -3284,11 +3284,12 @@ def home_attention(
         ledger_ok = False
     feed: dict[str, object] | None = None
     if use_feed:
+        feed_key = (spec.home, (snapshot.data_dir or spec.home / "data").expanduser().resolve())
         try:
             feed = feed_runner(spec.home, snapshot.data_dir)
-            LAST_GOOD_FEEDS[str(spec.home)] = (now.timestamp(), feed)
+            LAST_GOOD_FEEDS[feed_key] = (now.timestamp(), feed)
         except AttentionSourceError as exc:
-            last_good = LAST_GOOD_FEEDS.get(str(spec.home))
+            last_good = LAST_GOOD_FEEDS.get(feed_key)
             if last_good is not None:
                 feed = last_good[1]
                 view["feed_stale"] = {"as_of": iso_seconds(last_good[0]), "detail": exc.message}
