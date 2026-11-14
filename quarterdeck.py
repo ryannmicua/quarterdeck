@@ -625,8 +625,8 @@ NAV_LINK_STYLE = (
 def qd_nav_html(raw_href: str | None, fixed: bool, main_href: str = "index.html") -> str:
     """The small bar every served document page carries: back to Quarterdeck, and the file by itself when raw_href.
 
-    Every style is inline and the element has a unique id, so it neither inherits from nor leaks into the page it is
-    added to. A fixed bar reserves its measured height at the end of the document.
+    Inline styles keep the bar's presentation local without adding stylesheet rules to the document.
+    A fixed bar reserves its measured height at the end of the document.
     """
     where = (
         "position:fixed;left:0;right:0;bottom:0;z-index:2147483647;padding-bottom:env(safe-area-inset-bottom);"

@@ -38,9 +38,9 @@ text, including questions. Files resolve against the task owner's configured
 data directory, including a local secondmate's; an unavailable owner or a
 namespace shared by distinct home labels leaves links out.
 
-Markdown opens rendered and HTML opens as written. A link appears only for a
-readable UTF-8 regular `.md` or `.html` file of 2 MB or less that really sits
-inside that data directory; missing files and links that escape it are left out.
+Markdown opens rendered and HTML retains its content and scripts. A link appears
+only for a readable UTF-8 regular `.md` or `.html` file of 2 MB or less that really
+sits inside that data directory; missing files and links that escape it are left out.
 The card text is not changed. Every opened document carries a small bar with
 **Back to Quarterdeck** and **Open file by itself**. The second link opens the
 original file with no bar: markdown as plain text, HTML as its own page. The bar

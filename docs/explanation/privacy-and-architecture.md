@@ -155,9 +155,12 @@ renderer. The [CLI reference](../reference/cli-and-config.md) documents its
 output path, report IDs, and collision handling.
 
 Referenced activity-card HTML is copied as written, including scripts, plus one
-inline-styled navigation bar before its closing `</body>`; the raw-file link serves
-the same file with no bar (`raw-*.html`, or `raw-*.txt` for markdown, under the same
-sandbox header).
+inline-styled navigation bar and a spacer with a script that reserves the bar's
+measured height. These are inserted before the last closing `</body>`, or appended
+when there is no closing body tag. For navigation and opening the original file,
+see [the activity-card guide](../how-to/watch-activity-cards.md#open-the-documents-a-card-names).
+Original-file copies use `raw-*.html`, or `raw-*.txt` for Markdown, and receive the
+same sandbox header as the document pages.
 When served by `quarterdeck serve`,
 document pages receive `Content-Security-Policy: sandbox allow-scripts allow-popups`:
 scripts may run, but without the serving origin's storage or access to its write
