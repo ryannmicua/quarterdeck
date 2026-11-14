@@ -4931,6 +4931,7 @@ class AttentionTests(unittest.TestCase):
     def test_failed_refresh_keeps_last_good_needs_you_list(self) -> None:
         self.assertEqual(quarterdeck.ATTENTION_TIMEOUT_SECONDS, 60)
         quarterdeck.LAST_GOOD_FEEDS.clear()
+        self.addCleanup(quarterdeck.LAST_GOOD_FEEDS.clear)
         row = {"task": "kelp", "kind": "decision", "title": "Choice kelp", "bucket": "live",
                "opened_at": "2026-07-02T10:00:00Z", "last_touched_at": "2026-07-02T11:00:00Z"}
 
@@ -4948,7 +4949,7 @@ class AttentionTests(unittest.TestCase):
             self.assertEqual(view["homes"][0]["errors"], [])
             self.assertEqual([r["title"] for r in view["homes"][0]["decisions"]["relevant"]], ["Choice kelp"])
             line = quarterdeck.status_line_html(view, 0, 0, ATTENTION_NOW)
-            self.assertIn("1 needs you", line)
+            self.assertIn("Needs-you status unavailable", line)
             self.assertIn("refresh failed", line)
             self.assertNotIn("Nothing needs you", line)
             note = " ".join(quarterdeck.attention_errors_html(view))
@@ -4958,6 +4959,77 @@ class AttentionTests(unittest.TestCase):
             cold = quarterdeck.attention_view(homes, ATTENTION_NOW, feed_runner=failing)
             self.assertIn("could not be read right now", " ".join(quarterdeck.attention_errors_html(cold)))
             self.assertIn("unavailable", quarterdeck.status_line_html(cold, 0, 0, ATTENTION_NOW))
+
+    def test_empty_cached_feed_stays_incomplete_until_refresh_recovers(self) -> None:
+        quarterdeck.LAST_GOOD_FEEDS.clear()
+        self.addCleanup(quarterdeck.LAST_GOOD_FEEDS.clear)
+
+        def empty(*_: object) -> dict[str, object]:
+            return {"open_decisions": []}
+
+        def failing(*_: object) -> dict[str, object]:
+            raise quarterdeck.AttentionSourceError("decisions", "feed_failed", "feed timed out")
+
+        definitions = ([{"name": "Review", "sections": [{"type": "priorities"}, {"type": "waiting"}]}], "Review")
+        with tempfile.TemporaryDirectory(dir=ROOT) as temp:
+            home = Path(temp)
+            (home / "data").mkdir()
+            (home / "data" / "backlog.md").write_text("# Backlog\n\n## Work\n")
+            homes = [quarterdeck.load_home_snapshot(quarterdeck.HomeSpec("invented", home))]
+            for options in ({"view_name": "Review"}, {"all_views": True}):
+                with self.subTest(options=options):
+                    fresh = quarterdeck.attention_view(homes, ATTENTION_NOW, feed_runner=empty)
+                    self.assertTrue(fresh["homes"][0]["complete"])
+                    stale = quarterdeck.attention_view(
+                        homes, ATTENTION_NOW + timedelta(minutes=1), feed_runner=failing,
+                        priority_projects=["harbor-app"], saved_views=definitions, **options,
+                    )
+                    self.assertFalse(stale["ok"])
+                    entry = stale["homes"][0]
+                    self.assertFalse(entry["ok"])
+                    self.assertFalse(entry["complete"])
+                    self.assertEqual(entry["feed_stale"]["as_of"], fresh["generated"])
+                    self.assertIsNone(entry["priorities"][0]["nothing_waiting"])
+                    self.assertIn("status unavailable", entry["priorities"][0]["say"])
+                    saved = stale["views"][0] if options.get("all_views") else stale["view"]
+                    self.assertEqual(len(saved["sections"]), 2)
+                    for section in saved["sections"]:
+                        self.assertIsNone(section["nothing_waiting"])
+                        self.assertIn("status unavailable", section["say"])
+                    line = quarterdeck.status_line_html(stale, 0, 0, ATTENTION_NOW)
+                    self.assertIn('data-need="unknown"', line)
+                    self.assertIn("refresh failed", line)
+                    self.assertNotIn("Nothing needs you", line)
+                    cards = quarterdeck.activity_cards(stale, None, None)
+                    page = quarterdeck.cards_html(cards, stale, ATTENTION_NOW, True)
+                    self.assertIn("not a confirmed all clear", page)
+                    self.assertNotIn("Nothing needs you right now", page)
+                    recovered = quarterdeck.attention_view(homes, ATTENTION_NOW + timedelta(minutes=2), feed_runner=empty)
+                    self.assertTrue(recovered["ok"])
+                    self.assertTrue(recovered["homes"][0]["complete"])
+                    self.assertNotIn("feed_stale", recovered["homes"][0])
+                    self.assertIn("Nothing needs you", quarterdeck.status_line_html(recovered, 0, 0, ATTENTION_NOW))
+
+    def test_only_decisions_errors_collapse_diagnostics(self) -> None:
+        for source in ("decisions", "backlog", "ledger", "home"):
+            with self.subTest(source=source):
+                diagnostic = f"Cannot read {source} <input>"
+                page = AttentionPage()
+                page.feed("".join(quarterdeck.attention_errors_html({"homes": [{
+                    "label": "invented", "errors": [{"source": source, "message": diagnostic}],
+                }]})))
+                visible, all_text = " ".join(page.visible), " ".join(page.all_text)
+                self.assertIn(f"{source} unavailable", visible)
+                self.assertIn(diagnostic, all_text)
+                self.assertIn("quarterdeck attention --check", all_text)
+                if source == "decisions":
+                    self.assertIn("could not be read right now", visible)
+                    self.assertNotIn(diagnostic, visible)
+                    self.assertNotIn("quarterdeck attention --check", visible)
+                else:
+                    self.assertIn(diagnostic, visible)
+                    self.assertIn("quarterdeck attention --check", visible)
+                    self.assertNotIn("Details", visible)
 
     def make_home(self, root: Path, ledger: str | None = None, feed: str | None = None, script: bool = True) -> Path:
         home = root / "invented-home"

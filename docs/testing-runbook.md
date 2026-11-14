@@ -1,5 +1,17 @@
 # Targeted testing
 
+## Attention feed refresh failures
+
+Run `PYTHONPATH=tests python3 -m unittest -v test_quarterdeck.AttentionTests.test_failed_refresh_keeps_last_good_needs_you_list test_quarterdeck.AttentionTests.test_empty_cached_feed_stays_incomplete_until_refresh_recovers test_quarterdeck.AttentionTests.test_only_decisions_errors_collapse_diagnostics`.
+The fallback contract requires cached decisions to stay visible while a failed
+refresh marks the home and aggregate unhealthy. The empty-cache regression
+checks incomplete priorities, single/all saved views, status and live-card
+empty wording, then recovery to a confirmed all-clear after a successful read.
+The display contract hides only decisions-feed diagnostics behind Details;
+other source errors and their check commands must remain visible. The HTML
+parser checks rendered text visibility, including escaped diagnostic content.
+Fixtures are fictional and disposable; no real home scripts or inboxes run.
+
 ## Background cache and write responses
 
 Run `PYTHONPATH=tests python3 -m unittest test_quarterdeck.ServeTests -v`.

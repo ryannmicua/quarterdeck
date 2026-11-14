@@ -1435,10 +1435,8 @@ def status_line_html(
                       if item.get("opened_at") and (when := parse_when(str(item["opened_at"]))) is not None]
             oldest = f" · oldest {waited_text(min(opened)[1], now)}" if opened else ""
             text, need = f"{len(waiting)} {'needs' if len(waiting) == 1 else 'need'} you{oldest}", "some"
-        if stale and not unread:
+        if stale:
             text += f" ({stale})"
-            if need == "none":
-                text, need = "Needs-you list " + stale, "unknown"
         parts.append(f'<a href="#cards" data-need="{need}">{html.escape(text)}</a>')
     if underway is not None:
         parts.append(f'<a href="#underway">{underway} underway</a>')
@@ -3366,7 +3364,7 @@ def home_attention(
         }
         if not use_feed:
             view["decisions"]["skipped"] = "the Firstmate scripts were skipped with --no-snapshot"
-    view["ok"] = not errors
+    view["ok"] = not errors and not view.get("feed_stale")
     return view
 
 
@@ -4068,11 +4066,13 @@ def attention_errors_html(view: dict[str, object]) -> list[str]:
                        f'<details><summary>Details</summary><p>{html.escape(str(home["feed_stale"]["detail"]))}. '
                        f'Run <code>quarterdeck attention --check</code> and report this line.</p></details></div>')
         for error in home["errors"]:  # type: ignore[union-attr]
+            diagnostic = (f'{html.escape(str(error["message"]))}. Run <code>quarterdeck attention '
+                          f'--check</code> and report this line.')
+            detail = (f'could not be read right now.</p><details><summary>Details</summary>'
+                      f'<p>{diagnostic}</p></details>' if error["source"] == "decisions" else f'{diagnostic}</p>')
             out.append(
                 f'<div class="warning"><p><strong>{html.escape(label)}{html.escape(str(error["source"]))} '
-                f'unavailable</strong> — could not be read right now.</p><details><summary>Details</summary>'
-                f'<p>{html.escape(str(error["message"]))}. Run <code>quarterdeck attention '
-                f'--check</code> and report this line.</p></details></div>'
+                f'unavailable</strong> — {detail}</div>'
             )
         decisions = home.get("decisions")
         if isinstance(decisions, dict) and decisions.get("skipped"):
