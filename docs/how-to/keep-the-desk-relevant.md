@@ -20,8 +20,8 @@ own. `undiscard` (or **Undiscard**) brings a discarded report back.
 
 On the served page, **Discard** is drawn quieter than **Mark reviewed**. After either one the
 page says "Saved" and offers **Undo** for 15 seconds; Undo sends the opposite action
-(`unmark` or `undiscard`) and returns the report to "needs review". Once the 15 seconds pass, the list
-reloads and the report moves. To reverse it later, use the Reviewed or Discarded reports section on the page, or the commands below.
+(`unmark` or `undiscard`) and returns the report to "needs review"; if Undo fails to save, it stays
+offered for another 15 seconds. Once the 15 seconds pass, the list reloads and the report moves. To reverse it later, use the Reviewed or Discarded reports section on the page, or the commands below.
 
 ```sh
 quarterdeck reports discard maple-harbor/amber-18

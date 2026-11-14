@@ -518,8 +518,8 @@ Q12 supplies the oracle: network and body-transfer failures retain the last
 page; a complete response replaces it without a second request. Edits, reaction
 choices, sends, view saves and Undo begun during transfer postpone replacement.
 Q17 requires both Mark reviewed and Discard to undo to needs review. Node checks
-reverse-action dispatch and expiry cancellation during a failed Undo, including
-retry; disposable CLI fixtures check persisted report state independently.
+reverse-action dispatch, expiry cancellation while Undo is pending, a fresh
+expiry window after a failed Undo that releases refresh, and retry; disposable CLI fixtures check persisted report state independently.
 No real homes or inbox deliveries are used; fixtures clean up automatically.
 Replacement reuses the window: global script bindings must allow reexecution,
 and the replacement event stops outgoing page timers and card observations.
