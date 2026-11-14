@@ -357,3 +357,28 @@ per-request retries, retry after the TTL, and recover after valid config returns
 Inspect persisted SQLite/preferences/wait state and the fictional inbox log.
 Stop server/browser children, wait for helper completion, and remove disposable
 homes, profiles and private state. Keep only synthetic screenshots and transcripts.
+
+
+## Adoption history and visits
+
+Run `PYTHONPATH=tests python3 -m unittest test_quarterdeck.AdoptionTests -v`.
+The fictional fixtures use disposable homes, private SQLite state, visit logs
+and loopback HTTP servers; cleanup is automatic and no inbox messages are sent.
+The regression oracles are the agreed answer fraction (two Quarterdeck replies
+and one chat decision gives 67%), a worked median (30 and 20 minutes gives 25),
+and historical weeks that retain a review after discard, unmark and file edits.
+Mutable pre-existing state must not be backfilled. Repeated observations must
+not move arrival dates. Read-only page builds must not start collection.
+The HTTP regression advances a clock across midnight and beyond the visit
+window: automatic requests add no visits, while later manual navigation does.
+The generated reload JavaScript is executed with Node to check the marker,
+visible URL cleanup and preservation of unrelated query parameters and hashes.
+Device cases include Android phones, Android tablets and iPads with Mobile in
+their user agent. Node is optional for the Python tests but required for the
+reload-script check; a skip means that browser behavior remains unverified.
+
+Chat boundary cases use Asia/Manila: Sunday 18:00 UTC belongs to Monday,
+while a bare Sunday stays Sunday. Artifact-import regressions run both action
+formats, apply Sunday actions on Monday, and require Sunday event times without
+backfilling pre-collection actions. Pending-card activity updates must preserve
+arrival counts and waits; distinct captain-hold identities remain distinct.

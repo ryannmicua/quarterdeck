@@ -1905,7 +1905,7 @@ class CaptainBoardTests(unittest.TestCase):
         if node is None:
             self.skipTest("Node.js is not available to execute the generated refresh script")
         page = quarterdeck.build_html([], "Q", refresh_seconds=30)
-        refresh_script = re.findall(r"<script>(.*?)</script>", page, flags=re.S)[-1]
+        refresh_script = "\n".join(re.findall(r"<script>(.*?)</script>", page, flags=re.S))
         harness = r"""
 const storageKey = "quarterdeck-open-details";
 const details = [
@@ -1921,8 +1921,10 @@ globalThis.document = {
   querySelectorAll(selector) {
     if (selector === "details") return details;
     if (selector === "details[open]") return details.filter(detail => detail.open);
+    if (selector === ".reaction-text") return [];
     throw new Error("unexpected selector " + selector);
-  }
+  },
+  querySelector() { return null; }
 };
 globalThis.sessionStorage = {
   getItem(key) { return values.get(key) || null; },
@@ -1949,7 +1951,7 @@ if (saved.length !== 3) throw new Error("open disclosures were not saved");
 
         no_storage = r"""
 let reloaded = false;
-globalThis.document = { querySelectorAll() { return []; } };
+globalThis.document = { querySelectorAll() { return []; }, querySelector() { return null; } };
 globalThis.sessionStorage = new Proxy({}, { get() { throw new Error("storage unavailable"); } });
 globalThis.location = { reload() { reloaded = true; } };
 globalThis.setTimeout = callback => callback();
@@ -6735,7 +6737,8 @@ globalThis.document = {
   }
 };
 globalThis.window = {IntersectionObserver};
-globalThis.location = {protocol: 'http:', hash: '', reload() { reloads++; }};
+globalThis.location = {protocol: 'http:', href: 'http://localhost/?view=waiting#cards', hash: '', reload() { reloads++; }};
+globalThis.history = {replaceState(_state, _title, url) { location.href = String(url); }};
 globalThis.localStorage = {getItem: () => null, setItem(key, value) { saved = JSON.parse(value); }};
 let poll, payload;
 globalThis.setInterval = (callback, delay) => { if (delay === 15000) poll = callback; };
@@ -7706,6 +7709,7 @@ class CaptainWaitTests(unittest.TestCase):
         for enabled in (False, True):
             context = quarterdeck.ReactionContext(enabled=enabled, now=WAIT_NOW)
             built = quarterdeck.activity_cards(attention, None, context)[0]
+            self.assertEqual(built["hold_set"], "2026-07-02T10:00:00Z")
             self.assertEqual(built["summary"], "Give the word to merge: Merge PR 7 with one check waived")
             body = built["body"]
             self.assertLess(body.index("Firstmate&#x27;s briefing, 2026-07-02 10:00 UTC"),
@@ -7918,3 +7922,380 @@ class CaptainWaitTests(unittest.TestCase):
             self.assertIn("could not read", markup)
         self.assertIn("captain waits: could not read", quarterdeck.attention_check_line(attention))
 
+
+
+class AdoptionTests(unittest.TestCase):
+    NOW = datetime(2026, 11, 14, 12, 0, tzinfo=timezone.utc)  # a Saturday; this week starts Monday 2026-11-09
+
+    def setUp(self) -> None:
+        self.temp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.temp.cleanup)
+        self.root = Path(self.temp.name)
+        env = patch.dict(os.environ, {"XDG_STATE_HOME": str(self.root / "state"), "TZ": "UTC"})
+        env.start()
+        self.addCleanup(env.stop)
+        time.tzset()
+        self.addCleanup(time.tzset)
+        self.home = BearingsTests().make_home(self.root)
+        self.homes = BearingsTests().snapshots(self.home)
+
+    def write_tags(self, *records: object) -> None:
+        directory = self.home / "data" / "qd-adoption"
+        directory.mkdir(parents=True, exist_ok=True)
+        lines = [item if isinstance(item, str) else json.dumps(item) for item in records]
+        (directory / "tags.jsonl").write_text("\n".join(lines) + "\n", encoding="utf-8")
+
+    def summary(self, visits: Path | None = None) -> dict:
+        return quarterdeck.adoption_summary(self.homes, self.NOW, visits or self.root / "visits.jsonl")
+
+    def test_missing_sources_count_as_zero_and_are_named(self) -> None:
+        summary = self.summary()
+        self.assertTrue(all(value == [0, 0] for key, value in summary["counts"].items() if key != "arrived"))  # the fixture report is dated by its file
+        self.assertEqual(summary["missing"], ["chat tags", "review state", "visit log"])
+        self.assertEqual(summary["answer_share"], [None, None])
+        self.assertEqual(summary["first_seen_minutes"], [None, None])
+        page = quarterdeck.adoption_page_html(summary)
+        self.assertIn("No status questions in chat this week or last", page)
+        self.assertIn("Not found yet: chat tags, review state, visit log", page)
+
+    def test_status_tags_split_by_week_and_answer(self) -> None:
+        self.write_tags(
+            {"ts": "2026-11-14", "kind": "status", "topic": "what is waiting: harbor", "qd_had_answer": False},
+            {"ts": "2026-11-10", "kind": "status", "topic": "is it merged", "qd_had_answer": True},
+            {"ts": "2026-11-10", "kind": "instruction", "topic": "merge it", "qd_had_answer": None},
+            {"ts": "2026-11-05", "kind": "status", "topic": "how is kelp", "qd_had_answer": None},
+            {"ts": "2026-10-20", "kind": "status", "topic": "too old", "qd_had_answer": False},
+            "not json",
+            {"ts": "later", "kind": "status", "topic": "bad date", "qd_had_answer": False},
+        )
+        summary = self.summary()
+        self.assertEqual(summary["counts"]["status"], [2, 1])
+        self.assertEqual(summary["counts"]["status_answered"], [1, 0])
+        self.assertEqual(summary["counts"]["status_missed"], [1, 0])
+        page = quarterdeck.adoption_page_html(summary)
+        self.assertIn("You asked 2 status questions in chat this week; Quarterdeck already had the answer for 1.", page)
+        self.assertIn("what is waiting: harbor", page)
+        self.assertIn("had to ask", page)
+        self.assertNotIn("too old", page)
+        self.assertNotIn("merge it", page)
+
+    def test_reactions_triage_and_visits_are_counted_per_week(self) -> None:
+        state = self.root / "state" / "quarterdeck" / "review-state" / "marks.json"
+        quarterdeck.write_state(state, [
+            ("INSERT INTO report_state VALUES ('a', 'reviewed', ?, '2026-11-12T08:00:00Z')", ("0" * 64,)),
+            ("INSERT INTO report_state VALUES ('b', 'discarded', ?, '2026-11-11T08:00:00Z')", ("1" * 64,)),
+            ("INSERT INTO report_state VALUES ('c', 'reviewed', ?, '2026-11-03T08:00:00Z')", ("2" * 64,)),
+            ("INSERT INTO reactions VALUES ('r1', 'x', 'call', 't', 'approve', '', '2026-11-13T01:00:00.000Z', 'page')", ()),
+            ("INSERT INTO reactions VALUES ('r2', 'y', 'report', 't', '', 'hi', '2026-11-04T01:00:00.000Z', 'artifact')", ()),
+            ("INSERT INTO reactions VALUES ('r3', 'z', 'call', 't', 'hold', '', '2026-11-13T02:00:00.000Z', 'chat')", ()),
+        ])
+        visits = self.root / "visits.jsonl"
+        visits.write_text("".join(json.dumps(item) + "\n" for item in (
+            {"ts": "2026-11-13T01:00:00.000Z", "page": "main", "device": "phone"},
+            {"ts": "2026-11-13T09:00:00.000Z", "page": "main", "device": "desktop"},
+            {"ts": "2026-11-14T09:00:00.000Z", "page": "adoption", "device": "phone"},
+            {"ts": "2026-11-04T09:00:00.000Z", "page": "main", "device": "desktop"},
+        )) + "garbage\n", encoding="utf-8")
+        counts = self.summary(visits)["counts"]
+        self.assertEqual((counts["reviewed"], counts["discarded"]), ([0, 0], [0, 0]))
+        self.assertEqual(counts["answers"], [1, 1])
+        self.assertEqual((counts["days"], counts["visits"], counts["phone"]), ([2, 1], [3, 1], [2, 0]))
+        self.assertIn("67%", quarterdeck.adoption_page_html(self.summary(visits)))
+
+    def test_chat_week_boundaries_use_local_dates_and_preserve_bare_dates(self) -> None:
+        with patch.dict(os.environ, {"TZ": "Asia/Manila"}):
+            time.tzset()
+            self.write_tags(
+                {"ts": "2026-11-08T18:00:00Z", "kind": "status", "qd_had_answer": True, "topic": "Monday here"},
+                {"ts": "2026-11-09T01:00:00+14:00", "kind": "status", "qd_had_answer": False, "topic": "Sunday here"},
+                {"ts": "2026-11-08", "kind": "status", "topic": "Bare Sunday"},
+                {"ts": "2026-11-08T18:00:00Z", "kind": "decision"},
+                {"ts": "2026-11-09T01:00:00+14:00", "kind": "decision"},
+            )
+            state = quarterdeck.validate_review_state_location(self.homes)
+            quarterdeck.write_state(state, [
+                ("INSERT INTO reactions VALUES (?, 'x', 'call', 't', 'approve', '', ?, 'page')", (key, at))
+                for key, at in (("new", "2026-11-10T01:00:00Z"), ("old", "2026-11-05T01:00:00Z"))
+            ])
+            summary = self.summary()
+            self.assertEqual(summary["counts"]["status"], [1, 2])
+            self.assertEqual(summary["counts"]["status_answered"], [1, 0])
+            self.assertEqual(summary["counts"]["status_missed"], [0, 1])
+            self.assertEqual(summary["counts"]["chat_answers"], [1, 1])
+            self.assertEqual(summary["answer_share"], [50, 50])
+            self.assertEqual([topic["topic"] for topic in summary["topics"][0]], ["Monday here"])
+            self.assertEqual([topic["topic"] for topic in summary["topics"][1]], ["Sunday here", "Bare Sunday"])
+        time.tzset()
+
+    def test_imported_triage_uses_action_week_without_backfilling(self) -> None:
+        report = self.homes[0].reports[0]
+        for resulting_state in (False, True):
+            with self.subTest(resulting_state=resulting_state):
+                state = self.root / str(resulting_state) / "marks.json"
+                quarterdeck.record_adoption_arrivals(state, self.homes, [], datetime(2026, 11, 7, tzinfo=timezone.utc))
+                rows = []
+                for action, result, at in (
+                    ("mark", "reviewed", "2026-11-06T08:00:00Z"),
+                    ("mark", "reviewed", "2026-11-08T20:00:00-02:00"),
+                    ("discard", "discarded", "2026-11-08T22:30:00Z"),
+                    ("undiscard", "needs review", "2026-11-08T23:00:00Z"),
+                ):
+                    row = {"report_id": report.report_id, "fingerprint": report.fingerprint, "action": action, "at": at}
+                    if resulting_state:
+                        row["state"] = result
+                    rows.append(row)
+                path = self.root / "import.json"
+                path.write_text(json.dumps(rows), encoding="utf-8")
+                args = argparse.Namespace(file=str(path), dry_run=False)
+                with patch.object(quarterdeck, "load_report_snapshots", return_value=(self.homes, state)), \
+                     patch.object(quarterdeck, "state_timestamp", return_value="2026-11-09T12:00:00Z"), redirect_stdout(io.StringIO()):
+                    self.assertEqual(quarterdeck.import_actions(args), 0)
+                self.assertNotIn(report.report_id, quarterdeck.load_review_state(state).reports)
+                with quarterdeck.state_connection(state) as connection:
+                    events = connection.execute("SELECT kind, at FROM adoption_events WHERE kind != 'arrived'").fetchall()
+                self.assertEqual(events, [("reviewed", "2026-11-08T22:00:00Z"),
+                                          ("discarded", "2026-11-08T22:30:00Z"),
+                                          ("unmarked", "2026-11-08T23:00:00Z")])
+                with patch.object(quarterdeck, "validate_review_state_location", return_value=state):
+                    counts = self.summary()["counts"]
+                self.assertEqual(counts["reviewed"], [0, 1])
+                self.assertEqual(counts["discarded"], [0, 1])
+
+    def test_activity_updates_preserve_arrivals_but_new_holds_are_distinct(self) -> None:
+        state = quarterdeck.validate_review_state_location(self.homes)
+        start = datetime(2026, 11, 12, 8, tzinfo=timezone.utc)
+        quarterdeck.record_adoption_arrivals(state, self.homes, [], start)
+        for hold in (None, "2026-11-10T08:00:00Z", "2026-11-12T08:00:00Z"):
+            card = {"id": "call:harbor/one", "section": "needs_you", "hold_set": hold, "at": "2026-11-11T01:00:00Z"}
+            quarterdeck.record_adoption_arrivals(state, self.homes, [card], start)
+            quarterdeck.record_adoption_arrivals(state, self.homes, [dict(card, at="2026-11-12T08:20:00Z")], start + timedelta(minutes=20))
+        with quarterdeck.state_connection(state) as connection:
+            events = connection.execute("SELECT at FROM adoption_events WHERE kind = 'needs_you'").fetchall()
+        self.assertEqual(events, [("2026-11-12T08:00:00Z",)] * 3)
+        visits = self.root / "visits.jsonl"
+        visits.write_text(json.dumps({"ts": "2026-11-12T08:30:00Z", "page": "main", "device": "desktop"}) + "\n")
+        self.assertEqual(self.summary(visits)["first_seen_minutes"], [30, None])
+
+    def test_answer_share_includes_chat_decisions_and_excludes_quarterdeck_status(self) -> None:
+        state = quarterdeck.validate_review_state_location(self.homes)
+        quarterdeck.write_state(state, [
+            ("INSERT INTO reactions VALUES (?, 'x', 'call', 't', '', 'reply', ?, ?)", (key, at, source))
+            for key, at, source in (("one", "2026-11-10T01:00:00Z", "page"),
+                                    ("two", "2026-11-11T01:00:00Z", "artifact"),
+                                    ("old", "2026-11-05T01:00:00Z", "page"))
+        ])
+        self.write_tags(
+            {"ts": "2026-11-12", "kind": "decision"},
+            {"ts": "2026-11-05", "kind": "decision"},
+            {"ts": "2026-11-12", "kind": "status", "source": "page"},
+            {"ts": "2026-11-12", "kind": "status", "source": "artifact"},
+            {"ts": "2026-11-12", "kind": "status"},
+        )
+        summary = self.summary()
+        self.assertEqual(summary["answer_share"], [67, 50])
+        self.assertEqual(summary["counts"]["status"], [1, 0])
+        self.assertIn("Share of answers from Quarterdeck (approximate)", quarterdeck.adoption_page_html(summary))
+
+    def test_triage_history_survives_state_changes_and_report_edits(self) -> None:
+        state = quarterdeck.validate_review_state_location(self.homes)
+        report = self.homes[0].reports[0]
+        last_week = datetime(2026, 11, 5, 8, tzinfo=timezone.utc)
+        quarterdeck.record_adoption_arrivals(state, self.homes, [], last_week)
+        with patch.object(quarterdeck, "state_timestamp", return_value="2026-11-05T09:00:00Z"):
+            quarterdeck.apply_report_action(self.homes, state, report.report_id, "mark")
+        with patch.object(quarterdeck, "state_timestamp", return_value="2026-11-12T09:00:00Z"):
+            quarterdeck.apply_report_action(self.homes, state, report.report_id, "discard")
+            quarterdeck.apply_report_action(self.homes, state, report.report_id, "unmark")
+            self.assertEqual(quarterdeck.load_review_state(state).reports[report.report_id][0], "discarded")
+            quarterdeck.apply_report_action(self.homes, state, report.report_id, "undiscard")
+        report.modified = self.NOW
+        quarterdeck.record_adoption_arrivals(state, self.homes, [], self.NOW)
+        summary = self.summary()
+        self.assertEqual(summary["counts"]["arrived"], [0, 0])
+        self.assertEqual(summary["counts"]["reviewed"], [0, 1])
+        self.assertEqual(summary["counts"]["discarded"], [1, 0])
+        self.assertNotIn(report.report_id, quarterdeck.load_review_state(state).reports)
+        with quarterdeck.state_connection(state) as connection:
+            self.assertEqual(connection.execute("SELECT kind FROM adoption_events WHERE kind = 'unmarked'").fetchall(), [("unmarked",)])
+        self.assertIsNone(summary["counting_from"])
+
+    def test_first_seen_wait_uses_first_visit_and_preserves_arrivals(self) -> None:
+        state = quarterdeck.validate_review_state_location(self.homes)
+        start = datetime(2026, 11, 12, 8, tzinfo=timezone.utc)
+        card = {"id": "call:harbor/one", "section": "needs_you", "at": "2026-11-11T01:00:00Z"}
+        quarterdeck.record_adoption_arrivals(state, self.homes, [], start)
+        quarterdeck.record_adoption_arrivals(state, self.homes, [card], start)
+        quarterdeck.record_adoption_arrivals(state, self.homes, [card], start + timedelta(minutes=20))
+        quarterdeck.record_adoption_arrivals(state, self.homes, [dict(card, id="call:harbor/two")], start + timedelta(minutes=40))
+        quarterdeck.record_adoption_arrivals(state, self.homes, [dict(card, id="call:harbor/unseen")], self.NOW)
+        visits = self.root / "visits.jsonl"
+        visits.write_text("".join(json.dumps({"ts": at, "page": "main", "device": "desktop"}) + "\n" for at in (
+            "2026-11-12T07:59:00Z", "2026-11-12T08:30:00Z", "2026-11-12T09:00:00Z", "2026-11-12T10:00:00Z")))
+        summary = self.summary(visits)
+        self.assertEqual(summary["first_seen_minutes"], [25, None])
+        self.assertEqual(summary["counting_from"], "2026-11-12")
+        page = quarterdeck.adoption_page_html(summary)
+        self.assertIn("counting from 2026-11-12", page)
+        self.assertIn("Median first-seen wait (approximate)", page)
+        self.assertIn("25 min", page)
+
+    def test_generated_reload_marks_request_and_restores_visible_url(self) -> None:
+        node = shutil.which("node")
+        if node is None:
+            self.skipTest("Node is required to execute the generated reload script")
+        page = quarterdeck.build_html([], "Q", refresh_seconds=60)
+        script = next(script for script in re.findall(r"<script>(.*?)</script>", page, re.S)
+                      if "function quarterdeckReload" in script)
+        harness = r"""
+const assert = require('node:assert/strict');
+globalThis.location = {protocol: 'http:', href: 'http://localhost/?view=waiting&qd_refresh=1#cards',
+  reload() { this.requested = this.href; }};
+globalThis.history = {replaceState(_state, _title, url) { location.href = String(url); }};
+globalThis.document = {querySelectorAll: () => [], querySelector: () => null};
+"""
+        verify = r"""
+assert.equal(location.href, 'http://localhost/?view=waiting#cards');
+quarterdeckReload();
+const request = new URL(location.requested);
+assert.equal(request.searchParams.get('qd_refresh'), '1');
+assert.equal(request.searchParams.get('view'), 'waiting');
+assert.equal(request.hash, '#cards');
+"""
+        result = subprocess.run([node, "-e", harness + script + verify], capture_output=True, text=True)
+        self.assertEqual(result.returncode, 0, result.stderr)
+
+    def test_automatic_refreshes_do_not_create_overnight_visits(self) -> None:
+        clock = [datetime(2026, 11, 13, 23, 50, tzinfo=timezone.utc).timestamp()]
+        path = self.root / "visits.jsonl"
+        log = quarterdeck.VisitLog(path, lambda: clock[0])
+        server = quarterdeck.make_server("127.0.0.1", 0, quarterdeck.make_handler(
+            quarterdeck.SiteCache(lambda: {"index.html": "ok"}), visit_log=log))
+        threading.Thread(target=server.serve_forever, daemon=True).start()
+        self.addCleanup(lambda: (server.shutdown(), server.server_close()))
+        base = f"http://127.0.0.1:{server.server_address[1]}"
+        for target in ("/", "/?qd_refresh=1", "/index.html?qd_refresh=1"):
+            with urllib.request.urlopen(base + target) as response:
+                self.assertEqual(response.status, 200)
+            clock[0] += 3600
+        self.assertEqual(len(quarterdeck.read_jsonl(path)), 1)
+        self.assertEqual(self.summary(path)["counts"]["days"], [1, 0])
+        with urllib.request.urlopen(base + "/") as response:
+            self.assertEqual(response.status, 200)
+        self.assertEqual(len(quarterdeck.read_jsonl(path)), 2)
+
+    def test_served_builder_records_arrivals_only_with_marks(self) -> None:
+        bearings = quarterdeck.build_bearings(self.homes, use_snapshot=False)
+        bearings.attention = quarterdeck.attention_view(self.homes, bearings.generated, use_feed=False)
+        args = argparse.Namespace(title=None)
+        with patch.object(quarterdeck, "load_site", return_value=({}, self.homes, bearings)):
+            quarterdeck.site_builder(args, False)()
+            state = quarterdeck.validate_review_state_location(self.homes)
+            self.assertFalse(quarterdeck.state_db_path(state).exists())
+            quarterdeck.site_builder(args, True)()
+        self.assertTrue(quarterdeck.state_db_path(state).exists())
+        summary = quarterdeck.adoption_summary(self.homes, bearings.generated, self.root / "visits.jsonl")
+        self.assertEqual(summary["counts"]["arrived"][0], 0)
+
+    def test_first_build_records_existing_items_without_arrivals(self) -> None:
+        state = quarterdeck.validate_review_state_location(self.homes)
+        card = {"id": "call:harbor/old", "section": "needs_you"}
+        before = [dataclasses.replace(self.homes[0], reports=[])]
+        quarterdeck.record_adoption_arrivals(state, before, [card], datetime(2026, 11, 10, 8, tzinfo=timezone.utc))
+        later = datetime(2026, 11, 11, 8, tzinfo=timezone.utc)
+        quarterdeck.record_adoption_arrivals(state, self.homes, [card, dict(card, id="call:harbor/new")], later)
+        visits = self.root / "visits.jsonl"
+        visits.write_text(json.dumps({"ts": "2026-11-11T08:10:00Z", "page": "main", "device": "desktop"}) + "\n")
+        summary = self.summary(visits)
+        self.assertEqual(summary["counts"]["arrived"][0], 1)
+        self.assertEqual(summary["first_seen_minutes"], [10, None])
+
+    def test_failed_arrival_write_does_not_stop_the_build(self) -> None:
+        bearings = quarterdeck.build_bearings(self.homes, use_snapshot=False)
+        bearings.attention = quarterdeck.attention_view(self.homes, bearings.generated, use_feed=False)
+        with patch.object(quarterdeck, "load_site", return_value=({}, self.homes, bearings)), \
+             patch.object(quarterdeck, "record_adoption_arrivals", side_effect=sqlite3.OperationalError("locked")), \
+             redirect_stderr(io.StringIO()) as stderr:
+            pages = quarterdeck.site_builder(argparse.Namespace(title=None), True)()
+        self.assertIn("index.html", pages)
+        self.assertIn("locked", stderr.getvalue())
+
+    def test_first_seen_uses_every_main_load_and_visits_are_deduplicated(self) -> None:
+        state = quarterdeck.validate_review_state_location(self.homes)
+        quarterdeck.record_adoption_arrivals(state, self.homes, [], datetime(2026, 11, 12, 7, tzinfo=timezone.utc))
+        card = {"id": "call:harbor/one", "section": "needs_you"}
+        quarterdeck.record_adoption_arrivals(state, self.homes, [card], datetime(2026, 11, 12, 8, 5, tzinfo=timezone.utc))
+        clock = [datetime(2026, 11, 12, 8, tzinfo=timezone.utc).timestamp()]
+        visits = self.root / "visits.jsonl"
+        log = quarterdeck.VisitLog(visits, lambda: clock[0])
+        for minutes, page in ((0, "main"), (7, "adoption"), (10, "main"), (31, "main")):
+            clock[0] = datetime(2026, 11, 12, 8, minutes, tzinfo=timezone.utc).timestamp()
+            log.record(page, "Firefox")
+        self.assertEqual(len(quarterdeck.read_jsonl(visits)), 4)
+        summary = self.summary(visits)
+        self.assertEqual(summary["first_seen_minutes"], [5, None])
+        self.assertEqual(summary["counts"]["visits"], [3, 0])
+
+    def test_device_class(self) -> None:
+        phone = "Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) Mobile/15E148"
+        self.assertEqual(quarterdeck.device_class(phone), "phone")
+        self.assertEqual(quarterdeck.device_class("Mozilla/5.0 (Linux; Android 14) Mobile Safari"), "phone")
+        self.assertEqual(quarterdeck.device_class("Mozilla/5.0 (X11; Linux x86_64) Firefox/130"), "desktop")
+        self.assertEqual(quarterdeck.device_class(None), "desktop")
+        self.assertEqual(quarterdeck.device_class("Mozilla/5.0 (Linux; Android 14; Tablet) Safari"), "desktop")
+        self.assertEqual(quarterdeck.device_class("Mozilla/5.0 (iPad; CPU OS 17_0) Mobile/15E148 Safari"), "desktop")
+        self.assertEqual(quarterdeck.device_class("iPod Safari"), "phone")
+
+    def test_visit_log_appends_minimal_lines_and_prunes(self) -> None:
+        path = self.root / "state" / "visits.jsonl"
+        clock = [1_700_000_000.0]
+        log = quarterdeck.VisitLog(path, lambda: clock[0])
+        log.record("main", "Mobile Safari")
+        log.record("main", "Mobile Safari")
+        log.record("main", "Firefox")
+        log.record("adoption", "Mobile Safari")
+        lines = [json.loads(line) for line in path.read_text().splitlines()]
+        self.assertEqual([(line["page"], line["device"]) for line in lines],
+                         [("main", "phone"), ("main", "phone"), ("main", "desktop"), ("adoption", "phone")])
+        self.assertEqual(set(lines[0]), {"ts", "page", "device"})
+        self.assertEqual(stat.S_IMODE(path.stat().st_mode), 0o600)
+        old = json.dumps({"ts": "2020-01-01T00:00:00.000Z", "page": "main", "device": "phone"}) + "\n"
+        path.write_text(old * 3000, encoding="utf-8")
+        clock[0] += quarterdeck.VISIT_REPEAT_SECONDS + 1
+        log.record("adoption", "Firefox")
+        remaining = path.read_text().splitlines()
+        self.assertEqual(len(remaining), 1)
+        self.assertEqual(json.loads(remaining[0])["page"], "adoption")
+
+    def test_served_main_and_adoption_pages_log_visits_only_when_enabled(self) -> None:
+        pages = {"index.html": "main", "adoption.html": "adoption", "other.html": "other", "cards.json": "{}"}
+        log = quarterdeck.VisitLog(self.root / "visits.jsonl")
+        for visit_log, expected in ((None, 0), (log, 2)):
+            server = quarterdeck.make_server("127.0.0.1", 0, quarterdeck.make_handler(
+                quarterdeck.SiteCache(lambda: pages), visit_log=visit_log))
+            threading.Thread(target=server.serve_forever, daemon=True).start()
+            self.addCleanup(lambda s=server: (s.shutdown(), s.server_close()))
+            for name in ("/", "/adoption.html", "/other.html", "/cards.json"):
+                request = urllib.request.Request(
+                    f"http://127.0.0.1:{server.server_address[1]}{name}", headers={"User-Agent": "Mobile"})
+                with urllib.request.urlopen(request) as response:
+                    self.assertEqual(response.status, 200)
+            path = self.root / "visits.jsonl"
+            self.assertEqual(len(path.read_text().splitlines()) if path.exists() else 0, expected)
+
+    def test_a_failing_visit_log_does_not_break_the_page(self) -> None:
+        blocked = self.root / "blocked"
+        blocked.write_text("a file, not a directory", encoding="utf-8")
+        server = quarterdeck.make_server("127.0.0.1", 0, quarterdeck.make_handler(
+            quarterdeck.SiteCache(lambda: {"index.html": "ok"}), visit_log=quarterdeck.VisitLog(blocked / "visits.jsonl")))
+        threading.Thread(target=server.serve_forever, daemon=True).start()
+        self.addCleanup(lambda: (server.shutdown(), server.server_close()))
+        with redirect_stderr(io.StringIO()), urllib.request.urlopen(f"http://127.0.0.1:{server.server_address[1]}/") as response:
+            self.assertEqual(response.read(), b"ok")
+
+    def test_main_page_links_to_the_adoption_page_which_links_back(self) -> None:
+        bearings = quarterdeck.build_bearings(self.homes, use_snapshot=False)
+        index = quarterdeck.build_html(self.homes, "Test", bearings=bearings)
+        self.assertIn('href="adoption.html"', index)
+        pages = quarterdeck.source_pages(self.homes, bearings=bearings)
+        self.assertIn('href="index.html"', pages["adoption.html"])
+        self.assertIn("viewport", pages["adoption.html"])

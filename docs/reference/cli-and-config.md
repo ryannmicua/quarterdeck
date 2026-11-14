@@ -185,7 +185,8 @@ on each repeatable `--host` address (default `127.0.0.1` only) and `--port`
 report review request, the reaction request, the saved-view request
 (`POST /api/views`, which writes only the preferences file) described in the
 [serving guide](../how-to/serve-the-page.md), and the captain-wait discard
-request (`POST /api/waits/discard`, body `{"key", "hold_set"}`); all other
+request (`POST /api/waits/discard`, body `{"key", "hold_set"}`), and the
+[visit log](../how-to/see-your-adoption.md#the-visit-log); all other
 writes remain refused. `--watch-waits` also runs the captain-wait watcher in a
 background thread; see [Captain waits](#captain-waits).
 The served page shows its generated-at time; see the
