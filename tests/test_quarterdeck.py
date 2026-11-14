@@ -1905,7 +1905,7 @@ class CaptainBoardTests(unittest.TestCase):
         if node is None:
             self.skipTest("Node.js is not available to execute the generated refresh script")
         page = quarterdeck.build_html([], "Q", refresh_seconds=30)
-        refresh_script = re.findall(r"<script>(.*?)</script>", page, flags=re.S)[-1]
+        refresh_script = "\n".join(re.findall(r"<script>(.*?)</script>", page, flags=re.S))
         harness = r"""
 const storageKey = "quarterdeck-open-details";
 const details = [
@@ -1921,8 +1921,10 @@ globalThis.document = {
   querySelectorAll(selector) {
     if (selector === "details") return details;
     if (selector === "details[open]") return details.filter(detail => detail.open);
+    if (selector === ".reaction-text") return [];
     throw new Error("unexpected selector " + selector);
-  }
+  },
+  querySelector() { return null; }
 };
 globalThis.sessionStorage = {
   getItem(key) { return values.get(key) || null; },
@@ -1949,7 +1951,7 @@ if (saved.length !== 3) throw new Error("open disclosures were not saved");
 
         no_storage = r"""
 let reloaded = false;
-globalThis.document = { querySelectorAll() { return []; } };
+globalThis.document = { querySelectorAll() { return []; }, querySelector() { return null; } };
 globalThis.sessionStorage = new Proxy({}, { get() { throw new Error("storage unavailable"); } });
 globalThis.location = { reload() { reloaded = true; } };
 globalThis.setTimeout = callback => callback();
@@ -6735,7 +6737,8 @@ globalThis.document = {
   }
 };
 globalThis.window = {IntersectionObserver};
-globalThis.location = {protocol: 'http:', hash: '', reload() { reloads++; }};
+globalThis.location = {protocol: 'http:', href: 'http://localhost/?view=waiting#cards', hash: '', reload() { reloads++; }};
+globalThis.history = {replaceState(_state, _title, url) { location.href = String(url); }};
 globalThis.localStorage = {getItem: () => null, setItem(key, value) { saved = JSON.parse(value); }};
 let poll, payload;
 globalThis.setInterval = (callback, delay) => { if (delay === 15000) poll = callback; };
@@ -7948,6 +7951,8 @@ class AdoptionTests(unittest.TestCase):
         summary = self.summary()
         self.assertTrue(all(value == [0, 0] for key, value in summary["counts"].items() if key != "arrived"))  # the fixture report is dated by its file
         self.assertEqual(summary["missing"], ["chat tags", "review state", "visit log"])
+        self.assertEqual(summary["answer_share"], [None, None])
+        self.assertEqual(summary["first_seen_minutes"], [None, None])
         page = quarterdeck.adoption_page_html(summary)
         self.assertIn("No status questions in chat this week or last", page)
         self.assertIn("Not found yet: chat tags, review state, visit log", page)
@@ -7991,10 +7996,129 @@ class AdoptionTests(unittest.TestCase):
             {"ts": "2026-11-04T09:00:00.000Z", "page": "main", "device": "desktop"},
         )) + "garbage\n", encoding="utf-8")
         counts = self.summary(visits)["counts"]
-        self.assertEqual((counts["reviewed"], counts["discarded"]), ([1, 1], [1, 0]))
+        self.assertEqual((counts["reviewed"], counts["discarded"]), ([0, 0], [0, 0]))
         self.assertEqual(counts["answers"], [1, 1])
         self.assertEqual((counts["days"], counts["visits"], counts["phone"]), ([2, 1], [3, 1], [2, 0]))
         self.assertIn("67%", quarterdeck.adoption_page_html(self.summary(visits)))
+
+    def test_answer_share_includes_chat_decisions_and_excludes_quarterdeck_status(self) -> None:
+        state = quarterdeck.validate_review_state_location(self.homes)
+        quarterdeck.write_state(state, [
+            ("INSERT INTO reactions VALUES (?, 'x', 'call', 't', '', 'reply', ?, ?)", (key, at, source))
+            for key, at, source in (("one", "2026-11-10T01:00:00Z", "page"),
+                                    ("two", "2026-11-11T01:00:00Z", "artifact"),
+                                    ("old", "2026-11-05T01:00:00Z", "page"))
+        ])
+        self.write_tags(
+            {"ts": "2026-11-12", "kind": "decision"},
+            {"ts": "2026-11-05", "kind": "decision"},
+            {"ts": "2026-11-12", "kind": "status", "source": "page"},
+            {"ts": "2026-11-12", "kind": "status", "source": "artifact"},
+            {"ts": "2026-11-12", "kind": "status"},
+        )
+        summary = self.summary()
+        self.assertEqual(summary["answer_share"], [67, 50])
+        self.assertEqual(summary["counts"]["status"], [1, 0])
+        self.assertIn("Share of answers from Quarterdeck (approximate)", quarterdeck.adoption_page_html(summary))
+
+    def test_triage_history_survives_state_changes_and_report_edits(self) -> None:
+        state = quarterdeck.validate_review_state_location(self.homes)
+        report = self.homes[0].reports[0]
+        last_week = datetime(2026, 11, 5, 8, tzinfo=timezone.utc)
+        quarterdeck.record_adoption_arrivals(state, self.homes, [], last_week)
+        with patch.object(quarterdeck, "state_timestamp", return_value="2026-11-05T09:00:00Z"):
+            quarterdeck.apply_report_action(self.homes, state, report.report_id, "mark")
+        with patch.object(quarterdeck, "state_timestamp", return_value="2026-11-12T09:00:00Z"):
+            quarterdeck.apply_report_action(self.homes, state, report.report_id, "discard")
+            quarterdeck.apply_report_action(self.homes, state, report.report_id, "unmark")
+            self.assertEqual(quarterdeck.load_review_state(state).reports[report.report_id][0], "discarded")
+            quarterdeck.apply_report_action(self.homes, state, report.report_id, "undiscard")
+        report.modified = self.NOW
+        quarterdeck.record_adoption_arrivals(state, self.homes, [], self.NOW)
+        summary = self.summary()
+        self.assertEqual(summary["counts"]["arrived"], [0, len(self.homes[0].reports)])
+        self.assertEqual(summary["counts"]["reviewed"], [0, 1])
+        self.assertEqual(summary["counts"]["discarded"], [1, 0])
+        self.assertNotIn(report.report_id, quarterdeck.load_review_state(state).reports)
+        with quarterdeck.state_connection(state) as connection:
+            self.assertEqual(connection.execute("SELECT kind FROM adoption_events WHERE kind = 'unmarked'").fetchall(), [("unmarked",)])
+        self.assertIsNone(summary["counting_from"])
+
+    def test_first_seen_wait_uses_first_visit_and_preserves_arrivals(self) -> None:
+        state = quarterdeck.validate_review_state_location(self.homes)
+        start = datetime(2026, 11, 12, 8, tzinfo=timezone.utc)
+        card = {"id": "call:harbor/one", "section": "needs_you", "at": "2026-11-11T01:00:00Z"}
+        quarterdeck.record_adoption_arrivals(state, self.homes, [card], start)
+        quarterdeck.record_adoption_arrivals(state, self.homes, [card], start + timedelta(minutes=20))
+        quarterdeck.record_adoption_arrivals(state, self.homes, [dict(card, id="call:harbor/two")], start + timedelta(minutes=40))
+        quarterdeck.record_adoption_arrivals(state, self.homes, [dict(card, id="call:harbor/unseen")], self.NOW)
+        visits = self.root / "visits.jsonl"
+        visits.write_text("".join(json.dumps({"ts": at, "page": "main", "device": "desktop"}) + "\n" for at in (
+            "2026-11-12T07:59:00Z", "2026-11-12T08:30:00Z", "2026-11-12T09:00:00Z", "2026-11-12T10:00:00Z")))
+        summary = self.summary(visits)
+        self.assertEqual(summary["first_seen_minutes"], [25, None])
+        self.assertEqual(summary["counting_from"], "2026-11-12")
+        page = quarterdeck.adoption_page_html(summary)
+        self.assertIn("counting from 2026-11-12", page)
+        self.assertIn("Median first-seen wait (approximate)", page)
+        self.assertIn("25 min", page)
+
+    def test_generated_reload_marks_request_and_restores_visible_url(self) -> None:
+        node = shutil.which("node")
+        if node is None:
+            self.skipTest("Node is required to execute the generated reload script")
+        page = quarterdeck.build_html([], "Q", refresh_seconds=60)
+        script = next(script for script in re.findall(r"<script>(.*?)</script>", page, re.S)
+                      if "function quarterdeckReload" in script)
+        harness = r"""
+const assert = require('node:assert/strict');
+globalThis.location = {protocol: 'http:', href: 'http://localhost/?view=waiting&qd_refresh=1#cards',
+  reload() { this.requested = this.href; }};
+globalThis.history = {replaceState(_state, _title, url) { location.href = String(url); }};
+globalThis.document = {querySelectorAll: () => [], querySelector: () => null};
+"""
+        verify = r"""
+assert.equal(location.href, 'http://localhost/?view=waiting#cards');
+quarterdeckReload();
+const request = new URL(location.requested);
+assert.equal(request.searchParams.get('qd_refresh'), '1');
+assert.equal(request.searchParams.get('view'), 'waiting');
+assert.equal(request.hash, '#cards');
+"""
+        result = subprocess.run([node, "-e", harness + script + verify], capture_output=True, text=True)
+        self.assertEqual(result.returncode, 0, result.stderr)
+
+    def test_automatic_refreshes_do_not_create_overnight_visits(self) -> None:
+        clock = [datetime(2026, 11, 13, 23, 50, tzinfo=timezone.utc).timestamp()]
+        path = self.root / "visits.jsonl"
+        log = quarterdeck.VisitLog(path, lambda: clock[0])
+        server = quarterdeck.make_server("127.0.0.1", 0, quarterdeck.make_handler(
+            quarterdeck.SiteCache(lambda: {"index.html": "ok"}), visit_log=log))
+        threading.Thread(target=server.serve_forever, daemon=True).start()
+        self.addCleanup(lambda: (server.shutdown(), server.server_close()))
+        base = f"http://127.0.0.1:{server.server_address[1]}"
+        for target in ("/", "/?qd_refresh=1", "/index.html?qd_refresh=1"):
+            with urllib.request.urlopen(base + target) as response:
+                self.assertEqual(response.status, 200)
+            clock[0] += 3600
+        self.assertEqual(len(quarterdeck.read_jsonl(path)), 1)
+        self.assertEqual(self.summary(path)["counts"]["days"], [1, 0])
+        with urllib.request.urlopen(base + "/") as response:
+            self.assertEqual(response.status, 200)
+        self.assertEqual(len(quarterdeck.read_jsonl(path)), 2)
+
+    def test_served_builder_records_arrivals_only_with_marks(self) -> None:
+        bearings = quarterdeck.build_bearings(self.homes, use_snapshot=False)
+        bearings.attention = quarterdeck.attention_view(self.homes, bearings.generated, use_feed=False)
+        args = argparse.Namespace(title=None)
+        with patch.object(quarterdeck, "load_site", return_value=({}, self.homes, bearings)):
+            quarterdeck.site_builder(args, False)()
+            state = quarterdeck.validate_review_state_location(self.homes)
+            self.assertFalse(quarterdeck.state_db_path(state).exists())
+            quarterdeck.site_builder(args, True)()
+        self.assertTrue(quarterdeck.state_db_path(state).exists())
+        summary = quarterdeck.adoption_summary(self.homes, bearings.generated, self.root / "visits.jsonl")
+        self.assertEqual(summary["counts"]["arrived"][0], len(self.homes[0].reports))
 
     def test_device_class(self) -> None:
         phone = "Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) Mobile/15E148"
@@ -8002,6 +8126,9 @@ class AdoptionTests(unittest.TestCase):
         self.assertEqual(quarterdeck.device_class("Mozilla/5.0 (Linux; Android 14) Mobile Safari"), "phone")
         self.assertEqual(quarterdeck.device_class("Mozilla/5.0 (X11; Linux x86_64) Firefox/130"), "desktop")
         self.assertEqual(quarterdeck.device_class(None), "desktop")
+        self.assertEqual(quarterdeck.device_class("Mozilla/5.0 (Linux; Android 14; Tablet) Safari"), "desktop")
+        self.assertEqual(quarterdeck.device_class("Mozilla/5.0 (iPad; CPU OS 17_0) Mobile/15E148 Safari"), "desktop")
+        self.assertEqual(quarterdeck.device_class("iPod Safari"), "phone")
 
     def test_visit_log_appends_minimal_lines_dedupes_reloads_and_prunes(self) -> None:
         path = self.root / "state" / "visits.jsonl"

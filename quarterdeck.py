@@ -17,6 +17,7 @@ import shutil
 import socket
 import sqlite3
 import stat
+import statistics
 import subprocess
 import sys
 import tempfile
@@ -30,7 +31,7 @@ from dataclasses import dataclass, field, replace
 from datetime import date, datetime, timedelta, timezone
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
-from urllib.parse import quote, unquote, urlparse
+from urllib.parse import parse_qs, quote, unquote, urlparse
 
 
 DEFAULT_TITLE = "Quarterdeck"
@@ -1022,6 +1023,10 @@ CREATE TABLE IF NOT EXISTS meta (key TEXT PRIMARY KEY, value TEXT NOT NULL);
 CREATE TABLE IF NOT EXISTS report_state (
     report_id TEXT PRIMARY KEY, state TEXT NOT NULL CHECK (state IN ('reviewed', 'discarded')),
     fingerprint TEXT NOT NULL, updated_at TEXT NOT NULL);
+CREATE TABLE IF NOT EXISTS adoption_events (
+    kind TEXT NOT NULL, item_id TEXT NOT NULL, at TEXT NOT NULL);
+CREATE UNIQUE INDEX IF NOT EXISTS adoption_arrivals ON adoption_events(kind, item_id)
+    WHERE kind IN ('arrived', 'needs_you');
 CREATE TABLE IF NOT EXISTS relevance (
     kind TEXT NOT NULL, key TEXT NOT NULL, value TEXT NOT NULL CHECK (value IN ('current', 'stale')),
     reason TEXT NOT NULL DEFAULT '', updated_at TEXT NOT NULL, PRIMARY KEY (kind, key));
@@ -1151,16 +1156,18 @@ def write_state(path: Path, statements: list[tuple[str, tuple[object, ...]]]) ->
 
 def update_report_state(path: Path, report_id: str, state: str | None, fingerprint: str = "") -> None:
     """Set a report's state to reviewed or discarded for a fingerprint, or clear it with None."""
-    if state is None:
-        write_state(path, [("DELETE FROM report_state WHERE report_id = ?", (report_id,))])
-        return
-    if state not in REPORT_STATES:
+    if state is not None and state not in REPORT_STATES:
         raise ValueError(f"report state must be one of {', '.join(REPORT_STATES)}")
-    write_state(path, [(
+    now = state_timestamp()
+    statement = ("DELETE FROM report_state WHERE report_id = ?", (report_id,)) if state is None else (
         "INSERT INTO report_state VALUES (?, ?, ?, ?) ON CONFLICT(report_id) DO UPDATE SET "
         "state = excluded.state, fingerprint = excluded.fingerprint, updated_at = excluded.updated_at",
-        (report_id, state, fingerprint, state_timestamp()),
-    )])
+        (report_id, state, fingerprint, now),
+    )
+    write_state(path, [statement,
+        ("INSERT OR IGNORE INTO meta VALUES ('adoption_started', ?)", (now,)),
+        ("INSERT INTO adoption_events VALUES (?, ?, ?)", (state or "unmarked", report_id, now)),
+    ])
 
 
 def update_review_mark(path: Path, report_id: str, fingerprint: str | None) -> None:
@@ -1218,10 +1225,12 @@ def apply_report_action(
         update_report_state(state_path, report.report_id, new_state, report.fingerprint)
     else:
         wanted = "reviewed" if action == "unmark" else "discarded"
-        write_state(state_path, [(
-            "DELETE FROM report_state WHERE report_id = ? AND state = ?",
-            (report.report_id, wanted),
-        )])
+        now = state_timestamp()
+        write_state(state_path, [
+            ("DELETE FROM report_state WHERE report_id = ? AND state = ?", (report.report_id, wanted)),
+            ("INSERT INTO adoption_events SELECT 'unmarked', ?, ? WHERE changes() > 0", (report.report_id, now)),
+            ("INSERT OR IGNORE INTO meta VALUES ('adoption_started', ?)", (now,)),
+        ])
     apply_review_marks(snapshots, load_review_state(state_path))
     return report
 
@@ -1375,6 +1384,11 @@ def build_html(
     ) + set_aside_reports_html(homes, ambiguous_ids, report_resolution_incomplete, allow_marks, reactions)
     reload_script = """
   <script>
+    if (location.protocol === "http:" || location.protocol === "https:") {
+      const url = new URL(location.href);
+      url.searchParams.delete("qd_refresh");
+      history.replaceState(null, "", url);
+    }
     function quarterdeckReload() {
       const editing = Array.from(document.querySelectorAll(".reaction-text")).some(
         field => field.value || field === document.activeElement
@@ -1382,6 +1396,11 @@ def build_html(
       if (editing || document.querySelector('[data-reaction-choice][aria-pressed=true], .reaction-send:disabled, #view-editor[data-dirty=true], #view-save:disabled[data-saving=true]')) {
         setTimeout(quarterdeckReload, 1000);
         return;
+      }
+      if (location.protocol === "http:" || location.protocol === "https:") {
+        const url = new URL(location.href);
+        url.searchParams.set("qd_refresh", "1");
+        history.replaceState(null, "", url);
       }
       location.reload();
     }
@@ -5471,7 +5490,10 @@ def site_builder(args: argparse.Namespace, allow_marks: bool = False) -> Callabl
         index = build_html(
             homes, title, bearings=bearings, refresh_seconds=DEFAULT_REFRESH_SECONDS, allow_marks=allow_marks
         )
-        cards = cards_payload(site_cards(homes, bearings, allow_marks), bearings.generated)
+        activity = site_cards(homes, bearings, allow_marks)
+        if allow_marks:
+            record_adoption_arrivals(validate_review_state_location(homes), homes, activity, bearings.generated)
+        cards = cards_payload(activity, bearings.generated)
         pages = source_pages(homes, show_all=False, bearings=bearings)  # after the cards: they register document pages
         pages["index.html"] = index
         pages[CARDS_PAGE] = cards
@@ -5524,7 +5546,7 @@ def make_handler(
             if name not in pages:
                 self.send_text(404, "Not found\n")
                 return
-            if visit_log is not None and name in VISIT_PAGES:
+            if visit_log is not None and name in VISIT_PAGES and "qd_refresh" not in parse_qs(urlparse(self.path).query):
                 try:
                     visit_log.record(VISIT_PAGES[name], self.headers.get("User-Agent"))
                 except (OSError, ValueError) as exc:  # a visit that cannot be logged must never stop the page
@@ -6056,18 +6078,16 @@ def show_help(args: argparse.Namespace) -> int:
 
 # --- Adoption -----------------------------------------------------------------
 # How much the captain relies on Quarterdeck instead of asking in chat. Firstmate appends one tag per captain chat
-# message to <home data>/qd-adoption/tags.jsonl (Quarterdeck only reads it; message content is never stored). The
-# served page appends one line per page load to its own visits.jsonl. The weekly summary joins those with the
-# reactions and report triage already in the review state.
+# message to <home data>/qd-adoption/tags.jsonl (Quarterdeck only reads it; message content is never stored).
 
 ADOPTION_PAGE = "adoption.html"
 VISITS_NAME = "visits.jsonl"
 TAGS_RELATIVE = Path("qd-adoption") / "tags.jsonl"
 VISIT_PAGES = {"index.html": "main", ADOPTION_PAGE: "adoption"}
-VISIT_REPEAT_SECONDS = 30 * 60  # the page reloads itself every minute; one open page is one visit
+VISIT_REPEAT_SECONDS = 30 * 60
 VISIT_RETENTION_DAYS = 120
 VISIT_PRUNE_BYTES = 128 * 1024
-PHONE_AGENT_RE = re.compile(r"Mobi|Android|iPhone|iPod", re.IGNORECASE)
+PHONE_AGENT_RE = re.compile(r"Mobile|iPhone|iPod", re.IGNORECASE)
 ADOPTION_TOPIC_LIMIT = 8
 
 
@@ -6077,7 +6097,7 @@ def visits_path() -> Path:
 
 def device_class(user_agent: str | None) -> str:
     """'phone' for a phone browser, otherwise 'desktop' (tablets and unknown browsers included)."""
-    return "phone" if user_agent and PHONE_AGENT_RE.search(user_agent) else "desktop"
+    return "phone" if user_agent and "ipad" not in user_agent.lower() and PHONE_AGENT_RE.search(user_agent) else "desktop"
 
 
 class VisitLog:
@@ -6176,16 +6196,32 @@ def week_index(day: date | None, weeks: tuple[date, date, date]) -> int | None:
     return 0 if day >= weeks[1] else 1 if day >= weeks[0] else None
 
 
+def record_adoption_arrivals(
+    path: Path, homes: list[HomeSnapshot], cards: list[dict[str, object]], now: datetime,
+) -> None:
+    at = board_time_text(now)
+    events = [("arrived", report.report_id, at)
+              for snapshot in all_snapshots(homes) for report in snapshot.reports]
+    events.extend(("needs_you", str(card["id"]) + ":" + str(card.get("at") or ""), at)
+                  for card in cards if card["section"] == "needs_you")
+    write_state(path, [
+        ("INSERT OR IGNORE INTO meta VALUES ('adoption_started', ?)", (at,)),
+        *[("INSERT OR IGNORE INTO adoption_events VALUES (?, ?, ?)", event) for event in events],
+    ])
+
+
 def adoption_summary(homes: list[HomeSnapshot], now: datetime, visits: Path | None = None) -> dict[str, object]:
     """This week and last week side by side. Missing sources count as zero and are named in 'missing'."""
     weeks = adoption_weeks(now)
     zero = lambda: [0, 0]  # noqa: E731 - [this week, last week]
-    keys = ("status", "status_answered", "status_missed", "answers", "arrived", "reviewed", "discarded", "visits", "phone", "days")
+    keys = ("status", "status_answered", "status_missed", "answers", "arrived", "reviewed", "discarded", "visits", "phone", "days", "chat_answers")
     counts = {key: zero() for key in keys}
     days: list[set[date]] = [set(), set()]
     topics: list[list[dict[str, object]]] = [[], []]
     missing: list[str] = []
 
+    needs: list[datetime] = []
+    started = None
     tag_files = []
     for directory in home_data_dirs(homes).values():
         if directory is not None and (directory / TAGS_RELATIVE) not in tag_files:
@@ -6195,7 +6231,11 @@ def adoption_summary(homes: list[HomeSnapshot], now: datetime, visits: Path | No
         missing.append("chat tags")
     for record in tags:
         index = week_index(local_day(record.get("ts"), date_only=True), weeks)
-        if index is None or record.get("kind") != "status":
+        if index is None or record.get("source") in ("page", "artifact"):
+            continue
+        if record.get("kind") == "decision":
+            counts["chat_answers"][index] += 1
+        if record.get("kind") != "status":
             continue
         counts["status"][index] += 1
         had = record.get("qd_had_answer")
@@ -6207,11 +6247,6 @@ def adoption_summary(homes: list[HomeSnapshot], now: datetime, visits: Path | No
         if isinstance(topic, str) and topic.strip():
             topics[index].append({"topic": topic.strip()[:120], "had_answer": had})
 
-    for snapshot in all_snapshots(homes):
-        for report in snapshot.reports:
-            index = week_index(report.modified.astimezone().date() if report.modified else None, weeks)
-            if index is not None:
-                counts["arrived"][index] += 1
     try:
         db_path = state_db_path(validate_review_state_location(homes))
     except ValueError:
@@ -6222,14 +6257,19 @@ def adoption_summary(homes: list[HomeSnapshot], now: datetime, visits: Path | No
         try:
             connection = sqlite3.connect(f"file:{db_path}?mode=ro", uri=True, timeout=15)
             try:
-                for state, updated in connection.execute("SELECT state, updated_at FROM report_state"):
-                    index = week_index(local_day(updated), weeks)
-                    if index is not None and state in REPORT_STATES:
-                        counts[state][index] += 1
                 for source, at in connection.execute("SELECT source, at FROM reactions"):
                     index = week_index(local_day(at), weeks)
                     if index is not None and source in ("page", "artifact"):
                         counts["answers"][index] += 1
+                if connection.execute("SELECT 1 FROM sqlite_master WHERE name = 'adoption_events'").fetchone():
+                    row = connection.execute("SELECT value FROM meta WHERE key = 'adoption_started'").fetchone()
+                    started = parse_board_time(row[0]) if row else None
+                    for kind, at in connection.execute("SELECT kind, at FROM adoption_events"):
+                        index = week_index(local_day(at), weeks)
+                        if index is not None and kind in ("arrived", "reviewed", "discarded"):
+                            counts[kind][index] += 1
+                        if kind == "needs_you" and (when := parse_board_time(at)) is not None:
+                            needs.append(when)
             finally:
                 connection.close()
         except sqlite3.Error:
@@ -6238,16 +6278,28 @@ def adoption_summary(homes: list[HomeSnapshot], now: datetime, visits: Path | No
     visit_file = visits if visits is not None else visits_path()
     if not visit_file.is_file():
         missing.append("visit log")
+    visit_times: list[datetime] = []
     for record in read_jsonl(visit_file):
         day = local_day(record.get("ts"))
         index = week_index(day, weeks)
         if index is None:
             continue
+        if (when := parse_board_time(record.get("ts"))) is not None and when <= now:
+            visit_times.append(when)
         days[index].add(day)  # type: ignore[arg-type]
         counts["visits"][index] += 1
         counts["phone"][index] += record.get("device") == "phone"
     counts["days"] = [len(days[0]), len(days[1])]
-    return {"weeks": weeks, "counts": counts, "topics": topics, "missing": missing}
+    waits: list[list[float]] = [[], []]
+    for appeared in needs:
+        first = min((visit for visit in visit_times if visit >= appeared), default=None)
+        index = week_index(local_day(board_time_text(appeared)), weeks)
+        if first is not None and index is not None:
+            waits[index].append((first - appeared).total_seconds() / 60)
+    shares = [round(100 * counts["answers"][i] / total) if (total := counts["answers"][i] + counts["chat_answers"][i]) else None for i in (0, 1)]
+    return {"weeks": weeks, "counts": counts, "topics": topics, "missing": missing,
+            "answer_share": shares, "first_seen_minutes": [statistics.median(values) if values else None for values in waits],
+            "counting_from": started.astimezone().date().isoformat() if started and now - started < timedelta(days=7) else None}
 
 
 def adoption_page_html(summary: dict[str, object], main_href: str = "index.html") -> str:
@@ -6255,6 +6307,10 @@ def adoption_page_html(summary: dict[str, object], main_href: str = "index.html"
     counts: dict[str, list[int]] = summary["counts"]  # type: ignore[assignment]
     topics: list[list[dict[str, object]]] = summary["topics"]  # type: ignore[assignment]
     missing: list[str] = summary["missing"]  # type: ignore[assignment]
+
+    def measure(key: str, index: int, suffix: str) -> str:
+        value = summary[key][index]
+        return f"{value:g}{suffix}" if value is not None else "no observations"
 
     def phone_share(index: int) -> str:
         total = counts["visits"][index]
@@ -6296,6 +6352,8 @@ def adoption_page_html(summary: dict[str, object], main_href: str = "index.html"
         topic_lines += f"<h3>{label}</h3><ul>{items}</ul>"
     notes = (f'<p class="note">Not found yet: {html.escape(", ".join(missing))}. Those rows count as zero.</p>'
              if missing else "")
+    if summary["counting_from"]:
+        notes += f'<p class="note">Triage and Needs-you arrivals: counting from {summary["counting_from"]} (no backfill).</p>'
     return f'''<!doctype html>
 <html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
 <meta name="quarterdeck-{'gen' + 'erated'}" content="read-only adoption summary"><title>Adoption · Quarterdeck</title>
@@ -6331,6 +6389,8 @@ ul {{ margin: 0; padding-left: 1.2rem; }} li {{ margin: .3rem 0; overflow-wrap: 
 {row("Status questions asked in chat", "status", "Lower is better.")}
 {row("…Quarterdeck already had the answer", "status_answered")}
 {row("Answers sent from Quarterdeck", "answers", "Reactions and replies sent from the page or the artifact.")}
+<tr><th scope="row">Share of answers from Quarterdeck (approximate)</th><td>{measure("answer_share", 0, "%")}</td><td>{measure("answer_share", 1, "%")}</td></tr>
+<tr><th scope="row">Median first-seen wait (approximate)<small>Needs-you arrival to first page visit; grouped by arrival week.</small></th><td>{measure("first_seen_minutes", 0, " min")}</td><td>{measure("first_seen_minutes", 1, " min")}</td></tr>
 {row("Reports arrived", "arrived")}
 {row("Reports reviewed", "reviewed")}
 {row("Reports discarded", "discarded")}
