@@ -1391,7 +1391,7 @@ def load_report_context(args: argparse.Namespace) -> tuple[list[HomeSnapshot], P
 
 
 def status_line_html(
-    cards: list[dict[str, object]], attention: dict[str, object] | None, underway: int | None, reports: int,
+    attention: dict[str, object] | None, underway: int | None, reports: int,
     now: datetime,
 ) -> str:
     """The first line of the page: does anything need the captain, what is underway, how many reports wait.
@@ -1401,8 +1401,12 @@ def status_line_html(
     """
     parts: list[str] = []
     if attention is not None:
-        waiting = [card for card in cards if card["section"] == "needs_you"]
         homes = [home for home in attention.get("homes", []) if isinstance(home, dict)]  # type: ignore[union-attr]
+        waiting = {str(item["key"]): item for home in homes
+                   for field in ("waiting", "waiting_more")
+                   for kind in ("decisions", "needs_you")
+                   for item in (home.get(field) or {}).get(kind, [])
+                   if item.get("relevance") not in {"quiet", "stale"}}
         unread = not attention.get("ok", True) or bool(attention.get("waits_error")) or any(
             home.get("errors") or (isinstance(home.get("decisions"), dict) and home["decisions"].get("skipped"))
             for home in homes)
@@ -1411,7 +1415,7 @@ def status_line_html(
         elif not waiting:
             text, need = "Nothing needs you", "none"
         else:
-            times = [when for card in waiting if card["at"] and (when := parse_when(str(card["at"]))) is not None]
+            times = [when for item in waiting.values() if item.get("at") and (when := parse_when(str(item["at"]))) is not None]
             oldest = f" · oldest {elapsed_text(min(times), now)}" if times else ""
             text, need = f"{len(waiting)} {'needs' if len(waiting) == 1 else 'need'} you{oldest}", "some"
         parts.append(f'<a href="#cards" data-need="{need}">{html.escape(text)}</a>')
@@ -1423,7 +1427,11 @@ def status_line_html(
 
 JUMP_SECTIONS = (
     ("cards", "Cards"), ("board", "Desk"), ("attention", "Waiting"), ("reviews", "Reports"),
-    ("call", "Captain's Call"), ("underway", "Underway"), ("charted", "Charted Next"), ("details", "Details"),
+    ("call", "Captain's Call"), ("underway", "Underway"), ("charted", "Charted Next"),
+    ("call-background", "Background decisions"), ("related", "Related items"),
+    ("board-desk", "On your desk"), ("board-week", "This week"), ("board-parked", "Parked"),
+    ("board-stale", "Stale decisions"), ("reviewed", "Reviewed reports"),
+    ("stale-reports", "Stale reports"), ("discarded", "Discarded reports"), ("details", "Details"),
 )
 
 
@@ -1435,6 +1443,8 @@ def jump_nav_html(markup: str, counts: dict[str, int]) -> str:
             continue
         count = f" <b>{counts[anchor]}</b>" if anchor in counts else ""
         links.append(f'<a href="#{anchor}">{html.escape(label)}{count}</a>')
+    for anchor in dict.fromkeys(re.findall(r'id="(recent-background-\d+)"', markup)):
+        links.append(f'<a href="#{anchor}">Background decisions</a>')
     return f'<nav class="jump" aria-label="Sections">{"".join(links)}</nav>'
 
 
@@ -1521,7 +1531,7 @@ def build_html(
     )
     body_markup = cards_block + board_block + attention_block + bearings_block + reviewed_block + details_block
     status_block = status_line_html(
-        cards, bearings.attention if bearings else None, section_counts.get("underway") if bearings else None,
+        bearings.attention if bearings else None, section_counts.get("underway") if bearings else None,
         counts[-1], generated,
     )
     jump_block = jump_nav_html(body_markup, section_counts)
@@ -1807,9 +1817,6 @@ def build_html(
 {ACTIVITY_CSS}    @media (prefers-color-scheme: dark) {{
       :root {{ --navy: #a9cdee; --sea: #5fc2b9; --sand: #11181f; --paper: #1a242d; --ink: #e3e8ec; --muted: #9aa8b3; --line: #33434f; --gold: #e0a24e; --gold-ink: #e0a24e; --head: #0d2438; --soft: #ffffff10; --warn-bg: #2d2412; --warn-ink: #f0d9a8; --fail-bg: #331b17; --fail-ink: #f3c4bb; --chip: #1f3a37; }}
       .board-num {{ color: #0b1a18; }}
-    }}
-    @media (min-width: 641px) {{
-      .reaction-choices {{ grid-template-columns: repeat(4, minmax(0, 1fr)); }}
     }}
     @media (max-width: 640px) {{
       .stamp-long, .generated.board-ok {{ display: none; }}
@@ -8227,19 +8234,19 @@ def work_card(item: dict[str, object], home: str, multi_home: bool) -> dict[str,
 
 
 def work_cards(items: list[dict[str, object]], home: str, multi_home: bool) -> list[dict[str, object]]:
-    """One card per work item, except that repeated runs of one task (same event and title) fold into one counted card."""
-    groups: dict[tuple[str, str, str], list[dict[str, object]]] = {}
+    """One card per work item, except that repeated runs of one task (same home, project, event and title) fold into one counted card."""
+    groups: dict[tuple[str, str, str, str], list[dict[str, object]]] = {}
     for item in items:
-        groups.setdefault((str(item.get("home") or home), str(item["event"]), str(item["title"])), []).append(item)
+        groups.setdefault((str(item.get("home") or home), str(item.get("project") or ""),
+                           str(item["event"]), str(item["title"])), []).append(item)
     cards: list[dict[str, object]] = []
-    for (owner, event, title), runs in groups.items():
+    for (owner, project, event, title), runs in groups.items():
         if len(runs) == 1:
             cards.append(work_card(runs[0], owner, multi_home))
             continue
         runs.sort(key=lambda run: str(run["at"]), reverse=True)
         card = work_card(runs[0], owner, multi_home)
         verb = str(card["label"])
-        project = str(runs[0].get("project") or "")
         lines = []
         for run in runs:
             when = parse_when(str(run["at"]))
@@ -8248,7 +8255,7 @@ def work_cards(items: list[dict[str, object]], home: str, multi_home: bool) -> l
                     if isinstance(pr, str) and pr.startswith("https://") else "")
             lines.append(f"<li><b>{html.escape(str(run['task']))}</b> "
                          f"{html.escape(when.strftime('%Y-%m-%d %H:%M UTC')) if when else ''}{link}</li>")
-        digest = hashlib.sha256(title.encode("utf-8")).hexdigest()[:12]
+        digest = hashlib.sha256(json.dumps([project, title]).encode("utf-8")).hexdigest()[:12]
         card.update({
             "id": f"work:{owner}:{event}:runs:{digest}", "label": f"{verb} ×{len(runs)}",
             "summary": " · ".join(part for part in (owner if multi_home else "", project, f"{len(runs)} runs, newest first") if part),

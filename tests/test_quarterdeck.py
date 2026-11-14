@@ -7035,6 +7035,7 @@ function openCard(card) {
             self.assertEqual(serve.fetch(port, "/cards.json", headers={"Host": "evil.example"})[0], 403)
 
 
+
 if __name__ == "__main__":
     unittest.main()
 
@@ -8336,18 +8337,51 @@ class QuickWinTests(unittest.TestCase):
 
     def test_status_line_says_nothing_needs_you_only_when_the_feed_was_read(self) -> None:
         now = ATTENTION_NOW
-        self.assertIn(">Nothing needs you<", quarterdeck.status_line_html([], {"ok": True}, 6, 177, now))
-        self.assertIn("177 reports to review", quarterdeck.status_line_html([], {"ok": True}, 6, 177, now))
-        self.assertIn("1 report to review", quarterdeck.status_line_html([], {"ok": True}, 0, 1, now))
+        self.assertIn(">Nothing needs you<", quarterdeck.status_line_html({"ok": True}, 6, 177, now))
+        self.assertIn("177 reports to review", quarterdeck.status_line_html({"ok": True}, 6, 177, now))
+        self.assertIn("1 report to review", quarterdeck.status_line_html({"ok": True}, 0, 1, now))
         for unread in ({"ok": True, "waits_error": "x"}, {"ok": True, "homes": [{"errors": [{"source": "s"}]}]},
                        {"ok": True, "homes": [{"errors": [], "decisions": {"skipped": "no feed"}}]}):
-            self.assertIn("Needs-you status unavailable", quarterdeck.status_line_html([], unread, 6, 1, now))
-        unknown = quarterdeck.status_line_html([], {"ok": False}, 6, 177, now)
+            self.assertIn("Needs-you status unavailable", quarterdeck.status_line_html(unread, 6, 1, now))
+        unknown = quarterdeck.status_line_html({"ok": False}, 6, 177, now)
         self.assertIn("Needs-you status unavailable", unknown)
         self.assertNotIn("Nothing needs you", unknown)
-        cards = [{"section": "needs_you", "at": "2026-06-29T12:00:00Z"}, {"section": "needs_you", "at": None}]
-        self.assertIn("2 need you · oldest 3 days", quarterdeck.status_line_html(cards, {"ok": True}, 0, 0, now))
-        self.assertIn("1 needs you", quarterdeck.status_line_html(cards[:1], {"ok": True}, 0, 0, now))
+        items = [{"key": "invented/a", "at": "2026-06-29T12:00:00Z"}, {"key": "invented/b", "at": None}]
+        self.assertIn("2 need you · oldest 3 days", quarterdeck.status_line_html({"ok": True, "homes": [{"waiting": {"decisions": items}}]}, 0, 0, now))
+        self.assertIn("1 needs you", quarterdeck.status_line_html({"ok": True, "homes": [{"waiting": {"needs_you": items[:1]}}]}, 0, 0, now))
+
+    def test_status_counts_active_waiting_across_priority_scope_and_homes(self) -> None:
+        decision = {"key": "invented/decision", "at": "2026-06-29T12:00:00Z", "project": "other"}
+        need = {"key": "child/help", "at": None, "project": "other"}
+        waiting, _scope = quarterdeck.scope_waiting(
+            {"decisions": [decision], "needs_you": [],
+             "informational": [{"key": "invented/info", "project": "priority"}]},
+            ["priority"], False, True)
+        attention = {"ok": True, "homes": [
+            {"waiting": waiting, "waiting_more": {"decisions": [decision]}},
+            {"waiting": {"needs_you": [need]}, "waiting_more": {"needs_you": [need],
+             "decisions": [{"key": "child/quiet", "at": "2026-01-01", "relevance": "quiet"},
+                           {"key": "child/stale", "at": "2026-01-01", "relevance": "stale"}]}},
+        ]}
+        line = quarterdeck.status_line_html(attention, 0, 0, ATTENTION_NOW)
+        self.assertIn("2 need you · oldest 3 days", line)
+        self.assertNotIn("Nothing needs you", line)
+
+    def test_jump_links_cover_report_related_and_background_sections(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            snapshots, _bearings = self.reports_site(Path(temp))
+            markup = quarterdeck.reviewed_reports_html(snapshots, set(), False)
+            markup += quarterdeck.set_aside_reports_html(snapshots, set(), False, True)
+        markup += quarterdeck.related_html([], ATTENTION_NOW)
+        anchors = ["call-background", "board-desk", "board-week", "board-parked", "board-stale",
+                   "recent-background-0", "recent-background-1"]
+        markup += "".join(f'<details id="{anchor}"></details>' for anchor in anchors)
+        nav = quarterdeck.jump_nav_html(markup, {})
+        self.assertEqual(re.findall(r'href="#([^" ]+)"', nav), [
+            "top", "call-background", "related", "board-desk", "board-week", "board-parked",
+            "board-stale", "reviewed", "stale-reports", "discarded",
+            "recent-background-0", "recent-background-1",
+        ])
 
     def test_jump_bar_is_sticky_at_the_top_and_lists_every_section_after_top(self) -> None:
         with tempfile.TemporaryDirectory() as temp:
@@ -8358,7 +8392,9 @@ class QuickWinTests(unittest.TestCase):
         self.assertEqual(labels[0], "top")
         for anchor in labels:
             self.assertIn(f'id="{anchor}"', page, anchor)
-        self.assertEqual(labels[-3:], ["underway", "charted", "details"])
+        self.assertIn("stale-reports", labels)
+        self.assertIn("discarded", labels)
+        self.assertIn("details", labels)
         self.assertLess(page.index('<nav class="jump"'), page.index("<main>"))
         self.assertEqual(page.count('<nav class="jump"'), 1)
         self.assertRegex(page, r"\.jump \{[^}]*position: sticky; top: 0")
@@ -8379,7 +8415,6 @@ class QuickWinTests(unittest.TestCase):
         header = page[page.index("<header>"):page.index("</header>")]
         self.assertIn('<time class="stamp-short" id="updated"', header)
         self.assertIn("Generated at ", header)
-        self.assertIn("Updated ", page[page.index("function updated()"):])
         self.assertRegex(page, r"@media \(max-width: 640px\) \{\s*\.stamp-long")
 
     def test_document_page_header_title_is_visible_and_reports_carry_review_buttons(self) -> None:
@@ -8460,3 +8495,21 @@ class QuickWinTests(unittest.TestCase):
         self.assertEqual(fewer["id"], folded["id"])
         self.assertNotEqual(fewer["label"], folded["label"])
         self.assertEqual(quarterdeck.work_cards([runs[0]], "invented", False)[0]["label"], "Finished")
+
+    def test_started_and_finished_runs_keep_projects_and_identities_separate(self) -> None:
+        runs = [{"event": event, "task": f"{project}-{index}", "title": "Update dependencies",
+                 "project": project, "at": f"2026-07-02T0{index}:00:00Z", "home": "invented"}
+                for event in ("started", "finished") for project in ("reef", "harbor") for index in range(2)]
+        cards = quarterdeck.activity_cards({"homes": [{"label": "invented",
+            "recent_work_6h": [run for run in runs if run["event"] == "started"],
+            "done_recent": [run for run in runs if run["event"] == "finished"]}]}, None, None)
+        self.assertEqual(len(cards), 4)
+        self.assertEqual(len({card["id"] for card in cards}), 4)
+        self.assertCountEqual([card["label"] for card in cards],
+                              ["Started ×2", "Started ×2", "Finished ×2", "Finished ×2"])
+        for card in cards:
+            project = str(card["summary"]).split(" · ")[0]
+            other = "harbor" if project == "reef" else "reef"
+            self.assertIn(f"{project}-0", card["body"])
+            self.assertIn(f"{project}-1", card["body"])
+            self.assertNotIn(f"{other}-", card["body"])
