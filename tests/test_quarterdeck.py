@@ -4928,6 +4928,156 @@ class AttentionPage(HTMLParser):
 class AttentionTests(unittest.TestCase):
     """Contract tests: fixtures follow Firstmate's documented fleet ledger (v1) and fm-attention.v1 formats."""
 
+    def test_failed_refresh_keeps_last_good_needs_you_list(self) -> None:
+        self.assertEqual(quarterdeck.ATTENTION_TIMEOUT_SECONDS, 60)
+        quarterdeck.LAST_GOOD_FEEDS.clear()
+        self.addCleanup(quarterdeck.LAST_GOOD_FEEDS.clear)
+        row = {"task": "kelp", "kind": "decision", "title": "Choice kelp", "bucket": "live",
+               "opened_at": "2026-07-02T10:00:00Z", "last_touched_at": "2026-07-02T11:00:00Z"}
+
+        def failing(*_: object) -> dict[str, object]:
+            raise quarterdeck.AttentionSourceError("decisions", "feed_failed", "bin/fm-attention.sh timed out after 60 seconds")
+
+        with tempfile.TemporaryDirectory() as temp:
+            home = Path(temp)
+            (home / "data").mkdir()
+            (home / "data" / "backlog.md").write_text("# Backlog\n\n## Work\n")
+            homes = [quarterdeck.load_home_snapshot(quarterdeck.HomeSpec("invented", home))]
+            first = quarterdeck.attention_view(homes, ATTENTION_NOW, feed_runner=lambda *_: {"open_decisions": [row]})
+            self.assertEqual(first["homes"][0]["errors"], [])
+            view = quarterdeck.attention_view(homes, ATTENTION_NOW, feed_runner=failing)
+            self.assertEqual(view["homes"][0]["errors"], [])
+            self.assertEqual([r["title"] for r in view["homes"][0]["decisions"]["relevant"]], ["Choice kelp"])
+            line = quarterdeck.status_line_html(view, 0, 0, ATTENTION_NOW)
+            self.assertIn("Needs-you status unavailable", line)
+            self.assertIn("refresh failed", line)
+            self.assertNotIn("Nothing needs you", line)
+            note = " ".join(quarterdeck.attention_errors_html(view))
+            self.assertIn("refresh failed", note)
+            self.assertIn("<details>", note)
+            quarterdeck.LAST_GOOD_FEEDS.clear()
+            cold = quarterdeck.attention_view(homes, ATTENTION_NOW, feed_runner=failing)
+            self.assertIn("could not be read right now", " ".join(quarterdeck.attention_errors_html(cold)))
+            self.assertIn("unavailable", quarterdeck.status_line_html(cold, 0, 0, ATTENTION_NOW))
+
+    def test_empty_cached_feed_stays_incomplete_until_refresh_recovers(self) -> None:
+        quarterdeck.LAST_GOOD_FEEDS.clear()
+        self.addCleanup(quarterdeck.LAST_GOOD_FEEDS.clear)
+
+        def empty(*_: object) -> dict[str, object]:
+            return {"open_decisions": []}
+
+        def failing(*_: object) -> dict[str, object]:
+            raise quarterdeck.AttentionSourceError("decisions", "feed_failed", "feed timed out")
+
+        definitions = ([{"name": "Review", "sections": [{"type": "priorities"}, {"type": "waiting"}]}], "Review")
+        with tempfile.TemporaryDirectory(dir=ROOT) as temp:
+            home = Path(temp)
+            (home / "data").mkdir()
+            (home / "data" / "backlog.md").write_text("# Backlog\n\n## Work\n")
+            homes = [quarterdeck.load_home_snapshot(quarterdeck.HomeSpec("invented", home))]
+            for options in ({"view_name": "Review"}, {"all_views": True}):
+                with self.subTest(options=options):
+                    fresh = quarterdeck.attention_view(homes, ATTENTION_NOW, feed_runner=empty)
+                    self.assertTrue(fresh["homes"][0]["complete"])
+                    stale = quarterdeck.attention_view(
+                        homes, ATTENTION_NOW + timedelta(minutes=1), feed_runner=failing,
+                        priority_projects=["harbor-app"], saved_views=definitions, **options,
+                    )
+                    self.assertFalse(stale["ok"])
+                    entry = stale["homes"][0]
+                    self.assertFalse(entry["ok"])
+                    self.assertFalse(entry["complete"])
+                    self.assertEqual(entry["feed_stale"]["as_of"], fresh["generated"])
+                    self.assertIsNone(entry["priorities"][0]["nothing_waiting"])
+                    self.assertIn("status unavailable", entry["priorities"][0]["say"])
+                    saved = stale["views"][0] if options.get("all_views") else stale["view"]
+                    self.assertEqual(len(saved["sections"]), 2)
+                    for section in saved["sections"]:
+                        self.assertIsNone(section["nothing_waiting"])
+                        self.assertIn("status unavailable", section["say"])
+                    line = quarterdeck.status_line_html(stale, 0, 0, ATTENTION_NOW)
+                    self.assertIn('data-need="unknown"', line)
+                    self.assertIn("refresh failed", line)
+                    self.assertNotIn("Nothing needs you", line)
+                    cards = quarterdeck.activity_cards(stale, None, None)
+                    page = quarterdeck.cards_html(cards, stale, ATTENTION_NOW, True)
+                    self.assertIn("not a confirmed all clear", page)
+                    self.assertNotIn("Nothing needs you right now", page)
+                    recovered = quarterdeck.attention_view(homes, ATTENTION_NOW + timedelta(minutes=2), feed_runner=empty)
+                    self.assertTrue(recovered["ok"])
+                    self.assertTrue(recovered["homes"][0]["complete"])
+                    self.assertNotIn("feed_stale", recovered["homes"][0])
+                    self.assertIn("Nothing needs you", quarterdeck.status_line_html(recovered, 0, 0, ATTENTION_NOW))
+
+    def test_cached_feed_is_scoped_to_home_and_resolved_data_directory(self) -> None:
+        quarterdeck.LAST_GOOD_FEEDS.clear()
+        self.addCleanup(quarterdeck.LAST_GOOD_FEEDS.clear)
+
+        def failing(*_: object) -> dict[str, object]:
+            raise quarterdeck.AttentionSourceError("decisions", "feed_failed", "feed timed out")
+
+        def feed(title: str) -> dict[str, object]:
+            return {"open_decisions": [{
+                "task": "kelp", "kind": "decision", "title": title, "bucket": "live",
+                "opened_at": "2026-07-02T10:00:00Z", "last_touched_at": "2026-07-02T11:00:00Z",
+            }]}
+
+        with tempfile.TemporaryDirectory(dir=ROOT) as temp:
+            home = Path(temp)
+            default_data, other_data = home / "data", home / "other-data"
+            for directory in (default_data, other_data):
+                directory.mkdir()
+                (directory / "backlog.md").write_text("# Backlog\n\n## Work\n")
+            (other_data / "nested").mkdir()
+            default = quarterdeck.load_home_snapshot(quarterdeck.HomeSpec("invented", home))
+            other = quarterdeck.load_home_snapshot(quarterdeck.HomeSpec("invented", home, other_data))
+            first = quarterdeck.attention_view([default], ATTENTION_NOW, feed_runner=lambda *_: feed("Default choice"))
+            self.assertTrue(first["ok"])
+            switched = quarterdeck.attention_view([other], ATTENTION_NOW, feed_runner=failing)["homes"][0]
+            self.assertFalse(switched["complete"])
+            self.assertNotIn("feed_stale", switched)
+            self.assertIsNone(switched["decisions"])
+            self.assertEqual([error["code"] for error in switched["errors"]], ["feed_failed"])
+            refreshed = quarterdeck.attention_view([other], ATTENTION_NOW, feed_runner=lambda *_: feed("Other choice"))
+            self.assertTrue(refreshed["ok"])
+            equivalent = quarterdeck.load_home_snapshot(quarterdeck.HomeSpec(
+                "invented", home, other_data / "nested" / ".."))
+            for snapshot, title in ((default, "Default choice"), (equivalent, "Other choice")):
+                with self.subTest(title=title):
+                    stale = quarterdeck.attention_view([snapshot], ATTENTION_NOW, feed_runner=failing)["homes"][0]
+                    self.assertFalse(stale["complete"])
+                    self.assertIn("feed_stale", stale)
+                    self.assertEqual([row["title"] for row in stale["decisions"]["relevant"]], [title])
+            second_home = home / "second-home"
+            second_home.mkdir()
+            separate = quarterdeck.load_home_snapshot(quarterdeck.HomeSpec("second", second_home, other_data))
+            cold = quarterdeck.attention_view([separate], ATTENTION_NOW, feed_runner=failing)["homes"][0]
+            self.assertNotIn("feed_stale", cold)
+            self.assertIsNone(cold["decisions"])
+            self.assertEqual([error["code"] for error in cold["errors"]], ["feed_failed"])
+
+    def test_only_decisions_errors_collapse_diagnostics(self) -> None:
+        for source in ("decisions", "backlog", "ledger", "home"):
+            with self.subTest(source=source):
+                diagnostic = f"Cannot read {source} <input>"
+                page = AttentionPage()
+                page.feed("".join(quarterdeck.attention_errors_html({"homes": [{
+                    "label": "invented", "errors": [{"source": source, "message": diagnostic}],
+                }]})))
+                visible, all_text = " ".join(page.visible), " ".join(page.all_text)
+                self.assertIn(f"{source} unavailable", visible)
+                self.assertIn(diagnostic, all_text)
+                self.assertIn("quarterdeck attention --check", all_text)
+                if source == "decisions":
+                    self.assertIn("could not be read right now", visible)
+                    self.assertNotIn(diagnostic, visible)
+                    self.assertNotIn("quarterdeck attention --check", visible)
+                else:
+                    self.assertIn(diagnostic, visible)
+                    self.assertIn("quarterdeck attention --check", visible)
+                    self.assertNotIn("Details", visible)
+
     def make_home(self, root: Path, ledger: str | None = None, feed: str | None = None, script: bool = True) -> Path:
         home = root / "invented-home"
         (home / "data").mkdir(parents=True)

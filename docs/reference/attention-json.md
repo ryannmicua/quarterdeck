@@ -27,7 +27,7 @@ private review state:
 | `data/backlog.md` | read directly, including registered local secondmates | existing backlog formats |
 | Quarterdeck review state | read locally | existing call relevance marks |
 | `data/captain-board.json` | read directly, including registered local secondmate boards | board version `1`; engagement uses `touched_at` |
-| `bin/fm-attention.sh --json` | run with a 15-second timeout | schema `fm-attention.v1` |
+| `bin/fm-attention.sh --json` | run with a 60-second timeout | schema `fm-attention.v1` |
 
 Titles come from the home's `data/backlog.md`, then the feed's decision and
 in-flight titles, then the task id.
@@ -44,12 +44,28 @@ Quarterdeck refuses a source it does not understand instead of guessing:
 Identical ledger records count once. Ledger events Quarterdeck does not use
 are ignored, as the contract requires.
 
+### Failed feed refreshes
+
+Within one process, Quarterdeck retains the last successful feed for each home
+and resolved effective data directory. If a later feed read fails, that feed
+remains available with `feed_stale`; it does not cross home or data-directory
+boundaries and is lost when the process exits. Without a cached feed, the
+failure appears in `errors` as before.
+
+A stale feed leaves the home and aggregate `ok` non-true and the home's
+`complete` false, even if the cached list is empty. Waiting summaries cannot
+claim an all clear until a successful refresh. The page shows an
+"as of HH:MM - refresh failed" warning and keeps the failure detail and
+`quarterdeck attention --check` command under **Details**. An uncached
+decisions-feed failure also puts its diagnostic under **Details**; other
+source diagnostics remain visible.
+
 ## Exit status
 
 | Status | Meaning |
 | --- | --- |
 | `0` | Every selected home's sources were read. |
-| `1` | At least one source is missing, unreadable, or in a version Quarterdeck does not understand. The JSON is still printed, with the error. |
+| `1` | At least one source is missing, unreadable, or in a version Quarterdeck does not understand. The JSON is still printed, with `errors` or `feed_stale` describing the failure. |
 | `2` | Usage or configuration error, such as no home selected or neither `--json` nor `--check`. |
 
 A home with no ledger file is not an error: recording is off, every window's
@@ -63,7 +79,7 @@ secondmate ledgers.
 | --- | --- |
 | `schema` | `quarterdeck-attention.v1` |
 | `generated` | UTC time of the read, ISO 8601, second precision. Windows and relevance are measured back from it. |
-| `ok` | `true` when no home reported an error. |
+| `ok` | `true` when every home's `ok` is true. |
 | `priority_projects` | The saved priority projects (up to three), in priority order. |
 | `requested_project` | The resolved recorded name for `--project`, else `null`. |
 | `homes` | One entry per selected home, in selection order. |
@@ -77,7 +93,8 @@ members without changing the schema name.
 | Member | Meaning |
 | --- | --- |
 | `label`, `home` | The home's label and absolute path. |
-| `ok`, `errors` | `errors` lists `{source, code, message}` objects; `ok` is `true` when it is empty. |
+| `ok`, `errors` | `errors` lists `{source, code, message}` objects; `ok` is `true` when it is empty and no `feed_stale` is present. |
+| `feed_stale` | Present only after a failed feed refresh reused a cached feed: `{as_of, detail}`, with the last successful read time in UTC ISO 8601 second precision and the current failure message. See [Failed feed refreshes](#failed-feed-refreshes). |
 | `ledger` | `{path, present, version, records}`, or `null` when the ledger could not be read. `records` counts distinct records. |
 | `recent_work` | See below, or `null` when the ledger could not be read. |
 | `decision_relevance` | `{recent_days, since}`: the relevance window. |
@@ -87,7 +104,7 @@ members without changing the schema name.
 | `complete` | `true` when the feed was read and every source the waiting lists depend on (home, registry, local secondmate backlogs, captain board) was readable and understood. When `false`, an empty waiting list does not mean nothing is waiting. |
 | `waiting`, `waiting_more`, `waiting_scope`, `more_count` | See [Waiting](#waiting-and-priorities). |
 | `priorities` | See [Waiting](#waiting-and-priorities). |
-| `decisions` | See below, or `null` when no feed was read and no backlog candidates were found (except with `--no-snapshot`). Source failures remain in `errors` even if backlog decisions are available. |
+| `decisions` | See below, or `null` when no feed is available and no backlog candidates were found (except with `--no-snapshot`). Source failures remain in `errors` even if backlog decisions are available, except for cached-feed failures described by `feed_stale`. |
 
 Error `source` is `home`, `backlog`, `ledger`, or `decisions`. Error `code` is
 one of `home_not_local`, `backlog_unreadable`, `ledger_unreadable`,
