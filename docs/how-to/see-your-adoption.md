@@ -11,7 +11,7 @@ Firstmate chat, because Quarterdeck already shows the answer.
 | What you had to ask about | The `topic` of this and last week's status tags, marked "answer was here", "had to ask" or "not checked". |
 | Answers sent from Quarterdeck | Reactions recorded with source `page` or `artifact` in the review state. |
 | Share of answers from Quarterdeck (approximate) | Page/artifact reactions and replies divided by those answers plus `kind: "decision"` chat tags. No answers means no observations. |
-| Median first-seen wait (approximate) | Each Needs-you card's first observed appearance to the first logged page visit at or after it. Grouped by arrival week; cards without a later visit are excluded. |
+| Median first-seen wait (approximate) | Each Needs-you card's first observed appearance to the first logged main-page load at or after it. Grouped by arrival week; cards without a later visit are excluded. |
 | Reports arrived, reviewed, discarded | Append-only `adoption_events` in the review-state database. Arrivals are first observed by `serve --allow-marks`; triage events are recorded by CLI, page and artifact-import actions. Later report edits, discards or unmarks never change previous weeks. |
 | Days visited, share of visits from a phone | `visits.jsonl`, below. |
 
@@ -21,8 +21,8 @@ Triage and Needs-you history starts when collection begins, with no backfill:
 reports and Needs-you cards already present at the first served build are
 recorded without a time and never count as arrivals or first-seen waits.
 The page shows "counting from <date>" for the first seven days. Appearance means
-first observed by the server, and visits are deduplicated, so first-seen waits
-are estimates rather than proof that a particular card was read. Stable card IDs
+first observed by the server and a load is not proof that a particular card
+was read, so first-seen waits are estimates. Stable card IDs
 and captain-hold identities identify appearances; activity timestamp updates do
 not create new arrivals. The event log stores only kind, item ID
 and observation/action time, never card text. Imported triage uses valid recorded
