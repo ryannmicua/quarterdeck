@@ -75,7 +75,9 @@ code as `quarterdeck reports mark-reviewed` / `unmark-reviewed`, stores the
 same content fingerprint in the same state database, and reloads the page. A
 report that changes afterwards returns to "needs review". **Discard** takes a
 report off the list without marking it reviewed; discarded reports are in a
-collapsed "Discarded reports" section with **Undiscard**.
+collapsed "Discarded reports" section with **Undiscard**. Each report's own
+page carries the same buttons above the document; after a click it offers
+**Back to Quarterdeck** instead of reloading.
 
 There is no key or login: anyone who can open the page can mark or unmark
 reports, and clicking the button just saves the mark. See

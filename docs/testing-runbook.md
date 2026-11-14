@@ -382,3 +382,30 @@ while a bare Sunday stays Sunday. Artifact-import regressions run both action
 formats, apply Sunday actions on Monday, and require Sunday event times without
 backfilling pre-collection actions. Pending-card activity updates must preserve
 arrival counts and waits; distinct captain-hold identities remain distinct.
+
+## Quick win status, navigation and recurring work regressions
+
+Run `PYTHONPATH=tests python3 -m unittest test_quarterdeck.QuickWinTests -v`.
+Q1 is the oracle for counting active needs across priority-scoped waiting lists
+and homes, deduplicating keys and excluding quiet/stale background decisions.
+The status must also withhold an all-clear when a healthy feed accompanies an
+unreadable registry, child backlog or captain board, or when feed reading is
+skipped. Its Cards destination must include active items held in waiting_more;
+page rendering and live responses share the same card builder. Informational
+cards remain scoped to priority projects. Oldest age uses the request opening
+time even after a recent touch, across feed decisions, needs-you classifications,
+board-only filed dates and priority scoping; unknown opening times omit the age.
+Q3 requires links to the rendered report lists, related items and background
+sections. Q8 requires separate recurring cards and identities per project for
+both started and completed work. These cases reject a false all-clear, omitted
+navigation and cross-project folding. Fixtures are fictional and disposable;
+no real homes or inbox deliveries are used. No cleanup is needed.
+
+The focused class checks generated markup, not computed CSS. To verify Q1,
+Q3, Q4 and Q6 visually, render fictional dashboard and report pages in a browser
+at phone and desktop widths. Scroll the dashboard to check sticky navigation;
+on a phone, confirm the relative update timestamp replaces the long timestamps.
+Confirm the report header title is visible, tap targets measure at least 44 px,
+and the four reaction choices occupy two rows and two columns at both widths.
+A later overriding CSS rule must be judged by those rendered results; source
+substring assertions cannot establish these properties.

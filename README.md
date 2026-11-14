@@ -79,9 +79,13 @@ as a local artifact. Quarterdeck itself has no agent or build step.
   reports tied to the desk. A status line in the header and at the top of the
   desk says whether reactions are connected. See
   [Use the cloud artifact](docs/how-to/use-the-cloud-artifact.md).
-- Compact header: the page opens straight on the activity cards.
+- Compact header: the page opens on one status line (what needs you, how many
+  are underway, how many reports wait, each linking to its section), then a
+  sticky strip of section links, then the activity cards.
 - Bearings-shaped page: Captain's Call, Underway, and Charted Next, each
-  rendered with an empty-state sentence. Recent work uses the six-hour feed.
+  rendered with an empty-state sentence. Charted Next and Details by home start
+  collapsed; Underway says how long each task has run. Recent work uses the
+  six-hour feed.
 - Captain's Call cards include local hold context, options, and recommendations
   when available. Remote decisions show the snapshot summary and point to their
   secondmate home for the full background.
