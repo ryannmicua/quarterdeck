@@ -9140,17 +9140,25 @@ class PhoneFixTests(unittest.TestCase):
             self.assertIn("--gold-ink: #9a5f1a", page)
             self.assertRegex(page, r"\.chip-rec \{[^}]*border-radius: 12px")
 
-    def test_underway_count_is_the_same_in_the_status_line_and_the_details_totals(self) -> None:
+    def test_every_underway_number_is_the_backlog_in_flight_count(self) -> None:
         with tempfile.TemporaryDirectory() as temp:
             home = BearingsTests().make_home(Path(temp))
+            (home / "data" / "backlog.md").write_text(
+                "# Backlog\n\n| ID | Title | State |\n| --- | --- | --- |\n"
+                "| harbor-chart | Harbor chart | in_flight |\n| buoy-sort | Buoy sort | in_flight |\n"
+                "| reef-map | Reef map | in_flight |\n", encoding="utf-8")
             snapshots = BearingsTests().snapshots(home)
             bearings = quarterdeck.build_bearings(snapshots, ATTENTION_NOW, runner=lambda *_: (SNAPSHOT_JSON, ""))
             bearings.attention = quarterdeck.attention_view(snapshots, ATTENTION_NOW, all_decisions=True)
+            self.assertEqual(len(bearings.underway), 1, "the snapshot lists less live work than the backlog records")
             page = quarterdeck.build_html(snapshots, "Quarterdeck", bearings=bearings, refresh_seconds=60)
-            shown = len(bearings.underway)
-            self.assertGreater(shown, 0)
-            self.assertIn(f">{shown} underway</a>", page)
-            self.assertIn(f'<div class="metric"><b>{shown}</b><span>Underway</span></div>', page)
+            self.assertIn(">3 underway</a>", page, "the backlog records three in-flight tasks")
+            self.assertIn('<div class="metric"><b>3</b><span>Underway</span></div>', page)
+            self.assertIn("<span>3 underway</span>", page)
+            self.assertNotIn("1 underway", page)
+            section = page.split('<div class="dashboard-section" id="underway">', 1)[1].split('<div class="cards">', 1)[0]
+            self.assertNotIn('class="count"', section, "the snapshot section must not show a competing count")
+            self.assertIn('<a href="#underway">Underway</a>', page)
 
     def test_secondmate_name_is_the_heading_and_a_remote_home_is_a_plain_note(self) -> None:
         local = quarterdeck.HomeSpec(
@@ -9263,6 +9271,13 @@ const click = button => handlers.click({target: {closest: () => button}});
     await pending;
     assert.equal(row.buttons.includes(retry), true, 'failed Undo remains available');
     assert.equal(retry.disabled, false);
+    const [expireAgain, delayAgain] = timers[timers.length - 1];
+    assert.equal(delayAgain, 15000, 'a failed Undo gets a fresh undo window');
+    const reloadsBefore = reloads;
+    expireAgain();
+    assert.equal(row.buttons.includes(retry), false, 'an abandoned failed Undo expires');
+    assert.equal(reloads, reloadsBefore + 1, 'expiry releases the list refresh');
+    row.buttons.push(retry);
     globalThis.fetch = async (_url, options) => { posted.push(JSON.parse(options.body).action); return {ok: true}; };
     await click(retry);
     assert.equal(row.buttons.includes(retry), false, 'retry completes Undo');

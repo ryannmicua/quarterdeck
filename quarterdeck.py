@@ -1552,8 +1552,6 @@ def build_html(
         section_counts["activity"] = sum(card["section"] != "needs_you" for card in cards)
     cards_script = ACTIVITY_SCRIPT if cards_block else ""
     cards_link = '<a class="cards-new" id="cards-new" href="#cards" hidden></a>' if cards_block else ""
-    if "underway" in section_counts:  # one count for one thing: the Underway section's own count
-        counts[2] = section_counts["underway"]
     metrics_html = "".join(
         f'<div class="metric"><b>{count}</b><span>{html.escape(label)}</span></div>'
         for count, label in zip(counts, metric_labels)
@@ -1572,7 +1570,7 @@ def build_html(
     tab_prefix = f"({waiting_cards}) " if waiting_cards else ""
     app_links = APP_LINKS if refresh_seconds else ""
     status_block = status_line_html(
-        bearings.attention if bearings else None, section_counts.get("underway") if bearings else None,
+        bearings.attention if bearings else None, counts[2] if bearings else None,
         counts[-1], generated,
     )
     jump_block = jump_nav_html(body_markup, section_counts)
@@ -2819,6 +2817,9 @@ MARK_SCRIPT = """
         delete button.dataset.mutationPending;
         for (const other of enabled) other.disabled = false;
         if (status) status.textContent = "Could not save: " + error.message;
+        if (undoing && typeof quarterdeckSaved !== "function") {
+          undoTimers.set(button, setTimeout(() => { button.remove(); quarterdeckReload(); }, UNDO_SECONDS * 1000));
+        }
       }
     });
   </script>"""
@@ -2977,7 +2978,7 @@ def bearings_html(
         visible_sections.append((key, title, description, visible, empty))
     sections = visible_sections
     if counts is not None:
-        counts.update({key: len(items) for key, _title, _d, items, _e in sections})
+        counts.update({key: len(items) for key, _title, _d, items, _e in sections if key != "underway"})
     review_cards = []
     for snapshot, report in bearings.reports:
         home = snapshot.spec.home or Path(".")
@@ -3035,9 +3036,10 @@ def bearings_html(
                 f'<p>{html.escape(description)}</p><div class="cards">{cards}</div></details>'
             )
             continue
+        count = "" if key == "underway" else f'<span class="count">{len(items)}</span>'
         out.append(
             f'<div class="dashboard-section" id="{key}"><div class="section-head"><div><h2>{html.escape(title)}</h2>'
-            f'<p>{html.escape(description)}</p></div><span class="count">{len(items)}</span></div>'
+            f'<p>{html.escape(description)}</p></div>{count}</div>'
             f'<div class="cards">{cards}</div></div>'
         )
     if background:
