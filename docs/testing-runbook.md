@@ -263,6 +263,11 @@ then stop servers, close test tabs and remove fixture/state directories.
 ### Activity card reconciliation
 
 Run `PYTHONPATH=tests python3 -m unittest test_quarterdeck.ActivityCardTests -v`.
+Document-link regressions check child-owned cards in all waiting queues, with
+and without board entries, against different parent/child documents at the same
+relative path. An unavailable child directory must never select the parent's
+file. Initial card markup and polling payloads must link references in current
+and earlier briefing paragraphs, clarification questions and board recommendations.
 The fixtures use disposable fictional homes; set `TMPDIR` to a directory inside
 the worktree when file writes must stay within it. Node.js on PATH executes the
 generated polling script against DOM controls and scripted fetch responses.

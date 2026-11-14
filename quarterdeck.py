@@ -7706,10 +7706,14 @@ def need_card(
         parts.append('<ul class="board-links">' + "".join(
             f'<li><a href="{html.escape(url, quote=True)}">{html.escape(label)}</a> '
             f'<span class="path">{html.escape(url)}</span></li>' for label, url in links) + "</ul>")
-    parts.append(doc_links_html(
-        "\n".join(str(text) for text in (item.get("title"), ask, wait_ask_line(wait) if wait else "", detail) if text),  # type: ignore[arg-type]
-        data_dir, doc_pages,
-    ))
+    document_text = [str(item["title"]), ask, detail, recommendation]
+    if wait:
+        document_text.append(wait_ask_line(wait))
+        for wait_entry in [*(wait.get("entries") or []), *(wait.get("earlier_entries") or [])]:
+            document_text.extend(str(paragraph.get("text") or "") for paragraph in wait_entry.get("paragraphs") or [])
+            if wait_entry.get("type") == "clarification":
+                document_text.append(str(wait_entry.get("asked") or ""))
+    parts.append(doc_links_html("\n".join(document_text), data_dir, doc_pages))
     if entry and entry.number:
         parts.append(f'<p class="links"><a href="#{board_anchor(entry)}" data-desk-link>Show on the desk</a></p>')
     if section == "needs_you":
@@ -7746,6 +7750,7 @@ def activity_cards(
     ) if not entry.deferred}
     cards: list[dict[str, object]] = []
     taken: set[str] = set()
+    owner_labels = {report_reference(label, "").split("/", 1)[0]: label for label in data_dirs or {}}
     for home in homes:
         label = str(home["label"])
         waiting = home.get("waiting") or {}
@@ -7754,9 +7759,12 @@ def activity_cards(
                 if item["key"] in taken or item.get("relevance") in {"quiet", "stale"}:
                     continue
                 taken.add(str(item["key"]))
+                entry = entries.get(str(item["key"]))
+                namespace, separator, _task = str(item["key"]).partition("/")
+                owner = entry.home if entry else owner_labels.get(namespace, namespace if separator else label)
                 cards.append(need_card(
-                    item, entries.get(str(item["key"])), label, multi_home, reactions, section,
-                    (data_dirs or {}).get(label), doc_pages,
+                    item, entry, owner, multi_home, reactions, section,
+                    (data_dirs or {}).get(owner), doc_pages,
                 ))
         for item in home.get("recent_work_6h") or []:
             if item["event"] == "started":
