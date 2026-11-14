@@ -1504,7 +1504,11 @@ NAV_SCRIPT = """
         stamp.textContent = "Updated " + (minutes < 1 ? "just now" : minutes < 60 ? minutes + " min ago" :
           minutes < 1440 ? Math.floor(minutes / 60) + " hr ago" : Math.floor(minutes / 1440) + " days ago");
       }
-      if (stamp && !isNaN(Date.parse(stamp.getAttribute("datetime")))) { updated(); setInterval(updated, 20000); }
+      if (stamp && !isNaN(Date.parse(stamp.getAttribute("datetime")))) {
+        updated();
+        const timer = setInterval(updated, 20000);
+        document.addEventListener("quarterdeck-replace", () => clearInterval(timer), {once: true});
+      }
     })();
   </script>"""
 
@@ -1579,13 +1583,18 @@ def build_html(
       url.searchParams.delete("qd_refresh");
       history.replaceState(null, "", url);
     }
-    function quarterdeckReload() {
+    function quarterdeckRefreshBlocked() {
       const editing = Array.from(document.querySelectorAll(".reaction-text")).some(
         field => field === document.activeElement || field.value && (
           typeof quarterdeckDraftSaved !== "function" || !quarterdeckDraftSaved(field)
         )
       );
-      if (editing || document.querySelector('[data-reaction-choice][aria-pressed=true], .reaction-send:disabled, #view-editor[data-dirty=true], #view-save:disabled[data-saving=true], [data-undo]')) {
+      return editing || document.querySelector('[data-reaction-choice][aria-pressed=true], .reaction-send:disabled, #view-editor[data-dirty=true], #view-save:disabled[data-saving=true], [data-undo]');
+    }
+    var quarterdeckRefreshing = false;
+    function quarterdeckReload() {
+      if (quarterdeckRefreshing) return;
+      if (quarterdeckRefreshBlocked()) {
         setTimeout(quarterdeckReload, 1000);
         return;
       }
@@ -1595,17 +1604,29 @@ def build_html(
       }
       const url = new URL(location.href);
       url.searchParams.set("qd_refresh", "1");
+      quarterdeckRefreshing = true;
       fetch(url, {cache: "no-store", credentials: "same-origin"}).then(response => {
         if (!response.ok) throw new Error("HTTP " + response.status);
+        return response.text();
+      }).then(page => {
+        quarterdeckRefreshing = false;
+        if (quarterdeckRefreshBlocked()) {
+          setTimeout(quarterdeckReload, 1000);
+          return;
+        }
         quarterdeckOffline(false);
         history.replaceState(null, "", url);
-        location.reload();
+        document.dispatchEvent(new Event("quarterdeck-replace"));
+        document.open();
+        document.write(page);
+        document.close();
       }).catch(() => {
+        quarterdeckRefreshing = false;
         quarterdeckOffline(true);
         setTimeout(quarterdeckReload, 15000);
       });
     }
-    const quarterdeckLoaded = Date.now();
+    var quarterdeckLoaded = Date.now();
     function quarterdeckOffline(down) {
       const note = document.getElementById("offline-note");
       if (!note) return;
@@ -1629,7 +1650,7 @@ def build_html(
       }}
       return box.dataset.reactionId;
     }}
-    const DRAFT_PREFIX = "quarterdeck-draft:", DRAFT_MS = 7 * 86400000;
+    var DRAFT_PREFIX = "quarterdeck-draft:", DRAFT_MS = 7 * 86400000;
     function draftKey(box) {{ return DRAFT_PREFIX + box.dataset.reactionKind + ":" + box.dataset.reactionItem; }}
     function growField(field) {{
       if (!field.offsetParent) return;
@@ -1775,7 +1796,7 @@ def build_html(
         }}
         sessionStorage.removeItem(storageKey);
       }} catch (_) {{}}
-      setTimeout(function() {{
+      const timer = setTimeout(function() {{
         try {{
           const openKeys = Array.from(
             document.querySelectorAll("details[open]"),
@@ -1785,6 +1806,7 @@ def build_html(
         }} catch (_) {{}}
         quarterdeckReload();
       }}, {int(refresh_seconds) * 1000});
+      document.addEventListener("quarterdeck-replace", () => clearTimeout(timer), {{once: true}});
     }})();
   </script>""" if refresh_seconds else ""
     )
@@ -2742,12 +2764,14 @@ def bearings_item_html(item: BItem, now: datetime, section: str) -> str:
 MARK_ENDPOINT = "/api/reports/review"
 MARK_SCRIPT = """
   <script>
-    const MARK_UNDO = {mark: "unmark", discard: "undiscard"}, UNDO_SECONDS = 15;
+    var MARK_UNDO = {mark: "unmark", discard: "undiscard"}, UNDO_SECONDS = 15;
+    var undoTimers = new WeakMap();
     document.addEventListener("click", async (event) => {
       const button = event.target.closest("[data-mark-report]");
       if (!button || button.disabled) return;
       const status = button.parentElement.querySelector(".request-status");
       const undoing = button.hasAttribute("data-undo");
+      if (undoing) clearTimeout(undoTimers.get(button));
       button.disabled = true;
       if (status) status.textContent = "Saving…";
       try {
@@ -2783,7 +2807,7 @@ MARK_SCRIPT = """
         undo.dataset.undo = "";
         (status || row.lastChild).after(undo);
         if (typeof quarterdeckSaved !== "function") {  // a list page reloads once the undo window has passed
-          setTimeout(() => { undo.remove(); quarterdeckReload(); }, UNDO_SECONDS * 1000);
+          undoTimers.set(undo, setTimeout(() => { undo.remove(); quarterdeckReload(); }, UNDO_SECONDS * 1000));
         }
       } catch (error) {
         button.disabled = false;
@@ -9078,13 +9102,21 @@ ACTIVITY_SCRIPT = """
         count();
         save();
       }
+      let replaced = false;
+      const intervals = [];
+      document.addEventListener("quarterdeck-replace", () => {
+        replaced = true;
+        for (const timer of intervals) clearInterval(timer);
+        for (const timer of timers.values()) clearTimeout(timer);
+        if (watch) watch.disconnect();
+      }, {once: true});
       async function poll() {
-        if (document.hidden) return;
+        if (document.hidden || replaced) return;
         try {
           const response = await fetch(feed.dataset.endpoint, { cache: "no-store" });
           if (!response.ok) return;
           const payload = await response.json();
-          if (payload && payload.schema === "quarterdeck-cards.v1") update(payload);
+          if (!replaced && payload && payload.schema === "quarterdeck-cards.v1") update(payload);
         } catch (_) {}
       }
       for (const card of cards()) attach(card, false);
@@ -9101,8 +9133,8 @@ ACTIVITY_SCRIPT = """
         }
       });
       if (feed.dataset.live === "1" && /^https?:$/.test(location.protocol)) {
-        setInterval(poll, Number(feed.dataset.poll) * 1000);
-        setInterval(times, 60000);
+        intervals.push(setInterval(poll, Number(feed.dataset.poll) * 1000));
+        intervals.push(setInterval(times, 60000));
         document.addEventListener("visibilitychange", poll);
       }
     })();

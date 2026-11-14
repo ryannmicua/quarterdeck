@@ -3648,6 +3648,16 @@ class DeskRelevanceTests(unittest.TestCase):
         self.cli("reports", "undiscard", "invented-home/lone-report")
         self.assertIn("invented-home/lone-report\tneeds review\t", self.cli("reports", "list").stdout)
 
+    def test_undo_restores_report_to_needs_review(self) -> None:
+        report = "invented-home/lone-report"
+        for action, inverse, state in [("mark-reviewed", "unmark-reviewed", "reviewed"),
+                                       ("discard", "undiscard", "discarded")]:
+            with self.subTest(action=action):
+                self.cli("reports", action, report)
+                self.assertIn(f"{report}\t{state}\t", self.cli("reports", "list").stdout)
+                self.cli("reports", inverse, report)
+                self.assertIn(f"{report}\tneeds review\t", self.cli("reports", "list").stdout)
+
     def test_discard_and_reviewed_replace_each_other_and_content_change_returns_the_report(self) -> None:
         report = "invented-home/lone-report"
         self.cli("reports", "mark-reviewed", report)
@@ -7142,6 +7152,7 @@ const controls = Object.fromEntries(['cards-count', 'cards-new', 'cards-empty', 
 controls['cards-empty'].textContent = 'Nothing needs you right now.';
 globalThis.document = {
   title: 'Quarterdeck', hidden: false, activeElement: null,
+  dispatchEvent() {}, open() {}, write() { reloads++; }, close() {},
   getElementById(id) { return id === 'cards' ? feed : controls[id]; },
   addEventListener(name, callback) { (documentEvents[name] ||= []).push(callback); if (name === 'click') feedEvents.click = callback; },
   querySelectorAll(selector) {
@@ -7164,7 +7175,7 @@ globalThis.history = {replaceState(_state, _title, url) { location.href = String
 globalThis.localStorage = {getItem: () => null, setItem(key, value) { saved = JSON.parse(value); }};
 let poll, payload;
 globalThis.setInterval = (callback, delay) => { if (delay === 15000) poll = callback; };
-globalThis.fetch = async () => ({ok: true, json: async () => payload});
+globalThis.fetch = async () => ({ok: true, json: async () => payload, text: async () => '<p>replacement</p>'});
 const spec = (id, rev = '1', section = 'needs_you') => ({id, rev, section,
   html: '<article data-card-id="' + id + '" data-card-rev="' + rev + '"></article>'});
 const flush = async () => { for (let i = 0; i < 8; i++) await Promise.resolve(); };  // the reload now waits for a probe fetch
@@ -7296,6 +7307,10 @@ function openCard(card) {
   await update([]); tick(1200);
   assert.equal(saved.removed, undefined);
   assert.equal(document.title, 'Quarterdeck', 'the count goes away with the last card');
+  for (const callback of documentEvents['quarterdeck-replace']) callback();
+  assert.equal(observer.watched.size, 0, 'replacement disconnects outgoing card observations');
+  await update([spec('late')]);
+  assert.deepEqual(all(), [], 'outgoing polling cannot update the replacement document');
 })().catch(error => { console.error(error); process.exitCode = 1; });
 """
         script = re.search(r"<script>(.*?)</script>", quarterdeck.ACTIVITY_SCRIPT, re.S)[1]
@@ -8586,8 +8601,9 @@ const assert = require('node:assert/strict');
 globalThis.location = {protocol: 'http:', href: 'http://localhost/?view=waiting&qd_refresh=1#cards',
   reload() { this.requested = this.href; }};
 globalThis.history = {replaceState(_state, _title, url) { location.href = String(url); }};
-globalThis.document = {querySelectorAll: () => [], querySelector: () => null, getElementById: () => null};
-globalThis.fetch = async () => ({ok: true});
+globalThis.document = {querySelectorAll: () => [], querySelector: () => null, getElementById: () => null,
+  dispatchEvent() {}, open() {}, write(page) { this.page = page; }, close() {}};
+globalThis.fetch = async url => { location.requested = String(url); return {ok: true, text: async () => '<p>refreshed</p>'}; };
 """
         verify = r"""
 assert.equal(location.href, 'http://localhost/?view=waiting#cards');
@@ -8598,6 +8614,7 @@ quarterdeckReload();
   assert.equal(request.searchParams.get('qd_refresh'), '1');
   assert.equal(request.searchParams.get('view'), 'waiting');
   assert.equal(request.hash, '#cards');
+  assert.equal(document.page, '<p>refreshed</p>');
 })().catch(error => { console.error(error); process.exitCode = 1; });
 """
         result = subprocess.run([node, "-e", harness + script + verify], capture_output=True, text=True)
@@ -9174,13 +9191,10 @@ class PhoneFixTests(unittest.TestCase):
         self.assertNotIn(">https://github.com", line)
         self.assertNotIn("Read backlog item", line)
 
-    def test_discard_is_quieter_than_mark_and_both_offer_an_undo_that_reverses_them(self) -> None:
+    def test_discard_is_quieter_than_mark(self) -> None:
         buttons = quarterdeck.mark_buttons("invented/report", ["mark", "discard"], "0" * 64, None)
         self.assertRegex(buttons, r'class="request-lavish" type="button" data-mark-report="invented/report"[^>]*data-mark-action="mark"')
         self.assertRegex(buttons, r'class="request-lavish quiet"[^>]*data-mark-action="discard"')
-        self.assertIn('{mark: "unmark", discard: "undiscard"}', quarterdeck.MARK_SCRIPT)
-        self.assertEqual(quarterdeck.REPORT_ACTIONS["unmark"][0], None)
-        self.assertEqual(quarterdeck.REPORT_ACTIONS["undiscard"][0], None)
 
     @unittest.skipUnless(shutil.which("node"), "Node is required to execute the generated scripts")
     def test_undo_posts_the_reverse_action_and_a_failed_refresh_keeps_the_page(self) -> None:
@@ -9203,7 +9217,8 @@ const mark = new Button({markReport: 'a/b', markFingerprint: 'f', markAction: 'm
 discard.parent = mark.parent = row; row.buttons.push(mark, discard);
 globalThis.document = {addEventListener: (name, fn) => { handlers[name] = fn; }, createElement: () => new Button({})};
 globalThis.fetch = async (_url, options) => { posted.push(JSON.parse(options.body).action); return {ok: true}; };
-globalThis.setTimeout = (fn, ms) => { timers.push([fn, ms]); };
+globalThis.setTimeout = (fn, ms) => { const timer = [fn, ms]; timers.push(timer); return timer; };
+globalThis.clearTimeout = timer => { if (timer) timer[0] = () => {}; };
 let reloads = 0;
 globalThis.quarterdeckReload = () => { reloads++; };
 const click = button => handlers.click({target: {closest: () => button}});
@@ -9222,6 +9237,8 @@ const click = button => handlers.click({target: {closest: () => button}});
   assert.deepEqual(posted, ['discard', 'undiscard']);
   assert.equal(status.textContent, 'Undone');
   assert.equal(reloads, 1);
+  timers[0][0]();
+  assert.equal(reloads, 1, 'successful Undo cancels its expiry');
   posted.length = 0;
   mark.disabled = false;
   await click(mark);
@@ -9232,6 +9249,24 @@ const click = button => handlers.click({target: {closest: () => button}});
   expire();
   assert.equal(reloads, 2, 'the list reloads once the undo window passes');
   assert.equal(row.buttons.includes(again), false);
+  for (const original of [mark, discard]) {
+    original.disabled = false;
+    await click(original);
+    const retry = row.buttons.find(b => b.hasAttribute('data-undo'));
+    let rejectUndo;
+    globalThis.fetch = () => new Promise((_resolve, reject) => { rejectUndo = reject; });
+    const pending = click(retry);
+    timers[timers.length - 1][0]();
+    assert.equal(row.buttons.includes(retry), true, 'expiry must not remove pending Undo');
+    rejectUndo(new Error('offline'));
+    await pending;
+    assert.equal(row.buttons.includes(retry), true, 'failed Undo remains available');
+    assert.equal(retry.disabled, false);
+    globalThis.fetch = async (_url, options) => { posted.push(JSON.parse(options.body).action); return {ok: true}; };
+    await click(retry);
+    assert.equal(row.buttons.includes(retry), false, 'retry completes Undo');
+    assert.equal(status.textContent, 'Undone');
+  }
 })().catch(error => { console.error(error); process.exitCode = 1; });
 """
         result = subprocess.run(["node", "-e", harness + script + verify], capture_output=True, text=True)
@@ -9248,12 +9283,21 @@ const assert = require('node:assert/strict');
 const note = {hidden: true, textContent: ''};
 const stamp = {getAttribute: () => new Date(Date.now() - 3 * 60000).toISOString()};
 const timers = [];
-let reloads = 0, online = false;
+let reloads = 0, online = false, bodyFails = false, blocked = null, fields = [], finishBody;
+const writes = [];
+let requests = 0;
 globalThis.location = {protocol: 'http:', href: 'http://localhost/', reload() { reloads++; }};
 globalThis.history = {replaceState() {}};
-globalThis.document = {querySelectorAll: () => [], querySelector: () => null,
+globalThis.document = {querySelectorAll: () => fields,
+  querySelector: selector => blocked && selector.includes(blocked.selector) ? blocked : null,
+  dispatchEvent() {}, open() {}, write(page) { writes.push(page); }, close() {},
   getElementById: id => id === 'offline-note' ? note : id === 'updated' ? stamp : null};
-globalThis.fetch = async () => { if (!online) throw new TypeError('offline'); return {ok: true}; };
+globalThis.fetch = async () => {
+  requests++;
+  if (!online) throw new TypeError('offline');
+  return {ok: true, text: () => bodyFails ? Promise.reject(new Error('transfer failed')) :
+    new Promise(resolve => { finishBody = resolve; })};
+};
 globalThis.setTimeout = (fn, ms) => { timers.push([fn, ms]); };
 """
         verify = r"""
@@ -9265,10 +9309,33 @@ globalThis.setTimeout = (fn, ms) => { timers.push([fn, ms]); };
   assert.equal(note.textContent, "Can't reach Quarterdeck \u00b7 last updated 3 min ago");
   assert.equal(timers.length, 1, 'it tries again later');
   online = true;
+  bodyFails = true;
   timers[0][0](); await settle();
-  assert.equal(reloads, 1);
+  assert.deepEqual(writes, [], 'a body transfer failure retains the page');
+  assert.equal(note.hidden, false);
+  bodyFails = false;
+  for (const selector of ['[data-reaction-choice][aria-pressed=true]', '.reaction-send:disabled',
+      '#view-editor[data-dirty=true]', '#view-save:disabled[data-saving=true]', '[data-undo]', 'draft', 'focus']) {
+    quarterdeckReload(); await settle();
+    if (selector === 'draft') fields = [{value: 'unsaved'}];
+    else if (selector === 'focus') { fields = [{value: ''}]; document.activeElement = fields[0]; }
+    else blocked = {selector};
+    finishBody('<p>stale replacement</p>'); await settle();
+    assert.deepEqual(writes, [], 'work begun during fetch must postpone replacement: ' + selector);
+    blocked = null; fields = []; document.activeElement = null;
+  }
+  quarterdeckReload(); await settle();
+  const requestCount = requests;
+  quarterdeckReload(); await settle();
+  assert.equal(requests, requestCount, 'concurrent refresh triggers share the pending request');
+  assert.deepEqual(writes, [], 'headers alone do not replace the page');
+  finishBody('<p>complete replacement</p>'); await settle();
+  assert.deepEqual(writes, ['<p>complete replacement</p>']);
+  assert.equal(requests, requestCount, 'replacement uses the fetched body without another request');
+  assert.equal(reloads, 0, 'HTTP refresh never navigates to a second request');
   assert.equal(note.hidden, true);
 })().catch(error => { console.error(error); process.exitCode = 1; });
 """
-        result = subprocess.run(["node", "-e", harness + script + verify], capture_output=True, text=True)
+        execute = "const vm = require('node:vm'); const script = require('node:fs').readFileSync(0, 'utf8'); vm.runInThisContext(script); vm.runInThisContext(script);"
+        result = subprocess.run(["node", "-e", harness + execute + verify], input=script, capture_output=True, text=True)
         self.assertEqual(result.returncode, 0, result.stderr)

@@ -502,3 +502,24 @@ backlog/board, then corrupt the fictional feed. Allow the 30-second site cache
 and 15-second card poll to run before the 60-second page reload; verify neutral
 empty wording on the original page. Stop browser/server children and remove
 fictional homes, profiles and state after capturing screenshots and responses.
+
+## Refresh transfer and report Undo
+
+Run the focused Python/Node regressions:
+
+```sh
+PYTHONPATH=tests python3 -m unittest -v \
+  test_quarterdeck.PhoneFixTests.test_failed_fetch_keeps_the_page_and_says_how_old_it_is \
+  test_quarterdeck.PhoneFixTests.test_undo_posts_the_reverse_action_and_a_failed_refresh_keeps_the_page \
+  test_quarterdeck.DeskRelevanceTests.test_undo_restores_report_to_needs_review
+```
+
+Q12 supplies the oracle: network and body-transfer failures retain the last
+page; a complete response replaces it without a second request. Edits, reaction
+choices, sends, view saves and Undo begun during transfer postpone replacement.
+Q17 requires both Mark reviewed and Discard to undo to needs review. Node checks
+reverse-action dispatch and expiry cancellation during a failed Undo, including
+retry; disposable CLI fixtures check persisted report state independently.
+No real homes or inbox deliveries are used; fixtures clean up automatically.
+Replacement reuses the window: global script bindings must allow reexecution,
+and the replacement event stops outgoing page timers and card observations.
