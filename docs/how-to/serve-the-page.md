@@ -2,8 +2,8 @@
 
 `quarterdeck serve` runs a small local web server. It reads your Firstmate homes
 at startup and keeps serving the last built pages while refreshing them.
-When any selected home or registered secondmate has a captain board, its
-list leads the page; otherwise the shared waiting view leads, followed by
+After the Needs-you cards, when any selected home or registered secondmate has
+a captain board, its list appears; otherwise the shared waiting view appears, followed by
 Firstmate's `/bearings` sections (Captain's Call, Underway, Charted Next).
 See [See recent work](see-recent-work.md) for the waiting view and recent-work display.
 Reports waiting on your review also appear. See the
@@ -16,13 +16,14 @@ rules. Serving costs no tokens and needs no Firstmate session.
 quarterdeck serve
 ```
 
-Open `http://127.0.0.1:8765/`. The page leads with an activity-card feed
+Open `http://127.0.0.1:8765/`. The page leads with Needs-you cards
 (see [Watch Firstmate's activity as cards](watch-activity-cards.md) for polling
 and unread behavior). The page shows a "Generated at" time and reloads
 itself every 60 seconds, restoring open items and sections after each refresh
-when browser session storage is available. Automatic refresh waits while a reaction
-is being written or sent, or the view editor has unsaved changes or a pending
-save.
+when browser session storage is available. Automatic refresh waits while a reply
+box has focus or contains text that is not saved in browser storage, a reaction
+is selected or being sent, or the view editor has unsaved changes or a pending
+save. Saved, unfocused replies allow refresh; see [reply drafts](#react-to-calls-and-reports-from-the-page).
 
 The server finishes its first build before accepting requests. After that,
 the first request at least 30 seconds after a build finishes starts a background rebuild
@@ -96,11 +97,15 @@ authenticating TLS reverse proxy.
 With `--allow-marks`, each desk call, related item and report also has
 **Approve**, **Hold**, **Not now** and **Question** buttons, a reply box
 and **Send**. Pick a reaction, write a reply, or both, then Send. The reply box
-is a text area that grows as you type and takes up to 20,000 characters, enough
-for a long dictated answer. A counter appears when you near the limit, and a
+is a text area that grows as you type for a long dictated answer; the
+[reaction text limit](../reference/cli-and-config.md#reactions) applies.
+A counter appears when you near the limit, and a
 longer reply is refused with a message rather than cut. An unsent reply is kept
-in this browser (for up to seven days) across the page's automatic reloads and
-is cleared when you send it. Quarterdeck
+in this browser's `localStorage` (for up to seven days) across reloads when
+storage is available. Reply text is shared between card and desk composers for
+the same item and kind. A successful send clears the submitted text from those
+composers and storage; edits made while sending survive. A failed send keeps
+the draft. Quarterdeck
 hands one line (item ID, task ID, reaction, your text and the time) to the
 item's home through its `bin/fm-inbox.sh note`, so Firstmate receives it as a
 note and wakes, and it routes the answer to you or the workers. The card shows

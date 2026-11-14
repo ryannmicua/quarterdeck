@@ -315,7 +315,7 @@ reopening it explicitly acknowledges that revision. Reaction cases cross the
 one-hour age boundary with reply controls enabled and disabled; unchanged
 records keep their revision, while changed text, choice, source or absolute
 timestamp and reaction removal change it.
-The harness checks the header and Cards-heading unread counts on arrival and
+The harness checks the header and Needs-you-heading unread counts on arrival and
 acknowledgement, and checks that arrival, acknowledgement, replacement and
 removal preserve the page title. Seen persistence is asserted through executed
 localStorage writes.
@@ -390,7 +390,7 @@ Q1 is the oracle for counting active needs across priority-scoped waiting lists
 and homes, deduplicating keys and excluding quiet/stale background decisions.
 The status must also withhold an all-clear when a healthy feed accompanies an
 unreadable registry, child backlog or captain board, or when feed reading is
-skipped. Its Cards destination must include active items held in waiting_more;
+skipped. Its Needs-you destination must include active items held in waiting_more;
 page rendering and live responses share the same card builder. Informational
 cards remain scoped to priority projects. Oldest age uses the request opening
 time even after a recent touch, across feed decisions, needs-you classifications,
@@ -456,3 +456,18 @@ Offset timestamps compare as instants. Initial HTML and cards JSON must agree,
 including decisions and other needs-you items from priority and overflow lists.
 Polling without completeness evidence must replace an old all-clear with a
 neutral empty message, while preserving active replies during reconciliation.
+
+
+Live browser recipe for this flow: serve the fictional attention fixture with
+isolated XDG config/state and `--allow-marks`, shifting fixture timestamps to
+now so the six-hour activity window remains populated. Use a named browser
+session with a disposable profile. At 375px and desktop width, check that
+Needs you comes first and the Activity jump link opens the collapsed section.
+For a delayed-send check, delay the fictional inbox for three seconds (holding
+it indefinitely hits the delivery timeout); edit the matching desk composer
+while the card send is pending and verify the later text survives success.
+To check the poll empty state, start with a feed-only decision and valid empty
+backlog/board, then corrupt the fictional feed. Allow the 30-second site cache
+and 15-second card poll to run before the 60-second page reload; verify neutral
+empty wording on the original page. Stop browser/server children and remove
+fictional homes, profiles and state after capturing screenshots and responses.

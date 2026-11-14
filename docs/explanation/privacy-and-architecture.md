@@ -86,7 +86,7 @@ same origin, content-type and no-key rules, validates the view exactly as
 `quarterdeck views save` does, and writes only that file, never a home.
 
 `serve --allow-marks` also enables `POST /api/reactions` for
-reactions: a quick Approve, Hold, Not now or Question, and a short reply, on a
+reactions: a quick Approve, Hold, Not now or Question, and a reply, on a
 desk call, a related item or a report. It applies the same origin, content-type
 and no-key rules as the mark endpoint, and accepts only an item that exists. It
 is the one place Quarterdeck acts on a home beyond reading: it runs that home's
@@ -99,6 +99,8 @@ home, which routes it). Only after the script succeeds is the reaction recorded
 in the state database, so a failed delivery is reported on the card and nothing
 is recorded. `quarterdeck reactions import FILE` runs the same delivery for the
 reactions recorded in the cloud artifact, skipping ids already delivered.
+Unsent reply text stays in the browser; see the
+[reply draft rules](../how-to/serve-the-page.md#react-to-calls-and-reports-from-the-page).
 Each configured home is loaded independently. A missing or unreadable home
 shows its own error while other sections still render.
 

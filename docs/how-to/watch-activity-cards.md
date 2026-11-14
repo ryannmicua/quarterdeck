@@ -1,7 +1,8 @@
 # Watch Firstmate's activity as cards
 
 The served page leads with the **Needs you** cards, so what is waiting on you is
-the first thing you see; when nothing is, it says "Nothing needs you right now."
+the first thing you see. Empty-state messages are explained
+[below](#if-the-feed-is-empty-or-incomplete).
 What Firstmate started, merged and finished is in a collapsed **Activity**
 section lower on the page (in the jump strip, with its count). It works like the
 cards on Cadence's phone page: each card shows a label, its age, a title and the
@@ -21,7 +22,9 @@ for a task held for the captain also shows what the
 | For your information | One per result to read. | The attention feed and the captain board. |
 | Done recently | Recently merged work, answered or closed captain calls, and dated finished tasks. | The fleet ledger and backlog, including registered homes. |
 
-Needs you leads the page, oldest wait first; the other three sections sit inside
+Needs you leads the page, oldest opening time first, falling back to the last
+activity time when the opening time is missing or invalid; unknown times come
+last. The other three sections sit inside
 Activity, in that order, newest first. Quiet and
 stale decisions and dated decisions that are not yet due stay out. Information
 cards follow the [waiting queue's priority scope](see-recent-work.md); needs-you
@@ -65,8 +68,9 @@ and opens to Firstmate's dated briefing and clarifications first, with
 states them, the decision brief and other links, and a link to the item on the
 desk. If the desk has changed since the page loaded, that link refreshes the
 page once pending replies and view edits are finished. With `serve --allow-marks`, it also carries the usual Approve, Hold, Not
-now and Question buttons and reply box, which send a note through
-`bin/fm-inbox.sh` exactly as on the desk. A card never acts by itself: a merge or
+now and Question buttons and reply box, using the desk's
+[reaction controls and drafts](serve-the-page.md#react-to-calls-and-reports-from-the-page).
+A card never acts by itself: a merge or
 anything destructive still waits for your reaction, and Firstmate does the work.
 
 ## How new cards arrive
@@ -76,8 +80,9 @@ seconds, and a new card slides in at its place with a short highlight. Server
 refresh timing is described in the [serving guide](serve-the-page.md#run-it). A card
 stays marked **New** until it has been at least half on screen for 1.2 continuous
 seconds in the active tab or you open it there. Returning to the tab starts a
-fresh visibility check. The **Cards** heading and an "N new" link in the page
-header count the cards you have not seen. A card whose text changes
+fresh visibility check. The **Needs you** heading and an "N new" link in the page
+header count the Needs-you cards you have not seen. Activity cards also carry
+New labels, but do not contribute to that count. A card whose text changes
 becomes New again. Restoring an expanded card after a poll does not mark its
 changed content as seen. Card reactions show their absolute sent timestamp, so
 the passage of time alone does not make a card New.
@@ -94,7 +99,13 @@ not poll; reload it to see changes.
 
 ## If the feed is empty or incomplete
 
-"Nothing new from Firstmate." means no card source has anything to show. If a
+On the initial page, "Nothing needs you right now." means no Needs-you cards
+are waiting and their sources were read completely. Incomplete input instead
+shows "Could not read everything that might need you, so this is not a confirmed
+all clear." An empty live update says "No needs-you cards in this update. Reload
+to check the full status." because polling does not confirm completeness.
+
+"Nothing new from Firstmate." inside Activity means it has no cards. If a
 source could not be read (for example `--no-snapshot` skips the attention feed,
 or a ledger is malformed) a notice above the cards says which one; run
 `quarterdeck attention --check` for detail.

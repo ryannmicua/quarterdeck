@@ -25,10 +25,9 @@ as a local artifact. Quarterdeck itself has no agent or build step.
 ## Features
 
 - Needs-you cards and activity: the served page leads with the decisions,
-  merges and anything else waiting on you, longest wait first, each a card that
-  opens to the ask, options and links and uses the desk's reaction controls
-  (the reply box is a growing text area that takes up to 20,000 characters and
-  keeps an unsent draft across reloads); when nothing waits it says so. What
+  merges and anything else waiting on you, each a card that
+  opens to the ask, options and links and uses the desk's
+  [reaction controls and growing reply box](docs/how-to/serve-the-page.md#react-to-calls-and-reports-from-the-page). What
   Firstmate started, merged and finished sits in a collapsed Activity section
   lower on the page. New cards slide in and are marked New until seen, without a
   reload. See
