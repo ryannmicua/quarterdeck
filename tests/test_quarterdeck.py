@@ -5523,8 +5523,11 @@ class AttentionTests(unittest.TestCase):
             bearings.attention = view
             page = AttentionPage()
             page.feed(quarterdeck.build_html(snapshots, "Quarterdeck", bearings=bearings))
-            self.assertNotIn("other title", " ".join(page.visible))
-            self.assertIn("other title", " ".join(page.all_text))
+            # A decision outside the priority scope still shows as a needs-you card, so the status line's count
+            # leads to it; it is not shown in the scoped lists above.
+            self.assertIn("other title", " ".join(page.visible))
+            cards = quarterdeck.activity_cards(view, None, None)
+            self.assertIn("other title", [card["title"] for card in cards if card["section"] == "needs_you"])
 
     def test_priority_fallback_is_shared_across_homes(self) -> None:
         with tempfile.TemporaryDirectory() as temp:
