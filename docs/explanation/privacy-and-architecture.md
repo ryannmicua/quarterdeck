@@ -8,7 +8,8 @@ directory and adds a labeled section to one self-contained page.
 single-home invocation. In a home list, each entry may set its own `data_dir`;
 otherwise that home's `data/` directory is used.
 
-The inputs are `data/backlog.md`, `data/<id>/report.md` files, and the optional
+The inputs include `data/backlog.md`, `data/<id>/report.md` files, documents
+named in [activity cards](../how-to/watch-activity-cards.md#open-the-documents-a-card-names), and the optional
 `data/captain-board.json` board (see the
 [board file reference](../reference/captain-board.md)). For each
 configured parent home, Quarterdeck also reads the optional
@@ -152,6 +153,13 @@ review, and the backlog beside the main page; the dependency-free Markdown
 renderer escapes source HTML. `quarterdeck reports read <id>` uses the same
 renderer. The [CLI reference](../reference/cli-and-config.md) documents its
 output path, report IDs, and collision handling.
+
+Referenced activity-card HTML is copied as written, including scripts.
+When served by `quarterdeck serve`,
+document pages receive `Content-Security-Policy: sandbox allow-scripts allow-popups`:
+scripts may run, but without the serving origin's storage or access to its write
+endpoints. This HTTP header does not apply to files opened directly from a
+rendered snapshot.
 
 Review marks, discards, relevance and relations are stored separately from
 rendered pages in a SQLite database at

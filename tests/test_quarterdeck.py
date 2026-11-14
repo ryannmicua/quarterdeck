@@ -6309,6 +6309,165 @@ class ActivityCardTests(unittest.TestCase):
                           for section, _ in quarterdeck.CARD_SECTIONS},
                          {"needs_you": 65, "recent": 65, "information": 65, "done": 65})
 
+    def test_card_links_open_the_documents_its_text_names(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            root = Path(raw)
+            data = root / "home" / "data"
+            (data / "invented-review").mkdir(parents=True)
+            (data / "invented-review" / "report.md").write_text("# Findings\n\nOwner decisions that remain.\n")
+            (data / "invented-review" / "explainer.html").write_text("<h1>Explained</h1><script>1</script>")
+            (data / "other").mkdir()
+            (data / "other" / "notes.md").write_text("other\n")
+            (root / "secret.md").write_text("outside\n")
+            (data / "invented-review" / "escape.md").symlink_to(root / "secret.md")
+            ask = ("See data/invented-review/report.md, section 'Owner decisions that remain' and explainer.html. "
+                   "Also data/invented-review/missing.md, ../secret.md, escape.md and data/../../secret.md.")
+            item = {"key": "invented/choice", "title": "Choose", "ask": ask, "group": "decide", "at": None}
+            attention = {"homes": [{"label": "invented", "waiting": {"decisions": [item]}}]}
+            pages: dict[str, str] = {}
+            cards = quarterdeck.activity_cards(attention, None, None, {"invented": data}, pages)
+            body = cards[0]["body"]
+            self.assertIn(html.escape(ask), body, "the card text is not rewritten")
+            self.assertEqual(body.count("<li><a "), 2)
+            self.assertIn("Referenced documents", body)
+            names = re.findall(r'<li><a href="(doc-[0-9a-f]{12}\.html)">([^<]+)</a>', body)
+            self.assertEqual([label for _name, label in names], ["report.md", "explainer.html"])
+            by_label = {label: pages[name] for name, label in names}
+            self.assertIn("<h1>Findings</h1>", by_label["report.md"])
+            self.assertEqual(by_label["explainer.html"], "<h1>Explained</h1><script>1</script>")
+            self.assertEqual(set(pages), {name for name, _label in names})
+            # Without a data directory, or when two directories are named, nothing guesses a bare name.
+            self.assertNotIn("Referenced documents", quarterdeck.activity_cards(attention, None, None, {}, {})[0]["body"])
+            bare = quarterdeck.referenced_docs("data/invented-review/report.md and data/other/notes.md plus explainer.html", data)
+            self.assertEqual([label for _path, label in bare], ["invented-review/report.md", "other/notes.md"])
+
+    def test_card_documents_use_the_task_owner_in_aggregated_feeds(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            root = Path(raw)
+            directories = {label: root / label / "data" for label in ("Parent", "Child Mate")}
+            for label, data in directories.items():
+                (data / "review").mkdir(parents=True)
+                (data / "review" / "report.md").write_text(f"# {label} report\n")
+            for kind in ("decisions", "needs_you", "informational"):
+                for with_board in (False, True):
+                    with self.subTest(kind=kind, with_board=with_board):
+                        item = {"key": "child-mate/choice", "title": "Choose", "at": None,
+                                "ask": "See data/review/report.md", "group": "read" if kind == "informational" else "decide"}
+                        child = quarterdeck.HomeSnapshot(
+                            quarterdeck.HomeSpec("Child Mate", directories["Child Mate"].parent, route_id="route"),
+                            backlog_markdown=("# Backlog\n\n## Held\n\n"
+                                              "- [ ] choice - Choose (held: true) (hold-kind: captain) "
+                                              "(since: 2026-07-02T10:00:00Z)\n"))
+                        parent = quarterdeck.HomeSnapshot(
+                            quarterdeck.HomeSpec("Parent", directories["Parent"].parent), children=[child],
+                            board=quarterdeck.CaptainBoard(directories["Parent"] / "captain-board.json", ATTENTION_NOW, [
+                                quarterdeck.BoardItem(id="choice", task="route/choice", title="Choose",
+                                                      ask=item["ask"], group=item["group"]),
+                            ]))
+                        board = quarterdeck.board_view([parent], ATTENTION_NOW) if with_board else None
+                        if board:
+                            entry = next(entry for entries in board.bands.values() for entry in entries)
+                            self.assertEqual((entry.home, entry.key), ("Parent", "child-mate/choice"))
+                        attention = {"homes": [{"label": "Parent", "errors": [], "waiting": {kind: [item]}}]}
+                        pages: dict[str, str] = {}
+                        cards = quarterdeck.activity_cards(attention, board, None, directories, pages)
+                        outputs = [quarterdeck.cards_html(cards, attention, ATTENTION_NOW, False),
+                                   json.loads(quarterdeck.cards_payload(cards, ATTENTION_NOW))["cards"][0]["html"]]
+                        for output in outputs:
+                            link = re.search(r'href="(doc-[0-9a-f]{12}\.html)"', output)[1]
+                            self.assertIn("<h1>Child Mate report</h1>", pages[link])
+                            self.assertNotIn("Parent report", pages[link])
+                        unavailable_pages: dict[str, str] = {}
+                        unavailable = quarterdeck.activity_cards(
+                            attention, board, None, {"Parent": directories["Parent"]}, unavailable_pages)
+                        self.assertNotIn("Referenced documents", unavailable[0]["body"])
+                        self.assertEqual(unavailable_pages, {})
+
+    def test_card_documents_refuse_ambiguous_home_namespaces(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            root = Path(raw)
+            labels = ("Maple Harbor", "Maple-Harbor", "maple.harbor", "Clearwater")
+            for index, label in enumerate(labels):
+                directory = root / str(index) / "data" / "review"
+                directory.mkdir(parents=True)
+                (directory / "report.md").write_text(f"# {label} report\n")
+            for remote_collision in (False, True):
+                snapshots = [quarterdeck.HomeSnapshot(quarterdeck.HomeSpec(
+                    label, None if remote_collision and index in (1, 2) else root / str(index),
+                    remote_host="fictional.invalid" if remote_collision and index in (1, 2) else None,
+                )) for index, label in enumerate(labels)]
+                for reverse in (False, True):
+                    directories = quarterdeck.home_data_dirs(list(reversed(snapshots)) if reverse else snapshots)
+                    for kind in ("decisions", "needs_you", "informational"):
+                        items = [{"key": f"maple-harbor/choice-{index}" if index < 3 else "clearwater/choice",
+                                  "title": f"Choose {label}", "at": None, "ask": "See data/review/report.md"}
+                                 for index, label in enumerate(labels)]
+                        attention = {"homes": [{"label": label, "errors": [], "waiting": {kind: [item]}}
+                                               for label, item in zip(labels, items)]}
+                        entries = [quarterdeck.BoardEntry(quarterdeck.BoardItem(
+                            id=str(index), title=item["title"], ask=item["ask"], group="decide"),
+                            label, key=item["key"]) for index, (label, item) in enumerate(zip(labels, items))]
+                        for with_board in (False, True):
+                            with self.subTest(remote=remote_collision, reverse=reverse, kind=kind, board=with_board):
+                                board = quarterdeck.BoardView({}, [], 0, [], [], bands={"desk": entries}) if with_board else None
+                                pages: dict[str, str] = {}
+                                cards = quarterdeck.activity_cards(attention, board, None, directories, pages)
+                                self.assertEqual(len(cards), 4)
+                                for card in cards:
+                                    if card["id"] != "call:clearwater/choice":
+                                        self.assertNotIn("Referenced documents", card["body"])
+                                outputs = [quarterdeck.cards_html(cards, attention, ATTENTION_NOW, False),
+                                           "".join(card["html"] for card in json.loads(
+                                               quarterdeck.cards_payload(cards, ATTENTION_NOW))["cards"])]
+                                for output in outputs:
+                                    links = re.findall(r'href="(doc-[0-9a-f]{12}\.html)"', output)
+                                    self.assertEqual(len(links), 1)
+                                    self.assertIn("<h1>Clearwater report</h1>", pages[links[0]])
+                                self.assertEqual(len(pages), 1)
+
+    def test_card_documents_include_briefings_questions_and_recommendation(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            data = Path(raw) / "data"
+            (data / "review").mkdir(parents=True)
+            names = ("report.md", "explainer.html", "current.md", "earlier.md", "question.md", "earlier-question.md", "recommend.md")
+            for name in names:
+                (data / "review" / name).write_text(f"<h1>{name}</h1>" if name.endswith("html") else f"# {name}\n")
+            wait = {"key": "invented/choice", "briefing": "ready", "kind_label": "Captain call",
+                    "summary": "Choose the coverage model", "entries": [
+                        {"type": "briefing", "paragraphs": [{"text": "See data/review/report.md and explainer.html"}]},
+                        {"type": "clarification", "asked": "Read question.md?", "paragraphs": [{"text": "See current.md"}]},
+                    ], "earlier_entries": [
+                        {"type": "briefing", "paragraphs": [{"text": "Read earlier.md"}]},
+                        {"type": "clarification", "asked": "Read earlier-question.md?", "paragraphs": []},
+                    ]}
+            item = {"key": "invented/choice", "title": "Choose", "at": None, "ask": "Choose a model", "wait": wait}
+            entry = quarterdeck.BoardEntry(quarterdeck.BoardItem(
+                id="choice", title="Choose", ask=item["ask"], group="decide", recommendation="Read recommend.md"),
+                "invented", key=item["key"])
+            board = quarterdeck.BoardView({}, [], 0, [], [], bands={"desk": [entry]})
+            attention = {"homes": [{"label": "invented", "errors": [], "waiting": {"decisions": [item]}}]}
+            pages: dict[str, str] = {}
+            cards = quarterdeck.activity_cards(attention, board, None, {"invented": data}, pages)
+            outputs = [quarterdeck.cards_html(cards, attention, ATTENTION_NOW, False),
+                       json.loads(quarterdeck.cards_payload(cards, ATTENTION_NOW))["cards"][0]["html"]]
+            for output in outputs:
+                links = re.findall(r'<li><a href="(doc-[0-9a-f]{12}\.html)">([^<]+)</a>', output)
+                self.assertEqual({label for _link, label in links}, set(names))
+                for link, label in links:
+                    self.assertIn(f"<h1>{label}</h1>", pages[link])
+
+    def test_served_document_pages_are_sandboxed_from_the_write_endpoints(self) -> None:
+        cache = type("Cache", (), {"get": lambda self: {"doc-aaaaaaaaaaaa.html": "<p>x</p>", "index.html": "<p>i</p>"}})()
+        server = quarterdeck.ThreadingHTTPServer(("127.0.0.1", 0), quarterdeck.make_handler(cache))
+        threading.Thread(target=server.serve_forever, daemon=True).start()
+        self.addCleanup(server.server_close)
+        self.addCleanup(server.shutdown)
+        base = f"http://127.0.0.1:{server.server_address[1]}/"
+        with urllib.request.urlopen(base + "doc-aaaaaaaaaaaa.html") as response:
+            self.assertIn("sandbox", response.headers["Content-Security-Policy"])
+        with urllib.request.urlopen(base) as response:
+            self.assertIsNone(response.headers["Content-Security-Policy"])
+
     def test_timestamp_changes_revision_but_elapsed_time_does_not(self) -> None:
         card = {"id": "a", "section": "needs_you", "label": "Needs you", "title": "Choice",
                 "summary": "Choose", "status": "", "body": "", "at": "2026-07-02T10:00:00Z"}
