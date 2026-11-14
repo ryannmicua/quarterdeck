@@ -30,7 +30,7 @@ from dataclasses import dataclass, field, replace
 from datetime import datetime, timedelta, timezone
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
-from urllib.parse import unquote, urlparse
+from urllib.parse import quote, unquote, urlparse
 
 
 DEFAULT_TITLE = "Quarterdeck"
@@ -616,7 +616,55 @@ def display_path(path: Path, home: Path) -> str:
         return str(path)
 
 
-def source_page_html(title: str, source_path: str, markdown: str) -> str:
+NAV_LINK_STYLE = (
+    "display:inline-block;padding:.55rem .8rem;color:#fffdf8;font:600 15px/1.2 system-ui,sans-serif;"
+    "text-decoration:underline;background:none;border:0;margin:0"
+)
+
+
+def qd_nav_html(raw_href: str | None, fixed: bool, main_href: str = "index.html") -> str:
+    """The small bar every served document page carries: back to Quarterdeck, and the file by itself when raw_href.
+
+    Inline styles keep the bar's presentation local without adding stylesheet rules to the document.
+    A fixed bar reserves its measured height at the end of the document.
+    """
+    where = (
+        "position:fixed;left:0;right:0;bottom:0;z-index:2147483647;padding-bottom:env(safe-area-inset-bottom);"
+        if fixed else "position:relative;"
+    )
+    raw = f'<a href="{html.escape(raw_href, quote=True)}" style="{NAV_LINK_STYLE}">Open file by itself</a>' if raw_href else ""
+    bar = (
+        f'<nav id="qd-nav" aria-label="Quarterdeck" style="{where}display:flex;flex-wrap:wrap;justify-content:space-between;'
+        'box-sizing:border-box;background:#17324d;margin:0;border-top:2px solid #c98635;">'
+        f'<a href="{html.escape(main_href, quote=True)}" style="{NAV_LINK_STYLE}">&larr; Back to Quarterdeck</a>{raw}</nav>'
+    )
+    if fixed:
+        bar += '''<div id="qd-nav-space" aria-hidden="true" style="height:6rem;flex-shrink:0;clear:both"></div>
+<script>(() => {
+const nav = document.getElementById('qd-nav');
+const space = document.getElementById('qd-nav-space');
+const reserve = () => { space.style.height = nav.getBoundingClientRect().height + 'px'; };
+reserve();
+new ResizeObserver(reserve).observe(nav);
+})();</script>'''
+    return bar
+
+
+def inject_nav(page: str, raw_href: str, main_href: str = "index.html") -> str:
+    """Add the bar to an HTML document just before its closing body tag (or at its end), leaving the rest untouched."""
+    bar = qd_nav_html(raw_href, fixed=True, main_href=main_href)
+    closing = list(re.finditer(r"</body\s*>", page, re.IGNORECASE))
+    if closing:
+        at = closing[-1].start()
+        return page[:at] + bar + page[at:]
+    return page + bar
+
+
+def source_page_html(
+    title: str, source_path: str, markdown: str, raw_href: str | None = None,
+    main_href: str | None = "index.html",
+) -> str:
+    nav = qd_nav_html(raw_href, fixed=False, main_href=main_href) if main_href is not None else ""
     return f'''<!doctype html>
 <html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
 <meta name="quarterdeck-{'gen' + 'erated'}" content="read-only source page"><title>{html.escape(title)} · Quarterdeck source</title>
@@ -632,7 +680,7 @@ code {{ font-family: ui-monospace, SFMono-Regular, Consolas, monospace; backgrou
 pre code {{ background: transparent; padding: 0; }}
 .table-wrap {{ overflow-x: auto; }} table {{ border-collapse: collapse; min-width: 100%; }} th,td {{ border: 1px solid #d8d3c8; padding: .5rem .7rem; text-align: left; vertical-align: top; }}
 th {{ background: #e8e2d5; color: #17324d; }} a {{ color: #176b69; }} blockquote {{ border-left: 3px solid #c98635; margin-left: 0; padding-left: 1rem; color: #52616d; }}
-</style></head><body><header><h1>{html.escape(title)}</h1><p>{html.escape(source_path)}</p></header><main><article>{render_markdown(markdown)}</article></main></body></html>'''
+</style></head><body>{nav}<header><h1>{html.escape(title)}</h1><p>{html.escape(source_path)}</p></header><main><article>{render_markdown(markdown)}</article></main></body></html>'''
 
 
 def write_generated_page(path: Path, content: str) -> None:
@@ -655,13 +703,14 @@ def write_generated_page(path: Path, content: str) -> None:
 def source_pages(homes: list[HomeSnapshot], show_all: bool = False, bearings: Bearings | None = None) -> dict[str, str]:
     """Build every readable report, backlog and backlog-item page, keyed by file name."""
     pages: dict[str, str] = {}
+    main_href = bearings.main_href if bearings else "index.html"
     for snapshot in all_snapshots(homes):
         if snapshot.spec.home is None:
             continue
         if snapshot.backlog_path and snapshot.backlog_markdown is not None:
             name = source_page_filename("backlog", snapshot.spec.home, snapshot.backlog_path)
             snapshot_path = display_path(snapshot.backlog_path, snapshot.spec.home)
-            pages[name] = source_page_html(f"{snapshot.spec.label} backlog", snapshot_path, snapshot.backlog_markdown)
+            pages[name] = source_page_html(f"{snapshot.spec.label} backlog", snapshot_path, snapshot.backlog_markdown, main_href=main_href)
         if show_all:
             linked_reports = {report.path for report in snapshot.reports}
         else:
@@ -676,7 +725,7 @@ def source_pages(homes: list[HomeSnapshot], show_all: bool = False, bearings: Be
             if report.path not in linked_reports:
                 continue
             name = source_page_filename("report", snapshot.spec.home, report.path)
-            pages[name] = source_page_html(report.title, display_path(report.path, snapshot.spec.home), report.markdown)
+            pages[name] = source_page_html(report.title, display_path(report.path, snapshot.spec.home), report.markdown, main_href=main_href)
     if bearings is not None:
         pages.update(bearings.item_pages)
     return pages
@@ -1316,7 +1365,7 @@ def build_html(
         report_resolution_incomplete=report_resolution_incomplete, reactions=reactions, decisions=decisions,
     ) if bearings else ""
     attention_block = attention_html(bearings.attention, allow_marks) if bearings else ""
-    cards = activity_cards(bearings.attention, board, reactions, home_data_dirs(homes), bearings.item_pages) if bearings else []
+    cards = activity_cards(bearings.attention, board, reactions, home_data_dirs(homes), bearings.item_pages, bearings.main_href) if bearings else []
     cards_block = cards_html(cards, bearings.attention, generated, bool(refresh_seconds)) if bearings else ""
     cards_script = ACTIVITY_SCRIPT if cards_block else ""
     cards_link = '<a class="cards-new" id="cards-new" href="#cards" hidden></a>' if cards_block else ""
@@ -1747,6 +1796,7 @@ class Bearings:
     item_pages: dict[str, str] = field(default_factory=dict)
     linked_reports: set[Path] = field(default_factory=set)
     attention: dict[str, object] | None = None
+    main_href: str = "index.html"
 
 
 HOLD_REASON_PREFIX = "fm-hold-v1:"
@@ -2073,12 +2123,13 @@ def _blank(value: str) -> str:
 
 class BearingsBuilder:
     def __init__(self, homes: list[HomeSnapshot], now: datetime, use_snapshot: bool = True,
-                 runner: Callable[[Path, Path | None], tuple[dict[str, object] | None, str]] = run_bearings_snapshot) -> None:
+                 runner: Callable[[Path, Path | None], tuple[dict[str, object] | None, str]] = run_bearings_snapshot,
+                 main_href: str = "index.html") -> None:
         self.homes = homes
         self.now = now
         self.use_snapshot = use_snapshot
         self.runner = runner
-        self.result = Bearings(generated=now)
+        self.result = Bearings(generated=now, main_href=main_href)
 
     # -- shared helpers --
     def lookup(self, snapshot: HomeSnapshot, owner: str, item_id: str) -> tuple[HomeSnapshot, BacklogItem | None, str]:
@@ -2124,7 +2175,8 @@ class BearingsBuilder:
         name = item_page_filename(snapshot.spec.home, snapshot.spec.label, item.id)
         bitem.item_page = name
         self.result.item_pages[name] = source_page_html(
-            item.title, f"{snapshot.spec.label} · backlog item {item.id}", item.raw or item.title
+            item.title, f"{snapshot.spec.label} · backlog item {item.id}", item.raw or item.title,
+            main_href=self.result.main_href,
         )
 
     # -- snapshot path --
@@ -2166,7 +2218,8 @@ class BearingsBuilder:
                 bitem.filed = item.closed_on
                 bitem.item_page = item_page_filename(target.spec.home, target.spec.label, item.id)
                 self.result.item_pages[bitem.item_page] = source_page_html(
-                    item.title, f"{target.spec.label} · backlog item {item.id}", item.raw or item.title
+                    item.title, f"{target.spec.label} · backlog item {item.id}", item.raw or item.title,
+                    main_href=self.result.main_href,
                 )
             self.result.landed.append(bitem)
         for row in _rows(data, "in_flight"):
@@ -2272,8 +2325,9 @@ class BearingsBuilder:
 
 
 def build_bearings(homes: list[HomeSnapshot], now: datetime | None = None, use_snapshot: bool = True,
-                   runner: Callable[[Path, Path | None], tuple[dict[str, object] | None, str]] = run_bearings_snapshot) -> Bearings:
-    return BearingsBuilder(homes, now or datetime.now(timezone.utc), use_snapshot, runner).build()
+                   runner: Callable[[Path, Path | None], tuple[dict[str, object] | None, str]] = run_bearings_snapshot,
+                   main_href: str = "index.html") -> Bearings:
+    return BearingsBuilder(homes, now or datetime.now(timezone.utc), use_snapshot, runner, main_href).build()
 
 
 def bearings_item_html(item: BItem, now: datetime, section: str) -> str:
@@ -5455,7 +5509,7 @@ def make_handler(
                 return
             path = unquote(urlparse(self.path).path)
             name = "index.html" if path in {"/", "/index.html"} else path.lstrip("/")
-            if "/" in name or not name.endswith((".html", ".json")):
+            if "/" in name or not name.endswith((".html", ".json", ".txt")):
                 self.send_text(404, "Not found\n")
                 return
             try:
@@ -5466,8 +5520,9 @@ def make_handler(
             if name not in pages:
                 self.send_text(404, "Not found\n")
                 return
-            self.send_text(200, pages[name], "application/json; charset=utf-8" if name.endswith(".json") else "text/html; charset=utf-8",
-                           sandbox=name.startswith(DOC_PREFIX))
+            kind = "json" if name.endswith(".json") else "plain" if name.endswith(".txt") else "html"
+            self.send_text(200, pages[name], f"{'application' if kind == 'json' else 'text'}/{kind}; charset=utf-8",
+                           sandbox=name.startswith((DOC_PREFIX, RAW_PREFIX)))
 
         def host_allowed(self) -> bool:
             return not (is_loopback(str(self.server.server_address[0])) and not request_host_is_loopback(
@@ -6069,7 +6124,7 @@ def reports_read(args: argparse.Namespace) -> int:
         output_path.parent.mkdir(parents=True, exist_ok=True)
         write_generated_page(
             output_path,
-            source_page_html(report.title, display_path(report.path, home), report.markdown),
+            source_page_html(report.title, display_path(report.path, home), report.markdown, main_href=None),
         )
         print(f"Report ID: {report.report_id}")
         print(f"Title: {report.title}")
@@ -7597,6 +7652,7 @@ DOC_PATH_RE = re.compile(r"(?<![\w./-])data/([\w.-]+)/([\w.-]+\.(?:md|html))(?![
 DOC_BARE_RE = re.compile(r"(?<![\w./-])([\w-][\w.-]*\.(?:md|html))(?![\w-])")
 DOC_PAGE_LIMIT = 2_000_000
 DOC_PREFIX = "doc-"
+RAW_PREFIX = "raw-"  # the same file with no Quarterdeck additions: .html as written, markdown as .txt
 
 
 def referenced_docs(text: str, data_dir: Path) -> list[tuple[Path, str]]:
@@ -7633,31 +7689,33 @@ def referenced_docs(text: str, data_dir: Path) -> list[tuple[Path, str]]:
     return found
 
 
-def doc_page(path: Path, label: str) -> str | None:
-    """A referenced document as a page: markdown rendered, HTML exactly as written. None when unreadable."""
+def doc_page(path: Path, label: str, raw_name: str, main_href: str = "index.html") -> tuple[str, str] | None:
+    """A referenced document as (page with the Quarterdeck bar, file as written). None when unreadable."""
     try:
         text = path.read_text(encoding="utf-8")
     except (OSError, UnicodeError):
         return None
     if path.suffix == ".html":
-        return text
+        return inject_nav(text, raw_name, main_href), text
     try:
-        return source_page_html(label, f"data/{label}", text)
+        return source_page_html(label, f"data/{label}", text, raw_name, main_href), text
     except ValueError:
         return None
 
 
-def doc_links_html(text: str, data_dir: Path | None, pages: dict[str, str] | None) -> str:
+def doc_links_html(text: str, data_dir: Path | None, pages: dict[str, str] | None, main_href: str = "index.html") -> str:
     """A short list of links to the documents a card names; registers each page in pages. Empty when none exist."""
     if data_dir is None or pages is None:
         return ""
     items = []
     for path, label in referenced_docs(text, data_dir):
-        page = doc_page(path, label)
-        if page is None:
+        digest = hashlib.sha256(str(path).encode("utf-8")).hexdigest()[:12]
+        name = f"{DOC_PREFIX}{digest}.html"
+        raw_name = f"{RAW_PREFIX}{digest}{'.html' if path.suffix == '.html' else '.txt'}"
+        built = doc_page(path, label, raw_name, main_href)
+        if built is None:
             continue
-        name = f"{DOC_PREFIX}{hashlib.sha256(str(path).encode('utf-8')).hexdigest()[:12]}.html"
-        pages[name] = page
+        pages[name], pages[raw_name] = built
         items.append(
             f'<li><a href="{html.escape(name, quote=True)}">{html.escape(path.name)}</a> '
             f'<span class="path">{html.escape("data/" + label)}</span></li>'
@@ -7670,6 +7728,7 @@ def doc_links_html(text: str, data_dir: Path | None, pages: dict[str, str] | Non
 def need_card(
     item: dict[str, object], entry: BoardEntry | None, home: str, multi_home: bool, reactions: ReactionContext | None,
     section: str, data_dir: Path | None = None, doc_pages: dict[str, str] | None = None,
+    main_href: str = "index.html",
 ) -> dict[str, object]:
     key = str(item["key"])
     ask = str(item.get("ask") or "")
@@ -7713,7 +7772,7 @@ def need_card(
             document_text.extend(str(paragraph.get("text") or "") for paragraph in wait_entry.get("paragraphs") or [])
             if wait_entry.get("type") == "clarification":
                 document_text.append(str(wait_entry.get("asked") or ""))
-    parts.append(doc_links_html("\n".join(document_text), data_dir, doc_pages))
+    parts.append(doc_links_html("\n".join(document_text), data_dir, doc_pages, main_href))
     if entry and entry.number:
         parts.append(f'<p class="links"><a href="#{board_anchor(entry)}" data-desk-link>Show on the desk</a></p>')
     if section == "needs_you":
@@ -7741,6 +7800,7 @@ def home_data_dirs(homes: list[HomeSnapshot]) -> dict[str, Path | None]:
 def activity_cards(
     attention: dict[str, object] | None, board: BoardView | None, reactions: ReactionContext | None,
     data_dirs: dict[str, Path | None] | None = None, doc_pages: dict[str, str] | None = None,
+    main_href: str = "index.html",
 ) -> list[dict[str, object]]:
     """The cards for the feed: what needs the captain first, then recent work, information and what was done."""
     if attention is None:
@@ -7769,7 +7829,7 @@ def activity_cards(
                 owner = owners[0] if len(owners) == 1 else namespace if separator else label
                 cards.append(need_card(
                     item, entry, owner, multi_home, reactions, section,
-                    (data_dirs or {}).get(owner) if len(owners) == 1 else None, doc_pages,
+                    (data_dirs or {}).get(owner) if len(owners) == 1 else None, doc_pages, main_href,
                 ))
         for item in home.get("recent_work_6h") or []:
             if item["event"] == "started":
@@ -7840,7 +7900,7 @@ def site_cards(homes: list[HomeSnapshot], bearings: Bearings, allow_marks: bool)
     state = next((s.review_state for s in snapshots if s.review_state is not None), None) or ReviewState()
     return activity_cards(
         bearings.attention, board, ReactionContext(enabled=allow_marks, latest=state.reactions, now=bearings.generated),
-        home_data_dirs(homes), bearings.item_pages,
+        home_data_dirs(homes), bearings.item_pages, bearings.main_href,
     )
 
 
@@ -8407,7 +8467,7 @@ def load_home_snapshot(spec: HomeSpec, discover_secondmates: bool = False) -> Ho
     return snapshot
 
 
-def load_site(args: argparse.Namespace) -> tuple[dict[str, object], list[HomeSnapshot], Bearings]:
+def load_site(args: argparse.Namespace, main_href: str = "index.html") -> tuple[dict[str, object], list[HomeSnapshot], Bearings]:
     """Read the configured homes and review marks, then classify them into bearings."""
     if args.config is None:
         default_path = default_config_path()
@@ -8421,7 +8481,7 @@ def load_site(args: argparse.Namespace) -> tuple[dict[str, object], list[HomeSna
     state_path = validate_review_state_location(homes)
     apply_review_marks(homes, load_review_state(state_path))
     use_snapshot = not getattr(args, "no_snapshot", False)
-    bearings = build_bearings(homes, use_snapshot=use_snapshot)
+    bearings = build_bearings(homes, use_snapshot=use_snapshot, main_href=main_href)
     try:
         document = read_preferences(preferences_path(args))
     except ValueError:
@@ -8442,12 +8502,15 @@ def load_site(args: argparse.Namespace) -> tuple[dict[str, object], list[HomeSna
 
 def render(args: argparse.Namespace) -> int:
     try:
-        config, homes, bearings = load_site(args)
+        main_name = Path(args.output).expanduser().name if args.output else "index.html"
+        if args.lavish:
+            main_path = Path(main_name)
+            main_name = f"{main_path.stem}.lavish{main_path.suffix or '.html'}"
+        config, homes, bearings = load_site(args, main_href=quote(main_name, safe=""))
         configured_output = config.get("output_dir")
         output_dir = Path(configured_output).expanduser() if isinstance(configured_output, str) else default_output_dir()
         output_path = Path(args.output).expanduser() if args.output else output_dir / "index.html"
-        if args.lavish:
-            output_path = output_path.with_name(f"{output_path.stem}.lavish{output_path.suffix or '.html'}")
+        output_path = output_path.with_name(main_name)
         configured_title = config.get("page_title")
         title = args.title or (configured_title if isinstance(configured_title, str) else None) or DEFAULT_TITLE
         output_path = output_path.resolve()

@@ -6334,8 +6334,17 @@ class ActivityCardTests(unittest.TestCase):
             self.assertEqual([label for _name, label in names], ["report.md", "explainer.html"])
             by_label = {label: pages[name] for name, label in names}
             self.assertIn("<h1>Findings</h1>", by_label["report.md"])
-            self.assertEqual(by_label["explainer.html"], "<h1>Explained</h1><script>1</script>")
-            self.assertEqual(set(pages), {name for name, _label in names})
+            explainer = by_label["explainer.html"]
+            self.assertTrue(explainer.startswith("<h1>Explained</h1><script>1</script><nav id=\"qd-nav\""))
+            self.assertIn('href="index.html"', explainer)
+            self.assertIn("Back to Quarterdeck", by_label["report.md"])
+            raw = {name: text for name, text in pages.items() if name.startswith("raw-")}
+            self.assertEqual(sorted(name[-4:] for name in raw), [".txt", "html"])
+            self.assertEqual(sorted(raw.values()), ["# Findings\n\nOwner decisions that remain.\n",
+                                                    "<h1>Explained</h1><script>1</script>"])
+            for name, label in names:
+                self.assertRegex(pages[name], r'href="raw-[0-9a-f]{12}\.(?:txt|html)" style="[^"]*">Open file by itself</a>')
+            self.assertEqual(len(pages), 4)
             # Without a data directory, or when two directories are named, nothing guesses a bare name.
             self.assertNotIn("Referenced documents", quarterdeck.activity_cards(attention, None, None, {}, {})[0]["body"])
             bare = quarterdeck.referenced_docs("data/invented-review/report.md and data/other/notes.md plus explainer.html", data)
@@ -6423,7 +6432,7 @@ class ActivityCardTests(unittest.TestCase):
                                     links = re.findall(r'href="(doc-[0-9a-f]{12}\.html)"', output)
                                     self.assertEqual(len(links), 1)
                                     self.assertIn("<h1>Clearwater report</h1>", pages[links[0]])
-                                self.assertEqual(len(pages), 1)
+                                self.assertEqual(len(pages), 2)
 
     def test_card_documents_include_briefings_questions_and_recommendation(self) -> None:
         with tempfile.TemporaryDirectory() as raw:
@@ -6455,6 +6464,7 @@ class ActivityCardTests(unittest.TestCase):
                 self.assertEqual({label for _link, label in links}, set(names))
                 for link, label in links:
                     self.assertIn(f"<h1>{label}</h1>", pages[link])
+                    self.assertIn("Back to Quarterdeck", pages[link])
 
     def test_served_document_pages_are_sandboxed_from_the_write_endpoints(self) -> None:
         cache = type("Cache", (), {"get": lambda self: {"doc-aaaaaaaaaaaa.html": "<p>x</p>", "index.html": "<p>i</p>"}})()
@@ -6467,6 +6477,128 @@ class ActivityCardTests(unittest.TestCase):
             self.assertIn("sandbox", response.headers["Content-Security-Policy"])
         with urllib.request.urlopen(base) as response:
             self.assertIsNone(response.headers["Content-Security-Policy"])
+
+    def test_nav_bar_is_added_without_touching_the_page_it_joins(self) -> None:
+        page = "<!doctype html><html><body class=x><script>go()</script></BODY></html>"
+        out = quarterdeck.inject_nav(page, "raw-aaaaaaaaaaaa.html")
+        self.assertEqual(out.replace(quarterdeck.qd_nav_html("raw-aaaaaaaaaaaa.html", fixed=True), ""), page)
+        self.assertLess(out.index("go()"), out.index('id="qd-nav"'))
+        self.assertLess(out.index('id="qd-nav"'), out.index("</BODY>"))
+        self.assertEqual(quarterdeck.inject_nav("<p>x</p>", "r.html").count('<nav id="qd-nav"'), 1)
+        self.assertNotIn("Open file", quarterdeck.qd_nav_html(None, fixed=False))
+
+    def test_document_bar_reserves_its_height_after_wrapping(self) -> None:
+        node = shutil.which("node")
+        if node is None:
+            self.skipTest("node is required to execute document navigation")
+        page = quarterdeck.inject_nav("<p>Final control</p>", "raw-aaaaaaaaaaaa.html")
+        script = re.findall(r"<script>(.*?)</script>", page, re.DOTALL)[0]
+        harness = '''
+const assert = require('node:assert/strict');
+let height = 48;
+let resize;
+const nav = {getBoundingClientRect: () => ({height})};
+const space = {style: {}};
+global.document = {getElementById: id => ({'qd-nav': nav, 'qd-nav-space': space})[id]};
+global.ResizeObserver = class {
+  constructor(callback) { resize = callback; }
+  observe(element) { assert.equal(element, nav); }
+};
+'''
+        checks = '''
+assert.equal(space.style.height, '48px');
+height = 96; resize();
+assert.equal(space.style.height, '96px');
+height = 48; resize();
+assert.equal(space.style.height, '48px');
+'''
+        result = subprocess.run([node, "-e", harness + script + checks], capture_output=True, text=True)
+        self.assertEqual(result.returncode, 0, result.stderr)
+
+    def test_rendered_document_navigation_uses_the_main_filename(self) -> None:
+        for output_name, lavish, expected in (
+            ("index.html", False, "index.html"),
+            ("dashboard #1.html", False, "dashboard%20%231.html"),
+            ("dashboard.html", True, "dashboard.lavish.html"),
+        ):
+            with self.subTest(output=output_name, lavish=lavish), tempfile.TemporaryDirectory() as temp:
+                root = Path(temp)
+                home = AttentionTests().make_home(root)
+                feed_path = root / "feed.json"
+                feed = json.loads(feed_path.read_text())
+                decision = next(row for row in feed["open_decisions"] if row["task"] == "kelp-survey")
+                decision.update(bucket="live", opened_at=datetime.now(timezone.utc).isoformat(),
+                                last_touched_at=datetime.now(timezone.utc).isoformat())
+                feed_path.write_text(json.dumps(feed))
+                data = home / "data"
+                (data / "backlog.md").write_text(BULLET_BACKLOG)
+                (data / "kelp-survey").mkdir()
+                (data / "kelp-survey" / "report.md").write_text("# Kelp survey report\n")
+                (data / "kelp-survey" / "explainer.html").write_text("<p>Original explainer</p>")
+                board = {"version": 1, "updated_at": "2099-01-01T00:00:00Z", "items": [
+                    {"id": "kelp-survey", "task": "kelp-survey", "group": "decide", "title": "Survey",
+                     "ask": "Read data/kelp-survey/report.md and explainer.html", "touched_at": "2099-01-01T00:00:00Z"},
+                ]}
+                (data / "captain-board.json").write_text(json.dumps(board))
+                output = root / "out" / output_name
+                command = ["render", "--home", str(home), "--output", str(output)]
+                if lavish:
+                    command.append("--lavish")
+                with patch.dict(os.environ, {"XDG_CONFIG_HOME": str(root / "config"), "XDG_STATE_HOME": str(root / "state")}), \
+                     patch.object(quarterdeck.shutil, "which", return_value=None), redirect_stdout(io.StringIO()):
+                    self.assertEqual(quarterdeck.main(command), 0)
+                generated = list(output.parent.glob("*.html"))
+                prefixes = {path.name.split("-", 1)[0] for path in generated}
+                self.assertTrue({"doc", "report", "backlog", "item"} <= prefixes, prefixes)
+                docs = [path for path in generated if path.name.startswith("doc-")]
+                self.assertEqual(len(docs), 2)
+                for path in generated:
+                    if path.name.startswith(("doc-", "report-", "backlog-", "item-")):
+                        self.assertIn(f'href="{expected}"', path.read_text(), path.name)
+                self.assertTrue((output.parent / quarterdeck.unquote(expected)).is_file())
+
+    def test_standalone_report_has_no_site_back_link(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            home = BearingsTests().make_home(root)
+            with patch.dict(os.environ, {"XDG_CONFIG_HOME": str(root / "config"), "XDG_STATE_HOME": str(root / "state")}), \
+                 redirect_stdout(io.StringIO()):
+                self.assertEqual(quarterdeck.main([
+                    "reports", "read", "invented-home/kelp-survey", "--home", str(home),
+                ]), 0)
+            pages = list((root / "state").rglob("report-*.html"))
+            self.assertEqual(len(pages), 1)
+            page = pages[0].read_text()
+            self.assertIn("<h1>Kelp survey report</h1>", page)
+            self.assertNotIn('id="qd-nav"', page)
+
+    def test_snapshot_item_navigation_uses_the_main_filename(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            home = BearingsTests().make_home(Path(temp))
+            snapshots = BearingsTests().snapshots(home)
+            bearings = quarterdeck.build_bearings(
+                snapshots, ATTENTION_NOW, runner=lambda *_: (SNAPSHOT_JSON, ""), main_href="dashboard.html",
+            )
+            for item in (bearings.call[0], bearings.landed[0]):
+                self.assertIn('href="dashboard.html"', bearings.item_pages[item.item_page])
+
+    def test_served_raw_documents_are_plain_and_sandboxed(self) -> None:
+        pages = {"raw-aaaaaaaaaaaa.txt": "# T\n", "raw-bbbbbbbbbbbb.html": "<p>x</p>", "index.html": "<p>i</p>"}
+        cache = type("Cache", (), {"get": lambda self: pages})()
+        server = quarterdeck.ThreadingHTTPServer(("127.0.0.1", 0), quarterdeck.make_handler(cache))
+        threading.Thread(target=server.serve_forever, daemon=True).start()
+        self.addCleanup(server.server_close)
+        self.addCleanup(server.shutdown)
+        base = f"http://127.0.0.1:{server.server_address[1]}/"
+        with urllib.request.urlopen(base + "raw-aaaaaaaaaaaa.txt") as response:
+            self.assertEqual(response.headers["Content-Type"], "text/plain; charset=utf-8")
+            self.assertIn("sandbox", response.headers["Content-Security-Policy"])
+            self.assertEqual(response.read().decode(), "# T\n")
+        with urllib.request.urlopen(base + "raw-bbbbbbbbbbbb.html") as response:
+            self.assertIn("sandbox", response.headers["Content-Security-Policy"])
+            self.assertEqual(response.read().decode(), "<p>x</p>")
+        with self.assertRaises(urllib.error.HTTPError):
+            urllib.request.urlopen(base + "other.txt")
 
     def test_timestamp_changes_revision_but_elapsed_time_does_not(self) -> None:
         card = {"id": "a", "section": "needs_you", "label": "Needs you", "title": "Choice",
