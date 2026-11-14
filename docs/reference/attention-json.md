@@ -84,6 +84,7 @@ members without changing the schema name.
 | `recent_work_6h` | Merged and started items of the last six hours, newest first; each is a recent-work item plus `event` (`merged` or `started`). `[]` when none or the ledger could not be read. |
 | `done_recent` | Completions for the activity cards, including registered local secondmates; see [Recent completions](#recent-completions). |
 | `show_recent` | `true` only when `recent_work_6h` is not empty. Readers skip recent work otherwise. |
+| `complete` | `true` when the feed was read and every source the waiting lists depend on (home, registry, local secondmate backlogs, captain board) was readable and understood. When `false`, an empty waiting list does not mean nothing is waiting. |
 | `waiting`, `waiting_more`, `waiting_scope`, `more_count` | See [Waiting](#waiting-and-priorities). |
 | `priorities` | See [Waiting](#waiting-and-priorities). |
 | `decisions` | See below, or `null` when no feed was read and no backlog candidates were found (except with `--no-snapshot`). Source failures remain in `errors` even if backlog decisions are available. |
@@ -191,7 +192,9 @@ so does work on its task.
 including quiet, nondeferred decisions), `needs_you` (the rest of what needs the captain, from the
 board: merge, approve, decide, forward and unsorted board and backlog items not
 already a decision), and `informational` (board `read` items). Each item has
-`kind`, `key`, `title`, `ask`, `group`, `project`, `at` and `priority` (index
+`kind`, `key`, `title`, `ask`, `group`, `project`, `at`,
+`opened_at` (when the request was opened, from the feed or the backlog filed
+date; `null` when unknown) and `priority` (index
 into the effective project list, or `null`). `kind` is `decision`, `needs_you`,
 or `informational`. Items projected from decisions also
 retain `relevance`, so quiet decisions can remain collapsed without affecting
@@ -289,7 +292,8 @@ sentence fit to be read aloud.
   `nothing_waiting` is `null` with "<project>: waiting status unavailable."
   when a required source failed, as for `priorities`.
 - `information` holds the informational (board `read`) items and work recorded
-  as in flight or queued in a home's backlog that is not already waiting on the captain.
+  as in flight in a home's backlog that is not already waiting on the captain.
+  Queued work is left out; it appears under Charted Next.
 
 An item shows once per screen. Sections are built in order; the first section
 that claims an item lists it and each later section that would have listed it
@@ -311,7 +315,6 @@ order, are:
 | `review_waiting` | Review waiting | a board `approve` item |
 | `result_ready` | Result ready | a board `read` item |
 | `in_flight` | In flight | a backlog task recorded as in flight |
-| `queued` | Queued | other open, noncancelled backlog work not already waiting on the captain; deferred decisions are excluded |
 
 The served page uses the same builder for every saved view; the page's data is
 not part of this JSON. Readers must ignore members they do not recognize.

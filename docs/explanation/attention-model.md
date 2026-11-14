@@ -62,8 +62,9 @@ remain hidden. Each report appears once with its review state.
 
 ## Counts
 
-The page header counts match the cards in the four attention sections. A
+The counts at the top of the collapsed Details by home section match the cards
+in the four attention sections. A
 separate total counts reports needing review. In `--all` mode, two additional
 counts cover other backlog records and all scout reports. Per-home counts
-include that home's local secondmates only in their own panel; the page header
-totals all configured homes and secondmates.
+include that home's local secondmates only in their own panel; the section's
+totals cover all configured homes and secondmates.
