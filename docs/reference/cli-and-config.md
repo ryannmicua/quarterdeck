@@ -244,7 +244,7 @@ for an unreadable file or invalid action. See
 `reactions import` delivers the reactions recorded in the cloud artifact
 (collection `qd-inbox`; a JSON list, or `{"version": 1, "reactions": [...]}`,
 of documents with `id`, `kind` of `call` or `report`, `item_id`, `reaction` one
-of `approve`, `hold`, `not-now`, `question` or empty, `text` up to 1000
+of `approve`, `hold`, `not-now`, `question` or empty, `text` up to 20,000
 characters, and `at`). Oldest first, each is sent as a note through the item's
 home's `bin/fm-inbox.sh note --request-id qd-<id>`; delivered ids are kept in
 the local state, so none is sent twice. A reaction for an unknown item, an

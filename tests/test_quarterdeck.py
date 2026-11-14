@@ -4217,6 +4217,74 @@ async function click(report, text) {
         self.assertIn("reply on report invented-home/lone-report (task lone-report)", self.logged()[5])
         ServeTests().wait_for(lambda: "Latest reaction: Why option A?" in request("GET", "/")[1])
 
+    def test_a_twenty_thousand_character_reply_is_delivered_whole_and_the_page_offers_a_text_area(self) -> None:
+        request = self.serve()
+        words = ("tide “harbor” \u2603 note " * 1000)[:quarterdeck.REACTION_TEXT_LIMIT]
+        self.assertEqual(len(words), 20_000)
+        status, body = request("POST", quarterdeck.REACTION_ENDPOINT, {
+            "id": "page-long01", "kind": "call", "item_id": "invented-home/harbor-hold", "reaction": "", "text": words,
+        })
+        self.assertEqual(status, 200, body)
+        self.assertEqual(json.loads(body)["text"], " ".join(words.split()))
+        self.assertIn(" ".join(words.split()), self.logged()[5], "the whole reply reaches the inbox note")
+        self.assertEqual(self.review_state().reactions[("call", "invented-home/harbor-hold")]["text"], " ".join(words.split()))
+        status, body = request("POST", quarterdeck.REACTION_ENDPOINT, {
+            "id": "page-long02", "kind": "call", "item_id": "invented-home/harbor-hold", "reaction": "",
+            "text": words + "x",
+        })
+        self.assertEqual((status, quarterdeck.REACTION_TEXT_LIMIT), (400, 20_000))
+        self.assertIn("20000 characters", body)
+        page = request("GET", "/")[1]
+        self.assertIn('<textarea class="reaction-text"', page)
+        self.assertNotIn('<input class="reaction-text"', page)
+        self.assertNotIn("maxlength", page.split('class="reaction-text"', 1)[1].split(">", 1)[0])
+
+    def test_reply_box_grows_counts_refuses_a_too_long_reply_and_keeps_a_draft_across_reloads(self) -> None:
+        page = self.serve()("GET", "/")[1]
+        script = next(block for block in re.findall(r"<script>([\s\S]*?)</script>", page) if "quarterdeck-draft:" in block)
+        harness = r"""
+const assert = require('node:assert/strict');
+const script = require('node:fs').readFileSync(0, 'utf8');
+const store = {};
+globalThis.localStorage = {getItem: k => k in store ? store[k] : null, setItem: (k, v) => { store[k] = v; }, removeItem: k => { delete store[k]; }};
+const note = {hidden: true, textContent: '', classList: {toggle(name, on) { this.over = on; }}};
+const status = {textContent: ''};
+const field = {value: '', dataset: {limit: '20000'}, offsetParent: {}, scrollHeight: 300, style: {}, matches: s => s === '.reaction-text'};
+const box = {dataset: {reactionKind: 'call', reactionItem: 'home/task'},
+  querySelector: s => s === '.reaction-count' ? note : s === '.reaction-status' ? status : s === '.reaction-text' ? field : null,
+  querySelectorAll: () => []};
+field.closest = () => box;
+const send = {disabled: false, closest: () => box};
+const handlers = {};
+globalThis.document = {addEventListener: (n, f) => { handlers[n] = f; }, querySelectorAll: s => s === '.reaction-text' ? [field] : []};
+globalThis.window = {addEventListener() {}};
+globalThis.crypto = {getRandomValues: a => a};
+let posted = 0;
+globalThis.fetch = async () => { posted++; return {ok: true, json: async () => ({reaction: '', text: 'ok'})}; };
+store['quarterdeck-draft:call:home/task'] = JSON.stringify({text: 'unsent dictation', at: Date.now()});
+(async () => {
+  new Function(script)();
+  assert.equal(field.value, 'unsent dictation', 'a draft survives the reload');
+  assert.equal(field.style.height, '302px', 'the field grows to its content');
+  field.value = 'y'.repeat(18000);
+  handlers.input({target: field});
+  assert.equal(JSON.parse(store['quarterdeck-draft:call:home/task']).text.length, 18000);
+  assert.equal(note.hidden, false); assert.equal(note.textContent, '18,000 of 20,000 characters');
+  field.value = 'z'.repeat(20001);
+  handlers.input({target: field});
+  assert.equal(note.classList.over, true); assert.ok(note.textContent.includes('Shorten it by 1 '));
+  await handlers.click({target: {closest: s => s === '.reaction-send' ? send : null}});
+  assert.equal(posted, 0, 'a too-long reply is never sent or cut'); assert.ok(status.textContent.includes('too long'));
+  assert.equal(field.value.length, 20001);
+  field.value = 'z'.repeat(20000);
+  handlers.input({target: field});
+  await handlers.click({target: {closest: s => s === '.reaction-send' ? send : null}});
+  assert.equal(posted, 1); assert.equal(store['quarterdeck-draft:call:home/task'], undefined, 'a sent reply clears its draft');
+})().catch(error => { process.stderr.write(error.stack); process.exitCode = 1; });
+"""
+        result = subprocess.run(["node", "-e", harness], input=script, capture_output=True, text=True, check=False)
+        self.assertEqual(result.returncode, 0, result.stderr)
+
     def test_a_report_reaction_names_the_backlog_task_that_owns_the_report(self) -> None:
         backlog = self.home / "data" / "backlog.md"
         backlog.write_text(backlog.read_text(encoding="utf-8")
@@ -4238,7 +4306,7 @@ async function click(report, text) {
         self.assertEqual(request("POST", quarterdeck.REACTION_ENDPOINT, good, {"Sec-Fetch-Site": "cross-site"})[0], 403)
         self.assertEqual(request("POST", quarterdeck.REACTION_ENDPOINT, good, {"Content-Type": "text/plain"})[0], 415)
         for body in ({**good, "reaction": "banish"}, {**good, "reaction": "", "text": ""}, {**good, "kind": "task"},
-                     {**good, "text": "x" * 1001}, {**good, "extra": "1"}, {"kind": "call"}, {**good, "text": 5},
+                     {**good, "text": "x" * (quarterdeck.REACTION_TEXT_LIMIT + 1)}, {**good, "extra": "1"}, {"kind": "call"}, {**good, "text": 5},
                      {**good, "id": "bad id"}, {**good, "id": "short"}, {k: v for k, v in good.items() if k != "id"}):
             self.assertEqual(request("POST", quarterdeck.REACTION_ENDPOINT, body)[0], 400, body)
         self.assertEqual(request("POST", quarterdeck.REACTION_ENDPOINT, {**good, "item_id": "invented-home/nope"})[0], 404)
@@ -4432,7 +4500,7 @@ const button = (c, text) => c.querySelectorAll('button').find(b => b.textContent
   assert.equal(Object.keys(written).length, 0);  // nothing to send yet
   assert.ok(harbor.textContent.includes('Pick a reaction or write a reply first.'));
   button(harbor, 'Approve').listeners.click();
-  const input = harbor.querySelectorAll('input')[0];
+  const input = harbor.querySelectorAll('textarea')[0];
   input.value = '  Go  with teal '; input.listeners.input();
   button(harbor, 'Send').listeners.click();
   await flush();
@@ -4458,17 +4526,17 @@ const button = (c, text) => c.querySelectorAll('button').find(b => b.textContent
   const tideCard = () => card('Tide table');
   const sync = () => inboxCallback({docs: Object.values(written).map(d => ({data: () => d}))});
   button(tideCard(), 'Hold').listeners.click();
-  tideCard().querySelectorAll('input')[0].value = 'wait'; tideCard().querySelectorAll('input')[0].listeners.input();
+  tideCard().querySelectorAll('textarea')[0].value = 'wait'; tideCard().querySelectorAll('textarea')[0].listeners.input();
   let rejectSet;
   nextSet = () => new Promise((_, reject) => { rejectSet = reject; });
   button(tideCard(), 'Send').listeners.click();
   sync();  // a re-render while the send is pending keeps the composer locked
-  assert.ok(button(tideCard(), 'Send').disabled && button(tideCard(), 'Approve').disabled && tideCard().querySelectorAll('input')[0].disabled);
+  assert.ok(button(tideCard(), 'Send').disabled && button(tideCard(), 'Approve').disabled && tideCard().querySelectorAll('textarea')[0].disabled);
   assert.ok(tideCard().textContent.includes('Sending…'));
   rejectSet(new Error('offline')); await flush();
   assert.ok(tideCard().textContent.includes('Could not send: offline'));
   assert.ok(!button(tideCard(), 'Send').disabled);
-  assert.equal(tideCard().querySelectorAll('input')[0].value, 'wait');
+  assert.equal(tideCard().querySelectorAll('textarea')[0].value, 'wait');
   nextSet = () => Promise.reject(new Error('offline'));
   button(tideCard(), 'Send').listeners.click(); await flush();
   assert.equal(attempts.at(-1), attempts.at(-2));  // an unchanged retry reuses its id
@@ -4480,8 +4548,8 @@ const button = (c, text) => c.querySelectorAll('button').find(b => b.textContent
   const twice = cards().map(heading).find(title => cards().filter(c => heading(c) === title).length > 1);
   assert.ok(twice, 'an item shown on two cards');
   const [first, second] = cards().filter(c => heading(c) === twice);
-  const firstInput = first.querySelectorAll('input')[0];
-  const secondInput = second.querySelectorAll('input')[0];
+  const firstInput = first.querySelectorAll('textarea')[0];
+  const secondInput = second.querySelectorAll('textarea')[0];
   firstInput.value = 'Wait'; firstInput.listeners.input();
   secondInput.value = 'Proceed'; secondInput.listeners.input();
   assert.equal(firstInput.value, 'Proceed');  // every copy shows the draft Send would submit
@@ -6312,19 +6380,19 @@ class ActivityCardTests(unittest.TestCase):
         bearings.attention = quarterdeck.attention_view(snapshots, ATTENTION_NOW, all_decisions=True)
         return snapshots, bearings
 
-    def test_cards_are_grouped_newest_first_with_needs_you_first(self) -> None:
+    def test_needs_you_cards_come_first_oldest_wait_first_and_the_rest_newest_first(self) -> None:
         with tempfile.TemporaryDirectory() as temp:
             snapshots, bearings = self.site(Path(temp))
             cards = quarterdeck.site_cards(snapshots, bearings, False)
             self.assertEqual([(card["section"], card["title"]) for card in cards], [
-                ("needs_you", "Approve the tide table format"), ("needs_you", "Kelp survey scope"),
-                ("needs_you", "Pick the new harbor map vendor"), ("recent", "Started: Buoy light refit"),
+                ("needs_you", "Pick the new harbor map vendor"), ("needs_you", "Kelp survey scope"),
+                ("needs_you", "Approve the tide table format"), ("recent", "Started: Buoy light refit"),
                 ("done", "Merged: dock-notes"), ("done", "Closed: moot-call"),
                 ("done", "Answered: Approve the tide table format"), ("done", "Merged: Fix the pier lights"),
             ])
-            self.assertEqual([card["at"] for card in cards[:3]], sorted((card["at"] for card in cards[:3]), reverse=True))
-            self.assertEqual(cards[0]["summary"], "Format choice", "the first line of the ask sits under the title")
-            self.assertEqual(cards[0]["status"], "Decision waiting")
+            self.assertEqual([card["at"] for card in cards[:3]], sorted(card["at"] for card in cards[:3]))
+            self.assertEqual(cards[2]["summary"], "Format choice", "the first line of the ask sits under the title")
+            self.assertEqual(cards[2]["status"], "Decision waiting")
 
     def test_sections_do_not_silently_truncate_cards(self) -> None:
         homes = [{"label": "invented", "waiting": {
@@ -6410,7 +6478,7 @@ class ActivityCardTests(unittest.TestCase):
                         attention = {"homes": [{"label": "Parent", "errors": [], "waiting": {kind: [item]}}]}
                         pages: dict[str, str] = {}
                         cards = quarterdeck.activity_cards(attention, board, None, directories, pages)
-                        outputs = [quarterdeck.cards_html(cards, attention, ATTENTION_NOW, False),
+                        outputs = [quarterdeck.cards_html(cards, attention, ATTENTION_NOW, False) + quarterdeck.activity_html(cards, attention, ATTENTION_NOW),
                                    json.loads(quarterdeck.cards_payload(cards, ATTENTION_NOW))["cards"][0]["html"]]
                         for output in outputs:
                             link = re.search(r'href="(doc-[0-9a-f]{12}\.html)"', output)[1]
@@ -6455,7 +6523,7 @@ class ActivityCardTests(unittest.TestCase):
                                 for card in cards:
                                     if card["id"] != "call:clearwater/choice":
                                         self.assertNotIn("Referenced documents", card["body"])
-                                outputs = [quarterdeck.cards_html(cards, attention, ATTENTION_NOW, False),
+                                outputs = [quarterdeck.cards_html(cards, attention, ATTENTION_NOW, False) + quarterdeck.activity_html(cards, attention, ATTENTION_NOW),
                                            "".join(card["html"] for card in json.loads(
                                                quarterdeck.cards_payload(cards, ATTENTION_NOW))["cards"])]
                                 for output in outputs:
@@ -6487,7 +6555,7 @@ class ActivityCardTests(unittest.TestCase):
             attention = {"homes": [{"label": "invented", "errors": [], "waiting": {"decisions": [item]}}]}
             pages: dict[str, str] = {}
             cards = quarterdeck.activity_cards(attention, board, None, {"invented": data}, pages)
-            outputs = [quarterdeck.cards_html(cards, attention, ATTENTION_NOW, False),
+            outputs = [quarterdeck.cards_html(cards, attention, ATTENTION_NOW, False) + quarterdeck.activity_html(cards, attention, ATTENTION_NOW),
                        json.loads(quarterdeck.cards_payload(cards, ATTENTION_NOW))["cards"][0]["html"]]
             for output in outputs:
                 links = re.findall(r'<li><a href="(doc-[0-9a-f]{12}\.html)">([^<]+)</a>', output)
@@ -6713,6 +6781,7 @@ class Card {
     this.sending = false;
   }
   contains(field) { return this.field === field; }
+  closest(selector) { return selector === '#cards' && this.parentElement === lists.needs_you ? feed : null; }
   querySelectorAll(selector) { return selector === '.reaction-text' ? [this.field] : []; }
   querySelector(selector) {
     if (selector === 'details') return this.details;
@@ -6751,13 +6820,19 @@ const feed = {
   querySelector(selector) { return lists[selector.match(/"([^"]+)"/)[1]]; },
   addEventListener(name, callback) { feedEvents[name] = callback; }
 };
-const controls = Object.fromEntries(['cards-count', 'cards-new', 'cards-empty'].map(id => [id, {}]));
+const controls = Object.fromEntries(['cards-count', 'cards-new', 'cards-empty', 'activity-count', 'activity-empty'].map(id => [id, {}]));
 globalThis.document = {
   title: 'Quarterdeck', hidden: false, activeElement: null,
   getElementById(id) { return id === 'cards' ? feed : controls[id]; },
-  addEventListener(name, callback) { (documentEvents[name] ||= []).push(callback); },
-  querySelectorAll(selector) { return selector === '.reaction-text' ? all().map(card => card.field) : []; },
-  querySelector() { return editorDirty || all().some(card => card.selected || card.sending) ? {} : null; },
+  addEventListener(name, callback) { (documentEvents[name] ||= []).push(callback); if (name === 'click') feedEvents.click = callback; },
+  querySelectorAll(selector) {
+    if (selector === '.act-card') return all();
+    if (selector === '.act-section') return sections;
+    return selector === '.reaction-text' ? all().map(card => card.field) : [];
+  },
+  querySelector(selector) {
+    if (selector.startsWith('[data-section-list=')) return lists[selector.match(/"([^"]+)"/)[1]];
+    return editorDirty || all().some(card => card.selected || card.sending) ? {} : null; },
   createElement() {
     return {content: {}, set innerHTML(html) {
       this.content.firstElementChild = new Card(html.match(/data-card-id="([^"]+)"/)[1], html.match(/data-card-rev="([^"]+)"/)[1]);
@@ -6851,7 +6926,8 @@ function openCard(card) {
   lists.done.children[0].field.value = 'Keep me';
   await update([]);
   assert.deepEqual(ids('done'), ['b']);
-  assert.equal(controls['cards-empty'].hidden, true);
+  assert.equal(controls['cards-empty'].hidden, false, 'a card in Activity does not fill the needs-you section');
+  assert.equal(controls['activity-count'].textContent, '1');
   lists.done.children[0].field.value = '';
   await update([]);
   assert.deepEqual(all(), []);
@@ -6951,8 +7027,16 @@ function openCard(card) {
         with tempfile.TemporaryDirectory() as temp:
             snapshots, bearings = self.site(Path(temp))
             page = quarterdeck.build_html(snapshots, "Quarterdeck", bearings=bearings, refresh_seconds=60)
-            self.assertLess(page.index('id="cards"'), page.index("Waiting on you"), "the feed leads the page")
-            article = re.search(r'<article class="act-card act-need".*?</article>', page, re.S).group(0)
+            self.assertLess(page.index('id="cards"'), page.index("Waiting on you"), "what needs you leads the page")
+            self.assertLess(page.index("Waiting on you"), page.index('id="activity"'), "activity sits lower down")
+            needs, activity = page.split('id="activity"', 1)
+            self.assertNotIn('data-section="recent"', needs.split('id="cards"', 1)[1], "no activity card above the fold")
+            self.assertIn('<details class="dashboard-section cards-feed" id="activity"', page.replace("id=\"activity\"", 'id="activity"'))
+            self.assertRegex(page, r'id="activity-count">[1-9]\d*</span>')
+            self.assertIn('<a href="#activity">Activity <b>', page)
+            self.assertNotIn(" open", re.search(r'<details[^>]*id="activity"[^>]*>', page).group(0), "Activity starts collapsed")
+            article = next(a for a in re.findall(r'<article class="act-card act-need".*?</article>', page, re.S)
+                           if "Approve the tide table format" in a)
             self.assertIn('<span class="act-label">Needs you</span>', article)
             self.assertIn('<time class="act-time" datetime="2026-07-02T11:01:00Z">under an hour ago</time>', article)
             self.assertIn('<span class="act-title">Approve the tide table format</span>', article)
@@ -7001,7 +7085,7 @@ function openCard(card) {
             self.assertEqual([card["id"] for card in first["cards"]], [card["id"] for card in later["cards"]])
             self.assertEqual([card["rev"] for card in first["cards"]], [card["rev"] for card in later["cards"]])
             self.assertEqual(len(first["cards"]), len(cards))
-            self.assertIn("3 hours ago", later["cards"][0]["html"])
+            self.assertIn("3 hours ago", next(c["html"] for c in later["cards"] if "tide table" in c["html"]))
             changed = [dict(card, summary="Changed ask") if card["id"] == cards[0]["id"] else card for card in cards]
             revisions = {card["id"]: card["rev"] for card in json.loads(quarterdeck.cards_payload(changed, ATTENTION_NOW))["cards"]}
             self.assertNotEqual(revisions[cards[0]["id"]], first["cards"][0]["rev"])
@@ -7025,7 +7109,7 @@ function openCard(card) {
             bearings = quarterdeck.build_bearings(snapshots, ATTENTION_NOW, use_snapshot=False)
             bearings.attention = quarterdeck.attention_view(snapshots, ATTENTION_NOW, all_decisions=True)
             page = quarterdeck.build_html(snapshots, "Quarterdeck", bearings=bearings, refresh_seconds=60)
-            self.assertIn('<p class="empty" id="cards-empty">Nothing new from Firstmate.</p>', page)
+            self.assertIn('<p class="empty" id="cards-empty">Nothing needs you right now.</p>', page)
             self.assertEqual(page.count('class="act-section" data-section='), 4)
             self.assertEqual(page.count("act-section\" data-section=\"needs_you\" hidden"), 1)
             bad = AttentionTests().make_home(Path(temp) / "bad", feed="not json")
@@ -8452,7 +8536,7 @@ class QuickWinTests(unittest.TestCase):
                               ["call:invented/info"])
         line = quarterdeck.status_line_html(attention, 0, 0, ATTENTION_NOW)
         self.assertIn('href="#cards" data-need="some">2 need you', line)
-        destination = quarterdeck.cards_html(cards, attention, ATTENTION_NOW, False)
+        destination = quarterdeck.cards_html(cards, attention, ATTENTION_NOW, False) + quarterdeck.activity_html(cards, attention, ATTENTION_NOW)
         self.assertIn('id="cards"', destination)
         self.assertIn("Choose chart", destination)
         self.assertIn("Captain help", destination)

@@ -94,8 +94,13 @@ authenticating TLS reverse proxy.
 ## React to calls and reports from the page
 
 With `--allow-marks`, each desk call, related item and report also has
-**Approve**, **Hold**, **Not now** and **Question** buttons, a short reply box
-and **Send**. Pick a reaction, write a reply, or both, then Send. Quarterdeck
+**Approve**, **Hold**, **Not now** and **Question** buttons, a reply box
+and **Send**. Pick a reaction, write a reply, or both, then Send. The reply box
+is a text area that grows as you type and takes up to 20,000 characters, enough
+for a long dictated answer. A counter appears when you near the limit, and a
+longer reply is refused with a message rather than cut. An unsent reply is kept
+in this browser (for up to seven days) across the page's automatic reloads and
+is cleared when you send it. Quarterdeck
 hands one line (item ID, task ID, reaction, your text and the time) to the
 item's home through its `bin/fm-inbox.sh note`, so Firstmate receives it as a
 note and wakes, and it routes the answer to you or the workers. The card shows

@@ -74,7 +74,10 @@ footer { border-top: 1px solid var(--line); margin-top: 3rem; padding-top: 1rem;
 .reaction .choices { display: flex; flex-wrap: wrap; gap: .4rem; }
 .reaction button[aria-pressed="true"] { background: var(--accent); color: var(--surface); }
 .reaction .reply { display: flex; flex-wrap: wrap; gap: .5rem; align-items: center; margin-top: .5rem; }
-.reaction input[type="text"] { flex: 1 1 14rem; min-width: 0; min-height: 44px; padding: 0 .6rem; border: 1px solid var(--line); border-radius: 8px; background: var(--surface); color: var(--fg); font: inherit; font-size: .9rem; }
+.reaction textarea { display: block; box-sizing: border-box; flex: 1 1 100%; width: 100%; min-width: 0; min-height: 5.5rem; max-height: 60vh; padding: .55rem .6rem; border: 1px solid var(--line); border-radius: 8px; background: var(--surface); color: var(--fg); font: inherit; font-size: 1rem; line-height: 1.4; resize: vertical; overflow-y: auto; }
+.reaction .count { flex: 1 1 100%; color: var(--muted); font-size: .82rem; }
+.reaction .count.over { color: var(--warn); font-weight: 700; }
+.reaction .count[hidden] { display: none; }
 .report-body { white-space: pre-wrap; overflow-wrap: anywhere; font: inherit; }
 .access { color: var(--warn); }
 .error { border: 1px solid var(--gold); background: var(--warn-soft); color: var(--warn); border-radius: 10px; padding: .6rem 1rem; margin: .6rem 0; overflow-wrap: anywhere; }
@@ -95,7 +98,7 @@ footer { border-top: 1px solid var(--line); margin-top: 3rem; padding-top: 1rem;
   var COLLECTION = "qd-actions";
   var INBOX = "qd-inbox";
   var REACTIONS = [["approve", "Approve"], ["hold", "Hold"], ["not-now", "Not now"], ["question", "Question"]];
-  var TEXT_LIMIT = 1000;
+  var TEXT_LIMIT = 20000;
   var actionDocs = {};   // report id -> latest recorded action document
   var inboxDocs = {};    // reaction id -> recorded reaction document
   var drafts = {};       // "kind:item id" -> {reaction, text, id, sending, status} typed but not sent
@@ -242,13 +245,31 @@ footer { border-top: 1px solid var(--line); margin-top: 3rem; padding-top: 1rem;
       });
       choices.appendChild(button);
     });
-    var input = el("input", { type: "text", maxlength: String(TEXT_LIMIT), placeholder: "Reply to Firstmate (optional)", "aria-label": "Reply to Firstmate", "data-draft": key });
+    var input = el("textarea", { rows: "2", placeholder: "Reply to Firstmate (optional)", "aria-label": "Reply to Firstmate", "data-draft": key });
+    var count = el("span", { "class": "count", "aria-live": "polite" });
+    function grow(node) {
+      if (!node.offsetParent) return;
+      node.style.height = "auto";
+      node.style.height = (node.scrollHeight + 2) + "px";
+    }
+    function showCount(view) {
+      var length = draft.text.trim().length;
+      view.count.hidden = length < TEXT_LIMIT * 0.8;
+      view.count.className = "count" + (length > TEXT_LIMIT ? " over" : "");
+      view.count.textContent = length > TEXT_LIMIT
+        ? "This reply is " + length + " characters and the limit is " + TEXT_LIMIT + ". Shorten it by " + (length - TEXT_LIMIT) + " to send it."
+        : length + " of " + TEXT_LIMIT + " characters";
+    }
     input.value = draft.text;
     input.disabled = draft.sending || !db;
     input.addEventListener("input", function () {
       draft.text = input.value;
       draft.id = "";
-      composers[key].forEach(function (view) { if (view.input !== input) view.input.value = draft.text; });
+      grow(input);
+      composers[key].forEach(function (view) {
+        if (view.input !== input) { view.input.value = draft.text; grow(view.input); }
+        showCount(view);
+      });
     });
     var send = el("button", { type: "button", text: "Send" });
     send.disabled = draft.sending || !db;
@@ -257,6 +278,11 @@ footer { border-top: 1px solid var(--line); margin-top: 3rem; padding-top: 1rem;
       var text = draft.text.trim().replace(/\s+/g, " ");
       if (!draft.reaction && !text) {
         draft.status = "Pick a reaction or write a reply first.";
+        composers[key].forEach(function (view) { view.status.textContent = draft.status; });
+        return;
+      }
+      if (draft.text.trim().length > TEXT_LIMIT) {
+        draft.status = "Not sent: the reply is too long. Shorten it and send again.";
         composers[key].forEach(function (view) { view.status.textContent = draft.status; });
         return;
       }
@@ -275,9 +301,12 @@ footer { border-top: 1px solid var(--line); margin-top: 3rem; padding-top: 1rem;
         render();
       });
     });
-    (composers[key] || (composers[key] = [])).push({ choices: choices, input: input, status: status });
+    var view = { choices: choices, input: input, status: status, count: count };
+    (composers[key] || (composers[key] = [])).push(view);
     box.appendChild(choices);
-    box.appendChild(el("div", { "class": "reply" }, [input, send, status]));
+    box.appendChild(el("div", { "class": "reply" }, [input, count, send, status]));
+    showCount(view);
+    setTimeout(function () { grow(input); }, 0);
     var discuss = el("button", { type: "button", text: "Discuss with Firstmate" });
     discuss.disabled = !comments;
     discuss.addEventListener("click", function () {
@@ -599,7 +628,7 @@ footer { border-top: 1px solid var(--line); margin-top: 3rem; padding-top: 1rem;
       root.appendChild(statusBanner());
       root.appendChild(guard("detail " + shown.id, function () { return buildDetail(shown); }));
       if (focused) {
-        var kept = Array.prototype.filter.call(root.querySelectorAll("input[data-draft]"), function (node) { return node.getAttribute("data-draft") === focused; })[0];
+        var kept = Array.prototype.filter.call(root.querySelectorAll("textarea[data-draft]"), function (node) { return node.getAttribute("data-draft") === focused; })[0];
         if (kept) kept.focus();
       }
       return;
@@ -691,7 +720,7 @@ footer { border-top: 1px solid var(--line); margin-top: 3rem; padding-top: 1rem;
     }
     root.appendChild(footer);
     if (focused) {
-      var again = Array.prototype.filter.call(root.querySelectorAll("input[data-draft]"), function (node) { return node.getAttribute("data-draft") === focused; })[0];
+      var again = Array.prototype.filter.call(root.querySelectorAll("textarea[data-draft]"), function (node) { return node.getAttribute("data-draft") === focused; })[0];
       if (again) again.focus();
     }
   }

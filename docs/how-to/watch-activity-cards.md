@@ -1,9 +1,11 @@
 # Watch Firstmate's activity as cards
 
-The served page leads with a **Cards** feed, so you can see what Firstmate is
-doing without opening a session. It works like the cards on Cadence's phone
-page: newest first, each card shows a label, its age, a title and the first line
-of its text. Tap a card to read the rest.
+The served page leads with the **Needs you** cards, so what is waiting on you is
+the first thing you see; when nothing is, it says "Nothing needs you right now."
+What Firstmate started, merged and finished is in a collapsed **Activity**
+section lower on the page (in the jump strip, with its count). It works like the
+cards on Cadence's phone page: each card shows a label, its age, a title and the
+first line of its text. Tap a card to read the rest.
 
 ## What the cards are
 
@@ -19,7 +21,8 @@ for a task held for the captain also shows what the
 | For your information | One per result to read. | The attention feed and the captain board. |
 | Done recently | Recently merged work, answered or closed captain calls, and dated finished tasks. | The fleet ledger and backlog, including registered homes. |
 
-Sections appear in that order, and cards are newest first within each. Quiet and
+Needs you leads the page, oldest wait first; the other three sections sit inside
+Activity, in that order, newest first. Quiet and
 stale decisions and dated decisions that are not yet due stay out. Information
 cards follow the [waiting queue's priority scope](see-recent-work.md); needs-you
 cards include every waiting decision and needs-you item, in priority projects or
@@ -42,7 +45,7 @@ data directory, including a local secondmate's; an unavailable owner or a
 namespace shared by distinct home labels leaves links out.
 
 Markdown opens rendered and HTML retains its content and scripts. A link appears
-only for a readable UTF-8 regular `.md` or `.html` file of 2 MB or less that really
+only for a readable UTF8 regular `.md` or `.html` file of 2 MB or less that really
 sits inside that data directory; missing files and links that escape it are left out.
 The card text is not changed. Every opened document carries a small bar with
 **Back to Quarterdeck** and **Open file by itself**. The second link opens the
