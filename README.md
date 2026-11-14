@@ -90,7 +90,7 @@ as a local artifact. Quarterdeck itself has no agent or build step.
 - Captain's Call cards include local hold context, options, and recommendations
   when available. Remote decisions show the snapshot summary and point to their
   secondmate home for the full background.
-- Waiting on you: your priority projects first (set with
+- Decisions and recent work: your priority projects first (set with
   `quarterdeck priorities set`, up to three), the decisions still in play, and
   the last six hours of merged and started work from Firstmate's fleet ledger,
   shown only when there is some. See the guide for background and deferred decisions.
@@ -98,7 +98,7 @@ as a local artifact. Quarterdeck itself has no agent or build step.
   `quarterdeck attention --check` validates Firstmate's formats after an
   update. See [See recent work](docs/how-to/see-recent-work.md).
 - Views: a rail of saved briefing views (Morning and Priorities to start; a row
-  of buttons on a phone), each an ordered stack of Waiting on you, recent work,
+  of buttons on a phone), each an ordered stack of Waiting decisions and needs, recent work,
   priority projects and For your information, with an editor. An item shows
   once, in the first section that claims it. `quarterdeck views` manages them
   and `quarterdeck attention --json --view` prints the same sections.
@@ -110,7 +110,7 @@ as a local artifact. Quarterdeck itself has no agent or build step.
 - Scout reports with an explicit recommendation when the report states one.
 - Stable report IDs, Markdown and readable HTML reading, and local review state (reviewed, discarded, relevance) in a private SQLite database.
 - Reports needing review appear independently of backlog attention.
-- In-flight tasks and pull requests marked ready for review.
+- Underway tasks and pull requests marked ready for review.
 - Attention filtering; see [the attention model](docs/explanation/attention-model.md) for `--all` behavior.
 - Combined pages for configured homes, with registered secondmates grouped
   under their parent.

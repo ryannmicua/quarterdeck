@@ -117,7 +117,7 @@ for every key.
 
 On the served page, each waiting item in "Needs you" shows the kind of ask and
 the summary under its title. Open the card for the briefing and the
-clarifications, oldest first, with dates. "Waiting on you" shows the same line.
+clarifications, oldest first, with dates. "Decisions and recent work" shows the same line.
 Until the briefing is collected, the card shows the hold note and says the
 briefing is being collected; a failing helper shows its error and the next try.
 
@@ -144,7 +144,7 @@ quarterdeck waits discard maple-harbor/tide-merge
 Quarterdeck sends the home's Firstmate a note through its own
 `bin/fm-inbox.sh note`, the same channel reactions use, asking it to drop the
 hold. Only after the note is delivered is the card hidden, from the cards,
-"Waiting on you" and Captain's Call. The captain board keeps its own entry
+"Decisions and recent work" and Captain's Call. The captain board keeps its own entry
 until Firstmate updates it. The card is released for good when the hold
 disappears from the backlog. If the task is held again later with a new stamp,
 a new card appears.

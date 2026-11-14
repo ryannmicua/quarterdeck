@@ -1,7 +1,7 @@
 # Attention JSON (`quarterdeck-attention.v1`)
 
 `quarterdeck attention --json` prints one JSON object with waiting queues,
-project priorities, and recent work. The page's "Waiting on you" section renders
+project priorities, and recent work. The page's "Decisions and recent work" section renders
 this shared view. Readers use `recent_work_6h` and `show_recent` for recent-work
 display; the older three-window `recent_work` member remains for compatibility.
 

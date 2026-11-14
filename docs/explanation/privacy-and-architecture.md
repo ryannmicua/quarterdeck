@@ -29,7 +29,7 @@ page falls back to parsing the backlog when it is absent, fails, or times out.
 The wrapper may also read registered remote secondmate ledgers through
 Firstmate's routes and show the returned rows.
 
-The "Waiting on you" section and `quarterdeck attention` read the home's
+The "Decisions and recent work" section and `quarterdeck attention` read the home's
 `state/fleet-ledger.jsonl` directly and run the home's own
 `bin/fm-attention.sh --json`, Firstmate's documented read-only feed of open
 decisions; `--no-snapshot` skips that script for the page. Both are versioned

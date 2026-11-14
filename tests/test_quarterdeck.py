@@ -173,7 +173,8 @@ Use the compact format for the first release.
             self.assertIn("Use the compact format for the first release.", page)
             self.assertIn("https://github.com/example/quarterdeck-demo/" + "pull/42", page)
             self.assertIn("Chart the Maple Harbor catalog", page)
-            self.assertIn("kestrel — Maintains the Willow Quay field guide.", page)
+            self.assertIn("<h2>kestrel</h2>", page)
+            self.assertIn('<p class="home-charter">Maintains the Willow Quay field guide.</p>', page)
             self.assertIn("Chart the Willow Quay field guide", page)
             self.assertIn("Secondmate · registered by fictional-firstmate", page)
             self.assertIn("remote host sample-remote", page)
@@ -188,15 +189,16 @@ Use the compact format for the first release.
             self.assertIn(f'href="{orphan_page}">Read report <code>fictional-firstmate/orphan-35</code>', page)
             self.assertNotIn("Merge the local sample dependency", page)
             self.assertNotIn("file://", page)
-            self.assertIn("Read backlog item", page)
+            self.assertIn("Open the home&#x27;s backlog", page)
+            self.assertNotIn("Read backlog item", page)
             self.assertRegex(page, r'<b>2</b><span>Held for captain</span>')
             self.assertRegex(page, r'<b>1</b><span>Review-ready PRs</span>')
-            self.assertRegex(page, r'<b>2</b><span>In-flight work</span>')
+            self.assertRegex(page, r'<b>2</b><span>Underway</span>')
             self.assertRegex(page, r'<b>2</b><span>Blocked for captain/external</span>')
             for label, badge in (
                 ("Held for captain", "Held for captain"),
                 ("Review-ready PRs", "Review-ready pull request"),
-                ("In-flight work", "In-flight work"),
+                ("Underway", "Underway"),
                 ("Blocked for captain/external", "Blocked for captain or external party"),
             ):
                 metric = re.search(r'<div class="metric"><b>(\d+)</b><span>' + re.escape(label) + r"</span></div>", page)
@@ -3058,7 +3060,7 @@ class ServeTests(unittest.TestCase):
             self.assertIn("Generated at", body)
             self.assertIn("}, 60000);", body)
             links = re.findall(r'href="((?:item|report|backlog)-[0-9a-f]{12}\.html)"', body)
-            self.assertTrue(any(link.startswith("item-") for link in links))
+            self.assertFalse(any(link.startswith("item-") for link in links))
             self.assertTrue(any(link.startswith("report-") for link in links))
             for link in set(links):
                 self.assertEqual(self.fetch(port, "/" + link)[0], 200, link)
@@ -5445,7 +5447,7 @@ class AttentionTests(unittest.TestCase):
                         else:
                             self.assertNotIn(title, all_text)
                     if representation == "table":
-                        self.assertIn('<div class="metric"><b>2</b><span>In-flight work</span></div>', rendered)
+                        self.assertIn('<div class="metric"><b>2</b><span>Underway</span></div>', rendered)
                         self.assertIn('<div class="metric"><b>1</b><span>Blocked for captain/external</span></div>', rendered)
                     exported = quarterdeck.build_snapshot(homes, "Quarterdeck", ATTENTION_NOW, attention=view)
                     bands = {row["id"].split("/", 1)[1]: row["band"] for row in exported["calls"]}
@@ -6569,7 +6571,7 @@ class AttentionTests(unittest.TestCase):
             self.assertEqual([view["name"] for view in saved["views"]], ["Morning", "Priorities", "Reef"])
             self.assertEqual(saved["views"][2]["sections"], [{"type": "project", "project": "reef-demo"}, {"type": "waiting"}])
             self.assertEqual(self.run_tool(root, "views", "show", "reef").stdout.strip(),
-                             "Reef (startup): project reef-demo, Waiting on you.")
+                             "Reef (startup): project reef-demo, Waiting decisions and needs.")
             self.assertEqual(self.run_tool(root, "views", "default", "morning", "--home", str(home)).returncode, 0)
             self.assertEqual(json.loads(prefs.read_text())["default_view"], "Morning")
             self.assertEqual(self.run_tool(root, "views", "default", "nope", "--home", str(home)).returncode, 2)
@@ -6962,7 +6964,7 @@ assert.equal(space.style.height, '48px');
                     self.assertEqual(quarterdeck.main(command), 0)
                 generated = list(output.parent.glob("*.html"))
                 prefixes = {path.name.split("-", 1)[0] for path in generated}
-                self.assertTrue({"doc", "report", "backlog", "item"} <= prefixes, prefixes)
+                self.assertTrue({"doc", "report", "backlog"} <= prefixes, prefixes)
                 docs = [path for path in generated if path.name.startswith("doc-")]
                 self.assertEqual(len(docs), 2)
                 for path in generated:
@@ -6985,15 +6987,16 @@ assert.equal(space.style.height, '48px');
             self.assertIn("<h1>Kelp survey report</h1>", page)
             self.assertNotIn('id="qd-nav"', page)
 
-    def test_snapshot_item_navigation_uses_the_main_filename(self) -> None:
+    def test_snapshot_items_get_no_page_that_only_repeats_the_card(self) -> None:
         with tempfile.TemporaryDirectory() as temp:
             home = BearingsTests().make_home(Path(temp))
             snapshots = BearingsTests().snapshots(home)
             bearings = quarterdeck.build_bearings(
                 snapshots, ATTENTION_NOW, runner=lambda *_: (SNAPSHOT_JSON, ""), main_href="dashboard.html",
             )
+            self.assertEqual(bearings.item_pages, {}, "a page that only repeats the card is not made")
             for item in (bearings.call[0], bearings.landed[0]):
-                self.assertIn('href="dashboard.html"', bearings.item_pages[item.item_page])
+                self.assertTrue(item.item_page)
 
     def test_served_raw_documents_are_plain_and_sandboxed(self) -> None:
         pages = {"raw-aaaaaaaaaaaa.txt": "# T\n", "raw-bbbbbbbbbbbb.html": "<p>x</p>", "index.html": "<p>i</p>"}
@@ -7164,6 +7167,7 @@ globalThis.setInterval = (callback, delay) => { if (delay === 15000) poll = call
 globalThis.fetch = async () => ({ok: true, json: async () => payload});
 const spec = (id, rev = '1', section = 'needs_you') => ({id, rev, section,
   html: '<article data-card-id="' + id + '" data-card-rev="' + rev + '"></article>'});
+const flush = async () => { for (let i = 0; i < 8; i++) await Promise.resolve(); };  // the reload now waits for a probe fetch
 async function update(cards) { payload = {schema: 'quarterdeck-cards.v1', cards}; await poll(); }
 const ids = section => lists[section].children.map(card => card.dataset.cardId);
 function visibility(hidden) {
@@ -7186,7 +7190,7 @@ function openCard(card) {
         verify = r"""
 (async () => {
   await update([spec('a'), spec('b')]);
-  assert.equal(document.title, 'Quarterdeck');
+  assert.equal(document.title, '(2) Quarterdeck', 'the tab title counts what needs the captain');
   assert.equal(controls['cards-count'].textContent, '2');
   assert.equal(controls['cards-count'].hidden, false);
   assert.equal(controls['cards-new'].textContent, '2 new');
@@ -7200,6 +7204,7 @@ function openCard(card) {
   assert.equal(reloads, 0);
   assert.equal(clickDesk('#item-new-call'), true);
   assert.equal(location.hash, '#item-new-call');
+  await flush();
   assert.equal(reloads, 1);
   for (const mode of ['focus', 'text', 'selected', 'sending', 'editor']) {
     document.activeElement = mode === 'focus' ? a.field : null;
@@ -7207,10 +7212,10 @@ function openCard(card) {
     a.selected = mode === 'selected'; a.sending = mode === 'sending'; editorDirty = mode === 'editor';
     const before = reloads;
     assert.equal(clickDesk('#item-promoted-call'), true);
-    tick(1000);
+    tick(1000); await flush();
     assert.equal(reloads, before, mode + ' failed to defer navigation reload');
     document.activeElement = null; a.field.value = ''; a.selected = false; a.sending = false; editorDirty = false;
-    tick(1000);
+    tick(1000); await flush();
     assert.equal(reloads, before + 1);
     assert.equal(location.hash, '#item-promoted-call');
   }
@@ -7270,9 +7275,9 @@ function openCard(card) {
   assert.equal(saved.visible, '1');
   assert.equal(controls['cards-count'].hidden, true);
   assert.equal(controls['cards-new'].hidden, true);
-  assert.equal(document.title, 'Quarterdeck');
+  assert.equal(document.title, '(1) Quarterdeck', 'seen or not, a waiting card still counts');
   await update([spec('visible', '2')]);
-  assert.equal(document.title, 'Quarterdeck');
+  assert.equal(document.title, '(1) Quarterdeck');
   assert.equal(controls['cards-count'].textContent, '1');
   assert.equal(controls['cards-new'].textContent, '1 new');
   visible = lists.needs_you.children[0];
@@ -7290,7 +7295,7 @@ function openCard(card) {
   observer.emit(lists.needs_you.children[0], 0.5);
   await update([]); tick(1200);
   assert.equal(saved.removed, undefined);
-  assert.equal(document.title, 'Quarterdeck');
+  assert.equal(document.title, 'Quarterdeck', 'the count goes away with the last card');
 })().catch(error => { console.error(error); process.exitCode = 1; });
 """
         script = re.search(r"<script>(.*?)</script>", quarterdeck.ACTIVITY_SCRIPT, re.S)[1]
@@ -7344,8 +7349,8 @@ function openCard(card) {
         with tempfile.TemporaryDirectory() as temp:
             snapshots, bearings = self.site(Path(temp))
             page = quarterdeck.build_html(snapshots, "Quarterdeck", bearings=bearings, refresh_seconds=60)
-            self.assertLess(page.index('id="cards"'), page.index("Waiting on you"), "what needs you leads the page")
-            self.assertLess(page.index("Waiting on you"), page.index('id="activity"'), "activity sits lower down")
+            self.assertLess(page.index('id="cards"'), page.index("Decisions and recent work"), "what needs you leads the page")
+            self.assertLess(page.index("Decisions and recent work"), page.index('id="activity"'), "activity sits lower down")
             needs, activity = page.split('id="activity"', 1)
             self.assertNotIn('data-section="recent"', needs.split('id="cards"', 1)[1], "no activity card above the fold")
             self.assertIn('<details class="dashboard-section cards-feed" id="activity"', page.replace("id=\"activity\"", 'id="activity"'))
@@ -8581,15 +8586,19 @@ const assert = require('node:assert/strict');
 globalThis.location = {protocol: 'http:', href: 'http://localhost/?view=waiting&qd_refresh=1#cards',
   reload() { this.requested = this.href; }};
 globalThis.history = {replaceState(_state, _title, url) { location.href = String(url); }};
-globalThis.document = {querySelectorAll: () => [], querySelector: () => null};
+globalThis.document = {querySelectorAll: () => [], querySelector: () => null, getElementById: () => null};
+globalThis.fetch = async () => ({ok: true});
 """
         verify = r"""
 assert.equal(location.href, 'http://localhost/?view=waiting#cards');
 quarterdeckReload();
-const request = new URL(location.requested);
-assert.equal(request.searchParams.get('qd_refresh'), '1');
-assert.equal(request.searchParams.get('view'), 'waiting');
-assert.equal(request.hash, '#cards');
+(async () => {
+  await new Promise(resolve => setTimeout(resolve, 0));
+  const request = new URL(location.requested);
+  assert.equal(request.searchParams.get('qd_refresh'), '1');
+  assert.equal(request.searchParams.get('view'), 'waiting');
+  assert.equal(request.hash, '#cards');
+})().catch(error => { console.error(error); process.exitCode = 1; });
 """
         result = subprocess.run([node, "-e", harness + script + verify], capture_output=True, text=True)
         self.assertEqual(result.returncode, 0, result.stderr)
@@ -9033,3 +9042,233 @@ class QuickWinTests(unittest.TestCase):
                         self.assertNotIn("oldest", line)
                     else:
                         self.assertIn("1 needs you · oldest 3 days", line)
+
+
+class PhoneFixTests(unittest.TestCase):
+    """The small phone-first fixes: names, contrast, offline refresh, gzip, secondmate headings, links, undo, pinning."""
+
+    def serve(self, pages: dict[str, str] | None = None):
+        pages = pages or {"index.html": "<p>" + "page " * 600 + "</p>"}
+        cache = type("Cache", (), {"get": lambda self: pages})()
+        server = quarterdeck.make_server("127.0.0.1", 0, quarterdeck.make_handler(cache))
+        threading.Thread(target=server.serve_forever, daemon=True).start()
+        self.addCleanup(lambda: (server.shutdown(), server.server_close()))
+        port = server.server_address[1]
+
+        def get(path: str, headers: dict[str, str] | None = None, method: str = "GET"):
+            import http.client
+            connection = http.client.HTTPConnection("127.0.0.1", port, timeout=10)
+            connection.request(method, path, headers=headers or {})
+            response = connection.getresponse()
+            body = response.read()
+            connection.close()
+            return response.status, response.headers, body
+        return get, pages
+
+    def test_pages_are_compressed_only_for_clients_that_accept_gzip(self) -> None:
+        import gzip
+        get, pages = self.serve()
+        plain = pages["index.html"].encode("utf-8")
+        status, headers, body = get("/", {"Accept-Encoding": "gzip, deflate"})
+        self.assertEqual((status, headers["Content-Encoding"], headers["Vary"]), (200, "gzip", "Accept-Encoding"))
+        self.assertEqual(gzip.decompress(body), plain)
+        self.assertEqual(int(headers["Content-Length"]), len(body))
+        self.assertLess(len(body), len(plain) // 4)
+        for offered in (None, "identity", "gzip;q=0", "br"):
+            with self.subTest(offered=offered):
+                status, headers, body = get("/", {"Accept-Encoding": offered} if offered else {})
+                self.assertIsNone(headers["Content-Encoding"])
+                self.assertEqual(body, plain)
+        status, headers, body = get("/nothing.html", {"Accept-Encoding": "gzip"})
+        self.assertEqual(status, 404)
+        self.assertIsNone(headers["Content-Encoding"], "a short answer is not worth compressing")
+
+    def test_the_page_can_be_pinned_to_a_phone_home_screen(self) -> None:
+        get, pages = self.serve()
+        status, headers, body = get("/manifest.webmanifest")
+        manifest = json.loads(body)
+        self.assertEqual((status, headers["Content-Type"]), (200, "application/manifest+json"))
+        self.assertEqual((manifest["name"], manifest["display"], manifest["start_url"]), ("Quarterdeck", "standalone", "./"))
+        for icon in manifest["icons"]:
+            self.assertEqual(get("/" + icon["src"])[0], 200, icon["src"])
+        for name, size in (("icon-180.png", 180), ("icon-192.png", 192), ("icon-512.png", 512)):
+            status, headers, body = get("/" + name)
+            self.assertEqual((status, headers["Content-Type"]), (200, "image/png"))
+            self.assertEqual(body[:8], b"\x89PNG\r\n\x1a\n")
+            self.assertEqual(int.from_bytes(body[16:20], "big"), size)
+            self.assertEqual(int.from_bytes(body[20:24], "big"), size)
+        self.assertIn(b"<svg", get("/icon.svg")[2])
+        self.assertEqual(get("/icon-1.png")[0], 404)
+        self.assertEqual(get("/icon.svg", method="HEAD")[0], 405, "icons are read-only like everything else")
+        served = quarterdeck.build_html([], "Quarterdeck", refresh_seconds=60)
+        for link in ('rel="manifest" href="manifest.webmanifest"', 'rel="apple-touch-icon" href="icon-180.png"', 'name="theme-color"'):
+            self.assertIn(link, served)
+        self.assertNotIn("manifest.webmanifest", quarterdeck.build_html([], "Quarterdeck"), "a file render has nothing to pin")
+
+    def test_the_tab_title_counts_what_needs_the_captain(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            snapshots, bearings = ActivityCardTests().site(Path(temp))
+            page = quarterdeck.build_html(snapshots, "Quarterdeck", bearings=bearings, refresh_seconds=60)
+            self.assertIn("<title>(3) Quarterdeck · Firstmate review</title>", page)
+            self.assertIn("<title>Quarterdeck · Firstmate review</title>", quarterdeck.build_html([], "Quarterdeck"))
+
+    def test_page_uses_one_name_per_thing_and_darker_muted_text(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            snapshots, bearings = ActivityCardTests().site(Path(temp))
+            page = quarterdeck.build_html(snapshots, "Quarterdeck", bearings=bearings, refresh_seconds=60)
+            self.assertNotIn("Waiting on you", page)
+            self.assertNotIn("In-flight work", page)
+            self.assertNotIn("in-flight", page)
+            self.assertIn("--muted: #596774", page)
+            self.assertIn("--gold-ink: #9a5f1a", page)
+            self.assertRegex(page, r"\.chip-rec \{[^}]*border-radius: 12px")
+
+    def test_underway_count_is_the_same_in_the_status_line_and_the_details_totals(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            home = BearingsTests().make_home(Path(temp))
+            snapshots = BearingsTests().snapshots(home)
+            bearings = quarterdeck.build_bearings(snapshots, ATTENTION_NOW, runner=lambda *_: (SNAPSHOT_JSON, ""))
+            bearings.attention = quarterdeck.attention_view(snapshots, ATTENTION_NOW, all_decisions=True)
+            page = quarterdeck.build_html(snapshots, "Quarterdeck", bearings=bearings, refresh_seconds=60)
+            shown = len(bearings.underway)
+            self.assertGreater(shown, 0)
+            self.assertIn(f">{shown} underway</a>", page)
+            self.assertIn(f'<div class="metric"><b>{shown}</b><span>Underway</span></div>', page)
+
+    def test_secondmate_name_is_the_heading_and_a_remote_home_is_a_plain_note(self) -> None:
+        local = quarterdeck.HomeSpec(
+            "kestrel — Keeps the invented field guide current and drafts its weekly digest.", Path("/nonexistent/kestrel"),
+            parent_label="main", route_id="kestrel")
+        remote = quarterdeck.HomeSpec(
+            "osprey — Watches the invented far island.", None, parent_label="main", route_id="osprey", remote_host="far-island")
+        missing = quarterdeck.home_panel(quarterdeck.load_home_snapshot(local))
+        self.assertIn("<h2>kestrel</h2>", missing)
+        self.assertIn('<p class="home-charter">Keeps the invented field guide current and drafts its weekly digest.</p>', missing)
+        self.assertIn("Home could not be read", missing, "a home that should be readable and is not is still a fault")
+        far = quarterdeck.home_panel(quarterdeck.load_home_snapshot(remote))
+        self.assertIn("<h2>osprey</h2>", far)
+        self.assertIn("Registered on remote host far-island.", far)
+        self.assertNotIn("failure", far)
+        self.assertNotIn("could not be read", far)
+        attention = {"homes": [{"label": "osprey", "errors": [{"source": "home", "code": "home_not_local",
+                      "message": "This secondmate is on remote host far-island; Quarterdeck does not read its files directly"}]}]}
+        note = "".join(quarterdeck.attention_errors_html(attention))
+        self.assertIn("source-note", note)
+        self.assertNotIn('class="warning"', note)
+
+    def test_links_with_text_do_not_repeat_urls_paths_or_the_ask(self) -> None:
+        item = quarterdeck.BoardItem(
+            id="choice", task="choice", group="decide", title="Choose a map", ask="Which map should we buy?",
+            links=[("Chart comparison", "https://example.test/charts/compare")], brief_url="https://example.test/briefs/map")
+        entry = quarterdeck.BoardEntry(item, "invented", number=1, refresh_key="board:choice", key="invented/choice")
+        card = quarterdeck.board_entry_html(entry, False, ATTENTION_NOW)
+        self.assertEqual(card.count("Which map should we buy?"), 1, "the ask is said once")
+        self.assertNotIn('class="board-ask"', card)
+        self.assertNotIn(">https://example.test", card)
+        self.assertNotIn('class="path"', card)
+        self.assertIn('<a href="https://example.test/charts/compare">Chart comparison</a>', card)
+        bitem = quarterdeck.BItem(title="Fix the pier", owner="invented", item_id="pier", pr_url="https://github.com/example/demo/" + "pull/7")
+        bitem.item_page = "item-000000000000.html"
+        line = quarterdeck.bearings_item_html(bitem, ATTENTION_NOW, "underway")
+        self.assertIn(">Open pull request</a>", line)
+        self.assertNotIn(">https://github.com", line)
+        self.assertNotIn("Read backlog item", line)
+
+    def test_discard_is_quieter_than_mark_and_both_offer_an_undo_that_reverses_them(self) -> None:
+        buttons = quarterdeck.mark_buttons("invented/report", ["mark", "discard"], "0" * 64, None)
+        self.assertRegex(buttons, r'class="request-lavish" type="button" data-mark-report="invented/report"[^>]*data-mark-action="mark"')
+        self.assertRegex(buttons, r'class="request-lavish quiet"[^>]*data-mark-action="discard"')
+        self.assertIn('{mark: "unmark", discard: "undiscard"}', quarterdeck.MARK_SCRIPT)
+        self.assertEqual(quarterdeck.REPORT_ACTIONS["unmark"][0], None)
+        self.assertEqual(quarterdeck.REPORT_ACTIONS["undiscard"][0], None)
+
+    @unittest.skipUnless(shutil.which("node"), "Node is required to execute the generated scripts")
+    def test_undo_posts_the_reverse_action_and_a_failed_refresh_keeps_the_page(self) -> None:
+        script = quarterdeck.MARK_SCRIPT.replace("__ENDPOINT__", quarterdeck.MARK_ENDPOINT)
+        script = re.search(r"<script>(.*?)</script>", script, re.S)[1]
+        harness = r"""
+const assert = require('node:assert/strict');
+const handlers = {}, posted = [], timers = [];
+class Button {
+  constructor(attrs) { this.dataset = {...attrs}; this.disabled = false; this.className = 'request-lavish'; this.parent = null; }
+  hasAttribute(name) { return name === 'data-undo' && 'undo' in this.dataset; }
+  get parentElement() { return this.parent; }
+  remove() { this.parent.buttons = this.parent.buttons.filter(b => b !== this); }
+  after(other) { other.parent = this.parent; this.parent.buttons.push(other); }
+}
+const status = {textContent: '', after(other) { other.parent = row; row.buttons.push(other); }};
+const row = {buttons: [], querySelector: () => status, querySelectorAll() { return this.buttons; }, lastChild: status};
+const discard = new Button({markReport: 'a/b', markFingerprint: 'f', markAction: 'discard'});
+const mark = new Button({markReport: 'a/b', markFingerprint: 'f', markAction: 'mark'});
+discard.parent = mark.parent = row; row.buttons.push(mark, discard);
+globalThis.document = {addEventListener: (name, fn) => { handlers[name] = fn; }, createElement: () => new Button({})};
+globalThis.fetch = async (_url, options) => { posted.push(JSON.parse(options.body).action); return {ok: true}; };
+globalThis.setTimeout = (fn, ms) => { timers.push([fn, ms]); };
+let reloads = 0;
+globalThis.quarterdeckReload = () => { reloads++; };
+const click = button => handlers.click({target: {closest: () => button}});
+"""
+        verify = r"""
+(async () => {
+  await click(discard);
+  assert.deepEqual(posted, ['discard']);
+  assert.equal(status.textContent, 'Saved');
+  const undo = row.buttons.find(b => b.hasAttribute('data-undo'));
+  assert.equal(undo.textContent, 'Undo');
+  assert.equal(undo.dataset.markAction, 'undiscard');
+  assert.equal(mark.disabled && discard.disabled, true, 'nothing else can be pressed while the undo is on offer');
+  assert.equal(reloads, 0, 'the page waits for the undo window');
+  await click(undo);
+  assert.deepEqual(posted, ['discard', 'undiscard']);
+  assert.equal(status.textContent, 'Undone');
+  assert.equal(reloads, 1);
+  posted.length = 0;
+  mark.disabled = false;
+  await click(mark);
+  const again = row.buttons.find(b => b.hasAttribute('data-undo'));
+  assert.equal(again.dataset.markAction, 'unmark');
+  const [expire, delay] = timers[timers.length - 1];
+  assert.equal(delay, 15000);
+  expire();
+  assert.equal(reloads, 2, 'the list reloads once the undo window passes');
+  assert.equal(row.buttons.includes(again), false);
+})().catch(error => { console.error(error); process.exitCode = 1; });
+"""
+        result = subprocess.run(["node", "-e", harness + script + verify], capture_output=True, text=True)
+        self.assertEqual(result.returncode, 0, result.stderr)
+
+    @unittest.skipUnless(shutil.which("node"), "Node is required to execute the generated scripts")
+    def test_failed_fetch_keeps_the_page_and_says_how_old_it_is(self) -> None:
+        page = quarterdeck.build_html([], "Q", refresh_seconds=60)
+        script = next(script for script in re.findall(r"<script>(.*?)</script>", page, re.S)
+                      if "function quarterdeckReload" in script)
+        self.assertIn('id="offline-note"', page)
+        harness = r"""
+const assert = require('node:assert/strict');
+const note = {hidden: true, textContent: ''};
+const stamp = {getAttribute: () => new Date(Date.now() - 3 * 60000).toISOString()};
+const timers = [];
+let reloads = 0, online = false;
+globalThis.location = {protocol: 'http:', href: 'http://localhost/', reload() { reloads++; }};
+globalThis.history = {replaceState() {}};
+globalThis.document = {querySelectorAll: () => [], querySelector: () => null,
+  getElementById: id => id === 'offline-note' ? note : id === 'updated' ? stamp : null};
+globalThis.fetch = async () => { if (!online) throw new TypeError('offline'); return {ok: true}; };
+globalThis.setTimeout = (fn, ms) => { timers.push([fn, ms]); };
+"""
+        verify = r"""
+(async () => {
+  const settle = () => new Promise(resolve => setImmediate(resolve));
+  quarterdeckReload(); await settle();
+  assert.equal(reloads, 0, 'a failed fetch must not reload');
+  assert.equal(note.hidden, false);
+  assert.equal(note.textContent, "Can't reach Quarterdeck \u00b7 last updated 3 min ago");
+  assert.equal(timers.length, 1, 'it tries again later');
+  online = true;
+  timers[0][0](); await settle();
+  assert.equal(reloads, 1);
+  assert.equal(note.hidden, true);
+})().catch(error => { console.error(error); process.exitCode = 1; });
+"""
+        result = subprocess.run(["node", "-e", harness + script + verify], capture_output=True, text=True)
+        self.assertEqual(result.returncode, 0, result.stderr)

@@ -6,6 +6,8 @@ from __future__ import annotations
 import argparse
 import base64
 import fcntl
+import functools
+import gzip
 import hashlib
 import ipaddress
 import html
@@ -25,6 +27,7 @@ import threading
 import time
 import unicodedata
 import webbrowser
+import zlib
 from collections.abc import Callable, Iterator, Set
 from contextlib import contextmanager
 from dataclasses import dataclass, field, replace
@@ -691,6 +694,7 @@ article h1, article h2, article h3, article h4, article h5, article h6 {{ color:
 .review-actions {{ max-width: 850px; margin: 1rem auto 0; padding: 0 1.2rem; }}
 .review-actions .request-row {{ display: flex; flex-wrap: wrap; align-items: center; gap: .65rem; margin: 0; }}
 .review-actions button {{ min-height: 44px; padding: 0 1rem; border: 1px solid #176b69; border-radius: 8px; background: #e6f1ee; color: #20303d; font: 700 .95rem system-ui, sans-serif; cursor: pointer; }}
+.review-actions button.quiet {{ background: transparent; border-color: #d8d3c8; color: #596774; font-weight: 600; }}
 .review-actions button:disabled {{ opacity: .7; cursor: default; }}
 .review-actions .request-status {{ color: #52616d; font-size: .85rem; }}
 .review-actions #qd-saved-back {{ display: inline-block; margin-top: .4rem; min-height: 44px; line-height: 44px; }}
@@ -849,15 +853,13 @@ def card(
             links.append(f'<a href="{html.escape(record.pr_url, quote=True)}">Open pull request</a>')
     if show_report and record.report:
         report_name = source_page_filename("report", home, record.report)
-        report_relative = display_path(record.report, home)
         report_id = report_reference(snapshot.spec.label, record.report.parent.name)
         links.append(
-            f'<a href="{html.escape(report_name, quote=True)}">Read report '
-            f'<code>{html.escape(report_id)}</code> <span class="path">{html.escape(report_relative)}</span></a>'
+            f'<a href="{html.escape(report_name, quote=True)}">Read report <code>{html.escape(report_id)}</code></a>'
         )
     if snapshot.backlog_path:
         backlog_name = source_page_filename("backlog", home, snapshot.backlog_path)
-        links.append(f'<a href="{html.escape(backlog_name, quote=True)}">Read backlog item</a>')
+        links.append(f'<a href="{html.escape(backlog_name, quote=True)}">Open the home&#x27;s backlog</a>')
     if links:
         chunks.append('<p class="links">' + " · ".join(links) + "</p>")
     if lavish and category in {"held", "reviews", "in_flight"}:
@@ -880,7 +882,7 @@ def report_card(report: Report, snapshot: HomeSnapshot, lavish: bool = False) ->
         f'<code>{html.escape(report.report_id)}</code></p>',
         f'<h3>{html.escape(report.title)}</h3>{recommendation}',
         f'<p class="links"><a href="{html.escape(name, quote=True)}">Read report '
-        f'<code>{html.escape(report.report_id)}</code> <span class="path">{html.escape(relative)}</span></a></p>',
+        f'<code>{html.escape(report.report_id)}</code></a></p>',
     ]
     if lavish and report.waiting:
         payload = {
@@ -912,10 +914,15 @@ def home_panel(
         role = "Firstmate home"
     if spec.route_id:
         role += f" · {spec.route_id}"
+    name, charter = spec.label, ""
+    if spec.route_id and spec.label.startswith(f"{spec.route_id} — "):  # the name is the heading, the charter is body text
+        name, charter = spec.route_id, spec.label[len(spec.route_id) + 3:]
     heading = [
         f'<section class="home"><div class="home-head"><div><p class="home-role">{html.escape(role)}</p>',
-        f'<h2>{html.escape(spec.label)}</h2>',
+        f'<h2>{html.escape(name)}</h2>',
     ]
+    if charter:
+        heading.append(f'<p class="home-charter">{html.escape(charter)}</p>')
     if snapshot.data_dir and not spec.remote_host:
         heading.append(f'<p class="home-source">Source: {html.escape(str(snapshot.data_dir))}</p>')
     if spec.remote_host:
@@ -923,7 +930,9 @@ def home_panel(
     heading.append('</div></div>')
 
     body: list[str] = []
-    if snapshot.error:
+    if snapshot.error and spec.remote_host:  # an expected condition, not a fault
+        body.append('<p class="source-note">Quarterdeck reads only the homes on this machine, so nothing is shown here for this one.</p>')
+    elif snapshot.error:
         body.append(
             '<div class="failure" role="status"><strong>Home could not be read</strong>'
             f'<p>{html.escape(snapshot.error)}</p></div>'
@@ -947,7 +956,7 @@ def home_panel(
         home_count_labels = [
             f"{counts[0]} held for captain",
             f"{counts[1]} review-ready PRs",
-            f"{counts[2]} in-flight",
+            f"{counts[2]} underway",
             f"{counts[3]} blocked for captain/external",
         ]
         if show_all:
@@ -956,7 +965,7 @@ def home_panel(
         body.append(f'<div class="home-counts">{home_counts}</div>')
         held_cards = [card(record, snapshot, "Held for captain", "held", lavish, True) for record in groups["held"]]
         review_cards = [card(record, snapshot, "Review-ready pull request", "reviews", lavish, True) for record in groups["reviews"]]
-        in_flight_cards = [card(record, snapshot, "In-flight work", "in_flight", lavish, False) for record in groups["in_flight"]]
+        in_flight_cards = [card(record, snapshot, "Underway", "in_flight", lavish, False) for record in groups["in_flight"]]
         blocked_cards = [card(record, snapshot, "Blocked for captain or external party", "blocked", lavish, False) for record in groups["blocked"]]
         if not show_all:
             needs_review = [report for report in snapshot.reports if report.waiting]
@@ -970,7 +979,7 @@ def home_panel(
         body.extend([
             section_html("Held for the captain", "Unresolved captain holds, with the recorded reason and linked report.", held_cards, "Nothing is waiting for a captain answer."),
             section_html("Review-ready pull requests", "Open pull requests explicitly marked ready for review.", review_cards, "No review-ready pull requests are recorded."),
-            section_html("In-flight work", "Tasks recorded as actively in progress.", in_flight_cards, "No work is currently in flight."),
+            section_html("Underway", "Tasks recorded as actively in progress.", in_flight_cards, "No work is currently in flight."),
             section_html("Blocked for the captain or an external party", "Blocked items with a structured captain or external-party blocker.", blocked_cards, "Nothing is blocked on the captain or an external party."),
         ])
         if show_all:
@@ -1445,7 +1454,7 @@ def status_line_html(
 
 
 JUMP_SECTIONS = (
-    ("cards", "Needs you"), ("board", "Desk"), ("attention", "Waiting"), ("reviews", "Reports"),
+    ("cards", "Needs you"), ("board", "Desk"), ("attention", "Decisions"), ("reviews", "Reports"),
     ("call", "Captain's Call"), ("underway", "Underway"), ("charted", "Charted Next"),
     ("call-background", "Background decisions"), ("related", "Related items"),
     ("board-desk", "On your desk"), ("board-week", "This week"), ("board-parked", "Parked"),
@@ -1509,7 +1518,7 @@ def build_html(
     report_resolution_incomplete = bool(local_report_resolution_errors(homes))
     decisions = decision_rows(homes, bearings.attention if bearings else None, bearings.call if bearings else [])
     counts = [sum(snapshot_counts(snapshot, show_all, decisions)[index] for snapshot in snapshots) for index in range(6 if show_all else 4)]
-    metric_labels = ["Held for captain", "Review-ready PRs", "In-flight work", "Blocked for captain/external"]
+    metric_labels = ["Held for captain", "Review-ready PRs", "Underway", "Blocked for captain/external"]
     if show_all:
         metric_labels.extend(["Other backlog items", "Scout reports"])
     counts.append(sum(report.waiting for snapshot in snapshots for report in snapshot.reports))
@@ -1539,6 +1548,8 @@ def build_html(
         section_counts["activity"] = sum(card["section"] != "needs_you" for card in cards)
     cards_script = ACTIVITY_SCRIPT if cards_block else ""
     cards_link = '<a class="cards-new" id="cards-new" href="#cards" hidden></a>' if cards_block else ""
+    if "underway" in section_counts:  # one count for one thing: the Underway section's own count
+        counts[2] = section_counts["underway"]
     metrics_html = "".join(
         f'<div class="metric"><b>{count}</b><span>{html.escape(label)}</span></div>'
         for count, label in zip(counts, metric_labels)
@@ -1553,6 +1564,9 @@ def build_html(
         + "".join(home_panel(home, lavish, show_all, decisions) for home in homes) + "</details>"
     )
     body_markup = cards_block + board_block + attention_block + bearings_block + reviewed_block + activity_block + details_block
+    waiting_cards = sum(card["section"] == "needs_you" for card in cards)
+    tab_prefix = f"({waiting_cards}) " if waiting_cards else ""
+    app_links = APP_LINKS if refresh_seconds else ""
     status_block = status_line_html(
         bearings.attention if bearings else None, section_counts.get("underway") if bearings else None,
         counts[-1], generated,
@@ -1571,16 +1585,37 @@ def build_html(
           typeof quarterdeckDraftSaved !== "function" || !quarterdeckDraftSaved(field)
         )
       );
-      if (editing || document.querySelector('[data-reaction-choice][aria-pressed=true], .reaction-send:disabled, #view-editor[data-dirty=true], #view-save:disabled[data-saving=true]')) {
+      if (editing || document.querySelector('[data-reaction-choice][aria-pressed=true], .reaction-send:disabled, #view-editor[data-dirty=true], #view-save:disabled[data-saving=true], [data-undo]')) {
         setTimeout(quarterdeckReload, 1000);
         return;
       }
-      if (location.protocol === "http:" || location.protocol === "https:") {
-        const url = new URL(location.href);
-        url.searchParams.set("qd_refresh", "1");
-        history.replaceState(null, "", url);
+      if (location.protocol !== "http:" && location.protocol !== "https:") {
+        location.reload();
+        return;
       }
-      location.reload();
+      const url = new URL(location.href);
+      url.searchParams.set("qd_refresh", "1");
+      fetch(url, {cache: "no-store", credentials: "same-origin"}).then(response => {
+        if (!response.ok) throw new Error("HTTP " + response.status);
+        quarterdeckOffline(false);
+        history.replaceState(null, "", url);
+        location.reload();
+      }).catch(() => {
+        quarterdeckOffline(true);
+        setTimeout(quarterdeckReload, 15000);
+      });
+    }
+    const quarterdeckLoaded = Date.now();
+    function quarterdeckOffline(down) {
+      const note = document.getElementById("offline-note");
+      if (!note) return;
+      if (!down) { note.hidden = true; return; }
+      const stamp = document.getElementById("updated");
+      const base = stamp ? Date.parse(stamp.getAttribute("datetime")) : NaN;
+      const minutes = Math.max(0, Math.floor((Date.now() - (isNaN(base) ? quarterdeckLoaded : base)) / 60000));
+      note.textContent = "Can't reach Quarterdeck \u00b7 last updated " + (minutes < 1 ? "just now" : minutes < 60 ? minutes + " min ago" :
+        minutes < 1440 ? Math.floor(minutes / 60) + " hr ago" : Math.floor(minutes / 1440) + " days ago");
+      note.hidden = false;
     }
   </script>"""
     mark_script = MARK_SCRIPT.replace("__ENDPOINT__", MARK_ENDPOINT) if allow_marks else ""
@@ -1761,7 +1796,7 @@ def build_html(
     introductory_text = (
         "Exhaustive snapshot of configured homes, reports needing review, and their registered secondmates."
         if show_all else
-        "A read-only view of reports needing review, unresolved captain holds, review-ready pull requests, in-flight work, and external blockers."
+        "A read-only view of reports needing review, unresolved captain holds, review-ready pull requests, underway work, and external blockers."
     )
     lavish_script = '''
   <script>
@@ -1793,9 +1828,10 @@ def build_html(
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <meta name="quarterdeck-{'gen' + 'erated'}" content="read-only review page">
-  <title>{html.escape(title)} · Firstmate review</title>
+  <title>{tab_prefix}{html.escape(title)} · Firstmate review</title>
+  {app_links}
   <style>
-    :root {{ color-scheme: light dark; --navy: #17324d; --sea: #176b69; --sand: #f3eddf; --paper: #fffdf8; --ink: #20303d; --muted: #657482; --line: #d8d3c8; --gold: #c98635; --gold-ink: #9a5f1a; --head: #17324d; --soft: #ffffff70; --warn-bg: #fff8e9; --warn-ink: #624313; --fail-bg: #fff2ee; --fail-ink: #6f251b; --chip: #e6f1ee; }}
+    :root {{ color-scheme: light dark; --navy: #17324d; --sea: #176b69; --sand: #f3eddf; --paper: #fffdf8; --ink: #20303d; --muted: #596774; --line: #d8d3c8; --gold: #c98635; --gold-ink: #9a5f1a; --head: #17324d; --soft: #ffffff70; --warn-bg: #fff8e9; --warn-ink: #624313; --fail-bg: #fff2ee; --fail-ink: #6f251b; --chip: #e6f1ee; }}
     * {{ box-sizing: border-box; }}
     body {{ margin: 0; background: var(--sand); color: var(--ink); font: 16px/1.55 system-ui, -apple-system, Segoe UI, sans-serif; }}
     header {{ background: var(--head); color: #fffdf8; padding: .55rem max(1.2rem, calc((100vw - 1080px) / 2)); border-bottom: 3px solid var(--gold); display: flex; flex-wrap: wrap; align-items: baseline; gap: .1rem 1rem; }}
@@ -1809,6 +1845,7 @@ def build_html(
     .home {{ margin: 2rem 0 2.5rem; padding: 1.2rem; background: var(--soft); border: 1px solid var(--line); border-radius: 16px; }}
     .home-head {{ display: flex; justify-content: space-between; gap: 1rem; margin-bottom: 1rem; }}
     .home h2 {{ margin: 0; color: var(--navy); font: 700 1.8rem Georgia, serif; overflow-wrap: anywhere; }}
+    .home-charter {{ margin: .3rem 0 0; color: var(--ink); font-size: .95rem; max-width: 60ch; }}
     .home-role {{ margin: 0 0 .25rem; color: var(--sea); font-size: .73rem; text-transform: uppercase; letter-spacing: .09em; font-weight: 700; }}
     .home-source {{ margin: .35rem 0 0; color: var(--muted); font-size: .83rem; overflow-wrap: anywhere; }}
     .home-counts {{ display: flex; flex-wrap: wrap; gap: .5rem; margin: .3rem 0 1rem; }}
@@ -1829,6 +1866,7 @@ def build_html(
     .request-lavish {{ border: 1px solid var(--sea); border-radius: 7px; background: var(--chip); color: var(--ink); padding: .45rem .9rem; min-height: 44px; font: inherit; font-size: .86rem; font-weight: 700; cursor: pointer; }}
     .request-lavish:focus-visible {{ outline: 3px solid var(--gold); outline-offset: 2px; }}
     .request-lavish:disabled {{ opacity: .7; cursor: default; }}
+    .request-lavish.quiet {{ background: transparent; border-color: var(--line); color: var(--muted); font-weight: 600; }}
     .request-status {{ color: var(--muted); font-size: .82rem; }}
     .reaction {{ margin-top: .6rem; }}
     .reaction-latest {{ margin: .3rem 0; color: var(--muted); font-size: .85rem; }}
@@ -1860,6 +1898,8 @@ def build_html(
     .status-line a {{ display: inline-flex; align-items: center; min-height: 44px; color: var(--navy); text-decoration-thickness: 1px; }}
     .status-line a[data-need=some] {{ color: var(--gold-ink); }}
     .status-line a[data-need=unknown] {{ color: var(--fail-ink); }}
+    .offline-note {{ margin: 0; padding: .5rem max(1.2rem, calc((100vw - 1080px) / 2)); background: var(--warn-bg); color: var(--warn-ink); border-bottom: 1px solid var(--gold); font-size: .9rem; }}
+    .offline-note[hidden] {{ display: none; }}
     .jump {{ position: sticky; top: 0; z-index: 20; display: flex; flex-wrap: nowrap; gap: .4rem; margin: 0; padding: .35rem max(1.2rem, calc((100vw - 1080px) / 2)); background: var(--sand); border-bottom: 1px solid var(--line); overflow-x: auto; scrollbar-width: none; }}
     .jump::-webkit-scrollbar {{ display: none; }}
     .jump a {{ flex: none; display: inline-flex; align-items: center; min-height: 44px; border: 1px solid var(--line); background: var(--paper); border-radius: 999px; padding: 0 .9rem; text-decoration: none; white-space: nowrap; }}
@@ -1896,7 +1936,7 @@ def build_html(
     .chip {{ display: inline-block; padding: .1rem .55rem; border: 1px solid var(--line); border-radius: 999px; color: var(--muted); font-size: .78rem; overflow-wrap: anywhere; }}
     .chip-group {{ color: var(--sea); border-color: var(--sea); font-weight: 700; text-transform: uppercase; letter-spacing: .06em; }}
     .chip-deferred, .chip-sweep {{ color: var(--warn-ink); background: var(--warn-bg); border-color: var(--gold); }}
-    .chip-rec {{ color: var(--ink); background: var(--chip); border-color: var(--sea); font-size: .88rem; padding: .35rem .7rem; }}
+    .chip-rec {{ color: var(--ink); background: var(--chip); border-color: var(--sea); border-radius: 12px; font-size: .88rem; padding: .35rem .7rem; }}
     .rec-label {{ color: var(--sea); font-weight: 700; text-transform: uppercase; letter-spacing: .06em; font-size: .72rem; }}
     .brief-link {{ display: inline-flex; align-items: center; min-height: 44px; padding: 0 1rem; border: 1px solid var(--sea); border-radius: 10px; background: var(--paper); text-decoration: none; }}
     details.board-band > summary {{ display: block; min-height: 44px; cursor: pointer; list-style: none; }}
@@ -1950,6 +1990,7 @@ def build_html(
     {cards_link}
     <p class="generated"><a class="adoption-link" href="{ADOPTION_PAGE}">Adoption this week</a></p>
   </header>
+  <p class="offline-note" id="offline-note" role="status" hidden></p>
   {status_block}
   {jump_block}
   <main>
@@ -2490,10 +2531,6 @@ class BearingsBuilder:
             self.result.linked_reports.add(report.path)
         name = item_page_filename(snapshot.spec.home, snapshot.spec.label, item.id)
         bitem.item_page = name
-        self.result.item_pages[name] = source_page_html(
-            item.title, f"{snapshot.spec.label} · backlog item {item.id}", item.raw or item.title,
-            main_href=self.result.main_href,
-        )
 
     # -- snapshot path --
     def from_snapshot(self, snapshot: HomeSnapshot, data: dict[str, object]) -> None:
@@ -2533,10 +2570,6 @@ class BearingsBuilder:
                 bitem.project = item.project
                 bitem.filed = item.closed_on
                 bitem.item_page = item_page_filename(target.spec.home, target.spec.label, item.id)
-                self.result.item_pages[bitem.item_page] = source_page_html(
-                    item.title, f"{target.spec.label} · backlog item {item.id}", item.raw or item.title,
-                    main_href=self.result.main_href,
-                )
             self.result.landed.append(bitem)
         for row in _rows(data, "in_flight"):
             item_id = _text(row.get("id"))
@@ -2691,17 +2724,15 @@ def bearings_item_html(item: BItem, now: datetime, section: str) -> str:
         )
     links: list[str] = []
     if item.pr_url:
-        links.append(f'<a href="{html.escape(item.pr_url, quote=True)}">{html.escape(item.pr_url)}</a>')
+        links.append(f'<a href="{html.escape(item.pr_url, quote=True)}">Open pull request</a>')
     elif item.artifact:
         parsed = urlparse(item.artifact)
         if parsed.scheme == "https" and parsed.netloc:
-            links.append(f'<a href="{html.escape(item.artifact, quote=True)}">{html.escape(item.artifact)}</a>')
+            links.append(f'<a href="{html.escape(item.artifact, quote=True)}">Open linked page</a>')
         else:
             links.append(html.escape(item.artifact))
     if item.report_page:
         links.append(f'<a href="{html.escape(item.report_page, quote=True)}">Read report <code>{html.escape(item.report_label)}</code></a>')
-    if item.item_page:
-        links.append(f'<a href="{html.escape(item.item_page, quote=True)}">Read backlog item</a>')
     if links:
         parts.append('<p class="links">' + " · ".join(links) + "</p>")
     parts.append("</article>")
@@ -2711,10 +2742,12 @@ def bearings_item_html(item: BItem, now: datetime, section: str) -> str:
 MARK_ENDPOINT = "/api/reports/review"
 MARK_SCRIPT = """
   <script>
+    const MARK_UNDO = {mark: "unmark", discard: "undiscard"}, UNDO_SECONDS = 15;
     document.addEventListener("click", async (event) => {
       const button = event.target.closest("[data-mark-report]");
       if (!button || button.disabled) return;
       const status = button.parentElement.querySelector(".request-status");
+      const undoing = button.hasAttribute("data-undo");
       button.disabled = true;
       if (status) status.textContent = "Saving…";
       try {
@@ -2728,8 +2761,30 @@ MARK_SCRIPT = """
           }),
         });
         if (!response.ok) throw new Error((await response.text()).trim() || response.statusText);
+        const row = button.parentElement;
+        if (undoing) {
+          button.remove();
+          if (status) status.textContent = "Undone";
+          if (typeof quarterdeckUndone === "function") quarterdeckUndone(row); else quarterdeckReload();
+          return;
+        }
         if (status) status.textContent = "Saved";
-        if (typeof quarterdeckSaved === "function") quarterdeckSaved(button); else quarterdeckReload();
+        if (typeof quarterdeckSaved === "function") quarterdeckSaved(button);
+        else for (const other of row.querySelectorAll("[data-mark-report]")) other.disabled = true;
+        const inverse = MARK_UNDO[button.dataset.markAction];
+        if (!inverse) { if (typeof quarterdeckSaved !== "function") quarterdeckReload(); return; }
+        const undo = document.createElement("button");
+        undo.type = "button";
+        undo.className = "request-lavish quiet";
+        undo.textContent = "Undo";
+        undo.dataset.markReport = button.dataset.markReport;
+        undo.dataset.markFingerprint = button.dataset.markFingerprint;
+        undo.dataset.markAction = inverse;
+        undo.dataset.undo = "";
+        (status || row.lastChild).after(undo);
+        if (typeof quarterdeckSaved !== "function") {  // a list page reloads once the undo window has passed
+          setTimeout(() => { undo.remove(); quarterdeckReload(); }, UNDO_SECONDS * 1000);
+        }
       } catch (error) {
         button.disabled = false;
         if (status) status.textContent = "Could not save: " + error.message;
@@ -2742,6 +2797,11 @@ function quarterdeckSaved(button) {
   for (const other of button.parentElement.querySelectorAll("[data-mark-report]")) other.disabled = true;
   const back = document.getElementById("qd-saved-back");
   if (back) back.hidden = false;
+}
+function quarterdeckUndone(row) {
+  for (const other of row.querySelectorAll("[data-mark-report]")) other.disabled = false;
+  const back = document.getElementById("qd-saved-back");
+  if (back) back.hidden = true;
 }
 """
 
@@ -2757,6 +2817,7 @@ def report_mark_unavailable_reason(
 
 
 MARK_LABELS = {"mark": "Mark reviewed", "unmark": "Unmark", "discard": "Discard", "undiscard": "Undiscard"}
+QUIET_MARKS = {"discard", "undiscard"}  # the way out of the list looks less inviting than the way through it
 MARK_TITLES = {"discard": "Take it off the list without marking it reviewed"}
 
 
@@ -2770,7 +2831,7 @@ def mark_buttons(report_id: str, actions: list[str], fingerprint: str, unavailab
             f'<span class="request-status">{html.escape(unavailable_reason)}</span></div>'
         )
     buttons = "".join(
-        f'<button class="request-lavish" type="button" data-mark-report="{html.escape(report_id, quote=True)}" '
+        f'<button class="request-lavish{" quiet" if action in QUIET_MARKS else ""}" type="button" data-mark-report="{html.escape(report_id, quote=True)}" '
         f'data-mark-fingerprint="{html.escape(fingerprint, quote=True)}" data-mark-action="{action}"'
         + (f' title="{html.escape(MARK_TITLES[action], quote=True)}"' if action in MARK_TITLES else "")
         + f'>{MARK_LABELS[action]}</button>'
@@ -2993,7 +3054,7 @@ PREFERENCES_VERSION = 1
 VIEW_LIMIT = 8
 VIEW_NAME_LIMIT = 40
 VIEW_SECTION_TITLES = {
-    "waiting": "Waiting on you", "recent": f"Recent work, last {RECENT_HOURS} hours",
+    "waiting": "Waiting decisions and needs", "recent": f"Recent work, last {RECENT_HOURS} hours",
     "priorities": "Priority projects", "project": "Project", "information": "For your information",
     "done": "Done recently",
 }
@@ -4067,6 +4128,9 @@ def attention_errors_html(view: dict[str, object]) -> list[str]:
                        f'<details><summary>Details</summary><p>{html.escape(str(home["feed_stale"]["detail"]))}. '
                        f'Run <code>quarterdeck attention --check</code> and report this line.</p></details></div>')
         for error in home["errors"]:  # type: ignore[union-attr]
+            if error.get("code") == "home_not_local" and "remote host" in str(error.get("message")):
+                out.append(f'<p class="source-note">{html.escape(label)}Runs on a remote host; Quarterdeck reads only this machine\'s homes.</p>')
+                continue
             diagnostic = (f'{html.escape(str(error["message"]))}. Run <code>quarterdeck attention '
                           f'--check</code> and report this line.')
             detail = (f'could not be read right now.</p><details><summary>Details</summary>'
@@ -4256,7 +4320,7 @@ def attention_html(view: dict[str, object] | None, allow_marks: bool = False) ->
     now = parse_when(str(view["generated"])) or datetime.now(timezone.utc)
     homes = [home for home in view["homes"] if isinstance(home, dict)]  # type: ignore[union-attr]
     out = ['<section class="dashboard-section recent-work" id="attention" aria-label="Waiting and recent work">'
-           '<div class="section-head"><div><h2>Waiting on you</h2>'
+           '<div class="section-head"><div><h2>Decisions and recent work</h2>'
            "<p>Waiting decisions, then needs you and information, with your priority projects first. "
            f"Work from the last {RECENT_HOURS} hours appears only when there is some. "
            "Dated decisions stay hidden until due.</p></div></div>"]
@@ -4913,9 +4977,7 @@ def board_entry_html(
         )
     if item.brief_url:
         brief.append(f'<a class="brief-link" href="{html.escape(item.brief_url, quote=True)}">Open brief</a>')
-    parts = [
-        f'<p class="board-ask">{html.escape(item.ask)}</p>',
-    ]
+    parts: list[str] = []  # the ask is already the line under the title; the body does not say it again
     if item.detail:
         detail_warning = ""
         try:
@@ -4932,9 +4994,7 @@ def board_entry_html(
     ]
     if links:
         rendered = "".join(
-            f'<li><a href="{html.escape(url, quote=True)}">{html.escape(label)}</a> '
-            f'<span class="path">{html.escape(url)}</span></li>'
-            for label, url in links
+            f'<li><a href="{html.escape(url, quote=True)}">{html.escape(label)}</a></li>' for label, url in links
         )
         parts.append(f'<ul class="board-links">{rendered}</ul>')
     brief_row = f'<span class="board-brief">{"".join(brief)}</span>' if brief else ""
@@ -5027,7 +5087,7 @@ def board_html(
     if attention and (attention.get("priority_projects") or attention.get("requested_project")):
         entries = {entry.key: entry for items in view.bands.values() for entry in items}
         entries.update((entry.key, entry) for entry in view.stale)
-        out = ['<section class="board" id="board" aria-label="Waiting on you">']
+        out = ['<section class="board" id="board" aria-label="Desk">']
         out.extend(f'<div class="warning"><p>{html.escape(warning)}</p></div>' for warning in view.warnings)
         for field in ("waiting", "waiting_more"):
             count = sum(1 for home in attention["homes"] for items in home[field].values()
@@ -5046,7 +5106,7 @@ def board_html(
         out.append(related)
         out.append('</section>')
         return "".join(out)
-    out = ['<section class="board" id="board" aria-label="Waiting on you">']
+    out = ['<section class="board" id="board" aria-label="Desk">']
     out.extend(f'<div class="warning"><p>{html.escape(warning)}</p></div>' for warning in view.warnings)
     if view.hidden:
         out.append(f'<p class="source-note">{view.hidden} board item{"s" if view.hidden != 1 else ""} already settled in the backlog and hidden.</p>')
@@ -5879,6 +5939,104 @@ def site_builder(args: argparse.Namespace, allow_marks: bool = False) -> Callabl
 
 MARK_BODY_LIMIT = 4096
 
+# --- Home-screen icon and web manifest -------------------------------------------
+# A phone can pin the served page when the page names an icon and a manifest. Both are generated here, so the
+# install stays one file; nothing about a home or the captain goes into them.
+
+APP_NAME = "Quarterdeck"
+APP_NAVY, APP_GOLD, APP_SAND = "#17324d", "#c98635", "#f3eddf"
+APP_ICON_PATHS = {"icon.svg": "image/svg+xml", "icon-180.png": "image/png", "icon-192.png": "image/png",
+                  "icon-512.png": "image/png", "manifest.webmanifest": "application/manifest+json"}
+APP_LINKS = (
+    '<link rel="manifest" href="manifest.webmanifest">\n'
+    '  <link rel="icon" href="icon.svg" type="image/svg+xml">\n'
+    '  <link rel="apple-touch-icon" href="icon-180.png">\n'
+    f'  <meta name="theme-color" content="{APP_NAVY}">'
+)
+APP_ICON_SVG = (
+    '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512"><rect width="512" height="512" fill="' + APP_NAVY + '"/>'
+    '<g fill="none" stroke="' + APP_GOLD + '" stroke-width="28" stroke-linecap="round">'
+    '<circle cx="256" cy="133" r="29"/><path d="M256 162V380M184 205H328M102 282A154 154 0 0 0 410 282"/></g></svg>'
+)
+
+
+def anchor_icon_png(size: int) -> bytes:
+    """A gold anchor on navy, drawn without any image library: one distance test per sub-pixel."""
+    ring, shaft_top, shaft_bottom, bar_y, bar_half = (0.5, 0.26), 0.31, 0.74, 0.40, 0.14
+    arc_center, arc_radius, arc_start, half_width = (0.5, 0.55), 0.20, 0.55, 0.0275
+
+    def segment(px: float, py: float, x0: float, y0: float, x1: float, y1: float) -> float:
+        dx, dy = x1 - x0, y1 - y0
+        t = max(0.0, min(1.0, ((px - x0) * dx + (py - y0) * dy) / (dx * dx + dy * dy)))
+        return ((px - x0 - t * dx) ** 2 + (py - y0 - t * dy) ** 2) ** 0.5
+
+    def gold(px: float, py: float) -> bool:
+        if abs(((px - ring[0]) ** 2 + (py - ring[1]) ** 2) ** 0.5 - 0.058) <= half_width:
+            return True
+        if segment(px, py, 0.5, shaft_top, 0.5, shaft_bottom) <= half_width:
+            return True
+        if segment(px, py, 0.5 - bar_half, bar_y, 0.5 + bar_half, bar_y) <= half_width:
+            return True
+        return py >= arc_start and abs(((px - arc_center[0]) ** 2 + (py - arc_center[1]) ** 2) ** 0.5 - arc_radius) <= half_width
+
+    samples = 2 if size <= 192 else 1
+    back, front = (0x17, 0x32, 0x4D), (0xC9, 0x86, 0x35)
+    rows = []
+    for y in range(size):
+        row = bytearray([0])
+        for x in range(size):
+            share = sum(gold((x + (i + .5) / samples) / size, (y + (j + .5) / samples) / size)
+                        for i in range(samples) for j in range(samples)) / (samples * samples)
+            row.extend(round(b + (f - b) * share) for b, f in zip(back, front))
+        rows.append(bytes(row))
+
+    def chunk(kind: bytes, data: bytes) -> bytes:
+        body = kind + data
+        return len(data).to_bytes(4, "big") + body + (zlib.crc32(body) & 0xFFFFFFFF).to_bytes(4, "big")
+
+    header = size.to_bytes(4, "big") * 2 + bytes([8, 2, 0, 0, 0])
+    return (b"\x89PNG\r\n\x1a\n" + chunk(b"IHDR", header) + chunk(b"IDAT", zlib.compress(b"".join(rows), 9))
+            + chunk(b"IEND", b""))
+
+
+def app_manifest() -> str:
+    icons = [{"src": f"icon-{size}.png", "sizes": f"{size}x{size}", "type": "image/png", "purpose": "any maskable"}
+             for size in (192, 512)]
+    icons.append({"src": "icon.svg", "sizes": "any", "type": "image/svg+xml"})
+    return json.dumps({
+        "name": APP_NAME, "short_name": APP_NAME, "description": "What needs you, and what is underway.",
+        "start_url": "./", "scope": "./", "display": "standalone",
+        "background_color": APP_SAND, "theme_color": APP_NAVY, "icons": icons,
+    }, indent=2) + "\n"
+
+
+@functools.lru_cache(maxsize=None)
+def app_asset(name: str) -> bytes | None:
+    """The bytes of one pinning asset, or None when the name is not one of them."""
+    if name == "icon.svg":
+        return APP_ICON_SVG.encode("utf-8")
+    if name == "manifest.webmanifest":
+        return app_manifest().encode("utf-8")
+    sizes = {"icon-180.png": 180, "icon-192.png": 192, "icon-512.png": 512}
+    return anchor_icon_png(sizes[name]) if name in sizes else None
+
+
+def accepts_gzip(header: str | None) -> bool:
+    """True when Accept-Encoding offers gzip with a quality above zero."""
+    for part in (header or "").split(","):
+        coding, _, params = part.partition(";")
+        if coding.strip().lower() in {"gzip", "x-gzip"}:
+            quality = re.search(r"q\s*=\s*([0-9.]+)", params)
+            try:
+                return float(quality[1]) > 0 if quality else True
+            except ValueError:
+                return False
+    return False
+
+
+GZIP_MIN_BYTES = 1024
+
+
 
 def make_handler(
     cache: SiteCache,
@@ -5892,15 +6050,22 @@ def make_handler(
     class Handler(BaseHTTPRequestHandler):
         server_version = "Quarterdeck"
 
-        def send_text(self, status: int, body: str, content_type: str = "text/plain; charset=utf-8",
-                      sandbox: bool = False) -> None:
-            data = body.encode("utf-8")
+        def send_text(self, status: int, body: str | bytes, content_type: str = "text/plain; charset=utf-8",
+                      sandbox: bool = False, cache: str = "no-store") -> None:
+            data = body if isinstance(body, bytes) else body.encode("utf-8")
+            packed = len(data) >= GZIP_MIN_BYTES and accepts_gzip(self.headers.get("Accept-Encoding")) \
+                and not content_type.startswith("image/")
+            if packed:
+                data = gzip.compress(data, compresslevel=6, mtime=0)
             self.send_response(status)
             self.send_header("Content-Type", content_type)
             if sandbox:  # a document's own scripts run without this page's origin, so they cannot call its write endpoints
                 self.send_header("Content-Security-Policy", "sandbox allow-scripts allow-popups")
+            if packed:
+                self.send_header("Content-Encoding", "gzip")
+            self.send_header("Vary", "Accept-Encoding")
             self.send_header("Content-Length", str(len(data)))
-            self.send_header("Cache-Control", "no-store")
+            self.send_header("Cache-Control", cache)
             self.send_header("X-Content-Type-Options", "nosniff")
             self.end_headers()
             self.wfile.write(data)
@@ -5911,6 +6076,9 @@ def make_handler(
                 return
             path = unquote(urlparse(self.path).path)
             name = "index.html" if path in {"/", "/index.html"} else path.lstrip("/")
+            if name in APP_ICON_PATHS:
+                self.send_text(200, app_asset(name) or b"", APP_ICON_PATHS[name], cache="public, max-age=86400")
+                return
             if "/" in name or not name.endswith((".html", ".json", ".txt")):
                 self.send_text(404, "Not found\n")
                 return
@@ -8499,8 +8667,7 @@ def doc_links_html(text: str, data_dir: Path | None, pages: dict[str, str] | Non
             continue
         pages[name], pages[raw_name] = built
         items.append(
-            f'<li><a href="{html.escape(name, quote=True)}">{html.escape(path.name)}</a> '
-            f'<span class="path">{html.escape("data/" + label)}</span></li>'
+            f'<li><a href="{html.escape(name, quote=True)}">{html.escape(path.name)}</a></li>'
         )
     if not items:
         return ""
@@ -8545,8 +8712,7 @@ def need_card(
         ]
     if links:
         parts.append('<ul class="board-links">' + "".join(
-            f'<li><a href="{html.escape(url, quote=True)}">{html.escape(label)}</a> '
-            f'<span class="path">{html.escape(url)}</span></li>' for label, url in links) + "</ul>")
+            f'<li><a href="{html.escape(url, quote=True)}">{html.escape(label)}</a></li>' for label, url in links) + "</ul>")
     document_text = [str(item["title"]), ask, detail, recommendation]
     if wait:
         document_text.append(wait_ask_line(wait))
@@ -8808,6 +8974,8 @@ ACTIVITY_SCRIPT = """
         badge.textContent = String(unseen);
         badge.hidden = unseen === 0;
         if (top) { top.textContent = unseen + " new"; top.hidden = unseen === 0; }
+        const waiting = feed.querySelectorAll(".act-card").length;
+        document.title = (waiting ? "(" + waiting + ") " : "") + document.title.replace(/^\\(\\d+\\) /, "");
       }
       function unwatch(card) {
         clearTimeout(timers.get(card));
