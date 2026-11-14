@@ -9215,7 +9215,8 @@ const row = {buttons: [], querySelector: () => status, querySelectorAll() { retu
 const discard = new Button({markReport: 'a/b', markFingerprint: 'f', markAction: 'discard'});
 const mark = new Button({markReport: 'a/b', markFingerprint: 'f', markAction: 'mark'});
 discard.parent = mark.parent = row; row.buttons.push(mark, discard);
-globalThis.document = {addEventListener: (name, fn) => { handlers[name] = fn; }, createElement: () => new Button({})};
+globalThis.document = {addEventListener: (name, fn) => { handlers[name] = fn; },
+  querySelectorAll: () => row.buttons, createElement: () => new Button({})};
 globalThis.fetch = async (_url, options) => { posted.push(JSON.parse(options.body).action); return {ok: true}; };
 globalThis.setTimeout = (fn, ms) => { const timer = [fn, ms]; timers.push(timer); return timer; };
 globalThis.clearTimeout = timer => { if (timer) timer[0] = () => {}; };
@@ -9273,6 +9274,100 @@ const click = button => handlers.click({target: {closest: () => button}});
         self.assertEqual(result.returncode, 0, result.stderr)
 
     @unittest.skipUnless(shutil.which("node"), "Node is required to execute the generated scripts")
+    def test_report_actions_are_serialized_and_failures_restore_controls(self) -> None:
+        script = re.search(r"<script>(.*?)</script>", quarterdeck.MARK_SCRIPT, re.S)[1]
+        harness = r"""
+const assert = require('node:assert/strict');
+let handler, rows = [], posted = [], finish;
+const back = {hidden: true};
+class Button {
+  constructor(dataset = {}) { this.dataset = dataset; this.disabled = false; }
+  get parentElement() { return this.row; }
+  hasAttribute(name) { return name === 'data-undo' && 'undo' in this.dataset; }
+  remove() { this.row.buttons = this.row.buttons.filter(button => button !== this); }
+}
+function makeRow(report, actions) {
+  const row = {buttons: [], querySelectorAll() { return this.buttons; }, querySelector() { return this.status; }};
+  row.status = {textContent: '', after(button) { button.row = row; row.buttons.push(button); }};
+  for (const action of actions) {
+    const button = new Button({markReport: report, markFingerprint: 'f', markAction: action});
+    button.row = row; row.buttons.push(button);
+  }
+  rows.push(row);
+  return row;
+}
+globalThis.document = {addEventListener: (_name, fn) => { handler = fn; },
+  querySelectorAll: () => rows.flatMap(row => row.buttons), createElement: () => new Button(),
+  getElementById: () => back};
+globalThis.fetch = (_url, options) => {
+  posted.push(JSON.parse(options.body).action);
+  return new Promise((resolve, reject) => { finish = {resolve, reject}; });
+};
+globalThis.setTimeout = () => 1;
+globalThis.clearTimeout = () => {};
+globalThis.quarterdeckReload = () => {};
+const click = button => handler({target: {closest: () => button}});
+"""
+        verify = r"""
+(async () => {
+  for (const action of ['mark', 'discard', 'unmark', 'undiscard']) {
+    for (const outcome of ['success', 'network-error', 'http-error']) {
+      rows = []; posted = [];
+      const actions = action === 'mark' || action === 'discard' ? ['mark', 'discard'] : [action];
+      const row = makeRow('fictional/report', actions);
+      const duplicate = makeRow('fictional/report', actions);
+      const unrelated = makeRow('fictional/other', ['mark']);
+      const unavailable = makeRow('fictional/report', ['mark']).buttons[0];
+      unavailable.disabled = true;
+      const button = row.buttons.find(button => button.dataset.markAction === action);
+      const pending = click(button);
+      assert.ok(row.buttons.every(button => button.disabled), 'all sibling actions are disabled before dispatch');
+      assert.ok(duplicate.buttons.every(button => button.disabled), 'other representations of this report are locked');
+      assert.equal(unrelated.buttons[0].disabled, false, 'another report remains usable');
+      for (const other of [...row.buttons, ...duplicate.buttons]) await click(other);
+      const arriving = makeRow('fictional/report', [action]);
+      await click(arriving.buttons[0]);
+      assert.deepEqual(posted, [action], 'repeated, competing and arriving controls cannot submit concurrent actions');
+      if (outcome === 'network-error') finish.reject(new Error('offline'));
+      else finish.resolve({ok: outcome === 'success', text: async () => 'denied'});
+      await pending;
+      if (outcome !== 'success') {
+        assert.ok(row.buttons.every(button => !button.disabled), 'failure restores sibling actions');
+        assert.ok(duplicate.buttons.every(button => !button.disabled), 'failure restores duplicate controls');
+        assert.equal(unavailable.disabled, true, 'failure preserves preexisting disabled controls');
+        assert.match(row.status.textContent, /Could not save/);
+        const retry = click(button);
+        finish.resolve({ok: true}); await retry;
+      }
+      assert.equal(row.status.textContent, 'Saved');
+      const undo = row.buttons.find(button => button.hasAttribute('data-undo'));
+      if (action === 'mark' || action === 'discard') {
+        assert.ok(undo && !undo.disabled, 'only the completed action offers an enabled Undo');
+        const reversing = click(undo);
+        finish.reject(new Error('offline')); await reversing;
+        assert.equal(undo.disabled, false, 'failed Undo remains retryable');
+        assert.ok(row.buttons.filter(button => button !== undo).every(button => button.disabled),
+          'failed Undo cannot reenable previously saved actions');
+        const retry = click(undo);
+        finish.resolve({ok: true}); await retry;
+        assert.equal(row.status.textContent, 'Undone');
+        if (process.argv[1] === 'reader') {
+          assert.ok(row.buttons.every(button => !button.disabled), 'reader Undo restores original actions');
+          assert.equal(back.hidden, true);
+        }
+      } else assert.equal(undo, undefined, 'direct reverse actions do not create another Undo');
+    }
+  }
+})().catch(error => { console.error(error); process.exitCode = 1; });
+"""
+        for mode in ("dashboard", "reader"):
+            with self.subTest(mode=mode):
+                reader_script = quarterdeck.DOC_MARK_SCRIPT if mode == "reader" else ""
+                result = subprocess.run(["node", "-e", harness + reader_script + script + verify, mode],
+                                        capture_output=True, text=True)
+                self.assertEqual(result.returncode, 0, result.stderr)
+
+    @unittest.skipUnless(shutil.which("node"), "Node is required to execute the generated scripts")
     def test_refresh_waits_for_report_and_wait_mutations_to_settle(self) -> None:
         page = quarterdeck.build_html([], "Q", refresh_seconds=60, allow_marks=True)
         scripts = re.findall(r"<script>(.*?)</script>", page, re.S)
@@ -9297,7 +9392,8 @@ class Button {
 globalThis.document = {
   addEventListener(name, fn) { if (name === 'click') handlers.push(fn); },
   createElement: () => new Button(),
-  querySelectorAll: () => [],
+  querySelectorAll: selector => selector === "[data-mark-report]" && row ?
+    row.buttons.filter(button => "markReport" in button.dataset) : [],
   querySelector(selector) {
     return row && row.buttons.find(button =>
       selector.includes('[data-mutation-pending]') && 'mutationPending' in button.dataset ||

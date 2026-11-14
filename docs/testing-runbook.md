@@ -531,3 +531,13 @@ bodies and POST responses. Every report action, both Undo actions and wait
 discard must retain the page while pending, then release refresh on success,
 HTTP failure or network failure. Mark and discard must show Undo on the retained
 row; permanently disabled saved buttons must not prevent later refreshes.
+
+For report-action serialization, run
+`PYTHONPATH=tests python3 -m unittest -v test_quarterdeck.PhoneFixTests.test_report_actions_are_serialized_and_failures_restore_controls`.
+The Q17 oracle requires Undo to reverse the one action that actually saved.
+Delayed report requests must disable competing controls for the same report,
+including duplicate and newly arriving representations, while other reports
+remain usable. Network and HTTP failures restore only previously enabled
+controls. Failed Undo must keep the saved actions disabled and remain retryable;
+successful reader Undo must restore the original actions. Both dashboard and
+reader scripts execute against fictional browser-boundary doubles.

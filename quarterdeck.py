@@ -2769,10 +2769,15 @@ MARK_SCRIPT = """
     document.addEventListener("click", async (event) => {
       const button = event.target.closest("[data-mark-report]");
       if (!button || button.disabled) return;
+      const controls = Array.from(document.querySelectorAll("[data-mark-report]")).filter(
+        other => other.dataset.markReport === button.dataset.markReport
+      );
+      if (controls.some(other => other.dataset.mutationPending)) return;
+      const enabled = controls.filter(other => !other.disabled);
       const status = button.parentElement.querySelector(".request-status");
       const undoing = button.hasAttribute("data-undo");
       if (undoing) clearTimeout(undoTimers.get(button));
-      button.disabled = true;
+      for (const other of controls) other.disabled = true;
       button.dataset.mutationPending = "true";
       if (status) status.textContent = "Saving…";
       try {
@@ -2796,7 +2801,6 @@ MARK_SCRIPT = """
         }
         if (status) status.textContent = "Saved";
         if (typeof quarterdeckSaved === "function") quarterdeckSaved(button);
-        else for (const other of row.querySelectorAll("[data-mark-report]")) other.disabled = true;
         const inverse = MARK_UNDO[button.dataset.markAction];
         if (!inverse) { if (typeof quarterdeckSaved !== "function") quarterdeckReload(); return; }
         const undo = document.createElement("button");
@@ -2813,7 +2817,7 @@ MARK_SCRIPT = """
         }
       } catch (error) {
         delete button.dataset.mutationPending;
-        button.disabled = false;
+        for (const other of enabled) other.disabled = false;
         if (status) status.textContent = "Could not save: " + error.message;
       }
     });
@@ -2821,7 +2825,6 @@ MARK_SCRIPT = """
 # A document page has no list to reload: after a save it offers the way back instead.
 DOC_MARK_SCRIPT = """
 function quarterdeckSaved(button) {
-  for (const other of button.parentElement.querySelectorAll("[data-mark-report]")) other.disabled = true;
   const back = document.getElementById("qd-saved-back");
   if (back) back.hidden = false;
 }
