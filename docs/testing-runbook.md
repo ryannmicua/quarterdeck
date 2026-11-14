@@ -284,6 +284,17 @@ make the child unavailable and confirm no parent fallback. An HTML explainer's
 script should run, but its sandbox must block storage and write-endpoint access.
 Each opened document must show the Back to Quarterdeck bar, and Open file by
 itself must return the unmodified file at 375px and desktop width.
+Scroll a long HTML document to its final control and confirm it clears the bar,
+including after resizing so the links wrap. The focused navigation regressions
+are `ActivityCardTests.test_document_bar_reserves_its_height_after_wrapping`,
+`ActivityCardTests.test_rendered_document_navigation_uses_the_main_filename`, and
+`ActivityCardTests.test_standalone_report_has_no_site_back_link`. They execute the
+generated spacer script with supplied browser geometry, render default/custom/Lavish
+sites and check their emitted back-link destinations, and run standalone report
+output. The geometry check covers resize handling, not browser layout; use the
+manual scroll check above for layout. The required destinations and unobscured
+final control come from the navigation contract; stale `index.html` links, a
+fixed-height spacer, and a standalone back link must fail these checks.
 Retain screenshots and HTTP output; stop servers, close test tabs and remove
 fictional homes/state afterward.
 The fixtures use disposable fictional homes; set `TMPDIR` to a directory inside
