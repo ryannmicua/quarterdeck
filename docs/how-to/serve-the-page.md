@@ -22,10 +22,11 @@ and unread behavior). The page shows a "Generated at" time and reloads
 itself every 60 seconds, restoring open items and sections after each refresh
 when browser session storage is available. Automatic refresh waits while a reply
 box has focus or contains text that is not saved in browser storage, a reaction
-is selected or being sent, or the view editor has unsaved changes or a pending
-save. Saved, unfocused replies allow refresh; see [reply drafts](#react-to-calls-and-reports-from-the-page).
-Before each refresh the page checks that the server answers. When it does not,
-the page stays as it is and shows "Can't reach Quarterdeck · last updated 3 min
+is selected or being sent, the view editor has unsaved changes or a pending
+save, a report or wait action is being saved, or a report's **Undo** is still
+offered. Saved, unfocused replies allow refresh; see [reply drafts](#react-to-calls-and-reports-from-the-page).
+Each refresh downloads the whole new page before replacing the current one.
+When the server cannot be reached or the download fails, the page stays as it is and shows "Can't reach Quarterdeck · last updated 3 min
 ago" at the top, then tries again every 15 seconds.
 
 The server compresses pages with gzip for any browser that asks, so a refresh
