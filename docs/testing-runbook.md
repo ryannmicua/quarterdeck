@@ -424,9 +424,27 @@ PYTHONPATH=tests python3 -m unittest -v \
 The emitted page scripts execute against disposable browser-boundary doubles.
 The draft contract requires restoration in card, desk and arriving composers,
 expiry after seven days, retaining drafts on failed sends, clearing every copy
-of the sent item and kind, and allowing refresh when no reply field has focus.
+of the sent item and kind, and allowing refresh for saved, unfocused replies.
+Blocked or full browser storage must defer refresh for unfocused edited text;
+a later successful save must release that guard.
 The independent length oracle is Python's 20,000-code-point server limit:
 19,999 ASCII characters plus one emoji must send whole; 20,000 ASCII characters
 plus one emoji must be refused. Both page and artifact counters follow it.
 Fixtures and inbox receivers are fictional, cleanup is automatic, and these
 checks do not send messages to real homes.
+
+For opening-time order and live empty states, run:
+
+```sh
+PYTHONPATH=tests python3 -m unittest -v \
+  test_quarterdeck.ActivityCardTests.test_needs_you_cards_come_first_oldest_wait_first_and_the_rest_newest_first \
+  test_quarterdeck.ActivityCardTests.test_needs_you_order_uses_parsed_opening_times_with_activity_fallback \
+  test_quarterdeck.ActivityCardTests.test_polling_preserves_busy_cards_and_reconciles_idle_cards
+```
+
+The ordering oracle is elapsed wait since opening, even after recent activity;
+missing or invalid openings fall back to activity, with unknown times last.
+Offset timestamps compare as instants. Initial HTML and cards JSON must agree,
+including decisions and other needs-you items from priority and overflow lists.
+Polling without completeness evidence must replace an old all-clear with a
+neutral empty message, while preserving active replies during reconciliation.

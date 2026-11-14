@@ -4248,7 +4248,10 @@ async function click(report, text) {
 const assert = require('node:assert/strict');
 const script = require('node:fs').readFileSync(0, 'utf8');
 const store = {};
-globalThis.localStorage = {getItem: k => k in store ? store[k] : null, setItem: (k, v) => { store[k] = v; }, removeItem: k => { delete store[k]; }};
+let storageFailure = null;
+globalThis.localStorage = {getItem: k => k in store ? store[k] : null,
+  setItem: (k, v) => { if (storageFailure) throw storageFailure; store[k] = v; },
+  removeItem: k => { delete store[k]; }};
 const note = {hidden: true, textContent: '', classList: {toggle(name, on) { this.over = on; }}};
 const status = {textContent: ''};
 const field = {value: '', dataset: {limit: '20000'}, offsetParent: {}, scrollHeight: 300, style: {}, matches: s => s === '.reaction-text'};
@@ -4305,6 +4308,18 @@ store['quarterdeck-draft:call:home/expired'] = JSON.stringify({text: 'old reply'
   document.activeElement = null;
   reload();
   assert.equal(reloaded, 2, 'leaving a saved reply permits refresh');
+  for (const name of ['QuotaExceededError', 'SecurityError']) {
+    storageFailure = new Error(name);
+    field.value = 'Unsaved dictation: ' + name;
+    handlers.input({target: field});
+    reload();
+    assert.equal(reloaded, 2, 'storage failure preserves unfocused edits');
+    assert.equal(JSON.parse(store['quarterdeck-draft:call:home/task']).text, 'unsent dictation');
+  }
+  storageFailure = null;
+  handlers.input({target: field});
+  reload();
+  assert.equal(reloaded, 3, 'a successfully saved edit permits refresh again');
   assert.equal(field.style.height, '302px', 'the field grows to its content');
   field.value = 'y'.repeat(18000);
   handlers.input({target: field});
@@ -4332,7 +4347,7 @@ store['quarterdeck-draft:call:home/expired'] = JSON.stringify({text: 'old reply'
   assert.equal(report.value, 'report reply', 'a different kind retains its draft');
   assert.ok(store['quarterdeck-draft:report:home/task']);
   reload();
-  assert.equal(reloaded, 3, 'an unrelated saved draft does not block refresh');
+  assert.equal(reloaded, 4, 'an unrelated saved draft does not block refresh');
 })().catch(error => { process.stderr.write(error.stack); process.exitCode = 1; });
 """
         result = subprocess.run(["node", "-e", harness], input=script, capture_output=True, text=True, check=False)
@@ -6450,14 +6465,38 @@ class ActivityCardTests(unittest.TestCase):
             snapshots, bearings = self.site(Path(temp))
             cards = quarterdeck.site_cards(snapshots, bearings, False)
             self.assertEqual([(card["section"], card["title"]) for card in cards], [
-                ("needs_you", "Pick the new harbor map vendor"), ("needs_you", "Kelp survey scope"),
-                ("needs_you", "Approve the tide table format"), ("recent", "Started: Buoy light refit"),
+                ("needs_you", "Kelp survey scope"), ("needs_you", "Approve the tide table format"),
+                ("needs_you", "Pick the new harbor map vendor"), ("recent", "Started: Buoy light refit"),
                 ("done", "Merged: dock-notes"), ("done", "Closed: moot-call"),
                 ("done", "Answered: Approve the tide table format"), ("done", "Merged: Fix the pier lights"),
             ])
-            self.assertEqual([card["at"] for card in cards[:3]], sorted(card["at"] for card in cards[:3]))
-            self.assertEqual(cards[2]["summary"], "Format choice", "the first line of the ask sits under the title")
-            self.assertEqual(cards[2]["status"], "Decision waiting")
+            self.assertEqual([card["opened_at"] for card in cards[:3]],
+                             ["2026-06-02T09:00:00Z", "2026-06-10", "2026-07-01T09:00:00Z"])
+            self.assertEqual(cards[1]["summary"], "Format choice", "the first line of the ask sits under the title")
+            self.assertEqual(cards[1]["status"], "Decision waiting")
+
+    def test_needs_you_order_uses_parsed_opening_times_with_activity_fallback(self) -> None:
+        items = [
+            {"key": "invented/new", "title": "New", "opened_at": "2026-07-02", "at": "2026-07-02T00:00:00Z"},
+            {"key": "invented/old", "title": "Old", "opened_at": "2026-07-01", "at": "2026-07-03T00:00:00Z"},
+            {"key": "invented/offset", "title": "Offset", "opened_at": "2026-07-02T01:00:00+08:00", "at": None},
+            {"key": "invented/fallback", "title": "Fallback", "opened_at": "invalid", "at": "2026-07-01T12:00:00Z"},
+            {"key": "invented/unknown", "title": "Unknown", "at": "invalid"},
+        ]
+        expected = ["call:invented/old", "call:invented/fallback", "call:invented/offset",
+                    "call:invented/new", "call:invented/unknown"]
+        for kind in ("decisions", "needs_you"):
+            for scoped in (False, True):
+                with self.subTest(kind=kind, scoped=scoped):
+                    home = {"label": "invented", "errors": [], "waiting": {kind: items}}
+                    if scoped:
+                        home = {"label": "invented", "errors": [], "waiting": {}, "waiting_more": {kind: items}}
+                    attention = {"homes": [home]}
+                    cards = quarterdeck.activity_cards(attention, None, None)
+                    payload = json.loads(quarterdeck.cards_payload(cards, ATTENTION_NOW))
+                    self.assertEqual([card["id"] for card in payload["cards"]], expected)
+                    page = quarterdeck.cards_html(cards, attention, ATTENTION_NOW, True)
+                    self.assertEqual(re.findall(r'data-card-id="([^"]+)"', page), expected)
 
     def test_sections_do_not_silently_truncate_cards(self) -> None:
         homes = [{"label": "invented", "waiting": {
@@ -6886,6 +6925,7 @@ const feed = {
   addEventListener(name, callback) { feedEvents[name] = callback; }
 };
 const controls = Object.fromEntries(['cards-count', 'cards-new', 'cards-empty', 'activity-count', 'activity-empty'].map(id => [id, {}]));
+controls['cards-empty'].textContent = 'Nothing needs you right now.';
 globalThis.document = {
   title: 'Quarterdeck', hidden: false, activeElement: null,
   getElementById(id) { return id === 'cards' ? feed : controls[id]; },
@@ -6992,6 +7032,7 @@ function openCard(card) {
   await update([]);
   assert.deepEqual(ids('done'), ['b']);
   assert.equal(controls['cards-empty'].hidden, false, 'a card in Activity does not fill the needs-you section');
+  assert.equal(controls['cards-empty'].textContent, 'No needs-you cards in this update. Reload to check the full status.');
   assert.equal(controls['activity-count'].textContent, '1');
   lists.done.children[0].field.value = '';
   await update([]);
@@ -8769,7 +8810,7 @@ class QuickWinTests(unittest.TestCase):
                         None if source == "decision" else board, {})
                     waiting = quarterdeck.apply_waits(waiting, {})
                     original = waiting["decisions" if source == "decision" else "needs_you"][0]
-                    self.assertEqual(original["at"], touched, "card ordering still uses activity")
+                    self.assertEqual(original["at"], touched, "the displayed activity timestamp is preserved")
                     if scoped:
                         visible, _scope = quarterdeck.scope_waiting(waiting, ["priority"], False, True)
                         home = {"waiting": visible, "waiting_more": waiting}

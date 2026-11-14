@@ -1555,7 +1555,7 @@ def build_html(
     }
     function quarterdeckReload() {
       const editing = Array.from(document.querySelectorAll(".reaction-text")).some(
-        field => field === document.activeElement
+        field => field === document.activeElement || field.value && field.value !== field.quarterdeckSavedDraft
       );
       if (editing || document.querySelector('[data-reaction-choice][aria-pressed=true], .reaction-send:disabled, #view-editor[data-dirty=true], #view-save:disabled[data-saving=true]')) {
         setTimeout(quarterdeckReload, 1000);
@@ -1600,7 +1600,8 @@ def build_html(
       try {{
         if (field.value) localStorage.setItem(draftKey(box), JSON.stringify({{text: field.value, at: Date.now()}}));
         else localStorage.removeItem(draftKey(box));
-      }} catch (_) {{}}
+        field.quarterdeckSavedDraft = field.value;
+      }} catch (_) {{ delete field.quarterdeckSavedDraft; }}
     }}
     function restoreDrafts(root) {{
       for (const field of (root || document).querySelectorAll(".reaction-text")) {{
@@ -1609,8 +1610,10 @@ def build_html(
           if (raw && !field.value) {{
             const draft = JSON.parse(raw);
             if (draft && typeof draft.text === "string" && Number.isFinite(draft.at)
-                && draft.at <= Date.now() && Date.now() - draft.at < DRAFT_MS) field.value = draft.text;
-            else localStorage.removeItem(draftKey(box));
+                && draft.at <= Date.now() && Date.now() - draft.at < DRAFT_MS) {{
+              field.value = draft.text;
+              field.quarterdeckSavedDraft = draft.text;
+            }} else localStorage.removeItem(draftKey(box));
           }}
         }} catch (_) {{}}
         growField(field);
@@ -1673,6 +1676,7 @@ def build_html(
           const other = copy.closest(".reaction");
           if (draftKey(other) !== draftKey(box)) continue;
           copy.value = "";
+          delete copy.quarterdeckSavedDraft;
           delete other.dataset.reactionId;
           growField(copy);
           showCount(copy);
@@ -8508,7 +8512,8 @@ def need_card(
     title = str(item["title"])
     return {
         "id": f"call:{key}", "section": section, "label": "Needs you" if section == "needs_you" else "For your information",
-        "at": item.get("at"), "title": title, "hold_set": wait.get("hold_set") if wait else None,
+        "at": item.get("at"), "opened_at": item.get("opened_at"), "title": title,
+        "hold_set": wait.get("hold_set") if wait else None,
         "summary": first_line(wait_ask_line(wait)) if wait else first_line(ask) or status,  # type: ignore[arg-type]
         "status": status, "body": "".join(parts),
     }
@@ -8567,7 +8572,10 @@ def activity_cards(
     for section, _title in CARD_SECTIONS:
         chosen = [card for card in cards if card["section"] == section]
         if section == "needs_you":  # the longest wait first; a card with no time goes last
-            chosen.sort(key=lambda card: (not card["at"], str(card["at"] or "")))
+            chosen.sort(key=lambda card: (
+                parse_when(str(card.get("opened_at") or "")) or parse_when(str(card.get("at") or ""))
+                or datetime.max.replace(tzinfo=timezone.utc)
+            ))
         else:
             chosen.sort(key=lambda card: str(card["at"] or ""), reverse=True)
         ranked.extend(chosen)
@@ -8840,7 +8848,9 @@ ACTIVITY_SCRIPT = """
         if (window.quarterdeckRestoreDrafts) for (const card of fresh) window.quarterdeckRestoreDrafts(card);
         for (const section of document.querySelectorAll(".act-section")) section.hidden = !section.querySelector(".act-card");
         const needs = cards().filter(card => card.closest("#cards")).length;
-        document.getElementById("cards-empty").hidden = needs > 0;
+        const empty = document.getElementById("cards-empty");
+        empty.textContent = "No needs-you cards in this update. Reload to check the full status.";
+        empty.hidden = needs > 0;
         const activity = document.getElementById("activity-count");
         if (activity) {
           activity.textContent = String(cards().length - needs);
