@@ -1408,7 +1408,7 @@ def status_line_html(
                    for item in (home.get(field) or {}).get(kind, [])
                    if item.get("relevance") not in {"quiet", "stale"}}
         unread = not attention.get("ok", True) or bool(attention.get("waits_error")) or any(
-            home.get("errors") or (isinstance(home.get("decisions"), dict) and home["decisions"].get("skipped"))
+            home.get("complete") is False or home.get("errors") or (isinstance(home.get("decisions"), dict) and home["decisions"].get("skipped"))
             for home in homes)
         if unread:
             text, need = "Needs-you status unavailable", "unknown"
@@ -3547,6 +3547,7 @@ def attention_view(
             or (owner.board is not None and (not owner.board.supported or owner.board.warnings))
             for owner in all_snapshots([snapshot])
         )
+        view["complete"] = complete
         view["priorities"] = priority_entries(waiting, names, complete)
         view["waiting"], scope = scope_waiting(waiting, names, show_more, has_priority)
         visible = {item["key"] for items in view["waiting"].values() for item in items}
@@ -8436,7 +8437,7 @@ def activity_cards(
         label = str(home["label"])
         waiting = home.get("waiting") or {}
         for kind, section in (("decisions", "needs_you"), ("needs_you", "needs_you"), ("informational", "information")):
-            for item in waiting.get(kind, []):
+            for item in [*waiting.get(kind, []), *(home.get("waiting_more") or {}).get(kind, [])]:
                 if item["key"] in taken or item.get("relevance") in {"quiet", "stale"}:
                     continue
                 taken.add(str(item["key"]))

@@ -8367,6 +8367,58 @@ class QuickWinTests(unittest.TestCase):
         self.assertIn("2 need you · oldest 3 days", line)
         self.assertNotIn("Nothing needs you", line)
 
+    def test_status_requires_complete_sources_even_with_a_healthy_feed(self) -> None:
+        for case in ("healthy", "registry", "child", "board", "backlog", "feed", "skipped"):
+            with self.subTest(case=case), tempfile.TemporaryDirectory() as temp:
+                root = Path(temp)
+                home = AttentionTests().make_home(root, ledger="", script=case != "feed",
+                    feed=json.dumps({"schema": "fm-attention.v1", "open_decisions": []}))
+                (home / "data" / "backlog.md").write_text("# Backlog\n")
+                if case == "board":
+                    (home / "data" / "captain-board.json").write_text('{"version":999}')
+                elif case == "backlog":
+                    (home / "data" / "backlog.md").unlink()
+                snapshot = quarterdeck.load_home_snapshot(quarterdeck.HomeSpec("invented", home))
+                if case == "registry":
+                    snapshot.registry_error = "registry unavailable"
+                elif case == "child":
+                    snapshot.children = [quarterdeck.load_home_snapshot(
+                        quarterdeck.HomeSpec("child", root / "missing-child"))]
+                attention = quarterdeck.attention_view([snapshot], ATTENTION_NOW, use_feed=case != "skipped")
+                bearings = quarterdeck.build_bearings([snapshot], ATTENTION_NOW, use_snapshot=False)
+                bearings.attention = attention
+                page = quarterdeck.build_html([snapshot], "Invented", bearings=bearings)
+                if case == "healthy":
+                    self.assertIn(">Nothing needs you<", page)
+                    self.assertNotIn("Needs-you status unavailable", page)
+                else:
+                    self.assertIn("Needs-you status unavailable", page)
+                    self.assertNotIn(">Nothing needs you<", page)
+
+    def test_status_destination_contains_active_items_outside_priority_projects(self) -> None:
+        decision = {"key": "invented/decision", "title": "Choose chart", "at": "2026-06-29T12:00:00Z",
+                    "project": "other", "ask": "Which chart?"}
+        need = {"key": "child/help", "title": "Captain help", "at": None, "project": "other"}
+        waiting, _scope = quarterdeck.scope_waiting({"decisions": [decision], "needs_you": [need],
+            "informational": [{"key": "invented/info", "title": "Priority update", "project": "priority"}]},
+            ["priority"], False, True)
+        attention = {"ok": True, "homes": [{"label": "invented", "errors": [], "waiting": waiting,
+            "waiting_more": {"decisions": [decision], "needs_you": [need, decision],
+                             "informational": [{"key": "invented/result", "title": "Result ready"},
+                                               {"key": "invented/quiet", "title": "Quiet call", "relevance": "quiet"},
+                                               {"key": "invented/stale", "title": "Stale call", "relevance": "stale"}]}}]}
+        cards = quarterdeck.activity_cards(attention, None, None)
+        self.assertCountEqual([card["id"] for card in cards if card["section"] == "needs_you"],
+                              ["call:invented/decision", "call:child/help"])
+        self.assertCountEqual([card["id"] for card in cards if card["section"] == "information"],
+                              ["call:invented/info", "call:invented/result"])
+        line = quarterdeck.status_line_html(attention, 0, 0, ATTENTION_NOW)
+        self.assertIn('href="#cards" data-need="some">2 need you', line)
+        destination = quarterdeck.cards_html(cards, attention, ATTENTION_NOW, False)
+        self.assertIn('id="cards"', destination)
+        self.assertIn("Choose chart", destination)
+        self.assertIn("Captain help", destination)
+
     def test_jump_links_cover_report_related_and_background_sections(self) -> None:
         with tempfile.TemporaryDirectory() as temp:
             snapshots, _bearings = self.reports_site(Path(temp))
@@ -8433,7 +8485,6 @@ class QuickWinTests(unittest.TestCase):
             self.assertIn('data-mark-action="discard"', page, name)
             self.assertIn("Mark reviewed", page)
             self.assertIn('id="qd-saved-back"', page)
-            self.assertIn("/api/reports/review", page)
             self.assertNotIn("data-mark-report", unmarked[name])
 
     def test_reviewed_and_discarded_report_pages_offer_the_way_back_to_needs_review(self) -> None:

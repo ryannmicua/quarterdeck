@@ -388,6 +388,10 @@ arrival counts and waits; distinct captain-hold identities remain distinct.
 Run `PYTHONPATH=tests python3 -m unittest test_quarterdeck.QuickWinTests -v`.
 Q1 is the oracle for counting active needs across priority-scoped waiting lists
 and homes, deduplicating keys and excluding quiet/stale background decisions.
+The status must also withhold an all-clear when a healthy feed accompanies an
+unreadable registry, child backlog or captain board, or when feed reading is
+skipped. Its Cards destination must include active items held in waiting_more;
+page rendering and live responses share the same card builder.
 Q3 requires links to the rendered report lists, related items and background
 sections. Q8 requires separate recurring cards and identities per project for
 both started and completed work. These cases reject a false all-clear, omitted
