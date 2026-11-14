@@ -8064,6 +8064,7 @@ class AdoptionTests(unittest.TestCase):
     def test_activity_updates_preserve_arrivals_but_new_holds_are_distinct(self) -> None:
         state = quarterdeck.validate_review_state_location(self.homes)
         start = datetime(2026, 11, 12, 8, tzinfo=timezone.utc)
+        quarterdeck.record_adoption_arrivals(state, self.homes, [], start)
         for hold in (None, "2026-11-10T08:00:00Z", "2026-11-12T08:00:00Z"):
             card = {"id": "call:harbor/one", "section": "needs_you", "hold_set": hold, "at": "2026-11-11T01:00:00Z"}
             quarterdeck.record_adoption_arrivals(state, self.homes, [card], start)
@@ -8110,7 +8111,7 @@ class AdoptionTests(unittest.TestCase):
         report.modified = self.NOW
         quarterdeck.record_adoption_arrivals(state, self.homes, [], self.NOW)
         summary = self.summary()
-        self.assertEqual(summary["counts"]["arrived"], [0, len(self.homes[0].reports)])
+        self.assertEqual(summary["counts"]["arrived"], [0, 0])
         self.assertEqual(summary["counts"]["reviewed"], [0, 1])
         self.assertEqual(summary["counts"]["discarded"], [1, 0])
         self.assertNotIn(report.report_id, quarterdeck.load_review_state(state).reports)
@@ -8122,6 +8123,7 @@ class AdoptionTests(unittest.TestCase):
         state = quarterdeck.validate_review_state_location(self.homes)
         start = datetime(2026, 11, 12, 8, tzinfo=timezone.utc)
         card = {"id": "call:harbor/one", "section": "needs_you", "at": "2026-11-11T01:00:00Z"}
+        quarterdeck.record_adoption_arrivals(state, self.homes, [], start)
         quarterdeck.record_adoption_arrivals(state, self.homes, [card], start)
         quarterdeck.record_adoption_arrivals(state, self.homes, [card], start + timedelta(minutes=20))
         quarterdeck.record_adoption_arrivals(state, self.homes, [dict(card, id="call:harbor/two")], start + timedelta(minutes=40))
@@ -8192,7 +8194,46 @@ assert.equal(request.hash, '#cards');
             quarterdeck.site_builder(args, True)()
         self.assertTrue(quarterdeck.state_db_path(state).exists())
         summary = quarterdeck.adoption_summary(self.homes, bearings.generated, self.root / "visits.jsonl")
-        self.assertEqual(summary["counts"]["arrived"][0], len(self.homes[0].reports))
+        self.assertEqual(summary["counts"]["arrived"][0], 0)
+
+    def test_first_build_records_existing_items_without_arrivals(self) -> None:
+        state = quarterdeck.validate_review_state_location(self.homes)
+        card = {"id": "call:harbor/old", "section": "needs_you"}
+        before = [dataclasses.replace(self.homes[0], reports=[])]
+        quarterdeck.record_adoption_arrivals(state, before, [card], datetime(2026, 11, 10, 8, tzinfo=timezone.utc))
+        later = datetime(2026, 11, 11, 8, tzinfo=timezone.utc)
+        quarterdeck.record_adoption_arrivals(state, self.homes, [card, dict(card, id="call:harbor/new")], later)
+        visits = self.root / "visits.jsonl"
+        visits.write_text(json.dumps({"ts": "2026-11-11T08:10:00Z", "page": "main", "device": "desktop"}) + "\n")
+        summary = self.summary(visits)
+        self.assertEqual(summary["counts"]["arrived"][0], 1)
+        self.assertEqual(summary["first_seen_minutes"], [10, None])
+
+    def test_failed_arrival_write_does_not_stop_the_build(self) -> None:
+        bearings = quarterdeck.build_bearings(self.homes, use_snapshot=False)
+        bearings.attention = quarterdeck.attention_view(self.homes, bearings.generated, use_feed=False)
+        with patch.object(quarterdeck, "load_site", return_value=({}, self.homes, bearings)), \
+             patch.object(quarterdeck, "record_adoption_arrivals", side_effect=sqlite3.OperationalError("locked")), \
+             redirect_stderr(io.StringIO()) as stderr:
+            pages = quarterdeck.site_builder(argparse.Namespace(title=None), True)()
+        self.assertIn("index.html", pages)
+        self.assertIn("locked", stderr.getvalue())
+
+    def test_first_seen_uses_every_main_load_and_visits_are_deduplicated(self) -> None:
+        state = quarterdeck.validate_review_state_location(self.homes)
+        quarterdeck.record_adoption_arrivals(state, self.homes, [], datetime(2026, 11, 12, 7, tzinfo=timezone.utc))
+        card = {"id": "call:harbor/one", "section": "needs_you"}
+        quarterdeck.record_adoption_arrivals(state, self.homes, [card], datetime(2026, 11, 12, 8, 5, tzinfo=timezone.utc))
+        clock = [datetime(2026, 11, 12, 8, tzinfo=timezone.utc).timestamp()]
+        visits = self.root / "visits.jsonl"
+        log = quarterdeck.VisitLog(visits, lambda: clock[0])
+        for minutes, page in ((0, "main"), (7, "adoption"), (10, "main"), (31, "main")):
+            clock[0] = datetime(2026, 11, 12, 8, minutes, tzinfo=timezone.utc).timestamp()
+            log.record(page, "Firefox")
+        self.assertEqual(len(quarterdeck.read_jsonl(visits)), 4)
+        summary = self.summary(visits)
+        self.assertEqual(summary["first_seen_minutes"], [5, None])
+        self.assertEqual(summary["counts"]["visits"], [3, 0])
 
     def test_device_class(self) -> None:
         phone = "Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) Mobile/15E148"
@@ -8204,25 +8245,23 @@ assert.equal(request.hash, '#cards');
         self.assertEqual(quarterdeck.device_class("Mozilla/5.0 (iPad; CPU OS 17_0) Mobile/15E148 Safari"), "desktop")
         self.assertEqual(quarterdeck.device_class("iPod Safari"), "phone")
 
-    def test_visit_log_appends_minimal_lines_dedupes_reloads_and_prunes(self) -> None:
+    def test_visit_log_appends_minimal_lines_and_prunes(self) -> None:
         path = self.root / "state" / "visits.jsonl"
         clock = [1_700_000_000.0]
         log = quarterdeck.VisitLog(path, lambda: clock[0])
-        self.assertTrue(log.record("main", "Mobile Safari"))
-        self.assertFalse(log.record("main", "Mobile Safari"))  # the page's own minute reload
-        self.assertTrue(log.record("main", "Firefox"))
-        self.assertTrue(log.record("adoption", "Mobile Safari"))
-        clock[0] += quarterdeck.VISIT_REPEAT_SECONDS + 1
-        self.assertTrue(log.record("main", "Mobile Safari"))
+        log.record("main", "Mobile Safari")
+        log.record("main", "Mobile Safari")
+        log.record("main", "Firefox")
+        log.record("adoption", "Mobile Safari")
         lines = [json.loads(line) for line in path.read_text().splitlines()]
         self.assertEqual([(line["page"], line["device"]) for line in lines],
-                         [("main", "phone"), ("main", "desktop"), ("adoption", "phone"), ("main", "phone")])
+                         [("main", "phone"), ("main", "phone"), ("main", "desktop"), ("adoption", "phone")])
         self.assertEqual(set(lines[0]), {"ts", "page", "device"})
         self.assertEqual(stat.S_IMODE(path.stat().st_mode), 0o600)
         old = json.dumps({"ts": "2020-01-01T00:00:00.000Z", "page": "main", "device": "phone"}) + "\n"
         path.write_text(old * 3000, encoding="utf-8")
         clock[0] += quarterdeck.VISIT_REPEAT_SECONDS + 1
-        self.assertTrue(log.record("adoption", "Firefox"))
+        log.record("adoption", "Firefox")
         remaining = path.read_text().splitlines()
         self.assertEqual(len(remaining), 1)
         self.assertEqual(json.loads(remaining[0])["page"], "adoption")

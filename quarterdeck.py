@@ -5500,7 +5500,10 @@ def site_builder(args: argparse.Namespace, allow_marks: bool = False) -> Callabl
         )
         activity = site_cards(homes, bearings, allow_marks)
         if allow_marks:
-            record_adoption_arrivals(validate_review_state_location(homes), homes, activity, bearings.generated)
+            try:
+                record_adoption_arrivals(validate_review_state_location(homes), homes, activity, bearings.generated)
+            except (sqlite3.Error, OSError, ValueError) as exc:
+                print(f"quarterdeck: could not record adoption arrivals: {exc}", file=sys.stderr, flush=True)
         cards = cards_payload(activity, bearings.generated)
         pages = source_pages(homes, show_all=False, bearings=bearings)  # after the cards: they register document pages
         pages["index.html"] = index
@@ -6115,16 +6118,12 @@ class VisitLog:
         self.path = path
         self.clock = clock
         self.lock = threading.Lock()
-        self.last: dict[tuple[str, str], float] = {}
 
-    def record(self, page: str, user_agent: str | None) -> bool:
-        """Log one visit unless the same page and device was logged within the last half hour."""
+    def record(self, page: str, user_agent: str | None) -> None:
+        """Log one manual page load."""
         device = device_class(user_agent)
         now = self.clock()
         with self.lock:
-            if now - self.last.get((page, device), -VISIT_REPEAT_SECONDS) < VISIT_REPEAT_SECONDS:
-                return False
-            self.last[(page, device)] = now
             line = json.dumps({
                 "ts": reaction_time(datetime.fromtimestamp(now, timezone.utc)), "page": page, "device": device,
             }) + "\n"
@@ -6139,7 +6138,6 @@ class VisitLog:
                 os.close(descriptor)
             if size > VISIT_PRUNE_BYTES:
                 self.prune(now)
-            return True
 
     def prune(self, now: float) -> None:
         """Drop visits older than the retention window; the caller holds the lock."""
@@ -6212,10 +6210,17 @@ def record_adoption_arrivals(
               for snapshot in all_snapshots(homes) for report in snapshot.reports]
     events.extend(("needs_you", json.dumps([card["id"], card.get("hold_set")], separators=(",", ":")), at)
                   for card in cards if card["section"] == "needs_you")
-    write_state(path, [
-        ("INSERT OR IGNORE INTO meta VALUES ('adoption_started', ?)", (at,)),
-        *[("INSERT OR IGNORE INTO adoption_events VALUES (?, ?, ?)", event) for event in events],
-    ])
+    with state_connection(path) as connection:
+        connection.execute("BEGIN IMMEDIATE")
+        try:
+            connection.execute("INSERT OR IGNORE INTO meta VALUES ('adoption_started', ?)", (at,))
+            baseline = connection.execute("INSERT OR IGNORE INTO meta VALUES ('arrivals_baseline', ?)", (at,)).rowcount > 0
+            connection.executemany("INSERT OR IGNORE INTO adoption_events VALUES (?, ?, ?)",
+                                   [(kind, item, "" if baseline else when) for kind, item, when in events])
+            connection.execute("COMMIT")
+        except BaseException:
+            connection.execute("ROLLBACK")
+            raise
 
 
 def adoption_summary(homes: list[HomeSnapshot], now: datetime, visits: Path | None = None) -> dict[str, object]:
@@ -6287,14 +6292,21 @@ def adoption_summary(homes: list[HomeSnapshot], now: datetime, visits: Path | No
     if not visit_file.is_file():
         missing.append("visit log")
     visit_times: list[datetime] = []
+    last_visit: dict[tuple[object, object], datetime] = {}
     for record in read_jsonl(visit_file):
         day = local_day(record.get("ts"))
         index = week_index(day, weeks)
         if index is None:
             continue
-        if (when := parse_board_time(record.get("ts"))) is not None and when <= now:
+        when = parse_board_time(record.get("ts"))
+        if when is not None and when <= now and record.get("page") == "main":
             visit_times.append(when)
         days[index].add(day)  # type: ignore[arg-type]
+        key = (record.get("page"), record.get("device"))
+        if when is not None and key in last_visit and abs(when - last_visit[key]) < timedelta(seconds=VISIT_REPEAT_SECONDS):
+            continue
+        if when is not None:
+            last_visit[key] = when
         counts["visits"][index] += 1
         counts["phone"][index] += record.get("device") == "phone"
     counts["days"] = [len(days[0]), len(days[1])]

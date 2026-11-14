@@ -17,7 +17,9 @@ Firstmate chat, because Quarterdeck already shows the answer.
 
 A source that does not exist yet counts as zero and is named at the foot of the
 page. Damaged lines are skipped. Only tags are kept: never the chat messages.
-Triage and Needs-you history starts when collection begins, with no backfill.
+Triage and Needs-you history starts when collection begins, with no backfill:
+reports and Needs-you cards already present at the first served build are
+recorded without a time and never count as arrivals or first-seen waits.
 The page shows "counting from <date>" for the first seven days. Appearance means
 first observed by the server, and visits are deduplicated, so first-seen waits
 are estimates rather than proof that a particular card was read. Stable card IDs
@@ -37,6 +39,7 @@ says Mobile, iPhone or iPod; Android requires Mobile. iPads, Android tablets
 without Mobile, and unknown browsers count as desktop.
 Automatic refresh requests carry a marker and are never logged, even after
 midnight or a server restart. The page removes that marker from its visible URL
-so later manual navigation can count again. Repeat visits to the same page from
-the same kind of device within 30 minutes are deduplicated. When the file passes
+so later manual navigation can count again. Every manual load is logged; the
+page counts repeat visits to the same page from the same kind of device within
+30 minutes as one visit, while first-seen waits use every main-page load. When the file passes
 128 KiB, lines older than 120 days are dropped. A read-only `serve` logs nothing.
