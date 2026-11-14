@@ -4248,8 +4248,8 @@ async function click(report, text) {
 const assert = require('node:assert/strict');
 const script = require('node:fs').readFileSync(0, 'utf8');
 const store = {};
-let storageFailure = null;
-globalThis.localStorage = {getItem: k => k in store ? store[k] : null,
+let storageFailure = null, readFailure = false;
+globalThis.localStorage = {getItem: k => { if (readFailure) throw new Error('blocked'); return k in store ? store[k] : null; },
   setItem: (k, v) => { if (storageFailure) throw storageFailure; store[k] = v; },
   removeItem: k => { delete store[k]; }};
 const note = {hidden: true, textContent: '', classList: {toggle(name, on) { this.over = on; }}};
@@ -4308,18 +4308,46 @@ store['quarterdeck-draft:call:home/expired'] = JSON.stringify({text: 'old reply'
   document.activeElement = null;
   reload();
   assert.equal(reloaded, 2, 'leaving a saved reply permits refresh');
+  field.value = 'Reply A'; handlers.input({target: field});
+  assert.equal(desk.value, 'Reply A', 'card edits mirror to the desk');
+  assert.equal(arriving.value, 'Reply A', 'card edits mirror to arriving composers');
+  desk.value = 'Reply B'; handlers.input({target: desk});
+  assert.equal(field.value, 'Reply B', 'desk edits mirror back to the card');
+  assert.equal(arriving.value, 'Reply B');
+  assert.equal(report.value, 'report reply', 'mirroring stays within the same kind');
+  assert.equal(expired.value, '', 'mirroring stays within the same item');
+  assert.equal(JSON.parse(store['quarterdeck-draft:call:home/task']).text, 'Reply B');
+  reload();
+  assert.equal(reloaded, 3, 'all matching composers have the current saved text');
+  store['quarterdeck-draft:call:home/task'] = JSON.stringify({text: 'external edit', at: Date.now()});
+  reload();
+  assert.equal(reloaded, 3, 'an overwritten stored draft must not discard page text');
+  delete store['quarterdeck-draft:call:home/task'];
+  reload();
+  assert.equal(reloaded, 3, 'a removed stored draft must not discard page text');
+  handlers.input({target: desk});
+  readFailure = true;
+  reload();
+  assert.equal(reloaded, 3, 'unreadable storage must not discard page text');
+  readFailure = false;
+  const beforeFailure = reloaded;
   for (const name of ['QuotaExceededError', 'SecurityError']) {
     storageFailure = new Error(name);
     field.value = 'Unsaved dictation: ' + name;
     handlers.input({target: field});
     reload();
-    assert.equal(reloaded, 2, 'storage failure preserves unfocused edits');
-    assert.equal(JSON.parse(store['quarterdeck-draft:call:home/task']).text, 'unsent dictation');
+    assert.equal(reloaded, beforeFailure, 'storage failure preserves unfocused edits');
+    assert.equal(desk.value, 'Unsaved dictation: ' + name);
+    assert.equal(arriving.value, 'Unsaved dictation: ' + name);
+    assert.equal(JSON.parse(store['quarterdeck-draft:call:home/task']).text, 'Reply B');
   }
+  const unsavedArrival = addCopy();
+  window.quarterdeckRestoreDrafts({querySelectorAll: () => [unsavedArrival]});
+  assert.equal(unsavedArrival.value, 'Unsaved dictation: SecurityError', 'arrivals mirror unsaved page text');
   storageFailure = null;
   handlers.input({target: field});
   reload();
-  assert.equal(reloaded, 3, 'a successfully saved edit permits refresh again');
+  assert.equal(reloaded, beforeFailure + 1, 'a successfully saved edit permits refresh again');
   assert.equal(field.style.height, '302px', 'the field grows to its content');
   field.value = 'y'.repeat(18000);
   handlers.input({target: field});
@@ -4343,11 +4371,11 @@ store['quarterdeck-draft:call:home/expired'] = JSON.stringify({text: 'old reply'
   await handlers.click({target: {closest: s => s === '.reaction-send' ? send : null}});
   assert.equal(posted, 1); assert.equal(store['quarterdeck-draft:call:home/task'], undefined, 'a sent reply clears its draft');
   assert.equal(sentText, 'z'.repeat(19999) + '😀', '20,000 code points are sent whole');
-  for (const copy of [field, desk, arriving]) assert.equal(copy.value, '', 'every matching composer clears');
+  for (const copy of [field, desk, arriving, unsavedArrival]) assert.equal(copy.value, '', 'every matching composer clears');
   assert.equal(report.value, 'report reply', 'a different kind retains its draft');
   assert.ok(store['quarterdeck-draft:report:home/task']);
   reload();
-  assert.equal(reloaded, 4, 'an unrelated saved draft does not block refresh');
+  assert.equal(reloaded, beforeFailure + 2, 'an unrelated saved draft does not block refresh');
 })().catch(error => { process.stderr.write(error.stack); process.exitCode = 1; });
 """
         result = subprocess.run(["node", "-e", harness], input=script, capture_output=True, text=True, check=False)

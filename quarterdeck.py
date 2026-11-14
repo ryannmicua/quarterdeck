@@ -1555,7 +1555,9 @@ def build_html(
     }
     function quarterdeckReload() {
       const editing = Array.from(document.querySelectorAll(".reaction-text")).some(
-        field => field === document.activeElement || field.value && field.value !== field.quarterdeckSavedDraft
+        field => field === document.activeElement || field.value && (
+          typeof quarterdeckDraftSaved !== "function" || !quarterdeckDraftSaved(field)
+        )
       );
       if (editing || document.querySelector('[data-reaction-choice][aria-pressed=true], .reaction-send:disabled, #view-editor[data-dirty=true], #view-save:disabled[data-saving=true]')) {
         setTimeout(quarterdeckReload, 1000);
@@ -1600,22 +1602,33 @@ def build_html(
       try {{
         if (field.value) localStorage.setItem(draftKey(box), JSON.stringify({{text: field.value, at: Date.now()}}));
         else localStorage.removeItem(draftKey(box));
-        field.quarterdeckSavedDraft = field.value;
-      }} catch (_) {{ delete field.quarterdeckSavedDraft; }}
+      }} catch (_) {{}}
+    }}
+    function readDraft(box) {{
+      try {{
+        const raw = localStorage.getItem(draftKey(box));
+        if (!raw) return null;
+        const draft = JSON.parse(raw);
+        if (draft && typeof draft.text === "string" && Number.isFinite(draft.at)
+            && draft.at <= Date.now() && Date.now() - draft.at < DRAFT_MS) return draft;
+        localStorage.removeItem(draftKey(box));
+      }} catch (_) {{}}
+      return null;
+    }}
+    function quarterdeckDraftSaved(field) {{
+      const draft = readDraft(field.closest(".reaction"));
+      return draft && draft.text === field.value;
     }}
     function restoreDrafts(root) {{
       for (const field of (root || document).querySelectorAll(".reaction-text")) {{
-        try {{
-          const box = field.closest(".reaction"), raw = localStorage.getItem(draftKey(box));
-          if (raw && !field.value) {{
-            const draft = JSON.parse(raw);
-            if (draft && typeof draft.text === "string" && Number.isFinite(draft.at)
-                && draft.at <= Date.now() && Date.now() - draft.at < DRAFT_MS) {{
-              field.value = draft.text;
-              field.quarterdeckSavedDraft = draft.text;
-            }} else localStorage.removeItem(draftKey(box));
-          }}
-        }} catch (_) {{}}
+        if (!field.value) {{
+          const box = field.closest(".reaction");
+          const peer = Array.from(document.querySelectorAll(".reaction-text")).find(
+            other => other !== field && other.value && draftKey(other.closest(".reaction")) === draftKey(box)
+          );
+          const draft = peer ? null : readDraft(box);
+          field.value = peer ? peer.value : draft ? draft.text : "";
+        }}
         growField(field);
         showCount(field);
       }}
@@ -1629,9 +1642,14 @@ def build_html(
     document.addEventListener("input", event => {{
       if (!event.target.matches(".reaction-text")) return;
       const box = event.target.closest(".reaction");
-      delete box.dataset.reactionId;
-      growField(event.target);
-      showCount(event.target);
+      for (const copy of document.querySelectorAll(".reaction-text")) {{
+        const other = copy.closest(".reaction");
+        if (draftKey(other) !== draftKey(box)) continue;
+        copy.value = event.target.value;
+        delete other.dataset.reactionId;
+        growField(copy);
+        showCount(copy);
+      }}
       saveDraft(box, event.target);
     }});
     document.addEventListener("click", async (event) => {{
@@ -1676,7 +1694,6 @@ def build_html(
           const other = copy.closest(".reaction");
           if (draftKey(other) !== draftKey(box)) continue;
           copy.value = "";
-          delete copy.quarterdeckSavedDraft;
           delete other.dataset.reactionId;
           growField(copy);
           showCount(copy);

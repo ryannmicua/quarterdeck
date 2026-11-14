@@ -426,7 +426,11 @@ The draft contract requires restoration in card, desk and arriving composers,
 expiry after seven days, retaining drafts on failed sends, clearing every copy
 of the sent item and kind, and allowing refresh for saved, unfocused replies.
 Blocked or full browser storage must defer refresh for unfocused edited text;
-a later successful save must release that guard.
+a later successful save must release that guard. Edits mirror in both directions
+between card, desk and arriving composers for the same item and kind, including
+when storage writes fail. Reload checks the current stored text: deleting or
+overwriting that draft, or making storage unreadable, must preserve page text.
+Arriving composers inherit unsaved text from an existing composer.
 The independent length oracle is Python's 20,000-code-point server limit:
 19,999 ASCII characters plus one emoji must send whole; 20,000 ASCII characters
 plus one emoji must be refused. Both page and artifact counters follow it.
