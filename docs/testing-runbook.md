@@ -409,3 +409,24 @@ Confirm the report header title is visible, tap targets measure at least 44 px,
 and the four reaction choices occupy two rows and two columns at both widths.
 A later overriding CSS rule must be judged by those rendered results; source
 substring assertions cannot establish these properties.
+
+## Reply drafts and Unicode limits
+
+Run the focused reply regressions with Python and Node:
+
+```sh
+PYTHONPATH=tests python3 -m unittest -v \
+  test_quarterdeck.DeskRelevanceTests.test_reply_box_grows_counts_refuses_a_too_long_reply_and_keeps_a_draft_across_reloads \
+  test_quarterdeck.DeskRelevanceTests.test_a_twenty_thousand_character_reply_is_delivered_whole_and_the_page_offers_a_text_area \
+  test_quarterdeck.DeskRelevanceTests.test_artifact_sends_reactions_to_the_inbox_collection_and_opens_the_composer
+```
+
+The emitted page scripts execute against disposable browser-boundary doubles.
+The draft contract requires restoration in card, desk and arriving composers,
+expiry after seven days, retaining drafts on failed sends, clearing every copy
+of the sent item and kind, and allowing refresh when no reply field has focus.
+The independent length oracle is Python's 20,000-code-point server limit:
+19,999 ASCII characters plus one emoji must send whole; 20,000 ASCII characters
+plus one emoji must be refused. Both page and artifact counters follow it.
+Fixtures and inbox receivers are fictional, cleanup is automatic, and these
+checks do not send messages to real homes.

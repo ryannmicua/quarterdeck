@@ -4219,7 +4219,7 @@ async function click(report, text) {
 
     def test_a_twenty_thousand_character_reply_is_delivered_whole_and_the_page_offers_a_text_area(self) -> None:
         request = self.serve()
-        words = ("tide “harbor” \u2603 note " * 1000)[:quarterdeck.REACTION_TEXT_LIMIT]
+        words = ("tide “harbor” \u2603 note " * 1000)[:quarterdeck.REACTION_TEXT_LIMIT - 1] + "😀"
         self.assertEqual(len(words), 20_000)
         status, body = request("POST", quarterdeck.REACTION_ENDPOINT, {
             "id": "page-long01", "kind": "call", "item_id": "invented-home/harbor-hold", "reaction": "", "text": words,
@@ -4241,7 +4241,9 @@ async function click(report, text) {
 
     def test_reply_box_grows_counts_refuses_a_too_long_reply_and_keeps_a_draft_across_reloads(self) -> None:
         page = self.serve()("GET", "/")[1]
-        script = next(block for block in re.findall(r"<script>([\s\S]*?)</script>", page) if "quarterdeck-draft:" in block)
+        blocks = re.findall(r"<script>([\s\S]*?)</script>", page)
+        script = next(block for block in blocks if "function quarterdeckReload" in block)
+        script += next(block for block in blocks if "quarterdeck-draft:" in block)
         harness = r"""
 const assert = require('node:assert/strict');
 const script = require('node:fs').readFileSync(0, 'utf8');
@@ -4255,31 +4257,82 @@ const box = {dataset: {reactionKind: 'call', reactionItem: 'home/task'},
   querySelectorAll: () => []};
 field.closest = () => box;
 const send = {disabled: false, closest: () => box};
+const fields = [field];
+function addCopy(kind = 'call', item = 'home/task') {
+  const copy = {...field, value: '', dataset: {...field.dataset}, style: {}};
+  const otherNote = {...note, classList: {...note.classList}};
+  const other = {dataset: {reactionKind: kind, reactionItem: item},
+    querySelector: s => s === '.reaction-count' ? otherNote : null};
+  copy.closest = () => other;
+  fields.push(copy);
+  return copy;
+}
+const desk = addCopy();
+const report = addCopy('report');
+const expired = addCopy('call', 'home/expired');
 const handlers = {};
-globalThis.document = {addEventListener: (n, f) => { handlers[n] = f; }, querySelectorAll: s => s === '.reaction-text' ? [field] : []};
+globalThis.document = {activeElement: null, addEventListener: (n, f) => { handlers[n] = f; },
+  querySelector: () => null, querySelectorAll: s => s === '.reaction-text' ? fields : []};
+let reloaded = 0, deferred = 0;
+globalThis.location = {protocol: 'file:', reload() { reloaded++; }};
+globalThis.setTimeout = () => { deferred++; };
 globalThis.window = {addEventListener() {}};
 globalThis.crypto = {getRandomValues: a => a};
-let posted = 0;
-globalThis.fetch = async () => { posted++; return {ok: true, json: async () => ({reaction: '', text: 'ok'})}; };
+let posted = 0, fail = false, sentText;
+globalThis.fetch = async (_url, options) => {
+  if (fail) throw new Error('offline');
+  posted++; sentText = JSON.parse(options.body).text;
+  return {ok: true, json: async () => ({reaction: '', text: 'ok'})};
+};
 store['quarterdeck-draft:call:home/task'] = JSON.stringify({text: 'unsent dictation', at: Date.now()});
+store['quarterdeck-draft:report:home/task'] = JSON.stringify({text: 'report reply', at: Date.now()});
+store['quarterdeck-draft:call:home/expired'] = JSON.stringify({text: 'old reply', at: Date.now() - 8 * 86400000});
 (async () => {
-  new Function(script)();
+  const reload = new Function(script + ';return quarterdeckReload;')();
   assert.equal(field.value, 'unsent dictation', 'a draft survives the reload');
+  assert.equal(desk.value, field.value, 'the desk also restores the draft');
+  assert.equal(expired.value, '', 'expired drafts are not restored');
+  assert.equal(store['quarterdeck-draft:call:home/expired'], undefined);
+  const arriving = addCopy();
+  window.quarterdeckRestoreDrafts({querySelectorAll: () => [arriving]});
+  assert.equal(arriving.value, field.value, 'arriving cards restore the same draft');
+  reload();
+  assert.equal(reloaded, 1, 'unattended restored drafts do not block refresh');
+  document.activeElement = field;
+  reload();
+  assert.equal(reloaded, 1, 'active editing postpones refresh');
+  assert.equal(deferred, 1);
+  document.activeElement = null;
+  reload();
+  assert.equal(reloaded, 2, 'leaving a saved reply permits refresh');
   assert.equal(field.style.height, '302px', 'the field grows to its content');
   field.value = 'y'.repeat(18000);
   handlers.input({target: field});
   assert.equal(JSON.parse(store['quarterdeck-draft:call:home/task']).text.length, 18000);
   assert.equal(note.hidden, false); assert.equal(note.textContent, '18,000 of 20,000 characters');
-  field.value = 'z'.repeat(20001);
+  field.value = 'z'.repeat(20000) + '😀';
   handlers.input({target: field});
   assert.equal(note.classList.over, true); assert.ok(note.textContent.includes('Shorten it by 1 '));
   await handlers.click({target: {closest: s => s === '.reaction-send' ? send : null}});
   assert.equal(posted, 0, 'a too-long reply is never sent or cut'); assert.ok(status.textContent.includes('too long'));
-  assert.equal(field.value.length, 20001);
-  field.value = 'z'.repeat(20000);
+  assert.equal(field.value, 'z'.repeat(20000) + '😀');
+  field.value = 'z'.repeat(19999) + '😀';
   handlers.input({target: field});
+  assert.equal(note.classList.over, false);
+  assert.equal(note.textContent, '20,000 of 20,000 characters');
+  fail = true;
+  await handlers.click({target: {closest: s => s === '.reaction-send' ? send : null}});
+  assert.equal(field.value, 'z'.repeat(19999) + '😀', 'failure retains the reply');
+  assert.equal(JSON.parse(store['quarterdeck-draft:call:home/task']).text, field.value);
+  fail = false;
   await handlers.click({target: {closest: s => s === '.reaction-send' ? send : null}});
   assert.equal(posted, 1); assert.equal(store['quarterdeck-draft:call:home/task'], undefined, 'a sent reply clears its draft');
+  assert.equal(sentText, 'z'.repeat(19999) + '😀', '20,000 code points are sent whole');
+  for (const copy of [field, desk, arriving]) assert.equal(copy.value, '', 'every matching composer clears');
+  assert.equal(report.value, 'report reply', 'a different kind retains its draft');
+  assert.ok(store['quarterdeck-draft:report:home/task']);
+  reload();
+  assert.equal(reloaded, 3, 'an unrelated saved draft does not block refresh');
 })().catch(error => { process.stderr.write(error.stack); process.exitCode = 1; });
 """
         result = subprocess.run(["node", "-e", harness], input=script, capture_output=True, text=True, check=False)
@@ -4555,6 +4608,18 @@ const button = (c, text) => c.querySelectorAll('button').find(b => b.textContent
   assert.equal(firstInput.value, 'Proceed');  // every copy shows the draft Send would submit
   button(second, 'Question').listeners.click();
   assert.equal(button(first, 'Question').getAttribute('aria-pressed'), 'true');
+  const unicodeCard = () => card('Quay colour');
+  let unicodeInput = unicodeCard().querySelectorAll('textarea')[0];
+  unicodeInput.value = 'z'.repeat(20000) + '😀'; unicodeInput.listeners.input();
+  const before = attempts.length;
+  button(unicodeCard(), 'Send').listeners.click(); await flush();
+  assert.equal(attempts.length, before, '20,001 code points must be refused');
+  assert.ok(unicodeCard().textContent.includes('Shorten it by 1 '));
+  unicodeInput.value = 'z'.repeat(19999) + '😀'; unicodeInput.listeners.input();
+  assert.ok(unicodeCard().textContent.includes('20000 of 20000 characters'));
+  button(unicodeCard(), 'Send').listeners.click(); await flush();
+  assert.equal(attempts.length, before + 1, '20,000 code points must be accepted');
+  assert.equal(written[attempts.at(-1)].text, 'z'.repeat(19999) + '😀');
   process.stdout.write(JSON.stringify(exported));
 })().catch(error => {process.stderr.write(error.stack); process.exitCode = 1;});
 """

@@ -1555,7 +1555,7 @@ def build_html(
     }
     function quarterdeckReload() {
       const editing = Array.from(document.querySelectorAll(".reaction-text")).some(
-        field => field.value || field === document.activeElement
+        field => field === document.activeElement
       );
       if (editing || document.querySelector('[data-reaction-choice][aria-pressed=true], .reaction-send:disabled, #view-editor[data-dirty=true], #view-save:disabled[data-saving=true]')) {
         setTimeout(quarterdeckReload, 1000);
@@ -1589,7 +1589,7 @@ def build_html(
     }}
     function showCount(field) {{
       const note = field.closest(".reaction").querySelector(".reaction-count");
-      const limit = Number(field.dataset.limit), length = field.value.trim().length;
+      const limit = Number(field.dataset.limit), length = Array.from(field.value.trim()).length;
       note.classList.toggle("over", length > limit);
       note.hidden = length < limit * 0.8;
       note.textContent = length > limit
@@ -1608,7 +1608,8 @@ def build_html(
           const box = field.closest(".reaction"), raw = localStorage.getItem(draftKey(box));
           if (raw && !field.value) {{
             const draft = JSON.parse(raw);
-            if (draft && typeof draft.text === "string" && Date.now() - draft.at < DRAFT_MS) field.value = draft.text;
+            if (draft && typeof draft.text === "string" && Number.isFinite(draft.at)
+                && draft.at <= Date.now() && Date.now() - draft.at < DRAFT_MS) field.value = draft.text;
             else localStorage.removeItem(draftKey(box));
           }}
         }} catch (_) {{}}
@@ -1649,7 +1650,7 @@ def build_html(
       const reaction = picked ? picked.dataset.reactionChoice : "";
       const text = field.value.trim();
       if (!reaction && !text) {{ status.textContent = "Pick a reaction or write a reply first."; return; }}
-      if (text.length > Number(field.dataset.limit)) {{ showCount(field); status.textContent = "Not sent: the reply is too long. Shorten it and send again."; return; }}
+      if (Array.from(text).length > Number(field.dataset.limit)) {{ showCount(field); status.textContent = "Not sent: the reply is too long. Shorten it and send again."; return; }}
       const controls = [send, field, ...box.querySelectorAll("[data-reaction-choice]")];
       for (const control of controls) control.disabled = true;
       status.textContent = "Sending…";
@@ -1668,10 +1669,15 @@ def build_html(
           node.textContent = (node.tagName === "P" ? "Latest reaction: " : "") + summary + " (from this page · just now)";
           node.hidden = false;
         }}
-        field.value = "";
-        saveDraft(box, field);
-        growField(field);
-        showCount(field);
+        for (const copy of document.querySelectorAll(".reaction-text")) {{
+          const other = copy.closest(".reaction");
+          if (draftKey(other) !== draftKey(box)) continue;
+          copy.value = "";
+          delete other.dataset.reactionId;
+          growField(copy);
+          showCount(copy);
+        }}
+        try {{ localStorage.removeItem(draftKey(box)); }} catch (_) {{}}
         if (picked) picked.setAttribute("aria-pressed", "false");
         delete box.dataset.reactionId;
         status.textContent = "Sent to Firstmate";

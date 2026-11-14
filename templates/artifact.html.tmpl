@@ -253,7 +253,7 @@ footer { border-top: 1px solid var(--line); margin-top: 3rem; padding-top: 1rem;
       node.style.height = (node.scrollHeight + 2) + "px";
     }
     function showCount(view) {
-      var length = draft.text.trim().length;
+      var length = Array.from(draft.text.trim()).length;
       view.count.hidden = length < TEXT_LIMIT * 0.8;
       view.count.className = "count" + (length > TEXT_LIMIT ? " over" : "");
       view.count.textContent = length > TEXT_LIMIT
@@ -281,7 +281,7 @@ footer { border-top: 1px solid var(--line); margin-top: 3rem; padding-top: 1rem;
         composers[key].forEach(function (view) { view.status.textContent = draft.status; });
         return;
       }
-      if (draft.text.trim().length > TEXT_LIMIT) {
+      if (Array.from(draft.text.trim()).length > TEXT_LIMIT) {
         draft.status = "Not sent: the reply is too long. Shorten it and send again.";
         composers[key].forEach(function (view) { view.status.textContent = draft.status; });
         return;
