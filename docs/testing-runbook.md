@@ -273,6 +273,17 @@ ambiguous cards, regardless of home order, board presence or remote-home status;
 unambiguous homes must retain their links in initial markup and polling payloads.
 Initial card markup and polling payloads must link references in current
 and earlier briefing paragraphs, clarification questions and board recommendations.
+Manual document-link check: serve fictional homes with isolated XDG config/state
+and `--no-snapshot`; seed saved wait cards in a disposable store outside the
+checkout and homes. At 375px, open a card and follow both its Markdown report
+and bare `explainer.html` links. Check current/earlier briefing and question
+references, then edit the board and wait for cache refresh plus card polling.
+Also run `render --output <disposable-output>/index.html` and follow its links.
+Use same-path parent/child reports with distinct headings to check ownership;
+make the child unavailable and confirm no parent fallback. An HTML explainer's
+script should run, but its sandbox must block storage and write-endpoint access.
+Retain screenshots and HTTP output; stop servers, close test tabs and remove
+fictional homes/state afterward.
 The fixtures use disposable fictional homes; set `TMPDIR` to a directory inside
 the worktree when file writes must stay within it. Node.js on PATH executes the
 generated polling script against DOM controls and scripted fetch responses.

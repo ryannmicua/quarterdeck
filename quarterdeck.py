@@ -7600,7 +7600,7 @@ DOC_PREFIX = "doc-"
 
 
 def referenced_docs(text: str, data_dir: Path) -> list[tuple[Path, str]]:
-    """The existing documents a card's text names, as (file, "<id>/<name>") pairs, in order of first mention.
+    """The existing documents a card's text names, as (file, "<id>/<name>") pairs.
 
     A bare name such as explainer.html resolves next to the one data/<id>/ directory the same text names. Only
     regular files that really sit inside data_dir (symbolic links that escape it are refused) are returned.

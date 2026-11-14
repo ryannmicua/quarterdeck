@@ -31,11 +31,19 @@ Sections show every eligible card without a hidden count limit.
 When a needs-you or information card's text names a document, such as
 `data/<id>/report.md` or a bare `explainer.html` beside it, the card shows a
 **Referenced documents** list with one link per file. A bare name resolves only
-when the text names exactly one `data/<id>/` directory. Markdown opens rendered
-and HTML opens as written, in a sandbox so its scripts cannot reach the page's
-write endpoints. A link appears only for a regular `.md` or `.html` file of
-2 MB or less that really sits inside the home's data directory; missing files
-and links that escape it are left out. The card text is not changed.
+when the text includes a `data/<id>/<file>.md` or `.html` reference and all such
+references name the same directory. References are collected from the title,
+ask, detail, recommendation, and current and earlier briefing and clarification
+text, including questions. Files resolve against the task owner's configured
+data directory, including a local secondmate's; an unavailable owner or a
+namespace shared by distinct home labels leaves links out.
+
+Markdown opens rendered and HTML opens as written. A link appears only for a
+readable UTF-8 regular `.md` or `.html` file of 2 MB or less that really sits
+inside that data directory; missing files and links that escape it are left out.
+The card text is not changed. Links also work in a rendered snapshot; keep its
+generated document pages beside the main page. For served HTML sandboxing, see
+[Privacy and architecture](../explanation/privacy-and-architecture.md).
 
 A needs-you card for a task held for the captain shows the kind of ask and a
 one-line summary under its title once the captain-wait watcher has briefed it,
