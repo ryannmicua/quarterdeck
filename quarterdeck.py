@@ -1154,11 +1154,14 @@ def write_state(path: Path, statements: list[tuple[str, tuple[object, ...]]]) ->
             raise
 
 
-def update_report_state(path: Path, report_id: str, state: str | None, fingerprint: str = "") -> None:
+def update_report_state(
+    path: Path, report_id: str, state: str | None, fingerprint: str = "", at: str | None = None,
+) -> None:
     """Set a report's state to reviewed or discarded for a fingerprint, or clear it with None."""
     if state is not None and state not in REPORT_STATES:
         raise ValueError(f"report state must be one of {', '.join(REPORT_STATES)}")
     now = state_timestamp()
+    event_at = board_time_text(when) if (when := parse_board_time(at)) is not None else now
     statement = ("DELETE FROM report_state WHERE report_id = ?", (report_id,)) if state is None else (
         "INSERT INTO report_state VALUES (?, ?, ?, ?) ON CONFLICT(report_id) DO UPDATE SET "
         "state = excluded.state, fingerprint = excluded.fingerprint, updated_at = excluded.updated_at",
@@ -1166,7 +1169,9 @@ def update_report_state(path: Path, report_id: str, state: str | None, fingerpri
     )
     write_state(path, [statement,
         ("INSERT OR IGNORE INTO meta VALUES ('adoption_started', ?)", (now,)),
-        ("INSERT INTO adoption_events VALUES (?, ?, ?)", (state or "unmarked", report_id, now)),
+        ("INSERT INTO adoption_events SELECT ?, ?, ? WHERE ? >= "
+         "(SELECT value FROM meta WHERE key = 'adoption_started')",
+         (state or "unmarked", report_id, event_at, event_at)),
     ])
 
 
@@ -1215,20 +1220,23 @@ def set_report_action(
 
 def apply_report_action(
     snapshots: list[HomeSnapshot], state_path: Path, report_id: str, action: str,
-    expected_fingerprint: str | None = None,
+    expected_fingerprint: str | None = None, at: str | None = None,
 ) -> Report:
     _snapshot, report = unique_report(snapshots, report_id)
     if expected_fingerprint is not None and report.fingerprint != expected_fingerprint:
         raise ValueError("report changed since the page was loaded; reload before marking")
     new_state = REPORT_ACTIONS[action][0]
     if new_state is not None:
-        update_report_state(state_path, report.report_id, new_state, report.fingerprint)
+        update_report_state(state_path, report.report_id, new_state, report.fingerprint, at)
     else:
         wanted = "reviewed" if action == "unmark" else "discarded"
         now = state_timestamp()
+        event_at = board_time_text(when) if (when := parse_board_time(at)) is not None else now
         write_state(state_path, [
             ("DELETE FROM report_state WHERE report_id = ? AND state = ?", (report.report_id, wanted)),
-            ("INSERT INTO adoption_events SELECT 'unmarked', ?, ? WHERE changes() > 0", (report.report_id, now)),
+            ("INSERT INTO adoption_events SELECT 'unmarked', ?, ? WHERE changes() > 0 AND ? >= "
+             "COALESCE((SELECT value FROM meta WHERE key = 'adoption_started'), ?)",
+             (report.report_id, event_at, event_at, now)),
             ("INSERT OR IGNORE INTO meta VALUES ('adoption_started', ?)", (now,)),
         ])
     apply_review_marks(snapshots, load_review_state(state_path))
@@ -6169,11 +6177,11 @@ def read_jsonl(path: Path) -> list[dict[str, object]]:
     return records
 
 
-def local_day(value: object, date_only: bool = False) -> date | None:
+def local_day(value: object) -> date | None:
     """The calendar day of a recorded time in this machine's zone; a bare date stays as written."""
     if not isinstance(value, str):
         return None
-    if date_only or len(value.strip()) == 10:
+    if len(value.strip()) == 10:
         try:
             return date.fromisoformat(value.strip()[:10])
         except ValueError:
@@ -6202,7 +6210,7 @@ def record_adoption_arrivals(
     at = board_time_text(now)
     events = [("arrived", report.report_id, at)
               for snapshot in all_snapshots(homes) for report in snapshot.reports]
-    events.extend(("needs_you", str(card["id"]) + ":" + str(card.get("at") or ""), at)
+    events.extend(("needs_you", json.dumps([card["id"], card.get("hold_set")], separators=(",", ":")), at)
                   for card in cards if card["section"] == "needs_you")
     write_state(path, [
         ("INSERT OR IGNORE INTO meta VALUES ('adoption_started', ?)", (at,)),
@@ -6230,7 +6238,7 @@ def adoption_summary(homes: list[HomeSnapshot], now: datetime, visits: Path | No
     if not any(path.is_file() for path in tag_files):
         missing.append("chat tags")
     for record in tags:
-        index = week_index(local_day(record.get("ts"), date_only=True), weeks)
+        index = week_index(local_day(record.get("ts")), weeks)
         if index is None or record.get("source") in ("page", "artifact"):
             continue
         if record.get("kind") == "decision":
@@ -8140,7 +8148,7 @@ def need_card(
     title = str(item["title"])
     return {
         "id": f"call:{key}", "section": section, "label": "Needs you" if section == "needs_you" else "For your information",
-        "at": item.get("at"), "title": title,
+        "at": item.get("at"), "title": title, "hold_set": wait.get("hold_set") if wait else None,
         "summary": first_line(wait_ask_line(wait)) if wait else first_line(ask) or status,  # type: ignore[arg-type]
         "status": status, "body": "".join(parts),
     }
@@ -8717,10 +8725,10 @@ def import_actions(args: argparse.Namespace) -> int:
                             raise ValueError("report changed since the artifact was exported")
                         update_report_state(
                             state_path, report.report_id,
-                            None if action["state"] == "needs review" else action["state"], report.fingerprint,
+                            None if action["state"] == "needs review" else action["state"], report.fingerprint, action["at"],
                         )
                     else:
-                        apply_report_action(snapshots, state_path, action["report_id"], action["action"], action["fingerprint"])
+                        apply_report_action(snapshots, state_path, action["report_id"], action["action"], action["fingerprint"], action["at"])
                 applied += 1
             except ValueError as exc:
                 skipped.append(f"{action['report_id']} ({action['action']}): {exc}")

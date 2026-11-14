@@ -20,9 +20,12 @@ page. Damaged lines are skipped. Only tags are kept: never the chat messages.
 Triage and Needs-you history starts when collection begins, with no backfill.
 The page shows "counting from <date>" for the first seven days. Appearance means
 first observed by the server, and visits are deduplicated, so first-seen waits
-are estimates rather than proof that a particular card was read. New card event
-timestamps identify new appearances. The event log stores only kind, item ID
-and observation/action time, never card text.
+are estimates rather than proof that a particular card was read. Stable card IDs
+and captain-hold identities identify appearances; activity timestamp updates do
+not create new arrivals. The event log stores only kind, item ID
+and observation/action time, never card text. Imported triage uses valid recorded
+action times; actions before collection began still apply to report state but
+are excluded from adoption history.
 
 ## The visit log
 

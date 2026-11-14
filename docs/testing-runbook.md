@@ -376,3 +376,9 @@ visible URL cleanup and preservation of unrelated query parameters and hashes.
 Device cases include Android phones, Android tablets and iPads with Mobile in
 their user agent. Node is optional for the Python tests but required for the
 reload-script check; a skip means that browser behavior remains unverified.
+
+Chat boundary cases use Asia/Manila: Sunday 18:00 UTC belongs to Monday,
+while a bare Sunday stays Sunday. Artifact-import regressions run both action
+formats, apply Sunday actions on Monday, and require Sunday event times without
+backfilling pre-collection actions. Pending-card activity updates must preserve
+arrival counts and waits; distinct captain-hold identities remain distinct.

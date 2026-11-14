@@ -7709,6 +7709,7 @@ class CaptainWaitTests(unittest.TestCase):
         for enabled in (False, True):
             context = quarterdeck.ReactionContext(enabled=enabled, now=WAIT_NOW)
             built = quarterdeck.activity_cards(attention, None, context)[0]
+            self.assertEqual(built["hold_set"], "2026-07-02T10:00:00Z")
             self.assertEqual(built["summary"], "Give the word to merge: Merge PR 7 with one check waived")
             body = built["body"]
             self.assertLess(body.index("Firstmate&#x27;s briefing, 2026-07-02 10:00 UTC"),
@@ -8000,6 +8001,79 @@ class AdoptionTests(unittest.TestCase):
         self.assertEqual(counts["answers"], [1, 1])
         self.assertEqual((counts["days"], counts["visits"], counts["phone"]), ([2, 1], [3, 1], [2, 0]))
         self.assertIn("67%", quarterdeck.adoption_page_html(self.summary(visits)))
+
+    def test_chat_week_boundaries_use_local_dates_and_preserve_bare_dates(self) -> None:
+        with patch.dict(os.environ, {"TZ": "Asia/Manila"}):
+            time.tzset()
+            self.write_tags(
+                {"ts": "2026-11-08T18:00:00Z", "kind": "status", "qd_had_answer": True, "topic": "Monday here"},
+                {"ts": "2026-11-09T01:00:00+14:00", "kind": "status", "qd_had_answer": False, "topic": "Sunday here"},
+                {"ts": "2026-11-08", "kind": "status", "topic": "Bare Sunday"},
+                {"ts": "2026-11-08T18:00:00Z", "kind": "decision"},
+                {"ts": "2026-11-09T01:00:00+14:00", "kind": "decision"},
+            )
+            state = quarterdeck.validate_review_state_location(self.homes)
+            quarterdeck.write_state(state, [
+                ("INSERT INTO reactions VALUES (?, 'x', 'call', 't', 'approve', '', ?, 'page')", (key, at))
+                for key, at in (("new", "2026-11-10T01:00:00Z"), ("old", "2026-11-05T01:00:00Z"))
+            ])
+            summary = self.summary()
+            self.assertEqual(summary["counts"]["status"], [1, 2])
+            self.assertEqual(summary["counts"]["status_answered"], [1, 0])
+            self.assertEqual(summary["counts"]["status_missed"], [0, 1])
+            self.assertEqual(summary["counts"]["chat_answers"], [1, 1])
+            self.assertEqual(summary["answer_share"], [50, 50])
+            self.assertEqual([topic["topic"] for topic in summary["topics"][0]], ["Monday here"])
+            self.assertEqual([topic["topic"] for topic in summary["topics"][1]], ["Sunday here", "Bare Sunday"])
+        time.tzset()
+
+    def test_imported_triage_uses_action_week_without_backfilling(self) -> None:
+        report = self.homes[0].reports[0]
+        for resulting_state in (False, True):
+            with self.subTest(resulting_state=resulting_state):
+                state = self.root / str(resulting_state) / "marks.json"
+                quarterdeck.record_adoption_arrivals(state, self.homes, [], datetime(2026, 11, 7, tzinfo=timezone.utc))
+                rows = []
+                for action, result, at in (
+                    ("mark", "reviewed", "2026-11-06T08:00:00Z"),
+                    ("mark", "reviewed", "2026-11-08T20:00:00-02:00"),
+                    ("discard", "discarded", "2026-11-08T22:30:00Z"),
+                    ("undiscard", "needs review", "2026-11-08T23:00:00Z"),
+                ):
+                    row = {"report_id": report.report_id, "fingerprint": report.fingerprint, "action": action, "at": at}
+                    if resulting_state:
+                        row["state"] = result
+                    rows.append(row)
+                path = self.root / "import.json"
+                path.write_text(json.dumps(rows), encoding="utf-8")
+                args = argparse.Namespace(file=str(path), dry_run=False)
+                with patch.object(quarterdeck, "load_report_snapshots", return_value=(self.homes, state)), \
+                     patch.object(quarterdeck, "state_timestamp", return_value="2026-11-09T12:00:00Z"), redirect_stdout(io.StringIO()):
+                    self.assertEqual(quarterdeck.import_actions(args), 0)
+                self.assertNotIn(report.report_id, quarterdeck.load_review_state(state).reports)
+                with quarterdeck.state_connection(state) as connection:
+                    events = connection.execute("SELECT kind, at FROM adoption_events WHERE kind != 'arrived'").fetchall()
+                self.assertEqual(events, [("reviewed", "2026-11-08T22:00:00Z"),
+                                          ("discarded", "2026-11-08T22:30:00Z"),
+                                          ("unmarked", "2026-11-08T23:00:00Z")])
+                with patch.object(quarterdeck, "validate_review_state_location", return_value=state):
+                    counts = self.summary()["counts"]
+                self.assertEqual(counts["reviewed"], [0, 1])
+                self.assertEqual(counts["discarded"], [0, 1])
+
+    def test_activity_updates_preserve_arrivals_but_new_holds_are_distinct(self) -> None:
+        state = quarterdeck.validate_review_state_location(self.homes)
+        start = datetime(2026, 11, 12, 8, tzinfo=timezone.utc)
+        for hold in (None, "2026-11-10T08:00:00Z", "2026-11-12T08:00:00Z"):
+            card = {"id": "call:harbor/one", "section": "needs_you", "hold_set": hold, "at": "2026-11-11T01:00:00Z"}
+            quarterdeck.record_adoption_arrivals(state, self.homes, [card], start)
+            quarterdeck.record_adoption_arrivals(state, self.homes, [dict(card, at="2026-11-12T08:20:00Z")], start + timedelta(minutes=20))
+        with quarterdeck.state_connection(state) as connection:
+            events = connection.execute("SELECT at FROM adoption_events WHERE kind = 'needs_you'").fetchall()
+        self.assertEqual(events, [("2026-11-12T08:00:00Z",)] * 3)
+        visits = self.root / "visits.jsonl"
+        visits.write_text(json.dumps({"ts": "2026-11-12T08:30:00Z", "page": "main", "device": "desktop"}) + "\n")
+        self.assertEqual(self.summary(visits)["first_seen_minutes"], [30, None])
 
     def test_answer_share_includes_chat_decisions_and_excludes_quarterdeck_status(self) -> None:
         state = quarterdeck.validate_review_state_location(self.homes)
