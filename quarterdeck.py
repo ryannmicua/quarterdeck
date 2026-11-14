@@ -1316,7 +1316,7 @@ def build_html(
         report_resolution_incomplete=report_resolution_incomplete, reactions=reactions, decisions=decisions,
     ) if bearings else ""
     attention_block = attention_html(bearings.attention, allow_marks) if bearings else ""
-    cards = activity_cards(bearings.attention, board, reactions) if bearings else []
+    cards = activity_cards(bearings.attention, board, reactions, home_data_dirs(homes), bearings.item_pages) if bearings else []
     cards_block = cards_html(cards, bearings.attention, generated, bool(refresh_seconds)) if bearings else ""
     cards_script = ACTIVITY_SCRIPT if cards_block else ""
     cards_link = '<a class="cards-new" id="cards-new" href="#cards" hidden></a>' if cards_block else ""
@@ -5411,11 +5411,13 @@ def site_builder(args: argparse.Namespace, allow_marks: bool = False) -> Callabl
         config, homes, bearings = load_site(args)
         configured_title = config.get("page_title")
         title = args.title or (configured_title if isinstance(configured_title, str) else None) or DEFAULT_TITLE
-        pages = source_pages(homes, show_all=False, bearings=bearings)
-        pages["index.html"] = build_html(
+        index = build_html(
             homes, title, bearings=bearings, refresh_seconds=DEFAULT_REFRESH_SECONDS, allow_marks=allow_marks
         )
-        pages[CARDS_PAGE] = cards_payload(site_cards(homes, bearings, allow_marks), bearings.generated)
+        cards = cards_payload(site_cards(homes, bearings, allow_marks), bearings.generated)
+        pages = source_pages(homes, show_all=False, bearings=bearings)  # after the cards: they register document pages
+        pages["index.html"] = index
+        pages[CARDS_PAGE] = cards
         return pages
     return build
 
@@ -5434,10 +5436,13 @@ def make_handler(
     class Handler(BaseHTTPRequestHandler):
         server_version = "Quarterdeck"
 
-        def send_text(self, status: int, body: str, content_type: str = "text/plain; charset=utf-8") -> None:
+        def send_text(self, status: int, body: str, content_type: str = "text/plain; charset=utf-8",
+                      sandbox: bool = False) -> None:
             data = body.encode("utf-8")
             self.send_response(status)
             self.send_header("Content-Type", content_type)
+            if sandbox:  # a document's own scripts run without this page's origin, so they cannot call its write endpoints
+                self.send_header("Content-Security-Policy", "sandbox allow-scripts allow-popups")
             self.send_header("Content-Length", str(len(data)))
             self.send_header("Cache-Control", "no-store")
             self.send_header("X-Content-Type-Options", "nosniff")
@@ -5461,7 +5466,8 @@ def make_handler(
             if name not in pages:
                 self.send_text(404, "Not found\n")
                 return
-            self.send_text(200, pages[name], "application/json; charset=utf-8" if name.endswith(".json") else "text/html; charset=utf-8")
+            self.send_text(200, pages[name], "application/json; charset=utf-8" if name.endswith(".json") else "text/html; charset=utf-8",
+                           sandbox=name.startswith(DOC_PREFIX))
 
         def host_allowed(self) -> bool:
             return not (is_loopback(str(self.server.server_address[0])) and not request_host_is_loopback(
@@ -7587,9 +7593,83 @@ def work_card(item: dict[str, object], home: str, multi_home: bool) -> dict[str,
     }
 
 
+DOC_PATH_RE = re.compile(r"(?<![\w./-])data/([\w.-]+)/([\w.-]+\.(?:md|html))(?![\w-])")
+DOC_BARE_RE = re.compile(r"(?<![\w./-])([\w-][\w.-]*\.(?:md|html))(?![\w-])")
+DOC_PAGE_LIMIT = 2_000_000
+DOC_PREFIX = "doc-"
+
+
+def referenced_docs(text: str, data_dir: Path) -> list[tuple[Path, str]]:
+    """The existing documents a card's text names, as (file, "<id>/<name>") pairs, in order of first mention.
+
+    A bare name such as explainer.html resolves next to the one data/<id>/ directory the same text names. Only
+    regular files that really sit inside data_dir (symbolic links that escape it are refused) are returned.
+    """
+    wanted: list[tuple[str, str]] = [(match.group(1), match.group(2)) for match in DOC_PATH_RE.finditer(text)]
+    directories = {directory for directory, _name in wanted}
+    if len(directories) == 1:
+        directory = next(iter(directories))
+        spans = [match.span() for match in DOC_PATH_RE.finditer(text)]
+        wanted.extend(
+            (directory, match.group(1)) for match in DOC_BARE_RE.finditer(text)
+            if not any(start <= match.start() < end for start, end in spans)
+        )
+    try:
+        root = data_dir.resolve()
+    except OSError:
+        return []
+    found: list[tuple[Path, str]] = []
+    for directory, name in wanted:
+        if directory in {".", ".."} or name.startswith("."):
+            continue
+        try:
+            path = (root / directory / name).resolve()
+            path.relative_to(root)
+            usable = path.is_file() and path.stat().st_size <= DOC_PAGE_LIMIT
+        except (OSError, ValueError):
+            continue
+        if usable and all(path != seen for seen, _label in found):
+            found.append((path, f"{directory}/{name}"))
+    return found
+
+
+def doc_page(path: Path, label: str) -> str | None:
+    """A referenced document as a page: markdown rendered, HTML exactly as written. None when unreadable."""
+    try:
+        text = path.read_text(encoding="utf-8")
+    except (OSError, UnicodeError):
+        return None
+    if path.suffix == ".html":
+        return text
+    try:
+        return source_page_html(label, f"data/{label}", text)
+    except ValueError:
+        return None
+
+
+def doc_links_html(text: str, data_dir: Path | None, pages: dict[str, str] | None) -> str:
+    """A short list of links to the documents a card names; registers each page in pages. Empty when none exist."""
+    if data_dir is None or pages is None:
+        return ""
+    items = []
+    for path, label in referenced_docs(text, data_dir):
+        page = doc_page(path, label)
+        if page is None:
+            continue
+        name = f"{DOC_PREFIX}{hashlib.sha256(str(path).encode('utf-8')).hexdigest()[:12]}.html"
+        pages[name] = page
+        items.append(
+            f'<li><a href="{html.escape(name, quote=True)}">{html.escape(path.name)}</a> '
+            f'<span class="path">{html.escape("data/" + label)}</span></li>'
+        )
+    if not items:
+        return ""
+    return '<div class="act-docs"><p class="act-docs-head">Referenced documents</p><ul>' + "".join(items) + "</ul></div>"
+
+
 def need_card(
     item: dict[str, object], entry: BoardEntry | None, home: str, multi_home: bool, reactions: ReactionContext | None,
-    section: str,
+    section: str, data_dir: Path | None = None, doc_pages: dict[str, str] | None = None,
 ) -> dict[str, object]:
     key = str(item["key"])
     ask = str(item.get("ask") or "")
@@ -7626,6 +7706,10 @@ def need_card(
         parts.append('<ul class="board-links">' + "".join(
             f'<li><a href="{html.escape(url, quote=True)}">{html.escape(label)}</a> '
             f'<span class="path">{html.escape(url)}</span></li>' for label, url in links) + "</ul>")
+    parts.append(doc_links_html(
+        "\n".join(str(text) for text in (item.get("title"), ask, wait_ask_line(wait) if wait else "", detail) if text),  # type: ignore[arg-type]
+        data_dir, doc_pages,
+    ))
     if entry and entry.number:
         parts.append(f'<p class="links"><a href="#{board_anchor(entry)}" data-desk-link>Show on the desk</a></p>')
     if section == "needs_you":
@@ -7639,8 +7723,18 @@ def need_card(
     }
 
 
+def home_data_dirs(homes: list[HomeSnapshot]) -> dict[str, Path]:
+    """Each local home's data directory by label, for resolving the documents a card names."""
+    dirs: dict[str, Path] = {}
+    for snapshot in all_snapshots(homes):
+        if snapshot.spec.remote_host is None and snapshot.spec.home is not None:
+            dirs.setdefault(snapshot.spec.label, snapshot.spec.data_dir or snapshot.data_dir or snapshot.spec.home / "data")
+    return dirs
+
+
 def activity_cards(
     attention: dict[str, object] | None, board: BoardView | None, reactions: ReactionContext | None,
+    data_dirs: dict[str, Path] | None = None, doc_pages: dict[str, str] | None = None,
 ) -> list[dict[str, object]]:
     """The cards for the feed: what needs the captain first, then recent work, information and what was done."""
     if attention is None:
@@ -7660,7 +7754,10 @@ def activity_cards(
                 if item["key"] in taken or item.get("relevance") in {"quiet", "stale"}:
                     continue
                 taken.add(str(item["key"]))
-                cards.append(need_card(item, entries.get(str(item["key"])), label, multi_home, reactions, section))
+                cards.append(need_card(
+                    item, entries.get(str(item["key"])), label, multi_home, reactions, section,
+                    (data_dirs or {}).get(label), doc_pages,
+                ))
         for item in home.get("recent_work_6h") or []:
             if item["event"] == "started":
                 cards.append(work_card(item, label, multi_home))
@@ -7728,7 +7825,10 @@ def site_cards(homes: list[HomeSnapshot], bearings: Bearings, allow_marks: bool)
     decisions = decision_rows(homes, bearings.attention, bearings.call)
     board = board_view(homes, bearings.generated, decisions=decisions)
     state = next((s.review_state for s in snapshots if s.review_state is not None), None) or ReviewState()
-    return activity_cards(bearings.attention, board, ReactionContext(enabled=allow_marks, latest=state.reactions, now=bearings.generated))
+    return activity_cards(
+        bearings.attention, board, ReactionContext(enabled=allow_marks, latest=state.reactions, now=bearings.generated),
+        home_data_dirs(homes), bearings.item_pages,
+    )
 
 
 ACTIVITY_CSS = """
@@ -7752,6 +7852,12 @@ ACTIVITY_CSS = """
     .act-status { margin-top: .3rem; }
     .act-body { border-top: 1px solid var(--line); padding: .3rem 1rem 1rem; overflow-wrap: anywhere; }
     .act-ask { font-weight: 650; }
+    .act-docs { margin: .6rem 0; }
+    .act-docs-head { margin: 0; font-size: .8rem; font-weight: 700; text-transform: uppercase; letter-spacing: .07em; color: var(--muted); }
+    .act-docs ul { margin: .2rem 0 0; padding: 0; list-style: none; }
+    .act-docs li { margin: 0; padding: .35rem 0; border-top: 1px solid var(--line); }
+    .act-docs a { display: inline-block; min-height: 44px; line-height: 44px; font-weight: 650; }
+    .act-docs .path { display: block; margin-top: -.5rem; font-size: .8rem; overflow-wrap: anywhere; }
     .act-facts { margin: .4rem 0; padding-left: 1.1rem; }
     .wait { margin: .5rem 0 .8rem; padding-bottom: .4rem; border-bottom: 1px solid var(--line); }
     .wait-ask { font-weight: 650; }
@@ -8334,10 +8440,9 @@ def render(args: argparse.Namespace) -> int:
         output_path = output_path.resolve()
         validate_output_path(output_path, homes)
         output_path.parent.mkdir(parents=True, exist_ok=True)
-        write_source_pages(homes, output_path.parent, show_all=args.all, bearings=bearings)
-        write_generated_page(
-            output_path, build_html(homes, title, lavish=args.lavish, show_all=args.all, bearings=bearings)
-        )
+        index = build_html(homes, title, lavish=args.lavish, show_all=args.all, bearings=bearings)
+        write_source_pages(homes, output_path.parent, show_all=args.all, bearings=bearings)  # after: cards register pages
+        write_generated_page(output_path, index)
     except (OSError, ValueError) as exc:
         print(f"quarterdeck: {exc}", file=sys.stderr)
         return 2

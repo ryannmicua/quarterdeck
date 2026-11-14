@@ -26,6 +26,17 @@ recent and done cards include work across projects. Only Recent work and Done
 recently use the six-hour window; waiting items can be older.
 Sections show every eligible card without a hidden count limit.
 
+## Open the documents a card names
+
+When a needs-you or information card's text names a document, such as
+`data/<id>/report.md` or a bare `explainer.html` beside it, the card shows a
+**Referenced documents** list with one link per file. A bare name resolves only
+when the text names exactly one `data/<id>/` directory. Markdown opens rendered
+and HTML opens as written, in a sandbox so its scripts cannot reach the page's
+write endpoints. A link appears only for a regular `.md` or `.html` file of
+2 MB or less that really sits inside the home's data directory; missing files
+and links that escape it are left out. The card text is not changed.
+
 A needs-you card for a task held for the captain shows the kind of ask and a
 one-line summary under its title once the captain-wait watcher has briefed it,
 and opens to Firstmate's dated briefing and clarifications first, with
