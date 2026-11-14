@@ -18,6 +18,11 @@ Reviewed and discarded replace each other. Both are tied to the report's
 content: a report that changes afterwards returns to "needs review" on its
 own. `undiscard` (or **Undiscard**) brings a discarded report back.
 
+On the served page, **Discard** is drawn quieter than **Mark reviewed**. After either one the
+page says "Saved" and offers **Undo** for 15 seconds; Undo sends the opposite action
+(`unmark` or `undiscard`) and returns the report to "needs review"; if Undo fails to save, it stays
+offered for another 15 seconds. Once the 15 seconds pass, the list reloads and the report moves. To reverse it later, use the Reviewed or Discarded reports section on the page, or the commands below.
+
 ```sh
 quarterdeck reports discard maple-harbor/amber-18
 quarterdeck reports undiscard maple-harbor/amber-18

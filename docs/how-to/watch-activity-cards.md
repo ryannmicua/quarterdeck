@@ -10,7 +10,7 @@ first line of its text. Tap a card to read the rest.
 
 ## What the cards are
 
-Cards come from the same data as the "Waiting on you" section, read on each
+Cards come from the same data as the "Decisions and recent work" section, read on each
 render. The feed itself keeps no store and runs no new script; a needs-you card
 for a task held for the captain also shows what the
 [captain-wait watcher](track-captain-waits.md) recorded, when it runs.

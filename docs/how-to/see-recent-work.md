@@ -6,7 +6,7 @@ stale decisions stay collapsed; dated decisions stay hidden until due.
 
 ## On the page
 
-`render` and `serve` add a "Waiting on you" section after the board. Select a
+`render` and `serve` add a "Decisions and recent work" section after the board. Select a
 saved briefing view to choose which sections appear and in what order (see
 [Briefing views](#briefing-views) below). The
 [view reference](../reference/attention-json.md#briefing-views) defines section
@@ -80,7 +80,7 @@ quarterdeck attention --json --project harbor-app
 
 ## Briefing views
 
-A view is an ordered stack of sections you choose: Waiting on you, Recent work
+A view is an ordered stack of sections you choose: Waiting decisions and needs, Recent work
 (last six hours), one section per priority project, For your information, and Done recently
 (merged work in the last six hours).
 Quarterdeck ships two, Morning (opens at startup) and Priorities. On the page, a

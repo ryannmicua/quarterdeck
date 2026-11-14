@@ -502,3 +502,42 @@ backlog/board, then corrupt the fictional feed. Allow the 30-second site cache
 and 15-second card poll to run before the 60-second page reload; verify neutral
 empty wording on the original page. Stop browser/server children and remove
 fictional homes, profiles and state after capturing screenshots and responses.
+
+## Refresh transfer and report Undo
+
+Run the focused Python/Node regressions:
+
+```sh
+PYTHONPATH=tests python3 -m unittest -v \
+  test_quarterdeck.PhoneFixTests.test_failed_fetch_keeps_the_page_and_says_how_old_it_is \
+  test_quarterdeck.PhoneFixTests.test_undo_posts_the_reverse_action_and_a_failed_refresh_keeps_the_page \
+  test_quarterdeck.DeskRelevanceTests.test_undo_restores_report_to_needs_review
+```
+
+Q12 supplies the oracle: network and body-transfer failures retain the last
+page; a complete response replaces it without a second request. Edits, reaction
+choices, sends, view saves and Undo begun during transfer postpone replacement.
+Q17 requires both Mark reviewed and Discard to undo to needs review. Node checks
+reverse-action dispatch, expiry cancellation while Undo is pending, a fresh
+expiry window after a failed Undo that releases refresh, and retry; disposable CLI fixtures check persisted report state independently.
+No real homes or inbox deliveries are used; fixtures clean up automatically.
+Replacement reuses the window: global script bindings must allow reexecution,
+and the replacement event stops outgoing page timers and card observations.
+
+For refresh races with mutations, run
+`PYTHONPATH=tests python3 -m unittest -v test_quarterdeck.PhoneFixTests.test_refresh_waits_for_report_and_wait_mutations_to_settle`.
+The generated refresh, report and wait handlers run together with delayed GET
+bodies and POST responses. Every report action, both Undo actions and wait
+discard must retain the page while pending, then release refresh on success,
+HTTP failure or network failure. Mark and discard must show Undo on the retained
+row; permanently disabled saved buttons must not prevent later refreshes.
+
+For report-action serialization, run
+`PYTHONPATH=tests python3 -m unittest -v test_quarterdeck.PhoneFixTests.test_report_actions_are_serialized_and_failures_restore_controls`.
+The Q17 oracle requires Undo to reverse the one action that actually saved.
+Delayed report requests must disable competing controls for the same report,
+including duplicate and newly arriving representations, while other reports
+remain usable. Network and HTTP failures restore only previously enabled
+controls. Failed Undo must keep the saved actions disabled and remain retryable;
+successful reader Undo must restore the original actions. Both dashboard and
+reader scripts execute against fictional browser-boundary doubles.
