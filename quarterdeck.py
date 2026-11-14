@@ -7727,18 +7727,20 @@ def need_card(
     }
 
 
-def home_data_dirs(homes: list[HomeSnapshot]) -> dict[str, Path]:
-    """Each local home's data directory by label, for resolving the documents a card names."""
-    dirs: dict[str, Path] = {}
+def home_data_dirs(homes: list[HomeSnapshot]) -> dict[str, Path | None]:
+    """Each home's local data directory by label, or None when unavailable."""
+    dirs: dict[str, Path | None] = {}
     for snapshot in all_snapshots(homes):
+        directory = None
         if snapshot.spec.remote_host is None and snapshot.spec.home is not None:
-            dirs.setdefault(snapshot.spec.label, snapshot.spec.data_dir or snapshot.data_dir or snapshot.spec.home / "data")
+            directory = snapshot.spec.data_dir or snapshot.data_dir or snapshot.spec.home / "data"
+        dirs.setdefault(snapshot.spec.label, directory)
     return dirs
 
 
 def activity_cards(
     attention: dict[str, object] | None, board: BoardView | None, reactions: ReactionContext | None,
-    data_dirs: dict[str, Path] | None = None, doc_pages: dict[str, str] | None = None,
+    data_dirs: dict[str, Path | None] | None = None, doc_pages: dict[str, str] | None = None,
 ) -> list[dict[str, object]]:
     """The cards for the feed: what needs the captain first, then recent work, information and what was done."""
     if attention is None:
@@ -7750,7 +7752,9 @@ def activity_cards(
     ) if not entry.deferred}
     cards: list[dict[str, object]] = []
     taken: set[str] = set()
-    owner_labels = {report_reference(label, "").split("/", 1)[0]: label for label in data_dirs or {}}
+    owner_labels: dict[str, list[str]] = {}
+    for label in data_dirs or {}:
+        owner_labels.setdefault(report_reference(label, "").split("/", 1)[0], []).append(label)
     for home in homes:
         label = str(home["label"])
         waiting = home.get("waiting") or {}
@@ -7761,10 +7765,11 @@ def activity_cards(
                 taken.add(str(item["key"]))
                 entry = entries.get(str(item["key"]))
                 namespace, separator, _task = str(item["key"]).partition("/")
-                owner = owner_labels.get(namespace, namespace if separator else label)
+                owners = owner_labels.get(namespace, [])
+                owner = owners[0] if len(owners) == 1 else namespace if separator else label
                 cards.append(need_card(
                     item, entry, owner, multi_home, reactions, section,
-                    (data_dirs or {}).get(owner), doc_pages,
+                    (data_dirs or {}).get(owner) if len(owners) == 1 else None, doc_pages,
                 ))
         for item in home.get("recent_work_6h") or []:
             if item["event"] == "started":

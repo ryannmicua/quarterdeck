@@ -6383,6 +6383,48 @@ class ActivityCardTests(unittest.TestCase):
                         self.assertNotIn("Referenced documents", unavailable[0]["body"])
                         self.assertEqual(unavailable_pages, {})
 
+    def test_card_documents_refuse_ambiguous_home_namespaces(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            root = Path(raw)
+            labels = ("Maple Harbor", "Maple-Harbor", "maple.harbor", "Clearwater")
+            for index, label in enumerate(labels):
+                directory = root / str(index) / "data" / "review"
+                directory.mkdir(parents=True)
+                (directory / "report.md").write_text(f"# {label} report\n")
+            for remote_collision in (False, True):
+                snapshots = [quarterdeck.HomeSnapshot(quarterdeck.HomeSpec(
+                    label, None if remote_collision and index in (1, 2) else root / str(index),
+                    remote_host="fictional.invalid" if remote_collision and index in (1, 2) else None,
+                )) for index, label in enumerate(labels)]
+                for reverse in (False, True):
+                    directories = quarterdeck.home_data_dirs(list(reversed(snapshots)) if reverse else snapshots)
+                    for kind in ("decisions", "needs_you", "informational"):
+                        items = [{"key": f"maple-harbor/choice-{index}" if index < 3 else "clearwater/choice",
+                                  "title": f"Choose {label}", "at": None, "ask": "See data/review/report.md"}
+                                 for index, label in enumerate(labels)]
+                        attention = {"homes": [{"label": label, "errors": [], "waiting": {kind: [item]}}
+                                               for label, item in zip(labels, items)]}
+                        entries = [quarterdeck.BoardEntry(quarterdeck.BoardItem(
+                            id=str(index), title=item["title"], ask=item["ask"], group="decide"),
+                            label, key=item["key"]) for index, (label, item) in enumerate(zip(labels, items))]
+                        for with_board in (False, True):
+                            with self.subTest(remote=remote_collision, reverse=reverse, kind=kind, board=with_board):
+                                board = quarterdeck.BoardView({}, [], 0, [], [], bands={"desk": entries}) if with_board else None
+                                pages: dict[str, str] = {}
+                                cards = quarterdeck.activity_cards(attention, board, None, directories, pages)
+                                self.assertEqual(len(cards), 4)
+                                for card in cards:
+                                    if card["id"] != "call:clearwater/choice":
+                                        self.assertNotIn("Referenced documents", card["body"])
+                                outputs = [quarterdeck.cards_html(cards, attention, ATTENTION_NOW, False),
+                                           "".join(card["html"] for card in json.loads(
+                                               quarterdeck.cards_payload(cards, ATTENTION_NOW))["cards"])]
+                                for output in outputs:
+                                    links = re.findall(r'href="(doc-[0-9a-f]{12}\.html)"', output)
+                                    self.assertEqual(len(links), 1)
+                                    self.assertIn("<h1>Clearwater report</h1>", pages[links[0]])
+                                self.assertEqual(len(pages), 1)
+
     def test_card_documents_include_briefings_questions_and_recommendation(self) -> None:
         with tempfile.TemporaryDirectory() as raw:
             data = Path(raw) / "data"

@@ -268,7 +268,10 @@ and without board entries, against different parent/child documents at the same
 relative path. Parent-board items routed to child tasks are built through
 `board_view()` to preserve the distinction between board home and task owner.
 An unavailable child directory must never select the parent's
-file. Initial card markup and polling payloads must link references in current
+file. Colliding home-label namespaces must register no document links for the
+ambiguous cards, regardless of home order, board presence or remote-home status;
+unambiguous homes must retain their links in initial markup and polling payloads.
+Initial card markup and polling payloads must link references in current
 and earlier briefing paragraphs, clarification questions and board recommendations.
 The fixtures use disposable fictional homes; set `TMPDIR` to a directory inside
 the worktree when file writes must stay within it. Node.js on PATH executes the
