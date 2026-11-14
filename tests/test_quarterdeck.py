@@ -8436,7 +8436,7 @@ class QuickWinTests(unittest.TestCase):
             "recent-background-0", "recent-background-1",
         ])
 
-    def test_jump_bar_is_sticky_at_the_top_and_lists_every_section_after_top(self) -> None:
+    def test_jump_bar_precedes_main_and_lists_sections_after_top(self) -> None:
         with tempfile.TemporaryDirectory() as temp:
             page, _snapshots, _bearings = self.site_page(Path(temp))
         nav = page[page.index('<nav class="jump"'):]
@@ -8450,7 +8450,6 @@ class QuickWinTests(unittest.TestCase):
         self.assertIn("details", labels)
         self.assertLess(page.index('<nav class="jump"'), page.index("<main>"))
         self.assertEqual(page.count('<nav class="jump"'), 1)
-        self.assertRegex(page, r"\.jump \{[^}]*position: sticky; top: 0")
 
     def test_charted_next_and_details_by_home_are_collapsed_by_default(self) -> None:
         with tempfile.TemporaryDirectory() as temp:
@@ -8462,18 +8461,15 @@ class QuickWinTests(unittest.TestCase):
             self.assertIn(f"<summary><h2>{heading}</h2>", page)
         self.assertIn('data-refresh-key="charted"', page)
 
-    def test_header_timestamps_fold_into_updated_ago_on_a_phone(self) -> None:
+    def test_header_emits_generated_and_updated_timestamp_elements(self) -> None:
         with tempfile.TemporaryDirectory() as temp:
             page, _snapshots, _bearings = self.site_page(Path(temp))
         header = page[page.index("<header>"):page.index("</header>")]
         self.assertIn('<time class="stamp-short" id="updated"', header)
         self.assertIn("Generated at ", header)
-        self.assertRegex(page, r"@media \(max-width: 640px\) \{\s*\.stamp-long")
 
-    def test_document_page_header_title_is_visible_and_reports_carry_review_buttons(self) -> None:
+    def test_document_pages_emit_review_controls_only_for_reports_when_enabled(self) -> None:
         plain = quarterdeck.source_page_html("A title", "data/x/report.md", "# Body\n\ntext")
-        self.assertRegex(plain, r"header h1 \{[^}]*color: #fffdf8")
-        self.assertNotRegex(plain, r"(?m)^h1,h2")
         self.assertNotIn("review-actions\" aria-label", plain)
         with tempfile.TemporaryDirectory() as temp:
             snapshots, bearings = self.reports_site(Path(temp))
@@ -8517,14 +8513,9 @@ class QuickWinTests(unittest.TestCase):
         queued = quarterdeck.bearings_item_html(quarterdeck.BItem(title="Chart", filed="2026-11-09"), now, "charted")
         self.assertIn("waiting 5 days", queued)
 
-    def test_tap_targets_are_44px_and_reactions_form_a_two_by_two_grid(self) -> None:
+    def test_page_emits_four_choices_per_reaction_control(self) -> None:
         with tempfile.TemporaryDirectory() as temp:
             page, _snapshots, _bearings = self.site_page(Path(temp), allow_marks=True)
-        css = page[page.index("<style>"):page.index("</style>")]
-        self.assertRegex(css, r"\.request-lavish \{[^}]*min-height: 44px")
-        self.assertRegex(css, r"\.reaction-text \{[^}]*min-height: 44px")
-        self.assertRegex(css, r"\.links a \{[^}]*min-height: 44px")
-        self.assertRegex(css, r"\.reaction-choices \{[^}]*grid-template-columns: repeat\(2, minmax\(0, 1fr\)\)")
         self.assertIn('class="request-row reaction-choices"', page)
         self.assertEqual(page.count('data-reaction-choice="'), 4 * page.count('class="request-row reaction-choices"'))
 

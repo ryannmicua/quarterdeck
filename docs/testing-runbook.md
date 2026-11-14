@@ -400,3 +400,12 @@ sections. Q8 requires separate recurring cards and identities per project for
 both started and completed work. These cases reject a false all-clear, omitted
 navigation and cross-project folding. Fixtures are fictional and disposable;
 no real homes or inbox deliveries are used. No cleanup is needed.
+
+The focused class checks generated markup, not computed CSS. To verify Q1,
+Q3, Q4 and Q6 visually, render fictional dashboard and report pages in a browser
+at phone and desktop widths. Scroll the dashboard to check sticky navigation;
+on a phone, confirm the relative update timestamp replaces the long timestamps.
+Confirm the report header title is visible, tap targets measure at least 44 px,
+and the four reaction choices occupy two rows and two columns at both widths.
+A later overriding CSS rule must be judged by those rendered results; source
+substring assertions cannot establish these properties.
