@@ -41,7 +41,11 @@ namespace shared by distinct home labels leaves links out.
 Markdown opens rendered and HTML opens as written. A link appears only for a
 readable UTF-8 regular `.md` or `.html` file of 2 MB or less that really sits
 inside that data directory; missing files and links that escape it are left out.
-The card text is not changed. Links also work in a rendered snapshot; keep its
+The card text is not changed. Every opened document carries a small bar with
+**Back to Quarterdeck** and **Open file by itself**. The second link opens the
+original file with no bar: markdown as plain text, HTML as its own page. The bar
+floats over an HTML document's closing edge, so that page's layout and scripts
+are untouched. Other report and backlog pages carry the back link only. Links also work in a rendered snapshot; keep its
 generated document pages beside the main page. For served HTML sandboxing, see
 [Privacy and architecture](../explanation/privacy-and-architecture.md).
 

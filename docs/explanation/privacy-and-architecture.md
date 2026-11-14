@@ -154,7 +154,10 @@ renderer escapes source HTML. `quarterdeck reports read <id>` uses the same
 renderer. The [CLI reference](../reference/cli-and-config.md) documents its
 output path, report IDs, and collision handling.
 
-Referenced activity-card HTML is copied as written, including scripts.
+Referenced activity-card HTML is copied as written, including scripts, plus one
+inline-styled navigation bar before its closing `</body>`; the raw-file link serves
+the same file with no bar (`raw-*.html`, or `raw-*.txt` for markdown, under the same
+sandbox header).
 When served by `quarterdeck serve`,
 document pages receive `Content-Security-Policy: sandbox allow-scripts allow-popups`:
 scripts may run, but without the serving origin's storage or access to its write

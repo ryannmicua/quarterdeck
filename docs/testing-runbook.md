@@ -282,6 +282,8 @@ Also run `render --output <disposable-output>/index.html` and follow its links.
 Use same-path parent/child reports with distinct headings to check ownership;
 make the child unavailable and confirm no parent fallback. An HTML explainer's
 script should run, but its sandbox must block storage and write-endpoint access.
+Each opened document must show the Back to Quarterdeck bar, and Open file by
+itself must return the unmodified file at 375px and desktop width.
 Retain screenshots and HTTP output; stop servers, close test tabs and remove
 fictional homes/state afterward.
 The fixtures use disposable fictional homes; set `TMPDIR` to a directory inside

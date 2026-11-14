@@ -616,7 +616,42 @@ def display_path(path: Path, home: Path) -> str:
         return str(path)
 
 
-def source_page_html(title: str, source_path: str, markdown: str) -> str:
+NAV_LINK_STYLE = (
+    "display:inline-block;padding:.55rem .8rem;color:#fffdf8;font:600 15px/1.2 system-ui,sans-serif;"
+    "text-decoration:underline;background:none;border:0;margin:0"
+)
+
+
+def qd_nav_html(raw_href: str | None, fixed: bool) -> str:
+    """The small bar every served document page carries: back to Quarterdeck, and the file by itself when raw_href.
+
+    Every style is inline and the element has a unique id, so it neither inherits from nor leaks into the page it is
+    added to. A fixed bar floats over an HTML explainer and takes no space in its layout.
+    """
+    where = (
+        "position:fixed;left:0;right:0;bottom:0;z-index:2147483647;padding-bottom:env(safe-area-inset-bottom);"
+        if fixed else "position:relative;"
+    )
+    raw = f'<a href="{html.escape(raw_href, quote=True)}" style="{NAV_LINK_STYLE}">Open file by itself</a>' if raw_href else ""
+    return (
+        f'<nav id="qd-nav" aria-label="Quarterdeck" style="{where}display:flex;flex-wrap:wrap;justify-content:space-between;'
+        'box-sizing:border-box;background:#17324d;margin:0;border-top:2px solid #c98635;">'
+        f'<a href="index.html" style="{NAV_LINK_STYLE}">&larr; Back to Quarterdeck</a>{raw}</nav>'
+    )
+
+
+def inject_nav(page: str, raw_href: str) -> str:
+    """Add the bar to an HTML document just before its closing body tag (or at its end), leaving the rest untouched."""
+    bar = qd_nav_html(raw_href, fixed=True)
+    closing = list(re.finditer(r"</body\s*>", page, re.IGNORECASE))
+    if closing:
+        at = closing[-1].start()
+        return page[:at] + bar + page[at:]
+    return page + bar
+
+
+def source_page_html(title: str, source_path: str, markdown: str, raw_href: str | None = None) -> str:
+    nav = qd_nav_html(raw_href, fixed=False)
     return f'''<!doctype html>
 <html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
 <meta name="quarterdeck-{'gen' + 'erated'}" content="read-only source page"><title>{html.escape(title)} · Quarterdeck source</title>
@@ -632,7 +667,7 @@ code {{ font-family: ui-monospace, SFMono-Regular, Consolas, monospace; backgrou
 pre code {{ background: transparent; padding: 0; }}
 .table-wrap {{ overflow-x: auto; }} table {{ border-collapse: collapse; min-width: 100%; }} th,td {{ border: 1px solid #d8d3c8; padding: .5rem .7rem; text-align: left; vertical-align: top; }}
 th {{ background: #e8e2d5; color: #17324d; }} a {{ color: #176b69; }} blockquote {{ border-left: 3px solid #c98635; margin-left: 0; padding-left: 1rem; color: #52616d; }}
-</style></head><body><header><h1>{html.escape(title)}</h1><p>{html.escape(source_path)}</p></header><main><article>{render_markdown(markdown)}</article></main></body></html>'''
+</style></head><body>{nav}<header><h1>{html.escape(title)}</h1><p>{html.escape(source_path)}</p></header><main><article>{render_markdown(markdown)}</article></main></body></html>'''
 
 
 def write_generated_page(path: Path, content: str) -> None:
@@ -5455,7 +5490,7 @@ def make_handler(
                 return
             path = unquote(urlparse(self.path).path)
             name = "index.html" if path in {"/", "/index.html"} else path.lstrip("/")
-            if "/" in name or not name.endswith((".html", ".json")):
+            if "/" in name or not name.endswith((".html", ".json", ".txt")):
                 self.send_text(404, "Not found\n")
                 return
             try:
@@ -5466,8 +5501,9 @@ def make_handler(
             if name not in pages:
                 self.send_text(404, "Not found\n")
                 return
-            self.send_text(200, pages[name], "application/json; charset=utf-8" if name.endswith(".json") else "text/html; charset=utf-8",
-                           sandbox=name.startswith(DOC_PREFIX))
+            kind = "json" if name.endswith(".json") else "plain" if name.endswith(".txt") else "html"
+            self.send_text(200, pages[name], f"{'application' if kind == 'json' else 'text'}/{kind}; charset=utf-8",
+                           sandbox=name.startswith((DOC_PREFIX, RAW_PREFIX)))
 
         def host_allowed(self) -> bool:
             return not (is_loopback(str(self.server.server_address[0])) and not request_host_is_loopback(
@@ -7597,6 +7633,7 @@ DOC_PATH_RE = re.compile(r"(?<![\w./-])data/([\w.-]+)/([\w.-]+\.(?:md|html))(?![
 DOC_BARE_RE = re.compile(r"(?<![\w./-])([\w-][\w.-]*\.(?:md|html))(?![\w-])")
 DOC_PAGE_LIMIT = 2_000_000
 DOC_PREFIX = "doc-"
+RAW_PREFIX = "raw-"  # the same file with no Quarterdeck additions: .html as written, markdown as .txt
 
 
 def referenced_docs(text: str, data_dir: Path) -> list[tuple[Path, str]]:
@@ -7633,16 +7670,16 @@ def referenced_docs(text: str, data_dir: Path) -> list[tuple[Path, str]]:
     return found
 
 
-def doc_page(path: Path, label: str) -> str | None:
-    """A referenced document as a page: markdown rendered, HTML exactly as written. None when unreadable."""
+def doc_page(path: Path, label: str, raw_name: str) -> tuple[str, str] | None:
+    """A referenced document as (page with the Quarterdeck bar, file as written). None when unreadable."""
     try:
         text = path.read_text(encoding="utf-8")
     except (OSError, UnicodeError):
         return None
     if path.suffix == ".html":
-        return text
+        return inject_nav(text, raw_name), text
     try:
-        return source_page_html(label, f"data/{label}", text)
+        return source_page_html(label, f"data/{label}", text, raw_name), text
     except ValueError:
         return None
 
@@ -7653,11 +7690,13 @@ def doc_links_html(text: str, data_dir: Path | None, pages: dict[str, str] | Non
         return ""
     items = []
     for path, label in referenced_docs(text, data_dir):
-        page = doc_page(path, label)
-        if page is None:
+        digest = hashlib.sha256(str(path).encode("utf-8")).hexdigest()[:12]
+        name = f"{DOC_PREFIX}{digest}.html"
+        raw_name = f"{RAW_PREFIX}{digest}{'.html' if path.suffix == '.html' else '.txt'}"
+        built = doc_page(path, label, raw_name)
+        if built is None:
             continue
-        name = f"{DOC_PREFIX}{hashlib.sha256(str(path).encode('utf-8')).hexdigest()[:12]}.html"
-        pages[name] = page
+        pages[name], pages[raw_name] = built
         items.append(
             f'<li><a href="{html.escape(name, quote=True)}">{html.escape(path.name)}</a> '
             f'<span class="path">{html.escape("data/" + label)}</span></li>'
