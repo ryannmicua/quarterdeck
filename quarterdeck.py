@@ -1415,9 +1415,9 @@ def status_line_html(
         elif not waiting:
             text, need = "Nothing needs you", "none"
         else:
-            times = [when for item in waiting.values()
-                     if item.get("opened_at") and (when := parse_when(str(item["opened_at"]))) is not None]
-            oldest = f" · oldest {elapsed_text(min(times), now)}" if times else ""
+            opened = [(when, str(item["opened_at"])) for item in waiting.values()
+                      if item.get("opened_at") and (when := parse_when(str(item["opened_at"]))) is not None]
+            oldest = f" · oldest {waited_text(min(opened)[1], now)}" if opened else ""
             text, need = f"{len(waiting)} {'needs' if len(waiting) == 1 else 'need'} you{oldest}", "some"
         parts.append(f'<a href="#cards" data-need="{need}">{html.escape(text)}</a>')
     if underway is not None:
@@ -2142,6 +2142,9 @@ def waited_text(filed: str, now: datetime) -> str:
     then = parse_when(filed)
     if then is None:
         return ""
+    if is_date_only(filed):
+        days = max(0, (now.astimezone(timezone.utc).date() - then.date()).days)
+        return "today" if days == 0 else f"{days} day{'s' if days != 1 else ''}"
     return elapsed_text(then, now)
 
 

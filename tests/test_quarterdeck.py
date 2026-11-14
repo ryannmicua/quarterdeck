@@ -8376,6 +8376,17 @@ class QuickWinTests(unittest.TestCase):
         self.assertIn("2 need you · oldest 3 days", quarterdeck.status_line_html({"ok": True, "homes": [{"waiting": {"decisions": items}}]}, 0, 0, now))
         self.assertIn("1 needs you", quarterdeck.status_line_html({"ok": True, "homes": [{"waiting": {"needs_you": items[:1]}}]}, 0, 0, now))
 
+    def test_status_oldest_counts_whole_days_for_a_date_only_opening(self) -> None:
+        now = datetime(2026, 11, 14, 15, 0, tzinfo=timezone.utc)
+        for opened, expected in (("2026-11-14", "oldest today"), ("2026-11-13", "oldest 1 day"),
+                                 ("2026-11-14T14:00:00Z", "oldest 1 hour")):
+            with self.subTest(opened=opened):
+                attention = {"ok": True, "homes": [{"waiting": {"needs_you": [{"key": "invented/a", "opened_at": opened}]}}]}
+                line = quarterdeck.status_line_html(attention, 0, 0, now)
+                self.assertIn(f"1 needs you · {expected}<", line)
+                if "T" not in opened:
+                    self.assertNotIn("hour", line)
+
     def test_status_counts_active_waiting_across_priority_scope_and_homes(self) -> None:
         decision = {"key": "invented/decision", "at": "2026-06-29T12:00:00Z",
                     "opened_at": "2026-06-29T12:00:00Z", "project": "other"}
