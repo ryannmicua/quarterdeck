@@ -1398,6 +1398,15 @@ def needs_unread(attention: dict[str, object]) -> bool:
         for home in homes)
 
 
+def stale_note(attention: dict[str, object]) -> str:
+    """A short note when a failed refresh left the last good needs-you list on show, else an empty string."""
+    times = [(when, str(home["feed_stale"]["as_of"])) for home in attention.get("homes", []) if isinstance(home, dict)  # type: ignore[union-attr]
+             and isinstance(home.get("feed_stale"), dict) and (when := parse_when(str(home["feed_stale"]["as_of"]))) is not None]
+    if not times:
+        return ""
+    return f"as of {min(times)[0].astimezone().strftime('%H:%M')} - refresh failed"
+
+
 def status_line_html(
     attention: dict[str, object] | None, underway: int | None, reports: int,
     now: datetime,
@@ -1416,6 +1425,7 @@ def status_line_html(
                    for item in (home.get(field) or {}).get(kind, [])
                    if item.get("relevance") not in {"quiet", "stale"}}
         unread = needs_unread(attention)
+        stale = stale_note(attention)
         if unread:
             text, need = "Needs-you status unavailable", "unknown"
         elif not waiting:
@@ -1425,6 +1435,10 @@ def status_line_html(
                       if item.get("opened_at") and (when := parse_when(str(item["opened_at"]))) is not None]
             oldest = f" · oldest {waited_text(min(opened)[1], now)}" if opened else ""
             text, need = f"{len(waiting)} {'needs' if len(waiting) == 1 else 'need'} you{oldest}", "some"
+        if stale and not unread:
+            text += f" ({stale})"
+            if need == "none":
+                text, need = "Needs-you list " + stale, "unknown"
         parts.append(f'<a href="#cards" data-need="{need}">{html.escape(text)}</a>')
     if underway is not None:
         parts.append(f'<a href="#underway">{underway} underway</a>')
@@ -2966,7 +2980,9 @@ def bearings_html(
 ATTENTION_SCHEMA = "quarterdeck-attention.v1"
 ATTENTION_SCRIPT = Path("bin") / "fm-attention.sh"
 ATTENTION_FEED_SCHEMA = "fm-attention.v1"
-ATTENTION_TIMEOUT_SECONDS = 15
+ATTENTION_TIMEOUT_SECONDS = 60
+# The last feed that read cleanly, by home, so a failed refresh keeps showing it instead of "unavailable".
+LAST_GOOD_FEEDS: dict[str, tuple[float, dict[str, object]]] = {}
 LEDGER_PATH = Path("state") / "fleet-ledger.jsonl"
 LEDGER_VERSION = 1
 RECENT_WINDOWS = (("last_12h", 0, 12), ("12h_to_24h", 12, 24), ("24h_to_48h", 24, 48))
@@ -3272,8 +3288,14 @@ def home_attention(
     if use_feed:
         try:
             feed = feed_runner(spec.home, snapshot.data_dir)
+            LAST_GOOD_FEEDS[str(spec.home)] = (now.timestamp(), feed)
         except AttentionSourceError as exc:
-            errors.append(exc.as_dict())
+            last_good = LAST_GOOD_FEEDS.get(str(spec.home))
+            if last_good is not None:
+                feed = last_good[1]
+                view["feed_stale"] = {"as_of": iso_seconds(last_good[0]), "detail": exc.message}
+            else:
+                errors.append(exc.as_dict())
     feed_rows = [row for row in (feed or {}).get("open_decisions", []) if isinstance(row, dict)]  # type: ignore[union-attr]
     feed_titles = {str(row["task"]): str(row["title"]) for row in feed_rows}
     for row in (feed or {}).get("in_flight", []) or []:  # type: ignore[union-attr]
@@ -4040,11 +4062,17 @@ def attention_errors_html(view: dict[str, object]) -> list[str]:
                    f'{html.escape(str(view["waits_error"]))}.</p></div>')
     for home in homes:
         label = f"{home['label']}: " if len(homes) > 1 else ""
+        if isinstance(home.get("feed_stale"), dict):
+            out.append(f'<div class="warning"><p><strong>{html.escape(label)}{html.escape(stale_note({"homes": [home]}))}'
+                       f'</strong> — showing the last list that loaded.</p>'
+                       f'<details><summary>Details</summary><p>{html.escape(str(home["feed_stale"]["detail"]))}. '
+                       f'Run <code>quarterdeck attention --check</code> and report this line.</p></details></div>')
         for error in home["errors"]:  # type: ignore[union-attr]
             out.append(
                 f'<div class="warning"><p><strong>{html.escape(label)}{html.escape(str(error["source"]))} '
-                f'unavailable</strong> — {html.escape(str(error["message"]))}. Run <code>quarterdeck attention '
-                f'--check</code> and report this line.</p></div>'
+                f'unavailable</strong> — could not be read right now.</p><details><summary>Details</summary>'
+                f'<p>{html.escape(str(error["message"]))}. Run <code>quarterdeck attention '
+                f'--check</code> and report this line.</p></details></div>'
             )
         decisions = home.get("decisions")
         if isinstance(decisions, dict) and decisions.get("skipped"):

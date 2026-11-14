@@ -4928,6 +4928,37 @@ class AttentionPage(HTMLParser):
 class AttentionTests(unittest.TestCase):
     """Contract tests: fixtures follow Firstmate's documented fleet ledger (v1) and fm-attention.v1 formats."""
 
+    def test_failed_refresh_keeps_last_good_needs_you_list(self) -> None:
+        self.assertEqual(quarterdeck.ATTENTION_TIMEOUT_SECONDS, 60)
+        quarterdeck.LAST_GOOD_FEEDS.clear()
+        row = {"task": "kelp", "kind": "decision", "title": "Choice kelp", "bucket": "live",
+               "opened_at": "2026-07-02T10:00:00Z", "last_touched_at": "2026-07-02T11:00:00Z"}
+
+        def failing(*_: object) -> dict[str, object]:
+            raise quarterdeck.AttentionSourceError("decisions", "feed_failed", "bin/fm-attention.sh timed out after 60 seconds")
+
+        with tempfile.TemporaryDirectory() as temp:
+            home = Path(temp)
+            (home / "data").mkdir()
+            (home / "data" / "backlog.md").write_text("# Backlog\n\n## Work\n")
+            homes = [quarterdeck.load_home_snapshot(quarterdeck.HomeSpec("invented", home))]
+            first = quarterdeck.attention_view(homes, ATTENTION_NOW, feed_runner=lambda *_: {"open_decisions": [row]})
+            self.assertEqual(first["homes"][0]["errors"], [])
+            view = quarterdeck.attention_view(homes, ATTENTION_NOW, feed_runner=failing)
+            self.assertEqual(view["homes"][0]["errors"], [])
+            self.assertEqual([r["title"] for r in view["homes"][0]["decisions"]["relevant"]], ["Choice kelp"])
+            line = quarterdeck.status_line_html(view, 0, 0, ATTENTION_NOW)
+            self.assertIn("1 needs you", line)
+            self.assertIn("refresh failed", line)
+            self.assertNotIn("Nothing needs you", line)
+            note = " ".join(quarterdeck.attention_errors_html(view))
+            self.assertIn("refresh failed", note)
+            self.assertIn("<details>", note)
+            quarterdeck.LAST_GOOD_FEEDS.clear()
+            cold = quarterdeck.attention_view(homes, ATTENTION_NOW, feed_runner=failing)
+            self.assertIn("could not be read right now", " ".join(quarterdeck.attention_errors_html(cold)))
+            self.assertIn("unavailable", quarterdeck.status_line_html(cold, 0, 0, ATTENTION_NOW))
+
     def make_home(self, root: Path, ledger: str | None = None, feed: str | None = None, script: bool = True) -> Path:
         home = root / "invented-home"
         (home / "data").mkdir(parents=True)
