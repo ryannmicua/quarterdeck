@@ -7918,3 +7918,144 @@ class CaptainWaitTests(unittest.TestCase):
             self.assertIn("could not read", markup)
         self.assertIn("captain waits: could not read", quarterdeck.attention_check_line(attention))
 
+
+
+class AdoptionTests(unittest.TestCase):
+    NOW = datetime(2026, 11, 14, 12, 0, tzinfo=timezone.utc)  # a Saturday; this week starts Monday 2026-11-09
+
+    def setUp(self) -> None:
+        self.temp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.temp.cleanup)
+        self.root = Path(self.temp.name)
+        env = patch.dict(os.environ, {"XDG_STATE_HOME": str(self.root / "state"), "TZ": "UTC"})
+        env.start()
+        self.addCleanup(env.stop)
+        time.tzset()
+        self.addCleanup(time.tzset)
+        self.home = BearingsTests().make_home(self.root)
+        self.homes = BearingsTests().snapshots(self.home)
+
+    def write_tags(self, *records: object) -> None:
+        directory = self.home / "data" / "qd-adoption"
+        directory.mkdir(parents=True, exist_ok=True)
+        lines = [item if isinstance(item, str) else json.dumps(item) for item in records]
+        (directory / "tags.jsonl").write_text("\n".join(lines) + "\n", encoding="utf-8")
+
+    def summary(self, visits: Path | None = None) -> dict:
+        return quarterdeck.adoption_summary(self.homes, self.NOW, visits or self.root / "visits.jsonl")
+
+    def test_missing_sources_count_as_zero_and_are_named(self) -> None:
+        summary = self.summary()
+        self.assertTrue(all(value == [0, 0] for key, value in summary["counts"].items() if key != "arrived"))  # the fixture report is dated by its file
+        self.assertEqual(summary["missing"], ["chat tags", "review state", "visit log"])
+        page = quarterdeck.adoption_page_html(summary)
+        self.assertIn("No status questions in chat this week or last", page)
+        self.assertIn("Not found yet: chat tags, review state, visit log", page)
+
+    def test_status_tags_split_by_week_and_answer(self) -> None:
+        self.write_tags(
+            {"ts": "2026-11-14", "kind": "status", "topic": "what is waiting: harbor", "qd_had_answer": False},
+            {"ts": "2026-11-10", "kind": "status", "topic": "is it merged", "qd_had_answer": True},
+            {"ts": "2026-11-10", "kind": "instruction", "topic": "merge it", "qd_had_answer": None},
+            {"ts": "2026-11-05", "kind": "status", "topic": "how is kelp", "qd_had_answer": None},
+            {"ts": "2026-10-20", "kind": "status", "topic": "too old", "qd_had_answer": False},
+            "not json",
+            {"ts": "later", "kind": "status", "topic": "bad date", "qd_had_answer": False},
+        )
+        summary = self.summary()
+        self.assertEqual(summary["counts"]["status"], [2, 1])
+        self.assertEqual(summary["counts"]["status_answered"], [1, 0])
+        self.assertEqual(summary["counts"]["status_missed"], [1, 0])
+        page = quarterdeck.adoption_page_html(summary)
+        self.assertIn("You asked 2 status questions in chat this week; Quarterdeck already had the answer for 1.", page)
+        self.assertIn("what is waiting: harbor", page)
+        self.assertIn("had to ask", page)
+        self.assertNotIn("too old", page)
+        self.assertNotIn("merge it", page)
+
+    def test_reactions_triage_and_visits_are_counted_per_week(self) -> None:
+        state = self.root / "state" / "quarterdeck" / "review-state" / "marks.json"
+        quarterdeck.write_state(state, [
+            ("INSERT INTO report_state VALUES ('a', 'reviewed', ?, '2026-11-12T08:00:00Z')", ("0" * 64,)),
+            ("INSERT INTO report_state VALUES ('b', 'discarded', ?, '2026-11-11T08:00:00Z')", ("1" * 64,)),
+            ("INSERT INTO report_state VALUES ('c', 'reviewed', ?, '2026-11-03T08:00:00Z')", ("2" * 64,)),
+            ("INSERT INTO reactions VALUES ('r1', 'x', 'call', 't', 'approve', '', '2026-11-13T01:00:00.000Z', 'page')", ()),
+            ("INSERT INTO reactions VALUES ('r2', 'y', 'report', 't', '', 'hi', '2026-11-04T01:00:00.000Z', 'artifact')", ()),
+            ("INSERT INTO reactions VALUES ('r3', 'z', 'call', 't', 'hold', '', '2026-11-13T02:00:00.000Z', 'chat')", ()),
+        ])
+        visits = self.root / "visits.jsonl"
+        visits.write_text("".join(json.dumps(item) + "\n" for item in (
+            {"ts": "2026-11-13T01:00:00.000Z", "page": "main", "device": "phone"},
+            {"ts": "2026-11-13T09:00:00.000Z", "page": "main", "device": "desktop"},
+            {"ts": "2026-11-14T09:00:00.000Z", "page": "adoption", "device": "phone"},
+            {"ts": "2026-11-04T09:00:00.000Z", "page": "main", "device": "desktop"},
+        )) + "garbage\n", encoding="utf-8")
+        counts = self.summary(visits)["counts"]
+        self.assertEqual((counts["reviewed"], counts["discarded"]), ([1, 1], [1, 0]))
+        self.assertEqual(counts["answers"], [1, 1])
+        self.assertEqual((counts["days"], counts["visits"], counts["phone"]), ([2, 1], [3, 1], [2, 0]))
+        self.assertIn("67%", quarterdeck.adoption_page_html(self.summary(visits)))
+
+    def test_device_class(self) -> None:
+        phone = "Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) Mobile/15E148"
+        self.assertEqual(quarterdeck.device_class(phone), "phone")
+        self.assertEqual(quarterdeck.device_class("Mozilla/5.0 (Linux; Android 14) Mobile Safari"), "phone")
+        self.assertEqual(quarterdeck.device_class("Mozilla/5.0 (X11; Linux x86_64) Firefox/130"), "desktop")
+        self.assertEqual(quarterdeck.device_class(None), "desktop")
+
+    def test_visit_log_appends_minimal_lines_dedupes_reloads_and_prunes(self) -> None:
+        path = self.root / "state" / "visits.jsonl"
+        clock = [1_700_000_000.0]
+        log = quarterdeck.VisitLog(path, lambda: clock[0])
+        self.assertTrue(log.record("main", "Mobile Safari"))
+        self.assertFalse(log.record("main", "Mobile Safari"))  # the page's own minute reload
+        self.assertTrue(log.record("main", "Firefox"))
+        self.assertTrue(log.record("adoption", "Mobile Safari"))
+        clock[0] += quarterdeck.VISIT_REPEAT_SECONDS + 1
+        self.assertTrue(log.record("main", "Mobile Safari"))
+        lines = [json.loads(line) for line in path.read_text().splitlines()]
+        self.assertEqual([(line["page"], line["device"]) for line in lines],
+                         [("main", "phone"), ("main", "desktop"), ("adoption", "phone"), ("main", "phone")])
+        self.assertEqual(set(lines[0]), {"ts", "page", "device"})
+        self.assertEqual(stat.S_IMODE(path.stat().st_mode), 0o600)
+        old = json.dumps({"ts": "2020-01-01T00:00:00.000Z", "page": "main", "device": "phone"}) + "\n"
+        path.write_text(old * 3000, encoding="utf-8")
+        clock[0] += quarterdeck.VISIT_REPEAT_SECONDS + 1
+        self.assertTrue(log.record("adoption", "Firefox"))
+        remaining = path.read_text().splitlines()
+        self.assertEqual(len(remaining), 1)
+        self.assertEqual(json.loads(remaining[0])["page"], "adoption")
+
+    def test_served_main_and_adoption_pages_log_visits_only_when_enabled(self) -> None:
+        pages = {"index.html": "main", "adoption.html": "adoption", "other.html": "other", "cards.json": "{}"}
+        log = quarterdeck.VisitLog(self.root / "visits.jsonl")
+        for visit_log, expected in ((None, 0), (log, 2)):
+            server = quarterdeck.make_server("127.0.0.1", 0, quarterdeck.make_handler(
+                quarterdeck.SiteCache(lambda: pages), visit_log=visit_log))
+            threading.Thread(target=server.serve_forever, daemon=True).start()
+            self.addCleanup(lambda s=server: (s.shutdown(), s.server_close()))
+            for name in ("/", "/adoption.html", "/other.html", "/cards.json"):
+                request = urllib.request.Request(
+                    f"http://127.0.0.1:{server.server_address[1]}{name}", headers={"User-Agent": "Mobile"})
+                with urllib.request.urlopen(request) as response:
+                    self.assertEqual(response.status, 200)
+            path = self.root / "visits.jsonl"
+            self.assertEqual(len(path.read_text().splitlines()) if path.exists() else 0, expected)
+
+    def test_a_failing_visit_log_does_not_break_the_page(self) -> None:
+        blocked = self.root / "blocked"
+        blocked.write_text("a file, not a directory", encoding="utf-8")
+        server = quarterdeck.make_server("127.0.0.1", 0, quarterdeck.make_handler(
+            quarterdeck.SiteCache(lambda: {"index.html": "ok"}), visit_log=quarterdeck.VisitLog(blocked / "visits.jsonl")))
+        threading.Thread(target=server.serve_forever, daemon=True).start()
+        self.addCleanup(lambda: (server.shutdown(), server.server_close()))
+        with redirect_stderr(io.StringIO()), urllib.request.urlopen(f"http://127.0.0.1:{server.server_address[1]}/") as response:
+            self.assertEqual(response.read(), b"ok")
+
+    def test_main_page_links_to_the_adoption_page_which_links_back(self) -> None:
+        bearings = quarterdeck.build_bearings(self.homes, use_snapshot=False)
+        index = quarterdeck.build_html(self.homes, "Test", bearings=bearings)
+        self.assertIn('href="adoption.html"', index)
+        pages = quarterdeck.source_pages(self.homes, bearings=bearings)
+        self.assertIn('href="index.html"', pages["adoption.html"])
+        self.assertIn("viewport", pages["adoption.html"])

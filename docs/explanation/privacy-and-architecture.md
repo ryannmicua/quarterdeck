@@ -178,6 +178,12 @@ the state directory is outside the repository checkout, all selected homes, and
 their configured data directories. The database contains IDs, fingerprints and
 short reasons, not a copy of the report or Firstmate data.
 
+The Adoption page reads each home's `data/qd-adoption/tags.jsonl` (topic tags,
+never chat content) and, with `serve --allow-marks`, Quarterdeck appends page
+loads (time, page, phone or desktop; no address) to
+`${XDG_STATE_HOME:-~/.local/state}/quarterdeck/visits.jsonl`. See
+[see how much you use Quarterdeck](../how-to/see-your-adoption.md).
+
 `quarterdeck export` is a read of the homes that writes a snapshot of the page's
 data (calls, report titles and recommendations, states and fingerprints) to a
 file you choose. By default current, unreviewed reports include their Markdown
