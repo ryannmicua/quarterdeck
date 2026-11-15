@@ -4198,6 +4198,34 @@ async function click(report, text) {
         self.assertIn('data-reaction-kind="call"', related.split("</details>")[0])
         self.assertNotIn("data-reaction-kind", self.page())  # a rendered file has no server to send to
 
+    def test_answer_phrases_come_only_from_what_the_call_states(self) -> None:
+        phrases = quarterdeck.answer_phrases
+        self.assertEqual(phrases("Answer: approve or not"), ["approve", "not"])
+        self.assertEqual(phrases("Options: start it, or leave it."), ["start it", "leave it"])
+        self.assertEqual(phrases("Reply 'merge 63' or the step numbers that looked wrong."), ["merge 63"])
+        self.assertEqual(phrases("Answer: \u2018Not yet\u2019 or \u2018Approve\u2019"), ["Not yet", "Approve"])
+        self.assertEqual(phrases("Choices: red / blue / green"), ["red", "blue", "green"])
+        self.assertEqual(phrases("Answer: yes, no, later, maybe, never"), ["yes", "no", "later", "maybe"])
+        # Nothing stated, a lone unquoted word, a long clause, or a quote nobody is asked to say: no buttons.
+        self.assertEqual(phrases("The pier patch is ready for a look."), [])
+        self.assertEqual(phrases("Answer: when you have time"), [])
+        self.assertEqual(phrases("Options: approve it once the long harbour survey finishes, or leave it"), [])
+        self.assertEqual(phrases("The sign said 'closed for repairs' on Monday."), [])
+        self.assertEqual(phrases(""), [])
+
+    def test_a_call_that_states_its_answers_gets_buttons_beside_the_reply_box(self) -> None:
+        ctx = quarterdeck.ReactionContext(enabled=True, latest={}, now=None)
+        card = quarterdeck.reaction_html(ctx, "call", "invented-home/harbor-hold", call_text="Answer: approve or not yet")
+        self.assertIn('data-reaction-answer="approve"', card)
+        self.assertIn('data-reaction-answer="not yet"', card)
+        self.assertIn(">Not yet</button>", card)
+        self.assertLess(card.index("reaction-answers"), card.index("reaction-text"))
+        plain = quarterdeck.reaction_html(ctx, "call", "invented-home/harbor-hold", call_text="Nothing stated here.")
+        self.assertNotIn("data-reaction-answer", plain)
+        self.assertIn("reaction-text", plain)
+        report = quarterdeck.reaction_html(ctx, "report", "lone-report", call_text="Answer: approve or not yet")
+        self.assertNotIn("data-reaction-answer", report)
+
     def test_sending_a_reaction_delivers_one_note_records_it_and_shows_it_on_the_card(self) -> None:
         request = self.serve()
         status, body = request("POST", quarterdeck.REACTION_ENDPOINT, {
@@ -4386,6 +4414,15 @@ store['quarterdeck-draft:call:home/expired'] = JSON.stringify({text: 'old reply'
   assert.equal(posted, 1); assert.equal(store['quarterdeck-draft:call:home/task'], undefined, 'a sent reply clears its draft');
   assert.equal(sentText, 'z'.repeat(19999) + '😀', '20,000 code points are sent whole');
   for (const copy of [field, desk, arriving, unsavedArrival]) assert.equal(copy.value, '', 'every matching composer clears');
+  // An answer button sends its own phrase as a plain reply and leaves a draft in the box alone.
+  field.value = 'half a thought'; handlers.input({target: field});
+  const answer = {disabled: false, dataset: {reactionAnswer: 'merge 63'}, closest: () => box};
+  const before = posted;
+  await handlers.click({target: {closest: s => s === '[data-reaction-answer]' ? answer : null}});
+  assert.equal(posted, before + 1); assert.equal(sentText, 'merge 63', 'the button sends the stated phrase');
+  assert.equal(field.value, 'half a thought', 'the draft in the reply box is kept');
+  assert.equal(status.textContent, 'Sent to Firstmate');
+  field.value = ''; handlers.input({target: field});
   assert.equal(report.value, 'report reply', 'a different kind retains its draft');
   assert.ok(store['quarterdeck-draft:report:home/task']);
   reload();

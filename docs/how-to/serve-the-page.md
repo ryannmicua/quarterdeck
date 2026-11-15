@@ -116,7 +116,19 @@ authenticating TLS reverse proxy.
 
 With `--allow-marks`, each desk call, related item and report also has
 **Approve**, **Hold**, **Not now** and **Question** buttons, a reply box
-and **Send**. Pick a reaction, write a reply, or both, then Send. The reply box
+and **Send**. Pick a reaction, write a reply, or both, then Send.
+
+When a needs-you call's own text states its answers, the card also shows one
+button per answer above those buttons. Quarterdeck recognizes a clause after
+`Answer:`, `Options:`, `Choices:` or `Reply:` (for example `Answer: approve or
+not yet`), and quoted phrases in a sentence that asks you to reply, answer, say
+or send them (for example `Reply 'merge 63' or the step numbers that looked
+wrong`). It never invents an answer: a clause with a part longer than four words
+or no stated answers shows no buttons, and at most four are shown. Tapping one
+sends that phrase at once, exactly as if you had typed it in the reply box and
+pressed Send, and leaves any draft in the reply box alone. The reply box stays
+for anything else.
+ The reply box
 is a text area that grows as you type for a long dictated answer; the
 [reaction text limit](../reference/cli-and-config.md#reactions) applies.
 A counter appears when you near the limit, and a

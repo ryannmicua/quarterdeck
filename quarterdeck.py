@@ -1587,7 +1587,7 @@ def build_html(
           typeof quarterdeckDraftSaved !== "function" || !quarterdeckDraftSaved(field)
         )
       );
-      return editing || document.querySelector('[data-reaction-choice][aria-pressed=true], .reaction-send:disabled, #view-editor[data-dirty=true], #view-save:disabled[data-saving=true], [data-undo], [data-mutation-pending]');
+      return editing || document.querySelector('[data-reaction-choice][aria-pressed=true], .reaction-send:disabled, .reaction-answer:disabled, #view-editor[data-dirty=true], #view-save:disabled[data-saving=true], [data-undo], [data-mutation-pending]');
     }
     var quarterdeckRefreshing = false;
     function quarterdeckReload() {
@@ -1728,18 +1728,20 @@ def build_html(
         choice.setAttribute("aria-pressed", String(pressed));
         return;
       }}
-      const send = event.target.closest(".reaction-send");
+      const answerButton = event.target.closest("[data-reaction-answer]");
+      const send = event.target.closest(".reaction-send") || answerButton;
       if (!send || send.disabled) return;
       const box = send.closest(".reaction");
       const status = box.querySelector(".reaction-status");
       const field = box.querySelector(".reaction-text");
-      const picked = box.querySelector("[data-reaction-choice][aria-pressed=true]");
+      const answered = !!answerButton;
+      const picked = answered ? null : box.querySelector("[data-reaction-choice][aria-pressed=true]");
       const reaction = picked ? picked.dataset.reactionChoice : "";
-      const submittedText = field.value;
+      const submittedText = answered ? answerButton.dataset.reactionAnswer : field.value;
       const text = submittedText.trim();
       if (!reaction && !text) {{ status.textContent = "Pick a reaction or write a reply first."; return; }}
       if (Array.from(text).length > Number(field.dataset.limit)) {{ showCount(field); status.textContent = "Not sent: the reply is too long. Shorten it and send again."; return; }}
-      const controls = [send, field, ...box.querySelectorAll("[data-reaction-choice]")];
+      const controls = [send, field, ...box.querySelectorAll("[data-reaction-choice], [data-reaction-answer], .reaction-send")];
       for (const control of controls) control.disabled = true;
       status.textContent = "Sending…";
       try {{
@@ -1759,7 +1761,7 @@ def build_html(
         }}
         for (const copy of document.querySelectorAll(".reaction-text")) {{
           const other = copy.closest(".reaction");
-          if (draftKey(other) !== draftKey(box) || copy.value !== submittedText) continue;
+          if (answered || draftKey(other) !== draftKey(box) || copy.value !== submittedText) continue;
           copy.value = "";
           delete other.dataset.reactionId;
           growField(copy);
@@ -1767,7 +1769,7 @@ def build_html(
         }}
         try {{
           const draft = readDraft(box);
-          if (draft && draft.text === submittedText) localStorage.removeItem(draftKey(box));
+          if (!answered && draft && draft.text === submittedText) localStorage.removeItem(draftKey(box));
         }} catch (_) {{}}
         if (picked) picked.setAttribute("aria-pressed", "false");
         delete box.dataset.reactionId;
@@ -1898,6 +1900,8 @@ def build_html(
     .reaction-count.over {{ color: #b3261e; font-weight: 700; }}
     .reaction-latest {{ overflow-wrap: anywhere; }}
     .reaction-choices {{ display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: .5rem; }}
+    .reaction-answers {{ display: flex; flex-wrap: wrap; gap: .5rem; }}
+    .reaction-answer {{ flex: 1 1 8rem; background: var(--sea); color: var(--paper); }}
     .reaction-choice[aria-pressed=true] {{ background: var(--sea); color: var(--paper); }}
     .chip-reaction {{ color: var(--ink); border-color: var(--gold); }}
     .chip-reaction[hidden], .reaction-latest[hidden] {{ display: none; }}
@@ -5030,7 +5034,7 @@ def board_entry_html(
         )
         parts.append(f'<ul class="board-links">{rendered}</ul>')
     brief_row = f'<span class="board-brief">{"".join(brief)}</span>' if brief else ""
-    reaction = reaction_html(reactions, "call", entry.key)
+    reaction = reaction_html(reactions, "call", entry.key, call_text=entry.item.ask)
     if reactions is not None and (reactions.latest.get(("call", entry.key))):
         chips.append(
             f'<span class="chip chip-reaction" data-reaction-latest="{html.escape("call:" + entry.key, quote=True)}">'
@@ -5360,7 +5364,7 @@ def related_html(
             body = f'<p>{html.escape(entry.item.ask)}</p>'
             if entry.deferred:
                 chips += f'<span class="chip chip-deferred">{html.escape(entry.deferred)}</span>'
-            tail = reaction_html(reactions, "call", entry.key)
+            tail = reaction_html(reactions, "call", entry.key, call_text=entry.item.ask)
         cards.append(
             f'<article class="card"><p class="eyebrow">{label} · {html.escape(item.home)}{when}</p>'
             f'<h3>{html.escape(item.title)}</h3>{body}<div class="board-chips">{chips}</div>{tail}</article>'
@@ -7473,8 +7477,61 @@ def reaction_latest_text(reaction: dict[str, str] | None, now: datetime | None) 
     return f"Latest reaction: {reaction_summary(reaction)} ({sent}{ago})"
 
 
-def reaction_html(ctx: ReactionContext | None, kind: str, item_id: str, available: bool = True) -> str:
-    """The reaction row for a card: latest reaction, quick reactions, a reply box and Send."""
+ANSWER_CUE_RE = re.compile(r"\b(?:answers?|options?|choices?|reply|respond)\s*:\s*([^\n]+)", re.IGNORECASE)
+ANSWER_VERB_RE = re.compile(r"\b(?:answer|reply|respond|say|send|type|tell)\b", re.IGNORECASE)
+ANSWER_QUOTED_RE = re.compile(r"[\u2018\u201c'\"]([^'\"\u2018\u2019\u201c\u201d\n]{2,30})[\u2019\u201d'\"]")
+ANSWER_SPLIT_RE = re.compile(r"\s*(?:,\s*(?:or\s+)?|;\s*(?:or\s+)?|/|\s+or\s+)\s*", re.IGNORECASE)
+ANSWER_MAX_BUTTONS = 4
+ANSWER_MAX_WORDS = 4
+
+
+def answer_phrases(text: str) -> list[str]:
+    """The answers a call's own text states, for one-tap buttons; conservative, and empty when unsure.
+
+    Recognized: a clause after `Answer:`, `Options:`, `Reply:` or `Choices:` (quoted phrases, or a short list split on
+    commas, `/` and `or`), and quoted phrases in a sentence that tells the reader to reply, answer, say or send them.
+    A list with any part longer than four words is not recognized at all, so no answer is ever invented or trimmed."""
+    found: list[str] = []
+    clause = ANSWER_CUE_RE.search(text)
+    if clause:
+        quoted = ANSWER_QUOTED_RE.findall(clause.group(1))
+        if quoted:
+            found = quoted
+        else:
+            body = re.sub(r"^\s*(?:either|one of)\s+", "", clause.group(1).strip().rstrip(".!?"), flags=re.IGNORECASE)
+            parts = [part.strip(" .!?'\"") for part in ANSWER_SPLIT_RE.split(body)]
+            parts = [part for part in parts if part]
+            if len(parts) >= 2 and all(len(part.split()) <= ANSWER_MAX_WORDS for part in parts):
+                found = parts
+    else:
+        for sentence in re.split(r"(?<=[.!?])\s+|\n", text):
+            if ANSWER_VERB_RE.search(sentence):
+                found.extend(ANSWER_QUOTED_RE.findall(sentence))
+    phrases: list[str] = []
+    for phrase in found:
+        phrase = " ".join(phrase.split())
+        if (phrase and len(phrase.split()) <= ANSWER_MAX_WORDS and phrase.lower() not in (p.lower() for p in phrases)):
+            phrases.append(phrase)
+    return phrases[:ANSWER_MAX_BUTTONS]
+
+
+def answer_buttons_html(text: str) -> str:
+    phrases = answer_phrases(text)
+    if not phrases:
+        return ""
+    buttons = "".join(
+        f'<button class="request-lavish reaction-answer" type="button" data-reaction-answer="{html.escape(phrase, quote=True)}">'
+        f'{html.escape(phrase[:1].upper() + phrase[1:])}</button>' for phrase in phrases
+    )
+    return f'<div class="request-row reaction-answers" role="group" aria-label="Answers stated in this call">{buttons}</div>'
+
+
+def reaction_html(
+    ctx: ReactionContext | None, kind: str, item_id: str, available: bool = True, call_text: str = "",
+) -> str:
+    """The reaction row for a card: latest reaction, quick reactions, a reply box and Send.
+
+    `call_text` is a call's own words; any answers it states become one-tap buttons beside the reply box."""
     if ctx is None:
         return ""
     key = html.escape(f"{kind}:{item_id}", quote=True)
@@ -7488,7 +7545,8 @@ def reaction_html(ctx: ReactionContext | None, kind: str, item_id: str, availabl
     )
     return (
         f'<div class="reaction" data-reaction-kind="{kind}" data-reaction-item="{html.escape(item_id, quote=True)}">'
-        f'{latest}<div class="request-row reaction-choices">{buttons}</div>'
+        f'{latest}{answer_buttons_html(call_text) if kind == "call" else ""}'
+        f'<div class="request-row reaction-choices">{buttons}</div>'
         f'<div class="request-row reaction-reply"><textarea class="reaction-text" rows="2" data-limit="{REACTION_TEXT_LIMIT}" '
         f'placeholder="Reply to Firstmate (optional)" aria-label="Reply to Firstmate" '
         f'autocapitalize="sentences" enterkeyhint="enter"></textarea>'
@@ -8756,7 +8814,7 @@ def need_card(
     if entry and entry.number:
         parts.append(f'<p class="links"><a href="#{board_anchor(entry)}" data-desk-link>Show on the desk</a></p>')
     if section == "needs_you":
-        parts.append(reaction_html(replace(reactions, now=None) if reactions else None, "call", key))
+        parts.append(reaction_html(replace(reactions, now=None) if reactions else None, "call", key, call_text=ask))
     title = str(item["title"])
     return {
         "id": f"call:{key}", "section": section, "label": "Needs you" if section == "needs_you" else "For your information",
@@ -9059,7 +9117,7 @@ ACTIVITY_SCRIPT = """
       function busy(card) {
         return card.contains(document.activeElement) && document.activeElement.matches("input, textarea") ||
           Array.from(card.querySelectorAll(".reaction-text")).some(field => field.value) ||
-          !!card.querySelector("[data-reaction-choice][aria-pressed=true], .reaction-send:disabled");
+          !!card.querySelector("[data-reaction-choice][aria-pressed=true], .reaction-send:disabled, .reaction-answer:disabled");
       }
       function build(html) {
         const holder = document.createElement("template");

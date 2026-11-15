@@ -86,7 +86,9 @@ same origin, content-type and no-key rules, validates the view exactly as
 `quarterdeck views save` does, and writes only that file, never a home.
 
 `serve --allow-marks` also enables `POST /api/reactions` for
-reactions: a quick Approve, Hold, Not now or Question, and a reply, on a
+reactions: a quick Approve, Hold, Not now or Question, a reply, or a one-tap
+answer taken from the call's own text (sent as a plain reply, through this same
+endpoint), on a
 desk call, a related item or a report. It applies the same origin, content-type
 and no-key rules as the mark endpoint, and accepts only an item that exists. It
 is the one place Quarterdeck acts on a home beyond reading: it runs that home's
