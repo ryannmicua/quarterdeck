@@ -116,14 +116,33 @@ authenticating TLS reverse proxy.
 
 With `--allow-marks`, each desk call, related item and report also has
 **Approve**, **Hold**, **Not now** and **Question** buttons, a reply box
-and **Send**. Pick a reaction, write a reply, or both, then Send. The reply box
-is a text area that grows as you type for a long dictated answer; the
+and **Send**. Pick a reaction, write a reply, or both, then Send.
+
+Calls on Needs-you cards, the desk and related cards can also show answer
+buttons taken from their own text. Quarterdeck recognizes `Answer:`, `Option:`,
+`Choice:` (also their plurals), `Reply:` or `Respond:` at the start of the text
+or a new line. These accept quoted answers or an unquoted list separated by
+commas, `or`, or a slash surrounded by whitespace, such as
+`Options: merge release/63 or hold.` Slashes within an answer stay literal.
+Unquoted lists need at least two answers and reject the whole list if any
+answer exceeds four words. Parsing stops before a later sentence, semicolon
+or recommendation field.
+
+Positive `Answer`, `Reply`, `Respond`, `Say`, `Send`, `Type` or `Tell` directives
+in the same position accept immediately listed quoted answers, such as
+`Reply 'merge 63' or 'hold'.` Quoted answers must be 2–30 characters and at most
+four words. Ambiguous prose can leave the card without answer buttons; at most
+four distinct answers are shown. Tapping one sends that phrase immediately as
+a plain reply, ignoring any selected quick reaction and preserving both that
+selection and the reply draft. Use the reply box for anything else.
+
+The reply box is a text area that grows as you type for a long dictated answer; the
 [reaction text limit](../reference/cli-and-config.md#reactions) applies.
 A counter appears when you near the limit, and a
 longer reply is refused with a message rather than cut. An unsent reply is kept
 in this browser's `localStorage` (for up to seven days) across reloads when
 storage is available. Reply text is shared between card and desk composers for
-the same item and kind. A successful send clears the submitted text from those
+the same item and kind. A successful **Send** clears the submitted text from those
 composers and storage; edits made while sending survive. A failed send keeps
 the draft. Quarterdeck
 hands one line (item ID, task ID, reaction, your text and the time) to the

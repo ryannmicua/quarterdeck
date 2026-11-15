@@ -59,10 +59,9 @@ as a local artifact. Quarterdeck itself has no agent or build step.
   `discard` and `undiscard`; off by default. Discard takes a report off the
   list without claiming you reviewed it.
   See the [serving guide](docs/how-to/serve-the-page.md#mark-reports-reviewed-from-the-page).
-- Reactions: with `--allow-marks`, each desk call, related item and report on
-  the served page has Approve, Hold, Not now and Question buttons and a reply
-  box. Send delivers a note to Firstmate through the home's `bin/fm-inbox.sh`.
-  The cloud artifact has the same controls, recorded for
+- Reactions: with `--allow-marks`, the served page offers
+  [quick reactions, one-tap answers and replies](docs/how-to/serve-the-page.md#react-to-calls-and-reports-from-the-page)
+  delivered to Firstmate. The cloud artifact records reactions and replies for
   `quarterdeck reactions import`, and a "Discuss with Firstmate" button that
   opens the claude.ai comment composer on the card.
 - Relevance: Firstmate marks reports and past captain calls current or stale

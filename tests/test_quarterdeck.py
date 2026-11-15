@@ -4198,6 +4198,100 @@ async function click(report, text) {
         self.assertIn('data-reaction-kind="call"', related.split("</details>")[0])
         self.assertNotIn("data-reaction-kind", self.page())  # a rendered file has no server to send to
 
+    def test_answer_phrases_come_only_from_what_the_call_states(self) -> None:
+        phrases = quarterdeck.answer_phrases
+        self.assertEqual(phrases("Answer: approve or not"), ["approve", "not"])
+        self.assertEqual(phrases("Options: start it, or leave it."), ["start it", "leave it"])
+        self.assertEqual(phrases("Reply 'merge 63' or the step numbers that looked wrong."), ["merge 63"])
+        self.assertEqual(phrases("Answer: \u2018Not yet\u2019 or \u2018Approve\u2019"), ["Not yet", "Approve"])
+        self.assertEqual(phrases("Choices: red / blue / green"), ["red", "blue", "green"])
+        for separator in (' or ', ', ', ' / ', ' \t/\t '):
+            with self.subTest(separator=separator):
+                self.assertEqual(phrases(f"Options: merge release/63{separator}hold."),
+                                 ["merge release/63", "hold"])
+                for cue in ('Options: ', 'Reply '):
+                    self.assertEqual(phrases(f"{cue}'merge release/63'{separator}'hold'."),
+                                     ["merge release/63", "hold"])
+        self.assertEqual(phrases("Options: release/63 or release/64."), ["release/63", "release/64"])
+        for ambiguous in ('approve/hold', 'approve /hold', 'approve/ hold'):
+            with self.subTest(ambiguous=ambiguous):
+                self.assertEqual(phrases('Options: ' + ambiguous), [])
+        self.assertEqual(phrases("Reply 'merge release/63'/'hold'."), ["merge release/63"])
+
+        self.assertEqual(phrases("Answer: yes, no, later, maybe, never"), ["yes", "no", "later", "maybe"])
+        # Nothing stated, a lone unquoted word, a long clause, or a quote nobody is asked to say: no buttons.
+        self.assertEqual(phrases("The pier patch is ready for a look."), [])
+        self.assertEqual(phrases("Answer: when you have time"), [])
+        self.assertEqual(phrases("Options: approve it once the long harbour survey finishes, or leave it"), [])
+        self.assertEqual(phrases("The sign said 'closed for repairs' on Monday."), [])
+        self.assertEqual(phrases(""), [])
+        for cue in ('Reply ', 'Options: '):
+            for first, second in (("\"don't merge\"", '"merge 63"'),
+                                  ('“don’t merge”', '“merge 63”'),
+                                  ("'hold'", "'merge 63'")):
+                with self.subTest(cue=cue, first=first):
+                    expected = "don’t merge" if '“' in first else "don't merge" if '"' in first else 'hold'
+                    self.assertEqual(phrases(f"{cue}{first} or {second}."), [expected, "merge 63"])
+        self.assertEqual(phrases('Reply “hold” or "merge 63".'), ["hold", "merge 63"])
+        self.assertEqual(phrases('Reply “hold".'), [])
+        for cue in ('Reply ', 'Options: '):
+            for opening, closing in (("'", "'"), ('‘', '’')):
+                with self.subTest(cue=cue, opening=opening):
+                    self.assertEqual(phrases(f"{cue}{opening}don't merge{closing} or {opening}merge 63{closing}."),
+                                     ["don't merge", "merge 63"])
+                    self.assertEqual(phrases(f"{cue}{opening}don’t merge{closing} or {opening}merge 63{closing}."),
+                                     ["don’t merge", "merge 63"])
+        self.assertEqual(phrases("Options: don't merge or don't deploy."), ["don't merge", "don't deploy"])
+        self.assertEqual(phrases("Options: don’t merge or don’t deploy. Recommend: wait."),
+                         ["don’t merge", "don’t deploy"])
+        self.assertEqual(phrases("Reply don't merge or don't deploy."), [])
+        for ambiguous in (
+            "Do not say 'merge 63'; reply 'hold' until CI passes.",
+            "Do not Reply: 'merge 63' or 'approve'.",
+            "Never use Options: 'merge 63' or 'approve'.",
+            "If CI fails, reply 'merge 63' or 'approve'.",
+            "Options: do not say 'merge 63' or 'approve'.",
+            "Reply: avoid 'merge 63' or 'approve'.",
+        ):
+            with self.subTest(ambiguous=ambiguous):
+                self.assertEqual(phrases(ambiguous), [])
+        for cue in ('Reply ', 'Reply: ', 'Options: '):
+            self.assertEqual(phrases(cue + "'hold'; do not say 'merge 63'."), ["hold"])
+            self.assertEqual(phrases(cue + "'hold' or 'wait', never 'merge 63'."), ["hold", "wait"])
+        self.assertEqual(phrases("Options: approve or hold; do not merge."), ["approve", "hold"])
+        self.assertEqual(phrases("The patch is ready.\nReply 'merge 63' or 'hold'."), ["merge 63", "hold"])
+
+
+        for tail in (' Recommend: approve.', ' Recommendation: "approve".',
+                     ' Recommended: "approve".', ' This needs a much longer explanation after the choices.'):
+            for options in ('approve or hold.', '"approve" or "hold".'):
+                with self.subTest(options=options, tail=tail):
+                    self.assertEqual(phrases('Options: ' + options + tail), ["approve", "hold"])
+        self.assertEqual(phrases('Options: "approve" or "hold" Recommend: "approve".'), ["approve", "hold"])
+        self.assertEqual(phrases('Options: "hold. please" or "merge 63". Recommend: "hold".'),
+                         ["hold. please", "merge 63"])
+
+
+    def test_a_call_that_states_its_answers_gets_buttons_beside_the_reply_box(self) -> None:
+        ctx = quarterdeck.ReactionContext(enabled=True, latest={}, now=None)
+        card = quarterdeck.reaction_html(ctx, "call", "invented-home/harbor-hold", call_text="Answer: approve or not yet")
+        self.assertIn('data-reaction-answer="approve"', card)
+        self.assertIn('data-reaction-answer="not yet"', card)
+        self.assertIn(">Not yet</button>", card)
+        self.assertLess(card.index("reaction-answers"), card.index("reaction-text"))
+        plain = quarterdeck.reaction_html(ctx, "call", "invented-home/harbor-hold", call_text="Nothing stated here.")
+        self.assertNotIn("data-reaction-answer", plain)
+        prohibited = quarterdeck.reaction_html(
+            ctx, "call", "invented-home/harbor-hold",
+            call_text="Do not say 'merge 63'; reply 'hold' until CI passes.",
+        )
+        self.assertNotIn("data-reaction-answer", prohibited)
+        self.assertIn("reaction-text", prohibited)
+
+        self.assertIn("reaction-text", plain)
+        report = quarterdeck.reaction_html(ctx, "report", "lone-report", call_text="Answer: approve or not yet")
+        self.assertNotIn("data-reaction-answer", report)
+
     def test_sending_a_reaction_delivers_one_note_records_it_and_shows_it_on_the_card(self) -> None:
         request = self.serve()
         status, body = request("POST", quarterdeck.REACTION_ENDPOINT, {
@@ -4267,8 +4361,9 @@ globalThis.localStorage = {getItem: k => { if (readFailure) throw new Error('blo
 const note = {hidden: true, textContent: '', classList: {toggle(name, on) { this.over = on; }}};
 const status = {textContent: ''};
 const field = {value: '', dataset: {limit: '20000'}, offsetParent: {}, scrollHeight: 300, style: {}, matches: s => s === '.reaction-text'};
+let picked = null;
 const box = {dataset: {reactionKind: 'call', reactionItem: 'home/task'},
-  querySelector: s => s === '.reaction-count' ? note : s === '.reaction-status' ? status : s === '.reaction-text' ? field : null,
+  querySelector: s => s === '.reaction-count' ? note : s === '.reaction-status' ? status : s === '.reaction-text' ? field : s === '[data-reaction-choice][aria-pressed=true]' ? picked : null,
   querySelectorAll: () => []};
 field.closest = () => box;
 const send = {disabled: false, closest: () => box};
@@ -4293,9 +4388,12 @@ let reloaded = 0, deferred = 0;
 globalThis.location = {protocol: 'file:', reload() { reloaded++; }};
 globalThis.setTimeout = () => { deferred++; };
 globalThis.window = {addEventListener() {}};
-globalThis.crypto = {getRandomValues: a => a};
+let sequence = 0;
+globalThis.crypto = {getRandomValues: a => a.fill(++sequence)};
 let posted = 0, fail = false, sentText, responseGate = null;
+const attempts = [];
 globalThis.fetch = async (_url, options) => {
+  attempts.push(JSON.parse(options.body));
   if (fail) throw new Error('offline');
   posted++; sentText = JSON.parse(options.body).text;
   if (responseGate) await responseGate;
@@ -4386,6 +4484,59 @@ store['quarterdeck-draft:call:home/expired'] = JSON.stringify({text: 'old reply'
   assert.equal(posted, 1); assert.equal(store['quarterdeck-draft:call:home/task'], undefined, 'a sent reply clears its draft');
   assert.equal(sentText, 'z'.repeat(19999) + '😀', '20,000 code points are sent whole');
   for (const copy of [field, desk, arriving, unsavedArrival]) assert.equal(copy.value, '', 'every matching composer clears');
+  // An answer button sends its own phrase as a plain reply and leaves a draft in the box alone.
+  field.value = 'half a thought'; handlers.input({target: field});
+  const answer = {disabled: false, dataset: {reactionAnswer: 'merge 63'}, closest: () => box};
+  const before = posted;
+  await handlers.click({target: {closest: s => s === '[data-reaction-answer]' ? answer : null}});
+  assert.equal(posted, before + 1); assert.equal(sentText, 'merge 63', 'the button sends the stated phrase');
+  assert.equal(field.value, 'half a thought', 'the draft in the reply box is kept');
+  assert.equal(status.textContent, 'Sent to Firstmate');
+  fail = true;
+  const clickSend = () => handlers.click({target: {closest: s => s === '.reaction-send' ? send : null}});
+  const clickAnswer = () => handlers.click({target: {closest: s => s === '[data-reaction-answer]' ? answer : null}});
+  const failures = [clickAnswer,
+    () => { answer.dataset.reactionAnswer = 'hold'; return clickAnswer(); },
+    clickSend, clickAnswer, clickSend,
+    () => { picked = {dataset: {reactionChoice: 'approve'}}; return clickSend(); },
+    () => { box.dataset.reactionKind = 'report'; return clickSend(); },
+    () => { box.dataset.reactionItem = 'home/other'; return clickSend(); }];
+  for (const submit of failures) {
+    const previous = attempts.at(-1);
+    await submit();
+    const failed = attempts.at(-1);
+    assert.notEqual(failed.id, previous.id, 'changed submissions need a new delivery ID');
+    await (failed.text === field.value.trim() ? clickSend() : clickAnswer());
+    assert.deepEqual(attempts.at(-1), failed, 'unchanged retries retain the payload and delivery ID');
+  }
+  picked = null;
+  box.dataset.reactionKind = 'call'; box.dataset.reactionItem = 'home/task';
+  await clickAnswer();
+  const failedAnswer = attempts.at(-1);
+  for (const editor of [field, desk, arriving]) {
+    editor.value = 'a different draft'; handlers.input({target: editor});
+    await clickAnswer();
+    assert.deepEqual(attempts.at(-1), failedAnswer, 'draft edits must not duplicate a failed answer');
+  }
+  let pressed = 'false';
+  const choice = {disabled: false, dataset: {reactionChoice: 'approve'}, closest: () => box,
+    getAttribute: () => pressed, setAttribute: (_name, value) => { pressed = value; },
+    parentElement: {querySelectorAll: () => [choice]}};
+  for (let toggle = 0; toggle < 2; toggle++) {
+    await handlers.click({target: {closest: s => s === '[data-reaction-choice]' ? choice : null}});
+    picked = pressed === 'true' ? choice : null;
+    await clickAnswer();
+    assert.deepEqual(attempts.at(-1), failedAnswer, 'quick reactions must not duplicate a failed answer');
+  }
+  fail = false;
+  const deskSend = {disabled: false, closest: () => desk.closest()};
+  await handlers.click({target: {closest: s => s === '.reaction-send' ? deskSend : null}});
+  fail = true;
+  await clickAnswer();
+  assert.deepEqual(attempts.at(-1), failedAnswer, 'a sibling send clearing drafts preserves the failed answer ID');
+  fail = false; picked = null;
+
+  field.value = ''; handlers.input({target: field});
   assert.equal(report.value, 'report reply', 'a different kind retains its draft');
   assert.ok(store['quarterdeck-draft:report:home/task']);
   reload();

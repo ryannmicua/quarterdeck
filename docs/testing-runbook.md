@@ -541,3 +541,47 @@ remain usable. Network and HTTP failures restore only previously enabled
 controls. Failed Undo must keep the saved actions disabled and remain retryable;
 successful reader Undo must restore the original actions. Both dashboard and
 reader scripts execute against fictional browser-boundary doubles.
+
+
+## Stated answers and delivery retries
+
+Run the focused regressions with Python and Node on PATH:
+
+```sh
+PYTHONPATH=tests python3 -m unittest -v \
+  test_quarterdeck.DeskRelevanceTests.test_answer_phrases_come_only_from_what_the_call_states \
+  test_quarterdeck.DeskRelevanceTests.test_a_call_that_states_its_answers_gets_buttons_beside_the_reply_box \
+  test_quarterdeck.DeskRelevanceTests.test_reply_box_grows_counts_refuses_a_too_long_reply_and_keeps_a_draft_across_reloads
+```
+
+The oracle is the call's literal stated answers: paired quotes preserve internal
+apostrophes (including inside single quotes), and later sentences and recommendation
+fields supply no answer text. Unquoted contractions must not become quote spans.
+Directives start the text or a new line; prohibited or conditional directives
+supply no buttons. Only immediately listed quoted alternatives are offered,
+so later warnings containing quotes cannot add answers. Slashes in branch names
+remain literal answer text; only whitespace-surrounded slashes separate
+alternatives in both quoted and unquoted lists.
+The generated page's executable submission handler must retain delivery IDs for
+unchanged failed retries and change them whenever kind, item, reaction or reply
+changes, including transitions between answer buttons and ordinary Send. Editing
+mirrored drafts, toggling quick reactions, or clearing drafts after a sibling send
+must preserve the ID of a failed answer whose payload remains unchanged.
+These use fictional fixtures and browser boundary doubles; no real inbox sends
+or manual cleanup are needed.
+
+For a live browser check, run `serve --no-snapshot --allow-marks` against a
+fictional home and a deduplicating `bin/fm-inbox.sh note` endpoint. Use a separate
+read-only server to verify the reaction POST is refused without `--allow-marks`.
+Keep the home, config and browser profile isolated. Review state must be outside
+both the checkout and selected homes; a gate's dedicated evidence directory can
+hold the disposable state database.
+
+Open the Needs-you card, desk item and related cards, then click their stated
+answers and inspect the inbox notes. Preserve a typed draft and selected quick
+reaction while clicking an answer. Have the inbox save a note but return exit 3;
+retry after editing mirrored drafts, toggling reactions and sending from a
+sibling composer. Identical answer payloads must retain their request ID, while
+changed answers and transitions to/from ordinary Send must get distinct IDs.
+Capture the rendered desktop and phone composers, then stop both servers and
+the browser and remove the disposable setup.
