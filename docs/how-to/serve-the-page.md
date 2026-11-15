@@ -120,10 +120,10 @@ and **Send**. Pick a reaction, write a reply, or both, then Send.
 
 When a needs-you call's own text states its answers, the card also shows one
 button per answer above those buttons. Quarterdeck recognizes a clause after
-`Answer:`, `Options:`, `Choices:` or `Reply:` (for example `Answer: approve or
-not yet`), and quoted phrases in a sentence that asks you to reply, answer, say
-or send them (for example `Reply 'merge 63' or the step numbers that looked
-wrong`). It never invents an answer: a clause with a part longer than four words
+`Answer:`, `Options:`, `Choices:` or `Reply:` at the start of the text or a new
+line (for example `Answer: approve or not yet`), and adjacent quoted alternatives
+after a positive reply, answer, say or send directive in that position (for
+example `Reply 'merge 63' or the step numbers that looked wrong`). It never invents an answer: a clause with a part longer than four words
 or no stated answers shows no buttons, and at most four are shown. Tapping one
 sends that phrase at once, exactly as if you had typed it in the reply box and
 pressed Send, and leaves any draft in the reply box alone. The reply box stays

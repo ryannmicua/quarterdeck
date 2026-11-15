@@ -7477,14 +7477,14 @@ def reaction_latest_text(reaction: dict[str, str] | None, now: datetime | None) 
     return f"Latest reaction: {reaction_summary(reaction)} ({sent}{ago})"
 
 
-ANSWER_CUE_RE = re.compile(r"\b(?:answers?|options?|choices?|reply|respond)\s*:\s*([^\n]+)", re.IGNORECASE)
-ANSWER_VERB_RE = re.compile(r"\b(?:answer|reply|respond|say|send|type|tell)\b", re.IGNORECASE)
+ANSWER_CUE_RE = re.compile(r"^\s*(?:answers?|options?|choices?|reply|respond)\s*:\s*([^\n]+)", re.IGNORECASE | re.MULTILINE)
+ANSWER_VERB_RE = re.compile(r"^\s*(?:answer|reply|respond|say|send|type|tell)\s+([^\n]+)", re.IGNORECASE | re.MULTILINE)
 ANSWER_QUOTED_RE = re.compile(
     r"\"([^\"\n]*)\"|(?<!\w)'((?:[^'\n]|(?<=\w)'(?=\w))*)'(?!\w)|"
     r"“([^”\n]*)”|(?<!\w)‘((?:[^’\n]|(?<=\w)’(?=\w))*)’(?!\w)"
 )
 ANSWER_BOUNDARY_RE = re.compile(
-    ANSWER_QUOTED_RE.pattern + r"|(?P<boundary>[.!?](?=\s|$)|\brecommend(?:ation|ed)?\s*:)", re.IGNORECASE,
+    ANSWER_QUOTED_RE.pattern + r"|(?P<boundary>;|[.!?](?=\s|$)|\brecommend(?:ation|ed)?\s*:)", re.IGNORECASE,
 )
 
 
@@ -7496,11 +7496,22 @@ def answer_clause(text: str) -> str:
 
 
 def quoted_answers(text: str) -> list[str]:
-    return [phrase for match in ANSWER_QUOTED_RE.finditer(text) for phrase in match.groups()
-            if phrase is not None and 2 <= len(phrase) <= 30]
+    phrases: list[str] = []
+    remaining = text.lstrip()
+    while match := ANSWER_QUOTED_RE.match(remaining):
+        phrase = next(group for group in match.groups() if group is not None)
+        if not 2 <= len(phrase) <= 30:
+            return []
+        phrases.append(phrase)
+        remaining = remaining[match.end():]
+        separator = ANSWER_SPLIT_RE.match(remaining)
+        if separator is None:
+            break
+        remaining = remaining[separator.end():]
+    return phrases
 
 
-ANSWER_SPLIT_RE = re.compile(r"\s*(?:,\s*(?:or\s+)?|;\s*(?:or\s+)?|/|\s+or\s+)\s*", re.IGNORECASE)
+ANSWER_SPLIT_RE = re.compile(r"\s*(?:,\s*(?:or\s+)?|/|\s+or\s+)\s*", re.IGNORECASE)
 ANSWER_MAX_BUTTONS = 4
 ANSWER_MAX_WORDS = 4
 
@@ -7509,7 +7520,8 @@ def answer_phrases(text: str) -> list[str]:
     """The answers a call's own text states, for one-tap buttons; conservative, and empty when unsure.
 
     Recognized: a clause after `Answer:`, `Options:`, `Reply:` or `Choices:` (quoted phrases, or a short list split on
-    commas, `/` and `or`), and quoted phrases in a sentence that tells the reader to reply, answer, say or send them.
+    commas, `/` and `or`), and adjacent quoted alternatives after a positive reply, answer, say or send directive.
+    Directives must start the text or a new line; ambiguous prose is not recognized.
     A list with any part longer than four words is not recognized at all, so no answer is ever invented or trimmed."""
     found: list[str] = []
     clause = ANSWER_CUE_RE.search(text)
@@ -7518,16 +7530,16 @@ def answer_phrases(text: str) -> list[str]:
         quoted = quoted_answers(body)
         if quoted:
             found = quoted
-        else:
+        elif not re.search(r'(?<!\w)[\'‘]|[\'’](?!\w)|["“”]', body):
             body = re.sub(r"^\s*(?:either|one of)\s+", "", body.strip().rstrip(".!?"), flags=re.IGNORECASE)
             parts = [part.strip(" .!?'\"") for part in ANSWER_SPLIT_RE.split(body)]
             parts = [part for part in parts if part]
             if len(parts) >= 2 and all(len(part.split()) <= ANSWER_MAX_WORDS for part in parts):
                 found = parts
     else:
-        for sentence in re.split(r"(?<=[.!?])\s+|\n", text):
-            if ANSWER_VERB_RE.search(sentence):
-                found.extend(quoted_answers(answer_clause(sentence)))
+        directive = ANSWER_VERB_RE.search(text)
+        if directive:
+            found = quoted_answers(answer_clause(directive.group(1)))
     phrases: list[str] = []
     for phrase in found:
         phrase = " ".join(phrase.split())

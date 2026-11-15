@@ -557,6 +557,9 @@ PYTHONPATH=tests python3 -m unittest -v \
 The oracle is the call's literal stated answers: paired quotes preserve internal
 apostrophes (including inside single quotes), and later sentences and recommendation
 fields supply no answer text. Unquoted contractions must not become quote spans.
+Directives start the text or a new line; prohibited or conditional directives
+supply no buttons. Only immediately listed quoted alternatives are offered,
+so later warnings containing quotes cannot add answers.
 The generated page's executable submission handler must retain delivery IDs for
 unchanged failed retries and change them whenever kind, item, reaction or reply
 changes, including transitions between answer buttons and ordinary Send. Editing

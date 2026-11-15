@@ -4232,6 +4232,22 @@ async function click(report, text) {
         self.assertEqual(phrases("Options: don’t merge or don’t deploy. Recommend: wait."),
                          ["don’t merge", "don’t deploy"])
         self.assertEqual(phrases("Reply don't merge or don't deploy."), [])
+        for ambiguous in (
+            "Do not say 'merge 63'; reply 'hold' until CI passes.",
+            "Do not Reply: 'merge 63' or 'approve'.",
+            "Never use Options: 'merge 63' or 'approve'.",
+            "If CI fails, reply 'merge 63' or 'approve'.",
+            "Options: do not say 'merge 63' or 'approve'.",
+            "Reply: avoid 'merge 63' or 'approve'.",
+        ):
+            with self.subTest(ambiguous=ambiguous):
+                self.assertEqual(phrases(ambiguous), [])
+        for cue in ('Reply ', 'Reply: ', 'Options: '):
+            self.assertEqual(phrases(cue + "'hold'; do not say 'merge 63'."), ["hold"])
+            self.assertEqual(phrases(cue + "'hold' or 'wait', never 'merge 63'."), ["hold", "wait"])
+        self.assertEqual(phrases("Options: approve or hold; do not merge."), ["approve", "hold"])
+        self.assertEqual(phrases("The patch is ready.\nReply 'merge 63' or 'hold'."), ["merge 63", "hold"])
+
 
         for tail in (' Recommend: approve.', ' Recommendation: "approve".',
                      ' Recommended: "approve".', ' This needs a much longer explanation after the choices.'):
@@ -4252,6 +4268,13 @@ async function click(report, text) {
         self.assertLess(card.index("reaction-answers"), card.index("reaction-text"))
         plain = quarterdeck.reaction_html(ctx, "call", "invented-home/harbor-hold", call_text="Nothing stated here.")
         self.assertNotIn("data-reaction-answer", plain)
+        prohibited = quarterdeck.reaction_html(
+            ctx, "call", "invented-home/harbor-hold",
+            call_text="Do not say 'merge 63'; reply 'hold' until CI passes.",
+        )
+        self.assertNotIn("data-reaction-answer", prohibited)
+        self.assertIn("reaction-text", prohibited)
+
         self.assertIn("reaction-text", plain)
         report = quarterdeck.reaction_html(ctx, "report", "lone-report", call_text="Answer: approve or not yet")
         self.assertNotIn("data-reaction-answer", report)
