@@ -4205,6 +4205,19 @@ async function click(report, text) {
         self.assertEqual(phrases("Reply 'merge 63' or the step numbers that looked wrong."), ["merge 63"])
         self.assertEqual(phrases("Answer: \u2018Not yet\u2019 or \u2018Approve\u2019"), ["Not yet", "Approve"])
         self.assertEqual(phrases("Choices: red / blue / green"), ["red", "blue", "green"])
+        for separator in (' or ', ', ', ' / ', ' \t/\t '):
+            with self.subTest(separator=separator):
+                self.assertEqual(phrases(f"Options: merge release/63{separator}hold."),
+                                 ["merge release/63", "hold"])
+                for cue in ('Options: ', 'Reply '):
+                    self.assertEqual(phrases(f"{cue}'merge release/63'{separator}'hold'."),
+                                     ["merge release/63", "hold"])
+        self.assertEqual(phrases("Options: release/63 or release/64."), ["release/63", "release/64"])
+        for ambiguous in ('approve/hold', 'approve /hold', 'approve/ hold'):
+            with self.subTest(ambiguous=ambiguous):
+                self.assertEqual(phrases('Options: ' + ambiguous), [])
+        self.assertEqual(phrases("Reply 'merge release/63'/'hold'."), ["merge release/63"])
+
         self.assertEqual(phrases("Answer: yes, no, later, maybe, never"), ["yes", "no", "later", "maybe"])
         # Nothing stated, a lone unquoted word, a long clause, or a quote nobody is asked to say: no buttons.
         self.assertEqual(phrases("The pier patch is ready for a look."), [])

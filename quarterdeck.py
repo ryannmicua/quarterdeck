@@ -7511,7 +7511,7 @@ def quoted_answers(text: str) -> list[str]:
     return phrases
 
 
-ANSWER_SPLIT_RE = re.compile(r"\s*(?:,\s*(?:or\s+)?|/|\s+or\s+)\s*", re.IGNORECASE)
+ANSWER_SPLIT_RE = re.compile(r"\s*(?:,\s*(?:or\s+)?|(?<=\s)/(?=\s)|\s+or\s+)\s*", re.IGNORECASE)
 ANSWER_MAX_BUTTONS = 4
 ANSWER_MAX_WORDS = 4
 
@@ -7520,7 +7520,8 @@ def answer_phrases(text: str) -> list[str]:
     """The answers a call's own text states, for one-tap buttons; conservative, and empty when unsure.
 
     Recognized: a clause after `Answer:`, `Options:`, `Reply:` or `Choices:` (quoted phrases, or a short list split on
-    commas, `/` and `or`), and adjacent quoted alternatives after a positive reply, answer, say or send directive.
+    commas, whitespace-surrounded `/` and `or`), and adjacent quoted alternatives after a positive reply, answer,
+    say or send directive.
     Directives must start the text or a new line; ambiguous prose is not recognized.
     A list with any part longer than four words is not recognized at all, so no answer is ever invented or trimmed."""
     found: list[str] = []
