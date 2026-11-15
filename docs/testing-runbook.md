@@ -569,3 +569,19 @@ mirrored drafts, toggling quick reactions, or clearing drafts after a sibling se
 must preserve the ID of a failed answer whose payload remains unchanged.
 These use fictional fixtures and browser boundary doubles; no real inbox sends
 or manual cleanup are needed.
+
+For a live browser check, run `serve --no-snapshot --allow-marks` against a
+fictional home and a deduplicating `bin/fm-inbox.sh note` endpoint. Use a separate
+read-only server to verify the reaction POST is refused without `--allow-marks`.
+Keep the home, config and browser profile isolated. Review state must be outside
+both the checkout and selected homes; a gate's dedicated evidence directory can
+hold the disposable state database.
+
+Open the Needs-you card, desk item and related cards, then click their stated
+answers and inspect the inbox notes. Preserve a typed draft and selected quick
+reaction while clicking an answer. Have the inbox save a note but return exit 3;
+retry after editing mirrored drafts, toggling reactions and sending from a
+sibling composer. Identical answer payloads must retain their request ID, while
+changed answers and transitions to/from ordinary Send must get distinct IDs.
+Capture the rendered desktop and phone composers, then stop both servers and
+the browser and remove the disposable setup.

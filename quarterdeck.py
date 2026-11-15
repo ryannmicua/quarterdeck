@@ -7565,7 +7565,7 @@ def reaction_html(
 ) -> str:
     """The reaction row for a card: latest reaction, quick reactions, a reply box and Send.
 
-    `call_text` is a call's own words; any answers it states become one-tap buttons beside the reply box."""
+    `call_text` is a call's own words; recognized answers become one-tap buttons beside the reply box."""
     if ctx is None:
         return ""
     key = html.escape(f"{kind}:{item_id}", quote=True)
