@@ -4212,6 +4212,24 @@ async function click(report, text) {
         self.assertEqual(phrases("Options: approve it once the long harbour survey finishes, or leave it"), [])
         self.assertEqual(phrases("The sign said 'closed for repairs' on Monday."), [])
         self.assertEqual(phrases(""), [])
+        for cue in ('Reply ', 'Options: '):
+            for first, second in (("\"don't merge\"", '"merge 63"'),
+                                  ('“don’t merge”', '“merge 63”'),
+                                  ("'hold'", "'merge 63'")):
+                with self.subTest(cue=cue, first=first):
+                    expected = "don’t merge" if '“' in first else "don't merge" if '"' in first else 'hold'
+                    self.assertEqual(phrases(f"{cue}{first} or {second}."), [expected, "merge 63"])
+        self.assertEqual(phrases('Reply “hold” or "merge 63".'), ["hold", "merge 63"])
+        self.assertEqual(phrases('Reply “hold".'), [])
+        for tail in (' Recommend: approve.', ' Recommendation: "approve".',
+                     ' Recommended: "approve".', ' This needs a much longer explanation after the choices.'):
+            for options in ('approve or hold.', '"approve" or "hold".'):
+                with self.subTest(options=options, tail=tail):
+                    self.assertEqual(phrases('Options: ' + options + tail), ["approve", "hold"])
+        self.assertEqual(phrases('Options: "approve" or "hold" Recommend: "approve".'), ["approve", "hold"])
+        self.assertEqual(phrases('Options: "hold. please" or "merge 63". Recommend: "hold".'),
+                         ["hold. please", "merge 63"])
+
 
     def test_a_call_that_states_its_answers_gets_buttons_beside_the_reply_box(self) -> None:
         ctx = quarterdeck.ReactionContext(enabled=True, latest={}, now=None)
@@ -4295,8 +4313,9 @@ globalThis.localStorage = {getItem: k => { if (readFailure) throw new Error('blo
 const note = {hidden: true, textContent: '', classList: {toggle(name, on) { this.over = on; }}};
 const status = {textContent: ''};
 const field = {value: '', dataset: {limit: '20000'}, offsetParent: {}, scrollHeight: 300, style: {}, matches: s => s === '.reaction-text'};
+let picked = null;
 const box = {dataset: {reactionKind: 'call', reactionItem: 'home/task'},
-  querySelector: s => s === '.reaction-count' ? note : s === '.reaction-status' ? status : s === '.reaction-text' ? field : null,
+  querySelector: s => s === '.reaction-count' ? note : s === '.reaction-status' ? status : s === '.reaction-text' ? field : s === '[data-reaction-choice][aria-pressed=true]' ? picked : null,
   querySelectorAll: () => []};
 field.closest = () => box;
 const send = {disabled: false, closest: () => box};
@@ -4321,9 +4340,12 @@ let reloaded = 0, deferred = 0;
 globalThis.location = {protocol: 'file:', reload() { reloaded++; }};
 globalThis.setTimeout = () => { deferred++; };
 globalThis.window = {addEventListener() {}};
-globalThis.crypto = {getRandomValues: a => a};
+let sequence = 0;
+globalThis.crypto = {getRandomValues: a => a.fill(++sequence)};
 let posted = 0, fail = false, sentText, responseGate = null;
+const attempts = [];
 globalThis.fetch = async (_url, options) => {
+  attempts.push(JSON.parse(options.body));
   if (fail) throw new Error('offline');
   posted++; sentText = JSON.parse(options.body).text;
   if (responseGate) await responseGate;
@@ -4422,6 +4444,25 @@ store['quarterdeck-draft:call:home/expired'] = JSON.stringify({text: 'old reply'
   assert.equal(posted, before + 1); assert.equal(sentText, 'merge 63', 'the button sends the stated phrase');
   assert.equal(field.value, 'half a thought', 'the draft in the reply box is kept');
   assert.equal(status.textContent, 'Sent to Firstmate');
+  fail = true;
+  const clickSend = () => handlers.click({target: {closest: s => s === '.reaction-send' ? send : null}});
+  const clickAnswer = () => handlers.click({target: {closest: s => s === '[data-reaction-answer]' ? answer : null}});
+  const failures = [clickAnswer,
+    () => { answer.dataset.reactionAnswer = 'hold'; return clickAnswer(); },
+    clickSend, clickAnswer, clickSend,
+    () => { picked = {dataset: {reactionChoice: 'approve'}}; return clickSend(); },
+    () => { box.dataset.reactionKind = 'report'; return clickSend(); },
+    () => { box.dataset.reactionItem = 'home/other'; return clickSend(); }];
+  for (const submit of failures) {
+    const previous = attempts.at(-1);
+    await submit();
+    const failed = attempts.at(-1);
+    assert.notEqual(failed.id, previous.id, 'changed submissions need a new delivery ID');
+    await (failed.text === field.value.trim() ? clickSend() : clickAnswer());
+    assert.deepEqual(attempts.at(-1), failed, 'unchanged retries retain the payload and delivery ID');
+  }
+  fail = false; picked = null;
+  box.dataset.reactionKind = 'call'; box.dataset.reactionItem = 'home/task';
   field.value = ''; handlers.input({target: field});
   assert.equal(report.value, 'report reply', 'a different kind retains its draft');
   assert.ok(store['quarterdeck-draft:report:home/task']);

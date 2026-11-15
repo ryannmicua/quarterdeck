@@ -1641,8 +1641,10 @@ def build_html(
     wait_script = WAIT_SCRIPT.replace("__ENDPOINT__", WAITS_DISCARD_ENDPOINT) if allow_marks else ""
     reaction_script = f"""
   <script>
-    function reactionId(box) {{
-      if (!box.dataset.reactionId) {{
+    function reactionId(box, payload) {{
+      const key = JSON.stringify(payload);
+      if (!box.dataset.reactionId || box.dataset.reactionPayload !== key) {{
+        box.dataset.reactionPayload = key;
         box.dataset.reactionId = Array.from(crypto.getRandomValues(new Uint8Array(16)),
           byte => byte.toString(16).padStart(2, "0")).join("");
       }}
@@ -1744,11 +1746,12 @@ def build_html(
       const controls = [send, field, ...box.querySelectorAll("[data-reaction-choice], [data-reaction-answer], .reaction-send")];
       for (const control of controls) control.disabled = true;
       status.textContent = "Sending…";
+      const payload = {{kind: box.dataset.reactionKind, item_id: box.dataset.reactionItem, reaction: reaction, text: text}};
       try {{
         const response = await fetch("{REACTION_ENDPOINT}", {{
           method: "POST",
           headers: {{"Content-Type": "application/json"}},
-          body: JSON.stringify({{id: reactionId(box), kind: box.dataset.reactionKind, item_id: box.dataset.reactionItem, reaction: reaction, text: text}}),
+          body: JSON.stringify({{id: reactionId(box, payload), ...payload}}),
         }});
         if (!response.ok) throw new Error((await response.text()).trim() || response.statusText);
         const sent = await response.json();
@@ -7479,7 +7482,24 @@ def reaction_latest_text(reaction: dict[str, str] | None, now: datetime | None) 
 
 ANSWER_CUE_RE = re.compile(r"\b(?:answers?|options?|choices?|reply|respond)\s*:\s*([^\n]+)", re.IGNORECASE)
 ANSWER_VERB_RE = re.compile(r"\b(?:answer|reply|respond|say|send|type|tell)\b", re.IGNORECASE)
-ANSWER_QUOTED_RE = re.compile(r"[\u2018\u201c'\"]([^'\"\u2018\u2019\u201c\u201d\n]{2,30})[\u2019\u201d'\"]")
+ANSWER_QUOTED_RE = re.compile(r'"([^"\n]*)"|\'([^\'\n]*)\'|“([^”\n]*)”|‘([^’\n]*)’')
+ANSWER_BOUNDARY_RE = re.compile(
+    ANSWER_QUOTED_RE.pattern + r"|(?P<boundary>[.!?](?=\s|$)|\brecommend(?:ation|ed)?\s*:)", re.IGNORECASE,
+)
+
+
+def answer_clause(text: str) -> str:
+    for match in ANSWER_BOUNDARY_RE.finditer(text):
+        if match.group("boundary") is not None:
+            return text[:match.start()]
+    return text
+
+
+def quoted_answers(text: str) -> list[str]:
+    return [phrase for match in ANSWER_QUOTED_RE.finditer(text) for phrase in match.groups()
+            if phrase is not None and 2 <= len(phrase) <= 30]
+
+
 ANSWER_SPLIT_RE = re.compile(r"\s*(?:,\s*(?:or\s+)?|;\s*(?:or\s+)?|/|\s+or\s+)\s*", re.IGNORECASE)
 ANSWER_MAX_BUTTONS = 4
 ANSWER_MAX_WORDS = 4
@@ -7494,11 +7514,12 @@ def answer_phrases(text: str) -> list[str]:
     found: list[str] = []
     clause = ANSWER_CUE_RE.search(text)
     if clause:
-        quoted = ANSWER_QUOTED_RE.findall(clause.group(1))
+        body = answer_clause(clause.group(1))
+        quoted = quoted_answers(body)
         if quoted:
             found = quoted
         else:
-            body = re.sub(r"^\s*(?:either|one of)\s+", "", clause.group(1).strip().rstrip(".!?"), flags=re.IGNORECASE)
+            body = re.sub(r"^\s*(?:either|one of)\s+", "", body.strip().rstrip(".!?"), flags=re.IGNORECASE)
             parts = [part.strip(" .!?'\"") for part in ANSWER_SPLIT_RE.split(body)]
             parts = [part for part in parts if part]
             if len(parts) >= 2 and all(len(part.split()) <= ANSWER_MAX_WORDS for part in parts):
@@ -7506,7 +7527,7 @@ def answer_phrases(text: str) -> list[str]:
     else:
         for sentence in re.split(r"(?<=[.!?])\s+|\n", text):
             if ANSWER_VERB_RE.search(sentence):
-                found.extend(ANSWER_QUOTED_RE.findall(sentence))
+                found.extend(quoted_answers(answer_clause(sentence)))
     phrases: list[str] = []
     for phrase in found:
         phrase = " ".join(phrase.split())

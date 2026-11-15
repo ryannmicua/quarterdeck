@@ -541,3 +541,23 @@ remain usable. Network and HTTP failures restore only previously enabled
 controls. Failed Undo must keep the saved actions disabled and remain retryable;
 successful reader Undo must restore the original actions. Both dashboard and
 reader scripts execute against fictional browser-boundary doubles.
+
+
+## Stated answers and delivery retries
+
+Run the focused regressions with Python and Node on PATH:
+
+```sh
+PYTHONPATH=tests python3 -m unittest -v \
+  test_quarterdeck.DeskRelevanceTests.test_answer_phrases_come_only_from_what_the_call_states \
+  test_quarterdeck.DeskRelevanceTests.test_a_call_that_states_its_answers_gets_buttons_beside_the_reply_box \
+  test_quarterdeck.DeskRelevanceTests.test_reply_box_grows_counts_refuses_a_too_long_reply_and_keeps_a_draft_across_reloads
+```
+
+The oracle is the call's literal stated answers: paired quotes preserve internal
+apostrophes, and later sentences and recommendation fields supply no answer text.
+The generated page's executable submission handler must retain delivery IDs for
+unchanged failed retries and change them whenever kind, item, reaction or reply
+changes, including transitions between answer buttons and ordinary Send.
+These use fictional fixtures and browser boundary doubles; no real inbox sends
+or manual cleanup are needed.
