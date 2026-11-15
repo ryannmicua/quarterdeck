@@ -4221,6 +4221,18 @@ async function click(report, text) {
                     self.assertEqual(phrases(f"{cue}{first} or {second}."), [expected, "merge 63"])
         self.assertEqual(phrases('Reply “hold” or "merge 63".'), ["hold", "merge 63"])
         self.assertEqual(phrases('Reply “hold".'), [])
+        for cue in ('Reply ', 'Options: '):
+            for opening, closing in (("'", "'"), ('‘', '’')):
+                with self.subTest(cue=cue, opening=opening):
+                    self.assertEqual(phrases(f"{cue}{opening}don't merge{closing} or {opening}merge 63{closing}."),
+                                     ["don't merge", "merge 63"])
+                    self.assertEqual(phrases(f"{cue}{opening}don’t merge{closing} or {opening}merge 63{closing}."),
+                                     ["don’t merge", "merge 63"])
+        self.assertEqual(phrases("Options: don't merge or don't deploy."), ["don't merge", "don't deploy"])
+        self.assertEqual(phrases("Options: don’t merge or don’t deploy. Recommend: wait."),
+                         ["don’t merge", "don’t deploy"])
+        self.assertEqual(phrases("Reply don't merge or don't deploy."), [])
+
         for tail in (' Recommend: approve.', ' Recommendation: "approve".',
                      ' Recommended: "approve".', ' This needs a much longer explanation after the choices.'):
             for options in ('approve or hold.', '"approve" or "hold".'):
@@ -4461,8 +4473,33 @@ store['quarterdeck-draft:call:home/expired'] = JSON.stringify({text: 'old reply'
     await (failed.text === field.value.trim() ? clickSend() : clickAnswer());
     assert.deepEqual(attempts.at(-1), failed, 'unchanged retries retain the payload and delivery ID');
   }
-  fail = false; picked = null;
+  picked = null;
   box.dataset.reactionKind = 'call'; box.dataset.reactionItem = 'home/task';
+  await clickAnswer();
+  const failedAnswer = attempts.at(-1);
+  for (const editor of [field, desk, arriving]) {
+    editor.value = 'a different draft'; handlers.input({target: editor});
+    await clickAnswer();
+    assert.deepEqual(attempts.at(-1), failedAnswer, 'draft edits must not duplicate a failed answer');
+  }
+  let pressed = 'false';
+  const choice = {disabled: false, dataset: {reactionChoice: 'approve'}, closest: () => box,
+    getAttribute: () => pressed, setAttribute: (_name, value) => { pressed = value; },
+    parentElement: {querySelectorAll: () => [choice]}};
+  for (let toggle = 0; toggle < 2; toggle++) {
+    await handlers.click({target: {closest: s => s === '[data-reaction-choice]' ? choice : null}});
+    picked = pressed === 'true' ? choice : null;
+    await clickAnswer();
+    assert.deepEqual(attempts.at(-1), failedAnswer, 'quick reactions must not duplicate a failed answer');
+  }
+  fail = false;
+  const deskSend = {disabled: false, closest: () => desk.closest()};
+  await handlers.click({target: {closest: s => s === '.reaction-send' ? deskSend : null}});
+  fail = true;
+  await clickAnswer();
+  assert.deepEqual(attempts.at(-1), failedAnswer, 'a sibling send clearing drafts preserves the failed answer ID');
+  fail = false; picked = null;
+
   field.value = ''; handlers.input({target: field});
   assert.equal(report.value, 'report reply', 'a different kind retains its draft');
   assert.ok(store['quarterdeck-draft:report:home/task']);

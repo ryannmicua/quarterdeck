@@ -555,9 +555,12 @@ PYTHONPATH=tests python3 -m unittest -v \
 ```
 
 The oracle is the call's literal stated answers: paired quotes preserve internal
-apostrophes, and later sentences and recommendation fields supply no answer text.
+apostrophes (including inside single quotes), and later sentences and recommendation
+fields supply no answer text. Unquoted contractions must not become quote spans.
 The generated page's executable submission handler must retain delivery IDs for
 unchanged failed retries and change them whenever kind, item, reaction or reply
-changes, including transitions between answer buttons and ordinary Send.
+changes, including transitions between answer buttons and ordinary Send. Editing
+mirrored drafts, toggling quick reactions, or clearing drafts after a sibling send
+must preserve the ID of a failed answer whose payload remains unchanged.
 These use fictional fixtures and browser boundary doubles; no real inbox sends
 or manual cleanup are needed.

@@ -1714,7 +1714,6 @@ def build_html(
         const other = copy.closest(".reaction");
         if (draftKey(other) !== draftKey(box)) continue;
         copy.value = event.target.value;
-        delete other.dataset.reactionId;
         growField(copy);
         showCount(copy);
       }}
@@ -1724,7 +1723,6 @@ def build_html(
       const choice = event.target.closest("[data-reaction-choice]");
       if (choice) {{
         if (choice.disabled) return;
-        delete choice.closest(".reaction").dataset.reactionId;
         const pressed = choice.getAttribute("aria-pressed") !== "true";
         for (const other of choice.parentElement.querySelectorAll("[data-reaction-choice]")) other.setAttribute("aria-pressed", "false");
         choice.setAttribute("aria-pressed", String(pressed));
@@ -1766,7 +1764,6 @@ def build_html(
           const other = copy.closest(".reaction");
           if (answered || draftKey(other) !== draftKey(box) || copy.value !== submittedText) continue;
           copy.value = "";
-          delete other.dataset.reactionId;
           growField(copy);
           showCount(copy);
         }}
@@ -7482,7 +7479,10 @@ def reaction_latest_text(reaction: dict[str, str] | None, now: datetime | None) 
 
 ANSWER_CUE_RE = re.compile(r"\b(?:answers?|options?|choices?|reply|respond)\s*:\s*([^\n]+)", re.IGNORECASE)
 ANSWER_VERB_RE = re.compile(r"\b(?:answer|reply|respond|say|send|type|tell)\b", re.IGNORECASE)
-ANSWER_QUOTED_RE = re.compile(r'"([^"\n]*)"|\'([^\'\n]*)\'|“([^”\n]*)”|‘([^’\n]*)’')
+ANSWER_QUOTED_RE = re.compile(
+    r"\"([^\"\n]*)\"|(?<!\w)'((?:[^'\n]|(?<=\w)'(?=\w))*)'(?!\w)|"
+    r"“([^”\n]*)”|(?<!\w)‘((?:[^’\n]|(?<=\w)’(?=\w))*)’(?!\w)"
+)
 ANSWER_BOUNDARY_RE = re.compile(
     ANSWER_QUOTED_RE.pattern + r"|(?P<boundary>[.!?](?=\s|$)|\brecommend(?:ation|ed)?\s*:)", re.IGNORECASE,
 )
