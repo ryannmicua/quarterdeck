@@ -1517,6 +1517,7 @@ NAV_SCRIPT = """
 def build_html(
     homes: list[HomeSnapshot], title: str, lavish: bool = False, show_all: bool = False,
     bearings: Bearings | None = None, refresh_seconds: int | None = None, allow_marks: bool = False,
+    push_enabled: bool = True,
 ) -> str:
     snapshots = all_snapshots(homes)
     ambiguous_ids = assign_report_ids(homes)
@@ -1553,7 +1554,7 @@ def build_html(
         section_counts["activity"] = sum(card["section"] != "needs_you" for card in cards)
     cards_script = ACTIVITY_SCRIPT if cards_block else ""
     cards_link = '<a class="cards-new" id="cards-new" href="#cards" hidden></a>' if cards_block else ""
-    serve_push = bool(allow_marks and refresh_seconds)
+    serve_push = bool(push_enabled and allow_marks and refresh_seconds)
     push_control = PUSH_CONTROL_HTML if serve_push else ""
     push_script = PUSH_PAGE_SCRIPT if serve_push else ""
     metrics_html = "".join(
@@ -5973,7 +5974,8 @@ def site_builder(
         configured_title = config.get("page_title")
         title = args.title or (configured_title if isinstance(configured_title, str) else None) or DEFAULT_TITLE
         index = build_html(
-            homes, title, bearings=bearings, refresh_seconds=DEFAULT_REFRESH_SECONDS, allow_marks=allow_marks
+            homes, title, bearings=bearings, refresh_seconds=DEFAULT_REFRESH_SECONDS, allow_marks=allow_marks,
+            push_enabled=push is not None,
         )
         activity = site_cards(homes, bearings, allow_marks)
         if allow_marks:
@@ -6989,7 +6991,9 @@ def serve(args: argparse.Namespace) -> int:
             save_view_to = lambda raw: save_view_request(args, raw)  # noqa: E731
             discard_wait_to = lambda raw: discard_wait(args, str(raw["key"]), str(raw["hold_set"]))  # noqa: E731
         tls = tls_context(args)
-        push = PushNotifier(default_output_dir()) if getattr(args, "allow_marks", False) and push_crypto_available() else None
+        push = (PushNotifier(default_output_dir())
+                if getattr(args, "allow_marks", False) and not getattr(args, "no_snapshot", False) and push_crypto_available()
+                else None)
         cache = SiteCache(site_builder(args, getattr(args, "allow_marks", False), push))
         cache.get()
         visit_log = VisitLog(visits_path()) if getattr(args, "allow_marks", False) else None
@@ -7012,7 +7016,8 @@ def serve(args: argparse.Namespace) -> int:
         print(f"Serving Quarterdeck at {'https' if tls else 'http'}://{shown}:{port}/ ({access}; Ctrl+C to stop)", flush=True)
     if getattr(args, "allow_marks", False):
         print("Phone notifications: " + (
-            "available; turn them on from the page, which must be opened over https" if push is not None
+            "off, because --no-snapshot cannot tell when a needs-you item is answered" if getattr(args, "no_snapshot", False)
+            else "available; turn them on from the page, which must be opened over https" if push is not None
             else "off, because the Python 'cryptography' package is not installed"), flush=True)
     stop_watch = threading.Event()
     if push is not None:

@@ -191,7 +191,10 @@ request (`POST /api/waits/discard`, body `{"key", "hold_set"}`), and the
 (`GET /api/push/key`, `GET /sw.js`, `POST /api/push/subscribe` with body
 `{"subscription"}` and `POST /api/push/unsubscribe` with body `{"endpoint"}`,
 which write only Quarterdeck's own state; available when the Python
-`cryptography` package is installed); all other writes remain refused.
+`cryptography` package is installed and `--no-snapshot` is omitted). With
+`--no-snapshot`, notifications, their controls and endpoints are off because
+Quarterdeck cannot tell when a needs-you item is answered; the startup message
+explains this limitation. All other writes remain refused.
 `--tls-cert FILE` and `--tls-key FILE`, given together, serve `https` with that
 PEM certificate chain and key instead of plain `http`. `--watch-waits` also runs the captain-wait watcher in a
 background thread; see [Captain waits](#captain-waits).

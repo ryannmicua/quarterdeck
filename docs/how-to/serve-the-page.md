@@ -97,6 +97,9 @@ below.
 ### What the server needs
 
 - `--allow-marks`, as for every other write from the page.
+- Snapshot reads enabled (omit `--no-snapshot`). With `--no-snapshot`, phone
+  notifications are off because Quarterdeck cannot tell when a needs-you item
+  is answered; the controls and push endpoints are unavailable.
 - The Python `cryptography` package for the Python that runs Quarterdeck
   (`python3 -c "import cryptography"` succeeds). Without it the control does not
   appear, and `serve` prints "Phone notifications: off" at start-up.

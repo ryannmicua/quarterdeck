@@ -10118,6 +10118,52 @@ setImmediate(() => {
             self.assertEqual(self.request(off, "GET", quarterdeck.PUSH_KEY_ENDPOINT)[0], 404)
             self.assertEqual(self.request(off, "POST", quarterdeck.PUSH_SUBSCRIBE_ENDPOINT, {"subscription": self.subscription})[0], 405)
 
+    def test_no_snapshot_serve_disables_push_controls_endpoints_and_tracking(self) -> None:
+        home = BearingsTests().make_home(self.root.parent / "home")
+        homes = BearingsTests().snapshots(home)
+        bearings = quarterdeck.build_bearings(homes, use_snapshot=False)
+        bearings.attention = quarterdeck.attention_view(homes, bearings.generated, use_feed=False)
+        args = quarterdeck.make_parser().parse_args(["serve", "--allow-marks", "--no-snapshot", "--host", "127.0.0.1"])
+        args.port = 0
+        run_server = quarterdeck.ThreadingHTTPServer.serve_forever
+        class Controls(HTMLParser):
+            def __init__(self):
+                super().__init__()
+                self.ids = set()
+            def handle_starttag(self, tag, attrs):
+                self.ids.add(dict(attrs).get("id"))
+        def exercise(server):
+            thread = threading.Thread(target=run_server, args=(server,), kwargs={"poll_interval": 0.01}, daemon=True)
+            thread.start()
+            try:
+                port = server.server_address[1]
+                status, _headers, body = self.request(port, "GET", "/")
+                self.assertEqual(status, 200)
+                controls = Controls()
+                controls.feed(body.decode())
+                self.assertNotIn("push-control", controls.ids)
+                self.assertNotIn("push-toggle", controls.ids)
+                self.assertEqual(self.request(port, "GET", "/sw.js")[0], 404)
+                self.assertEqual(self.request(port, "GET", quarterdeck.PUSH_KEY_ENDPOINT)[0], 404)
+                self.assertEqual(self.request(port, "POST", quarterdeck.PUSH_SUBSCRIBE_ENDPOINT,
+                                              {"subscription": self.subscription})[0], 405)
+                self.assertEqual(self.request(port, "POST", quarterdeck.PUSH_UNSUBSCRIBE_ENDPOINT,
+                                              {"endpoint": self.ENDPOINT})[0], 405)
+            finally:
+                server.shutdown()
+                thread.join(timeout=5)
+            self.assertFalse(thread.is_alive())
+            raise KeyboardInterrupt
+        with patch.object(quarterdeck, "load_site", return_value=({}, homes, bearings)), \
+             patch.object(quarterdeck.ThreadingHTTPServer, "serve_forever", exercise), \
+             patch.dict(os.environ, {"XDG_STATE_HOME": str(self.root)}), \
+             redirect_stdout(io.StringIO()) as stdout, redirect_stderr(io.StringIO()):
+            self.assertEqual(quarterdeck.serve(args), 0)
+            for name in (quarterdeck.PUSH_KEY_NAME, quarterdeck.PUSH_SUBSCRIPTIONS_NAME, quarterdeck.PUSH_ITEMS_NAME):
+                self.assertFalse((quarterdeck.default_output_dir() / name).exists())
+        self.assertIn("Phone notifications: off, because --no-snapshot cannot tell when a needs-you item is answered",
+                      stdout.getvalue())
+
     @unittest.skipUnless(shutil.which("node"), "node is not installed")
     def test_served_worker_shows_withdraws_and_navigates(self) -> None:
         port = self.serve(self.notifier)
