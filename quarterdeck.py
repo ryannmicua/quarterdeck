@@ -6115,7 +6115,6 @@ PUSH_TTL_SECONDS = 86400
 PUSH_TIMEOUT_SECONDS = 10
 PUSH_MAX_SUBSCRIPTIONS = 20
 PUSH_FAILURE_LIMIT = 3
-PUSH_FORGET_DAYS = 30
 PUSH_BODY_LIMIT = 4096
 # Only the browsers' own push services: a subscription naming any other host is refused, so the server never posts
 # to an address a page visitor chose.
@@ -6245,8 +6244,8 @@ class PushNotifier:
     """Phone notifications for new needs-you items: one message per new item, a withdrawal when it goes.
 
     `observe` runs after each page build. The first observation only records what is already waiting. An item is
-    announced once; if it goes away and comes back it is not announced again until it has been gone for
-    PUSH_FORGET_DAYS. While the needs-you feed is incomplete, nothing is withdrawn, because an item missing from a
+    announced once; if it goes away and comes back it is not announced again.
+    While the needs-you feed is incomplete, nothing is withdrawn, because an item missing from a
     partial read may still be waiting. A subscription the push service reports gone (404 or 410) is dropped at once;
     one refused PUSH_FAILURE_LIMIT times in a row is dropped too. Network failures keep it.
     """
@@ -6360,9 +6359,6 @@ class PushNotifier:
                         record.update(active=False, gone_at=now)
                     if record.get("shown"):
                         messages.append({"type": "withdraw", "tag": tag})
-            forget = now - PUSH_FORGET_DAYS * 86400
-            items = {tag: record for tag, record in items.items()
-                     if record.get("active") or not isinstance(record.get("gone_at"), (int, float)) or record["gone_at"] >= forget}  # type: ignore[operator]
             if first or messages or items != (stored or {}).get("items"):
                 write_private_json(self.items_path, {"items": items})
         if messages:
@@ -6503,8 +6499,7 @@ PUSH_PAGE_SCRIPT = """
         show("Notifications: add Quarterdeck to the Home Screen first", "");
         return;
       }
-      const complete = document.getElementById("cards")?.dataset.complete === "1";
-      const waiting = new Set(Array.from(document.querySelectorAll("[data-push-tag]"), node => node.dataset.pushTag));
+      let withdrawn;
       let key = "";
       function keyBytes(text) {
         const raw = atob((text + "===".slice((text.length + 3) % 4)).replace(/-/g, "+").replace(/_/g, "/"));
@@ -6558,12 +6553,13 @@ PUSH_PAGE_SCRIPT = """
         return response.json();
       }).then(data => {
         key = String(data.key || "");
+        withdrawn = new Set(data.withdrawn);
         if (!key) throw new Error("no key");
         return navigator.serviceWorker.register("/%(worker)s").then(() => navigator.serviceWorker.ready);
       }).then(registration => {
         // An item that no longer needs you loses its notification when the page opens, on every platform.
-        if (complete) registration.getNotifications().then(list => list.forEach(item => {
-          if (!item.tag || !waiting.has(item.tag)) item.close();
+        registration.getNotifications().then(list => list.forEach(item => {
+          if (withdrawn.has(item.tag)) item.close();
         })).catch(() => {});
         button.addEventListener("click", () => toggle(registration));
         return registration.pushManager.getSubscription().then(current => {
@@ -6634,11 +6630,14 @@ def make_handler(
                 return
             if push is not None and path == PUSH_KEY_ENDPOINT:
                 try:
-                    key = push.public_key()
+                    with push.lock:
+                        key = push.public_key()
+                        stored = read_private_json(push.items_path) or {}
+                        withdrawn = [tag for tag, record in stored.get("items", {}).items() if record.get("active") is False]
                 except (OSError, ValueError) as exc:
                     self.send_text(500, f"Quarterdeck could not load its notification key: {exc}\n")
                     return
-                self.send_text(200, json.dumps({"key": key}) + "\n", "application/json; charset=utf-8")
+                self.send_text(200, json.dumps({"key": key, "withdrawn": withdrawn}) + "\n", "application/json; charset=utf-8")
                 return
             if "/" in name or not name.endswith((".html", ".json", ".txt")):
                 self.send_text(404, "Not found\n")
@@ -9581,7 +9580,7 @@ def cards_html(cards: list[dict[str, object]], attention: dict[str, object] | No
              if needs_unread(attention) else "Nothing needs you right now.")
     return (
         f'<section class="dashboard-section cards-feed" id="cards" data-live="{1 if live else 0}" data-poll="{CARDS_POLL_SECONDS}" '
-        f'data-complete="{0 if needs_unread(attention) else 1}" data-endpoint="{CARDS_PAGE}" aria-label="Needs you"><div class="section-head"><div>'
+        f'data-endpoint="{CARDS_PAGE}" aria-label="Needs you"><div class="section-head"><div>'
         '<h2>Needs you <span class="count" id="cards-count" hidden>0</span></h2>'
         "<p>What is waiting on you, longest wait first. Tap a card to read it. "
         + ("New cards slide in here without a reload." if live else "Reload to see new cards.") + "</p></div></div>"

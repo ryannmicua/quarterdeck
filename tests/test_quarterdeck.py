@@ -9862,6 +9862,23 @@ class PushNotificationTests(unittest.TestCase):
         self.assertEqual(len(self.sent), 1)
         self.assertEqual(self.decrypt(self.sent[0][1])["type"], "new")
 
+    def test_notified_and_baseline_items_stay_quiet_after_a_year_and_restart(self) -> None:
+        self.notifier.subscribe(self.subscription)
+        baseline, notified = self.card("harbor/baseline"), self.card("harbor/notified")
+        self.notifier.observe([baseline], complete=True)
+        self.notifier.observe([baseline, notified], complete=True)
+        self.notifier.observe([], complete=True)
+        self.assertEqual(len(self.sent), 2)
+        self.clock[0] += 366 * 86400
+        self.assertEqual(self.notifier.observe([], complete=True), [])
+        restarted = quarterdeck.PushNotifier(self.root, post=self.post, background=False, clock=lambda: self.clock[0])
+        self.assertEqual(restarted.observe([baseline, notified], complete=True), [])
+        self.assertEqual(len(self.sent), 2)
+        fresh_hold = self.card("harbor/notified", hold="2027-11-15T09:00:00Z")
+        self.assertEqual(restarted.observe([baseline, notified, fresh_hold], complete=True),
+                         [{"type": "new", "tag": quarterdeck.push_tag(fresh_hold)}])
+        self.assertEqual(len(self.sent), 3)
+
     def test_safari_subscriptions_get_new_items_but_no_withdrawals(self) -> None:
         apple = dict(self.subscription, endpoint="https://web.push.apple.com/invented-token")
         self.notifier.subscribe(apple)
@@ -9996,43 +10013,55 @@ class PushNotificationTests(unittest.TestCase):
             self.notifier.observe([], complete=True)
 
     @unittest.skipUnless(shutil.which("node"), "node is not installed")
-    def test_page_closes_missing_notifications_only_with_a_complete_feed(self) -> None:
-        class FeedParser(HTMLParser):
-            complete = None
-            def handle_starttag(self, tag, attrs):
-                values = dict(attrs)
-                if values.get("id") == "cards":
-                    self.complete = values.get("data-complete")
+    def test_page_closes_only_server_withdrawn_tags_despite_delayed_worker_setup(self) -> None:
         script = quarterdeck.PUSH_PAGE_SCRIPT.strip().removeprefix("<script>").removesuffix("</script>")
         harness = r"""
 const assert = require('node:assert/strict');
 const input = JSON.parse(require('node:fs').readFileSync(0, 'utf8'));
-const closed = [];
+const closed = [], notes = [input.answered, input.waiting, ''];
 const controls = {dataset: {}, addEventListener() {}};
 global.document = {
-  getElementById: id => id === 'cards' ? {dataset: {complete: input.complete}} : controls,
-  querySelectorAll: () => [{dataset: {pushTag: 'still-waiting'}}],
+  getElementById: id => id === 'cards' ? {dataset: {complete: '1'}} : controls,
+  querySelectorAll: () => [{dataset: {pushTag: input.waiting}}],
 };
 global.window = {isSecureContext: true, PushManager: {}, Notification: {}};
 global.Notification = {permission: 'default'};
 const registration = {
-  getNotifications: async () => ['answered', 'still-waiting'].map(tag => ({tag, close: () => closed.push(tag)})),
+  getNotifications: async () => notes.map(tag => ({tag, close: () => closed.push(tag)})),
   pushManager: {getSubscription: async () => null},
 };
+let ready;
 Object.defineProperty(global, 'navigator', {value: {serviceWorker: {
-  register: async () => {}, ready: Promise.resolve(registration),
+  register: async () => {}, ready: new Promise(resolve => ready = resolve),
 }}, configurable: true});
-global.fetch = async () => ({ok: true, json: async () => ({key: 'invented-key'})});
+global.fetch = async () => ({ok: true, json: async () => input.response});
 require('node:vm').runInThisContext(input.script);
-setImmediate(() => assert.deepEqual(closed, input.expected));
+setImmediate(() => {
+  notes.push(input.newer);
+  ready(registration);
+  setImmediate(() => assert.deepEqual(closed, input.expected));
+});
 """
         for complete in (False, True):
             with self.subTest(complete=complete):
-                view = {"ok": complete, "homes": []}
-                parser = FeedParser()
-                parser.feed(quarterdeck.cards_html([], view, WAIT_NOW, True))
+                notifier = quarterdeck.PushNotifier(self.root / str(complete), post=self.post, background=False)
+                notifier.subscribe(self.subscription)
+                notifier.observe([], complete=True)
+                answered, waiting, newer = (self.card("harbor/answered"), self.card("harbor/waiting"), self.card("harbor/newer"))
+                notifier.observe([answered, waiting], complete=True)
+                notifier.observe([waiting], complete=complete)
+                port = self.serve(notifier)
+                with redirect_stderr(io.StringIO()):
+                    status, _headers, body = self.request(port, "GET", quarterdeck.PUSH_KEY_ENDPOINT)
+                self.assertEqual(status, 200)
+                response = json.loads(body)
+                expected = [quarterdeck.push_tag(answered)] if complete else []
+                self.assertEqual(response["withdrawn"], expected)
+                notifier.observe([waiting, newer], complete=False)
                 result = subprocess.run(["node", "-e", harness], input=json.dumps({
-                    "script": script, "complete": parser.complete, "expected": ["answered"] if complete else [],
+                    "script": script, "response": response, "expected": expected,
+                    "answered": quarterdeck.push_tag(answered), "waiting": quarterdeck.push_tag(waiting),
+                    "newer": quarterdeck.push_tag(newer),
                 }), capture_output=True, text=True)
                 self.assertEqual(result.returncode, 0, result.stderr)
 
@@ -10210,7 +10239,7 @@ async function run(secure, subscribed, pushManager = true) {
                querySelectorAll: () => []},
     sessionStorage: {getItem: () => "", setItem() {}},
     fetch: async (path, options) => { if (options && options.method === "POST") posts.push([path, JSON.parse(options.body)]);
-      return {ok: true, json: async () => ({key: "BAAA"})}; },
+      return {ok: true, json: async () => ({key: "BAAA", withdrawn: []})}; },
     atob: text => Buffer.from(text, "base64").toString("binary"), Uint8Array, Set, Array, Promise, Error, String, JSON,
   };
   if (!pushManager) delete context.window.PushManager;

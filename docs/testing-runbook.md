@@ -598,9 +598,12 @@ The approved phone contract is the oracle: a subscribed server checks once a
 minute without browser requests, initial incomplete reads cannot establish a
 baseline, fresh backlog holds have fresh linked identities without a wait
 watcher, and transient failures retry until at least one service accepts them.
-Repeated successful observations send nothing. The served worker executes in
+Repeated successful observations send nothing, even after a year away and a
+server restart; a new hold identity can still alert. The served worker executes in
 Node to verify display, tagged withdrawal, and navigation to Quarterdeck;
-the page script also executes to ensure partial feeds preserve notifications.
+the page script also executes with delayed worker readiness and the real push-key
+response: only server-confirmed withdrawn tags close, while newer, active and
+untagged notifications survive stale page snapshots and partial observations.
 Apple subscriptions receive no withdrawal push. These checks reject lost
 messages after transient errors, startup announcements after partial reads,
 unrelated notification closure, and browser-dependent observation.

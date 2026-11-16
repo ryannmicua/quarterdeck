@@ -216,7 +216,11 @@ except to Apple's service. On iPhone no withdrawal push is sent; the notificatio
 clears when Quarterdeck is next opened. Android and other browsers receive the
 withdrawal push; Chrome may occasionally show its own generic "updated in the
 background" line after a silent withdrawal. Transient delivery failures leave
-the item pending for the next check; an accepted message is not retried.
+the item pending for the next check; an accepted message is not retried. Item
+history does not expire, so the same identity never sends a repeat alert. The
+uncached push-key response also lists server-confirmed inactive tags; page-open
+cleanup closes only those notifications, never tags merely absent from a cached
+page.
 Every state file is under
 `${XDG_STATE_HOME:-~/.local/state}/quarterdeck/` with mode 0600:
 `push-vapid.pem` (the signing key), `push-subscriptions.json` and
