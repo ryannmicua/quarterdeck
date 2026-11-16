@@ -76,15 +76,12 @@ address and for its JSON output.
 | `--tls-cert FILE` | unset | Serve `https` with this PEM certificate chain. Give `--tls-key` with it. Phone notifications need `https`. |
 | `--tls-key FILE` | unset | The PEM private key for `--tls-cert`. |
 
-By default the server only answers `GET` for the main page, `cards.json` (the
-feed's cards) and the generated report, backlog and backlog-item pages. It has no write endpoints. With
-`--allow-marks` it also accepts a `POST` that marks or
-unmarks a known report, a `POST` that sends a reaction (see below) and a `POST`
-that saves a briefing view to the preferences file;
-everything else is still refused. When
-snapshots are enabled, Firstmate's wrapper may refresh its cache and read
-registered remote secondmate ledgers through its own routes; `--no-snapshot`
-skips that behavior.
+By default the server serves generated pages and read-only assets and has no
+write endpoints. `--allow-marks` enables the actions described below; see the
+[CLI reference](../reference/cli-and-config.md) for the
+allowed endpoints. When snapshots are enabled, Firstmate's wrapper may refresh
+its cache and read registered remote secondmate ledgers through its own routes;
+`--no-snapshot` skips that behavior.
 
 ## Get phone notifications
 
@@ -134,8 +131,8 @@ site in the browser or phone settings and reload.
 ### What arrives, and when it goes
 
 - One notification for each Needs-you card that appears after the server
-  starts tracking. Items already waiting at the first build are recorded,
-  not announced. While a subscription exists, the server checks about once a
+  starts tracking. Items already waiting at the first complete observation are
+  recorded, not announced. While a subscription exists, the server checks about once a
   minute even when every browser is closed.
 - When the item is answered or goes away, Quarterdeck withdraws its
   notification on Android and desktop browsers. An iPhone allows no silent
@@ -144,18 +141,17 @@ site in the browser or phone settings and reload.
   generic "updated in the background" line after a silent withdrawal.
 - An item that goes away and comes back stays quiet. A new hold on the same
   task counts as a new item.
-- While the Needs-you feed cannot be read in full, nothing is withdrawn.
+- While the Needs-you feed cannot be read in full, nothing is withdrawn and
+  unfamiliar items wait for a complete observation before being announced.
 
 ### Turn them off
 
 Tap **Turn off notifications** in the header. Removing the Home Screen app or
 blocking notifications in the phone's settings also works: the push service
 then reports the subscription gone, and Quarterdeck deletes it on its next
-message. Quarterdeck also drops a subscription that its push service refuses
-three times in a row.
-
-See [Privacy and architecture](../explanation/privacy-and-architecture.md) for
-what each message contains and where the keys and subscriptions are stored.
+message. See [Privacy and architecture](../explanation/privacy-and-architecture.md)
+for other subscription removal rules, what each message contains and where the
+keys and subscriptions are stored.
 
 ## Mark reports reviewed from the page
 

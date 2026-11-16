@@ -18,8 +18,8 @@ to another Firstmate home, which gets its own labeled section underneath the
 parent. That secondmate has its own `data/backlog.md` and report files. A remote
 route is shown as unavailable as a separately loaded home. The parent's
 bearings snapshot may still include remote secondmate rows collected through
-Firstmate's routes and cache. Quarterdeck itself makes no network calls and
-does not use SSH. This follows Firstmate's [secondmate route and home layout](https://github.com/kunchenguid/firstmate/blob/main/docs/configuration.md).
+Firstmate's routes and cache. Quarterdeck does not use SSH or fetch remote
+secondmate data itself. This follows Firstmate's [secondmate route and home layout](https://github.com/kunchenguid/firstmate/blob/main/docs/configuration.md).
 
 Quarterdeck reads these files directly. The first exception is a home's own
 `bin/fm-bearings-snapshot.sh --json`, run with a short timeout so the page
@@ -197,8 +197,9 @@ changes preserve historical weekly totals. The first-seen estimate joins
 Needs-you observation times with subsequent visits. See
 [see how much you use Quarterdeck](../how-to/see-your-adoption.md).
 
-Phone notifications are opt-in twice: `serve --allow-marks` offers them, and
-nothing is sent until a browser turns them on from the page. They use standard
+For notification prerequisites, setup and phone-specific withdrawal behavior, see
+[Get phone notifications](../how-to/serve-the-page.md#get-phone-notifications).
+Nothing is sent until a browser turns them on from the page. They use standard
 Web Push. The page's service worker (`/sw.js`) subscribes with the browser's own
 push service, and `POST /api/push/subscribe` stores that subscription (an
 endpoint URL and the browser's public keys) under the same origin, content-type
@@ -211,21 +212,19 @@ subscription's push service: an encrypted payload (RFC 8291) signed with
 Quarterdeck's own key (RFC 8292). The payload holds only "1 new item needs you",
 a tag and a link to that tag; the tag is a hash of the card's identity, so no
 title, task name or text leaves the machine, and the push service sees only
-ciphertext. When the card goes away it posts a withdrawal with the same tag,
-except to Apple's service. On iPhone no withdrawal push is sent; the notification
-clears when Quarterdeck is next opened. Android and other browsers receive the
-withdrawal push; Chrome may occasionally show its own generic "updated in the
-background" line after a silent withdrawal. Transient delivery failures leave
-the item pending for the next check; an accepted message is not retried. Item
-history does not expire, so the same identity never sends a repeat alert. The
-uncached push-key response also lists server-confirmed inactive tags; page-open
+ciphertext. Lifecycle tracking follows the behavior in the serving guide.
+Transient delivery failures leave the item pending for the next check; once at
+least one push service accepts a message, it is not retried for other phones.
+The uncached push-key response also lists server-confirmed inactive tags; page-open
 cleanup closes only those notifications, never tags merely absent from a cached
 page.
 Every state file is under
 `${XDG_STATE_HOME:-~/.local/state}/quarterdeck/` with mode 0600:
 `push-vapid.pem` (the signing key), `push-subscriptions.json` and
 `push-items.json` (tags and times only). A subscription the push service reports
-gone (HTTP 404 or 410) is deleted, and so is one refused three times in a row.
+gone (HTTP 404 or 410) is deleted. Other non-transient client refusals count
+toward removal after three failures; a successful delivery resets the count.
+Timeouts, rate limits and server failures retain the subscription.
 Without the `cryptography` package the feature is off and the rest of
 Quarterdeck still uses only the standard library.
 

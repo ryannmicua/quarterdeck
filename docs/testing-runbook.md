@@ -643,12 +643,21 @@ navigate; do not count it as click evidence. This validates the local Chromium s
 flows or vendor delivery. Stop and await the server, browser and local receiver;
 remove private state, profiles and fixture homes, retaining only evidence.
 
-Known failure observed in that gate: after a complete baseline and a successful
+Regression reproduced in the initial gate: after a complete baseline and a successful
 new-item alert, remove the held backlog rows while making the attention script
 return malformed JSON. The retained last-good decisions lose their backlog
 hold stamps and are announced again under new tags, including baseline items.
 A partial read must not turn existing decisions into fresh arrivals. Check the
 received payload sequence, not only that no withdrawal was sent.
+
+Live recheck (2026-11-17): the real TLS CLI server and local encrypted-push
+receiver passed the missing-hold regression across two independent 60-second
+polls. No new or withdrawal messages arrived, stored lifecycle history stayed
+unchanged, and the key API authorized no cleanup. A separate disposable
+Chromium/DBus run verified actual notification display, trusted click navigation,
+matching-tag withdrawal, newer-tag preservation and answered-item page cleanup.
+These checks establish local behavior with synthetic subscriptions, not vendor
+delivery or physical Android/iPhone permission flows.
 
 Regression check (2026-11-17):
 `PYTHONPATH=tests python3 -m unittest -v test_quarterdeck.PushNotificationTests.test_failed_feed_and_missing_backlog_holds_do_not_reannounce_cached_decisions`

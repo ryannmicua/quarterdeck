@@ -82,8 +82,9 @@ under that parent. It may run that home's
 `bin/fm-bearings-snapshot.sh --json` for the bearings view and
 `bin/fm-attention.sh --json` for the "Decisions and recent work" section, unless
 `--no-snapshot` is set, and it reads `state/fleet-ledger.jsonl` for that
-section. Quarterdeck itself makes no network calls and invokes no other
-Firstmate script directly, apart from `bin/fm-inbox.sh note` for reactions and
+section. For network behavior, see
+[Privacy and architecture](../explanation/privacy-and-architecture.md). It invokes
+no other Firstmate script directly, apart from `bin/fm-inbox.sh note` for reactions and
 for discarding a captain wait. The captain-wait watcher also reads the home's
 saved Claude Code sessions and runs the configured helper command; see
 [Captain waits](#captain-waits). The snapshot wrapper may read registered

@@ -211,7 +211,8 @@ board: merge, approve, decide, forward and unsorted board and backlog items not
 already a decision), and `informational` (board `read` items). Each item has
 `kind`, `key`, `title`, `ask`, `group`, `project`, `at`,
 `opened_at` (when the request was opened, from the feed or the backlog filed
-date; `null` when unknown) and `priority` (index
+date; `null` when unknown), `hold_set` (the matching backlog item's hold stamp,
+or `null` when unavailable) and `priority` (index
 into the effective project list, or `null`). `kind` is `decision`, `needs_you`,
 or `informational`. Items projected from decisions also
 retain `relevance`, so quiet decisions can remain collapsed without affecting
