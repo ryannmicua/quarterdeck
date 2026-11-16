@@ -73,16 +73,85 @@ address and for its JSON output.
 | `--no-snapshot` | off | Skip the Firstmate snapshot script and always parse backlogs. |
 | `--allow-marks` | off | Enable the "Mark reviewed", "Unmark", "Discard" and "Undiscard" buttons for reports, reactions sent to Firstmate, saving briefing views from the page, and "Discard this wait" on captain-wait cards. |
 | `--watch-waits` | off | Also run the captain-wait watcher in the background; see [Track what is waiting on you](track-captain-waits.md). |
+| `--tls-cert FILE` | unset | Serve `https` with this PEM certificate chain. Give `--tls-key` with it. Phone notifications need `https`. |
+| `--tls-key FILE` | unset | The PEM private key for `--tls-cert`. |
 
-By default the server only answers `GET` for the main page, `cards.json` (the
-feed's cards) and the generated report, backlog and backlog-item pages. It has no write endpoints. With
-`--allow-marks` it also accepts a `POST` that marks or
-unmarks a known report, a `POST` that sends a reaction (see below) and a `POST`
-that saves a briefing view to the preferences file;
-everything else is still refused. When
-snapshots are enabled, Firstmate's wrapper may refresh its cache and read
-registered remote secondmate ledgers through its own routes; `--no-snapshot`
-skips that behavior.
+By default the server serves generated pages and read-only assets and has no
+write endpoints. `--allow-marks` enables the actions described below; see the
+[CLI reference](../reference/cli-and-config.md) for the
+allowed endpoints. When snapshots are enabled, Firstmate's wrapper may refresh
+its cache and read registered remote secondmate ledgers through its own routes;
+`--no-snapshot` skips that behavior.
+
+## Get phone notifications
+
+With `--allow-marks`, the served page can send your phone one notification
+whenever a new item needs you. The notification says only "1 new item needs
+you"; tapping it opens Quarterdeck on that card. The same item never sends a
+second alert. Withdrawal behavior depends on the phone browser, as described
+below.
+
+### What the server needs
+
+- `--allow-marks`, as for every other write from the page.
+- Snapshot reads enabled (omit `--no-snapshot`). With `--no-snapshot`, phone
+  notifications are off because Quarterdeck cannot tell when a needs-you item
+  is answered; the controls and push endpoints are unavailable.
+- The Python `cryptography` package for the Python that runs Quarterdeck
+  (`python3 -c "import cryptography"` succeeds). Without it the control does not
+  appear, and `serve` prints "Phone notifications: off" at start-up.
+- An `https` address the phone trusts. Phone browsers allow notifications only
+  on `https`, and an iPhone also needs the page added to its Home Screen from
+  that address (iOS 16.4 or later). Serve with `--tls-cert` and `--tls-key`, or
+  put Quarterdeck behind a TLS reverse proxy. On plain `http` the control stays
+  hidden.
+- Outgoing `https` from the server to the phone's push service (Google for
+  Android Chrome, Apple for iPhone).
+
+### Turn them on, once per phone
+
+On an Android phone with Chrome:
+
+1. Open Quarterdeck's `https` address.
+2. Tap **Turn on notifications** in the header, then allow notifications.
+
+On an iPhone:
+
+1. Open Quarterdeck's `https` address in Safari.
+2. Tap Share, then **Add to Home Screen**. If Quarterdeck is already on the Home
+   Screen from an `http` address, remove that icon first.
+3. Open Quarterdeck from the new Home Screen icon.
+4. Tap **Turn on notifications** in the header, then **Allow**.
+
+The header then shows "Notifications: on". In a Safari tab it shows
+"Notifications: add Quarterdeck to the Home Screen first" instead. If the
+browser blocked notifications earlier, the header says so; allow them for this
+site in the browser or phone settings and reload.
+
+### What arrives, and when it goes
+
+- One notification for each Needs-you card that appears after the server
+  starts tracking. Items already waiting at the first complete observation are
+  recorded, not announced. While a subscription exists, the server checks about once a
+  minute even when every browser is closed.
+- When the item is answered or goes away, Quarterdeck withdraws its
+  notification on Android and desktop browsers. An iPhone allows no silent
+  withdrawal, so no withdrawal push is sent there; the notification is cleared
+  the next time you open Quarterdeck. Chrome may occasionally show its own
+  generic "updated in the background" line after a silent withdrawal.
+- An item that goes away and comes back stays quiet. A new hold on the same
+  task counts as a new item.
+- While the Needs-you feed cannot be read in full, nothing is withdrawn and
+  unfamiliar items wait for a complete observation before being announced.
+
+### Turn them off
+
+Tap **Turn off notifications** in the header. Removing the Home Screen app or
+blocking notifications in the phone's settings also works: the push service
+then reports the subscription gone, and Quarterdeck deletes it on its next
+message. See [Privacy and architecture](../explanation/privacy-and-architecture.md)
+for other subscription removal rules, what each message contains and where the
+keys and subscriptions are stored.
 
 ## Mark reports reviewed from the page
 

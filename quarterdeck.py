@@ -17,6 +17,7 @@ import re
 import shlex
 import shutil
 import socket
+import ssl
 import sqlite3
 import stat
 import statistics
@@ -1516,6 +1517,7 @@ NAV_SCRIPT = """
 def build_html(
     homes: list[HomeSnapshot], title: str, lavish: bool = False, show_all: bool = False,
     bearings: Bearings | None = None, refresh_seconds: int | None = None, allow_marks: bool = False,
+    push_enabled: bool = True,
 ) -> str:
     snapshots = all_snapshots(homes)
     ambiguous_ids = assign_report_ids(homes)
@@ -1552,6 +1554,9 @@ def build_html(
         section_counts["activity"] = sum(card["section"] != "needs_you" for card in cards)
     cards_script = ACTIVITY_SCRIPT if cards_block else ""
     cards_link = '<a class="cards-new" id="cards-new" href="#cards" hidden></a>' if cards_block else ""
+    serve_push = bool(push_enabled and allow_marks and refresh_seconds)
+    push_control = PUSH_CONTROL_HTML if serve_push else ""
+    push_script = PUSH_PAGE_SCRIPT if serve_push else ""
     metrics_html = "".join(
         f'<div class="metric"><b>{count}</b><span>{html.escape(label)}</span></div>'
         for count, label in zip(counts, metric_labels)
@@ -1938,6 +1943,11 @@ def build_html(
     .bearing .body {{ border-left: 3px solid var(--line); padding-left: .8rem; overflow-wrap: anywhere; }}
     .generated, .source-note {{ color: #d8c49b; font-size: .85rem; }}
     .adoption-link {{ display: inline-flex; align-items: center; min-height: 44px; color: #fffdf8; }}
+    .push-control {{ display: inline-flex; flex-wrap: wrap; align-items: center; gap: 0 .5rem; margin-left: 1rem; }}
+    .push-control[hidden] {{ display: none; }}
+    .push-toggle {{ min-height: 44px; padding: 0; border: 0; background: none; color: #fffdf8; font: inherit; text-decoration: underline; cursor: pointer; }}
+    .push-toggle:focus-visible {{ outline: 3px solid var(--gold); outline-offset: 2px; }}
+    .push-toggle:disabled {{ cursor: progress; opacity: .7; }}
     .source-note {{ color: var(--muted); }}
     footer {{ border-top: 1px solid var(--line); margin-top: 3rem; padding-top: 1rem; color: var(--muted); font-size: .85rem; }}
     .board {{ margin-bottom: 1rem; }}
@@ -2012,7 +2022,7 @@ def build_html(
     <p class="generated"><span class="stamp-long">Generated at {timestamp}{refresh_note}</span><time class="stamp-short" id="updated" datetime="{iso_seconds(generated.timestamp())}">Updated {generated.strftime("%H:%M")} UTC</time></p>
     {board_status}
     {cards_link}
-    <p class="generated"><a class="adoption-link" href="{ADOPTION_PAGE}">Adoption this week</a></p>
+    <p class="generated"><a class="adoption-link" href="{ADOPTION_PAGE}">Adoption this week</a>{push_control}</p>
   </header>
   <p class="offline-note" id="offline-note" role="status" hidden></p>
   {status_block}
@@ -2027,7 +2037,7 @@ def build_html(
     {details_block}
     <footer>{html.escape(introductory_text)} {footer_label} · generated {timestamp} · source files open as readable pages beside this one.</footer>
   </main>
-  {lavish_script}{NAV_SCRIPT}{refresh_script}{reload_script}{mark_script}{reaction_script}{wait_script}{cards_script}
+  {lavish_script}{NAV_SCRIPT}{refresh_script}{reload_script}{mark_script}{reaction_script}{wait_script}{cards_script}{push_script}
 </body>
 </html>
 '''
@@ -3501,8 +3511,9 @@ def home_waiting(
     """What waits on the captain in one home: its decisions, the rest of what needs them, then informational items."""
     owners = all_snapshots([snapshot])
     labels = {owner.spec.label for owner in owners}
-    filed = {report_reference(owner.spec.label, item.id): item.filed
-             for owner in owners for item in backlog_items(owner.backlog_markdown or "", owner)}
+    backlog = {report_reference(owner.spec.label, item.id): item
+               for owner in owners for item in backlog_items(owner.backlog_markdown or "", owner)}
+    filed = {key: item.filed for key, item in backlog.items()}
     decisions = view.get("decisions")
     rows = [*decisions["relevant"], *(decisions.get("background") or [])] if isinstance(decisions, dict) else []
     entries = {entry.key: entry for entry in (
@@ -3539,6 +3550,10 @@ def home_waiting(
             entry.item.project or projects.get(entry.key), entry.item.group, iso_or_none(entry.touched),
             filed.get(entry.key) or None,
         ))
+    for items in queues.values():
+        for item in items:
+            held = backlog.get(str(item["key"]))
+            item["hold_set"] = hold_stamp(held) if held is not None else None
     return {"decisions": waiting_decisions, "needs_you": needs_you, "informational": informational}
 
 
@@ -5951,13 +5966,16 @@ class SiteCache:
             self.cond.notify_all()
 
 
-def site_builder(args: argparse.Namespace, allow_marks: bool = False) -> Callable[[], dict[str, str]]:
+def site_builder(
+    args: argparse.Namespace, allow_marks: bool = False, push: PushNotifier | None = None,
+) -> Callable[[], dict[str, str]]:
     def build() -> dict[str, str]:
         config, homes, bearings = load_site(args)
         configured_title = config.get("page_title")
         title = args.title or (configured_title if isinstance(configured_title, str) else None) or DEFAULT_TITLE
         index = build_html(
-            homes, title, bearings=bearings, refresh_seconds=DEFAULT_REFRESH_SECONDS, allow_marks=allow_marks
+            homes, title, bearings=bearings, refresh_seconds=DEFAULT_REFRESH_SECONDS, allow_marks=allow_marks,
+            push_enabled=push is not None,
         )
         activity = site_cards(homes, bearings, allow_marks)
         if allow_marks:
@@ -5965,6 +5983,12 @@ def site_builder(args: argparse.Namespace, allow_marks: bool = False) -> Callabl
                 record_adoption_arrivals(validate_review_state_location(homes), homes, activity, bearings.generated)
             except (sqlite3.Error, OSError, ValueError) as exc:
                 print(f"quarterdeck: could not record adoption arrivals: {exc}", file=sys.stderr, flush=True)
+        if push is not None:
+            attention = bearings.attention
+            try:
+                push.observe(activity, complete=attention is not None and not needs_unread(attention))
+            except Exception as exc:  # noqa: BLE001 - a notification problem must never stop the page
+                print(f"quarterdeck: could not check for new needs-you items to notify: {exc}", file=sys.stderr, flush=True)
         cards = cards_payload(activity, bearings.generated)
         pages = source_pages(homes, show_all=False, bearings=bearings, allow_marks=allow_marks)  # after the cards: they register document pages
         pages["index.html"] = index
@@ -6072,6 +6096,495 @@ def accepts_gzip(header: str | None) -> bool:
 
 GZIP_MIN_BYTES = 1024
 
+# --- Phone push notifications -----------------------------------------------------
+# Standard Web Push (RFC 8030, 8291 and 8292): the page's service worker subscribes with the browser's own push
+# service, and Quarterdeck sends one encrypted message when a needs-you item newly appears and a withdrawal when it
+# goes away. A message carries a fixed line, a hashed tag and a link to that tag; never a title, task name or text.
+# Keys, subscriptions and the item record stay in the private state directory. The elliptic-curve and AES-GCM
+# steps need the `cryptography` package; without it push stays off and the rest of Quarterdeck is unchanged.
+
+PUSH_KEY_ENDPOINT = "/api/push/key"
+PUSH_SUBSCRIBE_ENDPOINT = "/api/push/subscribe"
+PUSH_UNSUBSCRIBE_ENDPOINT = "/api/push/unsubscribe"
+PUSH_WORKER_PATH = "sw.js"
+PUSH_KEY_NAME = "push-vapid.pem"
+PUSH_SUBSCRIPTIONS_NAME = "push-subscriptions.json"
+PUSH_ITEMS_NAME = "push-items.json"
+PUSH_SUBJECT = "https://github.com/ryannmicua/quarterdeck"
+PUSH_TITLE = APP_NAME
+PUSH_BODY = "1 new item needs you"
+PUSH_TTL_SECONDS = 86400
+PUSH_TIMEOUT_SECONDS = 10
+PUSH_MAX_SUBSCRIPTIONS = 20
+PUSH_FAILURE_LIMIT = 3
+PUSH_BODY_LIMIT = 4096
+# Only the browsers' own push services: a subscription naming any other host is refused, so the server never posts
+# to an address a page visitor chose.
+PUSH_SERVICE_HOSTS = ("fcm.googleapis.com", "push.apple.com", "push.services.mozilla.com", "notify.windows.com")
+PUSH_APPLE_HOSTS = ("push.apple.com",)
+
+
+def push_crypto_available() -> bool:
+    try:
+        import cryptography.hazmat.primitives.ciphers.aead  # noqa: F401
+    except ImportError:
+        return False
+    return True
+
+
+def b64url(data: bytes) -> str:
+    return base64.urlsafe_b64encode(data).rstrip(b"=").decode("ascii")
+
+
+def b64url_decode(text: str) -> bytes:
+    return base64.urlsafe_b64decode(text + "=" * (-len(text) % 4))
+
+
+def push_tag(card: dict[str, object]) -> str:
+    """A stable tag for one needs-you arrival: a hash of the card id and its hold, so nothing readable leaves."""
+    identity = json.dumps([card["id"], card.get("hold_set")], separators=(",", ":"))
+    return "qd" + hashlib.sha256(identity.encode("utf-8")).hexdigest()[:24]
+
+
+def push_service_host(endpoint: str) -> str | None:
+    parsed = urlparse(endpoint)
+    host = (parsed.hostname or "").lower()
+    if parsed.scheme != "https" or parsed.username or parsed.password:
+        return None
+    return host if any(host == known or host.endswith("." + known) for known in PUSH_SERVICE_HOSTS) else None
+
+
+def clean_push_subscription(raw: object) -> dict[str, object]:
+    """The subscription a page sent, reduced to endpoint and keys; raise ValueError when it is not a usable one."""
+    if not isinstance(raw, dict) or not isinstance(raw.get("endpoint"), str) or not isinstance(raw.get("keys"), dict):
+        raise ValueError("expected a push subscription with endpoint and keys")
+    endpoint = str(raw["endpoint"])
+    if len(endpoint) > 1024 or push_service_host(endpoint) is None:
+        raise ValueError("the subscription endpoint is not a known browser push service")
+    keys = raw["keys"]
+    try:
+        p256dh, auth = b64url_decode(str(keys["p256dh"])), b64url_decode(str(keys["auth"]))  # type: ignore[index]
+    except (KeyError, ValueError, TypeError) as exc:
+        raise ValueError("the subscription keys are not base64url") from exc
+    if len(p256dh) != 65 or p256dh[0] != 4 or len(auth) != 16:
+        raise ValueError("the subscription keys have the wrong length")
+    return {"endpoint": endpoint, "keys": {"p256dh": b64url(p256dh), "auth": b64url(auth)}}
+
+
+def push_encrypt(payload: bytes, p256dh: str, auth: str, salt: bytes | None = None) -> bytes:
+    """Encrypt one message for one subscription as an aes128gcm body (RFC 8291 with RFC 8188), single record."""
+    import hmac
+    from cryptography.hazmat.primitives import serialization
+    from cryptography.hazmat.primitives.asymmetric import ec
+    from cryptography.hazmat.primitives.ciphers.aead import AESGCM
+
+    ua_public = b64url_decode(p256dh)
+    auth_secret = b64url_decode(auth)
+    server_key = ec.generate_private_key(ec.SECP256R1())
+    as_public = server_key.public_key().public_bytes(serialization.Encoding.X962, serialization.PublicFormat.UncompressedPoint)
+    shared = server_key.exchange(ec.ECDH(), ec.EllipticCurvePublicKey.from_encoded_point(ec.SECP256R1(), ua_public))
+
+    def hmac_sha256(key: bytes, data: bytes) -> bytes:
+        return hmac.new(key, data, hashlib.sha256).digest()
+
+    ikm = hmac_sha256(hmac_sha256(auth_secret, shared), b"WebPush: info\x00" + ua_public + as_public + b"\x01")
+    salt = salt if salt is not None else os.urandom(16)
+    prk = hmac_sha256(salt, ikm)
+    cek = hmac_sha256(prk, b"Content-Encoding: aes128gcm\x00\x01")[:16]
+    nonce = hmac_sha256(prk, b"Content-Encoding: nonce\x00\x01")[:12]
+    ciphertext = AESGCM(cek).encrypt(nonce, payload + b"\x02", None)
+    return salt + (4096).to_bytes(4, "big") + bytes([len(as_public)]) + as_public + ciphertext
+
+
+def http_post(url: str, body: bytes, headers: dict[str, str]) -> int:
+    """POST one push message; return the status, or 0 when the service could not be reached."""
+    import urllib.error
+    import urllib.request
+    request = urllib.request.Request(url, data=body, headers=headers, method="POST")
+    try:
+        with urllib.request.urlopen(request, timeout=PUSH_TIMEOUT_SECONDS) as response:
+            return int(response.status)
+    except urllib.error.HTTPError as exc:
+        return int(exc.code)
+    except (urllib.error.URLError, OSError, ValueError):
+        return 0
+
+
+def write_private_json(path: Path, value: object) -> None:
+    """Replace one owner-only JSON file atomically; refuse to follow a symbolic link."""
+    if path.is_symlink():
+        raise ValueError(f"refusing to replace symbolic-link file: {path}")
+    path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
+    temporary: Path | None = None
+    try:
+        with tempfile.NamedTemporaryFile("w", encoding="utf-8", dir=path.parent, prefix=f".{path.name}.",
+                                         suffix=".tmp", delete=False) as stream:
+            temporary = Path(stream.name)
+            os.chmod(temporary, 0o600)
+            json.dump(value, stream, indent=2)
+            stream.write("\n")
+        os.replace(temporary, path)
+    except OSError:
+        if temporary is not None:
+            temporary.unlink(missing_ok=True)
+        raise
+
+
+def read_private_json(path: Path) -> dict[str, object] | None:
+    if path.is_symlink():
+        raise ValueError(f"refusing symbolic-link file: {path}")
+    try:
+        value = json.loads(path.read_text(encoding="utf-8"))
+    except FileNotFoundError:
+        return None
+    except (OSError, ValueError, UnicodeDecodeError):
+        return None
+    return value if isinstance(value, dict) else None
+
+
+class PushNotifier:
+    """Phone notifications for new needs-you items: one message per new item, a withdrawal when it goes.
+
+    `observe` runs after each page build. The first observation only records what is already waiting. An item is
+    announced once; if it goes away and comes back it is not announced again.
+    While the needs-you feed is incomplete, nothing is withdrawn, because an item missing from a
+    partial read may still be waiting. A subscription the push service reports gone (404 or 410) is dropped at once;
+    one refused PUSH_FAILURE_LIMIT times in a row is dropped too. Network failures keep it.
+    """
+
+    def __init__(self, directory: Path, post: Callable[[str, bytes, dict[str, str]], int] = http_post,
+                 background: bool = True, clock: Callable[[], float] = time.time) -> None:
+        self.directory = directory
+        self.post = post
+        self.background = background
+        self.clock = clock
+        self.lock = threading.RLock()
+        self.send_lock = threading.Lock()
+
+    @property
+    def key_path(self) -> Path:
+        return self.directory / PUSH_KEY_NAME
+
+    @property
+    def subscriptions_path(self) -> Path:
+        return self.directory / PUSH_SUBSCRIPTIONS_NAME
+
+    @property
+    def items_path(self) -> Path:
+        return self.directory / PUSH_ITEMS_NAME
+
+    def private_key(self):  # noqa: ANN201 - cryptography's key type is imported lazily
+        from cryptography.hazmat.primitives import serialization
+        from cryptography.hazmat.primitives.asymmetric import ec
+        with self.lock:
+            if self.key_path.is_symlink():
+                raise ValueError(f"refusing symbolic-link key: {self.key_path}")
+            if self.key_path.exists():
+                return serialization.load_pem_private_key(self.key_path.read_bytes(), password=None)
+            key = ec.generate_private_key(ec.SECP256R1())
+            pem = key.private_bytes(serialization.Encoding.PEM, serialization.PrivateFormat.PKCS8,
+                                    serialization.NoEncryption())
+            self.directory.mkdir(parents=True, exist_ok=True, mode=0o700)
+            descriptor = os.open(self.key_path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+            with os.fdopen(descriptor, "wb") as stream:
+                stream.write(pem)
+            return key
+
+    def public_key(self) -> str:
+        from cryptography.hazmat.primitives import serialization
+        return b64url(self.private_key().public_key().public_bytes(
+            serialization.Encoding.X962, serialization.PublicFormat.UncompressedPoint))
+
+    def vapid_header(self, endpoint: str) -> str:
+        """The RFC 8292 Authorization value for one push service: an ES256 token for its origin, and our key."""
+        from cryptography.hazmat.primitives import hashes
+        from cryptography.hazmat.primitives.asymmetric import ec
+        from cryptography.hazmat.primitives.asymmetric.utils import decode_dss_signature
+        parsed = urlparse(endpoint)
+        claims = {"aud": f"{parsed.scheme}://{parsed.netloc}", "exp": int(self.clock()) + 12 * 3600, "sub": PUSH_SUBJECT}
+        signing_input = (b64url(json.dumps({"typ": "JWT", "alg": "ES256"}, separators=(",", ":")).encode()) + "."
+                         + b64url(json.dumps(claims, separators=(",", ":")).encode()))
+        r, s = decode_dss_signature(self.private_key().sign(signing_input.encode("ascii"), ec.ECDSA(hashes.SHA256())))
+        token = signing_input + "." + b64url(r.to_bytes(32, "big") + s.to_bytes(32, "big"))
+        return f"vapid t={token}, k={self.public_key()}"
+
+    def subscriptions(self) -> list[dict[str, object]]:
+        stored = read_private_json(self.subscriptions_path) or {}
+        return [entry for entry in stored.get("subscriptions", []) if isinstance(entry, dict)]  # type: ignore[union-attr]
+
+    def save_subscriptions(self, entries: list[dict[str, object]]) -> None:
+        write_private_json(self.subscriptions_path, {"subscriptions": entries})
+
+    def subscribe(self, raw: object) -> dict[str, object]:
+        subscription = clean_push_subscription(raw)
+        with self.lock:
+            self.public_key()  # create the key before the first subscription so it can never change under one
+            entries = [entry for entry in self.subscriptions() if entry.get("endpoint") != subscription["endpoint"]]
+            entries.append({**subscription, "added": iso_seconds(self.clock()), "failures": 0})
+            self.save_subscriptions(entries[-PUSH_MAX_SUBSCRIPTIONS:])
+        return {"subscribed": True}
+
+    def unsubscribe(self, endpoint: str) -> dict[str, object]:
+        with self.lock:
+            entries = self.subscriptions()
+            kept = [entry for entry in entries if entry.get("endpoint") != endpoint]
+            if len(kept) != len(entries):
+                self.save_subscriptions(kept)
+        return {"subscribed": False}
+
+    def observe(self, cards: list[dict[str, object]], complete: bool) -> list[dict[str, object]]:
+        """Record the needs-you items on show and return the messages this change calls for (and send them)."""
+        now = self.clock()
+        current = {push_tag(card) for card in cards if card.get("section") == "needs_you"}
+        messages: list[dict[str, object]] = []
+        with self.send_lock, self.lock:
+            stored = read_private_json(self.items_path)
+            items: dict[str, dict[str, object]] = {}
+            if stored is not None and isinstance(stored.get("items"), dict):
+                items = {str(tag): dict(record) for tag, record in stored["items"].items() if isinstance(record, dict)}  # type: ignore[union-attr]
+            first = stored is None
+            if first and not complete:
+                return []
+            for tag in sorted(current):
+                record = items.get(tag)
+                if record is None:
+                    # Partial reads can lose hold stamps and give cached items new tags.
+                    if not complete:
+                        continue
+                    items[tag] = {"active": True, "shown": False if first else None, "gone_at": None}
+                else:
+                    record.update(active=True, gone_at=None)
+                if items[tag].get("shown") is None:
+                    messages.append({"type": "new", "tag": tag})
+            if complete:
+                for tag, record in items.items():
+                    if tag in current:
+                        continue
+                    if record.get("active"):
+                        record.update(active=False, gone_at=now)
+                    if record.get("shown"):
+                        messages.append({"type": "withdraw", "tag": tag})
+            if first or messages or items != (stored or {}).get("items"):
+                write_private_json(self.items_path, {"items": items})
+        if messages:
+            if self.background:
+                threading.Thread(target=self.send_all, args=(messages,), daemon=True).start()
+            else:
+                self.send_all(messages)
+        return messages
+
+    def payload(self, message: dict[str, object]) -> bytes:
+        tag = str(message["tag"])
+        if message["type"] == "withdraw":
+            return json.dumps({"type": "withdraw", "tag": tag}).encode("utf-8")
+        return json.dumps({"type": "new", "tag": tag, "title": PUSH_TITLE, "body": PUSH_BODY,
+                           "url": f"./#need-{tag}"}).encode("utf-8")
+
+    def send_all(self, messages: list[dict[str, object]]) -> None:
+        with self.send_lock:
+            with self.lock:
+                entries = self.subscriptions()
+            stored = read_private_json(self.items_path) or {"items": {}}
+            items = stored["items"]
+            statuses: dict[str, list[int]] = {}
+            for message in messages:
+                record = items.get(str(message["tag"]))
+                new = message["type"] == "new"
+                if record is None or (new and (not record.get("active") or record.get("shown") is not None)) or (
+                    not new and (record.get("active") or not record.get("shown"))
+                ):
+                    continue
+                accepted = False
+                eligible = False
+                for entry in entries:
+                    endpoint = str(entry["endpoint"])
+                    previous = statuses.setdefault(endpoint, [])
+                    if previous and previous[-1] in {404, 410}:
+                        continue
+                    if not new and (push_service_host(endpoint) or "").endswith(PUSH_APPLE_HOSTS):
+                        continue
+                    eligible = True
+                    status = self.send(entry, message)
+                    previous.append(status)
+                    accepted = accepted or 200 <= status < 300
+                if accepted or (not new and not eligible):
+                    record["shown"] = new
+            with self.lock:
+                write_private_json(self.items_path, stored)
+            outcomes = {}
+            for endpoint, results in statuses.items():
+                if results:
+                    delivered = [status for status in results if 200 <= status < 300]
+                    outcomes[endpoint] = results[-1] if results[-1] in {404, 410} else delivered[0] if delivered else results[-1]
+            self.record_outcomes(outcomes)
+
+    def send(self, entry: dict[str, object], message: dict[str, object]) -> int:
+        endpoint = str(entry["endpoint"])
+        keys = entry["keys"]
+        try:
+            body = push_encrypt(self.payload(message), str(keys["p256dh"]), str(keys["auth"]))  # type: ignore[index]
+            headers = {
+                "Authorization": self.vapid_header(endpoint), "TTL": str(PUSH_TTL_SECONDS),
+                "Content-Encoding": "aes128gcm", "Content-Type": "application/octet-stream",
+                "Urgency": "high" if message["type"] == "new" else "normal", "Topic": str(message["tag"]),
+            }
+        except (ValueError, TypeError, KeyError) as exc:
+            print(f"quarterdeck: could not prepare a push message: {exc}", file=sys.stderr, flush=True)
+            return 0
+        return self.post(endpoint, body, headers)
+
+    def record_outcomes(self, outcomes: dict[str, int]) -> None:
+        if not outcomes:
+            return
+        with self.lock:
+            entries = self.subscriptions()
+            kept = []
+            for entry in entries:
+                status = outcomes.get(str(entry["endpoint"]))
+                failures = int(entry.get("failures") or 0)
+                if status in {404, 410}:
+                    continue
+                if status is not None and 400 <= status < 500 and status not in {408, 429}:
+                    failures += 1
+                elif status is not None and 200 <= status < 300:
+                    failures = 0
+                if failures >= PUSH_FAILURE_LIMIT:
+                    continue
+                kept.append({**entry, "failures": failures})
+            if kept != entries:
+                self.save_subscriptions(kept)
+
+
+PUSH_WORKER_JS = """// Quarterdeck service worker: shows a needs-you notification and withdraws it when the item is gone.
+self.addEventListener("install", () => self.skipWaiting());
+self.addEventListener("activate", event => event.waitUntil(self.clients.claim()));
+self.addEventListener("push", event => {
+  let data = {};
+  try { data = event.data ? event.data.json() : {}; } catch (_) { data = {}; }
+  const tag = typeof data.tag === "string" ? data.tag : "";
+  if (data.type === "withdraw") {
+    event.waitUntil(self.registration.getNotifications(tag ? {tag} : {}).then(list => list.forEach(note => note.close())));
+    return;
+  }
+  const url = new URL(typeof data.url === "string" ? data.url : "./", self.registration.scope).href;
+  event.waitUntil(self.registration.showNotification(data.title || "Quarterdeck", {
+    body: data.body || "1 new item needs you", tag: tag || undefined, icon: "icon-192.png", data: {url},
+  }));
+});
+self.addEventListener("notificationclick", event => {
+  event.notification.close();
+  const url = (event.notification.data && event.notification.data.url) || self.registration.scope;
+  event.waitUntil(self.clients.matchAll({type: "window", includeUncontrolled: true}).then(list => {
+    const open = list.find(client => client.url.startsWith(self.registration.scope));
+    if (!open) return self.clients.openWindow(url);
+    return open.focus().then(client => (client || open).navigate(url)).catch(() => self.clients.openWindow(url));
+  }));
+});
+"""
+
+PUSH_CONTROL_HTML = (
+    '<span class="push-control" id="push-control" hidden><span id="push-note" role="status"></span>'
+    '<button type="button" class="push-toggle" id="push-toggle" hidden>Turn on notifications</button></span>'
+)
+PUSH_PAGE_SCRIPT = """
+  <script>
+    (function () {
+      const box = document.getElementById("push-control");
+      const button = document.getElementById("push-toggle");
+      const note = document.getElementById("push-note");
+      // Push needs a secure address (https) and a service worker; on plain http the control stays hidden.
+      if (!box || !window.isSecureContext || !("serviceWorker" in navigator)) return;
+      function show(text, label) {
+        box.hidden = false;
+        note.textContent = text;
+        button.hidden = !label;
+        if (label) button.textContent = label;
+      }
+      if (!("PushManager" in window) || !("Notification" in window)) {
+        show("Notifications: add Quarterdeck to the Home Screen first", "");
+        return;
+      }
+      let withdrawn;
+      let key = "";
+      function keyBytes(text) {
+        const raw = atob((text + "===".slice((text.length + 3) % 4)).replace(/-/g, "+").replace(/_/g, "/"));
+        return Uint8Array.from(raw, character => character.charCodeAt(0));
+      }
+      function sameKey(subscription) {
+        const used = subscription.options && subscription.options.applicationServerKey;
+        if (!used) return true;
+        const mine = keyBytes(key), theirs = new Uint8Array(used);
+        return mine.length === theirs.length && mine.every((value, index) => value === theirs[index]);
+      }
+      function post(path, body) {
+        return fetch(path, {method: "POST", credentials: "same-origin", headers: {"Content-Type": "application/json"},
+                            body: JSON.stringify(body)}).then(response => {
+          if (!response.ok) throw new Error("HTTP " + response.status);
+          return response.json();
+        });
+      }
+      function settle(subscription) {
+        if (subscription) show("Notifications: on", "Turn off notifications");
+        else if (Notification.permission === "denied") show("Notifications: blocked in this browser's settings", "");
+        else show("", "Turn on notifications");
+      }
+      function toggle(registration) {
+        button.disabled = true;
+        button.dataset.mutationPending = "true";
+        registration.pushManager.getSubscription().then(current => {
+          if (current) {
+            note.textContent = "Turning off...";
+            return post("%(unsubscribe)s", {endpoint: current.endpoint}).catch(() => null)
+              .then(() => current.unsubscribe()).then(() => null);
+          }
+          note.textContent = "Turning on...";
+          return Notification.requestPermission().then(permission => {
+            if (permission !== "granted") return null;
+            return registration.pushManager.subscribe({userVisibleOnly: true, applicationServerKey: keyBytes(key)})
+              .then(made => post("%(subscribe)s", {subscription: made.toJSON()}).then(() => {
+                try { sessionStorage.setItem("quarterdeck-push", made.endpoint); } catch (_) {}
+                return made;
+              }, error => made.unsubscribe().then(() => { throw error; })));
+          });
+        }).then(settle).catch(() => {
+          note.textContent = "Notifications did not change. Try again.";
+        }).finally(() => {
+          button.disabled = false;
+          delete button.dataset.mutationPending;
+        });
+      }
+      fetch("%(key)s", {cache: "no-store", credentials: "same-origin"}).then(response => {
+        if (!response.ok) throw new Error("HTTP " + response.status);
+        return response.json();
+      }).then(data => {
+        key = String(data.key || "");
+        withdrawn = new Set(data.withdrawn);
+        if (!key) throw new Error("no key");
+        return navigator.serviceWorker.register("/%(worker)s").then(() => navigator.serviceWorker.ready);
+      }).then(registration => {
+        // An item that no longer needs you loses its notification when the page opens, on every platform.
+        registration.getNotifications().then(list => list.forEach(item => {
+          if (withdrawn.has(item.tag)) item.close();
+        })).catch(() => {});
+        button.addEventListener("click", () => toggle(registration));
+        return registration.pushManager.getSubscription().then(current => {
+          if (current && !sameKey(current)) return current.unsubscribe().then(() => null);
+          if (current) {
+            let synced = "";
+            try { synced = sessionStorage.getItem("quarterdeck-push") || ""; } catch (_) {}
+            if (synced !== current.endpoint) {
+              post("%(subscribe)s", {subscription: current.toJSON()}).then(() => {
+                try { sessionStorage.setItem("quarterdeck-push", current.endpoint); } catch (_) {}
+              }).catch(() => {});
+            }
+          }
+          return current;
+        });
+      }).then(settle).catch(() => { box.hidden = true; });
+    })();
+  </script>""".replace("%(key)s", PUSH_KEY_ENDPOINT).replace("%(subscribe)s", PUSH_SUBSCRIBE_ENDPOINT).replace(
+    "%(unsubscribe)s", PUSH_UNSUBSCRIBE_ENDPOINT).replace("%(worker)s", PUSH_WORKER_PATH)
+
 
 
 def make_handler(
@@ -6081,8 +6594,10 @@ def make_handler(
     save_view_to: Callable[[dict[str, object]], dict[str, object]] | None = None,
     discard_wait_to: Callable[[dict[str, object]], dict[str, object]] | None = None,
     visit_log: VisitLog | None = None,
+    push: PushNotifier | None = None,
 ) -> type[BaseHTTPRequestHandler]:
-    """Build the request handler; POST is refused unless set_mark, send_reaction_to, save_view_to or discard_wait_to is given."""
+    """Build the request handler; POST is refused unless set_mark, send_reaction_to, save_view_to, discard_wait_to
+    or push is given."""
     class Handler(BaseHTTPRequestHandler):
         server_version = "Quarterdeck"
 
@@ -6114,6 +6629,20 @@ def make_handler(
             name = "index.html" if path in {"/", "/index.html"} else path.lstrip("/")
             if name in APP_ICON_PATHS:
                 self.send_text(200, app_asset(name) or b"", APP_ICON_PATHS[name], cache="public, max-age=86400")
+                return
+            if push is not None and name == PUSH_WORKER_PATH:
+                self.send_text(200, PUSH_WORKER_JS, "text/javascript; charset=utf-8")
+                return
+            if push is not None and path == PUSH_KEY_ENDPOINT:
+                try:
+                    with push.lock:
+                        key = push.public_key()
+                        stored = read_private_json(push.items_path) or {}
+                        withdrawn = [tag for tag, record in stored.get("items", {}).items() if record.get("active") is False]
+                except (OSError, ValueError) as exc:
+                    self.send_text(500, f"Quarterdeck could not load its notification key: {exc}\n")
+                    return
+                self.send_text(200, json.dumps({"key": key, "withdrawn": withdrawn}) + "\n", "application/json; charset=utf-8")
                 return
             if "/" in name or not name.endswith((".html", ".json", ".txt")):
                 self.send_text(404, "Not found\n")
@@ -6164,6 +6693,9 @@ def make_handler(
                 return
             if discard_wait_to is not None and path == WAITS_DISCARD_ENDPOINT:
                 self.post_wait_discard(discard_wait_to)
+                return
+            if push is not None and path in {PUSH_SUBSCRIBE_ENDPOINT, PUSH_UNSUBSCRIBE_ENDPOINT}:
+                self.post_push(push, path == PUSH_SUBSCRIBE_ENDPOINT)
                 return
             if set_mark is None or path != MARK_ENDPOINT:
                 self.refuse()
@@ -6268,6 +6800,29 @@ def make_handler(
             self.refresh_after_write()
             self.send_text(200, json.dumps(result) + "\n", "application/json; charset=utf-8")
 
+        def post_push(self, notifier: PushNotifier, subscribe: bool) -> None:
+            problem = self.mark_request_problem()
+            if problem:
+                self.send_text(*problem)
+                return
+            field = "subscription" if subscribe else "endpoint"
+            try:
+                length = int(self.headers.get("Content-Length") or "")
+                if not 0 < length <= PUSH_BODY_LIMIT:
+                    raise ValueError
+                body = json.loads(self.rfile.read(length).decode("utf-8"))
+                if not isinstance(body, dict) or set(body) != {field} or (not subscribe and not isinstance(body[field], str)):
+                    raise ValueError
+                result = notifier.subscribe(body[field]) if subscribe else notifier.unsubscribe(body[field])
+            except (ValueError, UnicodeDecodeError) as exc:
+                detail = f" ({exc})" if str(exc) else ""
+                self.send_text(400, f"Expected JSON {{\"{field}\": ...}} naming a browser push subscription{detail}\n")
+                return
+            except OSError as exc:
+                self.send_text(500, f"Quarterdeck could not save the notification setting: {exc}\n")
+                return
+            self.send_text(200, json.dumps(result) + "\n", "application/json; charset=utf-8")
+
         def post_reaction(self, deliver: Callable[[dict[str, object]], dict[str, str]]) -> None:
             problem = self.mark_request_problem()
             if problem:
@@ -6353,7 +6908,27 @@ def bind_hosts(args: argparse.Namespace) -> list[str]:
     return hosts
 
 
-def make_server(host: str, port: int, handler: type[BaseHTTPRequestHandler]) -> ThreadingHTTPServer:
+TLS_HANDSHAKE_SECONDS = 15
+
+
+def tls_context(args: argparse.Namespace) -> ssl.SSLContext | None:
+    """The server's TLS settings from --tls-cert and --tls-key, or None to serve plain HTTP."""
+    cert, key = getattr(args, "tls_cert", None), getattr(args, "tls_key", None)
+    if not cert and not key:
+        return None
+    if not (cert and key):
+        raise ValueError("--tls-cert and --tls-key go together")
+    context = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
+    context.minimum_version = ssl.TLSVersion.TLSv1_2
+    try:
+        context.load_cert_chain(str(Path(cert).expanduser()), str(Path(key).expanduser()))
+    except ssl.SSLError as exc:
+        raise ValueError(f"could not load the TLS certificate and key: {exc}") from exc
+    return context
+
+
+def make_server(host: str, port: int, handler: type[BaseHTTPRequestHandler],
+                tls: ssl.SSLContext | None = None) -> ThreadingHTTPServer:
     class Server(ThreadingHTTPServer):
         address_family = socket.AF_INET6 if ":" in host else socket.AF_INET
         daemon_threads = True
@@ -6362,6 +6937,22 @@ def make_server(host: str, port: int, handler: type[BaseHTTPRequestHandler]) -> 
             if self.address_family == socket.AF_INET6:
                 self.socket.setsockopt(socket.IPPROTO_IPV6, socket.IPV6_V6ONLY, 1)
             super().server_bind()
+
+        def finish_request(self, request, client_address) -> None:  # noqa: ANN001 - socketserver signature
+            if tls is None:
+                super().finish_request(request, client_address)
+                return
+            # The handshake runs in the request's own thread, so a slow or plain-HTTP client never holds up the others.
+            request.settimeout(TLS_HANDSHAKE_SECONDS)
+            try:
+                secure = tls.wrap_socket(request, server_side=True)
+            except (ssl.SSLError, OSError):
+                return
+            secure.settimeout(None)
+            try:
+                super().finish_request(secure, client_address)
+            finally:
+                secure.close()
 
     return Server((host, port), handler)
 
@@ -6373,6 +6964,17 @@ def save_view_request(args: argparse.Namespace, body: dict[str, object]) -> dict
         raise ValueError("every section is an object")
     saved, startup = store_view(preferences_path(args), selected_homes(args), str(body["name"]), sections, bool(body["default"]))
     return {"views": [view["name"] for view in saved], "default_view": startup}
+
+
+def push_watch_loop(push: PushNotifier, cache: SiteCache, stop: threading.Event) -> None:
+    while not stop.wait(60):
+        try:
+            with push.lock:
+                subscribed = bool(push.subscriptions())
+            if subscribed:
+                cache.invalidate()
+        except (OSError, ValueError) as exc:
+            print(f"quarterdeck: could not check phone subscriptions: {exc}", file=sys.stderr, flush=True)
 
 
 def serve(args: argparse.Namespace) -> int:
@@ -6391,13 +6993,17 @@ def serve(args: argparse.Namespace) -> int:
         if getattr(args, "allow_marks", False):
             save_view_to = lambda raw: save_view_request(args, raw)  # noqa: E731
             discard_wait_to = lambda raw: discard_wait(args, str(raw["key"]), str(raw["hold_set"]))  # noqa: E731
-        cache = SiteCache(site_builder(args, getattr(args, "allow_marks", False)))
+        tls = tls_context(args)
+        push = (PushNotifier(default_output_dir())
+                if getattr(args, "allow_marks", False) and not getattr(args, "no_snapshot", False) and push_crypto_available()
+                else None)
+        cache = SiteCache(site_builder(args, getattr(args, "allow_marks", False), push))
         cache.get()
         visit_log = VisitLog(visits_path()) if getattr(args, "allow_marks", False) else None
-        handler = make_handler(cache, set_mark, send_reaction_to, save_view_to, discard_wait_to, visit_log)
+        handler = make_handler(cache, set_mark, send_reaction_to, save_view_to, discard_wait_to, visit_log, push)
         port = args.port
         for host in bind_hosts(args):
-            server = make_server(host, port, handler)
+            server = make_server(host, port, handler, tls)
             port = server.server_address[1]
             servers.append(server)
     except (OSError, ValueError) as exc:
@@ -6410,8 +7016,15 @@ def serve(args: argparse.Namespace) -> int:
         shown = f"[{host}]" if ":" in host else host
         access = ("report review marks, reactions, view saves and wait discards enabled"
                   if getattr(args, "allow_marks", False) else "read-only")
-        print(f"Serving Quarterdeck at http://{shown}:{port}/ ({access}; Ctrl+C to stop)", flush=True)
+        print(f"Serving Quarterdeck at {'https' if tls else 'http'}://{shown}:{port}/ ({access}; Ctrl+C to stop)", flush=True)
+    if getattr(args, "allow_marks", False):
+        print("Phone notifications: " + (
+            "off, because --no-snapshot cannot tell when a needs-you item is answered" if getattr(args, "no_snapshot", False)
+            else "available; turn them on from the page, which must be opened over https" if push is not None
+            else "off, because the Python 'cryptography' package is not installed"), flush=True)
     stop_watch = threading.Event()
+    if push is not None:
+        threading.Thread(target=push_watch_loop, args=(push, cache, stop_watch), daemon=True).start()
     if getattr(args, "watch_waits", False):
         watch_args = argparse.Namespace(**vars(args))
         threading.Thread(target=wait_watch_loop, args=(watch_args, stop_watch, cache.invalidate), daemon=True).start()
@@ -6454,6 +7067,11 @@ def service_unit(args: argparse.Namespace) -> str:
         command.append("--allow-marks")
     if getattr(args, "watch_waits", False):
         command.append("--watch-waits")
+    tls_cert, tls_key = getattr(args, "tls_cert", None), getattr(args, "tls_key", None)
+    if bool(tls_cert) != bool(tls_key):
+        raise ValueError("--tls-cert and --tls-key go together")
+    if tls_cert and tls_key:
+        command += ["--tls-cert", str(Path(tls_cert).expanduser().resolve()), "--tls-key", str(Path(tls_key).expanduser().resolve())]
     config_path = args.config.expanduser().resolve() if args.config else default_config_path()
     config = load_config(config_path) if args.config or config_path.is_file() else {}
     single_home = bool(args.home) or ("homes" not in config and bool(os.environ.get("FM_HOME")))
@@ -6517,11 +7135,11 @@ def service(args: argparse.Namespace) -> int:
     return 0
 
 
-def configured_service_addresses() -> tuple[list[str], int, str]:
-    """Return addresses from the installed unit, or serve's default bind settings."""
+def configured_service_addresses() -> tuple[list[str], int, str, str]:
+    """Return addresses, port, source and scheme from the installed unit, or serve's default bind settings."""
     unit_path = Path(os.environ.get("XDG_CONFIG_HOME") or "~/.config").expanduser() / "systemd/user/quarterdeck.service"
     if not unit_path.is_file():
-        return [DEFAULT_HOST], DEFAULT_PORT, "default"
+        return [DEFAULT_HOST], DEFAULT_PORT, "default", "http"
     source = unit_path.read_text(encoding="utf-8")
     match = re.search(r"(?m)^ExecStart=(.*)$", source)
     if not match:
@@ -6550,17 +7168,18 @@ def configured_service_addresses() -> tuple[list[str], int, str]:
             index += 2
         else:
             index += 1
-    return list(dict.fromkeys(hosts or [DEFAULT_HOST])), port, f"installed service unit {unit_path}"
+    scheme = "https" if "--tls-cert" in command[serve_index + 1:] else "http"
+    return list(dict.fromkeys(hosts or [DEFAULT_HOST])), port, f"installed service unit {unit_path}", scheme
 
 
 def url(args: argparse.Namespace) -> int:
     try:
-        hosts, port, source = configured_service_addresses()
+        hosts, port, source, scheme = configured_service_addresses()
     except (OSError, ValueError) as exc:
         print(f"quarterdeck: {exc}", file=sys.stderr)
         return 2
     addresses = [
-        f"http://[{host.replace('%', '%25', 1)}]:{port}/" if ":" in host else f"http://{host}:{port}/"
+        f"{scheme}://[{host.replace('%', '%25', 1)}]:{port}/" if ":" in host else f"{scheme}://{host}:{port}/"
         for host in hosts
     ]
     if args.as_json:
@@ -8853,7 +9472,7 @@ def need_card(
     return {
         "id": f"call:{key}", "section": section, "label": "Needs you" if section == "needs_you" else "For your information",
         "at": item.get("at"), "opened_at": item.get("opened_at"), "title": title,
-        "hold_set": wait.get("hold_set") if wait else None,
+        "hold_set": item.get("hold_set") or (wait.get("hold_set") if wait else None),
         "summary": first_line(wait_ask_line(wait)) if wait else first_line(ask) or status,  # type: ignore[arg-type]
         "status": status, "body": "".join(parts),
     }
@@ -8930,10 +9549,11 @@ def card_html(card: dict[str, object], now: datetime) -> tuple[str, str]:
              f'{elapsed_text(at, now)} ago</time>') if at else ""
     rev = hashlib.sha1(json.dumps([card["title"], card["summary"], card["status"], card["body"], card["label"], card["at"]]).encode()).hexdigest()[:12]
     need = card["section"] == "needs_you"
+    anchor = f' id="need-{push_tag(card)}" data-push-tag="{push_tag(card)}"' if need else ""
     chip = f'<span class="chip act-status">{status}</span>' if status else ""
     return rev, (
         f'<article class="act-card{" act-need" if need else ""}" data-card-id="{html.escape(str(card["id"]), quote=True)}" '
-        f'data-card-rev="{rev}"><details data-refresh-key="card:{html.escape(str(card["id"]), quote=True)}"><summary>'
+        f'data-card-rev="{rev}"><details{anchor} data-refresh-key="card:{html.escape(str(card["id"]), quote=True)}"><summary>'
         f'<span class="act-top"><span class="act-label">{html.escape(str(card["label"]))}</span>{stamp}'
         f'<span class="act-new">New</span></span><span class="act-title">{title}</span>'
         f'<span class="act-line">{summary}</span>{chip}</summary><div class="act-body">{card["body"]}</div></details></article>'
@@ -9679,6 +10299,8 @@ def add_serve_options(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--port", type=port_number, default=DEFAULT_PORT, help=f"port to listen on (default {DEFAULT_PORT})")
     parser.add_argument("--allow-marks", action="store_true", help="enable report marks, reactions to Firstmate, saved-view edits and discarding captain waits (default: read-only; no key, anyone who can open the page can mark, react, edit views or discard)")
     parser.add_argument("--watch-waits", action="store_true", help="also run the captain-wait watcher in the background (see 'quarterdeck waits watch')")
+    parser.add_argument("--tls-cert", metavar="FILE", help="serve https with this PEM certificate chain (with --tls-key); phone notifications need https")
+    parser.add_argument("--tls-key", metavar="FILE", help="the PEM private key for --tls-cert")
     parser.add_argument("--home", help="serve this Firstmate home instead of configured homes or FM_HOME")
     parser.add_argument("--config", type=Path, help="optional JSON config file")
 
@@ -9703,7 +10325,7 @@ def make_parser() -> argparse.ArgumentParser:
 
     serve_parser = subparsers.add_parser(
         "serve", help="serve the always-current bearings page over HTTP",
-        description="Serve the bearings page and its readable report and backlog pages, re-rendered from the homes on request. Read-only by default: GET only, no login. With --allow-marks the only writes are a request to mark, unmark, discard or undiscard a known report, a reaction sent to Firstmate through the home's bin/fm-inbox.sh, saving a briefing view to the preferences file, and discarding a captain wait (a note through the same bin/fm-inbox.sh, then the card store). --watch-waits also runs the captain-wait watcher, which writes only its card store. Binds loopback by default.",
+        description="Serve the bearings page and its readable report and backlog pages, re-rendered from the homes on request. Read-only by default: GET only, no login. With --allow-marks the only writes are a request to mark, unmark, discard or undiscard a known report, a reaction sent to Firstmate through the home's bin/fm-inbox.sh, saving a briefing view to the preferences file, and discarding a captain wait (a note through the same bin/fm-inbox.sh, then the card store), and turning phone notifications on or off (saved in Quarterdeck's own state; needs https and the cryptography package). --watch-waits also runs the captain-wait watcher, which writes only its card store. Binds loopback by default.",
     )
     command_parsers["serve"] = serve_parser
     add_serve_options(serve_parser)

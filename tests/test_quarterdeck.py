@@ -9703,3 +9703,660 @@ globalThis.setTimeout = (fn, ms) => { timers.push([fn, ms]); };
         execute = "const vm = require('node:vm'); const script = require('node:fs').readFileSync(0, 'utf8'); vm.runInThisContext(script); vm.runInThisContext(script);"
         result = subprocess.run(["node", "-e", harness + execute + verify], input=script, capture_output=True, text=True)
         self.assertEqual(result.returncode, 0, result.stderr)
+
+
+@unittest.skipUnless(quarterdeck.push_crypto_available(), "the cryptography package is not installed")
+class PushNotificationTests(unittest.TestCase):
+    """Phone push: one message per new needs-you item, none on repeat, a withdrawal when it goes, stale ones dropped."""
+
+    ENDPOINT = "https://fcm.googleapis.com/fcm/send/invented-device"
+
+    def setUp(self) -> None:
+        from cryptography.hazmat.primitives import serialization
+        from cryptography.hazmat.primitives.asymmetric import ec
+        self.temp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.temp.cleanup)
+        self.root = Path(self.temp.name) / "state"
+        self.sent: list[tuple[str, bytes, dict[str, str]]] = []
+        self.status = 201
+        self.clock = [datetime(2026, 11, 14, 12, tzinfo=timezone.utc).timestamp()]
+        self.notifier = quarterdeck.PushNotifier(self.root, post=self.post, background=False, clock=lambda: self.clock[0])
+        self.device = ec.generate_private_key(ec.SECP256R1())
+        self.auth = os.urandom(16)
+        public = self.device.public_key().public_bytes(serialization.Encoding.X962, serialization.PublicFormat.UncompressedPoint)
+        self.subscription = {"endpoint": self.ENDPOINT, "expirationTime": None,
+                             "keys": {"p256dh": quarterdeck.b64url(public), "auth": quarterdeck.b64url(self.auth)}}
+
+    def post(self, url: str, body: bytes, headers: dict[str, str]) -> int:
+        self.sent.append((url, body, headers))
+        return self.status
+
+    def decrypt(self, body: bytes) -> dict:
+        """Undo RFC 8291 as a browser would, with the invented device's private key and auth secret."""
+        import hmac
+        from cryptography.hazmat.primitives import serialization
+        from cryptography.hazmat.primitives.asymmetric import ec
+        from cryptography.hazmat.primitives.ciphers.aead import AESGCM
+        salt, record_size, id_length = body[:16], int.from_bytes(body[16:20], "big"), body[20]
+        self.assertEqual(record_size, 4096)
+        server_public = body[21:21 + id_length]
+        ciphertext = body[21 + id_length:]
+        ua_public = self.device.public_key().public_bytes(serialization.Encoding.X962, serialization.PublicFormat.UncompressedPoint)
+        shared = self.device.exchange(ec.ECDH(), ec.EllipticCurvePublicKey.from_encoded_point(ec.SECP256R1(), server_public))
+        mac = lambda key, data: hmac.new(key, data, "sha256").digest()  # noqa: E731
+        ikm = mac(mac(self.auth, shared), b"WebPush: info\x00" + ua_public + server_public + b"\x01")
+        prk = mac(salt, ikm)
+        plain = AESGCM(mac(prk, b"Content-Encoding: aes128gcm\x00\x01")[:16]).decrypt(
+            mac(prk, b"Content-Encoding: nonce\x00\x01")[:12], ciphertext, None)
+        self.assertTrue(plain.endswith(b"\x02"))
+        return json.loads(plain[:-1])
+
+    @staticmethod
+    def card(key: str = "harbor/secret-task", hold: str | None = None) -> dict[str, object]:
+        return {"id": f"call:{key}", "section": "needs_you", "hold_set": hold, "title": "Invented secret title"}
+
+    def test_new_item_sends_one_generic_message_and_a_repeat_poll_sends_nothing(self) -> None:
+        self.notifier.subscribe(self.subscription)
+        self.assertEqual(self.notifier.observe([], complete=True), [])  # the first look only records what is there
+        card = self.card()
+        messages = self.notifier.observe([card, {"id": "work:a", "section": "recent"}], complete=True)
+        self.assertEqual(messages, [{"type": "new", "tag": quarterdeck.push_tag(card)}])
+        self.assertEqual(len(self.sent), 1)
+        url, body, headers = self.sent[0]
+        self.assertEqual(url, self.ENDPOINT)
+        payload = self.decrypt(body)
+        tag = quarterdeck.push_tag(card)
+        self.assertEqual(payload, {"type": "new", "tag": tag, "title": "Quarterdeck", "body": "1 new item needs you",
+                                   "url": f"./#need-{tag}"})
+        self.assertNotIn(b"secret", body)
+        self.assertEqual(headers["Content-Encoding"], "aes128gcm")
+        self.assertEqual(headers["Topic"], tag)
+        self.assertRegex(tag, r"^[A-Za-z0-9_-]{1,32}$")
+
+        self.assertEqual(self.notifier.observe([card], complete=True), [])
+        self.assertEqual(self.notifier.observe([card], complete=False), [])
+        self.assertEqual(len(self.sent), 1)
+
+    def test_items_waiting_at_the_first_look_are_not_announced(self) -> None:
+        self.notifier.subscribe(self.subscription)
+        self.assertEqual(self.notifier.observe([self.card()], complete=True), [])
+        self.assertEqual(self.sent, [])
+        self.assertEqual(self.notifier.observe([], complete=True), [])  # never shown, so nothing to withdraw
+        self.assertEqual(self.sent, [])
+
+    def test_answered_item_withdraws_its_notification_once_and_never_returns(self) -> None:
+        self.notifier.subscribe(self.subscription)
+        self.notifier.observe([], complete=True)
+        card = self.card()
+        self.notifier.observe([card], complete=True)
+        self.assertEqual(self.notifier.observe([], complete=False), [])  # a partial read never withdraws
+        self.assertEqual(self.notifier.observe([], complete=True), [{"type": "withdraw", "tag": quarterdeck.push_tag(card)}])
+        self.assertEqual(self.decrypt(self.sent[-1][1]), {"type": "withdraw", "tag": quarterdeck.push_tag(card)})
+        self.assertEqual(self.sent[-1][2]["Topic"], quarterdeck.push_tag(card))
+        self.assertEqual(self.notifier.observe([], complete=True), [])
+        self.assertEqual(self.notifier.observe([card], complete=True), [])  # the same item again: no repeat
+        self.assertEqual(len(self.sent), 2)
+        new_hold = self.card(hold="2026-11-15T09:00:00Z")
+        self.assertEqual(self.notifier.observe([card, new_hold], complete=True),
+                         [{"type": "new", "tag": quarterdeck.push_tag(new_hold)}])
+
+    def test_incomplete_first_reads_do_not_establish_a_baseline(self) -> None:
+        self.notifier.subscribe(self.subscription)
+        self.assertEqual(self.notifier.observe([self.card()], complete=False), [])
+        self.assertFalse(self.notifier.items_path.exists())
+        self.assertEqual(self.notifier.observe([self.card(), self.card("harbor/other")], complete=True), [])
+        self.assertEqual(self.sent, [])
+
+    def test_failed_feed_and_missing_backlog_holds_do_not_reannounce_cached_decisions(self) -> None:
+        # Oracle: only new needs-you arrivals alert; a failed refresh is no arrival.
+        quarterdeck.LAST_GOOD_FEEDS.clear()
+        self.addCleanup(quarterdeck.LAST_GOOD_FEEDS.clear)
+        fixture = self.root.parent / "fixture"
+        home = AttentionTests().make_home(fixture, ledger="")
+        feed_path = fixture / "feed.json"
+        feed = json.loads(feed_path.read_text())
+        feed["in_flight"] = []
+        backlog = home / "data" / "backlog.md"
+        stamp = "2026-07-02T10:00:00Z"
+
+        def seed(tasks):
+            backlog.write_text("# Backlog\n\n" + "\n".join(
+                held_row(task, "Choose " + task, "Which option?", stamp) for task in tasks) + "\n")
+            feed["open_decisions"] = [
+                {"task": task, "title": "Choose " + task, "kind": "captain_hold", "bucket": "live",
+                 "reason": "Which option?", "opened_at": stamp, "last_touched_at": stamp}
+                for task in tasks]
+            feed_path.write_text(json.dumps(feed))
+
+        def observe(complete):
+            homes = BearingsTests().snapshots(home)
+            bearings = quarterdeck.build_bearings(homes, WAIT_NOW, use_snapshot=False)
+            bearings.attention = quarterdeck.attention_view(homes, WAIT_NOW)
+            self.assertEqual(bearings.attention["homes"][0]["complete"], complete)
+            cards = [card for card in quarterdeck.site_cards(homes, bearings, True)
+                     if card["section"] == "needs_you"]
+            self.assertEqual(len(cards), 2 if not complete else len(feed["open_decisions"]))
+            return self.notifier.observe(cards, complete=complete)
+
+        self.notifier.subscribe(self.subscription)
+        seed(["map"])
+        self.assertEqual(observe(True), [])
+        seed(["map", "chart"])
+        self.assertEqual(len(observe(True)), 1)
+        history = self.notifier.items_path.read_bytes()
+        backlog.write_text("# Backlog\n")
+        feed_path.write_text("malformed JSON")
+        for _ in range(2):
+            self.assertEqual(observe(False), [])
+            self.assertEqual(len(self.sent), 1)
+            self.assertEqual(self.notifier.items_path.read_bytes(), history)
+        seed(["map", "chart", "compass"])
+        self.assertEqual(len(observe(True)), 1)
+        self.assertEqual(observe(True), [])
+        self.assertEqual([self.decrypt(body)["type"] for _, body, _ in self.sent], ["new", "new"])
+
+    def test_transient_failures_retry_new_messages_and_withdrawals_until_accepted(self) -> None:
+        self.notifier.subscribe(self.subscription)
+        self.notifier.observe([], complete=True)
+        for status in (0, 408, 429, 503):
+            self.status = status
+            self.assertEqual(len(self.notifier.observe([self.card()], complete=True)), 1)
+        self.status = 201
+        self.notifier.observe([self.card()], complete=True)
+        self.assertEqual(len(self.sent), 5)
+        self.assertEqual(self.notifier.observe([self.card()], complete=True), [])
+        for status in (0, 429, 503):
+            self.status = status
+            self.assertEqual(len(self.notifier.observe([], complete=True)), 1)
+        self.status = 204
+        self.notifier.observe([], complete=True)
+        self.assertEqual(len(self.sent), 9)
+        self.assertEqual(self.notifier.observe([], complete=True), [])
+        self.assertEqual(self.notifier.observe([self.card()], complete=True), [])
+
+    def test_one_accepting_subscription_prevents_item_retries(self) -> None:
+        self.notifier.subscribe(self.subscription)
+        self.notifier.subscribe(dict(self.subscription, endpoint="https://web.push.apple.com/invented-token"))
+        self.notifier.post = lambda url, body, headers: 201 if url == self.ENDPOINT else 503
+        self.notifier.observe([], complete=True)
+        self.assertEqual(len(self.notifier.observe([self.card()], complete=True)), 1)
+        self.assertEqual(self.notifier.observe([self.card()], complete=True), [])
+        self.assertEqual(len(self.notifier.observe([], complete=True)), 1)
+        self.assertEqual(self.notifier.observe([], complete=True), [])
+
+    def test_timer_builds_without_browser_requests_only_when_subscribed(self) -> None:
+        cards = []
+        builds = []
+        def build():
+            builds.append(len(cards))
+            self.notifier.observe(cards, complete=True)
+            return {"index.html": "invented"}
+        cache = quarterdeck.SiteCache(build)
+        cache.get()
+        ticks = []
+        def wait(seconds):
+            self.assertEqual(seconds, 60)
+            with cache.cond:
+                self.assertTrue(cache.cond.wait_for(lambda: not cache.building, timeout=5))
+            ticks.append(seconds)
+            if len(ticks) == 2:
+                self.assertEqual(builds, [0])
+                self.notifier.subscribe(self.subscription)
+                cards.append(self.card())
+            return len(ticks) == 3
+        stop = type("Stop", (), {"wait": staticmethod(wait)})()
+        quarterdeck.push_watch_loop(self.notifier, cache, stop)
+        self.assertEqual(builds, [0, 1])
+        self.assertEqual(len(self.sent), 1)
+        self.assertEqual(self.decrypt(self.sent[0][1])["type"], "new")
+
+    def test_notified_and_baseline_items_stay_quiet_after_a_year_and_restart(self) -> None:
+        self.notifier.subscribe(self.subscription)
+        baseline, notified = self.card("harbor/baseline"), self.card("harbor/notified")
+        self.notifier.observe([baseline], complete=True)
+        self.notifier.observe([baseline, notified], complete=True)
+        self.notifier.observe([], complete=True)
+        self.assertEqual(len(self.sent), 2)
+        self.clock[0] += 366 * 86400
+        self.assertEqual(self.notifier.observe([], complete=True), [])
+        restarted = quarterdeck.PushNotifier(self.root, post=self.post, background=False, clock=lambda: self.clock[0])
+        self.assertEqual(restarted.observe([baseline, notified], complete=True), [])
+        self.assertEqual(len(self.sent), 2)
+        fresh_hold = self.card("harbor/notified", hold="2027-11-15T09:00:00Z")
+        self.assertEqual(restarted.observe([baseline, notified, fresh_hold], complete=True),
+                         [{"type": "new", "tag": quarterdeck.push_tag(fresh_hold)}])
+        self.assertEqual(len(self.sent), 3)
+
+    def test_safari_subscriptions_get_new_items_but_no_withdrawals(self) -> None:
+        apple = dict(self.subscription, endpoint="https://web.push.apple.com/invented-token")
+        self.notifier.subscribe(apple)
+        self.notifier.observe([], complete=True)
+        self.notifier.observe([self.card()], complete=True)
+        self.notifier.observe([], complete=True)
+        self.assertEqual([self.decrypt(body)["type"] for _url, body, _headers in self.sent], ["new"])
+
+    def test_expired_subscription_is_removed_quietly(self) -> None:
+        self.notifier.subscribe(self.subscription)
+        self.notifier.observe([], complete=True)
+        self.status = 410
+        with redirect_stderr(io.StringIO()) as stderr:
+            self.notifier.observe([self.card()], complete=True)
+        self.assertEqual(self.notifier.subscriptions(), [])
+        self.assertEqual(stderr.getvalue(), "")
+        self.notifier.observe([self.card("harbor/next")], complete=True)
+        self.assertEqual(len(self.sent), 1)
+
+    def test_refused_subscription_is_dropped_after_repeated_failures_but_network_errors_keep_it(self) -> None:
+        self.notifier.subscribe(self.subscription)
+        self.notifier.observe([], complete=True)
+        self.status = 0
+        for index in range(4):
+            self.notifier.observe([self.card(f"harbor/offline-{index}")], complete=True)
+        self.assertEqual(len(self.notifier.subscriptions()), 1)
+        self.status = 403
+        for index in range(2):
+            self.notifier.observe([self.card(f"harbor/refused-{index}")], complete=True)
+        self.assertEqual(self.notifier.subscriptions()[0]["failures"], 2)
+        self.status = 201
+        self.notifier.observe([self.card("harbor/delivered")], complete=True)
+        self.assertEqual(self.notifier.subscriptions()[0]["failures"], 0)
+        self.status = 403
+        for index in range(3):
+            self.notifier.observe([self.card(f"harbor/refused-again-{index}")], complete=True)
+        self.assertEqual(self.notifier.subscriptions(), [])
+
+    def test_subscriptions_must_name_a_browser_push_service_with_valid_keys(self) -> None:
+        for endpoint in ("https://invented.example/push", "http://fcm.googleapis.com/fcm/send/x",
+                         "https://fcm.googleapis.com.invented.example/x", "https://user@fcm.googleapis.com/x"):
+            with self.subTest(endpoint=endpoint), self.assertRaises(ValueError):
+                self.notifier.subscribe(dict(self.subscription, endpoint=endpoint))
+        with self.assertRaises(ValueError):
+            self.notifier.subscribe(dict(self.subscription, keys={"p256dh": "AAAA", "auth": self.subscription["keys"]["auth"]}))
+        with self.assertRaises(ValueError):
+            self.notifier.subscribe({"endpoint": self.ENDPOINT})
+        self.notifier.subscribe(dict(self.subscription, endpoint="https://updates.push.services.mozilla.com/wpush/v2/x"))
+        self.notifier.subscribe(self.subscription)
+        self.notifier.subscribe(self.subscription)
+        self.assertEqual(len(self.notifier.subscriptions()), 2)
+        self.notifier.unsubscribe(self.ENDPOINT)
+        self.assertEqual([entry["endpoint"] for entry in self.notifier.subscriptions()],
+                         ["https://updates.push.services.mozilla.com/wpush/v2/x"])
+
+    def test_vapid_token_is_signed_for_the_push_service_origin(self) -> None:
+        from cryptography.hazmat.primitives import hashes
+        from cryptography.hazmat.primitives.asymmetric import ec
+        from cryptography.hazmat.primitives.asymmetric.utils import encode_dss_signature
+        header = self.notifier.vapid_header(self.ENDPOINT)
+        match = re.fullmatch(r"vapid t=([^,]+), k=(\S+)", header)
+        self.assertIsNotNone(match)
+        token, key = match.groups()
+        self.assertEqual(key, self.notifier.public_key())
+        head, claims, signature = token.split(".")
+        self.assertEqual(json.loads(quarterdeck.b64url_decode(head)), {"typ": "JWT", "alg": "ES256"})
+        decoded = json.loads(quarterdeck.b64url_decode(claims))
+        self.assertEqual(decoded["aud"], "https://fcm.googleapis.com")
+        self.assertGreater(decoded["exp"], self.clock[0])
+        raw = quarterdeck.b64url_decode(signature)
+        public = ec.EllipticCurvePublicKey.from_encoded_point(ec.SECP256R1(), quarterdeck.b64url_decode(key))
+        public.verify(encode_dss_signature(int.from_bytes(raw[:32], "big"), int.from_bytes(raw[32:], "big")),
+                      f"{head}.{claims}".encode(), ec.ECDSA(hashes.SHA256()))
+
+    def test_keys_subscriptions_and_items_are_owner_only(self) -> None:
+        self.notifier.subscribe(self.subscription)
+        self.notifier.observe([self.card()], complete=True)
+        key = self.notifier.public_key()
+        for name in (quarterdeck.PUSH_KEY_NAME, quarterdeck.PUSH_SUBSCRIPTIONS_NAME, quarterdeck.PUSH_ITEMS_NAME):
+            with self.subTest(name=name):
+                self.assertEqual(stat.S_IMODE((self.root / name).stat().st_mode), 0o600)
+        self.assertNotIn("harbor", (self.root / quarterdeck.PUSH_ITEMS_NAME).read_text())
+        self.assertEqual(quarterdeck.PushNotifier(self.root).public_key(), key)  # the key survives a restart
+
+    def test_build_observes_needs_you_cards_and_marks_them_for_the_link(self) -> None:
+        home = BearingsTests().make_home(self.root.parent / "home")
+        homes = BearingsTests().snapshots(home)
+        bearings = quarterdeck.build_bearings(homes, use_snapshot=False)
+        bearings.attention = quarterdeck.attention_view(homes, bearings.generated, use_feed=False)
+        bearings.attention["homes"][0].setdefault("waiting", {})["decisions"] = [
+            {"key": "invented/choice", "title": "Choose a map", "ask": "Which map?", "group": "decide", "at": "2026-07-02T10:00:00Z"}]
+        observed: list[tuple[list, bool]] = []
+        push = type("Push", (), {"observe": lambda _self, cards, complete: observed.append((cards, complete)) or []})()
+        with patch.object(quarterdeck, "load_site", return_value=({}, homes, bearings)), \
+             patch.dict(os.environ, {"XDG_STATE_HOME": str(self.root)}):
+            pages = quarterdeck.site_builder(argparse.Namespace(title=None), True, push)()
+            read_only = quarterdeck.site_builder(argparse.Namespace(title=None), False)()
+        self.assertEqual(len(observed), 1)
+        needs = [card for card in observed[0][0] if card["section"] == "needs_you"]
+        self.assertTrue(needs)
+        tag = quarterdeck.push_tag(needs[0])
+        self.assertIn(f'id="need-{tag}" data-push-tag="{tag}"', pages["index.html"])
+        self.assertIn(f'id=\\"need-{tag}\\"', pages[quarterdeck.CARDS_PAGE])
+        self.assertIn('id="push-control" hidden', pages["index.html"])
+        self.assertIn(quarterdeck.PUSH_KEY_ENDPOINT, pages["index.html"])
+        self.assertNotIn('id="push-control"', read_only["index.html"])
+
+    def test_backlog_hold_stamps_create_fresh_notifications_without_wait_watcher(self) -> None:
+        home = BearingsTests().make_home(self.root.parent / "home")
+        self.notifier.subscribe(self.subscription)
+        self.notifier.observe([], complete=True)
+        tags = []
+        for stamp, row in (
+            ("2026-07-02T10:00:00Z", held_row("map", "Choose map", "Which map?", "2026-07-02T10:00:00Z")),
+            ("2026-07-02T11:00:00Z", held_row("map", "Choose map", "Which map?", None) +
+             " (hold-set: 2026-07-02T11:00:00Z)"),
+        ):
+            (home / "data" / "backlog.md").write_text("# Backlog\n\n" + row + "\n")
+            homes = BearingsTests().snapshots(home)
+            bearings = quarterdeck.build_bearings(homes, WAIT_NOW, use_snapshot=False)
+            bearings.attention = quarterdeck.attention_view(homes, WAIT_NOW, use_feed=False)
+            cards = [card for card in quarterdeck.site_cards(homes, bearings, True) if card["section"] == "needs_you"]
+            self.assertEqual(len(cards), 1)
+            self.assertEqual(cards[0]["hold_set"], stamp)
+            tag = quarterdeck.push_tag(cards[0])
+            self.assertNotIn(tag, tags)
+            tags.append(tag)
+            self.assertEqual(self.notifier.observe(cards, complete=True), [{"type": "new", "tag": tag}])
+            self.assertEqual(self.decrypt(self.sent[-1][1])["url"], f"./#need-{tag}")
+            rendered = quarterdeck.cards_html(cards, bearings.attention, WAIT_NOW, True)
+            self.assertIn(f'id="need-{tag}" data-push-tag="{tag}"', rendered)
+            self.notifier.observe([], complete=True)
+
+    @unittest.skipUnless(shutil.which("node"), "node is not installed")
+    def test_page_closes_only_server_withdrawn_tags_despite_delayed_worker_setup(self) -> None:
+        script = quarterdeck.PUSH_PAGE_SCRIPT.strip().removeprefix("<script>").removesuffix("</script>")
+        harness = r"""
+const assert = require('node:assert/strict');
+const input = JSON.parse(require('node:fs').readFileSync(0, 'utf8'));
+const closed = [], notes = [input.answered, input.waiting, ''];
+const controls = {dataset: {}, addEventListener() {}};
+global.document = {
+  getElementById: id => id === 'cards' ? {dataset: {complete: '1'}} : controls,
+  querySelectorAll: () => [{dataset: {pushTag: input.waiting}}],
+};
+global.window = {isSecureContext: true, PushManager: {}, Notification: {}};
+global.Notification = {permission: 'default'};
+const registration = {
+  getNotifications: async () => notes.map(tag => ({tag, close: () => closed.push(tag)})),
+  pushManager: {getSubscription: async () => null},
+};
+let ready;
+Object.defineProperty(global, 'navigator', {value: {serviceWorker: {
+  register: async () => {}, ready: new Promise(resolve => ready = resolve),
+}}, configurable: true});
+global.fetch = async () => ({ok: true, json: async () => input.response});
+require('node:vm').runInThisContext(input.script);
+setImmediate(() => {
+  notes.push(input.newer);
+  ready(registration);
+  setImmediate(() => assert.deepEqual(closed, input.expected));
+});
+"""
+        for complete in (False, True):
+            with self.subTest(complete=complete):
+                notifier = quarterdeck.PushNotifier(self.root / str(complete), post=self.post, background=False)
+                notifier.subscribe(self.subscription)
+                notifier.observe([], complete=True)
+                answered, waiting, newer = (self.card("harbor/answered"), self.card("harbor/waiting"), self.card("harbor/newer"))
+                notifier.observe([answered, waiting], complete=True)
+                notifier.observe([waiting], complete=complete)
+                port = self.serve(notifier)
+                with redirect_stderr(io.StringIO()):
+                    status, _headers, body = self.request(port, "GET", quarterdeck.PUSH_KEY_ENDPOINT)
+                self.assertEqual(status, 200)
+                response = json.loads(body)
+                expected = [quarterdeck.push_tag(answered)] if complete else []
+                self.assertEqual(response["withdrawn"], expected)
+                notifier.observe([waiting, newer], complete=False)
+                result = subprocess.run(["node", "-e", harness], input=json.dumps({
+                    "script": script, "response": response, "expected": expected,
+                    "answered": quarterdeck.push_tag(answered), "waiting": quarterdeck.push_tag(waiting),
+                    "newer": quarterdeck.push_tag(newer),
+                }), capture_output=True, text=True)
+                self.assertEqual(result.returncode, 0, result.stderr)
+
+    def test_push_failure_never_stops_the_build(self) -> None:
+        home = BearingsTests().make_home(self.root.parent / "home")
+        homes = BearingsTests().snapshots(home)
+        bearings = quarterdeck.build_bearings(homes, use_snapshot=False)
+        push = type("Push", (), {"observe": lambda *_args, **_kwargs: (_ for _ in ()).throw(OSError("disk full"))})()
+        with patch.object(quarterdeck, "load_site", return_value=({}, homes, bearings)), \
+             patch.dict(os.environ, {"XDG_STATE_HOME": str(self.root)}), redirect_stderr(io.StringIO()) as stderr:
+            pages = quarterdeck.site_builder(argparse.Namespace(title=None), True, push)()
+        self.assertIn("index.html", pages)
+        self.assertIn("disk full", stderr.getvalue())
+
+    def serve(self, push: quarterdeck.PushNotifier | None, tls=None):
+        cache = type("Cache", (), {"get": lambda self: {"index.html": "ok"}, "invalidate": lambda self, wait=False: None})()
+        server = quarterdeck.make_server("127.0.0.1", 0, quarterdeck.make_handler(cache, push=push), tls)
+        threading.Thread(target=server.serve_forever, daemon=True).start()
+        self.addCleanup(lambda: (server.shutdown(), server.server_close()))
+        return server.server_address[1]
+
+    def request(self, port: int, method: str, path: str, body: object = None, headers: dict[str, str] | None = None):
+        import http.client
+        connection = http.client.HTTPConnection("127.0.0.1", port, timeout=10)
+        data = json.dumps(body).encode() if body is not None else None
+        connection.request(method, path, body=data, headers={"Content-Type": "application/json", **(headers or {})})
+        response = connection.getresponse()
+        result = response.status, response.headers, response.read()
+        connection.close()
+        return result
+
+    def test_server_offers_the_worker_key_and_on_off_endpoints_only_when_push_is_on(self) -> None:
+        port = self.serve(self.notifier)
+        with redirect_stderr(io.StringIO()):
+            status, headers, body = self.request(port, "GET", "/sw.js")
+            self.assertEqual((status, headers["Content-Type"]), (200, "text/javascript; charset=utf-8"))
+            status, _headers, body = self.request(port, "GET", quarterdeck.PUSH_KEY_ENDPOINT)
+            self.assertEqual((status, json.loads(body)["key"]), (200, self.notifier.public_key()))
+            status, _headers, body = self.request(port, "POST", quarterdeck.PUSH_SUBSCRIBE_ENDPOINT, {"subscription": self.subscription})
+            self.assertEqual((status, json.loads(body)), (200, {"subscribed": True}))
+            self.assertEqual(len(self.notifier.subscriptions()), 1)
+            status, _headers, _body = self.request(port, "POST", quarterdeck.PUSH_SUBSCRIBE_ENDPOINT,
+                                                   {"subscription": dict(self.subscription, endpoint="https://invented.example/x")})
+            self.assertEqual(status, 400)
+            status, _headers, _body = self.request(port, "POST", quarterdeck.PUSH_SUBSCRIBE_ENDPOINT,
+                                                   {"subscription": self.subscription}, {"Origin": "https://invented.example"})
+            self.assertEqual(status, 403)
+            status, _headers, body = self.request(port, "POST", quarterdeck.PUSH_UNSUBSCRIBE_ENDPOINT, {"endpoint": self.ENDPOINT})
+            self.assertEqual((status, json.loads(body)), (200, {"subscribed": False}))
+            self.assertEqual(self.notifier.subscriptions(), [])
+
+            off = self.serve(None)
+            self.assertEqual(self.request(off, "GET", "/sw.js")[0], 404)
+            self.assertEqual(self.request(off, "GET", quarterdeck.PUSH_KEY_ENDPOINT)[0], 404)
+            self.assertEqual(self.request(off, "POST", quarterdeck.PUSH_SUBSCRIBE_ENDPOINT, {"subscription": self.subscription})[0], 405)
+
+    def test_no_snapshot_serve_disables_push_controls_endpoints_and_tracking(self) -> None:
+        home = BearingsTests().make_home(self.root.parent / "home")
+        homes = BearingsTests().snapshots(home)
+        bearings = quarterdeck.build_bearings(homes, use_snapshot=False)
+        bearings.attention = quarterdeck.attention_view(homes, bearings.generated, use_feed=False)
+        args = quarterdeck.make_parser().parse_args(["serve", "--allow-marks", "--no-snapshot", "--host", "127.0.0.1"])
+        args.port = 0
+        run_server = quarterdeck.ThreadingHTTPServer.serve_forever
+        class Controls(HTMLParser):
+            def __init__(self):
+                super().__init__()
+                self.ids = set()
+            def handle_starttag(self, tag, attrs):
+                self.ids.add(dict(attrs).get("id"))
+        def exercise(server):
+            thread = threading.Thread(target=run_server, args=(server,), kwargs={"poll_interval": 0.01}, daemon=True)
+            thread.start()
+            try:
+                port = server.server_address[1]
+                status, _headers, body = self.request(port, "GET", "/")
+                self.assertEqual(status, 200)
+                controls = Controls()
+                controls.feed(body.decode())
+                self.assertNotIn("push-control", controls.ids)
+                self.assertNotIn("push-toggle", controls.ids)
+                self.assertEqual(self.request(port, "GET", "/sw.js")[0], 404)
+                self.assertEqual(self.request(port, "GET", quarterdeck.PUSH_KEY_ENDPOINT)[0], 404)
+                self.assertEqual(self.request(port, "POST", quarterdeck.PUSH_SUBSCRIBE_ENDPOINT,
+                                              {"subscription": self.subscription})[0], 405)
+                self.assertEqual(self.request(port, "POST", quarterdeck.PUSH_UNSUBSCRIBE_ENDPOINT,
+                                              {"endpoint": self.ENDPOINT})[0], 405)
+            finally:
+                server.shutdown()
+                thread.join(timeout=5)
+            self.assertFalse(thread.is_alive())
+            raise KeyboardInterrupt
+        with patch.object(quarterdeck, "load_site", return_value=({}, homes, bearings)), \
+             patch.object(quarterdeck.ThreadingHTTPServer, "serve_forever", exercise), \
+             patch.dict(os.environ, {"XDG_STATE_HOME": str(self.root)}), \
+             redirect_stdout(io.StringIO()) as stdout, redirect_stderr(io.StringIO()):
+            self.assertEqual(quarterdeck.serve(args), 0)
+            for name in (quarterdeck.PUSH_KEY_NAME, quarterdeck.PUSH_SUBSCRIPTIONS_NAME, quarterdeck.PUSH_ITEMS_NAME):
+                self.assertFalse((quarterdeck.default_output_dir() / name).exists())
+        self.assertIn("Phone notifications: off, because --no-snapshot cannot tell when a needs-you item is answered",
+                      stdout.getvalue())
+
+    @unittest.skipUnless(shutil.which("node"), "node is not installed")
+    def test_served_worker_shows_withdraws_and_navigates(self) -> None:
+        port = self.serve(self.notifier)
+        with redirect_stderr(io.StringIO()):
+            status, _headers, worker = self.request(port, "GET", "/sw.js")
+        self.assertEqual(status, 200)
+        harness = r"""
+const assert = require('node:assert/strict');
+const handlers = {}, shown = [], closed = [], navigated = [], opened = [];
+let windows = [];
+const notes = ['invented-tag', 'other-tag'].map(tag => ({tag, close: () => closed.push(tag)}));
+global.self = {
+  addEventListener: (name, handler) => handlers[name] = handler,
+  registration: {
+    scope: 'https://invented.example/quarterdeck/',
+    showNotification: async (title, options) => shown.push({title, ...options}),
+    getNotifications: async ({tag} = {}) => notes.filter(note => !tag || note.tag === tag),
+  },
+  clients: {matchAll: async () => windows, openWindow: async url => opened.push(url)},
+};
+require('node:vm').runInThisContext(require('node:fs').readFileSync(0, 'utf8'));
+async function fire(name, event) {
+  let done;
+  handlers[name]({...event, waitUntil: promise => done = promise});
+  await done;
+}
+(async () => {
+  await fire('push', {data: {json: () => ({type: 'new', tag: 'invented-tag',
+    title: 'Quarterdeck', body: '1 new item needs you', url: './#need-invented-tag'})}});
+  assert.equal(shown.length, 1);
+  assert.equal(shown[0].title, 'Quarterdeck');
+  assert.equal(shown[0].body, '1 new item needs you');
+  assert.equal(shown[0].tag, 'invented-tag');
+  const url = 'https://invented.example/quarterdeck/#need-invented-tag';
+  assert.equal(shown[0].data.url, url);
+  await fire('push', {data: {json: () => ({type: 'withdraw', tag: 'invented-tag'})}});
+  assert.deepEqual(closed, ['invented-tag']);
+  assert.equal(shown.length, 1);
+  const notification = {data: {url}, close: () => {}};
+  await fire('notificationclick', {notification});
+  assert.deepEqual(opened, [url]);
+  const client = {url: 'https://invented.example/quarterdeck/',
+    focus: async () => client, navigate: async url => navigated.push(url)};
+  windows = [client];
+  await fire('notificationclick', {notification});
+  assert.deepEqual(navigated, [url]);
+  assert.deepEqual(opened, [url]);
+})().catch(error => { console.error(error); process.exitCode = 1; });
+"""
+        result = subprocess.run(["node", "-e", harness], input=worker, capture_output=True)
+        self.assertEqual(result.returncode, 0, result.stderr.decode())
+
+    def test_tls_options_serve_https_and_appear_in_the_unit_and_url(self) -> None:
+        import ssl
+        from cryptography import x509
+        from cryptography.hazmat.primitives import hashes, serialization
+        from cryptography.hazmat.primitives.asymmetric import ec
+        from cryptography.x509.oid import NameOID
+        key = ec.generate_private_key(ec.SECP256R1())
+        name = x509.Name([x509.NameAttribute(NameOID.COMMON_NAME, "localhost")])
+        now = datetime.now(timezone.utc)
+        cert = (x509.CertificateBuilder().subject_name(name).issuer_name(name).public_key(key.public_key())
+                .serial_number(1).not_valid_before(now - timedelta(days=1)).not_valid_after(now + timedelta(days=1))
+                .sign(key, hashes.SHA256()))
+        directory = Path(self.temp.name)
+        cert_path, key_path = directory / "cert.pem", directory / "key.pem"
+        cert_path.write_bytes(cert.public_bytes(serialization.Encoding.PEM))
+        key_path.write_bytes(key.private_bytes(serialization.Encoding.PEM, serialization.PrivateFormat.PKCS8,
+                                               serialization.NoEncryption()))
+        args = quarterdeck.make_parser().parse_args(["serve", "--tls-cert", str(cert_path), "--tls-key", str(key_path)])
+        port = self.serve(None, quarterdeck.tls_context(args))
+        client = ssl.create_default_context()
+        client.check_hostname = False
+        client.verify_mode = ssl.CERT_NONE
+        with redirect_stderr(io.StringIO()):
+            with urllib.request.urlopen(f"https://127.0.0.1:{port}/", context=client, timeout=10) as response:
+                self.assertEqual(response.read(), b"ok")
+            with self.assertRaises((urllib.error.URLError, ConnectionError, OSError)):
+                urllib.request.urlopen(f"http://127.0.0.1:{port}/", timeout=10).read()
+            with urllib.request.urlopen(f"https://127.0.0.1:{port}/", context=client, timeout=10) as response:
+                self.assertEqual(response.read(), b"ok")  # a plain-http attempt does not stop the server
+        with self.assertRaises(ValueError):
+            quarterdeck.tls_context(quarterdeck.make_parser().parse_args(["serve", "--tls-cert", str(cert_path)]))
+        self.assertIsNone(quarterdeck.tls_context(quarterdeck.make_parser().parse_args(["serve"])))
+
+        config = directory / "config"
+        with patch.dict(os.environ, {"XDG_CONFIG_HOME": str(config)}), redirect_stdout(io.StringIO()):
+            service_args = quarterdeck.make_parser().parse_args(
+                ["service", "--host", "127.0.0.1", "--tls-cert", str(cert_path), "--tls-key", str(key_path), "--write"])
+            self.assertEqual(service_args.handler(service_args), 0)
+        unit = parse_systemd_unit((config / "systemd/user/quarterdeck.service").read_text())
+        command = unit["Service"]["ExecStart"][0]
+        self.assertEqual(command[command.index("--tls-cert") + 1], str(cert_path.resolve()))
+        self.assertEqual(command[command.index("--tls-key") + 1], str(key_path.resolve()))
+        with patch.dict(os.environ, {"XDG_CONFIG_HOME": str(config)}), redirect_stdout(io.StringIO()) as out:
+            url_args = quarterdeck.make_parser().parse_args(["url"])
+            url_args.handler(url_args)
+        self.assertIn("https://127.0.0.1:8765/", out.getvalue())
+
+    @unittest.skipUnless(shutil.which("node"), "node is not installed")
+    def test_page_script_hides_the_control_on_plain_http_and_offers_it_on_https(self) -> None:
+        script = quarterdeck.PUSH_PAGE_SCRIPT.split("<script>", 1)[1].rsplit("</script>", 1)[0]
+        harness = r"""
+const vm = require("node:vm");
+function element(hidden) { return {hidden, textContent: "", dataset: {}, disabled: false, listeners: {},
+  addEventListener(type, fn) { this.listeners[type] = fn; }}; }
+async function run(secure, subscribed, pushManager = true) {
+  const box = element(true), button = element(true), note = element(false);
+  const posts = [];
+  const subscription = {endpoint: "https://fcm.googleapis.com/fcm/send/x", options: {applicationServerKey: null},
+    toJSON() { return {endpoint: this.endpoint, keys: {p256dh: "p", auth: "a"}}; }, unsubscribe: async () => true};
+  let current = subscribed ? subscription : null;
+  const registration = {getNotifications: async () => [], pushManager: {
+    getSubscription: async () => current, subscribe: async () => (current = subscription)}};
+  const context = {
+    window: {isSecureContext: secure, PushManager: pushManager ? function () {} : undefined, Notification: {}},
+    navigator: {serviceWorker: {register: async () => registration, ready: Promise.resolve(registration)}},
+    Notification: {permission: "default", requestPermission: async () => "granted"},
+    document: {getElementById: id => ({"push-control": box, "push-toggle": button, "push-note": note})[id],
+               querySelectorAll: () => []},
+    sessionStorage: {getItem: () => "", setItem() {}},
+    fetch: async (path, options) => { if (options && options.method === "POST") posts.push([path, JSON.parse(options.body)]);
+      return {ok: true, json: async () => ({key: "BAAA", withdrawn: []})}; },
+    atob: text => Buffer.from(text, "base64").toString("binary"), Uint8Array, Set, Array, Promise, Error, String, JSON,
+  };
+  if (!pushManager) delete context.window.PushManager;
+  vm.runInNewContext(SCRIPT, context);
+  await new Promise(resolve => setTimeout(resolve, 20));
+  return {box, button, note, posts, registration, click: async () => { await button.listeners.click(); await new Promise(r => setTimeout(r, 20)); }};
+}
+(async () => {
+  const plain = await run(false, false);
+  if (!plain.box.hidden) throw new Error("control shown on plain http");
+  const tab = await run(true, false, false);
+  if (tab.box.hidden || !tab.button.hidden || !/Home Screen/.test(tab.note.textContent)) throw new Error("no home-screen hint: " + tab.note.textContent);
+  const off = await run(true, false);
+  if (off.box.hidden || off.button.hidden || off.button.textContent !== "Turn on notifications") throw new Error("not offered: " + off.button.textContent);
+  await off.click();
+  if (off.note.textContent !== "Notifications: on" || off.button.textContent !== "Turn off notifications") throw new Error("not on: " + off.note.textContent);
+  if (off.posts.length !== 1 || off.posts[0][0] !== "/api/push/subscribe") throw new Error("no subscribe post " + JSON.stringify(off.posts));
+  await off.click();
+  if (off.button.textContent !== "Turn on notifications" || off.posts[1][0] !== "/api/push/unsubscribe") throw new Error("not off");
+  if (off.button.dataset.mutationPending) throw new Error("still pending");
+})().catch(error => { console.error(error); process.exitCode = 1; });
+"""
+        result = subprocess.run(["node", "-e", "const SCRIPT = " + json.dumps(script) + ";" + harness],
+                                capture_output=True, text=True)
+        self.assertEqual(result.returncode, 0, result.stderr)

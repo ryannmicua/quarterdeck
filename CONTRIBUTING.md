@@ -1,7 +1,9 @@
 # Contributing
 
 Quarterdeck is a small, dependency-free Python tool. Keep changes focused and
-stdlib-only, and keep all fixtures fictional. Never add real Firstmate backlog
+stdlib-only, and keep all fixtures fictional. The one exception is phone
+notifications, which import the `cryptography` package only when used and stay
+off without it; their tests skip when it is missing. Never add real Firstmate backlog
 entries, reports, paths, screenshots, hostnames, or project names.
 
 Quarterdeck has no CI; validation relies on the local no-mistakes pipeline.
