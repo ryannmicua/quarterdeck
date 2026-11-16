@@ -22,6 +22,15 @@ Render on demand, or run `quarterdeck serve` for a page that stays current on
 its own. Open the result in a browser, or hand a rendered file to `lavish-axi`
 as a local artifact. Quarterdeck itself has no agent or build step.
 
+Quarterdeck can also bring you to the page. With `serve --allow-marks` on an
+`https` address, tap **Turn on notifications** in the page header and your phone
+gets one notification, "1 new item needs you", each time a new item needs you.
+Tapping it opens Quarterdeck on that item. The notification is withdrawn once
+the item is answered, and nothing else sends one. On an iPhone, first add the
+`https` page to the Home Screen and open it from there. See
+[Get phone notifications](docs/how-to/serve-the-page.md#get-phone-notifications)
+for the server setup and the steps on each phone.
+
 ## Features
 
 - Needs-you cards and activity: the served page leads with the decisions,
@@ -103,9 +112,13 @@ as a local artifact. Quarterdeck itself has no agent or build step.
   and `quarterdeck attention --json --view` prints the same sections.
 - Uses Firstmate's own `bin/fm-bearings-snapshot.sh --json` when a home has it,
   and says so when it falls back to parsing the backlog.
-- `quarterdeck serve` serves the page over HTTP. `quarterdeck service` can
-  print or write a systemd user unit; see the
-  [serving guide](docs/how-to/serve-the-page.md).
+- `quarterdeck serve` serves the page over HTTP, or HTTPS with `--tls-cert`
+  and `--tls-key`. `quarterdeck service` can print or write a systemd user
+  unit; see the [serving guide](docs/how-to/serve-the-page.md).
+- Phone notifications: with `--allow-marks` on an `https` address, one
+  standard Web Push notification per new needs-you item, carrying no work
+  content, withdrawn when the item is answered. No account or extra app. See
+  [Get phone notifications](docs/how-to/serve-the-page.md#get-phone-notifications).
 - Scout reports with an explicit recommendation when the report states one.
 - Stable report IDs, Markdown and readable HTML reading, and local review state (reviewed, discarded, relevance) in a private SQLite database.
 - Reports needing review appear independently of backlog attention.
@@ -116,7 +129,8 @@ as a local artifact. Quarterdeck itself has no agent or build step.
 - Inline-styled review page with readable local report and backlog pages.
 - Optional `quarterdeck render --lavish` creates and opens an annotation-ready Lavish review page.
 - Lavish request controls queue a report or backlog-item page request for an armed session listener.
-- Python 3 standard library only.
+- Python 3 standard library only. Phone notifications also need the
+  `cryptography` package; without it they are off.
 - Generated pages default to the user's state directory outside the repo.
 
 ## Quick Start: Make Ready to Sail
@@ -198,7 +212,9 @@ the optional snapshot's data access.
 
 ### Does it contact a service?
 
-See [privacy and architecture](docs/explanation/privacy-and-architecture.md)
+Only for phone notifications, once you turn them on: Quarterdeck then posts an
+encrypted message to your phone's own push service (Google or Apple) when a new
+item needs you. See [privacy and architecture](docs/explanation/privacy-and-architecture.md)
 for Quarterdeck's network behavior, optional snapshot, and the `--no-snapshot`
 mode.
 

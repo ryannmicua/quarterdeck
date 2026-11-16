@@ -4,8 +4,8 @@
 
 ```text
 quarterdeck render [--home PATH] [--output PATH] [--config FILE] [--title TEXT] [--all] [--lavish] [--no-snapshot]
-quarterdeck serve [--host ADDRESS ...] [--port N] [--home PATH] [--config FILE] [--title TEXT] [--no-snapshot] [--allow-marks] [--watch-waits]
-quarterdeck service [--write] [--allow-marks] [--watch-waits] [--host ADDRESS ...] [--port N] [--home PATH] [--config FILE]
+quarterdeck serve [--host ADDRESS ...] [--port N] [--home PATH] [--config FILE] [--title TEXT] [--no-snapshot] [--allow-marks] [--watch-waits] [--tls-cert FILE --tls-key FILE]
+quarterdeck service [--write] [--allow-marks] [--watch-waits] [--tls-cert FILE --tls-key FILE] [--host ADDRESS ...] [--port N] [--home PATH] [--config FILE]
 quarterdeck url [--json]
 quarterdeck reactions import FILE|- [--dry-run] [--home PATH] [--config FILE]
 quarterdeck reports list [--home PATH] [--config FILE]
@@ -186,20 +186,27 @@ report review request, the reaction request, the saved-view request
 (`POST /api/views`, which writes only the preferences file) described in the
 [serving guide](../how-to/serve-the-page.md), and the captain-wait discard
 request (`POST /api/waits/discard`, body `{"key", "hold_set"}`), and the
-[visit log](../how-to/see-your-adoption.md#the-visit-log); all other
-writes remain refused. `--watch-waits` also runs the captain-wait watcher in a
+[visit log](../how-to/see-your-adoption.md#the-visit-log), and
+[phone notifications](../how-to/serve-the-page.md#get-phone-notifications)
+(`GET /api/push/key`, `GET /sw.js`, `POST /api/push/subscribe` with body
+`{"subscription"}` and `POST /api/push/unsubscribe` with body `{"endpoint"}`,
+which write only Quarterdeck's own state; available when the Python
+`cryptography` package is installed); all other writes remain refused.
+`--tls-cert FILE` and `--tls-key FILE`, given together, serve `https` with that
+PEM certificate chain and key instead of plain `http`. `--watch-waits` also runs the captain-wait watcher in a
 background thread; see [Captain waits](#captain-waits).
 The served page shows its generated-at time; see the
 [serving guide](../how-to/serve-the-page.md#run-it) for automatic refresh behavior.
 `service` prints a systemd user unit that runs `serve` with the given
-options, or with `--write` writes it to
+options (certificate and key paths become absolute), or with `--write` writes it to
 `${XDG_CONFIG_HOME:-~/.config}/systemd/user/quarterdeck.service`; it never runs
 `systemctl`. A non-loopback host exposes work data without a login. `url`
 prints the address or addresses configured in the installed user
 service; it does not check whether the service is running. If no unit is
 installed, it labels the default `serve` address shown, which a plain
 `quarterdeck serve` uses. A foreground serve started with custom `--host` or
-`--port` is not detected and serves wherever those flags point. IPv6 URLs use
+`--port` is not detected and serves wherever those flags point. The URLs use
+`https` when the unit has `--tls-cert`. IPv6 URLs use
 brackets, and scoped IPv6 zone separators use `%25` in URLs. Add `--json` for
 an object containing `urls`, raw configured `hosts`, and `source`; when no unit
 is installed, `source` is `default` and `note` explains the fallback. See

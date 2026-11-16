@@ -44,7 +44,8 @@ and overrides.
 
 Quarterdeck invokes no other Firstmate script directly, except one: a reaction
 or a captain-wait discard (below) runs the home's own `bin/fm-inbox.sh note`.
-Quarterdeck makes no network calls itself. `render` and
+Quarterdeck makes no network calls itself, except phone notifications (below)
+once you turn them on. `render` and
 `serve` write nothing to a home directly.
 
 The one exception is the explicit `quarterdeck board` command, which Firstmate
@@ -195,6 +196,28 @@ content. Summary rendering only reads this history. Later edits and state
 changes preserve historical weekly totals. The first-seen estimate joins
 Needs-you observation times with subsequent visits. See
 [see how much you use Quarterdeck](../how-to/see-your-adoption.md).
+
+Phone notifications are opt-in twice: `serve --allow-marks` offers them, and
+nothing is sent until a browser turns them on from the page. They use standard
+Web Push. The page's service worker (`/sw.js`) subscribes with the browser's own
+push service, and `POST /api/push/subscribe` stores that subscription (an
+endpoint URL and the browser's public keys) under the same origin, content-type
+and no-key rules as the other writes. Only endpoints on the Google, Apple,
+Mozilla and Microsoft push services are accepted, so the server never posts to
+an address a visitor chose. After each page build Quarterdeck compares the
+Needs-you cards with its record and, for each new one, posts one message to each
+subscription's push service: an encrypted payload (RFC 8291) signed with
+Quarterdeck's own key (RFC 8292). The payload holds only "1 new item needs you",
+a tag and a link to that tag; the tag is a hash of the card's identity, so no
+title, task name or text leaves the machine, and the push service sees only
+ciphertext. When the card goes away it posts a withdrawal with the same tag,
+except to Apple's service. Every state file is under
+`${XDG_STATE_HOME:-~/.local/state}/quarterdeck/` with mode 0600:
+`push-vapid.pem` (the signing key), `push-subscriptions.json` and
+`push-items.json` (tags and times only). A subscription the push service reports
+gone (HTTP 404 or 410) is deleted, and so is one refused three times in a row.
+Without the `cryptography` package the feature is off and the rest of
+Quarterdeck still uses only the standard library.
 
 `quarterdeck export` is a read of the homes that writes a snapshot of the page's
 data (calls, report titles and recommendations, states and fingerprints) to a
