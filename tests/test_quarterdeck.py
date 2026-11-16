@@ -9800,6 +9800,68 @@ class PushNotificationTests(unittest.TestCase):
         self.assertEqual(self.notifier.observe([card, new_hold], complete=True),
                          [{"type": "new", "tag": quarterdeck.push_tag(new_hold)}])
 
+    def test_incomplete_first_reads_do_not_establish_a_baseline(self) -> None:
+        self.notifier.subscribe(self.subscription)
+        self.assertEqual(self.notifier.observe([self.card()], complete=False), [])
+        self.assertFalse(self.notifier.items_path.exists())
+        self.assertEqual(self.notifier.observe([self.card(), self.card("harbor/other")], complete=True), [])
+        self.assertEqual(self.sent, [])
+
+    def test_transient_failures_retry_new_messages_and_withdrawals_until_accepted(self) -> None:
+        self.notifier.subscribe(self.subscription)
+        self.notifier.observe([], complete=True)
+        for status in (0, 408, 429, 503):
+            self.status = status
+            self.assertEqual(len(self.notifier.observe([self.card()], complete=True)), 1)
+        self.status = 201
+        self.notifier.observe([self.card()], complete=True)
+        self.assertEqual(len(self.sent), 5)
+        self.assertEqual(self.notifier.observe([self.card()], complete=True), [])
+        for status in (0, 429, 503):
+            self.status = status
+            self.assertEqual(len(self.notifier.observe([], complete=True)), 1)
+        self.status = 204
+        self.notifier.observe([], complete=True)
+        self.assertEqual(len(self.sent), 9)
+        self.assertEqual(self.notifier.observe([], complete=True), [])
+        self.assertEqual(self.notifier.observe([self.card()], complete=True), [])
+
+    def test_one_accepting_subscription_prevents_item_retries(self) -> None:
+        self.notifier.subscribe(self.subscription)
+        self.notifier.subscribe(dict(self.subscription, endpoint="https://web.push.apple.com/invented-token"))
+        self.notifier.post = lambda url, body, headers: 201 if url == self.ENDPOINT else 503
+        self.notifier.observe([], complete=True)
+        self.assertEqual(len(self.notifier.observe([self.card()], complete=True)), 1)
+        self.assertEqual(self.notifier.observe([self.card()], complete=True), [])
+        self.assertEqual(len(self.notifier.observe([], complete=True)), 1)
+        self.assertEqual(self.notifier.observe([], complete=True), [])
+
+    def test_timer_builds_without_browser_requests_only_when_subscribed(self) -> None:
+        cards = []
+        builds = []
+        def build():
+            builds.append(len(cards))
+            self.notifier.observe(cards, complete=True)
+            return {"index.html": "invented"}
+        cache = quarterdeck.SiteCache(build)
+        cache.get()
+        ticks = []
+        def wait(seconds):
+            self.assertEqual(seconds, 60)
+            with cache.cond:
+                self.assertTrue(cache.cond.wait_for(lambda: not cache.building, timeout=5))
+            ticks.append(seconds)
+            if len(ticks) == 2:
+                self.assertEqual(builds, [0])
+                self.notifier.subscribe(self.subscription)
+                cards.append(self.card())
+            return len(ticks) == 3
+        stop = type("Stop", (), {"wait": staticmethod(wait)})()
+        quarterdeck.push_watch_loop(self.notifier, cache, stop)
+        self.assertEqual(builds, [0, 1])
+        self.assertEqual(len(self.sent), 1)
+        self.assertEqual(self.decrypt(self.sent[0][1])["type"], "new")
+
     def test_safari_subscriptions_get_new_items_but_no_withdrawals(self) -> None:
         apple = dict(self.subscription, endpoint="https://web.push.apple.com/invented-token")
         self.notifier.subscribe(apple)
@@ -9907,6 +9969,73 @@ class PushNotificationTests(unittest.TestCase):
         self.assertIn(quarterdeck.PUSH_KEY_ENDPOINT, pages["index.html"])
         self.assertNotIn('id="push-control"', read_only["index.html"])
 
+    def test_backlog_hold_stamps_create_fresh_notifications_without_wait_watcher(self) -> None:
+        home = BearingsTests().make_home(self.root.parent / "home")
+        self.notifier.subscribe(self.subscription)
+        self.notifier.observe([], complete=True)
+        tags = []
+        for stamp, row in (
+            ("2026-07-02T10:00:00Z", held_row("map", "Choose map", "Which map?", "2026-07-02T10:00:00Z")),
+            ("2026-07-02T11:00:00Z", held_row("map", "Choose map", "Which map?", None) +
+             " (hold-set: 2026-07-02T11:00:00Z)"),
+        ):
+            (home / "data" / "backlog.md").write_text("# Backlog\n\n" + row + "\n")
+            homes = BearingsTests().snapshots(home)
+            bearings = quarterdeck.build_bearings(homes, WAIT_NOW, use_snapshot=False)
+            bearings.attention = quarterdeck.attention_view(homes, WAIT_NOW, use_feed=False)
+            cards = [card for card in quarterdeck.site_cards(homes, bearings, True) if card["section"] == "needs_you"]
+            self.assertEqual(len(cards), 1)
+            self.assertEqual(cards[0]["hold_set"], stamp)
+            tag = quarterdeck.push_tag(cards[0])
+            self.assertNotIn(tag, tags)
+            tags.append(tag)
+            self.assertEqual(self.notifier.observe(cards, complete=True), [{"type": "new", "tag": tag}])
+            self.assertEqual(self.decrypt(self.sent[-1][1])["url"], f"./#need-{tag}")
+            rendered = quarterdeck.cards_html(cards, bearings.attention, WAIT_NOW, True)
+            self.assertIn(f'id="need-{tag}" data-push-tag="{tag}"', rendered)
+            self.notifier.observe([], complete=True)
+
+    @unittest.skipUnless(shutil.which("node"), "node is not installed")
+    def test_page_closes_missing_notifications_only_with_a_complete_feed(self) -> None:
+        class FeedParser(HTMLParser):
+            complete = None
+            def handle_starttag(self, tag, attrs):
+                values = dict(attrs)
+                if values.get("id") == "cards":
+                    self.complete = values.get("data-complete")
+        script = quarterdeck.PUSH_PAGE_SCRIPT.strip().removeprefix("<script>").removesuffix("</script>")
+        harness = r"""
+const assert = require('node:assert/strict');
+const input = JSON.parse(require('node:fs').readFileSync(0, 'utf8'));
+const closed = [];
+const controls = {dataset: {}, addEventListener() {}};
+global.document = {
+  getElementById: id => id === 'cards' ? {dataset: {complete: input.complete}} : controls,
+  querySelectorAll: () => [{dataset: {pushTag: 'still-waiting'}}],
+};
+global.window = {isSecureContext: true, PushManager: {}, Notification: {}};
+global.Notification = {permission: 'default'};
+const registration = {
+  getNotifications: async () => ['answered', 'still-waiting'].map(tag => ({tag, close: () => closed.push(tag)})),
+  pushManager: {getSubscription: async () => null},
+};
+Object.defineProperty(global, 'navigator', {value: {serviceWorker: {
+  register: async () => {}, ready: Promise.resolve(registration),
+}}, configurable: true});
+global.fetch = async () => ({ok: true, json: async () => ({key: 'invented-key'})});
+require('node:vm').runInThisContext(input.script);
+setImmediate(() => assert.deepEqual(closed, input.expected));
+"""
+        for complete in (False, True):
+            with self.subTest(complete=complete):
+                view = {"ok": complete, "homes": []}
+                parser = FeedParser()
+                parser.feed(quarterdeck.cards_html([], view, WAIT_NOW, True))
+                result = subprocess.run(["node", "-e", harness], input=json.dumps({
+                    "script": script, "complete": parser.complete, "expected": ["answered"] if complete else [],
+                }), capture_output=True, text=True)
+                self.assertEqual(result.returncode, 0, result.stderr)
+
     def test_push_failure_never_stops_the_build(self) -> None:
         home = BearingsTests().make_home(self.root.parent / "home")
         homes = BearingsTests().snapshots(home)
@@ -9940,7 +10069,6 @@ class PushNotificationTests(unittest.TestCase):
         with redirect_stderr(io.StringIO()):
             status, headers, body = self.request(port, "GET", "/sw.js")
             self.assertEqual((status, headers["Content-Type"]), (200, "text/javascript; charset=utf-8"))
-            self.assertIn(b'addEventListener("push"', body)
             status, _headers, body = self.request(port, "GET", quarterdeck.PUSH_KEY_ENDPOINT)
             self.assertEqual((status, json.loads(body)["key"]), (200, self.notifier.public_key()))
             status, _headers, body = self.request(port, "POST", quarterdeck.PUSH_SUBSCRIBE_ENDPOINT, {"subscription": self.subscription})
@@ -9960,6 +10088,58 @@ class PushNotificationTests(unittest.TestCase):
             self.assertEqual(self.request(off, "GET", "/sw.js")[0], 404)
             self.assertEqual(self.request(off, "GET", quarterdeck.PUSH_KEY_ENDPOINT)[0], 404)
             self.assertEqual(self.request(off, "POST", quarterdeck.PUSH_SUBSCRIBE_ENDPOINT, {"subscription": self.subscription})[0], 405)
+
+    @unittest.skipUnless(shutil.which("node"), "node is not installed")
+    def test_served_worker_shows_withdraws_and_navigates(self) -> None:
+        port = self.serve(self.notifier)
+        with redirect_stderr(io.StringIO()):
+            status, _headers, worker = self.request(port, "GET", "/sw.js")
+        self.assertEqual(status, 200)
+        harness = r"""
+const assert = require('node:assert/strict');
+const handlers = {}, shown = [], closed = [], navigated = [], opened = [];
+let windows = [];
+const notes = ['invented-tag', 'other-tag'].map(tag => ({tag, close: () => closed.push(tag)}));
+global.self = {
+  addEventListener: (name, handler) => handlers[name] = handler,
+  registration: {
+    scope: 'https://invented.example/quarterdeck/',
+    showNotification: async (title, options) => shown.push({title, ...options}),
+    getNotifications: async ({tag} = {}) => notes.filter(note => !tag || note.tag === tag),
+  },
+  clients: {matchAll: async () => windows, openWindow: async url => opened.push(url)},
+};
+require('node:vm').runInThisContext(require('node:fs').readFileSync(0, 'utf8'));
+async function fire(name, event) {
+  let done;
+  handlers[name]({...event, waitUntil: promise => done = promise});
+  await done;
+}
+(async () => {
+  await fire('push', {data: {json: () => ({type: 'new', tag: 'invented-tag',
+    title: 'Quarterdeck', body: '1 new item needs you', url: './#need-invented-tag'})}});
+  assert.equal(shown.length, 1);
+  assert.equal(shown[0].title, 'Quarterdeck');
+  assert.equal(shown[0].body, '1 new item needs you');
+  assert.equal(shown[0].tag, 'invented-tag');
+  const url = 'https://invented.example/quarterdeck/#need-invented-tag';
+  assert.equal(shown[0].data.url, url);
+  await fire('push', {data: {json: () => ({type: 'withdraw', tag: 'invented-tag'})}});
+  assert.deepEqual(closed, ['invented-tag']);
+  assert.equal(shown.length, 1);
+  const notification = {data: {url}, close: () => {}};
+  await fire('notificationclick', {notification});
+  assert.deepEqual(opened, [url]);
+  const client = {url: 'https://invented.example/quarterdeck/',
+    focus: async () => client, navigate: async url => navigated.push(url)};
+  windows = [client];
+  await fire('notificationclick', {notification});
+  assert.deepEqual(navigated, [url]);
+  assert.deepEqual(opened, [url]);
+})().catch(error => { console.error(error); process.exitCode = 1; });
+"""
+        result = subprocess.run(["node", "-e", harness], input=worker, capture_output=True)
+        self.assertEqual(result.returncode, 0, result.stderr.decode())
 
     def test_tls_options_serve_https_and_appear_in_the_unit_and_url(self) -> None:
         import ssl

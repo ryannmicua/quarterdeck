@@ -90,8 +90,9 @@ skips that behavior.
 
 With `--allow-marks`, the served page can send your phone one notification
 whenever a new item needs you. The notification says only "1 new item needs
-you"; tapping it opens Quarterdeck on that card. Nothing else sends a
-notification, and the same item never sends a second one.
+you"; tapping it opens Quarterdeck on that card. The same item never sends a
+second alert. Withdrawal behavior depends on the phone browser, as described
+below.
 
 ### What the server needs
 
@@ -131,11 +132,13 @@ site in the browser or phone settings and reload.
 
 - One notification for each Needs-you card that appears after the server
   starts tracking. Items already waiting at the first build are recorded,
-  not announced.
+  not announced. While a subscription exists, the server checks about once a
+  minute even when every browser is closed.
 - When the item is answered or goes away, Quarterdeck withdraws its
   notification on Android and desktop browsers. An iPhone allows no silent
-  withdrawal, so there the notification is cleared the next time you open
-  Quarterdeck.
+  withdrawal, so no withdrawal push is sent there; the notification is cleared
+  the next time you open Quarterdeck. Chrome may occasionally show its own
+  generic "updated in the background" line after a silent withdrawal.
 - An item that goes away and comes back stays quiet. A new hold on the same
   task counts as a new item.
 - While the Needs-you feed cannot be read in full, nothing is withdrawn.

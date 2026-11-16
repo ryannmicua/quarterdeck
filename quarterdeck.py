@@ -3510,8 +3510,9 @@ def home_waiting(
     """What waits on the captain in one home: its decisions, the rest of what needs them, then informational items."""
     owners = all_snapshots([snapshot])
     labels = {owner.spec.label for owner in owners}
-    filed = {report_reference(owner.spec.label, item.id): item.filed
-             for owner in owners for item in backlog_items(owner.backlog_markdown or "", owner)}
+    backlog = {report_reference(owner.spec.label, item.id): item
+               for owner in owners for item in backlog_items(owner.backlog_markdown or "", owner)}
+    filed = {key: item.filed for key, item in backlog.items()}
     decisions = view.get("decisions")
     rows = [*decisions["relevant"], *(decisions.get("background") or [])] if isinstance(decisions, dict) else []
     entries = {entry.key: entry for entry in (
@@ -3548,6 +3549,10 @@ def home_waiting(
             entry.item.project or projects.get(entry.key), entry.item.group, iso_or_none(entry.touched),
             filed.get(entry.key) or None,
         ))
+    for items in queues.values():
+        for item in items:
+            held = backlog.get(str(item["key"]))
+            item["hold_set"] = hold_stamp(held) if held is not None else None
     return {"decisions": waiting_decisions, "needs_you": needs_you, "informational": informational}
 
 
@@ -6331,27 +6336,29 @@ class PushNotifier:
         now = self.clock()
         current = {push_tag(card) for card in cards if card.get("section") == "needs_you"}
         messages: list[dict[str, object]] = []
-        with self.lock:
+        with self.send_lock, self.lock:
             stored = read_private_json(self.items_path)
             items: dict[str, dict[str, object]] = {}
             if stored is not None and isinstance(stored.get("items"), dict):
                 items = {str(tag): dict(record) for tag, record in stored["items"].items() if isinstance(record, dict)}  # type: ignore[union-attr]
             first = stored is None
+            if first and not complete:
+                return []
             for tag in sorted(current):
                 record = items.get(tag)
                 if record is None:
-                    items[tag] = {"active": True, "shown": not first, "gone_at": None}
-                    if not first:
-                        messages.append({"type": "new", "tag": tag})
+                    items[tag] = {"active": True, "shown": False if first else None, "gone_at": None}
                 else:
                     record.update(active=True, gone_at=None)
+                if items[tag].get("shown") is None:
+                    messages.append({"type": "new", "tag": tag})
             if complete:
                 for tag, record in items.items():
-                    if tag in current or not record.get("active"):
+                    if tag in current:
                         continue
-                    record.update(active=False, gone_at=now)
+                    if record.get("active"):
+                        record.update(active=False, gone_at=now)
                     if record.get("shown"):
-                        record["shown"] = False
                         messages.append({"type": "withdraw", "tag": tag})
             forget = now - PUSH_FORGET_DAYS * 86400
             items = {tag: record for tag, record in items.items()
@@ -6376,22 +6383,38 @@ class PushNotifier:
         with self.send_lock:
             with self.lock:
                 entries = self.subscriptions()
-            outcomes: dict[str, int] = {}
-            for entry in entries:
-                endpoint = str(entry["endpoint"])
-                apple = (push_service_host(endpoint) or "").endswith(PUSH_APPLE_HOSTS)
-                statuses: list[int] = []
-                for message in messages:
-                    # Safari ends a subscription whose messages show nothing, so it gets no withdrawals; the page
-                    # clears those notifications when it is opened instead.
-                    if message["type"] == "withdraw" and apple:
+            stored = read_private_json(self.items_path) or {"items": {}}
+            items = stored["items"]
+            statuses: dict[str, list[int]] = {}
+            for message in messages:
+                record = items.get(str(message["tag"]))
+                new = message["type"] == "new"
+                if record is None or (new and (not record.get("active") or record.get("shown") is not None)) or (
+                    not new and (record.get("active") or not record.get("shown"))
+                ):
+                    continue
+                accepted = False
+                eligible = False
+                for entry in entries:
+                    endpoint = str(entry["endpoint"])
+                    previous = statuses.setdefault(endpoint, [])
+                    if previous and previous[-1] in {404, 410}:
                         continue
-                    statuses.append(self.send(entry, message))
-                    if statuses[-1] in {404, 410}:
-                        break
-                if statuses:
-                    delivered = [status for status in statuses if 200 <= status < 300]
-                    outcomes[endpoint] = statuses[-1] if statuses[-1] in {404, 410} else delivered[0] if delivered else statuses[-1]
+                    if not new and (push_service_host(endpoint) or "").endswith(PUSH_APPLE_HOSTS):
+                        continue
+                    eligible = True
+                    status = self.send(entry, message)
+                    previous.append(status)
+                    accepted = accepted or 200 <= status < 300
+                if accepted or (not new and not eligible):
+                    record["shown"] = new
+            with self.lock:
+                write_private_json(self.items_path, stored)
+            outcomes = {}
+            for endpoint, results in statuses.items():
+                if results:
+                    delivered = [status for status in results if 200 <= status < 300]
+                    outcomes[endpoint] = results[-1] if results[-1] in {404, 410} else delivered[0] if delivered else results[-1]
             self.record_outcomes(outcomes)
 
     def send(self, entry: dict[str, object], message: dict[str, object]) -> int:
@@ -6480,6 +6503,7 @@ PUSH_PAGE_SCRIPT = """
         show("Notifications: add Quarterdeck to the Home Screen first", "");
         return;
       }
+      const complete = document.getElementById("cards")?.dataset.complete === "1";
       const waiting = new Set(Array.from(document.querySelectorAll("[data-push-tag]"), node => node.dataset.pushTag));
       let key = "";
       function keyBytes(text) {
@@ -6538,7 +6562,7 @@ PUSH_PAGE_SCRIPT = """
         return navigator.serviceWorker.register("/%(worker)s").then(() => navigator.serviceWorker.ready);
       }).then(registration => {
         // An item that no longer needs you loses its notification when the page opens, on every platform.
-        registration.getNotifications().then(list => list.forEach(item => {
+        if (complete) registration.getNotifications().then(list => list.forEach(item => {
           if (!item.tag || !waiting.has(item.tag)) item.close();
         })).catch(() => {});
         button.addEventListener("click", () => toggle(registration));
@@ -6938,6 +6962,17 @@ def save_view_request(args: argparse.Namespace, body: dict[str, object]) -> dict
     return {"views": [view["name"] for view in saved], "default_view": startup}
 
 
+def push_watch_loop(push: PushNotifier, cache: SiteCache, stop: threading.Event) -> None:
+    while not stop.wait(60):
+        try:
+            with push.lock:
+                subscribed = bool(push.subscriptions())
+            if subscribed:
+                cache.invalidate()
+        except (OSError, ValueError) as exc:
+            print(f"quarterdeck: could not check phone subscriptions: {exc}", file=sys.stderr, flush=True)
+
+
 def serve(args: argparse.Namespace) -> int:
     servers: list[ThreadingHTTPServer] = []
     try:
@@ -6981,6 +7016,8 @@ def serve(args: argparse.Namespace) -> int:
             "available; turn them on from the page, which must be opened over https" if push is not None
             else "off, because the Python 'cryptography' package is not installed"), flush=True)
     stop_watch = threading.Event()
+    if push is not None:
+        threading.Thread(target=push_watch_loop, args=(push, cache, stop_watch), daemon=True).start()
     if getattr(args, "watch_waits", False):
         watch_args = argparse.Namespace(**vars(args))
         threading.Thread(target=wait_watch_loop, args=(watch_args, stop_watch, cache.invalidate), daemon=True).start()
@@ -9428,7 +9465,7 @@ def need_card(
     return {
         "id": f"call:{key}", "section": section, "label": "Needs you" if section == "needs_you" else "For your information",
         "at": item.get("at"), "opened_at": item.get("opened_at"), "title": title,
-        "hold_set": wait.get("hold_set") if wait else None,
+        "hold_set": item.get("hold_set") or (wait.get("hold_set") if wait else None),
         "summary": first_line(wait_ask_line(wait)) if wait else first_line(ask) or status,  # type: ignore[arg-type]
         "status": status, "body": "".join(parts),
     }
@@ -9544,7 +9581,7 @@ def cards_html(cards: list[dict[str, object]], attention: dict[str, object] | No
              if needs_unread(attention) else "Nothing needs you right now.")
     return (
         f'<section class="dashboard-section cards-feed" id="cards" data-live="{1 if live else 0}" data-poll="{CARDS_POLL_SECONDS}" '
-        f'data-endpoint="{CARDS_PAGE}" aria-label="Needs you"><div class="section-head"><div>'
+        f'data-complete="{0 if needs_unread(attention) else 1}" data-endpoint="{CARDS_PAGE}" aria-label="Needs you"><div class="section-head"><div>'
         '<h2>Needs you <span class="count" id="cards-count" hidden>0</span></h2>'
         "<p>What is waiting on you, longest wait first. Tap a card to read it. "
         + ("New cards slide in here without a reload." if live else "Reload to see new cards.") + "</p></div></div>"

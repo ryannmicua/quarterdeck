@@ -204,14 +204,20 @@ push service, and `POST /api/push/subscribe` stores that subscription (an
 endpoint URL and the browser's public keys) under the same origin, content-type
 and no-key rules as the other writes. Only endpoints on the Google, Apple,
 Mozilla and Microsoft push services are accepted, so the server never posts to
-an address a visitor chose. After each page build Quarterdeck compares the
-Needs-you cards with its record and, for each new one, posts one message to each
+an address a visitor chose. While subscriptions exist, a timer rebuilds the page
+about once a minute even with no browsers open. After each page build Quarterdeck
+compares the Needs-you cards with its record and, for each new one, posts one message to each
 subscription's push service: an encrypted payload (RFC 8291) signed with
 Quarterdeck's own key (RFC 8292). The payload holds only "1 new item needs you",
 a tag and a link to that tag; the tag is a hash of the card's identity, so no
 title, task name or text leaves the machine, and the push service sees only
 ciphertext. When the card goes away it posts a withdrawal with the same tag,
-except to Apple's service. Every state file is under
+except to Apple's service. On iPhone no withdrawal push is sent; the notification
+clears when Quarterdeck is next opened. Android and other browsers receive the
+withdrawal push; Chrome may occasionally show its own generic "updated in the
+background" line after a silent withdrawal. Transient delivery failures leave
+the item pending for the next check; an accepted message is not retried.
+Every state file is under
 `${XDG_STATE_HOME:-~/.local/state}/quarterdeck/` with mode 0600:
 `push-vapid.pem` (the signing key), `push-subscriptions.json` and
 `push-items.json` (tags and times only). A subscription the push service reports

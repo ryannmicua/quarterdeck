@@ -25,9 +25,11 @@ as a local artifact. Quarterdeck itself has no agent or build step.
 Quarterdeck can also bring you to the page. With `serve --allow-marks` on an
 `https` address, tap **Turn on notifications** in the page header and your phone
 gets one notification, "1 new item needs you", each time a new item needs you.
-Tapping it opens Quarterdeck on that item. The notification is withdrawn once
-the item is answered, and nothing else sends one. On an iPhone, first add the
-`https` page to the Home Screen and open it from there. See
+Tapping it opens Quarterdeck on that item. Answered items trigger a withdrawal
+push on Android and other browsers; Chrome may occasionally show its own generic
+"updated in the background" line after a silent withdrawal. iPhones receive no
+withdrawal push: the notification clears when Quarterdeck is next opened. On an
+iPhone, first add the `https` page to the Home Screen and open it from there. See
 [Get phone notifications](docs/how-to/serve-the-page.md#get-phone-notifications)
 for the server setup and the steps on each phone.
 
@@ -117,7 +119,9 @@ for the server setup and the steps on each phone.
   unit; see the [serving guide](docs/how-to/serve-the-page.md).
 - Phone notifications: with `--allow-marks` on an `https` address, one
   standard Web Push notification per new needs-you item, carrying no work
-  content, withdrawn when the item is answered. No account or extra app. See
+  content. Answered notifications clear by withdrawal push on Android/other
+  browsers, or when Quarterdeck next opens on iPhone. Chrome may occasionally
+  show a generic "updated in the background" line after withdrawal. See
   [Get phone notifications](docs/how-to/serve-the-page.md#get-phone-notifications).
 - Scout reports with an explicit recommendation when the report states one.
 - Stable report IDs, Markdown and readable HTML reading, and local review state (reviewed, discarded, relevance) in a private SQLite database.

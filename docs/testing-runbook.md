@@ -585,3 +585,22 @@ sibling composer. Identical answer payloads must retain their request ID, while
 changed answers and transitions to/from ordinary Send must get distinct IDs.
 Capture the rendered desktop and phone composers, then stop both servers and
 the browser and remove the disposable setup.
+
+
+## Phone push lifecycle
+
+Run `PYTHONPATH=tests python3 -m unittest -v test_quarterdeck.PushNotificationTests`
+with Python, optional `cryptography`, and Node on PATH. Fixtures use invented
+homes, device keys and push endpoints; all delivery is intercepted and temporary
+files clean themselves up. No real subscriptions or home writes are needed.
+
+The approved phone contract is the oracle: a subscribed server checks once a
+minute without browser requests, initial incomplete reads cannot establish a
+baseline, fresh backlog holds have fresh linked identities without a wait
+watcher, and transient failures retry until at least one service accepts them.
+Repeated successful observations send nothing. The served worker executes in
+Node to verify display, tagged withdrawal, and navigation to Quarterdeck;
+the page script also executes to ensure partial feeds preserve notifications.
+Apple subscriptions receive no withdrawal push. These checks reject lost
+messages after transient errors, startup announcements after partial reads,
+unrelated notification closure, and browser-dependent observation.
