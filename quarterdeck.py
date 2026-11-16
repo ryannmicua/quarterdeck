@@ -6348,6 +6348,9 @@ class PushNotifier:
             for tag in sorted(current):
                 record = items.get(tag)
                 if record is None:
+                    # Partial reads can lose hold stamps and give cached items new tags.
+                    if not complete:
+                        continue
                     items[tag] = {"active": True, "shown": False if first else None, "gone_at": None}
                 else:
                     record.update(active=True, gone_at=None)

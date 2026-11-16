@@ -9807,6 +9807,54 @@ class PushNotificationTests(unittest.TestCase):
         self.assertEqual(self.notifier.observe([self.card(), self.card("harbor/other")], complete=True), [])
         self.assertEqual(self.sent, [])
 
+    def test_failed_feed_and_missing_backlog_holds_do_not_reannounce_cached_decisions(self) -> None:
+        # Oracle: only new needs-you arrivals alert; a failed refresh is no arrival.
+        quarterdeck.LAST_GOOD_FEEDS.clear()
+        self.addCleanup(quarterdeck.LAST_GOOD_FEEDS.clear)
+        fixture = self.root.parent / "fixture"
+        home = AttentionTests().make_home(fixture, ledger="")
+        feed_path = fixture / "feed.json"
+        feed = json.loads(feed_path.read_text())
+        feed["in_flight"] = []
+        backlog = home / "data" / "backlog.md"
+        stamp = "2026-07-02T10:00:00Z"
+
+        def seed(tasks):
+            backlog.write_text("# Backlog\n\n" + "\n".join(
+                held_row(task, "Choose " + task, "Which option?", stamp) for task in tasks) + "\n")
+            feed["open_decisions"] = [
+                {"task": task, "title": "Choose " + task, "kind": "captain_hold", "bucket": "live",
+                 "reason": "Which option?", "opened_at": stamp, "last_touched_at": stamp}
+                for task in tasks]
+            feed_path.write_text(json.dumps(feed))
+
+        def observe(complete):
+            homes = BearingsTests().snapshots(home)
+            bearings = quarterdeck.build_bearings(homes, WAIT_NOW, use_snapshot=False)
+            bearings.attention = quarterdeck.attention_view(homes, WAIT_NOW)
+            self.assertEqual(bearings.attention["homes"][0]["complete"], complete)
+            cards = [card for card in quarterdeck.site_cards(homes, bearings, True)
+                     if card["section"] == "needs_you"]
+            self.assertEqual(len(cards), 2 if not complete else len(feed["open_decisions"]))
+            return self.notifier.observe(cards, complete=complete)
+
+        self.notifier.subscribe(self.subscription)
+        seed(["map"])
+        self.assertEqual(observe(True), [])
+        seed(["map", "chart"])
+        self.assertEqual(len(observe(True)), 1)
+        history = self.notifier.items_path.read_bytes()
+        backlog.write_text("# Backlog\n")
+        feed_path.write_text("malformed JSON")
+        for _ in range(2):
+            self.assertEqual(observe(False), [])
+            self.assertEqual(len(self.sent), 1)
+            self.assertEqual(self.notifier.items_path.read_bytes(), history)
+        seed(["map", "chart", "compass"])
+        self.assertEqual(len(observe(True)), 1)
+        self.assertEqual(observe(True), [])
+        self.assertEqual([self.decrypt(body)["type"] for _, body, _ in self.sent], ["new", "new"])
+
     def test_transient_failures_retry_new_messages_and_withdrawals_until_accepted(self) -> None:
         self.notifier.subscribe(self.subscription)
         self.notifier.observe([], complete=True)

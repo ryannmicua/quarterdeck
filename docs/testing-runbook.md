@@ -609,3 +609,52 @@ untagged notifications survive stale page snapshots and partial observations.
 Apple subscriptions receive no withdrawal push. These checks reject lost
 messages after transient errors, startup announcements after partial reads,
 unrelated notification closure, and browser-dependent observation.
+
+Manual isolated CLI/browser check (2026-11-17): use a fictional home with
+`fm-attention.sh --json` and `fm-bearings-snapshot.sh --json` reading mutable
+synthetic JSON, plus a backlog carrying explicit hold-set timestamps. Start the
+real `serve --allow-marks` command with private XDG config/state, loopback TLS,
+and no optional wait watcher. Review state must be outside the checkout and
+fixture home; a gate's dedicated evidence directory can hold it temporarily.
+
+For offline transport verification, route the server's `https_proxy` to a
+loopback CONNECT/TLS receiver and trust its disposable certificate through
+`SSL_CERT_FILE`. Use an invented allowlisted browser-service endpoint and device
+keys, decrypt the received RFC 8291 bodies, and record delivery status, generic
+payload and link. Keep the endpoint entirely local through the proxy; never
+register an operator's phone or use real subscriptions. Wait through the real
+60-second observer intervals without page requests: initial items stay quiet,
+new items alert once, answers withdraw, same-hold returns stay quiet, fresh
+backlog holds alert, and restart retains history. Return 503 and 429 to check
+retries; start with a malformed feed and later recover it to check baseline and
+withdrawal completeness. Separately run read-only and `--allow-marks
+--no-snapshot` servers: controls, worker/key routes and subscription writes must
+be unavailable, with no push-tracking files.
+
+Use a disposable Chromium profile, restrict external name resolution, grant
+notification permission through CDP, and open the real TLS page. Capture the
+phone-sized controls, then use `ServiceWorker.deliverPushMessage` to exercise
+the served worker and inspect actual `getNotifications()` results. For a trusted
+click, run Chrome under a disposable `dbus-run-session` with a local
+`org.freedesktop.Notifications` receiver and emit `ActionInvoked(id, "default")`
+for its received notification. Verify the tab navigates to the card link. A
+script-created `NotificationEvent` lacks the trusted interaction and did not
+navigate; do not count it as click evidence. This validates the local Chromium surface, not Android/iOS permission
+flows or vendor delivery. Stop and await the server, browser and local receiver;
+remove private state, profiles and fixture homes, retaining only evidence.
+
+Known failure observed in that gate: after a complete baseline and a successful
+new-item alert, remove the held backlog rows while making the attention script
+return malformed JSON. The retained last-good decisions lose their backlog
+hold stamps and are announced again under new tags, including baseline items.
+A partial read must not turn existing decisions into fresh arrivals. Check the
+received payload sequence, not only that no withdrawal was sent.
+
+Regression check (2026-11-17):
+`PYTHONPATH=tests python3 -m unittest -v test_quarterdeck.PushNotificationTests.test_failed_feed_and_missing_backlog_holds_do_not_reannounce_cached_decisions`
+reproduced duplicate pushes before the fix and passes after it. It runs the
+fictional home's attention script, replaces its output with malformed JSON,
+and removes backlog holds. Unknown notification identities now wait for a
+complete observation; incomplete polls preserve stored history, and recovery
+announces a genuinely new item once without repeating existing items. The
+fixture and intercepted encrypted deliveries clean themselves up.
