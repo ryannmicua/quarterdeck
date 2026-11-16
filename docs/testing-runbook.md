@@ -590,7 +590,9 @@ the browser and remove the disposable setup.
 ## Phone push lifecycle
 
 Run `PYTHONPATH=tests python3 -m unittest -v test_quarterdeck.PushNotificationTests`
-with Python, optional `cryptography`, and Node on PATH. Fixtures use invented
+with Python, optional `cryptography`, and Node on PATH. Without Node, the three
+JavaScript tests skip; the remaining notification tests still run when
+`cryptography` is available. Fixtures use invented
 homes, device keys and push endpoints; all delivery is intercepted and temporary
 files clean themselves up. No real subscriptions or home writes are needed.
 

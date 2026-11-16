@@ -10217,6 +10217,7 @@ async function fire(name, event) {
             url_args.handler(url_args)
         self.assertIn("https://127.0.0.1:8765/", out.getvalue())
 
+    @unittest.skipUnless(shutil.which("node"), "node is not installed")
     def test_page_script_hides_the_control_on_plain_http_and_offers_it_on_https(self) -> None:
         script = quarterdeck.PUSH_PAGE_SCRIPT.split("<script>", 1)[1].rsplit("</script>", 1)[0]
         harness = r"""
