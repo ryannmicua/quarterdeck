@@ -10826,7 +10826,7 @@ Context.
             page = (output.parent / "topic-maple-harbor-catalog.html").read_text(encoding="utf-8")
             self.assertIn("<h1>Maple Harbor catalog launch</h1>", page)
             self.assertIn('<a href="index.html">&larr; Quarterdeck</a>', page)
-            self.assertIn('Open decisions <span class="n">1</span>', page)
+            self.assertIn('<h2 class="needs" id="open-h">Open decisions <span class="n">1</span></h2>', page)
             pinned = page.split('id="decision-merge-42"', 1)[1].split("</article>", 1)[0]
             self.assertIn("<h3>Merge PR 42 now?</h3>", pinned)
             self.assertIn("First mate recommends <b>Merge</b>.", pinned)
@@ -10994,7 +10994,7 @@ class TopicAskTests(unittest.TestCase):
         self.assertIn("You answered <b>Merge</b> from Quarterdeck", card)
         self.assertNotIn("data-option", card)
         thread = self.fresh_page("topic-maple-harbor-catalog.html")
-        self.assertIn('Open decisions <span class="n">0</span>', thread)
+        self.assertIn('<h2 id="open-h">Open decisions <span class="n">0</span></h2>', thread)
         self.assertNotIn("open decision", self.fresh_page("index.html"))
 
         status, body = self.send(request, "topic", quarterdeck.NEW_TOPIC_ITEM, "Start on the spring sale banners", number=3)

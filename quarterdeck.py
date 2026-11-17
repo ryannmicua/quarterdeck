@@ -8336,8 +8336,10 @@ def topic_page_html(topic: Topic, snapshot: HomeSnapshot, multi_home: bool, gene
     decisions = "".join(
         topic_decision_html(entry, topic.ref, live, answered_here.get(entry.entry_id)) for entry in open_decisions
     )
+    awaiting = len(topic_awaiting(topic, state))
+    heading_class = ' class="needs"' if awaiting else ""
     decisions_block = (
-        f'<section aria-labelledby="open-h"><h2 class="needs" id="open-h">Open decisions <span class="n">{len(open_decisions) - len(answered_here)}</span></h2>'
+        f'<section aria-labelledby="open-h"><h2{heading_class} id="open-h">Open decisions <span class="n">{awaiting}</span></h2>'
         f"{decisions}</section>" if open_decisions else ""
     )
     log: list[str] = []
