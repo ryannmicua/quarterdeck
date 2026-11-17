@@ -8139,13 +8139,23 @@ TOPIC_ASK_SCRIPT = """
         try { const y = Number(sessionStorage.getItem(SCROLL)); if (y > 0) window.scrollTo(0, y); } catch (error) { /* stays at the top */ }
       }
       const every = Number(document.body.dataset.refresh || 0);
-      if (every > 0) setInterval(() => {
+      function reload() {
         if (document.hidden || document.querySelector("[data-mutation-pending]")) return;
         try { sessionStorage.setItem(SCROLL, String(window.scrollY)); } catch (error) { /* reloads at the top */ }
         const next = new URL(location.href);
         next.searchParams.set("qd_refresh", "1");
         location.replace(next.href);
-      }, every * 1000);
+      }
+      if (every > 0) {
+        let hiddenAt = document.hidden ? Date.now() : 0;
+        setInterval(reload, every * 1000);
+        document.addEventListener("visibilitychange", () => {
+          if (document.hidden) { hiddenAt = Date.now(); return; }
+          const away = hiddenAt ? Date.now() - hiddenAt : 0;
+          hiddenAt = 0;
+          if (away >= every * 1000) reload();
+        });
+      }
     })();
   </script>"""
 

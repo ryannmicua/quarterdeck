@@ -11279,21 +11279,25 @@ let source = '';
 process.stdin.on('data', chunk => { source += chunk; });
 process.stdin.on('end', () => {
   const script = source.split('<script>').pop().split('</script>')[0];
+  let now = 1_000_000_000;
+  const clock = {now: () => now};
   const run = (href, hidden = false) => {
-    const calls = {replaced: [], states: [], timers: []};
+    const calls = {replaced: [], states: [], timers: [], listeners: {}};
     const store = {'quarterdeck-reload-scroll': '420'};
     const context = {
       URL,
       location: {href, replace: url => calls.replaced.push(url)},
       history: {replaceState: (_state, _title, url) => calls.states.push(String(url))},
-      document: {hidden, body: {dataset: {refresh: '60'}}, querySelector: () => null},
+      document: {hidden, body: {dataset: {refresh: '60'}}, querySelector: () => null,
+                 addEventListener: (name, fn) => { calls.listeners[name] = fn; }},
+      Date: clock,
       sessionStorage: {getItem: key => store[key] ?? null, setItem: (key, value) => { store[key] = value; }},
       setInterval: (fn, ms) => calls.timers.push([fn, ms]),
       window: null,
     };
     context.window = {scrollY: 75, scrollTo: (_x, y) => { calls.scrolled = y; }};
     vm.runInNewContext(script, context);
-    return {calls, store};
+    return {calls, store, document: context.document};
   };
   const first = run('http://127.0.0.1:8765/index.html#needs');
   assert.deepEqual(first.calls.states, [], 'a plain load leaves the address alone');
@@ -11304,6 +11308,24 @@ process.stdin.on('end', () => {
   const background = run('http://127.0.0.1:8765/index.html', true);
   background.calls.timers[0][0]();
   assert.deepEqual(background.calls.replaced, [], 'a hidden tab does not reload');
+  now += 60000;
+  background.document.hidden = false;
+  background.calls.listeners.visibilitychange();
+  assert.deepEqual(background.calls.replaced, ['http://127.0.0.1:8765/index.html?qd_refresh=1'],
+                   'coming back after missing a reload reloads at once');
+  const brief = run('http://127.0.0.1:8765/index.html');
+  brief.document.hidden = true;
+  brief.calls.listeners.visibilitychange();
+  now += 20000;
+  brief.document.hidden = false;
+  brief.calls.listeners.visibilitychange();
+  assert.deepEqual(brief.calls.replaced, [], 'a short look away does not reload');
+  brief.document.hidden = true;
+  brief.calls.listeners.visibilitychange();
+  now += 60000;
+  brief.document.hidden = false;
+  brief.calls.listeners.visibilitychange();
+  assert.deepEqual(brief.calls.replaced, ['http://127.0.0.1:8765/index.html?qd_refresh=1'], 'a full interval away reloads');
   const second = run('http://127.0.0.1:8765/index.html?qd_refresh=1#needs');
   assert.deepEqual(second.calls.states, ['http://127.0.0.1:8765/index.html#needs']);
   assert.equal(second.calls.scrolled, 420);
