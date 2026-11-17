@@ -552,7 +552,7 @@ fictional homes, profiles and state after capturing screenshots and responses.
 Run `PYTHONPATH=tests python3 -m unittest -v test_quarterdeck.TopicAskTests`. These cover the folded line after an
 answer (as a reload or another device sees it), the cut to about 80 characters with the whole answer in the
 disclosure, the uncounted line under Needs you, its removal once a `Re:` names the decision, a failed delivery that
-leaves the card open and counted, and long pending questions.
+leaves the card open and counted.
 
 The in-page fold runs in the browser only. Serve a fictional home with `--allow-marks --no-snapshot` and a fake
 `bin/fm-inbox.sh`, at 390 and 1280 px: tap an option and send a typed answer over 80 characters; after the

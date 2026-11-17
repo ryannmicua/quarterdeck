@@ -11081,18 +11081,6 @@ class TopicAskTests(unittest.TestCase):
         self.assertEqual(status, 200, f"the same answer goes through once Firstmate is reachable: {body}")
         self.assertIn('class="decision answered" id="decision-merge-42"', self.fresh_page("topic-maple-harbor-catalog.html"))
 
-    def test_a_long_question_waiting_for_its_answer_is_cut_with_the_rest_a_tap_away(self) -> None:
-        request = self.serve()
-        question = "Can the import also bring across the old seasonal product descriptions, or do we rewrite them all by hand?"
-        self.assertEqual(self.send(request, "topic", "maple-harbor-catalog", question)[0], 200)
-        self.assertEqual(self.send(request, "topic", "maple-harbor-catalog", "Is the import done?", number=2)[0], 200)
-        page = self.fresh_page("topic-maple-harbor-catalog.html")
-        long = page.split('id="entry-ask-0123456789abcdef"', 1)[1].split("</li>", 1)[0]
-        self.assertIn(f'<details class="said-line"><summary>{html.escape(quarterdeck.answer_preview(question))}</summary>'
-                      f'<p class="said-full">{html.escape(question)}</p></details>', long)
-        self.assertIn("Waiting for Firstmate’s answer", long)
-        self.assertIn('<div class="prose"><p class="said-line">Is the import done?</p></div>', page, "a short question is shown whole")
-
     def test_answer_previews_cut_at_about_eighty_characters(self) -> None:
         self.assertEqual(quarterdeck.answer_preview("Merge"), "Merge")
         exact = "x" * quarterdeck.ANSWER_PREVIEW_LIMIT

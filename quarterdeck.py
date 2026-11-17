@@ -7944,7 +7944,6 @@ TOPIC_ASK_SCRIPT = """
         field.style.height = Math.min(field.scrollHeight + 2, window.innerHeight * 0.4) + "px";
       }
 
-      // Cut a sent answer or question to about %(limit)s characters, as the server does.
       function preview(text) {
         return text.length <= %(limit)s ? text : text.slice(0, %(limit)s - 1).trimEnd() + "\u2026";
       }
@@ -8209,7 +8208,9 @@ TOPIC_ASK_SCRIPT = """
         head.append(who, when, where);
         const body = document.createElement("div");
         body.className = "prose";
-        body.append(folded(text, [preview(text)]));
+        const paragraph = document.createElement("p");
+        paragraph.textContent = text;
+        body.append(paragraph);
         const ties = document.createElement("p");
         ties.className = "ties";
         ties.textContent = "Waiting for Firstmate\u2019s answer";
@@ -8354,11 +8355,11 @@ def topic_state_html(topic: Topic, snapshot: HomeSnapshot, item_pages: dict[str,
     return '<dl class="state">' + "".join(f"<div><dt>{label}</dt><dd>{value}</dd></div>" for label, value in rows) + "</dl>"
 
 
-ANSWER_PREVIEW_LIMIT = 80  # characters of a sent answer or question shown before the rest is folded away
+ANSWER_PREVIEW_LIMIT = 80
 
 
 def answer_preview(text: str) -> str:
-    """A sent answer or question cut to about 80 characters, ending in an ellipsis when cut."""
+    """A sent answer cut to about 80 characters, ending in an ellipsis when cut."""
     return text if len(text) <= ANSWER_PREVIEW_LIMIT else text[:ANSWER_PREVIEW_LIMIT - 1].rstrip() + "…"
 
 
@@ -8481,14 +8482,12 @@ def topic_entry_html(entry: TopicEntry, by_id: dict[str, TopicEntry],
 
 
 def topic_pending_ask_html(reaction: dict[str, str], answers: list[TopicEntry]) -> str:
-    """A question sent from Quarterdeck that the topic file does not show yet, at the end of the conversation. A long
-    question is cut to about 80 characters, the rest a tap away."""
+    """A question sent from Quarterdeck that the topic file does not show yet, at the end of the conversation."""
     when = parse_board_time(reaction.get("at"))
     head = '<span class="who">You</span>' + (topic_stamp(when, "clock") if when else "") + "<span>on Quarterdeck</span>"
     tie = (f"Answered: {html.escape(topic_reply_summary(answers[-1]))}" if answers else "Waiting for Firstmate’s answer")
-    text = reaction.get("text", "")
     return (f'<li class="entry you{"" if answers else " pending"}" id="entry-{html.escape(topic_ask_id(reaction["id"]), quote=True)}">'
-            f'<p class="entry-head">{head}</p><div class="prose">{folded_text_html(text, html.escape(answer_preview(text)))}</div>'
+            f'<p class="entry-head">{head}</p><div class="prose"><p>{html.escape(reaction.get("text", ""))}</p></div>'
             f'<p class="ties">{tie}</p></li>')
 
 

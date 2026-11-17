@@ -67,8 +67,7 @@ general.
 ## Ask Firstmate (owner, served page)
 
 - **On a thread:** type in the box at the bottom and tap **Send**. Your question appears at the end of the
-  conversation as waiting, cut to about 80 characters when it is long (tap it to read all of it), and Firstmate's
-  answer appears there when it writes it. The page reloads about once a
+  conversation as waiting, and Firstmate's answer appears there when it writes it. The page reloads about once a
   minute while you are not typing.
 - **On the front page:** under the **Ask Firstmate** box, **Goes to** shows the
   topic your question will be filed under: Firstmate's guess from your words, or **New topic**. Tap **Change** to
