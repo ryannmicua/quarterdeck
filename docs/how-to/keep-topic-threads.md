@@ -7,20 +7,28 @@ a file in its home; Quarterdeck shows it as a page. The file format is in the
 
 ## Use the front page (owner)
 
-When a home keeps topic files, Quarterdeck's front page holds only what needs you and what changed:
+When a home keeps topic files, Quarterdeck's front page holds only what needs you, what changed, your topics, the
+ask box and search:
 
-- **Needs you:** every topic decision still waiting on you, oldest first, with one-tap answers on the served page,
-  then every other item waiting on you (desk calls, held tasks, reports) as a row that opens it on the previous page.
+- **Needs you:** every topic decision still waiting on your answer, oldest first, with one-tap answers on the served
+  page, then every `Waiting on: you` line of an open topic. Items that belong to no topic do not appear here:
+  Firstmate gathers them into one **Older items** topic so they can be cleared in one sitting.
 - **Changed since you last looked:** one row per topic with something new from Firstmate or anyone else since you
   last left the page on this device, with "+N more" when there is more than one entry. The first time, it shows the
   last two days. Reloading the page keeps the same starting point.
+- **Topics:** every open topic, those needing you first, with its **Now** line. Closed topics are in search.
 - **Ask Firstmate**, on the served page, with **Goes to** (see below).
-- **Everything else is in Search:** underway, waiting and queued work, reports and finished work, all searchable,
+- **Everything else is in Search:** reports, underway, waiting and queued work, and finished work, all searchable,
   with the filters All, Needs you, Underway, Waiting, Queued and Done. A search with no match lists the topics and
   offers to ask Firstmate.
 
-The previous page, with its saved views, Activity, desk and details, stays at `classic.html` for this release; the
-front page and search link to it, and it links back. With no topic files, or with `render --all` or `--lavish`, the
+A report counts as waiting for your review for two weeks. After that it stays findable in search (under All) but
+no longer counts as awaiting review; nothing is changed in its review record. A recent report also shows under
+**To review** on the topic whose **Links** or **Pieces** name it.
+
+The previous page, with its desk, saved views, Activity, reports and details, stays at `classic.html` for this
+release; the front page and search link to it, and it links back. Notifications for items that belong to no topic
+open there. With no topic files, or with `render --all` or `--lavish`, the
 front page is the previous page, as before.
 
 ## Read a thread (owner)
@@ -101,6 +109,8 @@ When a home has no topic files, the front page stays as it was and nothing else 
   needs a topic first.
 - When a decision no longer matters, append a `firstmate` entry with `Re:` naming it and saying why.
 - When the work is finished, set `Status: done`.
+- Gather open items that belong to no topic into one topic, such as `older-items`, with a decision or a
+  `Waiting on: you` line for each, so the owner sees them on the front page and can clear them in one sitting.
 - Run `quarterdeck topics check` after editing. With no file named it checks every configured home.
 
 ## Fix a mistake the page reports

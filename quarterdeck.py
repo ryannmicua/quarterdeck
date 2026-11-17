@@ -6025,6 +6025,11 @@ def site_builder(
                 print(f"quarterdeck: could not record adoption arrivals: {exc}", file=sys.stderr, flush=True)
         if push is not None:
             attention = bearings.attention
+            if assign_topic_pages(homes):
+                # The short front page lists topic items only; other needs-you notifications open on the previous page.
+                for card in activity:
+                    if card.get("section") == "needs_you":
+                        card["push_url"] = f"./{CLASSIC_PAGE}#need-{push_tag(card)}"
             try:
                 push.observe(activity + topic_push_cards(homes), complete=attention is not None and not needs_unread(attention))
             except Exception as exc:  # noqa: BLE001 - a notification problem must never stop the page
@@ -6038,7 +6043,7 @@ def site_builder(
                 push_enabled=push is not None, front_href="index.html",
             )
             pages[SEARCH_PAGE] = search_page_html(homes, title, bearings, allow_marks)
-            index = front_page_html(homes, title, bearings, activity, allow_marks, DEFAULT_REFRESH_SECONDS, push is not None)
+            index = front_page_html(homes, title, bearings, allow_marks, DEFAULT_REFRESH_SECONDS, push is not None)
         pages["index.html"] = index
         pages[CARDS_PAGE] = cards
         return pages
@@ -7736,9 +7741,11 @@ def topic_awaiting(topic: Topic, state: ReviewState | None) -> list[TopicEntry]:
 
 
 def topic_order(topic: Topic, state: ReviewState | None) -> tuple[int, float]:
-    """Topics with decisions that need the owner first, then the most recently written."""
+    """Topics with the most that needs the owner first (decisions waiting on an answer, waits on you), then the most
+    recently written."""
     last = topic.last_at
-    return (-len(topic_awaiting(topic, state)), -(last.timestamp() if last else 0.0))
+    waits = sum(topic_speaker(who) == "you" for who, _what in topic.waiting) if topic.status != "done" else 0
+    return (-(len(topic_awaiting(topic, state)) + waits), -(last.timestamp() if last else 0.0))
 
 
 TOPIC_CSS = """
@@ -8186,7 +8193,7 @@ def topic_link_html(link: str, data_dir: Path | None, pages: dict[str, str] | No
 
 
 def topic_state_html(topic: Topic, snapshot: HomeSnapshot, item_pages: dict[str, str],
-                     pages: dict[str, str] | None, main_href: str) -> str:
+                     pages: dict[str, str] | None, main_href: str, now: datetime | None = None) -> str:
     rows = []
     if topic.now:
         rows.append(("Now", f"<p style=\"margin:0\">{markdown_inline(topic.now)}</p>"))
@@ -8216,6 +8223,15 @@ def topic_state_html(topic: Topic, snapshot: HomeSnapshot, item_pages: dict[str,
     if topic.links:
         links = "".join(f"<li>{topic_link_html(link, snapshot.data_dir, pages, main_href)}</li>" for link in topic.links)
         rows.append(("Links", f"<ul>{links}</ul>"))
+    recent = [report for report in topic_reports(topic, snapshot) if report_awaits_review(report, now or datetime.now(timezone.utc))]
+    if recent and snapshot.spec.home is not None:
+        home = snapshot.spec.home
+        reviews = "".join(
+            f'<li><a href="{html.escape(source_page_filename("report", home, report.path), quote=True)}">{html.escape(report.title)}</a>'
+            + (f' <span class="piece-state">{topic_stamp(report.modified, "full")}</span>' if report.modified else "") + "</li>"
+            for report in recent
+        )
+        rows.append(("To review", f"<ul>{reviews}</ul>"))
     if not rows:
         return ""
     return '<dl class="state">' + "".join(f"<div><dt>{label}</dt><dd>{value}</dd></div>" for label, value in rows) + "</dl>"
@@ -8417,7 +8433,7 @@ def topic_page_html(topic: Topic, snapshot: HomeSnapshot, multi_home: bool, gene
   <main>
     <h1>{html.escape(title)}</h1>
     {closed}
-    {topic_state_html(topic, snapshot, item_pages, pages, main_href)}
+    {topic_state_html(topic, snapshot, item_pages, pages, main_href, generated)}
     {decisions_block}
     {log_block}
     {problems}
@@ -8588,7 +8604,7 @@ FRONT_CSS = """
 .stamp .push-control { display: inline-flex; flex-wrap: wrap; align-items: center; gap: 0 .5rem; margin-left: .4rem; }
 .stamp .push-control[hidden] { display: none; }
 .push-toggle { min-height: 44px; padding: 0 .2rem; border: 0; background: none; color: inherit; text-decoration: underline; }
-h2:first-of-type { margin-top: 0; }
+#needs-h { margin-top: 0; }
 a.discuss { display: inline-flex; align-items: center; font: 600 1rem/1.2 var(--sans); }
 .rows { list-style: none; margin: 0; padding: 0; border-top: 2px solid var(--ink); }
 .rows li { border-bottom: 1px solid var(--rule); }
@@ -8628,34 +8644,55 @@ a.discuss { display: inline-flex; align-items: center; font: 600 1rem/1.2 var(--
 FRONT_SCRIPT = """
   <script>
     (function () {
-      // "Changed since you last looked": entries newer than this device's previous visit. A reload in the same tab
-      // keeps the same starting point, so the list does not empty itself while the page refreshes.
-      const LEFT = "quarterdeck-left-at", BASE = "quarterdeck-look-from";
-      let from = 0;
-      try { from = Number(sessionStorage.getItem(BASE)) || 0; } catch (_) {}
+      // "Changed since you last looked": entries newer than the moment you last looked away from this page on this
+      // device. The automatic reload keeps the same starting point; coming back after the page was hidden for a while
+      // (another app, a locked phone) moves it to when you looked away.
+      const LEFT = "quarterdeck-left-at", BASE = "quarterdeck-look-from", HIDDEN = "quarterdeck-hidden-at";
+      const AWAY_MS = 120000;
+      function read(store, key) { try { return Number(store.getItem(key)) || 0; } catch (_) { return 0; } }
+      function write(store, key, value) { try { store.setItem(key, String(value)); } catch (_) {} }
+      let from = read(sessionStorage, BASE);
       if (!from) {
-        try { from = Number(localStorage.getItem(LEFT)) || 0; } catch (_) {}
-        if (!from) from = Date.now() - %(first)d * 3600000;
-        try { sessionStorage.setItem(BASE, String(from)); } catch (_) {}
+        from = read(localStorage, LEFT) || Date.now() - %(first)d * 3600000;
+        write(sessionStorage, BASE, from);
       }
-      let shown = 0;
-      for (const item of document.querySelectorAll("#changed-list li")) {
-        const times = (item.dataset.times || "").split(",").filter(Boolean).map(Number);
-        const fresh = times.filter(time => time * 1000 > from).length;
-        item.hidden = fresh === 0;
-        const more = item.querySelector(".row-more");
-        if (more) more.textContent = fresh > 1 ? " \\u00b7 +" + (fresh - 1) + " more" : "";
-        if (fresh) shown += 1;
+      function rebase() {
+        const hidden = read(sessionStorage, HIDDEN);
+        if (hidden > from && Date.now() - hidden > AWAY_MS) {
+          from = hidden;
+          write(sessionStorage, BASE, from);
+        }
+        try { sessionStorage.removeItem(HIDDEN); } catch (_) {}
       }
-      const count = document.getElementById("changed-n");
-      if (count) count.textContent = String(shown);
-      const empty = document.getElementById("changed-empty");
-      if (empty) empty.hidden = shown > 0;
-      const since = document.getElementById("changed-since");
-      if (since) since.textContent = new Intl.DateTimeFormat(undefined, {day: "numeric", month: "short", hour: "2-digit", minute: "2-digit"}).format(new Date(from));
-      const leave = () => { try { localStorage.setItem(LEFT, String(Date.now())); } catch (_) {} };
-      addEventListener("pagehide", leave);
-      document.addEventListener("visibilitychange", () => { if (document.visibilityState === "hidden") leave(); });
+      function show() {
+        let shown = 0;
+        for (const item of document.querySelectorAll("#changed-list li")) {
+          const times = (item.dataset.times || "").split(",").filter(Boolean).map(Number);
+          const fresh = times.filter(time => time * 1000 > from).length;
+          item.hidden = fresh === 0;
+          const more = item.querySelector(".row-more");
+          if (more) more.textContent = fresh > 1 ? " \\u00b7 +" + (fresh - 1) + " more" : "";
+          if (fresh) shown += 1;
+        }
+        const count = document.getElementById("changed-n");
+        if (count) count.textContent = String(shown);
+        const empty = document.getElementById("changed-empty");
+        if (empty) empty.hidden = shown > 0;
+        const since = document.getElementById("changed-since");
+        if (since) since.textContent = new Intl.DateTimeFormat(undefined, {day: "numeric", month: "short", hour: "2-digit", minute: "2-digit"}).format(new Date(from));
+      }
+      rebase();
+      show();
+      addEventListener("pagehide", () => write(localStorage, LEFT, Date.now()));
+      document.addEventListener("visibilitychange", () => {
+        if (document.visibilityState === "hidden") {
+          write(localStorage, LEFT, Date.now());
+          write(sessionStorage, HIDDEN, Date.now());
+        } else {
+          rebase();
+          show();
+        }
+      });
     })();
   </script>"""
 
@@ -8717,6 +8754,30 @@ SEARCH_SCRIPT = """
   </script>"""
 
 
+REPORT_REVIEW_DAYS = 14  # an unreviewed report older than this no longer counts as awaiting review on the new pages
+
+
+def report_awaits_review(report: Report, now: datetime) -> bool:
+    """Waiting for review and recent. Older ones stay findable in search; their review records are unchanged."""
+    return report.waiting and (report.modified is None or now - report.modified <= timedelta(days=REPORT_REVIEW_DAYS))
+
+
+def topic_reports(topic: Topic, snapshot: HomeSnapshot) -> list[Report]:
+    """The reports a topic names: a data/<id>/report.md in its Links, or a piece whose task the report belongs to."""
+    named: set[str] = set()
+    for link in topic.links:
+        match = REPORT_PATH_RE.search(topic_link_target(link))
+        if match:
+            named.add(match.group(1))
+    items = snapshot_items(snapshot)
+    for piece in topic.pieces:
+        named.add(piece)
+        item = items.get(piece)
+        if item is not None and item.report_dir:
+            named.add(item.report_dir)
+    return [report for report in snapshot.reports if report.path.parent.name in named]
+
+
 def deck_page(title: str, body: str, scripts: str = "", refresh_seconds: int | None = None, extra_css: str = "",
               head: str = "") -> str:
     """A page in the topic threads' visual system: the thread pages, the front page and search."""
@@ -8761,42 +8822,62 @@ def front_changed_rows(found: list[tuple[HomeSnapshot, Topic]], multi_home: bool
     return "".join(rows)
 
 
-def front_page_html(homes: list[HomeSnapshot], title: str, bearings: Bearings, cards: list[dict[str, object]],
+def topic_waits_on_you(topic: Topic) -> list[str]:
+    """What the topic's `Waiting on: you - ...` lines say the owner owes."""
+    return [what or "Your turn" for who, what in topic.waiting if topic_speaker(who) == "you"]
+
+
+def topic_needs_count(topic: Topic, state: ReviewState | None) -> int:
+    """How many things in a topic need the owner: decisions still waiting on an answer, and waits on you."""
+    return 0 if topic.status == "done" else len(topic_awaiting(topic, state)) + len(topic_waits_on_you(topic))
+
+
+def front_topic_rows(found: list[tuple[HomeSnapshot, Topic]], now: datetime, multi_home: bool) -> str:
+    """The front page's Topics list: every open topic, those needing the owner first."""
+    rows = []
+    for snapshot, topic in sorted(found, key=lambda pair: topic_order(pair[1], pair[0].review_state)):
+        if topic.status == "done":
+            continue
+        needs = topic_needs_count(topic, snapshot.review_state)
+        meta = [f'<b class="result-state needs">{needs} need{"s" if needs == 1 else ""} you</b>'] if needs else []
+        last = topic.last_at
+        if last is not None:
+            meta.append(f"last entry {elapsed_text(last, now)} ago" if last <= now else "last entry just now")
+        if multi_home:
+            meta.append(html.escape(snapshot.spec.label))
+        now_line = f'<span class="row-line">{html.escape(topic.now)}</span>' if topic.now else ""
+        rows.append(f'<li><a class="row" href="{html.escape(topic.page, quote=True)}"><span class="row-title">'
+                    f'{html.escape(topic.title or topic.topic_id)}</span>{now_line}'
+                    f'<span class="row-meta">{" · ".join(meta)}</span></a></li>')
+    return "".join(rows)
+
+
+def front_page_html(homes: list[HomeSnapshot], title: str, bearings: Bearings,
                     allow_marks: bool = False, refresh_seconds: int | None = None, push_enabled: bool = False) -> str:
-    """The short front page shown when topics exist: Needs you, Changed since you last looked, ask, and search."""
+    """The short front page shown when topics exist: Needs you, Changed since you last looked, Topics, the ask box
+    and search, and nothing else. Needs you comes from the topics only: their open decisions and their waits on you.
+    Items that belong to no topic are Firstmate's to gather into a topic; the previous page still lists them."""
     generated = bearings.generated
     found = assign_topic_pages(homes)
     multi_home = len(all_snapshots(homes)) > 1
     decisions: list[tuple[datetime, str]] = []
+    waits: list[str] = []
     for snapshot, topic in found:
-        state = snapshot.review_state
-        for entry in topic_awaiting(topic, state):
-            card = topic_decision_html(entry, topic.ref, allow_marks, None, topic)
-            decisions.append((entry.at or generated, card))
+        if topic.status == "done":
+            continue
+        for entry in topic_awaiting(topic, snapshot.review_state):
+            decisions.append((entry.at or generated, topic_decision_html(entry, topic.ref, allow_marks, None, topic)))
+        for what in topic_waits_on_you(topic):
+            waits.append(f'<li><a class="row" href="{html.escape(topic.page, quote=True)}"><span class="row-meta">'
+                         f'{html.escape(topic.title or topic.topic_id)} · waiting on you</span><span class="row-title">{html.escape(what)}</span></a></li>')
     decisions.sort(key=lambda pair: pair[0])
-    needs = [card for card in cards if card.get("section") == "needs_you"]
-    rows = "".join(
-        f'<li id="need-{push_tag(card)}" data-push-tag="{push_tag(card)}"><a class="row" '
-        f'href="{CLASSIC_PAGE}#need-{push_tag(card)}"><span class="row-meta">{html.escape(str(card.get("label") or "Needs you"))}</span>'
-        f'<span class="row-title">{html.escape(str(card["title"]))}</span>'
-        f'<span class="row-line">{html.escape(str(card.get("summary") or ""))}</span></a></li>'
-        for card in needs
-    )
-    total = len(decisions) + len(needs)
-    attention = bearings.attention
-    unread = attention is not None and needs_unread(attention)
-    if attention is None:
-        notice = '<p class="notice">Only topic decisions are listed: the attention feed was not read.</p>'
-    elif unread:
-        notice = '<p class="notice">Could not read everything that might need you, so this is not a confirmed all clear.</p>'
-    else:
-        notice = ""
-    empty = "" if total or unread or attention is None else '<p class="empty">Nothing needs you.</p>'
+    total = len(decisions) + len(waits)
+    needs_class = ' class="needs"' if total else ""
     needs_block = (
-        f'<section aria-labelledby="needs-h" id="needs"><h2 id="needs-h"{' class="needs"' if total else ""}>Needs you '
-        f'<span class="n">{total}</span></h2>{notice}{empty}'
+        f'<section aria-labelledby="needs-h" id="needs"><h2 id="needs-h"{needs_class}>Needs you <span class="n">{total}</span></h2>'
+        + ("" if total else '<p class="empty">Nothing in your topics needs you.</p>')
         + "".join(card for _at, card in decisions)
-        + (f'<ul class="rows">{rows}</ul>' if rows else "") + "</section>"
+        + (f'<ul class="rows">{"".join(waits)}</ul>' if waits else "") + "</section>"
     )
     changed = front_changed_rows(found, multi_home)
     changed_block = (
@@ -8805,6 +8886,15 @@ def front_page_html(homes: list[HomeSnapshot], title: str, bearings: Bearings, c
         f'<ul class="rows" id="changed-list">{changed}</ul>'
         '<p class="empty" id="changed-empty" hidden>Nothing new since <span id="changed-since">your last look</span>.</p></section>'
     )
+    topic_rows = front_topic_rows(found, generated, multi_home)
+    closed = sum(topic.status == "done" for _snapshot, topic in found)
+    topics_block = (
+        '<section aria-labelledby="topics-h" id="topics"><h2 id="topics-h">Topics '
+        f'<span class="n">{topic_rows.count("<li>")}</span></h2>'
+        + (f'<ul class="rows">{topic_rows}</ul>' if topic_rows else '<p class="empty">Every topic is closed.</p>')
+        + (f'<p class="row-meta"><a href="{SEARCH_PAGE}?filter=done">{closed} closed topic{"s" if closed != 1 else ""} in Search</a></p>'
+           if closed else "") + "</section>"
+    )
     active = [topic for _snapshot, topic in sorted(found, key=lambda pair: topic_order(pair[1], pair[0].review_state))
               if topic.status != "done"]
     ask = topic_front_ask_html(active) if allow_marks else ""
@@ -8812,13 +8902,13 @@ def front_page_html(homes: list[HomeSnapshot], title: str, bearings: Bearings, c
     push = PUSH_CONTROL_HTML if serve_push else ""
     stamp = f'<p class="stamp">Updated {topic_stamp(generated, "full")}{push}</p>'
     more = (
-        f'<p class="more"><a href="{SEARCH_PAGE}">Everything else is in Search</a>: underway, waiting and queued work, '
-        f'reports and what is done. The <a href="{CLASSIC_PAGE}">previous page</a> stays available for this release.</p>'
+        f'<p class="more"><a href="{SEARCH_PAGE}">Everything else is in Search</a>: reports, underway and queued work, '
+        f'and what is done. The <a href="{CLASSIC_PAGE}">previous page</a> stays available for this release.</p>'
     )
     body = (
         f'<nav class="bar" aria-label="Quarterdeck"><span class="mark">{html.escape(title)}</span>'
         f'<span class="bar-links"><a href="{SEARCH_PAGE}">Search</a></span></nav>'
-        f"<main>{stamp}{needs_block}{changed_block}{ask}{more}</main>"
+        f"<main>{stamp}{needs_block}{changed_block}{topics_block}{ask}{more}</main>"
     )
     scripts = FRONT_SCRIPT.replace("%(first)d", str(FRONT_FIRST_LOOK_HOURS))
     if allow_marks:
@@ -8838,7 +8928,7 @@ def search_index(homes: list[HomeSnapshot], bearings: Bearings) -> list[dict[str
         state = snapshot.review_state
         if topic.status == "done":
             key, label = "done", "closed"
-        elif topic_awaiting(topic, state):
+        elif topic_needs_count(topic, state):
             key, label = "needs", "needs you"
         elif any(topic_speaker(who) not in {"you", "firstmate"} for who, _what in topic.waiting):
             key, label = "waiting", "waiting"
@@ -8862,9 +8952,11 @@ def search_index(homes: list[HomeSnapshot], bearings: Bearings) -> list[dict[str
                           "u": url, "l": item.id + (f" · {snapshot.spec.label}" if multi_home else ""),
                           "x": " ".join((item.id, item.project, snapshot.spec.label if multi_home else ""))})
         for report in snapshot.reports:
-            waiting = report.waiting
-            index.append({"k": "Report", "t": report.title, "s": "to review" if waiting else "reviewed",
-                          "f": "needs" if waiting else "done",
+            recent = report_awaits_review(report, bearings.generated)
+            label, key = (("to review", "needs") if recent else
+                          ("not reviewed, over two weeks old", "") if report.waiting else
+                          (report.state, "done"))  # an empty key is found under All only
+            index.append({"k": "Report", "t": report.title, "s": label, "f": key,
                           "u": source_page_filename("report", snapshot.spec.home, report.path),
                           "l": report.recommendation or "", "x": " ".join((report.path.parent.name, report.recommendation or ""))})
     return index
@@ -12038,8 +12130,7 @@ def render(args: argparse.Namespace) -> int:
             # With topics the short front page takes the main file; the previous page stays beside it as classic.html.
             write_generated_page(output_path.with_name(CLASSIC_PAGE), index)
             write_generated_page(output_path.with_name(SEARCH_PAGE), search_page_html(homes, title, bearings))
-            activity = site_cards(homes, bearings, False)
-            index = front_page_html(homes, title, bearings, activity)
+            index = front_page_html(homes, title, bearings)
         write_generated_page(output_path, index)
     except (OSError, ValueError) as exc:
         print(f"quarterdeck: {exc}", file=sys.stderr)
