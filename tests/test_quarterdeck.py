@@ -65,23 +65,25 @@ def parse_systemd_unit(source: str) -> dict[str, dict[str, list[object]]]:
 
 
 class QuarterdeckTests(unittest.TestCase):
-    def make_home(self, root: Path) -> Path:
+    def make_home(self, root: Path, captain_active: bool = False) -> Path:
         home = root / "fictional-firstmate"
         data = home / "data"
+        # Captain-waiting rows count as current only with recent activity; stamp them an hour ago on request.
+        recent = (datetime.now(timezone.utc) - timedelta(hours=1)).strftime("%Y-%m-%dT%H:%M:%SZ") if captain_active else "-"
         for task_id in ("amber-18", "paper-27", "maple-21", "queued-31", "finished-32", "blocked-33", "internal-34", "captain-36", "orphan-35"):
             (data / task_id).mkdir(parents=True, exist_ok=True)
         (data / "backlog.md").write_text(
             """# Work queue
 
 ## Held for review
-| ID | Task | State | Held | Hold kind | Hold reason | Report | Closed |
-| --- | --- | --- | --- | --- | --- | --- | --- |
-| amber-18 | Choose the Amber Kite import format | queued | yes | captain | Pick one format | data/amber-18/report.md | - |
+| ID | Task | State | Held | Hold kind | Hold reason | Report | Closed | Hold set |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| amber-18 | Choose the Amber Kite import format | queued | yes | captain | Pick one format | data/amber-18/report.md | - | """ + recent + """ |
 
 ## Review ready
-| ID | Task | State | Review ready | PR | Report |
-| --- | --- | --- | --- | --- | --- |
-| paper-27 | Review the Paper Finch patch | review_ready | yes | """ + "https://github.com/example/quarterdeck-demo/" + "pull/42" + """ | data/paper-27/report.md |
+| ID | Task | State | Review ready | PR | Report | Hold set |
+| --- | --- | --- | --- | --- | --- | --- |
+| paper-27 | Review the Paper Finch patch | review_ready | yes | """ + "https://github.com/example/quarterdeck-demo/" + "pull/42" + """ | data/paper-27/report.md | """ + recent + """ |
 
 ## In flight
 | ID | Task | State | Held | Hold kind | Closed |
@@ -94,11 +96,11 @@ class QuarterdeckTests(unittest.TestCase):
 | queued-31 | Gather the Finch field notes | queued | no | captain | data/queued-31/report.md | - |
 
 ## Blocked
-| ID | Task | State | Blocked | Waiting on | Blocked reason |
-| --- | --- | --- | --- | --- | --- |
-| blocked-33 | Confirm the sample vendor schedule | blocked | yes | external | Waiting for the sample vendor response |
-| captain-36 | Confirm the sample release window | blocked | yes | captain | Waiting for a captain response |
-| internal-34 | Merge the local sample dependency | blocked | yes | maple-21 | Waiting for another backlog item |
+| ID | Task | State | Blocked | Waiting on | Blocked reason | Hold set |
+| --- | --- | --- | --- | --- | --- | --- |
+| blocked-33 | Confirm the sample vendor schedule | blocked | yes | external | Waiting for the sample vendor response | - |
+| captain-36 | Confirm the sample release window | blocked | yes | captain | Waiting for a captain response | """ + recent + """ |
+| internal-34 | Merge the local sample dependency | blocked | yes | maple-21 | Waiting for another backlog item | - |
 
 ## Done
 | ID | Task | State | Held | Hold kind | Closed | Report |
@@ -126,12 +128,12 @@ Use the compact format for the first release.
         (secondmate_data / "backlog.md").write_text(
             """# Secondmate queue
 
-| ID | Task | State | Held | Hold kind | Hold reason | Report |
-| --- | --- | --- | --- | --- | --- | --- |
-| kestrel-work | Chart the Willow Quay field guide | in_flight | no | - | - | - |
-| kestrel-hold | Choose the Willow Quay map legend | queued | yes | captain | Select a legend | data/kestrel-hold/report.md |
-| kestrel-queued | Collect later map notes | queued | no | - | - | - |
-| kestrel-done | Archive the old map draft | done | no | - | - | - |
+| ID | Task | State | Held | Hold kind | Hold reason | Report | Hold set |
+| --- | --- | --- | --- | --- | --- | --- | --- |
+| kestrel-work | Chart the Willow Quay field guide | in_flight | no | - | - | - | - |
+| kestrel-hold | Choose the Willow Quay map legend | queued | yes | captain | Select a legend | data/kestrel-hold/report.md | """ + recent + """ |
+| kestrel-queued | Collect later map notes | queued | no | - | - | - | - |
+| kestrel-done | Archive the old map draft | done | no | - | - | - | - |
 """,
             encoding="utf-8",
         )
@@ -163,7 +165,7 @@ Use the compact format for the first release.
     def test_render_shows_only_actionable_items_and_matches_header_counts(self) -> None:
         with tempfile.TemporaryDirectory() as temp:
             root = Path(temp)
-            home = self.make_home(root)
+            home = self.make_home(root, captain_active=True)
             output = root / "outside-output" / "index.html"
             result = self.run_cli(["render", "--home", str(home), "--output", str(output)], root, root / "config")
             self.assertEqual(result.returncode, 0, result.stderr)
@@ -226,6 +228,7 @@ Use the compact format for the first release.
             env = os.environ.copy()
             env["PATH"] = f"{bin_dir}:{env.get('PATH', '')}"
             env["XDG_STATE_HOME"] = str(root / "state")
+            env["XDG_CONFIG_HOME"] = str(root / "config")  # never read the real saved briefing views
             result = subprocess.run(
                 [sys.executable, str(ROOT / "quarterdeck.py"), "render", "--lavish", "--home", str(home), "--output", str(output)],
                 check=False, text=True, capture_output=True, env=env,
@@ -1926,13 +1929,16 @@ globalThis.document = {
     if (selector === ".reaction-text") return [];
     throw new Error("unexpected selector " + selector);
   },
-  querySelector() { return null; }
+  querySelector() { return null; },
+  getElementById() { return null; },
+  addEventListener() {}
 };
 globalThis.sessionStorage = {
   getItem(key) { return values.get(key) || null; },
   setItem(key, value) { values.set(key, value); },
   removeItem(key) { values.delete(key); }
 };
+globalThis.window = { addEventListener() {} };
 globalThis.location = { reload() { reloaded = true; } };
 globalThis.setTimeout = (callback, delay) => {
   if (delay !== 30000) throw new Error("refresh cadence changed");
@@ -1953,8 +1959,9 @@ if (saved.length !== 3) throw new Error("open disclosures were not saved");
 
         no_storage = r"""
 let reloaded = false;
-globalThis.document = { querySelectorAll() { return []; }, querySelector() { return null; } };
+globalThis.document = { querySelectorAll() { return []; }, querySelector() { return null; }, getElementById() { return null; }, addEventListener() {} };
 globalThis.sessionStorage = new Proxy({}, { get() { throw new Error("storage unavailable"); } });
+globalThis.window = { addEventListener() {} };
 globalThis.location = { reload() { reloaded = true; } };
 globalThis.setTimeout = callback => callback();
 """
@@ -2791,7 +2798,7 @@ class BearingsTests(unittest.TestCase):
             (home / "data").mkdir(parents=True)
             (home / "data" / "backlog.md").write_text("# Backlog\n", encoding="utf-8")
             page = quarterdeck.bearings_html(quarterdeck.build_bearings(self.snapshots(home)))
-            self.assertEqual(page.count('class="empty"'), 5)
+            self.assertEqual(page.count('class="empty"'), 4)
             self.assertIn("Nothing is waiting on a captain decision.", page)
             self.assertIn("No reports are waiting on your review.", page)
 
@@ -3057,7 +3064,7 @@ class ServeTests(unittest.TestCase):
             status, headers, body = self.fetch(port, "/")
             self.assertEqual(status, 200)
             self.assertIn("text/html", headers["Content-Type"])
-            self.assertIn("Kelp survey: map the invented reef", body)
+            self.assertIn("Harbor chart: draw the tide tables", body)
             self.assertIn("Generated at", body)
             self.assertIn("}, 60000);", body)
             links = re.findall(r'href="((?:item|report|backlog)-[0-9a-f]{12}\.html)"', body)
@@ -3782,7 +3789,8 @@ class DeskRelevanceTests(unittest.TestCase):
         self.assertEqual(snapshot["version"], 1)
         self.assertEqual(
             set(snapshot),
-            {"version", "title", "generated_at", "session", "calls", "reports", "related", "reactions", "delivered"},
+            {"version", "title", "generated_at", "session", "calls", "reports", "related", "decision_window_days",
+             "reactions", "delivered"},
         )
         bands = {call["id"]: call["band"] for call in snapshot["calls"]}
         self.assertEqual(bands["invented-home/harbor-hold"], "desk")
