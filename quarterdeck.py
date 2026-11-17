@@ -8850,16 +8850,13 @@ def topic_needs_count(topic: Topic, state: ReviewState | None) -> int:
     return 0 if topic.status == "done" else len(topic_awaiting(topic, state)) + len(topic_waits_on_you(topic))
 
 
-def card_task(card: dict[str, object]) -> str:
-    """The task a feed card is about: the part after the home in its id, such as call:<home>/<task>."""
-    namespace, separator, task = str(card["id"]).partition(":")[2].partition("/")
-    return task if separator else namespace
-
-
 def card_topic(card: dict[str, object], found: list[tuple[HomeSnapshot, Topic]]) -> Topic | None:
-    """The open topic whose Pieces name the card's task, if any."""
-    task = card_task(card)
-    return next((topic for _snapshot, topic in found if topic.status != "done" and task in topic.pieces), None)
+    """The open topic of the card's own home whose Pieces name the card's task, from an id such as call:<home>/<task>."""
+    home, separator, task = str(card["id"]).partition(":")[2].partition("/")
+    if not separator:
+        return None
+    return next((topic for snapshot, topic in found if topic.status != "done" and task in topic.pieces
+                 and report_reference(snapshot.spec.label, "").split("/", 1)[0] == home), None)
 
 
 def front_loose_rows(cards: list[dict[str, object]], found: list[tuple[HomeSnapshot, Topic]],

@@ -11230,11 +11230,12 @@ class FrontPageTests(unittest.TestCase):
                 seen.extend(cards)
                 return []
 
-        def card(task: str, title: str) -> dict[str, object]:
-            return {"id": f"call:fictional-firstmate/{task}", "section": "needs_you", "title": title, "hold_set": None,
+        def card(task: str, title: str, home: str = "fictional-firstmate") -> dict[str, object]:
+            return {"id": f"call:{home}/{task}", "section": "needs_you", "title": title, "hold_set": None,
                     "label": "Needs you", "summary": f"Summary of {title}", "status": "", "body": "", "at": None}
 
         loose, piece = card("amber-18", "Choose the Amber Kite import format"), card("maple-21", "Approve the catalog chart")
+        elsewhere = card("maple-21", "Another home's maple-21", home="other-home")
         builds: list[object] = []
         real_build_html = quarterdeck.build_html
         with tempfile.TemporaryDirectory() as temp:
@@ -11242,26 +11243,30 @@ class FrontPageTests(unittest.TestCase):
             home = TopicTests.home_with_topics(self, root)  # type: ignore[arg-type]
             args = argparse.Namespace(home=str(home), config=None, title=None, no_snapshot=True)
             with patch.dict(os.environ, {"XDG_CONFIG_HOME": str(root / "config"), "XDG_STATE_HOME": str(root / "state")}), \
-                    patch.object(quarterdeck, "site_cards", lambda *a, **k: [dict(loose), dict(piece)]), \
+                    patch.object(quarterdeck, "site_cards", lambda *a, **k: [dict(loose), dict(piece), dict(elsewhere)]), \
                     patch.object(quarterdeck, "build_html", lambda *a, **k: builds.append(k) or real_build_html(*a, **k)):
                 pages = quarterdeck.site_builder(args, True, push=Spy())()  # type: ignore[arg-type]
         self.assertEqual(len(builds), 1, "the previous page is built once per rebuild")
         by_id = {str(item["id"]): item for item in seen}
         self.assertNotIn("push_url", by_id[loose["id"]], "a card in no topic opens on the front page, at ./#need-<tag>")
         self.assertEqual(by_id[piece["id"]]["push_url"], "./topic-maple-harbor-catalog.html", "a topic's piece opens its topic")
+        self.assertNotIn("push_url", by_id[elsewhere["id"]], "the same task id in another home is not this topic's piece")
         decision = next(item for item in seen if str(item["id"]).startswith("topic-decision:"))
         self.assertEqual(decision["push_url"], "./topic-maple-harbor-catalog.html#decision-merge-42")
 
         front = pages["index.html"]
         needs = front.split('id="needs"', 1)[1].split("</section>", 1)[0]
-        self.assertIn('Needs you <span class="n">3</span>', needs, "the decision, the wait on you and the card in no topic")
+        self.assertIn('Needs you <span class="n">4</span>', needs, "the decision, the wait on you and the two cards in no topic")
         group = needs.split("Not yet in a topic", 1)[1]
         tag = quarterdeck.push_tag(loose)
         self.assertIn(f'<li id="need-{tag}" data-push-tag="{tag}">', group)
         self.assertIn("Choose the Amber Kite import format", group)
         self.assertIn("Summary of Choose the Amber Kite import format", group)
+        other = quarterdeck.push_tag(elsewhere)
+        self.assertIn(f'<li id="need-{other}" data-push-tag="{other}">', group)
+        self.assertIn("Another home&#x27;s maple-21", group)
         self.assertNotIn("Approve the catalog chart", front, "a card whose task is a topic piece is shown by its topic")
-        self.assertIn("<title>(3) Quarterdeck</title>", front)
+        self.assertIn("<title>(4) Quarterdeck</title>", front)
         href = re.search(r'<li id="need-[^"]+" data-push-tag="[^"]+"><a class="row" href="([^"]+)"', group).group(1)  # type: ignore[union-attr]
         self.assertIn(href.split("#", 1)[0], pages, "the row opens a page the site serves")
 
