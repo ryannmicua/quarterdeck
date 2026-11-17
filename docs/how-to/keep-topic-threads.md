@@ -11,8 +11,11 @@ When a home keeps topic files, Quarterdeck's front page holds only what needs yo
 ask box and search:
 
 - **Needs you:** every topic decision still waiting on your answer, oldest first, with one-tap answers on the served
-  page, then every `Waiting on: you` line of an open topic. Items that belong to no topic do not appear here:
-  Firstmate gathers them into one **Older items** topic so they can be cleared in one sitting.
+  page, then every `Waiting on: you` line of an open topic, then, under **Not yet in a topic**, every other item that
+  needs you (a desk call, a held task, a report to review) whose task is no open topic's piece. Each such row opens
+  the item's own page, or its card on the previous page when it has none. Firstmate gathers old items with no topic
+  into one **Older items** topic so they can be cleared in one sitting; once an item's task is a topic's piece, it
+  shows through that topic instead.
 - **Changed since you last looked:** one row per topic with something new from Firstmate or anyone else since you
   last left the page on this device, with "+N more" when there is more than one entry. The first time, it shows the
   last two days. Reloading the page keeps the same starting point.
@@ -27,8 +30,9 @@ no longer counts as awaiting review; nothing is changed in its review record. A 
 **To review** on the topic whose **Links** or **Pieces** name it.
 
 The previous page, with its desk, saved views, Activity, reports and details, stays at `classic.html` for this
-release; the front page and search link to it, and it links back. Notifications for items that belong to no topic
-open there. With no topic files, or with `render --all` or `--lavish`, the
+release; the front page and search link to it, and it links back. A notification for an item that belongs to no
+topic opens on its **Not yet in a topic** row; one for an item whose task is a topic's piece opens that topic. With
+no topic files, or with `render --all` or `--lavish`, the
 front page is the previous page, as before.
 
 ## Read a thread (owner)

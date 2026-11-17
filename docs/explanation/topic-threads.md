@@ -77,8 +77,9 @@ Related to this session, Decisions and recent work, For your information, Parked
 views and the pinned decision headlines are gone from it; reports, Underway, Charted Next and open work on record are
 behind search with the filters All, Needs you, Underway, Waiting, Queued and Done.
 
-**Needs you** counts only what the topics say needs the owner: open decisions and `Waiting on: you` lines. The
-previous page counted other things and could show nothing while decisions waited. Items that belong to no topic are
+**Needs you** lists what the topics say needs the owner, open decisions and `Waiting on: you` lines, then every other
+item that needs the owner and belongs to no open topic, under **Not yet in a topic**, so nothing that needs the owner
+leaves the front page. An item whose task is a topic's piece shows through its topic only. Old items with no topic are
 Firstmate's to gather into an **Older items** topic, so they appear once instead of across several sections. A
 report older than two weeks no longer counts as awaiting review; it stays in search, and a recent one shows on the
 topic that names it. "Since you last looked" is kept on the device, so it needs no

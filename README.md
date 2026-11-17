@@ -51,7 +51,7 @@ for server requirements, phone setup and withdrawal behavior.
   is answered with one tap and five seconds to undo, and an ask box on each
   thread and on the front page sends a question to Firstmate under the topic it
   shows. With topics, the front page holds only Needs you (open topic
-  decisions and waits on you), Changed since you last looked, Topics, the ask
+  decisions, waits on you, and items not yet in a topic), Changed since you last looked, Topics, the ask
   box and search; everything else is behind search, and the previous page
   stays at `classic.html` for one release. `quarterdeck topics check` reports mistakes in the files. See [Keep topic threads](docs/how-to/keep-topic-threads.md) and the
   [topic files reference](docs/reference/topic-files.md).

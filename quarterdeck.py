@@ -6013,9 +6013,10 @@ def site_builder(
         config, homes, bearings = load_site(args)
         configured_title = config.get("page_title")
         title = args.title or (configured_title if isinstance(configured_title, str) else None) or DEFAULT_TITLE
-        index = build_html(
+        found = assign_topic_pages(homes)
+        previous = build_html(
             homes, title, bearings=bearings, refresh_seconds=DEFAULT_REFRESH_SECONDS, allow_marks=allow_marks,
-            push_enabled=push is not None,
+            push_enabled=push is not None, front_href="index.html" if found else None,
         )
         activity = site_cards(homes, bearings, allow_marks)
         if allow_marks:
@@ -6025,26 +6026,24 @@ def site_builder(
                 print(f"quarterdeck: could not record adoption arrivals: {exc}", file=sys.stderr, flush=True)
         if push is not None:
             attention = bearings.attention
-            if assign_topic_pages(homes):
-                # The short front page lists topic items only; other needs-you notifications open on the previous page.
-                for card in activity:
-                    if card.get("section") == "needs_you":
-                        card["push_url"] = f"./{CLASSIC_PAGE}#need-{push_tag(card)}"
+            for card in activity:
+                topic = card_topic(card, found) if card.get("section") == "needs_you" else None
+                if topic is not None:
+                    card["push_url"] = f"./{topic.page}"
             try:
                 push.observe(activity + topic_push_cards(homes), complete=attention is not None and not needs_unread(attention))
             except Exception as exc:  # noqa: BLE001 - a notification problem must never stop the page
                 print(f"quarterdeck: could not check for new needs-you items to notify: {exc}", file=sys.stderr, flush=True)
         cards = cards_payload(activity, bearings.generated)
         pages = source_pages(homes, show_all=False, bearings=bearings, allow_marks=allow_marks)  # after the cards: they register document pages
-        if assign_topic_pages(homes):
+        if found:
             # With topics the front page is the short one; the previous page moves to classic.html for this release.
-            pages[CLASSIC_PAGE] = build_html(
-                homes, title, bearings=bearings, refresh_seconds=DEFAULT_REFRESH_SECONDS, allow_marks=allow_marks,
-                push_enabled=push is not None, front_href="index.html",
-            )
+            pages[CLASSIC_PAGE] = previous
             pages[SEARCH_PAGE] = search_page_html(homes, title, bearings, allow_marks)
-            index = front_page_html(homes, title, bearings, allow_marks, DEFAULT_REFRESH_SECONDS, push is not None)
-        pages["index.html"] = index
+            pages["index.html"] = front_page_html(homes, title, bearings, activity, allow_marks, DEFAULT_REFRESH_SECONDS,
+                                                  push is not None)
+        else:
+            pages["index.html"] = previous
         pages[CARDS_PAGE] = cards
         return pages
     return build
@@ -7744,8 +7743,7 @@ def topic_order(topic: Topic, state: ReviewState | None) -> tuple[int, float]:
     """Topics with the most that needs the owner first (decisions waiting on an answer, waits on you), then the most
     recently written."""
     last = topic.last_at
-    waits = sum(topic_speaker(who) == "you" for who, _what in topic.waiting) if topic.status != "done" else 0
-    return (-(len(topic_awaiting(topic, state)) + waits), -(last.timestamp() if last else 0.0))
+    return (-topic_needs_count(topic, state), -(last.timestamp() if last else 0.0))
 
 
 TOPIC_CSS = """
@@ -8127,9 +8125,27 @@ TOPIC_ASK_SCRIPT = """
         entry.append(head, body, ties);
         log.append(entry);
       }
-      // While served, reload now and then so answers appear; never while something is being typed or sent.
+    })();
+  </script>""" + """
+  <script>
+    (function () {
+      // While served, reload now and then so answers appear; never while something is being typed or sent. The
+      // reload carries qd_refresh so the server does not count it as a visit; the address bar drops it again.
+      const SCROLL = "quarterdeck-reload-scroll";
+      const here = new URL(location.href);
+      if (here.searchParams.has("qd_refresh")) {
+        here.searchParams.delete("qd_refresh");
+        history.replaceState(null, "", here);
+        try { const y = Number(sessionStorage.getItem(SCROLL)); if (y > 0) window.scrollTo(0, y); } catch (error) { /* stays at the top */ }
+      }
       const every = Number(document.body.dataset.refresh || 0);
-      if (every > 0) setInterval(() => { if (!document.querySelector("[data-mutation-pending]")) location.reload(); }, every * 1000);
+      if (every > 0) setInterval(() => {
+        if (document.querySelector("[data-mutation-pending]")) return;
+        try { sessionStorage.setItem(SCROLL, String(window.scrollY)); } catch (error) { /* reloads at the top */ }
+        const next = new URL(location.href);
+        next.searchParams.set("qd_refresh", "1");
+        location.replace(next.href);
+      }, every * 1000);
     })();
   </script>"""
 
@@ -8584,7 +8600,8 @@ TOPICS_FRONT_CSS = """
 
 # --- Front page and search -------------------------------------------------------
 # When any home keeps topic files, index.html becomes a short front page: Needs you (topic decisions with one-tap
-# answers, then every other needs-you card as a row), Changed since you last looked (one row per topic), the ask box,
+# answers, the topics' waits on you, then every needs-you card that belongs to no open topic as a row under "Not yet in
+# a topic"), Changed since you last looked (one row per topic), the ask box,
 # and a link to search. Everything else the previous page showed is reachable from search.html, and the previous page
 # itself stays at classic.html for one release. Without topic files nothing changes.
 
@@ -8605,6 +8622,7 @@ FRONT_CSS = """
 .stamp .push-control[hidden] { display: none; }
 .push-toggle { min-height: 44px; padding: 0 .2rem; border: 0; background: none; color: inherit; text-decoration: underline; }
 #needs-h { margin-top: 0; }
+.needs-group { margin: 1.4rem 0 .35rem; font: 600 .8rem var(--sans); letter-spacing: .08em; text-transform: uppercase; color: var(--soft); }
 a.discuss { display: inline-flex; align-items: center; font: 600 1rem/1.2 var(--sans); }
 .rows { list-style: none; margin: 0; padding: 0; border-top: 2px solid var(--ink); }
 .rows li { border-bottom: 1px solid var(--rule); }
@@ -8832,6 +8850,42 @@ def topic_needs_count(topic: Topic, state: ReviewState | None) -> int:
     return 0 if topic.status == "done" else len(topic_awaiting(topic, state)) + len(topic_waits_on_you(topic))
 
 
+def card_task(card: dict[str, object]) -> str:
+    """The task a feed card is about: the part after the home in its id, such as call:<home>/<task>."""
+    namespace, separator, task = str(card["id"]).partition(":")[2].partition("/")
+    return task if separator else namespace
+
+
+def card_topic(card: dict[str, object], found: list[tuple[HomeSnapshot, Topic]]) -> Topic | None:
+    """The open topic whose Pieces name the card's task, if any."""
+    task = card_task(card)
+    return next((topic for _snapshot, topic in found if topic.status != "done" and task in topic.pieces), None)
+
+
+def front_loose_rows(cards: list[dict[str, object]], found: list[tuple[HomeSnapshot, Topic]],
+                     homes: list[HomeSnapshot], bearings: Bearings) -> list[str]:
+    """One row per needs-you card that belongs to no open topic, opening the item's own page when it has one."""
+    pages = {}
+    for snapshot in all_snapshots(homes):
+        if snapshot.spec.home is None:
+            continue
+        for item_id in snapshot_items(snapshot):
+            page = item_page_filename(snapshot.spec.home, snapshot.spec.label, item_id)
+            if page in bearings.item_pages:
+                pages.setdefault(report_reference(snapshot.spec.label, item_id), page)
+    rows = []
+    for card in cards:
+        if card.get("section") != "needs_you" or card_topic(card, found) is not None:
+            continue
+        tag = push_tag(card)
+        href = pages.get(str(card["id"]).partition(":")[2]) or f"{CLASSIC_PAGE}#need-{tag}"
+        summary = str(card.get("summary") or "")
+        line = f'<span class="row-line">{html.escape(summary)}</span>' if summary else ""
+        rows.append(f'<li id="need-{tag}" data-push-tag="{tag}"><a class="row" href="{html.escape(href, quote=True)}">'
+                    f'<span class="row-title">{html.escape(str(card.get("title") or ""))}</span>{line}</a></li>')
+    return rows
+
+
 def front_topic_rows(found: list[tuple[HomeSnapshot, Topic]], now: datetime, multi_home: bool) -> str:
     """The front page's Topics list: every open topic, those needing the owner first."""
     rows = []
@@ -8852,11 +8906,11 @@ def front_topic_rows(found: list[tuple[HomeSnapshot, Topic]], now: datetime, mul
     return "".join(rows)
 
 
-def front_page_html(homes: list[HomeSnapshot], title: str, bearings: Bearings,
+def front_page_html(homes: list[HomeSnapshot], title: str, bearings: Bearings, cards: list[dict[str, object]],
                     allow_marks: bool = False, refresh_seconds: int | None = None, push_enabled: bool = False) -> str:
     """The short front page shown when topics exist: Needs you, Changed since you last looked, Topics, the ask box
-    and search, and nothing else. Needs you comes from the topics only: their open decisions and their waits on you.
-    Items that belong to no topic are Firstmate's to gather into a topic; the previous page still lists them."""
+    and search, and nothing else. Needs you lists the topics' open decisions and waits on you, then every needs-you
+    card whose task is no open topic's piece, under "Not yet in a topic", until Firstmate gathers it into one."""
     generated = bearings.generated
     found = assign_topic_pages(homes)
     multi_home = len(all_snapshots(homes)) > 1
@@ -8871,13 +8925,16 @@ def front_page_html(homes: list[HomeSnapshot], title: str, bearings: Bearings,
             waits.append(f'<li><a class="row" href="{html.escape(topic.page, quote=True)}"><span class="row-meta">'
                          f'{html.escape(topic.title or topic.topic_id)} · waiting on you</span><span class="row-title">{html.escape(what)}</span></a></li>')
     decisions.sort(key=lambda pair: pair[0])
-    total = len(decisions) + len(waits)
+    loose = front_loose_rows(cards, found, homes, bearings)
+    total = len(decisions) + len(waits) + len(loose)
     needs_class = ' class="needs"' if total else ""
     needs_block = (
         f'<section aria-labelledby="needs-h" id="needs"><h2 id="needs-h"{needs_class}>Needs you <span class="n">{total}</span></h2>'
-        + ("" if total else '<p class="empty">Nothing in your topics needs you.</p>')
+        + ("" if total else '<p class="empty">Nothing needs you right now.</p>')
         + "".join(card for _at, card in decisions)
-        + (f'<ul class="rows">{"".join(waits)}</ul>' if waits else "") + "</section>"
+        + (f'<ul class="rows">{"".join(waits)}</ul>' if waits else "")
+        + (f'<h3 class="needs-group">Not yet in a topic</h3><ul class="rows">{"".join(loose)}</ul>' if loose else "")
+        + "</section>"
     )
     changed = front_changed_rows(found, multi_home)
     changed_block = (
@@ -12125,12 +12182,13 @@ def render(args: argparse.Namespace) -> int:
         front = bool(assign_topic_pages(homes)) and not args.lavish and not args.all
         index = build_html(homes, title, lavish=args.lavish, show_all=args.all, bearings=bearings,
                            front_href=output_path.name if front else None)
+        activity = site_cards(homes, bearings, False) if front else []
         write_source_pages(homes, output_path.parent, show_all=args.all, bearings=bearings)  # after: cards register pages
         if front:
             # With topics the short front page takes the main file; the previous page stays beside it as classic.html.
             write_generated_page(output_path.with_name(CLASSIC_PAGE), index)
             write_generated_page(output_path.with_name(SEARCH_PAGE), search_page_html(homes, title, bearings))
-            index = front_page_html(homes, title, bearings)
+            index = front_page_html(homes, title, bearings, activity)
         write_generated_page(output_path, index)
     except (OSError, ValueError) as exc:
         print(f"quarterdeck: {exc}", file=sys.stderr)
