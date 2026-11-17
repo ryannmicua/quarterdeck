@@ -119,10 +119,19 @@ conversation with the first line of its answer.
 
 ### Questions sent from Quarterdeck
 
-Sending questions is reserved for the [following PRs](../explanation/topic-threads.md#what-comes-next).
-The format reserves ids starting with `ask-`, such as `ask-3f9c2a1b`, for those questions. Copy the
-question into the file as an entry from `you` at `quarterdeck` with that `Id:`, and answer it with `Re:` naming the
-same id. A `Re:` that names an `ask-` id is allowed even when the question itself is not in the file.
+A question the owner sends from Quarterdeck carries an id of `ask-` and 16 letters and digits, such as
+`ask-3f9c2a1b0d4e5f60`; Firstmate's inbox note names it and the topic. Copy the question into the file as an entry
+from `you` at `quarterdeck` with that `Id:`, and answer it with `Re:` naming the same id. A `Re:` that names an
+`ask-` id is allowed even when the question itself is not in the file. Until the file shows the question, the
+thread page shows it at the end of the conversation as waiting; the answer appears once a `Re:` names it. A
+question sent from the front page as **New topic** goes to the first configured home; start or pick a topic for it.
+
+### Answers sent from Quarterdeck
+
+An answer the owner taps on a decision card reaches Firstmate as an inbox note naming the topic and the decision.
+Record it as an entry from `you` at `quarterdeck` with `Re:` naming the decision. Until then the card shows the
+answer as sent, and the decision no longer counts as needing the owner. Quarterdeck refuses an answer to a decision
+the file already shows answered.
 
 ## Mistakes
 

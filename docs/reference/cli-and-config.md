@@ -270,7 +270,9 @@ Exit status is 0 when the file was read, and 2 for an unreadable or malformed
 file. The served page's Send button and
 [one-tap answers](../how-to/serve-the-page.md#react-to-calls-and-reports-from-the-page)
 post to `POST /api/reactions` (body
-`{"id", "kind", "item_id", "reaction", "text"}`) when `serve --allow-marks` is
+`{"id", "kind", "item_id", "reaction", "text"}`; `kind` is `call`, `report`,
+`topic` for a question about a topic, or `decision` for an answer to a topic
+decision, and the last two take text only) when `serve --allow-marks` is
 on. Each composer retains a failed submission's id while its submitted `kind`,
 `item_id`, `reaction` and trimmed `text` stay unchanged. An unchanged retry
 reuses the same fm-inbox request id and is not delivered twice. A changed

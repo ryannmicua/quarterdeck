@@ -58,15 +58,20 @@ the pages follow the system's light or dark setting.
 
 ## What comes next
 
-This first step ships the file format, the checker and read-only thread pages. Later steps add, in order:
+The first step shipped the file format, the checker and read-only thread pages. The second adds, on the served
+page with `--allow-marks`:
 
 - an ask box on each thread and on the front page, sending to Firstmate through the same `bin/fm-inbox.sh note`
-  path reactions use, with the topic attached; before sending a front-page question, choosing or changing its
-  guessed topic, including **New topic**; dictated words landing in the ask box to check before sending, never
-  sent by themselves;
-- one-tap answers on decision cards, with the same five-second Undo report marks use, and **Discuss**;
-- phone notifications that show only the decision title and open on its card, and a notification when a question is answered;
-- a front page of only **Needs you** and **Changed since you last looked**, with saved views, Activity and the other
-  sections reachable through search filters. These come in the following PRs.
+  path reactions use, with the topic attached. A front-page question shows the topic it will go to before it is
+  sent: Firstmate's guess from the words typed, which the owner can change, or **New topic**. Words dictated with
+  the phone keyboard land in the box to check; nothing is sent until **Send**. Drafts stay on the device, and a
+  failed send says "Not sent, your words are kept".
+- one-tap answers on decision cards, with five seconds to **Undo**, and **Discuss**, which opens the ask box about
+  that card;
+- phone notifications that show only the decision's title and open on its card, and one notification when a
+  question sent from Quarterdeck is answered.
+
+Still to come, in the next PR: a front page of only **Needs you** and **Changed since you last looked**, with saved
+views, Activity and the other sections reachable through search filters.
 
 Each step keeps the old page reachable until the new one covers what it showed.

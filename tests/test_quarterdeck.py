@@ -9756,20 +9756,21 @@ class PushNotificationTests(unittest.TestCase):
     def card(key: str = "harbor/secret-task", hold: str | None = None) -> dict[str, object]:
         return {"id": f"call:{key}", "section": "needs_you", "hold_set": hold, "title": "Invented secret title"}
 
-    def test_new_item_sends_one_generic_message_and_a_repeat_poll_sends_nothing(self) -> None:
+    def test_new_item_sends_one_title_only_message_and_a_repeat_poll_sends_nothing(self) -> None:
         self.notifier.subscribe(self.subscription)
         self.assertEqual(self.notifier.observe([], complete=True), [])  # the first look only records what is there
-        card = self.card()
+        card = dict(self.card(), detail="Invented recommendation detail")
         messages = self.notifier.observe([card, {"id": "work:a", "section": "recent"}], complete=True)
-        self.assertEqual(messages, [{"type": "new", "tag": quarterdeck.push_tag(card)}])
+        self.assertEqual(messages, [{"type": "new", "tag": quarterdeck.push_tag(card), "body": "Invented secret title"}])
         self.assertEqual(len(self.sent), 1)
         url, body, headers = self.sent[0]
         self.assertEqual(url, self.ENDPOINT)
         payload = self.decrypt(body)
         tag = quarterdeck.push_tag(card)
-        self.assertEqual(payload, {"type": "new", "tag": tag, "title": "Quarterdeck", "body": "1 new item needs you",
+        self.assertEqual(payload, {"type": "new", "tag": tag, "title": "Quarterdeck", "body": "Invented secret title",
                                    "url": f"./#need-{tag}"})
-        self.assertNotIn(b"secret", body)
+        self.assertNotIn(b"secret", body, "the push service sees only ciphertext")
+        self.assertNotIn("recommendation", json.dumps(payload), "the lock screen shows the title only")
         self.assertEqual(headers["Content-Encoding"], "aes128gcm")
         self.assertEqual(headers["Topic"], tag)
         self.assertRegex(tag, r"^[A-Za-z0-9_-]{1,32}$")
@@ -9799,7 +9800,7 @@ class PushNotificationTests(unittest.TestCase):
         self.assertEqual(len(self.sent), 2)
         new_hold = self.card(hold="2026-11-15T09:00:00Z")
         self.assertEqual(self.notifier.observe([card, new_hold], complete=True),
-                         [{"type": "new", "tag": quarterdeck.push_tag(new_hold)}])
+                         [{"type": "new", "tag": quarterdeck.push_tag(new_hold), "body": "Invented secret title"}])
 
     def test_incomplete_first_reads_do_not_establish_a_baseline(self) -> None:
         self.notifier.subscribe(self.subscription)
@@ -9925,7 +9926,7 @@ class PushNotificationTests(unittest.TestCase):
         self.assertEqual(len(self.sent), 2)
         fresh_hold = self.card("harbor/notified", hold="2027-11-15T09:00:00Z")
         self.assertEqual(restarted.observe([baseline, notified, fresh_hold], complete=True),
-                         [{"type": "new", "tag": quarterdeck.push_tag(fresh_hold)}])
+                         [{"type": "new", "tag": quarterdeck.push_tag(fresh_hold), "body": "Invented secret title"}])
         self.assertEqual(len(self.sent), 3)
 
     def test_safari_subscriptions_get_new_items_but_no_withdrawals(self) -> None:
@@ -10055,7 +10056,7 @@ class PushNotificationTests(unittest.TestCase):
             tag = quarterdeck.push_tag(cards[0])
             self.assertNotIn(tag, tags)
             tags.append(tag)
-            self.assertEqual(self.notifier.observe(cards, complete=True), [{"type": "new", "tag": tag}])
+            self.assertEqual(self.notifier.observe(cards, complete=True), [{"type": "new", "tag": tag, "body": cards[0]["title"]}])
             self.assertEqual(self.decrypt(self.sent[-1][1])["url"], f"./#need-{tag}")
             rendered = quarterdeck.cards_html(cards, bearings.attention, WAIT_NOW, True)
             self.assertIn(f'id="need-{tag}" data-push-tag="{tag}"', rendered)
@@ -10896,3 +10897,180 @@ See https://example.com/path?a=1 and [bad](javascript:alert(2)).
                 pages = quarterdeck.site_builder(args)()
             self.assertIn("topic-maple-harbor-catalog.html", pages)
             self.assertIn('href="topic-maple-harbor-catalog.html"', pages["index.html"])
+
+
+class BacklogFreeTextPathTests(unittest.TestCase):
+    """Free text in the backlog never reaches the filesystem as a path unless it is a documented data/<id>/<file>.md."""
+
+    def test_a_long_report_field_is_plain_text_and_the_documented_path_inside_it_still_resolves(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            home = Path(temp) / "home"
+            data = home / "data"
+            (data / "long-1").mkdir(parents=True)
+            (data / "long-1" / "report.md").write_text("# Long notes review\n\nRead it.\n", encoding="utf-8")
+            (data / "topics").mkdir()
+            (data / "topics" / "notes.md").write_text("# Notes\nPieces: long-1, short-2\n", encoding="utf-8")
+            hold = " ".join(f"step{index}/of/the/sample/plan" for index in range(200))  # over the system's path limit
+            (data / "backlog.md").write_text(
+                "# Backlog\n\n## Queued\n"
+                f"- [ ] long-1 - Settle the sample notes (report: data/long-1/report.md section 5) (repo: sample) "
+                f"(kind: review) (hold: {hold})\n"
+                f"- [ ] short-2 - Check the sample index (report: {hold})\n",
+                encoding="utf-8",
+            )
+            snapshot = quarterdeck.load_home_snapshot(quarterdeck.HomeSpec("home", home))
+            self.assertIsNone(snapshot.error)
+            records = {record.title.split(" - ")[0]: record for record in snapshot.records}
+            self.assertEqual(records["long-1"].report, (data / "long-1" / "report.md").resolve())
+            self.assertIsNone(records["short-2"].report)
+            result = QuarterdeckTests.run_cli(self, ["topics", "check", "--home", str(home)], Path(temp), Path(temp) / "config")  # type: ignore[arg-type]
+            self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+            self.assertIn("1 topic file checked: no mistakes.", result.stdout)
+            output = Path(temp) / "out" / "index.html"
+            render = QuarterdeckTests.run_cli(self, ["render", "--home", str(home), "--output", str(output), "--no-snapshot"],  # type: ignore[arg-type]
+                                              Path(temp), Path(temp) / "config")
+            self.assertEqual(render.returncode, 0, render.stderr)
+
+
+class TopicAskTests(unittest.TestCase):
+    """Questions and decision answers sent from the served page, and the phone notifications topics raise."""
+
+    def setUp(self) -> None:
+        self.temp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.temp.cleanup)
+        self.root = Path(self.temp.name)
+        self.home = TopicTests.home_with_topics(self, self.root)  # type: ignore[arg-type]
+        script = self.home / "bin" / "fm-inbox.sh"
+        script.parent.mkdir()
+        script.write_text(FAKE_INBOX, encoding="utf-8")
+        script.chmod(0o755)
+        self.log = self.root / "inbox.log"
+        patcher = patch.dict(os.environ, {"XDG_STATE_HOME": str(self.root / "state"), "HOME": str(self.root),
+                                          "QD_TEST_LOG": str(self.log)})
+        patcher.start()
+        self.addCleanup(patcher.stop)
+        self.topic_file = self.home / "data" / "topics" / "maple-harbor-catalog.md"
+
+    def args(self) -> argparse.Namespace:
+        return argparse.Namespace(home=str(self.home), config=None, title=None, no_snapshot=True)
+
+    def serve(self):
+        return DeskRelevanceTests.serve(self)  # type: ignore[arg-type]
+
+    def fresh_page(self, name: str) -> str:
+        """The page as the next build makes it; the server rebuilds in the background after a reaction."""
+        return quarterdeck.site_builder(self.args(), True)()[name]
+
+    def notes(self) -> list[str]:
+        return [line for line in self.log.read_text(encoding="utf-8").splitlines() if line.startswith("Quarterdeck ")] \
+            if self.log.exists() else []
+
+    def send(self, request, kind: str, item_id: str, text: str, reaction: str = "", number: int = 1):
+        return request("POST", quarterdeck.REACTION_ENDPOINT, {
+            "id": f"0123456789abcdef{number:016x}", "kind": kind, "item_id": item_id, "reaction": reaction, "text": text,
+        })
+
+    def test_a_question_and_an_answer_reach_firstmate_with_how_to_record_them(self) -> None:
+        request = self.serve()
+        status, body = self.send(request, "topic", "maple-harbor-catalog", "When does the import  finish?")
+        self.assertEqual(status, 200, body)
+        ask = "ask-0123456789abcdef"
+        note = self.notes()[-1]
+        self.assertTrue(note.startswith(f"Quarterdeck ask {ask} on topic maple-harbor-catalog ('Maple Harbor catalog launch'), home "), note)
+        self.assertIn(': "When does the import finish?". Add it to data/topics/maple-harbor-catalog.md as an entry from you '
+                      f"at quarterdeck with Id: {ask}, and answer it there with Re: {ask}.", note)
+        page = self.fresh_page("topic-maple-harbor-catalog.html")
+        pending = page.split(f'id="entry-{ask}"', 1)[1].split("</li>", 1)[0]
+        self.assertIn("When does the import finish?", pending)
+        self.assertIn("Waiting for Firstmate’s answer", pending)
+
+        status, body = self.send(request, "decision", "maple-harbor-catalog/merge-42", "Merge", number=2)
+        self.assertEqual(status, 200, body)
+        self.assertIn('answer on decision merge-42 in topic maple-harbor-catalog (\'Merge PR 42 now?\')', self.notes()[-1])
+        self.assertIn('"Merge". Record it in data/topics/maple-harbor-catalog.md as an entry from you at quarterdeck with Re: merge-42.',
+                      self.notes()[-1])
+        card = self.fresh_page("topic-maple-harbor-catalog.html").split('id="decision-merge-42"', 1)[1].split("</article>", 1)[0]
+        self.assertIn("You answered <b>Merge</b> from Quarterdeck", card)
+        self.assertNotIn("data-option", card)
+
+        status, body = self.send(request, "topic", quarterdeck.NEW_TOPIC_ITEM, "Start on the spring sale banners", number=3)
+        self.assertEqual(status, 200, body)
+        self.assertIn("for a new topic", self.notes()[-1])
+        self.assertIn("Start or pick a topic in data/topics/", self.notes()[-1])
+
+    def test_unknown_answered_or_malformed_topic_reactions_are_refused_and_not_sent(self) -> None:
+        request = self.serve()
+        sent = len(self.notes())
+        self.assertEqual(self.send(request, "topic", "no-such-topic", "Hello")[0], 404)
+        self.assertEqual(self.send(request, "decision", "maple-harbor-catalog/nope", "Merge")[0], 404)
+        status, body = self.send(request, "decision", "maple-harbor-catalog/images-host", "Wait")
+        self.assertEqual(status, 409, body)
+        self.assertIn("already records an answer to images-host", body)
+        self.assertEqual(self.send(request, "topic", "maple-harbor-catalog", "Hi", reaction="approve")[0], 400)
+        self.assertEqual(self.send(request, "decision", "maple-harbor-catalog/merge-42", "")[0], 400)
+        self.assertEqual(len(self.notes()), sent)
+
+    def test_the_served_thread_has_answers_discuss_and_the_ask_box_and_the_rendered_one_does_not(self) -> None:
+        request = self.serve()
+        page = request("GET", "/topic-maple-harbor-catalog.html")[1]
+        card = page.split('id="decision-merge-42"', 1)[1].split("</article>", 1)[0]
+        self.assertIn('data-decision="maple-harbor-catalog/merge-42"', page)
+        self.assertIn('<button type="button" class="opt recommended" data-option="Merge">Merge</button>', card)
+        self.assertIn('<button type="button" class="opt" data-option="Hold">Hold</button>', card)
+        self.assertIn('data-discuss="merge-42" data-question="Merge PR 42 now?">Discuss</button>', card)
+        self.assertIn('<form class="ask" id="ask" data-ask="thread" data-topic="maple-harbor-catalog">', page)
+        self.assertIn(f'<body data-refresh="{quarterdeck.DEFAULT_REFRESH_SECONDS}">', page)
+        self.assertIn(quarterdeck.REACTION_ENDPOINT, page)
+        front = request("GET", "/")[1]
+        ask = front.split('<form class="front-ask" data-ask="front"', 1)[1].split("</form>", 1)[0]
+        self.assertIn('value="maple-harbor-catalog" data-title="Maple Harbor catalog launch"', ask)
+        self.assertRegex(ask, r'data-words="Maple Harbor catalog launch maple harbor catalog The catalog import works;[^"]*maple-21')
+        self.assertIn(f'value="{quarterdeck.NEW_TOPIC_ITEM}" data-title="New topic" data-words="" checked> New topic', ask)
+
+        output = self.root / "out" / "index.html"
+        result = QuarterdeckTests.run_cli(self, ["render", "--home", str(self.home), "--output", str(output), "--no-snapshot"],  # type: ignore[arg-type]
+                                          self.root, self.root / "config")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        rendered = (output.parent / "topic-maple-harbor-catalog.html").read_text(encoding="utf-8")
+        for live_only in ("data-ask", "data-option", "data-discuss", "data-refresh", quarterdeck.REACTION_ENDPOINT):
+            self.assertNotIn(live_only, rendered)
+        self.assertIn("Options: Merge · Hold · Not now", rendered)
+        self.assertNotIn("data-ask", output.read_text(encoding="utf-8"))
+
+    def test_topics_notify_open_decisions_withdraw_answered_ones_and_announce_an_answer_once(self) -> None:
+        def cards():
+            config, homes, bearings = quarterdeck.load_site(self.args())
+            return quarterdeck.topic_push_cards(homes)
+
+        first = cards()
+        self.assertEqual([(card["section"], card["title"], card["push_url"]) for card in first],
+                         [("needs_you", "Merge PR 42 now?", "./topic-maple-harbor-catalog.html#decision-merge-42")])
+        request = self.serve()
+        self.assertEqual(self.send(request, "decision", "maple-harbor-catalog/merge-42", "Merge")[0], 200)
+        self.assertEqual(self.send(request, "topic", "maple-harbor-catalog", "Is the import done?", number=2)[0], 200)
+        self.assertEqual(cards(), [], "an answer sent from Quarterdeck takes the decision off Needs you")
+        ask = "ask-0123456789abcdef"
+        with self.topic_file.open("a", encoding="utf-8") as stream:
+            stream.write(f"\n## 2026-03-05 10:00 | firstmate | chat\nRe: {ask}\nYes, it finished overnight.\n")
+        answered = cards()
+        self.assertEqual([(card["section"], card["title"], card["push_url"]) for card in answered],
+                         [("answered", "Maple Harbor catalog launch", f"./topic-maple-harbor-catalog.html#entry-{ask}")])
+        page = self.fresh_page("topic-maple-harbor-catalog.html")
+        self.assertIn("Answered: Yes, it finished overnight.", page.split(f'id="entry-{ask}"', 1)[1].split("</li>", 1)[0])
+
+        posted: list[bytes] = []
+        notifier = quarterdeck.PushNotifier(self.root / "push", post=lambda url, body, headers: posted.append(body) or 201,
+                                            background=False)
+        self.assertEqual(notifier.observe([], complete=True), [])
+        tag = quarterdeck.push_tag(answered[0])
+        self.assertEqual(notifier.observe(answered, complete=True),
+                         [{"type": "new", "tag": tag, "body": "Maple Harbor catalog launch", "title": "Firstmate answered",
+                           "url": f"./topic-maple-harbor-catalog.html#entry-{ask}"}])
+        self.assertEqual(notifier.observe(answered, complete=True), [])
+        self.assertEqual(notifier.observe([], complete=True), [], "an answer is never withdrawn")
+        decision = {"id": "topic-decision:x", "section": "needs_you", "title": "Merge PR 42 now?",
+                    "push_url": "./topic-maple-harbor-catalog.html#decision-merge-42"}
+        message = quarterdeck.push_message(quarterdeck.push_tag(decision), decision)
+        self.assertEqual(json.loads(notifier.payload(message)),
+                         {"type": "new", "tag": quarterdeck.push_tag(decision), "title": "Quarterdeck",
+                          "body": "Merge PR 42 now?", "url": "./topic-maple-harbor-catalog.html#decision-merge-42"})
