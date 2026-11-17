@@ -493,19 +493,6 @@ def hidden_summary(
     return "Not shown: " + "; ".join(notes) + "." if notes else None
 
 
-MARKDOWN_LINK_RE = re.compile(r"(?<!!)\[([^\]]+)\]\(([^)]+)\)")
-
-
-def malformed_markdown_url(value: str) -> bool:
-    """Whether a Markdown link outside code spans has an address that cannot be parsed."""
-    for match in MARKDOWN_LINK_RE.finditer(re.sub(r"`[^`]+`", "", value)):
-        try:
-            urlparse(match.group(2).strip())
-        except ValueError:
-            return True
-    return False
-
-
 def markdown_inline(value: str) -> str:
     protected: list[str] = []
 
@@ -528,7 +515,7 @@ def markdown_inline(value: str) -> str:
             return keep(f'<a href="{html.escape(target, quote=True)}">{rendered_label}</a>')
         return keep(rendered_label)
 
-    value = MARKDOWN_LINK_RE.sub(link, value)
+    value = re.sub(r"(?<!!)\[([^\]]+)\]\(([^)]+)\)", link, value)
     value = html.escape(value, quote=False)
     value = re.sub(r"\*\*(.+?)\*\*|__(.+?)__", lambda m: f"<strong>{m.group(1) or m.group(2)}</strong>", value)
     value = re.sub(
@@ -578,11 +565,12 @@ def render_markdown(source: str) -> str:
         if not line.strip():
             index += 1
             continue
-        marker = markdown_fence(None, line)
-        if marker:
+        fence = re.match(r"^\s*(```+|~~~+)", line)
+        if fence:
+            marker = fence.group(1)
             code: list[str] = []
             index += 1
-            while index < len(lines) and markdown_fence(marker, lines[index]) is not None:
+            while index < len(lines) and not re.match(r"^\s*" + re.escape(marker[:3]) + r"\s*$", lines[index]):
                 code.append(lines[index])
                 index += 1
             if index < len(lines):
@@ -5062,9 +5050,9 @@ def board_entry_html(
     parts: list[str] = []  # the ask is already the line under the title; the body does not say it again
     if item.detail:
         detail_warning = ""
-        if not malformed_markdown_url(item.detail):
+        try:
             detail = render_markdown(item.detail)
-        else:
+        except ValueError:
             detail_warning = (
                 f'<div class="warning"><p>{html.escape(BOARD_FILENAME)} item {html.escape(item.id)}: '
                 "detail contains a malformed Markdown URL and was shown as text.</p></div>"

@@ -2111,13 +2111,14 @@ globalThis.setTimeout = callback => callback();
             self.assertNotIn("Unsupported board item", page)
             self.assertIn("Not yet sorted", page)
 
-    def test_malformed_detail_markdown_warns_and_renders_as_text(self) -> None:
+    def test_malformed_detail_link_renders_as_text_and_keeps_the_rest(self) -> None:
         with tempfile.TemporaryDirectory() as temp:
-            home = self.make_home(Path(temp), [board_item(detail="Malformed [link](http://[)")])
+            detail = "**Malformed** [link](http://[) and [ok](https://example.com/ok)"
+            home = self.make_home(Path(temp), [board_item(detail=detail)])
             homes, _ = self.view(home)
             page = quarterdeck.build_html(homes, "Q", bearings=quarterdeck.build_bearings(homes, now=self.NOW, use_snapshot=False))
-            self.assertIn("detail contains a malformed Markdown URL", page)
-            self.assertIn("Malformed [link](http://[)", page)
+            self.assertIn('<strong>Malformed</strong> link and <a href="https://example.com/ok">ok</a>', page)
+            self.assertNotIn('href="http://[', page)
 
 
 class BoardWriterTests(unittest.TestCase):
@@ -10650,13 +10651,12 @@ open https://example.com/tilde
 ## 2026-03-02 09:00 | firstmate | chat
 An example file:
 
-~~~~
+~~~
 ```sh
 make test
 ```
 ## Not a new entry
 ~~~
-~~~~
 
 ## 2026-03-02 10:00 | you | chat
 Thanks.
@@ -10671,7 +10671,7 @@ Thanks.
             rendered = self.run_cli(["render", "--home", str(home), "--output", str(output), "--no-snapshot"], root)
             self.assertEqual(rendered.returncode, 0, rendered.stderr)
             page = (output.parent / "topic-fences.html").read_text()
-            self.assertIn("<pre><code>```sh\nmake test\n```\n## Not a new entry\n~~~</code></pre>", page)
+            self.assertIn("<pre><code>```sh\nmake test\n```\n## Not a new entry</code></pre>", page)
 
     def test_links_without_a_host_are_warned(self) -> None:
         with tempfile.TemporaryDirectory() as temp:
