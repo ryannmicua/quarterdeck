@@ -89,7 +89,9 @@ With `--allow-marks`, the served page can send your phone one notification
 whenever a new item needs you: a desk call, a held task, or an open decision in a
 [topic thread](keep-topic-threads.md). The notification shows the item's title
 only, such as a decision's question, never its recommendation or detail;
-tapping it opens Quarterdeck on that card. When Firstmate answers a question you
+tapping it opens Quarterdeck on that card. When topics exist, an item that belongs
+to no topic opens on its row under **Not yet in a topic** on the front page, and an
+item whose task is a topic's piece opens that topic. When Firstmate answers a question you
 sent from a topic thread, one notification says "Firstmate answered" with the
 topic's title. The same item never sends a second alert. Withdrawal behavior
 depends on the phone browser, as described below.
@@ -234,6 +236,10 @@ drop the hold, and hides the card once the note is delivered. See
 [Track what is waiting on you](track-captain-waits.md#discard-a-wait).
 
 ## Where the sections come from
+
+When any home keeps [topic files](keep-topic-threads.md), the served front page
+is the short one (Needs you, Changed since you last looked, Topics, the ask
+box and search), and the sections below appear on `classic.html` for this release.
 
 When a home has an executable `bin/fm-bearings-snapshot.sh`, Quarterdeck runs it
 with `--json` and `FM_HOME` set, under a 15-second timeout, so the page and

@@ -5,11 +5,40 @@ Firstmate needs answered, and everything said about it in chat or on Quarterdeck
 a file in its home; Quarterdeck shows it as a page. The file format is in the
 [topic files reference](../reference/topic-files.md).
 
+## Use the front page (owner)
+
+When a home keeps topic files, Quarterdeck's front page holds only what needs you, what changed, your topics, the
+ask box and search:
+
+- **Needs you:** every topic decision still waiting on your answer, oldest first, with one-tap answers on the served
+  page, then every `Waiting on: you` line of an open topic, then, under **Not yet in a topic**, every other item that
+  needs you (a desk call, a held task, a report to review) whose task is no open topic's piece. Each such row opens
+  the item's own page, or its card on the previous page when it has none. Firstmate gathers old items with no topic
+  into one **Older items** topic so they can be cleared in one sitting; once an item's task is a topic's piece, it
+  shows through that topic instead.
+- **Changed since you last looked:** one row per topic with something new from Firstmate or anyone else since you
+  last left the page on this device, with "+N more" when there is more than one entry. The first time, it shows the
+  last two days. Reloading the page keeps the same starting point.
+- **Topics:** every open topic, those needing you first, with its **Now** line. Closed topics are in search.
+- **Ask Firstmate**, on the served page, with **Goes to** (see below).
+- **Everything else is in Search:** reports, underway, waiting and queued work, and finished work, all searchable,
+  with the filters All, Needs you, Underway, Waiting, Queued and Done. A search with no match lists the topics and
+  offers to ask Firstmate.
+
+A report counts as waiting for your review for two weeks. After that it stays findable in search (under All) but
+no longer counts as awaiting review; nothing is changed in its review record. A recent report also shows under
+**To review** on the topic whose **Links** or **Pieces** name it.
+
+The previous page, with its desk, saved views, Activity, reports and details, stays at `classic.html` for this
+release; the front page and search link to it, and it links back. A notification for an item that belongs to no
+topic opens on its **Not yet in a topic** row; one for an item whose task is a topic's piece opens that topic. With
+no topic files, or with `render --all` or `--lavish`, the
+front page is the previous page, as before.
+
 ## Read a thread (owner)
 
-1. Open Quarterdeck. When the home keeps topic files, a **Topics** section sits under **Needs you**. Each row shows
-   the topic, its **Now** line, how many decisions are open and when it was last written to. Topics with open
-   decisions come first.
+1. Open a topic from **Needs you**, **Changed since you last looked**, search, or the **Topics** list on the
+   previous page.
 2. Tap a topic. Its page starts with the state: **Now**, **Waiting on**, **Pieces** (backlog tasks with their state)
    and **Links**.
 3. **Open decisions** come next, one per question, each with Firstmate's recommendation and the options.
@@ -35,7 +64,7 @@ of the page with "About: <the question>" above it. Remove that line to ask about
 - **On a thread:** type in the box at the bottom and tap **Send**. Your question appears at the end of the
   conversation as waiting, and Firstmate's answer appears there when it writes it. The page reloads about once a
   minute while you are not typing.
-- **On the front page:** the **Ask Firstmate** box sits in the **Topics** section. Under it, **Goes to** shows the
+- **On the front page:** under the **Ask Firstmate** box, **Goes to** shows the
   topic your question will be filed under: Firstmate's guess from your words, or **New topic**. Tap **Change** to
   pick another topic or **New topic** before you send.
 - **By voice:** use the microphone on your phone's keyboard. The words land in the box for you to check; nothing is
@@ -50,7 +79,7 @@ that shows its question only, and tapping it opens the card. A decision you answ
 When Firstmate answers a question you sent from a thread, one notification says "Firstmate answered" and names the
 topic.
 
-When a home has no topic files, the front page has no Topics section and nothing else changes.
+When a home has no topic files, the front page stays as it was and nothing else changes.
 
 ## Start a topic (Firstmate)
 
@@ -84,6 +113,8 @@ When a home has no topic files, the front page has no Topics section and nothing
   needs a topic first.
 - When a decision no longer matters, append a `firstmate` entry with `Re:` naming it and saying why.
 - When the work is finished, set `Status: done`.
+- Gather open items that belong to no topic into one topic, such as `older-items`, with a decision or a
+  `Waiting on: you` line for each, so the owner sees them on the front page and can clear them in one sitting.
 - Run `quarterdeck topics check` after editing. With no file named it checks every configured home.
 
 ## Fix a mistake the page reports

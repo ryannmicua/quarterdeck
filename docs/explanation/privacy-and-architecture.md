@@ -17,7 +17,10 @@ the [topic files reference](../reference/topic-files.md)). Generated thread page
 beside the main page (see the [CLI reference](../reference/cli-and-config.md) for filenames),
 with the topic's text and eligible `data/` documents named in its Links or conversation;
 `quarterdeck topics check` reads the same
-files and writes nothing. For each
+files and writes nothing. When topics exist, `search.html` carries a search
+index of the same topic, task and report titles the other pages show, so search
+works without a server. The front page keeps when you last left it in the
+browser's `localStorage`; Quarterdeck stores nothing about it. For each
 configured parent home, Quarterdeck also reads the optional
 `data/secondmates.md` route registry. Each local route's `home:` field points
 to another Firstmate home, which gets its own labeled section underneath the

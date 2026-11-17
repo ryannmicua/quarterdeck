@@ -10819,10 +10819,13 @@ Context.
             output = root / "out" / "index.html"
             result = self.run_cli(["render", "--home", str(home), "--output", str(output), "--no-snapshot"], root)
             self.assertEqual(result.returncode, 0, result.stderr)
+            classic = (output.parent / quarterdeck.CLASSIC_PAGE).read_text(encoding="utf-8")
+            self.assertIn('<a href="#topics">Topics</a>', classic)
+            self.assertIn('href="topic-maple-harbor-catalog.html"', classic)
+            self.assertIn("1 open decision", classic)
+            self.assertIn('href="index.html">&larr; New front page</a>', classic)
             front = output.read_text(encoding="utf-8")
-            self.assertIn('<a href="#topics">Topics</a>', front)
-            self.assertIn('href="topic-maple-harbor-catalog.html"', front)
-            self.assertIn("1 open decision", front)
+            self.assertIn('<a href="topic-maple-harbor-catalog.html">Maple Harbor catalog launch</a> · Asked', front)
             page = (output.parent / "topic-maple-harbor-catalog.html").read_text(encoding="utf-8")
             self.assertIn("<h1>Maple Harbor catalog launch</h1>", page)
             self.assertIn('<a href="index.html">&larr; Quarterdeck</a>', page)
@@ -10984,7 +10987,8 @@ class TopicAskTests(unittest.TestCase):
         self.assertIn("When does the import finish?", pending)
         self.assertIn("Waiting for Firstmate’s answer", pending)
 
-        self.assertIn("1 open decision", self.fresh_page("index.html"))
+        self.assertIn("1 open decision", self.fresh_page(quarterdeck.CLASSIC_PAGE))
+        self.assertIn('Needs you <span class="n">2</span>', self.fresh_page("index.html"), "the decision and the wait on you")
         status, body = self.send(request, "decision", "maple-harbor-catalog/merge-42", "Merge", number=2)
         self.assertEqual(status, 200, body)
         self.assertIn('answer on decision merge-42 in topic maple-harbor-catalog (\'Merge PR 42 now?\')', self.notes()[-1])
@@ -10995,7 +10999,9 @@ class TopicAskTests(unittest.TestCase):
         self.assertNotIn("data-option", card)
         thread = self.fresh_page("topic-maple-harbor-catalog.html")
         self.assertIn('<h2 id="open-h">Open decisions <span class="n">0</span></h2>', thread)
-        self.assertNotIn("open decision", self.fresh_page("index.html"))
+        self.assertNotIn("open decision", self.fresh_page(quarterdeck.CLASSIC_PAGE))
+        self.assertIn('Needs you <span class="n">1</span>', self.fresh_page("index.html"),
+                      "an answer sent from Quarterdeck takes the decision off the front page; the wait on you stays")
 
         status, body = self.send(request, "topic", quarterdeck.NEW_TOPIC_ITEM, "Start on the spring sale banners", number=3)
         self.assertEqual(status, 200, body)
@@ -11118,3 +11124,261 @@ class TopicAskTests(unittest.TestCase):
         self.assertEqual(json.loads(notifier.payload(message)),
                          {"type": "new", "tag": quarterdeck.push_tag(decision), "title": "Quarterdeck",
                           "body": "Merge PR 42 now?", "url": "./topic-maple-harbor-catalog.html#decision-merge-42"})
+
+
+class FrontPageTests(unittest.TestCase):
+    """With topics, the front page shows only what needs the owner and what changed; the rest is behind search."""
+
+    def render(self, root: Path, home: Path, *extra: str) -> Path:
+        output = root / "out" / "index.html"
+        result = QuarterdeckTests.run_cli(self, ["render", "--home", str(home), "--output", str(output), "--no-snapshot", *extra],  # type: ignore[arg-type]
+                                          root, root / "config")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        return output
+
+    def test_topics_make_a_short_front_page_and_keep_the_previous_page_and_search_beside_it(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            home = TopicTests.home_with_topics(self, root)  # type: ignore[arg-type]
+            old = time.time() - 20 * 86400
+            os.utime(home / "data" / "paper-27" / "report.md", (old, old))  # a report over two weeks old
+            output = self.render(root, home)
+            front = output.read_text(encoding="utf-8")
+            self.assertIn('Needs you <span class="n">2</span>', front, "the open decision and the wait on you")
+            needs = front.split('id="needs"', 1)[1].split("</section>", 1)[0]
+            self.assertIn('<span class="row-meta">Maple Harbor catalog launch · waiting on you</span><span class="row-title">merge PR 42</span>', needs)
+            self.assertNotIn("Choose the Amber Kite import format", needs, "with no snapshot there are no needs-you cards to list")
+            topics = front.split('id="topics"', 1)[1].split("</section>", 1)[0]
+            self.assertIn('Topics <span class="n">1</span>', topics)
+            self.assertIn("2 need you", topics)
+            self.assertLess(len(front.encode("utf-8")), 60_000, "the front page stays small for phones")
+            self.assertIn('id="decision-maple-harbor-catalog-merge-42"', front)
+            self.assertIn("Options: Merge · Hold · Not now", front, "a rendered front page has no one-tap answers")
+            self.assertNotIn("data-decision", front)
+            self.assertIn("Changed since you last looked", front)
+            self.assertIn(f'<a href="{quarterdeck.SEARCH_PAGE}">Everything else is in Search</a>', front)
+            self.assertIn(f'<a href="{quarterdeck.CLASSIC_PAGE}">previous page</a>', front)
+            for gone in ("On your desk", "Captain&#x27;s Call", "Captain's Call", "Related to this session",
+                         "Decisions and recent work", "For your information", "Parked", "Activity", "Details by home",
+                         "Briefing views", "Reports waiting on your review", "Underway", "Charted Next"):
+                self.assertNotIn(gone, front)
+            thread = (output.parent / "topic-maple-harbor-catalog.html").read_text(encoding="utf-8")
+            review = thread.split("<dt>To review</dt>", 1)[1].split("</dd>", 1)[0]
+            self.assertIn("Amber Kite import review", review, "a recent report named in Links shows on its topic")
+            self.assertNotIn("Paper Finch patch review", review, "a report over two weeks old does not")
+            self.assertIn("Decisions and recent work", (output.parent / quarterdeck.CLASSIC_PAGE).read_text(encoding="utf-8"))
+            changed = front.split('id="changed-list">', 1)[1].split("</ul>", 1)[0]
+            self.assertEqual(changed.count("<li "), 1, "one row per topic")
+            times = re.search(r'data-times="([^"]*)"', changed).group(1).split(",")  # type: ignore[union-attr]
+            self.assertEqual(len(times), 4, "the owner's own messages are not changes")
+            self.assertIn('href="topic-maple-harbor-catalog.html#entry-images-host"', changed)
+            self.assertIn("First mate: Wait for the vendor&#x27;s quota, or host the images ourselves for now?", changed)
+
+            search = (output.parent / quarterdeck.SEARCH_PAGE).read_text(encoding="utf-8")
+            index = json.loads(search.split('<script type="application/json" id="search-index">', 1)[1].split("</script>", 1)[0])
+            found = {(item["k"], item["t"]): item["f"] for item in index}
+            self.assertEqual(found[("Topic", "Maple Harbor catalog launch")], "needs")
+            self.assertEqual(found[("Task", "Choose the Amber Kite import format")], "needs")
+            self.assertEqual(found[("Task", "Chart the Maple Harbor catalog")], "underway")
+            self.assertEqual(found[("Task", "Confirm the sample vendor schedule")], "waiting")
+            self.assertEqual(found[("Task", "Gather the Finch field notes")], "queued")
+            self.assertEqual(found[("Task", "File the old Finch notes")], "done")
+            self.assertEqual(found[("Report", "Amber Kite import review")], "needs")
+            self.assertEqual(found[("Report", "Paper Finch patch review")], "", "over two weeks old: found under All only")
+            self.assertEqual([key for key, _label in quarterdeck.SEARCH_FILTERS], ["all", "needs", "underway", "waiting", "queued", "done"])
+            for key, label in quarterdeck.SEARCH_FILTERS:
+                self.assertIn(f'data-filter="{key}"', search)
+            self.assertTrue(all(item["u"] for item in index))
+
+    def test_without_topics_or_with_all_the_page_is_unchanged(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            output = self.render(root, QuarterdeckTests.make_home(self, root))  # type: ignore[arg-type]
+            self.assertFalse((output.parent / quarterdeck.CLASSIC_PAGE).exists())
+            self.assertFalse((output.parent / quarterdeck.SEARCH_PAGE).exists())
+            self.assertIn("Details by home", output.read_text(encoding="utf-8"))
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            output = self.render(root, TopicTests.home_with_topics(self, root), "--all")  # type: ignore[arg-type]
+            self.assertFalse((output.parent / quarterdeck.CLASSIC_PAGE).exists())
+            self.assertIn('<a href="#topics">Topics</a>', output.read_text(encoding="utf-8"))
+
+    def test_the_served_front_page_answers_decisions_and_links_discuss_to_the_thread(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            home = TopicTests.home_with_topics(self, root)  # type: ignore[arg-type]
+            args = argparse.Namespace(home=str(home), config=None, title=None, no_snapshot=True)
+            with patch.dict(os.environ, {"XDG_CONFIG_HOME": str(root / "config"), "XDG_STATE_HOME": str(root / "state")}):
+                _config, homes, bearings = quarterdeck.load_site(args)
+                front = quarterdeck.front_page_html(homes, "Quarterdeck", bearings, [], allow_marks=True, refresh_seconds=60)
+                pages = quarterdeck.site_builder(args, True)()
+        self.assertIn('Needs you <span class="n">2</span>', front)
+        self.assertIn('data-decision="maple-harbor-catalog/merge-42"', front)
+        self.assertIn('<a class="discuss" href="topic-maple-harbor-catalog.html#decision-merge-42">Discuss</a>', front)
+        self.assertIn('<form class="front-ask" data-ask="front"', front)
+        self.assertIn('<body data-refresh="60">', front)
+        for name in ("index.html", quarterdeck.CLASSIC_PAGE, quarterdeck.SEARCH_PAGE, "topic-maple-harbor-catalog.html"):
+            self.assertIn(name, pages)
+        self.assertIn("Changed since you last looked", pages["index.html"])
+        self.assertIn('href="index.html">&larr; New front page</a>', pages[quarterdeck.CLASSIC_PAGE])
+
+    def test_needs_you_cards_outside_topics_stay_on_the_front_page_and_notifications_open_where_they_show(self) -> None:
+        seen: list[dict[str, object]] = []
+
+        class Spy:
+            def observe(self, cards, complete):  # noqa: ANN001, ANN201 - records what the build hands to notifications
+                seen.extend(cards)
+                return []
+
+        def card(task: str, title: str, home: str = "fictional-firstmate") -> dict[str, object]:
+            return {"id": f"call:{home}/{task}", "section": "needs_you", "title": title, "hold_set": None,
+                    "label": "Needs you", "summary": f"Summary of {title}", "status": "", "body": "", "at": None}
+
+        loose, piece = card("amber-18", "Choose the Amber Kite import format"), card("maple-21", "Approve the catalog chart")
+        elsewhere = card("maple-21", "Another home's maple-21", home="other-home")
+        builds: list[object] = []
+        real_build_html = quarterdeck.build_html
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            home = TopicTests.home_with_topics(self, root)  # type: ignore[arg-type]
+            args = argparse.Namespace(home=str(home), config=None, title=None, no_snapshot=True)
+            with patch.dict(os.environ, {"XDG_CONFIG_HOME": str(root / "config"), "XDG_STATE_HOME": str(root / "state")}), \
+                    patch.object(quarterdeck, "site_cards", lambda *a, **k: [dict(loose), dict(piece), dict(elsewhere)]), \
+                    patch.object(quarterdeck, "build_html", lambda *a, **k: builds.append(k) or real_build_html(*a, **k)):
+                pages = quarterdeck.site_builder(args, True, push=Spy())()  # type: ignore[arg-type]
+        self.assertEqual(len(builds), 1, "the previous page is built once per rebuild")
+        by_id = {str(item["id"]): item for item in seen}
+        self.assertNotIn("push_url", by_id[loose["id"]], "a card in no topic opens on the front page, at ./#need-<tag>")
+        self.assertEqual(by_id[piece["id"]]["push_url"], "./topic-maple-harbor-catalog.html", "a topic's piece opens its topic")
+        self.assertNotIn("push_url", by_id[elsewhere["id"]], "the same task id in another home is not this topic's piece")
+        decision = next(item for item in seen if str(item["id"]).startswith("topic-decision:"))
+        self.assertEqual(decision["push_url"], "./topic-maple-harbor-catalog.html#decision-merge-42")
+
+        front = pages["index.html"]
+        needs = front.split('id="needs"', 1)[1].split("</section>", 1)[0]
+        self.assertIn('Needs you <span class="n">4</span>', needs, "the decision, the wait on you and the two cards in no topic")
+        group = needs.split("Not yet in a topic", 1)[1]
+        tag = quarterdeck.push_tag(loose)
+        self.assertIn(f'<li id="need-{tag}" data-push-tag="{tag}">', group)
+        self.assertIn("Choose the Amber Kite import format", group)
+        self.assertIn("Summary of Choose the Amber Kite import format", group)
+        other = quarterdeck.push_tag(elsewhere)
+        self.assertIn(f'<li id="need-{other}" data-push-tag="{other}">', group)
+        self.assertIn("Another home&#x27;s maple-21", group)
+        self.assertNotIn("Approve the catalog chart", front, "a card whose task is a topic piece is shown by its topic")
+        self.assertIn("<title>(4) Quarterdeck</title>", front)
+        href = re.search(r'<li id="need-[^"]+" data-push-tag="[^"]+"><a class="row" href="([^"]+)"', group).group(1)  # type: ignore[union-attr]
+        self.assertIn(href.split("#", 1)[0], pages, "the row opens a page the site serves")
+
+    @unittest.skipUnless(shutil.which("node"), "Node is required to execute the generated script")
+    def test_the_served_pages_reload_carries_qd_refresh_and_the_address_bar_drops_it(self) -> None:
+        harness = r"""
+const assert = require('assert');
+const vm = require('vm');
+let source = '';
+process.stdin.on('data', chunk => { source += chunk; });
+process.stdin.on('end', () => {
+  const script = source.split('<script>').pop().split('</script>')[0];
+  let now = 1_000_000_000;
+  const clock = {now: () => now};
+  const run = (href, hidden = false) => {
+    const calls = {replaced: [], states: [], timers: [], listeners: {}};
+    const store = {'quarterdeck-reload-scroll': '420'};
+    const context = {
+      URL,
+      location: {href, replace: url => calls.replaced.push(url)},
+      history: {replaceState: (_state, _title, url) => calls.states.push(String(url))},
+      document: {hidden, body: {dataset: {refresh: '60'}}, querySelector: () => null,
+                 addEventListener: (name, fn) => { calls.listeners[name] = fn; }},
+      Date: clock,
+      sessionStorage: {getItem: key => store[key] ?? null, setItem: (key, value) => { store[key] = value; }},
+      setInterval: (fn, ms) => calls.timers.push([fn, ms]),
+      window: null,
+    };
+    context.window = {scrollY: 75, scrollTo: (_x, y) => { calls.scrolled = y; }};
+    vm.runInNewContext(script, context);
+    return {calls, store, document: context.document};
+  };
+  const first = run('http://127.0.0.1:8765/index.html#needs');
+  assert.deepEqual(first.calls.states, [], 'a plain load leaves the address alone');
+  assert.equal(first.calls.timers[0][1], 60000);
+  first.calls.timers[0][0]();
+  assert.deepEqual(first.calls.replaced, ['http://127.0.0.1:8765/index.html?qd_refresh=1#needs']);
+  assert.equal(first.store['quarterdeck-reload-scroll'], '75');
+  const background = run('http://127.0.0.1:8765/index.html', true);
+  background.calls.timers[0][0]();
+  assert.deepEqual(background.calls.replaced, [], 'a hidden tab does not reload');
+  now += 60000;
+  background.document.hidden = false;
+  background.calls.listeners.visibilitychange();
+  assert.deepEqual(background.calls.replaced, ['http://127.0.0.1:8765/index.html?qd_refresh=1'],
+                   'coming back after missing a reload reloads at once');
+  const brief = run('http://127.0.0.1:8765/index.html');
+  brief.document.hidden = true;
+  brief.calls.listeners.visibilitychange();
+  now += 20000;
+  brief.document.hidden = false;
+  brief.calls.listeners.visibilitychange();
+  assert.deepEqual(brief.calls.replaced, [], 'a short look away does not reload');
+  brief.document.hidden = true;
+  brief.calls.listeners.visibilitychange();
+  now += 60000;
+  brief.document.hidden = false;
+  brief.calls.listeners.visibilitychange();
+  assert.deepEqual(brief.calls.replaced, ['http://127.0.0.1:8765/index.html?qd_refresh=1'], 'a full interval away reloads');
+  const second = run('http://127.0.0.1:8765/index.html?qd_refresh=1#needs');
+  assert.deepEqual(second.calls.states, ['http://127.0.0.1:8765/index.html#needs']);
+  assert.equal(second.calls.scrolled, 420);
+});
+"""
+        script = quarterdeck.topic_ask_script()
+        result = subprocess.run(["node", "-e", harness], input=script, capture_output=True, text=True, check=False)
+        self.assertEqual(result.returncode, 0, result.stderr)
+
+    @unittest.skipUnless(shutil.which("node"), "Node is required to execute the generated script")
+    def test_a_page_loaded_in_a_hidden_tab_still_moves_changed_since_when_you_come_back(self) -> None:
+        harness = r"""
+const assert = require('assert');
+const vm = require('vm');
+let source = '';
+process.stdin.on('data', chunk => { source += chunk; });
+process.stdin.on('end', () => {
+  const script = source.split('<script>').pop().split('</script>')[0];
+  const hour = 3600000, now = Date.now();
+  const session = {'quarterdeck-look-from': String(now - 48 * hour), 'quarterdeck-hidden-at': String(now - 5 * hour)};
+  const store = data => ({getItem: key => data[key] ?? null, setItem: (key, value) => { data[key] = String(value); },
+                          removeItem: key => { delete data[key]; }});
+  const listeners = {};
+  const document = {visibilityState: 'hidden', querySelectorAll: () => [], getElementById: () => null,
+                    addEventListener: (name, fn) => { listeners[name] = fn; }};
+  vm.runInNewContext(script, {document, sessionStorage: store(session), localStorage: store({}), Date, Number, String, Intl,
+                              addEventListener: () => {}});
+  assert.equal(session['quarterdeck-hidden-at'], String(now - 5 * hour), 'a load while hidden keeps when you looked away');
+  document.visibilityState = 'visible';
+  listeners.visibilitychange();
+  assert.equal(session['quarterdeck-look-from'], String(now - 5 * hour), 'coming back moves the starting point');
+  assert.equal(session['quarterdeck-hidden-at'], undefined);
+});
+"""
+        script = quarterdeck.FRONT_SCRIPT.replace("%(first)d", "48")
+        result = subprocess.run(["node", "-e", harness], input=script, capture_output=True, text=True, check=False)
+        self.assertEqual(result.returncode, 0, result.stderr)
+
+    def test_the_front_page_never_claims_an_all_clear_it_could_not_read(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            home = TopicTests.home_with_topics(self, root, {"quiet.md": "# Quiet work\nNow: Nothing to decide.\n"})  # type: ignore[arg-type]
+            args = argparse.Namespace(home=str(home), config=None, title=None, no_snapshot=True)
+            with patch.dict(os.environ, {"XDG_CONFIG_HOME": str(root / "config"), "XDG_STATE_HOME": str(root / "state")}):
+                _config, homes, bearings = quarterdeck.load_site(args)
+                unread = quarterdeck.front_page_html(homes, "Quarterdeck", bearings, [])
+                bearings.attention = {"ok": False, "homes": []}
+                partial = quarterdeck.front_page_html(homes, "Quarterdeck", bearings, [])
+                bearings.attention = {"ok": True, "homes": []}
+                clear = quarterdeck.front_page_html(homes, "Quarterdeck", bearings, [])
+        for page in (unread, partial):
+            needs = page.split('id="needs"', 1)[1].split("</section>", 1)[0]
+            self.assertIn("not a confirmed all clear", needs)
+            self.assertNotIn("Nothing needs you right now", needs)
+        self.assertIn("Nothing needs you right now.", clear.split('id="needs"', 1)[1].split("</section>", 1)[0])
+

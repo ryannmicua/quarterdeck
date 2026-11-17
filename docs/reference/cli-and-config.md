@@ -292,7 +292,11 @@ discovery, or local secondmate discovery cannot be read or resolved. An absent
 optional topics directory is valid. Named-file checks do not discover unrelated
 homes. `render`
 and `serve` write one `topic-<id>.html` page per topic; when two homes share a
-topic id, each page name also carries a short hash of its home.
+topic id, each page name also carries a short hash of its home. When any topic
+exists, the main page (`index.html`, or the `--output` name) is the short front
+page, and the previous page is written beside it as `classic.html` together with
+`search.html`. `render --all` and `render --lavish` keep the previous page as the
+main page.
 
 `add`, `list`, and `remove` accept the same `--config FILE` option. `add` also
 accepts `--label LABEL`; `remove` takes one label or path.
