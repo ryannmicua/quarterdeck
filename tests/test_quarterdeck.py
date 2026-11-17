@@ -10360,3 +10360,254 @@ async function run(secure, subscribed, pushManager = true) {
         result = subprocess.run(["node", "-e", "const SCRIPT = " + json.dumps(script) + ";" + harness],
                                 capture_output=True, text=True)
         self.assertEqual(result.returncode, 0, result.stderr)
+
+
+EXAMPLE_TOPIC = ROOT / "docs" / "reference" / "examples" / "maple-harbor-catalog.md"
+
+
+class TopicTests(unittest.TestCase):
+    """Topic files: Firstmate writes them, Quarterdeck reads, checks and shows them as thread pages."""
+
+    def home_with_topics(self, root: Path, files: dict[str, str] | None = None) -> Path:
+        home = QuarterdeckTests.make_home(self, root)  # type: ignore[arg-type]
+        topics = home / "data" / "topics"
+        topics.mkdir()
+        for name, text in (files if files is not None else {"maple-harbor-catalog.md": EXAMPLE_TOPIC.read_text(encoding="utf-8")}).items():
+            (topics / name).write_text(text, encoding="utf-8")
+        return home
+
+    def run_cli(self, args: list[str], root: Path) -> subprocess.CompletedProcess[str]:
+        return QuarterdeckTests.run_cli(self, args, root, root / "config")  # type: ignore[arg-type]
+
+    def test_example_reads_state_entries_and_open_decisions(self) -> None:
+        topic = quarterdeck.read_topic_file(EXAMPLE_TOPIC)
+        self.assertEqual(topic.problems, [])
+        self.assertEqual(topic.topic_id, "maple-harbor-catalog")
+        self.assertEqual(topic.title, "Maple Harbor catalog launch")
+        self.assertIn("PR 42 is ready to merge", topic.now)
+        self.assertEqual(topic.waiting, [("you", "merge PR 42"), ("Sample vendor", "a storage quota for the product images")])
+        self.assertEqual(topic.pieces, ["maple-21", "paper-27", "blocked-33"])
+        self.assertEqual(topic.links, ["[Catalog preview](https://example.com/maple-harbor/preview)", "data/amber-18/report.md"])
+        self.assertEqual(len(topic.entries), 7)
+        first = topic.entries[0]
+        self.assertEqual((first.who, first.where, first.at), ("you", "chat", datetime(2026, 3, 2, 8, 12, tzinfo=timezone.utc)))
+        decision = topic.entries[2]
+        self.assertEqual((decision.entry_id, decision.decision, decision.options, decision.recommend),
+                         ("merge-42", "Merge PR 42 now?", ["Merge", "Hold", "Not now"], "Merge"))
+        self.assertTrue(decision.text.startswith("The patch switches"))
+        self.assertEqual([entry.entry_id for entry in topic.open_decisions()], ["merge-42"])
+        self.assertEqual(topic.entries[4].re_ids, ["ask-3f9c2a1b"])
+        self.assertEqual(topic.last_at, datetime(2026, 3, 4, 9, 40, tzinfo=timezone.utc))
+
+    def test_times_accept_zones_seconds_and_t_and_read_bare_times_as_utc(self) -> None:
+        utc = timezone.utc
+        self.assertEqual(quarterdeck.topic_time("2026-03-02 8:05"), datetime(2026, 3, 2, 8, 5, tzinfo=utc))
+        self.assertEqual(quarterdeck.topic_time("2026-03-02T08:05:09Z"), datetime(2026, 3, 2, 8, 5, 9, tzinfo=utc))
+        self.assertEqual(quarterdeck.topic_time("2026-03-02 08:05 UTC"), datetime(2026, 3, 2, 8, 5, tzinfo=utc))
+        self.assertEqual(quarterdeck.topic_time("2026-03-02 16:05+08:00").astimezone(utc), datetime(2026, 3, 2, 8, 5, tzinfo=utc))
+        self.assertEqual(quarterdeck.topic_time("2026-03-02 03:05 -0500").astimezone(utc), datetime(2026, 3, 2, 8, 5, tzinfo=utc))
+        for bad in ("yesterday", "2026-03-02", "2026-13-02 08:00", "08:00", "2026-03-02 25:00"):
+            self.assertIsNone(quarterdeck.topic_time(bad), bad)
+
+    def test_mistakes_become_numbered_problems_and_the_rest_still_reads(self) -> None:
+        source = """Stray line before the title
+# Broken topic
+Now: Half written.
+Status: paused
+Pieces: maple-21, not/a/task
+
+## yesterday | firstmate | chat
+Something happened.
+
+## 2026-03-02 09:00 | firstmate | chat
+Decision: Pick a colour?
+Options: Red | Blue
+Recommend: Green
+
+## 2026-03-02 08:00 | you | phone
+Id: dup
+First.
+
+## 2026-03-02 10:00 | firstmate | chat
+Id: dup
+Re: nowhere
+Second.
+
+## 2026-03-02 11:00 | you | chat | extra
+```
+## 2026-03-02 12:00 | not | a heading
+```
+Still the same entry.
+"""
+        topic = quarterdeck.parse_topic(source, Path("broken.md"), "broken")
+        found = {(problem.line, problem.level, problem.text.split(",")[0].split(";")[0]) for problem in topic.problems}
+        self.assertIn((1, "warning", "this line is not a # Title"), {(a, b, c[:29]) for a, b, c in found})
+        self.assertIn((4, "warning", "Status should be open or done"), {(a, b, c[:29]) for a, b, c in found})
+        self.assertIn((5, "warning", "'not/a/task' is not a backlog task id"), found)
+        self.assertIn((7, "error", "an entry heading starts with its time"), found)
+        self.assertIn((10, "error", "a Decision entry needs an Id line"), found)
+        self.assertIn((10, "warning", "Recommend says 'Green'"), found)
+        self.assertIn((15, "warning", "this entry is dated before the one above it"), found)
+        self.assertIn((15, "warning", "where it was said should be chat or quarterdeck"), found)
+        self.assertIn((19, "error", "Id 'dup' is already used on line 15"), found)
+        self.assertIn((19, "error", "Re names 'nowhere'"), found)
+        self.assertIn((24, "warning", "the heading has more than time"), found)
+        self.assertEqual(topic.title, "Broken topic")
+        self.assertEqual(topic.status, "open")
+        self.assertEqual(topic.pieces, ["maple-21"])
+        self.assertEqual(len(topic.entries), 5, "a broken heading still keeps its entry")
+        self.assertIsNone(topic.entries[0].at)
+        self.assertIn("## 2026-03-02 12:00 | not | a heading", topic.entries[-1].text, "a heading inside a code block is text")
+        self.assertEqual(quarterdeck.parse_topic("Now: no title\n", Path("x.md"), "x").problems[0].text,
+                         "the file must start with a `# Title` line")
+        self.assertEqual(quarterdeck.parse_topic("# T\n", Path("Bad Name.md"), "Bad Name").errors[0].line, 0)
+
+    def test_an_answer_settles_a_decision_and_a_reply_to_an_unshown_ask_is_allowed(self) -> None:
+        source = """# Two calls
+## 2026-03-02 09:00 | firstmate | chat
+Id: one
+Decision: First?
+Options: Yes | No
+
+## 2026-03-02 09:01 | firstmate | chat
+Id: two
+Decision: Second?
+
+## 2026-03-02 09:05 | you | quarterdeck
+Re: one
+Yes.
+
+## 2026-03-02 09:06 | firstmate | chat
+Re: ask-0011aabb
+Answered your question from the page.
+
+## 2026-03-02 09:07 | firstmate | chat
+Re: the certificate, I sent it.
+"""
+        topic = quarterdeck.parse_topic(source, Path("two-calls.md"), "two-calls")
+        self.assertEqual(topic.errors, [])
+        self.assertEqual([entry.entry_id for entry in topic.open_decisions()], ["two"])
+        self.assertEqual(topic.entries[-1].re_ids, [], "a Re line that is not ids stays text")
+        self.assertTrue(topic.entries[-1].text.startswith("Re: the certificate"))
+
+    def test_check_reports_file_line_and_exit_status(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            home = self.home_with_topics(root, {
+                "maple-harbor-catalog.md": EXAMPLE_TOPIC.read_text(encoding="utf-8").replace("blocked-33", "missing-99"),
+                "_draft.md": "not a topic, skipped\n",
+                "broken.md": "# Broken\n\n## soon | you | chat\nHello.\n",
+            })
+            result = self.run_cli(["topics", "check", "--home", str(home)], root)
+            self.assertEqual(result.returncode, 1, result.stderr)
+            self.assertIn("data/topics/broken.md:3: error: an entry heading starts with its time", result.stdout)
+            self.assertIn("data/topics/maple-harbor-catalog.md: warning: Pieces names missing-99, which is not in the backlog", result.stdout)
+            self.assertNotIn("_draft", result.stdout)
+            self.assertTrue(result.stdout.rstrip().endswith("2 topic files checked: 1 error, 1 warning."), result.stdout)
+            (home / "data" / "topics" / "broken.md").unlink()
+            named = self.run_cli(["topics", "check", str(home / "data" / "topics" / "maple-harbor-catalog.md")], root)
+            self.assertEqual(named.returncode, 0, named.stdout + named.stderr)
+            self.assertIn("Pieces names missing-99", named.stdout, "a named file is checked against its own home's backlog")
+            example = self.run_cli(["topics", "check", str(EXAMPLE_TOPIC)], root)
+            self.assertEqual((example.returncode, example.stdout), (0, "1 topic file checked: no mistakes.\n"))
+            empty = self.run_cli(["topics", "check", "--home", str(QuarterdeckTests.make_home(self, root / "bare"))], root)  # type: ignore[arg-type]
+            self.assertEqual(empty.returncode, 0)
+            self.assertIn("No topic files found", empty.stdout)
+
+    def test_render_without_topic_files_is_unchanged(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            home = QuarterdeckTests.make_home(self, root)  # type: ignore[arg-type]
+            output = root / "out" / "index.html"
+            result = self.run_cli(["render", "--home", str(home), "--output", str(output)], root)
+            self.assertEqual(result.returncode, 0, result.stderr)
+            page = output.read_text(encoding="utf-8")
+            self.assertNotIn('id="topics"', page)
+            self.assertNotIn('href="#topics"', page)
+            self.assertEqual(list(output.parent.glob("topic-*.html")), [])
+
+    def test_render_writes_a_thread_page_and_lists_topics_on_the_front_page(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            home = self.home_with_topics(root)
+            output = root / "out" / "index.html"
+            result = self.run_cli(["render", "--home", str(home), "--output", str(output), "--no-snapshot"], root)
+            self.assertEqual(result.returncode, 0, result.stderr)
+            front = output.read_text(encoding="utf-8")
+            self.assertIn('<a href="#topics">Topics</a>', front)
+            self.assertIn('href="topic-maple-harbor-catalog.html"', front)
+            self.assertIn("1 open decision", front)
+            page = (output.parent / "topic-maple-harbor-catalog.html").read_text(encoding="utf-8")
+            self.assertIn("<h1>Maple Harbor catalog launch</h1>", page)
+            self.assertIn('<a href="index.html">&larr; Quarterdeck</a>', page)
+            self.assertIn('Open decisions <span class="n">1</span>', page)
+            pinned = page.split('id="decision-merge-42"', 1)[1].split("</article>", 1)[0]
+            self.assertIn("<h3>Merge PR 42 now?</h3>", pinned)
+            self.assertIn("First mate recommends <b>Merge</b>.", pinned)
+            self.assertIn("Options: Merge · Hold · Not now", pinned)
+            self.assertNotIn('id="decision-images-host"', page, "an answered decision is not pinned")
+            self.assertIn("Settled by you: Wait. Ask the vendor again on Friday.", page)
+            self.assertIn('Answers <a href="#entry-images-host">', page)
+            self.assertIn('<span class="you">You</span>: merge PR 42', page)
+            self.assertIn('<span class="piece-state needs">needs you</span>', page, "paper-27 is review ready")
+            self.assertIn('<span class="piece-state">blocked</span>', page)
+            self.assertIn('href="https://example.com/maple-harbor/preview">Catalog preview</a>', page)
+            report = home / "data" / "amber-18" / "report.md"
+            digest = quarterdeck.hashlib.sha256(str(report.resolve()).encode("utf-8")).hexdigest()[:12]
+            self.assertIn(f'<a href="doc-{digest}.html">amber-18/report.md</a>', page)
+            self.assertTrue((output.parent / f"doc-{digest}.html").is_file())
+            self.assertIn('<time datetime="2026-03-02T08:12:00Z" data-show="clock">08:12 UTC</time>', page)
+            self.assertIn("in chat", page)
+            self.assertIn("on Quarterdeck", page)
+            self.assertNotIn("mistake", page)
+
+    def test_thread_page_escapes_text_and_refuses_unsafe_links(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            home = self.home_with_topics(root, {"risky.md": """# <script>alert(1)</script> topic
+Links: [click](javascript:alert(1))
+Waiting on: <b>you</b> - <img src=x onerror=alert(1)>
+
+## 2026-03-02 09:00 | <i>Mallory</i> | chat
+Id: q1
+Decision: <script>bad()</script>?
+Options: <b>Yes</b> | No
+
+See https://example.com/path?a=1 and [bad](javascript:alert(2)).
+"""})
+            output = root / "out" / "index.html"
+            self.assertEqual(self.run_cli(["render", "--home", str(home), "--output", str(output), "--no-snapshot"], root).returncode, 0)
+            page = (output.parent / "topic-risky.html").read_text(encoding="utf-8")
+            self.assertNotIn("<script>alert", page)
+            self.assertNotIn("<script>bad", page)
+            self.assertNotIn("<img", page)
+            self.assertNotIn("<i>Mallory", page)
+            self.assertNotIn('href="javascript', page)
+            self.assertIn('<a href="https://example.com/path?a=1">https://example.com/path?a=1</a>', page)
+            self.assertIn("The topic file has 1 mistake", page, "a link with no usable target is reported")
+            self.assertNotIn("<script>alert", output.read_text(encoding="utf-8"))
+
+    def test_topic_ids_shared_by_two_homes_get_separate_pages(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            snapshots = []
+            for name in ("one", "two"):
+                data = root / name / "data" / "topics"
+                data.mkdir(parents=True)
+                (data / "launch.md").write_text(f"# Launch in {name}\n", encoding="utf-8")
+                (data.parent / "backlog.md").write_text("# Backlog\n", encoding="utf-8")
+                snapshots.append(quarterdeck.load_home_snapshot(quarterdeck.HomeSpec(name, root / name)))
+            pages = quarterdeck.topic_pages(snapshots, None, {})
+            self.assertEqual(len(pages), 2)
+            self.assertTrue(all(re.fullmatch(r"topic-launch-[0-9a-f]{6}\.html", name) for name in pages))
+            self.assertIn('<span class="home">one</span>', "".join(pages.values()))
+
+    def test_served_site_includes_topic_pages(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            home = self.home_with_topics(root)
+            args = argparse.Namespace(home=str(home), config=None, title=None, no_snapshot=True)
+            with patch.dict(os.environ, {"XDG_CONFIG_HOME": str(root / "config"), "XDG_STATE_HOME": str(root / "state")}):
+                pages = quarterdeck.site_builder(args)()
+            self.assertIn("topic-maple-harbor-catalog.html", pages)
+            self.assertIn('href="topic-maple-harbor-catalog.html"', pages["index.html"])

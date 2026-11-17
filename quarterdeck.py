@@ -123,6 +123,7 @@ class HomeSnapshot:
     board: CaptainBoard | None = None
     backlog_changed: datetime | None = None
     review_state: ReviewState | None = None
+    topics: list[Topic] = field(default_factory=list)
 
 
 def markdown_text(value: str) -> str:
@@ -770,6 +771,7 @@ def source_pages(
             )
     if bearings is not None:
         pages.update(bearings.item_pages)
+    pages.update(topic_pages(homes, bearings, pages))
     pages[ADOPTION_PAGE] = adoption_page_html(adoption_summary(homes, bearings.generated if bearings else datetime.now(timezone.utc)), main_href)
     return pages
 
@@ -1455,7 +1457,7 @@ def status_line_html(
 
 
 JUMP_SECTIONS = (
-    ("cards", "Needs you"), ("board", "Desk"), ("attention", "Decisions"), ("reviews", "Reports"),
+    ("cards", "Needs you"), ("topics", "Topics"), ("board", "Desk"), ("attention", "Decisions"), ("reviews", "Reports"),
     ("call", "Captain's Call"), ("underway", "Underway"), ("charted", "Charted Next"),
     ("call-background", "Background decisions"), ("related", "Related items"),
     ("board-desk", "On your desk"), ("board-week", "This week"), ("board-parked", "Parked"),
@@ -1549,6 +1551,7 @@ def build_html(
     attention_block = attention_html(bearings.attention, allow_marks) if bearings else ""
     cards = activity_cards(bearings.attention, board, reactions, home_data_dirs(homes), bearings.item_pages, bearings.main_href) if bearings else []
     cards_block = cards_html(cards, bearings.attention, generated, bool(refresh_seconds)) if bearings else ""
+    topics_block = topics_section_html(homes, generated)
     activity_block = activity_html(cards, bearings.attention, generated) if bearings else ""
     if activity_block:
         section_counts["activity"] = sum(card["section"] != "needs_you" for card in cards)
@@ -1570,7 +1573,7 @@ def build_html(
         f'<div class="summary" aria-label="Review counts">{metrics_html}</div>'
         + "".join(home_panel(home, lavish, show_all, decisions) for home in homes) + "</details>"
     )
-    body_markup = cards_block + board_block + attention_block + bearings_block + reviewed_block + activity_block + details_block
+    body_markup = cards_block + topics_block + board_block + attention_block + bearings_block + reviewed_block + activity_block + details_block
     waiting_cards = sum(card["section"] == "needs_you" for card in cards)
     tab_prefix = f"({waiting_cards}) " if waiting_cards else ""
     app_links = APP_LINKS if refresh_seconds else ""
@@ -1999,7 +2002,7 @@ def build_html(
     details.dashboard-section:not(.board-band) > summary h2 {{ display: inline; }}
     details.dashboard-section:not(.board-band) > summary h2::before {{ content: "▸ "; color: var(--gold); }}
     details.dashboard-section:not(.board-band)[open] > summary h2::before {{ content: "▾ "; }}
-{ACTIVITY_CSS}    @media (prefers-color-scheme: dark) {{
+{ACTIVITY_CSS}{TOPICS_FRONT_CSS}    @media (prefers-color-scheme: dark) {{
       :root {{ --navy: #a9cdee; --sea: #5fc2b9; --sand: #11181f; --paper: #1a242d; --ink: #e3e8ec; --muted: #9aa8b3; --line: #33434f; --gold: #e0a24e; --gold-ink: #e0a24e; --head: #0d2438; --soft: #ffffff10; --warn-bg: #2d2412; --warn-ink: #f0d9a8; --fail-bg: #331b17; --fail-ink: #f3c4bb; --chip: #1f3a37; }}
       .board-num {{ color: #0b1a18; }}
     }}
@@ -2029,6 +2032,7 @@ def build_html(
   {jump_block}
   <main>
     {cards_block}
+    {topics_block}
     {board_block}
     {attention_block}
     {bearings_block}
@@ -7221,6 +7225,7 @@ COMMAND_DOCS = {
     "views": ["how-to/see-recent-work.md", "reference/cli-and-config.md"],
     "attention": ["how-to/see-recent-work.md", "reference/attention-json.md", "explanation/privacy-and-architecture.md"],
     "board": ["how-to/keep-the-board-current.md", "reference/captain-board.md", "explanation/privacy-and-architecture.md"],
+    "topics": ["how-to/keep-topic-threads.md", "reference/topic-files.md", "explanation/topic-threads.md", "explanation/privacy-and-architecture.md"],
     "waits": ["how-to/track-captain-waits.md", "reference/cli-and-config.md", "explanation/privacy-and-architecture.md"],
     "install": ["how-to/install.md", "how-to/update.md", "how-to/uninstall.md"],
     "update": ["how-to/update.md", "reference/cli-and-config.md"],
@@ -7273,6 +7278,824 @@ def show_help(args: argparse.Namespace) -> int:
         print("Read: " + ", ".join(str(docs_root / item) for item in doc_paths))
     print("Machine-readable command index: quarterdeck help --json")
     return 0
+
+
+# --- Topic threads -------------------------------------------------------------
+# One conversation per topic. Firstmate keeps each topic in <home data>/topics/<topic-id>.md; Quarterdeck only reads
+# it. The file starts with a `# Title` line and state lines (Now, Waiting on, Pieces, Links, Status), then holds one
+# `## <time> | <who> | <where>` entry per message, oldest first. Field lines at the top of an entry (Id, Re, Decision,
+# Options, Recommend) make it a decision card or tie it to an earlier entry. docs/reference/topic-files.md is the
+# contract; `quarterdeck topics check` reports mistakes in plain words. Parsing never fails: a mistake becomes a
+# problem on the topic and the rest of the file still shows.
+
+TOPICS_DIR_NAME = "topics"
+TOPIC_ID_RE = re.compile(r"[a-z0-9][a-z0-9-]{0,63}")
+TOPIC_ENTRY_ID_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,63}")
+TOPIC_TASK_ID_RE = re.compile(r"[A-Za-z0-9][\w.-]{0,127}")
+TOPIC_ASK_PREFIX = "ask-"  # ids Quarterdeck gives the questions it sends; a reply may name one the file never shows
+TOPIC_FILE_LIMIT = 2_000_000
+TOPIC_PAGE_PREFIX = "topic-"
+TOPIC_STATE_KEYS = {
+    "now": "now", "waiting on": "waiting", "waiting for": "waiting", "pieces": "pieces", "piece": "pieces",
+    "links": "links", "link": "links", "status": "status",
+}
+TOPIC_ENTRY_KEYS = {
+    "id": "id", "re": "re", "decision": "decision", "options": "options", "recommend": "recommend",
+    "recommended": "recommend", "recommendation": "recommend",
+}
+TOPIC_SPEAKERS = {"you": "you", "owner": "you", "captain": "you", "firstmate": "firstmate", "first mate": "firstmate"}
+TOPIC_PLACES = {"chat": "chat", "quarterdeck": "quarterdeck", "here": "quarterdeck"}
+TOPIC_PLACE_TEXT = {"chat": "in chat", "quarterdeck": "on Quarterdeck"}
+TOPIC_STATUSES = ("open", "done")
+TOPIC_HEADING_SPLIT_RE = re.compile(r"\s+\|\s+|\s*·\s*|\s*\|\s*")
+TOPIC_FIELD_RE = re.compile(r"^([A-Za-z][A-Za-z ]{0,19}?)\s*:\s*(.*)$")
+TOPIC_TIME_RE = re.compile(
+    r"^(\d{4})-(\d{2})-(\d{2})[T ](\d{1,2}):(\d{2})(?::(\d{2})(?:\.\d+)?)?\s*(Z|UTC|[+-]\d{2}:?\d{2})?$", re.IGNORECASE)
+TOPIC_LINK_RE = re.compile(r"\[[^\]]+\]\([^)\s]+\)|https?://[^\s,<>]+|(?<![\w./-])data/[\w.-]+/[\w.-]+\.(?:md|html)")
+TOPIC_BARE_URL_RE = re.compile(r"(?<![(\[<\"'=])\bhttps?://[^\s<>()\[\]]+[^\s<>()\[\].,;:!?'\"]")
+TOPIC_PIECE_STATES = {
+    "in_flight": "underway", "inflight": "underway", "working": "underway", "active": "underway",
+    "running": "underway", "in_progress": "underway", "queued": "queued", "blocked": "blocked",
+}
+
+
+@dataclass
+class TopicProblem:
+    line: int  # 0 when the problem is about the whole file
+    level: str  # "error" or "warning"
+    text: str
+
+
+@dataclass
+class TopicEntry:
+    line: int
+    at: datetime | None
+    who: str  # "you", "firstmate" or a name as written
+    where: str  # "chat", "quarterdeck", "" or the word as written
+    text: str = ""
+    entry_id: str = ""
+    re_ids: list[str] = field(default_factory=list)
+    decision: str = ""
+    options: list[str] = field(default_factory=list)
+    recommend: str = ""
+
+
+@dataclass
+class Topic:
+    topic_id: str
+    path: Path
+    title: str = ""
+    now: str = ""
+    waiting: list[tuple[str, str]] = field(default_factory=list)  # (who, what), each as written
+    pieces: list[str] = field(default_factory=list)  # backlog task ids
+    links: list[str] = field(default_factory=list)  # Markdown links, bare URLs or data/ paths, as written
+    status: str = "open"
+    entries: list[TopicEntry] = field(default_factory=list)
+    problems: list[TopicProblem] = field(default_factory=list)
+    page: str = ""  # the generated page's file name; empty when the topic cannot have one
+
+    def responses(self) -> dict[str, list[TopicEntry]]:
+        """Every entry that answers or replies to an id, keyed by that id, in file order."""
+        found: dict[str, list[TopicEntry]] = {}
+        for entry in self.entries:
+            for target in entry.re_ids:
+                found.setdefault(target, []).append(entry)
+        return found
+
+    def open_decisions(self) -> list[TopicEntry]:
+        answered = self.responses()
+        return [entry for entry in self.entries if entry.decision and entry.entry_id not in answered]
+
+    @property
+    def last_at(self) -> datetime | None:
+        times = [entry.at for entry in self.entries if entry.at is not None]
+        return max(times) if times else None
+
+    @property
+    def errors(self) -> list[TopicProblem]:
+        return [problem for problem in self.problems if problem.level == "error"]
+
+
+def topic_time(raw: str) -> datetime | None:
+    """A topic entry's time: date, hour and minute, optional seconds and zone. No zone reads as UTC."""
+    match = TOPIC_TIME_RE.match(raw.strip())
+    if not match:
+        return None
+    year, month, day, hour, minute, second, zone = match.groups()
+    offset = timezone.utc
+    if zone and zone.upper() not in {"Z", "UTC"}:
+        sign = -1 if zone[0] == "-" else 1
+        digits = zone[1:].replace(":", "")
+        offset = timezone(sign * timedelta(hours=int(digits[:2]), minutes=int(digits[2:])))
+    try:
+        return datetime(int(year), int(month), int(day), int(hour), int(minute), int(second or 0), tzinfo=offset)
+    except ValueError:
+        return None
+
+
+def topic_speaker(raw: str) -> str:
+    return TOPIC_SPEAKERS.get(" ".join(raw.lower().split()), raw.strip())
+
+
+def topic_id_list(value: str) -> list[str] | None:
+    """The ids in a comma-separated list, or None when any part is not one id (so `Re: the certificate` stays text)."""
+    parts = [part.strip() for part in value.split(",")]
+    return parts if parts and all(TOPIC_ENTRY_ID_RE.fullmatch(part) for part in parts) else None
+
+
+def split_waiting(value: str) -> tuple[str, str]:
+    """`you - merge PR 127` as ("you", "merge PR 127"); a line with no dash names only who."""
+    parts = re.split(r"\s+[-–—]\s+", value, maxsplit=1)
+    return (parts[0].strip(), parts[1].strip()) if len(parts) == 2 else (value.strip(), "")
+
+
+def parse_topic(source: str, path: Path, topic_id: str) -> Topic:
+    """Read one topic file. Never raises: each mistake is recorded as a problem with its line number."""
+    topic = Topic(topic_id=topic_id, path=path)
+
+    def problem(line: int, level: str, text: str) -> None:
+        topic.problems.append(TopicProblem(line, level, text))
+
+    if not TOPIC_ID_RE.fullmatch(topic_id):
+        problem(0, "error", "the file name must be the topic id: lower-case letters, digits and dashes, "
+                f"starting with a letter or digit, then .md (found {path.name})")
+    current: TopicEntry | None = None
+    body: list[str] = []
+    in_fields = False
+    fenced = False
+    ids: dict[str, int] = {}
+    previous_at: datetime | None = None
+    status_line = 0
+
+    def finish() -> None:
+        nonlocal current, previous_at
+        if current is None:
+            return
+        entry = current
+        entry.text = "\n".join(body).strip()
+        if entry.decision and not entry.entry_id:
+            problem(entry.line, "error", "a Decision entry needs an Id line, such as `Id: merge-127`, so answers can name it")
+        if (entry.options or entry.recommend) and not entry.decision:
+            problem(entry.line, "warning", "Options and Recommend only count on an entry with a Decision line")
+        if entry.decision and len(entry.options) == 1:
+            problem(entry.line, "warning", "a decision needs two or more options separated by `|`, or none to answer in words")
+        if entry.decision and entry.recommend and entry.options and entry.recommend.casefold() not in {
+            option.casefold() for option in entry.options
+        }:
+            problem(entry.line, "warning", f"Recommend says {entry.recommend!r}, which is not one of the options")
+        for target in entry.re_ids:
+            if target not in ids and not target.startswith(TOPIC_ASK_PREFIX):
+                problem(entry.line, "error", f"Re names {target!r}, but no entry above has that Id")
+        if not entry.text and not entry.decision:
+            problem(entry.line, "warning", "this entry has no text")
+        if entry.at is not None:
+            if previous_at is not None and entry.at < previous_at:
+                problem(entry.line, "warning", "this entry is dated before the one above it; entries show in file order")
+            previous_at = entry.at
+        if entry.entry_id:
+            if entry.entry_id in ids:
+                problem(entry.line, "error", f"Id {entry.entry_id!r} is already used on line {ids[entry.entry_id]}")
+            else:
+                ids[entry.entry_id] = entry.line
+        topic.entries.append(entry)
+        current = None
+        body.clear()
+
+    for number, raw in enumerate(source.splitlines(), start=1):
+        line = raw.rstrip()
+        if current is not None and line.lstrip().startswith(("```", "~~~")):
+            fenced = not fenced
+        if not fenced and line.startswith("## "):
+            finish()
+            parts = [part.strip() for part in TOPIC_HEADING_SPLIT_RE.split(line[3:].strip())]
+            when = topic_time(parts[0])
+            who = topic_speaker(parts[1]) if len(parts) > 1 else ""
+            where_raw = parts[2] if len(parts) > 2 else ""
+            where = TOPIC_PLACES.get(where_raw.lower(), where_raw)
+            if when is None:
+                problem(number, "error", "an entry heading starts with its time, like `## 2026-03-04 08:12 | firstmate | chat`; "
+                        f"{parts[0]!r} is not a time")
+            if not who:
+                problem(number, "error", "an entry heading names who said it after the time: you, firstmate or a name")
+            if not where_raw:
+                problem(number, "warning", "an entry heading ends with where it was said: chat or quarterdeck")
+            elif where not in TOPIC_PLACES.values():
+                problem(number, "warning", f"where it was said should be chat or quarterdeck, not {where_raw!r}")
+            if len(parts) > 3:
+                problem(number, "warning", f"the heading has more than time, who and where; {' | '.join(parts[3:])!r} is ignored")
+            current = TopicEntry(line=number, at=when, who=who or "unknown", where=where)
+            in_fields = True
+            continue
+        if current is None:
+            text = line.strip()
+            if not text or (text.startswith("<!--") and text.endswith("-->")):
+                continue
+            if text.startswith("# ") and not topic.title and not (topic.now or topic.waiting or topic.pieces or topic.links):
+                topic.title = text[2:].strip()
+                continue
+            match = TOPIC_FIELD_RE.match(text)
+            key = TOPIC_STATE_KEYS.get(" ".join(match.group(1).lower().split())) if match else None
+            if match is None or key is None:
+                hint = "the title must be the first line, " if text.startswith("#") else ""
+                problem(number, "warning", f"{hint}this line is not a # Title, Now, Waiting on, Pieces, Links or Status "
+                        "line, so it is not shown")
+                continue
+            value = match.group(2).strip()
+            if not value:
+                problem(number, "warning", f"{match.group(1).strip()} is empty")
+            elif key == "now":
+                topic.now = f"{topic.now} {value}".strip()
+            elif key == "waiting":
+                topic.waiting.append(split_waiting(value))
+            elif key == "pieces":
+                for piece in (part for part in re.split(r"[,\s]+", value) if part):
+                    if TOPIC_TASK_ID_RE.fullmatch(piece):
+                        topic.pieces.append(piece)
+                    else:
+                        problem(number, "warning", f"{piece!r} is not a backlog task id")
+            elif key == "links":
+                found = TOPIC_LINK_RE.findall(value)
+                for link in found:
+                    target = topic_link_target(link)
+                    if not (target.startswith("data/") or urlparse(target).scheme in {"http", "https"}):
+                        problem(number, "warning", f"{link} does not point to an http(s) address or a data/ path, "
+                                "so it shows as plain text")
+                    topic.links.append(link.rstrip(".;"))
+                if not found:
+                    problem(number, "warning", "no link found; write [label](https://...), a bare https:// address or a data/ path")
+            else:
+                status_line = number
+                topic.status = value.lower()
+            continue
+        if in_fields:
+            match = TOPIC_FIELD_RE.match(line.strip())
+            key = TOPIC_ENTRY_KEYS.get(match.group(1).strip().lower()) if match else None
+            if match is not None and key is not None:
+                value = match.group(2).strip()
+                if key == "re":
+                    targets = topic_id_list(value)
+                    if targets is not None:
+                        current.re_ids.extend(targets)
+                        continue
+                elif key == "id":
+                    if TOPIC_ENTRY_ID_RE.fullmatch(value):
+                        current.entry_id = value
+                    else:
+                        problem(number, "error", "an Id is one word of letters, digits, dots, dashes or underscores")
+                    continue
+                elif key == "decision":
+                    current.decision = value
+                    if not value:
+                        problem(number, "error", "the Decision line needs the question")
+                    continue
+                elif key == "options":
+                    current.options = [option.strip() for option in value.split("|") if option.strip()]
+                    continue
+                else:
+                    current.recommend = value
+                    continue
+            if not line.strip() and not body:
+                continue
+            in_fields = False
+        body.append(raw)
+    finish()
+    if fenced:
+        problem(0, "warning", "a ``` code block is never closed, so the rest of the file reads as code")
+    if not topic.title:
+        problem(1, "error", "the file must start with a `# Title` line")
+    if topic.status not in TOPIC_STATUSES:
+        problem(status_line, "warning", f"Status should be open or done, not {topic.status!r}; it reads as open")
+        topic.status = "open"
+    return topic
+
+
+def read_topic_file(path: Path) -> Topic:
+    topic_id = path.stem
+    try:
+        if not path.is_file():
+            raise OSError("not a regular file")
+        if path.stat().st_size > TOPIC_FILE_LIMIT:
+            topic = Topic(topic_id=topic_id, path=path, title=topic_id)
+            topic.problems.append(TopicProblem(0, "error", f"the file is over {TOPIC_FILE_LIMIT // 1_000_000} MB; "
+                                               "start a new topic and link to this one"))
+            return topic
+        source = path.read_text(encoding="utf-8", errors="replace")
+    except OSError as exc:
+        topic = Topic(topic_id=topic_id, path=path, title=topic_id)
+        topic.problems.append(TopicProblem(0, "error", f"could not read the file: {exc}"))
+        return topic
+    return parse_topic(source, path, topic_id)
+
+
+def read_topics(data_dir: Path) -> list[Topic]:
+    """Every <data>/topics/*.md file, by name. Names starting with `.` or `_` are drafts and are skipped."""
+    directory = data_dir / TOPICS_DIR_NAME
+    try:
+        paths = sorted(path for path in directory.glob("*.md") if not path.name.startswith((".", "_")))
+    except OSError:
+        return []
+    return [read_topic_file(path) for path in paths]
+
+
+def snapshot_items(snapshot: HomeSnapshot) -> dict[str, BacklogItem]:
+    """The home's backlog items by id, read once per snapshot."""
+    items = getattr(snapshot, "_items", None)
+    if items is None:
+        items = {}
+        if snapshot.backlog_markdown is not None and not snapshot.error:
+            items = {item.id: item for item in backlog_items(snapshot.backlog_markdown, snapshot)}
+        setattr(snapshot, "_items", items)
+    return items
+
+
+def check_topic_pieces(topic: Topic, snapshot: HomeSnapshot) -> list[TopicProblem]:
+    """A warning for each piece the home's backlog does not have."""
+    if snapshot.backlog_markdown is None or snapshot.error:
+        return []
+    items = snapshot_items(snapshot)
+    return [
+        TopicProblem(0, "warning", f"Pieces names {piece}, which is not in the backlog")
+        for piece in topic.pieces if piece not in items
+    ]
+
+
+def piece_state(item: BacklogItem) -> str:
+    """One short word for where a backlog task stands, matching the names the rest of the page uses."""
+    if item.done or is_closed_state(item.state):
+        return "done"
+    if is_cancelled_state(item.state):
+        return "cancelled"
+    if needs_captain(item):
+        return "needs you"
+    if item.review_ready:
+        return "ready for review"
+    return TOPIC_PIECE_STATES.get(normalized_state(item.state), item.state.replace("_", " ") or "open")
+
+
+def assign_topic_pages(homes: list[HomeSnapshot]) -> list[tuple[HomeSnapshot, Topic]]:
+    """Give each topic with a valid id its page name; an id two homes share also carries a short home digest."""
+    found = [(snapshot, topic) for snapshot in all_snapshots(homes) for topic in snapshot.topics
+             if TOPIC_ID_RE.fullmatch(topic.topic_id)]
+    counts: dict[str, int] = {}
+    for _snapshot, topic in found:
+        counts[topic.topic_id] = counts.get(topic.topic_id, 0) + 1
+    for snapshot, topic in found:
+        suffix = ""
+        if counts[topic.topic_id] > 1:
+            suffix = "-" + hashlib.sha256(str(snapshot.spec.home).encode("utf-8")).hexdigest()[:6]
+        topic.page = f"{TOPIC_PAGE_PREFIX}{topic.topic_id}{suffix}.html"
+    return found
+
+
+def topic_order(topic: Topic) -> tuple[int, float]:
+    """Topics with open decisions first, then the most recently written."""
+    last = topic.last_at
+    return (-len(topic.open_decisions()), -(last.timestamp() if last else 0.0))
+
+
+TOPIC_CSS = """
+:root { color-scheme: light dark;
+  --ground: #f6f4ef; --ink: #1a2129; --soft: #565f68; --rule: #d6d0c4; --faint: #e9e5dc;
+  --signal: #a8321c; --focus: #1d5c87;
+  --serif: Charter, "Bitstream Charter", "Iowan Old Style", "Sitka Text", Cambria, "Noto Serif", Georgia, serif;
+  --sans: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+  --mono: ui-monospace, "SF Mono", Menlo, Consolas, monospace; }
+@media (prefers-color-scheme: dark) {
+  :root { --ground: #131619; --ink: #ebe7df; --soft: #a3a9af; --rule: #363c42; --faint: #23282d; --signal: #ff8c6e; --focus: #8ec5ec; }
+}
+* { box-sizing: border-box; }
+html { -webkit-text-size-adjust: 100%; }
+body { margin: 0; background: var(--ground); color: var(--ink); font: 18px/1.55 var(--serif); }
+a { color: inherit; text-decoration-thickness: 1px; text-underline-offset: .18em; }
+a:hover { text-decoration-thickness: 2px; }
+:focus-visible { outline: 3px solid var(--focus); outline-offset: 2px; }
+.bar { position: sticky; top: 0; z-index: 5; display: flex; align-items: center; justify-content: space-between;
+  gap: 1rem; padding: 0 max(1rem, calc((100vw - 38rem) / 2)); background: var(--ground);
+  border-bottom: 1px solid var(--rule); font: 600 .95rem/1.2 var(--sans); }
+.bar a { display: inline-flex; align-items: center; min-height: 48px; text-decoration: none; }
+.bar a:hover { text-decoration: underline; }
+.bar .home { color: var(--soft); font-weight: 500; overflow-wrap: anywhere; text-align: right; }
+main { max-width: 40rem; margin: 0 auto; padding: 1.6rem 1rem 5rem; }
+h1 { margin: 0 0 1.2rem; font: 700 clamp(1.75rem, 7vw, 2.4rem)/1.12 var(--serif); letter-spacing: -.012em; overflow-wrap: anywhere; }
+.closed { margin: -.6rem 0 1.2rem; font: 600 .9rem var(--sans); color: var(--soft); }
+.label, h2, .entry-head, .state dt, .decision .asked, .footnote { font-family: var(--sans); }
+.state { margin: 0 0 .5rem; border-top: 2px solid var(--ink); }
+.state > div { display: grid; grid-template-columns: 7rem minmax(0, 1fr); gap: .15rem 1rem; padding: .75rem 0;
+  border-bottom: 1px solid var(--rule); }
+.state dt { padding-top: .2rem; font-size: .8rem; font-weight: 600; letter-spacing: .06em; text-transform: uppercase; color: var(--soft); }
+.state dd { margin: 0; min-width: 0; overflow-wrap: anywhere; }
+.state ul { list-style: none; margin: 0; padding: 0; }
+.state li + li { margin-top: .35rem; }
+.state .you { color: var(--signal); font-weight: 700; }
+.piece-id { font: .8rem var(--mono); color: var(--soft); margin-right: .45rem; }
+.piece-state { font: .85rem var(--sans); color: var(--soft); white-space: nowrap; }
+.piece-state.needs { color: var(--signal); font-weight: 600; }
+.state a { display: inline-block; min-height: 32px; }
+h2 { display: flex; align-items: baseline; gap: .55rem; margin: 2.4rem 0 .9rem; font-size: .8rem; font-weight: 600;
+  letter-spacing: .08em; text-transform: uppercase; color: var(--soft); }
+h2 .n { font-variant-numeric: tabular-nums; color: var(--ink); }
+h2.needs .n { color: var(--signal); }
+.decision { margin: 0 0 1.4rem; padding: .2rem 0 .2rem 1rem; border-left: 3px solid var(--signal); scroll-margin-top: 4rem; }
+.decision .asked { margin: 0; font-size: .82rem; color: var(--soft); }
+.decision h3 { margin: .2rem 0 .5rem; font: 700 1.32rem/1.25 var(--serif); overflow-wrap: anywhere; }
+.decision .rec { margin: .6rem 0 .2rem; }
+.decision .rec b { font-weight: 700; }
+.decision .opts { margin: .2rem 0 0; color: var(--soft); }
+.prose { overflow-wrap: anywhere; }
+.prose p, .prose ul, .prose ol, .prose pre, .prose blockquote { margin: .35rem 0; }
+.prose ul, .prose ol { padding-left: 1.3rem; }
+.prose h1, .prose h2, .prose h3, .prose h4 { margin: .8rem 0 .3rem; font: 700 1.05rem/1.3 var(--serif); letter-spacing: 0; text-transform: none; color: var(--ink); }
+.prose pre { overflow-x: auto; padding: .7rem .8rem; background: var(--faint); font-size: .85rem; }
+.prose code { font: .85em var(--mono); }
+.prose blockquote { margin-left: 0; padding-left: .9rem; border-left: 2px solid var(--rule); color: var(--soft); }
+.prose .table-wrap { overflow-x: auto; }
+.prose table { border-collapse: collapse; font: .9rem var(--sans); }
+.prose th, .prose td { border-bottom: 1px solid var(--rule); padding: .35rem .6rem .35rem 0; text-align: left; vertical-align: top; }
+.log { list-style: none; margin: 0; padding: 0; border-top: 2px solid var(--ink); }
+.day { margin: 0; padding: 1.1rem 0 .2rem; font: 600 .8rem var(--sans); letter-spacing: .06em; text-transform: uppercase; color: var(--soft); }
+.entry { padding: .8rem 0 .9rem; border-bottom: 1px solid var(--faint); scroll-margin-top: 4rem; }
+.entry.you { padding-left: 1rem; border-left: 2px solid var(--ink); }
+.entry-head { display: flex; flex-wrap: wrap; align-items: baseline; gap: 0 .6rem; margin: 0 0 .15rem; font-size: .85rem; color: var(--soft); }
+.entry-head .who { font-weight: 700; color: var(--ink); }
+.entry-head time { font-variant-numeric: tabular-nums; }
+.entry .ties { margin: .35rem 0 0; font: .88rem/1.45 var(--sans); color: var(--soft); }
+.entry .ties a { color: var(--ink); }
+.entry .asks { margin: .3rem 0 0; font-weight: 700; }
+.entry .docs { margin: .35rem 0 0; padding: 0; list-style: none; font: .9rem var(--sans); }
+.empty { color: var(--soft); }
+.problems { margin: 2.6rem 0 0; padding: .8rem 0 0; border-top: 1px solid var(--rule); font: .9rem/1.5 var(--sans); color: var(--soft); }
+.problems summary { min-height: 44px; display: flex; align-items: center; cursor: pointer; font-weight: 600; color: var(--ink); }
+.problems ul { margin: .2rem 0 .6rem; padding-left: 1.2rem; }
+.footnote { margin: 2.4rem 0 0; font-size: .82rem; color: var(--soft); overflow-wrap: anywhere; }
+@media (max-width: 30rem) {
+  body { font-size: 17px; }
+  .state > div { grid-template-columns: minmax(0, 1fr); }
+}
+@media print { .bar { position: static; } }
+"""
+
+TOPIC_TIME_SCRIPT = """
+  <script>
+    (function () {
+      // Times are written in UTC; show them in the reader's own time and regroup the log by the reader's days.
+      if (typeof Intl !== "object") return;
+      const clock = new Intl.DateTimeFormat(undefined, {hour: "2-digit", minute: "2-digit"});
+      const full = new Intl.DateTimeFormat(undefined, {day: "numeric", month: "short", hour: "2-digit", minute: "2-digit"});
+      const dayName = new Intl.DateTimeFormat(undefined, {weekday: "short", day: "numeric", month: "short"});
+      for (const stamp of document.querySelectorAll("time[data-show]")) {
+        const when = new Date(stamp.dateTime);
+        if (isNaN(when)) continue;
+        stamp.textContent = (stamp.dataset.show === "clock" ? clock : full).format(when);
+      }
+      const log = document.getElementById("log");
+      if (!log) return;
+      for (const day of log.querySelectorAll(".day")) day.remove();
+      let last = "";
+      for (const entry of log.querySelectorAll(".entry")) {
+        const stamp = entry.querySelector("time[datetime]");
+        const when = stamp ? new Date(stamp.dateTime) : null;
+        if (!when || isNaN(when)) continue;
+        const key = when.toDateString();
+        if (key === last) continue;
+        const heading = document.createElement("li");
+        heading.className = "day";
+        heading.textContent = dayName.format(when);
+        entry.before(heading);
+        last = key;
+      }
+    })();
+  </script>"""
+
+
+def topic_who_text(who: str) -> str:
+    return {"you": "You", "firstmate": "First mate"}.get(who, who)
+
+
+def topic_markdown(text: str) -> str:
+    """An entry's text as safe HTML: Markdown, with bare https addresses made into links."""
+    linked = TOPIC_BARE_URL_RE.sub(lambda match: f"[{match.group(0)}]({match.group(0)})", text)
+    return render_markdown(linked)
+
+
+def topic_stamp(value: datetime, show: str) -> str:
+    """A <time> written in UTC; the page script rewrites it in the reader's time zone."""
+    utc = value.astimezone(timezone.utc)
+    text = utc.strftime("%H:%M UTC") if show == "clock" else utc.strftime("%-d %b %H:%M UTC")
+    return f'<time datetime="{utc.isoformat().replace("+00:00", "Z")}" data-show="{show}">{text}</time>'
+
+
+def topic_link_target(link: str) -> str:
+    """Where a Links item points: the part in parentheses of a Markdown link, otherwise the item itself."""
+    match = re.fullmatch(r"\[[^\]]+\]\(([^)\s]+)\)", link)
+    return match.group(1) if match else link
+
+
+def topic_link_html(link: str, data_dir: Path | None, pages: dict[str, str] | None, main_href: str) -> str:
+    """One Links item: a Markdown link, a bare address, or a data/ document opened as a readable page."""
+    target = topic_link_target(link)
+    if target.startswith("data/"):
+        docs = referenced_docs(target, data_dir) if data_dir is not None and pages is not None else []
+        if docs:
+            path, label = docs[0]
+            digest = hashlib.sha256(str(path).encode("utf-8")).hexdigest()[:12]
+            name = f"{DOC_PREFIX}{digest}.html"
+            raw_name = f"{RAW_PREFIX}{digest}{'.html' if path.suffix == '.html' else '.txt'}"
+            built = doc_page(path, label, raw_name, main_href)
+            if built is not None:
+                assert pages is not None
+                pages[name], pages[raw_name] = built
+                text = link[1:link.index("](")] if link.startswith("[") else label
+                return f'<a href="{html.escape(name, quote=True)}">{markdown_inline(text)}</a>'
+        return f'<span class="piece-id">{html.escape(target)}</span>'
+    if link.startswith("["):
+        return markdown_inline(link)
+    return markdown_inline(f"[{link}]({link})")
+
+
+def topic_state_html(topic: Topic, snapshot: HomeSnapshot, item_pages: dict[str, str],
+                     pages: dict[str, str] | None, main_href: str) -> str:
+    rows = []
+    if topic.now:
+        rows.append(("Now", f"<p style=\"margin:0\">{markdown_inline(topic.now)}</p>"))
+    if topic.waiting:
+        waits = []
+        for who, what in topic.waiting:
+            mine = topic_speaker(who) == "you"
+            name = f'<span class="{"you" if mine else "who"}">{html.escape(topic_who_text(topic_speaker(who)))}</span>'
+            waits.append(f"<li>{name}{': ' + markdown_inline(what) if what else ''}</li>")
+        rows.append(("Waiting on", f"<ul>{''.join(waits)}</ul>"))
+    if topic.pieces:
+        items = snapshot_items(snapshot)
+        pieces = []
+        for piece in topic.pieces:
+            item = items.get(piece)
+            if item is None:
+                pieces.append(f'<li><span class="piece-id">{html.escape(piece)}</span>'
+                              '<span class="piece-state">not in the backlog</span></li>')
+                continue
+            state = piece_state(item)
+            page = item_page_filename(snapshot.spec.home, snapshot.spec.label, item.id)
+            title = html.escape(item.title or piece)
+            title = f'<a href="{html.escape(page, quote=True)}">{title}</a>' if page in item_pages else title
+            pieces.append(f'<li><span class="piece-id">{html.escape(piece)}</span>{title} '
+                          f'<span class="piece-state{" needs" if state == "needs you" else ""}">{html.escape(state)}</span></li>')
+        rows.append(("Pieces", f"<ul>{''.join(pieces)}</ul>"))
+    if topic.links:
+        links = "".join(f"<li>{topic_link_html(link, snapshot.data_dir, pages, main_href)}</li>" for link in topic.links)
+        rows.append(("Links", f"<ul>{links}</ul>"))
+    if not rows:
+        return ""
+    return '<dl class="state">' + "".join(f"<div><dt>{label}</dt><dd>{value}</dd></div>" for label, value in rows) + "</dl>"
+
+
+def topic_decision_html(entry: TopicEntry) -> str:
+    """An open decision card, pinned above the conversation: the question, its context, the recommendation and options."""
+    asked = f"Asked {topic_stamp(entry.at, 'full')}" if entry.at else "Asked"
+    parts = [f'<article class="decision" id="decision-{html.escape(entry.entry_id, quote=True)}">',
+             f'<p class="asked">{asked}</p><h3>{html.escape(entry.decision)}</h3>']
+    if entry.text:
+        parts.append(f'<div class="prose">{topic_markdown(entry.text)}</div>')
+    if entry.recommend:
+        parts.append(f'<p class="rec">First mate recommends <b>{html.escape(entry.recommend)}</b>.</p>')
+    if entry.options:
+        parts.append(f'<p class="opts">Options: {" · ".join(html.escape(option) for option in entry.options)}</p>')
+    parts.append("</article>")
+    return "".join(parts)
+
+
+def topic_reply_summary(entry: TopicEntry) -> str:
+    first = next((line.strip() for line in entry.text.splitlines() if line.strip()), "")
+    return first if len(first) <= 120 else first[:117].rstrip() + "…"
+
+
+def topic_entry_html(entry: TopicEntry, by_id: dict[str, TopicEntry],
+                     responses: dict[str, list[TopicEntry]], data_dir: Path | None,
+                     pages: dict[str, str] | None, main_href: str) -> str:
+    place = TOPIC_PLACE_TEXT.get(entry.where, entry.where)
+    anchor = f' id="entry-{html.escape(entry.entry_id, quote=True)}"' if entry.entry_id else ""
+    head = [f'<span class="who">{html.escape(topic_who_text(entry.who))}</span>']
+    if entry.at is not None:
+        head.append(topic_stamp(entry.at, "clock"))
+    if place:
+        head.append(f"<span>{html.escape(place)}</span>")
+    parts = [f'<li class="entry {"you" if entry.who == "you" else "firstmate" if entry.who == "firstmate" else "other"}"{anchor}>',
+             f'<p class="entry-head">{"".join(head)}</p>']
+    if entry.decision:
+        question = html.escape(entry.decision)
+        if entry.entry_id and entry.entry_id not in responses:  # an open decision is pinned above the conversation
+            question = f'<a href="#decision-{html.escape(entry.entry_id, quote=True)}">{question}</a>'
+        parts.append(f'<p class="asks">Asked: {question}</p>')
+    if entry.text:
+        parts.append(f'<div class="prose">{topic_markdown(entry.text)}</div>')
+    ties = []
+    for target in entry.re_ids:
+        earlier = by_id.get(target)
+        if earlier is None:
+            continue
+        what = earlier.decision or topic_reply_summary(earlier) or target
+        verb = "Answers" if earlier.decision else "Replies to"
+        ties.append(f'{verb} <a href="#entry-{html.escape(target, quote=True)}">{html.escape(what)}</a>')
+    if entry.decision:
+        replies = responses.get(entry.entry_id, [])
+        if replies:
+            answer = replies[-1]
+            ties.append(f"Settled by {html.escape(topic_who_text(answer.who).lower() if answer.who != 'you' else 'you')}: "
+                        f"{html.escape(topic_reply_summary(answer))}")
+        else:
+            ties.append("Open: waiting for your answer")
+    if ties:
+        parts.append(f'<p class="ties">{" · ".join(ties)}</p>')
+    docs = doc_links_html(entry.text, data_dir, pages, main_href) if entry.text else ""
+    if docs:
+        links = re.findall(r'<a href="[^"]+">[^<]*</a>', docs)
+        parts.append('<ul class="docs">' + "".join(f"<li>{link}</li>" for link in links) + "</ul>")
+    parts.append("</li>")
+    return "".join(parts)
+
+
+def topic_page_html(topic: Topic, snapshot: HomeSnapshot, multi_home: bool, generated: datetime,
+                    item_pages: dict[str, str], pages: dict[str, str] | None = None,
+                    main_href: str = "index.html") -> str:
+    """The thread page: the topic's state, its open decisions, then the whole conversation in file order."""
+    title = topic.title or topic.topic_id
+    by_id = {entry.entry_id: entry for entry in topic.entries if entry.entry_id}
+    responses = topic.responses()
+    open_decisions = topic.open_decisions()
+    decisions = "".join(topic_decision_html(entry) for entry in open_decisions)
+    decisions_block = (
+        f'<section aria-labelledby="open-h"><h2 class="needs" id="open-h">Open decisions <span class="n">{len(open_decisions)}</span></h2>'
+        f"{decisions}</section>" if open_decisions else ""
+    )
+    log: list[str] = []
+    last_day = ""
+    for entry in topic.entries:
+        if entry.at is not None:
+            day = entry.at.astimezone(timezone.utc).strftime("%a %-d %b")
+            if day != last_day:
+                log.append(f'<li class="day">{day}</li>')
+                last_day = day
+        log.append(topic_entry_html(entry, by_id, responses, snapshot.data_dir, pages, main_href))
+    log_block = (
+        f'<section aria-labelledby="log-h"><h2 id="log-h">Conversation <span class="n">{len(topic.entries)}</span></h2>'
+        + (f'<ol class="log" id="log">{"".join(log)}</ol>' if log else '<p class="empty">Nothing written here yet.</p>')
+        + "</section>"
+    )
+    problems = ""
+    if topic.problems:
+        count = len(topic.problems)
+        lines = "".join(
+            f"<li>{f'Line {problem.line}: ' if problem.line else ''}{html.escape(problem.text)}</li>"
+            for problem in sorted(topic.problems, key=lambda problem: problem.line)
+        )
+        problems = (
+            f'<details class="problems"><summary>The topic file has {count} mistake{"s" if count != 1 else ""}</summary>'
+            f"<ul>{lines}</ul><p>Some of what Firstmate wrote may be missing above. "
+            "<code>quarterdeck topics check</code> lists the same mistakes.</p></details>"
+        )
+    home = f'<span class="home">{html.escape(snapshot.spec.label)}</span>' if multi_home else ""
+    source = display_path(topic.path, snapshot.spec.home) if snapshot.spec.home else str(topic.path)
+    closed = '<p class="closed">This topic is closed.</p>' if topic.status == "done" else ""
+    return f'''<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="quarterdeck-{'gen' + 'erated'}" content="read-only topic page">
+  <title>{html.escape(title)} · Quarterdeck</title>
+  <style>{TOPIC_CSS}</style>
+</head>
+<body>
+  <nav class="bar" aria-label="Quarterdeck"><a href="{html.escape(main_href, quote=True)}">&larr; Quarterdeck</a>{home}</nav>
+  <main>
+    <h1>{html.escape(title)}</h1>
+    {closed}
+    {topic_state_html(topic, snapshot, item_pages, pages, main_href)}
+    {decisions_block}
+    {log_block}
+    {problems}
+    <p class="footnote">Read from {html.escape(source)} · built {topic_stamp(generated, "full")}</p>
+  </main>
+  {TOPIC_TIME_SCRIPT}
+</body>
+</html>
+'''
+
+
+def topic_pages(homes: list[HomeSnapshot], bearings: Bearings | None, pages: dict[str, str]) -> dict[str, str]:
+    """Build every topic page; documents the topics link to are registered in `pages` too."""
+    built: dict[str, str] = {}
+    generated = bearings.generated if bearings else datetime.now(timezone.utc)
+    item_pages = bearings.item_pages if bearings else {}
+    main_href = bearings.main_href if bearings else "index.html"
+    multi_home = len(all_snapshots(homes)) > 1
+    for snapshot, topic in assign_topic_pages(homes):
+        built[topic.page] = topic_page_html(topic, snapshot, multi_home, generated, item_pages, pages, main_href)
+    return built
+
+
+def topics_section_html(homes: list[HomeSnapshot], now: datetime) -> str:
+    """The front page's list of topics: one row each, open decisions first. Empty when no home keeps topic files."""
+    found = assign_topic_pages(homes)
+    if not found:
+        return ""
+    multi_home = len(all_snapshots(homes)) > 1
+
+    def row(snapshot: HomeSnapshot, topic: Topic) -> str:
+        open_count = len(topic.open_decisions())
+        meta = []
+        if open_count:
+            meta.append(f'<b class="topic-needs">{open_count} open decision{"s" if open_count != 1 else ""}</b>')
+        last = topic.last_at
+        if last is not None:
+            meta.append(f"last entry {elapsed_text(last, now)} ago" if last <= now else "last entry just now")
+        if multi_home:
+            meta.append(html.escape(snapshot.spec.label))
+        now_line = f'<span class="topic-now">{html.escape(topic.now)}</span>' if topic.now else ""
+        return (f'<li><a class="topic-row" href="{html.escape(topic.page, quote=True)}"><span class="topic-title">'
+                f'{html.escape(topic.title or topic.topic_id)}</span>{now_line}'
+                f'<span class="topic-meta">{" · ".join(meta)}</span></a></li>')
+
+    active = sorted(((s, t) for s, t in found if t.status != "done"), key=lambda pair: topic_order(pair[1]))
+    done = sorted(((s, t) for s, t in found if t.status == "done"), key=lambda pair: topic_order(pair[1]))
+    rows = "".join(row(snapshot, topic) for snapshot, topic in active)
+    closed = (
+        f'<details class="topic-done"><summary>Closed topics <span class="count">{len(done)}</span></summary>'
+        f'<ul class="topic-list">{"".join(row(snapshot, topic) for snapshot, topic in done)}</ul></details>'
+        if done else ""
+    )
+    return (
+        f'<section class="dashboard-section topics" id="topics"><div class="section-head"><div><h2>Topics</h2>'
+        "<p>One conversation per piece of work, with what stands now and what Firstmate asked you.</p></div>"
+        f'<span class="count">{len(active)}</span></div>'
+        + (f'<ul class="topic-list">{rows}</ul>' if rows else '<p class="empty">Every topic is closed.</p>')
+        + closed + "</section>"
+    )
+
+
+TOPICS_FRONT_CSS = """
+    .topic-list { list-style: none; margin: 0; padding: 0; border-top: 1px solid var(--line); }
+    .topic-list li { border-bottom: 1px solid var(--line); }
+    .topic-row { display: grid; gap: .1rem; padding: .7rem .2rem; min-height: 44px; color: var(--ink); text-decoration: none; }
+    .topic-row:hover .topic-title, .topic-row:focus-visible .topic-title { text-decoration: underline; }
+    .topic-title { font: 700 1.2rem/1.3 Georgia, serif; color: var(--navy); overflow-wrap: anywhere; }
+    .topic-now { font-weight: 400; overflow-wrap: anywhere; }
+    .topic-meta { color: var(--muted); font-size: .85rem; font-weight: 400; }
+    .topic-meta b { font-weight: 700; }
+    .topic-needs { color: var(--gold-ink); }
+    .topic-done { margin-top: .8rem; }
+    .topic-done > summary { display: flex; align-items: center; gap: .5rem; min-height: 44px; cursor: pointer; color: var(--sea); font-weight: 700; }
+"""
+
+
+def topics_check(args: argparse.Namespace) -> int:
+    """Report every mistake in topic files: the files named, or every configured home's data/topics/."""
+    checked: list[tuple[str, Topic]] = []
+    try:
+        if args.files:
+            chosen = selected_homes(args)[0] if args.home else None
+            nearby: dict[Path, HomeSnapshot | None] = {}
+            for name in args.files:
+                path = Path(name).expanduser()
+                topic = read_topic_file(path)
+                snapshot = chosen
+                if snapshot is None:
+                    # A file in <home>/data/topics/ is checked against that home's backlog.
+                    data_dir = path.resolve().parent.parent
+                    if data_dir not in nearby:
+                        nearby[data_dir] = load_home_snapshot(HomeSpec(data_dir.parent.name, data_dir.parent, data_dir)) if (
+                            path.resolve().parent.name == TOPICS_DIR_NAME and (data_dir / "backlog.md").is_file()) else None
+                    snapshot = nearby[data_dir]
+                if snapshot is not None:
+                    topic.problems.extend(check_topic_pieces(topic, snapshot))
+                checked.append((name, topic))
+        else:
+            snapshots = all_snapshots(selected_homes(args))
+            for snapshot in snapshots:
+                for topic in snapshot.topics:
+                    topic.problems.extend(check_topic_pieces(topic, snapshot))
+                    shown = display_path(topic.path, snapshot.spec.home) if snapshot.spec.home else str(topic.path)
+                    checked.append((f"{snapshot.spec.label}: {shown}" if len(snapshots) > 1 else shown, topic))
+    except (OSError, ValueError) as exc:
+        print(f"quarterdeck: {exc}", file=sys.stderr)
+        return 2
+    errors = warnings = 0
+    for name, topic in checked:
+        for problem in sorted(topic.problems, key=lambda problem: problem.line):
+            where = f"{name}:{problem.line}" if problem.line else name
+            print(f"{where}: {problem.level}: {problem.text}")
+            if problem.level == "error":
+                errors += 1
+            else:
+                warnings += 1
+    if not checked:
+        print("No topic files found. Firstmate keeps them in data/topics/<topic-id>.md in its home.")
+        return 0
+    files = f"{len(checked)} topic file{'s' if len(checked) != 1 else ''}"
+    if not errors and not warnings:
+        print(f"{files} checked: no mistakes.")
+    else:
+        print(f"{files} checked: {errors} error{'s' if errors != 1 else ''}, {warnings} warning{'s' if warnings != 1 else ''}.")
+    return 1 if errors else 0
 
 
 # --- Adoption -----------------------------------------------------------------
@@ -10196,6 +11019,7 @@ def load_home_snapshot(spec: HomeSpec, discover_secondmates: bool = False) -> Ho
             snapshot.error = str(exc)
         if snapshot.data_dir is not None:
             snapshot.board = read_captain_board(snapshot.data_dir)
+            snapshot.topics = read_topics(snapshot.data_dir)
 
     if discover_secondmates and spec.home is not None and not spec.remote_host:
         registry_path = spec.home / "data" / "secondmates.md"
@@ -10742,6 +11566,28 @@ def make_parser() -> argparse.ArgumentParser:
     waits_target(waits_discard_parser)
     waits_discard_parser.add_argument("key", help="the card key, home-label/task-id, as 'waits list' prints it")
     waits_discard_parser.set_defaults(handler=waits_discard)
+
+    topics_parser = subparsers.add_parser(
+        "topics", help="check the topic files Firstmate keeps for the thread pages",
+        description=(
+            "Firstmate keeps one file per topic in its home's data/topics/<topic-id>.md; Quarterdeck shows each as a "
+            "thread page and only reads the files. 'topics check' reports every mistake with its file and line."
+        ),
+    )
+    command_parsers["topics"] = topics_parser
+    topics_subparsers = topics_parser.add_subparsers(dest="topics_command", required=True)
+    topics_check_parser = topics_subparsers.add_parser(
+        "check", help="report mistakes in topic files",
+        description=(
+            "Check the named topic files, or every configured home's data/topics/*.md. Prints one line per mistake "
+            "(file:line: error|warning: what is wrong) and a count. Exits 1 when any error is found, otherwise 0. "
+            "Pieces are checked against the backlog when a home is known (--home, FM_HOME or the configured homes)."
+        ),
+    )
+    topics_check_parser.add_argument("files", nargs="*", help="topic files to check; default: every configured home's topics")
+    topics_check_parser.add_argument("--home", help="use this Firstmate home instead of configured homes or FM_HOME")
+    topics_check_parser.add_argument("--config", type=Path, help="optional JSON config file")
+    topics_check_parser.set_defaults(handler=topics_check)
 
     install_parser = subparsers.add_parser(
         "install", help="install or uninstall Quarterdeck", description="Run the user-local shell installer."

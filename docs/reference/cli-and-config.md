@@ -38,6 +38,7 @@ quarterdeck waits sync [--no-helper] [--home PATH] [--config FILE]
 quarterdeck waits watch [--interval SECONDS] [--home PATH] [--config FILE]
 quarterdeck waits list [--all] [--json] [--home PATH] [--config FILE]
 quarterdeck waits discard <home-label-slug/task-id> [--home PATH] [--config FILE]
+quarterdeck topics check [FILE ...] [--home PATH] [--config FILE]
 quarterdeck add <firstmate-home> [--label LABEL] [--config FILE]
 quarterdeck list [--config FILE]
 quarterdeck remove <label-or-path> [--config FILE]
@@ -276,6 +277,16 @@ reuses the same fm-inbox request id and is not delivered twice. A changed
 payload or a successful submission causes the next send to get a new id.
 Draft edits and quick-reaction selections do not change an answer button's
 payload or invalidate its failed submission's id.
+
+`quarterdeck topics check` reads the topic files Firstmate keeps in
+`<data>/topics/<topic-id>.md` (the format is in the
+[topic files reference](topic-files.md)) and prints one line per mistake,
+`<file>:<line>: error|warning: <what is wrong>`, then a count. With no `FILE` it
+checks every configured home's topics, or the one from `--home` or `FM_HOME`.
+Pieces are checked against the backlog when the home is known. Exit status is 1
+when any error is found, 0 otherwise, and 2 when no home can be read. `render`
+and `serve` write one `topic-<id>.html` page per topic; when two homes share a
+topic id, each page name also carries a short hash of its home.
 
 `add`, `list`, and `remove` accept the same `--config FILE` option. `add` also
 accepts `--label LABEL`; `remove` takes one label or path.
