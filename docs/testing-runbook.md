@@ -1,5 +1,49 @@
 # Targeted testing
 
+## Topic input failures
+
+Run `PYTHONPATH=tests python3 -m unittest -v test_quarterdeck.TopicTests`.
+The topic-format contract requires invalid offset hours and minutes to produce
+numbered errors without losing other topics, malformed URLs to warn in Links
+and remain unlinked without discarding other formatting, and unavailable homes to print
+problems and make the checker exit 2 even alongside readable files. The
+regressions exercise file loading, the checker CLI and generated HTML, rejecting
+crashes, normalized invalid offsets and false clean checks. Existing topic tests
+cover valid offsets, links, backlog references and thread rendering.
+All homes and outputs are disposable fictional fixtures with isolated config
+and state; no real home scripts or inbox writes are needed. Fixtures clean up
+automatically.
+
+### Read-only topic pages in a browser
+
+Live checked 2026-11-17 against the real CLI server with fictional homes and
+isolated Chromium. Serve with `--home <fixture> --no-snapshot` (no writes enabled),
+and isolate XDG config/state. State must be outside the checkout and fixture homes.
+Use the published Maple Harbor example plus a second home with the same topic id,
+a done topic, an empty home, and underscore/dot-prefixed drafts referenced from
+both Links and conversation text.
+
+At 375, 768 and 1280 px, follow Topics to the thread and its report link; check
+state, task states, one card per open decision, settled replies and no horizontal
+overflow. Check phone dark mode too. Times use the browser locale as well as its
+time zone: 14:05 UTC is 10:05 PM in en-US / Asia/Manila. Append a fictional `Re:`
+answer, wait beyond the 30-second server cache TTL, and reload until refreshed;
+the decision leaves the pinned list and front-page count. Confirm same-id topics
+in different homes open distinct pages, Closed topics remains accessible, and an
+empty home has no Topics section. POST to a read-only thread must return 405.
+
+For recovery, combine a misspelled field before valid Id/Decision fields, an
+invalid time offset, a missing Piece, a hostless link, mixed code fences, an
+existing Markdown link whose label contains a URL, and escaped HTML. Check the
+thread preserves usable messages, code and links and lists the same problems as
+`topics check`, with no duplicate missing-Piece warning. Draft document/raw routes
+must return 404 while an ordinary document still opens. Missing homes, an
+unreadable topics directory and a directory at `data/secondmates.md` must make
+checking exit 2; an absent optional topics directory is valid. These actions are
+safe only with disposable data. Restore fixture permissions, stop servers and
+browser children, remove fixtures/dependencies, and retain screenshots and CLI/HTTP
+transcripts in the assigned evidence directory.
+
 ## Attention feed refresh failures
 
 Run `PYTHONPATH=tests python3 -m unittest -v test_quarterdeck.AttentionTests.test_failed_refresh_keeps_last_good_needs_you_list test_quarterdeck.AttentionTests.test_empty_cached_feed_stays_incomplete_until_refresh_recovers test_quarterdeck.AttentionTests.test_only_decisions_errors_collapse_diagnostics`.

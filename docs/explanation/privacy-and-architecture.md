@@ -9,9 +9,15 @@ single-home invocation. In a home list, each entry may set its own `data_dir`;
 otherwise that home's `data/` directory is used.
 
 The inputs include `data/backlog.md`, `data/<id>/report.md` files, documents
-named in [activity cards](../how-to/watch-activity-cards.md#open-the-documents-a-card-names), and the optional
+named in [activity cards](../how-to/watch-activity-cards.md#open-the-documents-a-card-names), the optional
 `data/captain-board.json` board (see the
-[board file reference](../reference/captain-board.md)). For each
+[board file reference](../reference/captain-board.md)), and the optional
+`data/topics/*.md` topic files Firstmate writes, one conversation per topic (see
+the [topic files reference](../reference/topic-files.md)). Generated thread pages sit
+beside the main page (see the [CLI reference](../reference/cli-and-config.md) for filenames),
+with the topic's text and eligible `data/` documents named in its Links or conversation;
+`quarterdeck topics check` reads the same
+files and writes nothing. For each
 configured parent home, Quarterdeck also reads the optional
 `data/secondmates.md` route registry. Each local route's `home:` field points
 to another Firstmate home, which gets its own labeled section underneath the

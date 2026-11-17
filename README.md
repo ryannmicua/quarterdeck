@@ -44,6 +44,12 @@ for server requirements, phone setup and withdrawal behavior.
   clarifications it gave when you asked, with dates. Cards are released when the
   hold is gone; Discard asks Firstmate to drop a wait. Nothing changes in
   Firstmate. See [Track what is waiting on you](docs/how-to/track-captain-waits.md).
+- Topic threads: when Firstmate keeps `data/topics/<topic-id>.md` files, each
+  topic gets a thread page with what stands now, what waits on whom, its
+  backlog tasks, the open decisions and the whole conversation, and the front
+  page lists the topics. `quarterdeck topics check` reports mistakes in the
+  files. See [Keep topic threads](docs/how-to/keep-topic-threads.md) and the
+  [topic files reference](docs/reference/topic-files.md).
 - Captain board: when a home has `data/captain-board.json`, the desk groups
   decisions still in play, with background items collapsed. Items
   are cross-checked against the live backlog and can carry a decision-brief link

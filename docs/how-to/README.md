@@ -8,6 +8,7 @@
 - [Serve the always-current bearings page](serve-the-page.md)
 - [Watch Firstmate's activity as cards](watch-activity-cards.md)
 - [Track what is waiting on you](track-captain-waits.md)
+- [Keep topic threads](keep-topic-threads.md)
 - [See how much you use Quarterdeck](see-your-adoption.md)
 - [View in Lavish](view-in-lavish.md)
 - [Request a Lavish page](request-lavish-page.md)
