@@ -10644,6 +10644,44 @@ open https://example.com/tilde
             self.assertNotIn("No topic files found", result.stdout)
             self.assertEqual(rendered.returncode, 0, rendered.stderr)
 
+    def test_code_fence_closes_only_on_its_own_marker(self) -> None:
+        source = """# Fences
+
+## 2026-03-02 09:00 | firstmate | chat
+An example file:
+
+~~~~
+```sh
+make test
+```
+## Not a new entry
+~~~
+~~~~
+
+## 2026-03-02 10:00 | you | chat
+Thanks.
+"""
+        topic = quarterdeck.parse_topic(source, Path("fences.md"), "fences")
+        self.assertEqual(len(topic.entries), 2, [entry.text for entry in topic.entries])
+        self.assertEqual(topic.problems, [])
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            home = self.home_with_topics(root, {"fences.md": source})
+            output = root / "out" / "index.html"
+            rendered = self.run_cli(["render", "--home", str(home), "--output", str(output), "--no-snapshot"], root)
+            self.assertEqual(rendered.returncode, 0, rendered.stderr)
+            page = (output.parent / "topic-fences.html").read_text()
+            self.assertIn("<pre><code>```sh\nmake test\n```\n## Not a new entry\n~~~</code></pre>", page)
+
+    def test_links_without_a_host_are_warned(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            home = self.home_with_topics(root, {"hostless.md": "# Hostless\nLinks: [Preview](https:///preview), https://example.com/ok\n"})
+            result = self.run_cli(["topics", "check", "--home", str(home)], root)
+            self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+            self.assertEqual(result.stdout.count("hostless.md:2: warning:"), 1, result.stdout)
+            self.assertIn("[Preview](https:///preview) does not point", result.stdout)
+
     def test_render_without_topic_files_is_unchanged(self) -> None:
         with tempfile.TemporaryDirectory() as temp:
             root = Path(temp)

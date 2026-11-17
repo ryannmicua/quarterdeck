@@ -505,11 +505,8 @@ def markdown_inline(value: str) -> str:
 
     def link(match: re.Match[str]) -> str:
         label, target = match.group(1), match.group(2).strip()
-        try:
-            parsed = urlparse(target)
-            safe = parsed.scheme in {"http", "https", "mailto"} and (parsed.scheme == "mailto" or bool(parsed.netloc))
-        except ValueError:
-            safe = False
+        parsed = urlparse(target)
+        safe = parsed.scheme in {"http", "https", "mailto"} and (parsed.scheme == "mailto" or bool(parsed.netloc))
         rendered_label = markdown_inline(label)
         if safe:
             return keep(f'<a href="{html.escape(target, quote=True)}">{rendered_label}</a>')
@@ -543,6 +540,17 @@ def is_markdown_table(lines: list[str], index: int) -> bool:
     )
 
 
+MARKDOWN_FENCE_RE = re.compile(r"^\s*(`{3,}|~{3,})")
+
+
+def markdown_fence(fence: str | None, line: str) -> str | None:
+    """The open code fence after `line`: a new opener, or `fence` until a standalone run of its character at least as long."""
+    if fence is None:
+        opening = MARKDOWN_FENCE_RE.match(line)
+        return opening.group(1) if opening else None
+    return None if re.fullmatch(r"\s*" + re.escape(fence[0]) + "{%d,}\\s*" % len(fence), line) else fence
+
+
 def render_markdown(source: str) -> str:
     lines = source.splitlines()
     blocks: list[str] = []
@@ -554,12 +562,11 @@ def render_markdown(source: str) -> str:
         if not line.strip():
             index += 1
             continue
-        fence = re.match(r"^\s*(```+|~~~+)", line)
-        if fence:
-            marker = fence.group(1)
+        marker = markdown_fence(None, line)
+        if marker:
             code: list[str] = []
             index += 1
-            while index < len(lines) and not re.match(r"^\s*" + re.escape(marker[:3]) + r"\s*$", lines[index]):
+            while index < len(lines) and markdown_fence(marker, lines[index]) is not None:
                 code.append(lines[index])
                 index += 1
             if index < len(lines):
@@ -7429,7 +7436,7 @@ def parse_topic(source: str, path: Path, topic_id: str) -> Topic:
     current: TopicEntry | None = None
     body: list[str] = []
     in_fields = False
-    fenced = False
+    fence: str | None = None
     ids: dict[str, int] = {}
     previous_at: datetime | None = None
     status_line = 0
@@ -7470,9 +7477,9 @@ def parse_topic(source: str, path: Path, topic_id: str) -> Topic:
 
     for number, raw in enumerate(source.splitlines(), start=1):
         line = raw.rstrip()
-        if current is not None and line.lstrip().startswith(("```", "~~~")):
-            fenced = not fenced
-        if not fenced and line.startswith("## "):
+        if current is not None:
+            fence = markdown_fence(fence, line)
+        if fence is None and line.startswith("## "):
             finish()
             parts = [part.strip() for part in TOPIC_HEADING_SPLIT_RE.split(line[3:].strip())]
             when = topic_time(parts[0])
@@ -7525,7 +7532,8 @@ def parse_topic(source: str, path: Path, topic_id: str) -> Topic:
                 for link in found:
                     target = topic_link_target(link)
                     try:
-                        valid = target.startswith("data/") or urlparse(target).scheme in {"http", "https"}
+                        parsed = urlparse(target)
+                        valid = target.startswith("data/") or (parsed.scheme in {"http", "https"} and bool(parsed.netloc))
                     except ValueError:
                         valid = False
                     if not valid:
@@ -7570,7 +7578,7 @@ def parse_topic(source: str, path: Path, topic_id: str) -> Topic:
             in_fields = False
         body.append(raw)
     finish()
-    if fenced:
+    if fence is not None:
         problem(0, "warning", "a ``` code block is never closed, so the rest of the file reads as code")
     if not topic.title:
         problem(1, "error", "the file must start with a `# Title` line")
@@ -7786,17 +7794,24 @@ def topic_markdown(text: str) -> str:
     lines: list[str] = []
     fence: str | None = None
     for line in text.splitlines():
-        if fence is not None:
-            if re.match(r"^\s*" + re.escape(fence) + r"\s*$", line):
-                fence = None
-        elif opening := re.match(r"^\s*(```|~~~)", line):
-            fence = opening.group(1)
-        else:
+        outside, fence = fence is None, markdown_fence(fence, line)
+        if outside and fence is None:
             line = "".join(part if index % 2 else TOPIC_BARE_URL_RE.sub(
                 lambda match: f"[{match.group(0)}]({match.group(0)})", part)
                 for index, part in enumerate(re.split(r"(`[^`]+`)", line)))
         lines.append(line)
-    return render_markdown("\n".join(lines))
+    try:
+        return render_markdown("\n".join(lines))
+    except ValueError:
+        return f"<p>{html.escape(text, quote=False)}</p>"
+
+
+def topic_inline(text: str) -> str:
+    """A one-line topic value as safe HTML; text with a malformed link address shows as written."""
+    try:
+        return markdown_inline(text)
+    except ValueError:
+        return html.escape(text, quote=False)
 
 
 def topic_stamp(value: datetime, show: str) -> str:
@@ -7827,24 +7842,24 @@ def topic_link_html(link: str, data_dir: Path | None, pages: dict[str, str] | No
                 assert pages is not None
                 pages[name], pages[raw_name] = built
                 text = link[1:link.index("](")] if link.startswith("[") else label
-                return f'<a href="{html.escape(name, quote=True)}">{markdown_inline(text)}</a>'
+                return f'<a href="{html.escape(name, quote=True)}">{topic_inline(text)}</a>'
         return f'<span class="piece-id">{html.escape(target)}</span>'
     if link.startswith("["):
-        return markdown_inline(link)
-    return markdown_inline(f"[{link}]({link})")
+        return topic_inline(link)
+    return topic_inline(f"[{link}]({link})")
 
 
 def topic_state_html(topic: Topic, snapshot: HomeSnapshot, item_pages: dict[str, str],
                      pages: dict[str, str] | None, main_href: str) -> str:
     rows = []
     if topic.now:
-        rows.append(("Now", f"<p style=\"margin:0\">{markdown_inline(topic.now)}</p>"))
+        rows.append(("Now", f"<p style=\"margin:0\">{topic_inline(topic.now)}</p>"))
     if topic.waiting:
         waits = []
         for who, what in topic.waiting:
             mine = topic_speaker(who) == "you"
             name = f'<span class="{"you" if mine else "who"}">{html.escape(topic_who_text(topic_speaker(who)))}</span>'
-            waits.append(f"<li>{name}{': ' + markdown_inline(what) if what else ''}</li>")
+            waits.append(f"<li>{name}{': ' + topic_inline(what) if what else ''}</li>")
         rows.append(("Waiting on", f"<ul>{''.join(waits)}</ul>"))
     if topic.pieces:
         items = snapshot_items(snapshot)
