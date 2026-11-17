@@ -9404,9 +9404,15 @@ def reaction_delivered(state_path: Path, reaction_id: str) -> bool:
 
 
 def send_reaction(args: argparse.Namespace, raw: dict[str, object]) -> dict[str, str]:
-    """Deliver a reaction made on the served page and record it; shared with the page's Send button."""
+    """Deliver a reaction made on the served page and record it; shared with the page's Send button.
+
+    A retry of a reaction already recorded returns the recorded one without delivering it again."""
     reaction = clean_reaction(raw)
-    snapshots, state_path, _state = load_report_context(args)
+    snapshots, state_path, state = load_report_context(args)
+    stored = next((sent for sent in state.history.get((reaction["kind"], reaction["item_id"]), [])
+                   if sent["id"] == reaction["id"]), None)
+    if stored is not None:
+        return stored
     top, task, title = reaction_target(snapshots, reaction["kind"], reaction["item_id"])
     reaction.update(task=task, title=title, at=reaction_time(datetime.now(timezone.utc)), source="page")
     deliver_reaction(top.spec, reaction)
