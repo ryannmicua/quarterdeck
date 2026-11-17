@@ -7833,7 +7833,21 @@ button { font: 600 1rem/1.2 var(--sans); color: inherit; cursor: pointer; }
 .answer-status { margin: .8rem 0 0; font: .95rem/1.45 var(--sans); }
 .answer-status[hidden] { display: none; }
 .answer-status .undo { margin-left: .4rem; font-weight: 700; }
-.decision.sent { border-left-color: var(--rule); }
+.answer .words { flex: 1 1 100%; }
+.words .ask-send { border: 1.5px solid var(--ink); background: transparent; color: var(--ink); }
+.words label { display: block; margin: 0 0 .3rem; font: 600 .8rem var(--sans); letter-spacing: .08em; text-transform: uppercase; color: var(--soft); }
+.decision.answered { margin: 0 0 .8rem; border-left-color: var(--rule); }
+.decision .said-line { display: flex; flex-wrap: wrap; align-items: baseline; gap: 0 .7rem; margin: 0; min-height: 44px;
+  padding: .55rem 0; font: .95rem/1.45 var(--sans); color: var(--soft); }
+.decision details.said-line { display: block; }
+.decision .said-line summary { display: flex; flex-wrap: wrap; align-items: baseline; gap: 0 .7rem; cursor: pointer; list-style: none; }
+.decision .said-line summary::-webkit-details-marker { display: none; }
+.decision .said-line summary b { text-decoration: underline dotted; text-underline-offset: .2em; }
+.decision .said-line .q { font: 700 1.02rem/1.35 var(--serif); color: var(--ink); overflow-wrap: anywhere; }
+.decision .said-line .said { overflow-wrap: anywhere; }
+.decision .said-line b { color: var(--ink); }
+.said-full { margin: .4rem 0 0; font: 1rem/1.5 var(--serif); color: var(--ink); overflow-wrap: anywhere; white-space: pre-wrap; }
+.prose details.said-line summary { cursor: pointer; }
 .entry.pending .ties { color: var(--signal); }
 .ask { position: sticky; bottom: 0; z-index: 4; margin: 2rem -1rem 0; padding: .7rem 1rem calc(.8rem + env(safe-area-inset-bottom));
   background: var(--ground); border-top: 2px solid var(--ink); }
@@ -7930,27 +7944,98 @@ TOPIC_ASK_SCRIPT = """
         field.style.height = Math.min(field.scrollHeight + 2, window.innerHeight * 0.4) + "px";
       }
 
-      // A decision card: one tap starts five seconds to undo, then the answer is sent.
+      // Cut a sent answer or question to about %(limit)s characters, as the server does.
+      function preview(text) {
+        return text.length <= %(limit)s ? text : text.slice(0, %(limit)s - 1).trimEnd() + "\u2026";
+      }
+      function stamp(at) {
+        const time = document.createElement("time");
+        const when = new Date(at || Date.now());
+        time.dateTime = when.toISOString();
+        time.textContent = new Intl.DateTimeFormat(undefined, {day: "numeric", month: "short", hour: "2-digit", minute: "2-digit"}).format(when);
+        return time;
+      }
+      // One line as it stands, or a disclosure whose summary is the line and whose body is the whole text.
+      function folded(text, parts) {
+        const short = preview(text) === text;
+        const holder = document.createElement(short ? "p" : "details");
+        holder.className = "said-line";
+        const line = short ? holder : document.createElement("summary");
+        line.append(...parts);
+        if (!short) {
+          const full = document.createElement("p");
+          full.className = "said-full";
+          full.textContent = text;
+          holder.append(line, full);
+        }
+        return holder;
+      }
+      // An answered card stops counting as needing you, here and in the tab title.
+      function uncount() {
+        for (const count of document.querySelectorAll("#needs-h .n, #open-h .n")) {
+          const left = Math.max(0, Number(count.textContent) - 1);
+          count.textContent = String(left);
+          if (left) continue;
+          count.parentElement.classList.remove("needs");
+          const empty = document.querySelector("[data-needs-empty]");
+          if (empty) empty.hidden = false;
+        }
+        const title = document.querySelector("#needs-h .n");
+        if (title) document.title = (Number(title.textContent) ? "(" + title.textContent + ") " : "") + document.title.replace(/^\\(\\d+\\) /, "");
+      }
+
+      // A decision card: tapping an option or sending words starts five seconds to undo, then the answer is sent and
+      // the card folds to one line. A failed send leaves the card open with Try again.
       for (const card of document.querySelectorAll("[data-decision]")) {
         const row = card.querySelector(".answer"), status = card.querySelector(".answer-status");
+        const words = card.querySelector("[data-words-answer]"), field = words && words.querySelector(".ask-text");
         let timer = null, tick = null;
-        function settle(text) {
+        function settle(...parts) {
           clearTimeout(timer);
           clearInterval(tick);
           delete card.dataset.mutationPending;
           row.hidden = false;
-          status.textContent = text;
-          status.hidden = !text;
+          status.replaceChildren(...parts);
+          status.hidden = !parts.length;
         }
-        card.addEventListener("click", event => {
-          if (event.target.closest("[data-undo-answer]")) {
-            settle("Not sent. Pick an answer when you are ready.");
-            row.querySelector("[data-option], [data-discuss]").focus();
-            return;
+        function answered(text, at) {
+          const question = card.querySelector("h3").textContent;
+          const q = document.createElement("span");
+          q.className = "q";
+          q.textContent = question;
+          const said = document.createElement("span");
+          said.className = "said";
+          const answer = document.createElement("b");
+          answer.textContent = preview(text);
+          said.append("Answered: ", answer);
+          const line = folded(text, [q, said, stamp(at)]);
+          line.setAttribute("role", "status");
+          card.className = "decision answered";
+          delete card.dataset.decision;
+          delete card.dataset.mutationPending;
+          card.replaceChildren(line);
+          uncount();
+        }
+        async function deliver(text) {
+          clearInterval(tick);
+          card.dataset.mutationPending = "true";
+          row.hidden = true;
+          status.textContent = "Sending \u201c" + preview(text) + "\u201d\u2026";
+          status.hidden = false;
+          try {
+            const sent = await send({kind: "decision", item_id: card.dataset.decision, text}, card);
+            answered(sent.text || text, sent.at);
+          } catch (error) {
+            const retry = document.createElement("button");
+            retry.type = "button";
+            retry.className = "undo";
+            retry.dataset.retryAnswer = text;
+            retry.textContent = "Try again";
+            settle("Not sent: " + error.message + " ", retry);
           }
-          const option = event.target.closest("[data-option]");
-          if (!option || card.dataset.mutationPending) return;
-          const choice = option.dataset.option;
+        }
+        function start(text) {
+          if (card.dataset.mutationPending) return;
           let left = UNDO_MS / 1000;
           card.dataset.mutationPending = "true";
           row.hidden = true;
@@ -7962,24 +8047,39 @@ TOPIC_ASK_SCRIPT = """
           undo.textContent = "Undo";
           status.replaceChildren(label, undo);
           status.hidden = false;
-          const show = () => { label.textContent = "Sending \u201c" + choice + "\u201d in " + left + " s"; };
+          const show = () => { label.textContent = "Sending \u201c" + preview(text) + "\u201d in " + left + " s"; };
           show();
           undo.focus();
           tick = setInterval(() => { left -= 1; if (left > 0) show(); }, 1000);
-          timer = setTimeout(async () => {
-            clearInterval(tick);
-            undo.remove();
-            label.textContent = "Sending \u201c" + choice + "\u201d\u2026";
-            try {
-              await send({kind: "decision", item_id: card.dataset.decision, text: choice}, card);
-              delete card.dataset.mutationPending;
-              card.classList.add("sent");
-              status.textContent = "Sent to Firstmate: \u201c" + choice + "\u201d. The card closes when Firstmate records it.";
-            } catch (error) {
-              settle("Not sent: " + error.message + " Tap an answer to try again.");
-            }
-          }, UNDO_MS);
+          timer = setTimeout(() => deliver(text), UNDO_MS);
+        }
+        card.addEventListener("click", event => {
+          if (event.target.closest("[data-undo-answer]")) {
+            settle("Not sent. Pick an answer when you are ready.");
+            row.querySelector("[data-option], .ask-text, .discuss").focus();
+            return;
+          }
+          const retry = event.target.closest("[data-retry-answer]");
+          if (retry) { if (!card.dataset.mutationPending) deliver(retry.dataset.retryAnswer); return; }
+          const option = event.target.closest("[data-option]");
+          if (option) start(option.dataset.option);
         });
+        if (words) {
+          // Words being typed hold off the page's automatic reload, like the ask box.
+          const hold = () => {
+            if (document.activeElement === field || field.value.trim()) words.dataset.mutationPending = "true";
+            else delete words.dataset.mutationPending;
+          };
+          field.addEventListener("input", () => { grow(field); hold(); });
+          field.addEventListener("focus", hold);
+          field.addEventListener("blur", hold);
+          words.addEventListener("submit", event => {
+            event.preventDefault();
+            const text = field.value.trim();
+            if (!text) { settle("Write your answer first."); field.focus(); return; }
+            start(text);
+          });
+        }
       }
 
       // The ask box: drafts are kept on this device; nothing is sent until Send, so dictated words can be checked first.
@@ -8116,9 +8216,7 @@ TOPIC_ASK_SCRIPT = """
         head.append(who, when, where);
         const body = document.createElement("div");
         body.className = "prose";
-        const paragraph = document.createElement("p");
-        paragraph.textContent = text;
-        body.append(paragraph);
+        body.append(folded(text, [preview(text)]));
         const ties = document.createElement("p");
         ties.className = "ties";
         ties.textContent = "Waiting for Firstmate\u2019s answer";
@@ -8162,7 +8260,7 @@ TOPIC_ASK_SCRIPT = """
 
 def topic_ask_script() -> str:
     return (TOPIC_ASK_SCRIPT.replace("%(endpoint)s", REACTION_ENDPOINT).replace("%(stop)s", TOPIC_ASK_STOP_WORDS)
-            .replace("%(new)s", NEW_TOPIC_ITEM))
+            .replace("%(new)s", NEW_TOPIC_ITEM).replace("%(limit)s", str(ANSWER_PREVIEW_LIMIT)))
 
 
 def topic_who_text(who: str) -> str:
@@ -8263,34 +8361,58 @@ def topic_state_html(topic: Topic, snapshot: HomeSnapshot, item_pages: dict[str,
     return '<dl class="state">' + "".join(f"<div><dt>{label}</dt><dd>{value}</dd></div>" for label, value in rows) + "</dl>"
 
 
+ANSWER_PREVIEW_LIMIT = 80  # characters of a sent answer or question shown before the rest is folded away
+
+
+def answer_preview(text: str) -> str:
+    """A sent answer or question cut to about 80 characters, ending in an ellipsis when cut."""
+    return text if len(text) <= ANSWER_PREVIEW_LIMIT else text[:ANSWER_PREVIEW_LIMIT - 1].rstrip() + "…"
+
+
+def folded_text_html(text: str, line: str) -> str:
+    """`line` as it stands when `text` is short; otherwise a disclosure whose summary is `line` and whose body is the
+    whole text, so a long answer stays one line until tapped."""
+    if answer_preview(text) == text:
+        return f'<p class="said-line">{line}</p>'
+    return f'<details class="said-line"><summary>{line}</summary><p class="said-full">{html.escape(text)}</p></details>'
+
+
+def topic_answered_html(entry: TopicEntry, anchor: str, sent: dict[str, str]) -> str:
+    """A decision answered from Quarterdeck that the topic file does not record yet, folded to one line: the question,
+    the answer given (cut to about 80 characters, the rest a tap away) and when it was sent."""
+    text = sent.get("text", "")
+    when = parse_board_time(sent.get("at"))
+    line = (f'<span class="q">{html.escape(entry.decision)}</span>'
+            f'<span class="said">Answered: <b>{html.escape(answer_preview(text))}</b></span>'
+            + (topic_stamp(when, "full") if when else ""))
+    return f'<article class="decision answered" id="{anchor}">{folded_text_html(text, line)}</article>'
+
+
 def topic_decision_html(entry: TopicEntry, ref: str = "", live: bool = False, sent: dict[str, str] | None = None,
                         topic: Topic | None = None) -> str:
     """An open decision card, pinned above the conversation: the question, its context, the recommendation and options.
 
-    On the served page with writes on (`live`), each option is a one-tap answer with five seconds to undo, and Discuss
-    opens the ask box about this card. `sent` is an answer already sent from Quarterdeck that the file does not show yet.
-    On the front page (`topic` given) the card names its topic, and Discuss opens the card in its thread.
+    On the served page with writes on (`live`), each option is a one-tap answer and Answer in words sends typed text,
+    both with five seconds to undo, and Discuss opens the ask box about this card. `sent` is an answer already sent from
+    Quarterdeck that the file does not show yet: the card is then folded to one line. On the front page (`topic` given)
+    the card names its topic, and Discuss opens the card in its thread.
     """
     decision_id = html.escape(entry.entry_id, quote=True)
-    active = live and sent is None
-    data = f' data-decision="{html.escape(f"{ref}/{entry.entry_id}", quote=True)}"' if active else ""
-    asked = f"Asked {topic_stamp(entry.at, 'full')}" if entry.at else "Asked"
     anchor = f"decision-{decision_id}" if topic is None else html.escape(f"decision-{ref}-{entry.entry_id}", quote=True)
+    if sent is not None:
+        return topic_answered_html(entry, anchor, sent)
+    data = f' data-decision="{html.escape(f"{ref}/{entry.entry_id}", quote=True)}"' if live else ""
+    asked = f"Asked {topic_stamp(entry.at, 'full')}" if entry.at else "Asked"
     if topic is not None:
         asked = (f'<a href="{html.escape(topic.page, quote=True)}">{html.escape(topic.title or topic.topic_id)}</a>'
                  f" · {asked}")
-    parts = [f'<article class="decision{" sent" if sent else ""}" id="{anchor}"{data}>',
+    parts = [f'<article class="decision" id="{anchor}"{data}>',
              f'<p class="asked">{asked}</p><h3>{html.escape(entry.decision)}</h3>']
     if entry.text:
         parts.append(f'<div class="prose">{topic_markdown(entry.text)}</div>')
     if entry.recommend:
         parts.append(f'<p class="rec">First mate recommends <b>{html.escape(entry.recommend)}</b>.</p>')
-    if sent is not None:
-        when = parse_board_time(sent.get("at"))
-        stamp = f" {topic_stamp(when, 'full')}" if when else ""
-        parts.append(f'<p class="answer-status">You answered <b>{html.escape(sent.get("text", ""))}</b> from Quarterdeck{stamp}. '
-                     "The card closes when Firstmate records it.</p>")
-    elif active:
+    if live:
         recommended = entry.recommend.casefold()
         buttons = "".join(
             f'<button type="button" class="opt{" recommended" if option.casefold() == recommended else ""}" '
@@ -8303,7 +8425,10 @@ def topic_decision_html(entry: TopicEntry, ref: str = "", live: bool = False, se
             f'data-question="{html.escape(entry.decision, quote=True)}">Discuss</button>' if topic is None else
             f'<a class="discuss" href="{html.escape(f"{topic.page}#decision-{entry.entry_id}", quote=True)}">Discuss</a>'
         )
-        parts.append(f'<div class="answer">{row}{discuss}</div><p class="answer-status" aria-live="polite" hidden></p>')
+        words = (f'<form class="words" data-words-answer><label for="words-{anchor}">Answer in words</label>'
+                 f'<div class="ask-row"><textarea class="ask-text" id="words-{anchor}" rows="1" autocapitalize="sentences" '
+                 f'maxlength="{REACTION_TEXT_LIMIT}"></textarea><button type="submit" class="ask-send">Send</button></div></form>')
+        parts.append(f'<div class="answer">{row}{discuss}{words}</div><p class="answer-status" aria-live="polite" hidden></p>')
     elif entry.options:
         parts.append(f'<p class="opts">Options: {" · ".join(html.escape(option) for option in entry.options)}</p>')
     parts.append("</article>")
@@ -8363,12 +8488,14 @@ def topic_entry_html(entry: TopicEntry, by_id: dict[str, TopicEntry],
 
 
 def topic_pending_ask_html(reaction: dict[str, str], answers: list[TopicEntry]) -> str:
-    """A question sent from Quarterdeck that the topic file does not show yet, at the end of the conversation."""
+    """A question sent from Quarterdeck that the topic file does not show yet, at the end of the conversation. A long
+    question is cut to about 80 characters, the rest a tap away."""
     when = parse_board_time(reaction.get("at"))
     head = '<span class="who">You</span>' + (topic_stamp(when, "clock") if when else "") + "<span>on Quarterdeck</span>"
     tie = (f"Answered: {html.escape(topic_reply_summary(answers[-1]))}" if answers else "Waiting for Firstmate’s answer")
+    text = reaction.get("text", "")
     return (f'<li class="entry you{"" if answers else " pending"}" id="entry-{html.escape(topic_ask_id(reaction["id"]), quote=True)}">'
-            f'<p class="entry-head">{head}</p><div class="prose"><p>{html.escape(reaction.get("text", ""))}</p></div>'
+            f'<p class="entry-head">{head}</p><div class="prose">{folded_text_html(text, html.escape(answer_preview(text)))}</div>'
             f'<p class="ties">{tie}</p></li>')
 
 
@@ -8927,26 +9054,33 @@ def front_page_html(homes: list[HomeSnapshot], title: str, bearings: Bearings, c
     multi_home = len(all_snapshots(homes)) > 1
     decisions: list[tuple[datetime, str]] = []
     waits: list[str] = []
+    awaiting = 0
     for snapshot, topic in found:
         if topic.status == "done":
             continue
-        for entry in topic_awaiting(topic, snapshot.review_state):
-            decisions.append((entry.at or generated, topic_decision_html(entry, topic.ref, allow_marks, None, topic)))
+        for entry in topic.open_decisions():
+            # An answer sent from Quarterdeck folds the card to one line that no longer counts; it leaves once the
+            # topic file records the answer.
+            sent = topic_sent(snapshot.review_state, "decision", f"{topic.ref}/{entry.entry_id}")
+            awaiting += not sent
+            decisions.append((entry.at or generated,
+                              topic_decision_html(entry, topic.ref, allow_marks, sent[-1] if sent else None, topic)))
         for what in topic_waits_on_you(topic):
             waits.append(f'<li><a class="row" href="{html.escape(topic.page, quote=True)}"><span class="row-meta">'
                          f'{html.escape(topic.title or topic.topic_id)} · waiting on you</span><span class="row-title">{html.escape(what)}</span></a></li>')
     decisions.sort(key=lambda pair: pair[0])
     loose = front_loose_rows(cards, found, homes, bearings)
-    total = len(decisions) + len(waits) + len(loose)
+    total = awaiting + len(waits) + len(loose)
     needs_class = ' class="needs"' if total else ""
     attention = bearings.attention
     unread = attention is None or needs_unread(attention)
     empty = ("Could not read everything that might need you, so this is not a confirmed all clear."
              if unread else "Nothing needs you right now.")
     needs_block = (
-        f'<section aria-labelledby="needs-h" id="needs"><h2 id="needs-h"{needs_class}>Needs you <span class="n">{total}</span></h2>'
+        f'<section aria-labelledby="needs-h" id="needs"><h2 id="needs-h"{needs_class}>Needs you '
+        f'<span class="n">{total}</span></h2>'
         + ("".join(attention_errors_html(attention)) if attention is not None else "")
-        + ("" if total else f'<p class="empty">{empty}</p>')
+        + f'<p class="empty" data-needs-empty{"" if not total else " hidden"}>{empty}</p>'
         + "".join(card for _at, card in decisions)
         + (f'<ul class="rows">{"".join(waits)}</ul>' if waits else "")
         + (f'<h3 class="needs-group">Not yet in a topic</h3><ul class="rows">{"".join(loose)}</ul>' if loose else "")

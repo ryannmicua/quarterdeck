@@ -123,15 +123,20 @@ A question the owner sends from Quarterdeck carries an id of `ask-` and 16 lette
 `ask-3f9c2a1b0d4e5f60`; Firstmate's inbox note names it and the topic. Copy the question into the file as an entry
 from `you` at `quarterdeck` with that `Id:`, and answer it with `Re:` naming the same id. A `Re:` that names an
 `ask-` id is allowed even when the question itself is not in the file. Until the file shows the question, the
-thread page shows it at the end of the conversation as waiting; the answer appears once a `Re:` names it. A
+thread page shows it at the end of the conversation as waiting, a long question cut to about 80 characters with the
+rest shown on tap; the answer appears once a `Re:` names it. A
 question sent from the front page as **New topic** goes to the first configured home; start or pick a topic for it.
 
 ### Answers sent from Quarterdeck
 
-An answer the owner taps on a decision card reaches Firstmate as an inbox note naming the topic and the decision.
-Record it as an entry from `you` at `quarterdeck` with `Re:` naming the decision. Until then the card shows the
-answer as sent, and the decision no longer counts as needing the owner. Quarterdeck refuses an answer to a decision
-the file already shows answered, and a second answer to a decision already answered from Quarterdeck.
+An answer the owner gives on a decision card, a tapped option or words typed under **Answer in words**, reaches
+Firstmate as an inbox note naming the topic and the decision, with the whole answer. Record it as an entry from `you`
+at `quarterdeck` with `Re:` naming the decision. Until then the card is folded to one line: the question,
+"Answered:" and the answer (cut to about 80 characters, the rest shown on tap) and when it was sent. The line stays
+under **Needs you** and **Open decisions** but no longer counts, on every device and after a reload, because it is
+drawn from Quarterdeck's own record of the delivered answer. Once a `Re:` names the decision, the line is gone.
+An answer that could not be delivered is not recorded, so its card stays open. Quarterdeck refuses an answer to a
+decision the file already shows answered, and a second answer to a decision already answered from Quarterdeck.
 
 ## Mistakes
 
