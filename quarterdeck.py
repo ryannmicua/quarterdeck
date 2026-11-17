@@ -7985,7 +7985,7 @@ TOPIC_ASK_SCRIPT = """
       }
 
       // A decision card: tapping an option or sending words starts five seconds to undo, then the answer is sent and
-      // the card folds to one line. A failed send leaves the card open with Try again.
+      // the card folds to one line.
       for (const card of document.querySelectorAll("[data-decision]")) {
         const row = card.querySelector(".answer"), status = card.querySelector(".answer-status");
         const words = card.querySelector("[data-words-answer]"), field = words && words.querySelector(".ask-text");
@@ -8026,12 +8026,7 @@ TOPIC_ASK_SCRIPT = """
             const sent = await send({kind: "decision", item_id: card.dataset.decision, text}, card);
             answered(sent.text || text, sent.at);
           } catch (error) {
-            const retry = document.createElement("button");
-            retry.type = "button";
-            retry.className = "undo";
-            retry.dataset.retryAnswer = text;
-            retry.textContent = "Try again";
-            settle("Not sent: " + error.message + " ", retry);
+            settle("Not sent: " + error.message);
           }
         }
         function start(text) {
@@ -8059,8 +8054,6 @@ TOPIC_ASK_SCRIPT = """
             row.querySelector("[data-option], .ask-text, .discuss").focus();
             return;
           }
-          const retry = event.target.closest("[data-retry-answer]");
-          if (retry) { if (!card.dataset.mutationPending) deliver(retry.dataset.retryAnswer); return; }
           const option = event.target.closest("[data-option]");
           if (option) start(option.dataset.option);
         });

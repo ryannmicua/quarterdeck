@@ -558,7 +558,8 @@ The in-page fold runs in the browser only. Serve a fictional home with `--allow-
 `bin/fm-inbox.sh`, at 390 and 1280 px: tap an option and send a typed answer over 80 characters; after the
 five-second Undo each card folds, the Needs you or Open decisions count and the tab title drop by one, and a reload
 shows the same lines. Serve again with an inbox that exits non-zero: the card stays open with "Not sent" and
-**Try again**, which delivers once the inbox works. Append a fictional `Re:` and reload past the 30-second cache:
+its option buttons and **Answer in words** controls. Once the inbox works, tap an option again or resend the typed
+answer with **Send**; after the five-second Undo it delivers. Append a fictional `Re:` and reload past the 30-second cache:
 the line is gone. Check that the page scrolls to its end and back with no sideways overflow.
 
 ## Refresh transfer and report Undo

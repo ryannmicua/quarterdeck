@@ -57,8 +57,8 @@ A page written by `quarterdeck render` is read-only: answer a decision in the Fi
 3. The card folds to one line: the question, "Answered:" with your answer, and when you sent it. A long answer is cut
    to about 80 characters; tap the line to read all of it. The decision stops counting as needing you. The line
    stays after a reload and on your other devices, and goes away once Firstmate records your answer in the topic.
-4. If the answer could not be sent, the card stays open and says "Not sent" with the reason. Tap **Try again**, or
-   pick another answer.
+4. If the answer could not be sent, the card stays open and says "Not sent" with the reason. Tap an option again,
+   or use **Send** under **Answer in words** to resend your typed answer.
 
 **Discuss** is for a decision you want to talk through: it opens the ask box at the bottom of the page with
 "About: <the question>" above it, and sends a question, not an answer. Remove that line to ask about the topic in
