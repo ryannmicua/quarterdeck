@@ -4714,7 +4714,7 @@ store['quarterdeck-draft:call:home/expired'] = JSON.stringify({text: 'old reply'
         )
         snapshots = [quarterdeck.load_home_snapshot(quarterdeck.HomeSpec("Dock", home, None))
                      for home in (self.home, second)]
-        owner, task = quarterdeck.reaction_target(snapshots, "call", "dock/only-second")
+        owner, task, _title = quarterdeck.reaction_target(snapshots, "call", "dock/only-second")
         self.assertEqual((owner.spec.home, task), (second, "only-second"))
         self.assertEqual(quarterdeck.reaction_target(snapshots, "call", "dock/harbor-hold")[0].spec.home, self.home)
         with self.assertRaisesRegex(ValueError, "ambiguous"):
@@ -11009,6 +11009,42 @@ class TopicAskTests(unittest.TestCase):
         self.assertEqual(self.send(request, "topic", "maple-harbor-catalog", "Hi", reaction="approve")[0], 400)
         self.assertEqual(self.send(request, "decision", "maple-harbor-catalog/merge-42", "")[0], 400)
         self.assertEqual(len(self.notes()), sent)
+
+    def test_a_topic_named_new_is_asked_as_that_topic_not_as_a_new_one(self) -> None:
+        (self.home / "data" / "topics" / "new.md").write_text("# New arrivals shelf\n", encoding="utf-8")
+        request = self.serve()
+        status, body = self.send(request, "topic", "new", "Which titles go on the shelf?")
+        self.assertEqual(status, 200, body)
+        self.assertTrue(self.notes()[-1].startswith("Quarterdeck ask ask-0123456789abcdef on topic new ('New arrivals shelf')"),
+                        self.notes()[-1])
+        front = request("GET", "/")[1].split('<form class="front-ask" data-ask="front"', 1)[1].split("</form>", 1)[0]
+        self.assertEqual(len(re.findall(r'name="route" value="new"', front)), 1)
+
+    def test_a_second_answer_to_a_decision_is_refused_once_one_was_sent_from_quarterdeck(self) -> None:
+        request = self.serve()
+        with patch.object(quarterdeck, "topic_reaction_lookup", wraps=quarterdeck.topic_reaction_lookup) as lookup:
+            self.assertEqual(self.send(request, "decision", "maple-harbor-catalog/merge-42", "Merge")[0], 200)
+        self.assertEqual(lookup.call_count, 1)
+        sent = len(self.notes())
+        status, body = self.send(request, "decision", "maple-harbor-catalog/merge-42", "Hold", number=2)
+        self.assertEqual(status, 409, body)
+        self.assertIn("already sent from Quarterdeck", body)
+        self.assertEqual(len(self.notes()), sent)
+
+    def test_reactions_import_delivers_only_the_first_answer_to_a_decision(self) -> None:
+        path = self.root / "reactions.json"
+        path.write_text(json.dumps([
+            {"id": f"0123456789abcdef{number:016x}", "kind": "decision", "item_id": "maple-harbor-catalog/merge-42",
+             "reaction": "", "text": text, "at": at}
+            for number, text, at in ((1, "Merge", "2026-03-05T10:00:00Z"), (2, "Hold", "2026-03-05T10:05:00Z"))
+        ]), encoding="utf-8")
+        result = QuarterdeckTests.run_cli(self, ["reactions", "import", str(path), "--home", str(self.home)],  # type: ignore[arg-type]
+                                          self.root, self.root / "config")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("Delivered 1 of 2 artifact reactions.", result.stdout)
+        self.assertIn("already sent from Quarterdeck", result.stdout)
+        self.assertEqual(len(self.notes()), 1)
+        self.assertIn('"Merge"', self.notes()[0])
 
     def test_the_served_thread_has_answers_discuss_and_the_ask_box_and_the_rendered_one_does_not(self) -> None:
         request = self.serve()

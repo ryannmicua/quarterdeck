@@ -111,11 +111,11 @@ reactions recorded in the cloud artifact, skipping ids already delivered.
 Unsent reply text stays in the browser; see the
 [reply draft rules](../how-to/serve-the-page.md#react-to-calls-and-reports-from-the-page).
 The same endpoint takes a question about a topic (`kind` `topic`, the topic's
-page name or `new` for a new topic) and an answer to a topic decision (`kind`
+page name or `+new` for a new topic) and an answer to a topic decision (`kind`
 `decision`, `<topic>/<decision id>`), each as text only. The note asks Firstmate
 to record it in `data/topics/<topic-id>.md`; Quarterdeck itself never writes the
 topic file. A topic, decision or answer that does not exist, or a decision the
-file already shows answered, is refused before anything is sent.
+file already shows answered or that was already answered from Quarterdeck, is refused before anything is sent.
 Each configured home is loaded independently. A missing or unreadable home
 shows its own error while other sections still render.
 

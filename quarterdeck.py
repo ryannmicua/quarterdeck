@@ -7973,11 +7973,19 @@ TOPIC_ASK_SCRIPT = """
         const routes = Array.from(form.querySelectorAll("input[name=route]"));
         const toggle = form.querySelector(".route-toggle"), list = form.querySelector(".route-list");
         let manual = false;
+        function hold() {
+          if (form.dataset.sending || document.activeElement === field || field.value.trim() || manual || (about && !about.hidden)) {
+            form.dataset.mutationPending = "true";
+          } else {
+            delete form.dataset.mutationPending;
+          }
+        }
         function setAbout(id, question) {
           if (!about) return;
           about.dataset.id = id || "";
           about.querySelector(".about-text").textContent = question || "";
           about.hidden = !id;
+          hold();
         }
         function words(text) {
           return new Set((String(text).toLowerCase().match(/[a-z0-9]{3,}/g) || []).filter(word => !STOP.has(word)));
@@ -8003,9 +8011,9 @@ TOPIC_ASK_SCRIPT = """
         }
         field.value = readDraft(draftKey);
         grow(field);
-        field.addEventListener("input", () => { saveDraft(draftKey, field.value); grow(field); guess(); });
-        field.addEventListener("focus", () => { form.dataset.mutationPending = "true"; });
-        field.addEventListener("blur", () => { if (!form.dataset.sending) delete form.dataset.mutationPending; });
+        field.addEventListener("input", () => { saveDraft(draftKey, field.value); grow(field); guess(); hold(); });
+        field.addEventListener("focus", hold);
+        field.addEventListener("blur", hold);
         if (about) {
           about.querySelector(".linkish").addEventListener("click", () => { setAbout("", ""); field.focus(); });
           document.addEventListener("click", event => {
@@ -8016,9 +8024,6 @@ TOPIC_ASK_SCRIPT = """
             field.focus();
             form.scrollIntoView({block: "end"});
           });
-          const wanted = new URLSearchParams(location.search).get("about");
-          const named = wanted && Array.from(document.querySelectorAll("[data-discuss]")).find(item => item.dataset.discuss === wanted);
-          if (named) setAbout(wanted, named.dataset.question);
         }
         if (toggle) {
           toggle.addEventListener("click", () => {
@@ -8029,12 +8034,14 @@ TOPIC_ASK_SCRIPT = """
           for (const route of routes) route.addEventListener("change", () => {
             manual = true;
             showRoute();
+            hold();
             list.hidden = true;
             toggle.setAttribute("aria-expanded", "false");
             toggle.focus();
           });
           guess();
         }
+        hold();
         form.addEventListener("submit", async event => {
           event.preventDefault();
           if (form.dataset.sending) return;
@@ -8044,7 +8051,7 @@ TOPIC_ASK_SCRIPT = """
           const message = aboutId ? "About decision " + aboutId + " (" + about.querySelector(".about-text").textContent + "): " + text : text;
           const route = routes.length ? chosen() : null;
           form.dataset.sending = "true";
-          form.dataset.mutationPending = "true";
+          hold();
           submit.disabled = true;
           status.textContent = "Sending\u2026";
           try {
@@ -8067,7 +8074,7 @@ TOPIC_ASK_SCRIPT = """
           }
           submit.disabled = false;
           delete form.dataset.sending;
-          if (document.activeElement !== field) delete form.dataset.mutationPending;
+          hold();
         });
       }
       function addPending(text) {
@@ -9200,7 +9207,7 @@ REACTIONS_VERSION = 1
 REACTION_LABELS = {"approve": "Approve", "hold": "Hold", "not-now": "Not now", "question": "Question"}
 REACTION_KINDS = ("call", "report", "topic", "decision")
 TOPIC_REACTION_KINDS = ("topic", "decision")  # a question sent from Quarterdeck, and an answer to a decision card
-NEW_TOPIC_ITEM = "new"  # a front-page question for a topic Firstmate has not started yet
+NEW_TOPIC_ITEM = "+new"  # a front-page question for a topic Firstmate has not started yet
 REACTION_ID_RE = re.compile(r"[A-Za-z0-9._-]{8,64}")
 INBOX_SCRIPT = Path("bin") / "fm-inbox.sh"
 INBOX_TIMEOUT_SECONDS = 15
@@ -9278,9 +9285,10 @@ def reaction_note(reaction: dict[str, str], home_label: str) -> str:
 def topic_reaction_lookup(
     snapshots: list[HomeSnapshot], kind: str, item_id: str,
 ) -> tuple[HomeSnapshot, Topic | None, TopicEntry | None]:
-    """The home, topic and decision a question or answer names. `new` names no topic: the first local home takes it.
+    """The home, topic and decision a question or answer names. `+new` names no topic: the first local home takes it.
 
-    Raises ValueError for an unknown topic or decision, and for a decision the topic file already shows answered."""
+    Raises ValueError for an unknown topic or decision, and for a decision already answered in the topic file or
+    from Quarterdeck."""
     if kind == "topic" and item_id == NEW_TOPIC_ITEM:
         home = next((snapshot for snapshot in snapshots if snapshot.spec.home is not None and not snapshot.spec.remote_host), None)
         if home is None:
@@ -9298,22 +9306,28 @@ def topic_reaction_lookup(
         raise ValueError(f"no decision matches: {decision_id} in topic {topic.topic_id}")
     if decision_id in topic.responses():
         raise ValueError(f"the topic file already records an answer to {decision_id}")
+    if topic_sent(owner.review_state, "decision", item_id):
+        raise ValueError(f"an answer to {decision_id} was already sent from Quarterdeck")
     return owner, topic, entry
 
 
-def topic_reaction_target(snapshots: list[HomeSnapshot], kind: str, item_id: str) -> tuple[HomeSnapshot, str]:
+def topic_reaction_target(snapshots: list[HomeSnapshot], kind: str, item_id: str) -> tuple[HomeSnapshot, str, str]:
     owner, topic, entry = topic_reaction_lookup(snapshots, kind, item_id)
     if topic is None:
-        return owner, ""
-    return owner, f"{topic.topic_id}/{entry.entry_id}" if entry is not None else topic.topic_id
+        return owner, "", ""
+    if entry is not None:
+        return owner, f"{topic.topic_id}/{entry.entry_id}", entry.decision
+    return owner, topic.topic_id, topic.title
 
 
-def reaction_target(snapshots: list[HomeSnapshot], kind: str, item_id: str) -> tuple[HomeSnapshot, str]:
-    """Resolve a reaction's item to (the configured home to notify, the item's task id).
+def reaction_target(snapshots: list[HomeSnapshot], kind: str, item_id: str) -> tuple[HomeSnapshot, str, str]:
+    """Resolve a reaction's item to (the configured home to notify, the item's task id, its title).
 
-    A topic's task is its topic id, and a decision's is `<topic id>/<decision id>`."""
+    A topic's task is its topic id, and a decision's is `<topic id>/<decision id>`. Only topics and decisions carry a
+    title: the topic's title, or the decision's question."""
+    title = ""
     if kind in TOPIC_REACTION_KINDS:
-        owner, task = topic_reaction_target(snapshots, kind, item_id)
+        owner, task, title = topic_reaction_target(snapshots, kind, item_id)
     elif kind == "report":
         owner, report = unique_report(snapshots, item_id)
         items = backlog_items(owner.backlog_markdown, owner) if (
@@ -9331,7 +9345,7 @@ def reaction_target(snapshots: list[HomeSnapshot], kind: str, item_id: str) -> t
         owner = owners[0]
         task = item_id.partition("/")[2]
     top = next(s for s in snapshots if any(member is owner for member in all_snapshots([s])))
-    return top, task
+    return top, task, title
 
 
 def deliver_reaction(
@@ -9392,13 +9406,9 @@ def reaction_delivered(state_path: Path, reaction_id: str) -> bool:
 def send_reaction(args: argparse.Namespace, raw: dict[str, object]) -> dict[str, str]:
     """Deliver a reaction made on the served page and record it; shared with the page's Send button."""
     reaction = clean_reaction(raw)
-    snapshots, state_path = load_report_snapshots(args)
-    apply_review_marks(snapshots, {})
-    top, task = reaction_target(snapshots, reaction["kind"], reaction["item_id"])
-    reaction.update(task=task, at=reaction_time(datetime.now(timezone.utc)), source="page")
-    if reaction["kind"] in TOPIC_REACTION_KINDS:
-        _owner, topic, entry = topic_reaction_lookup(snapshots, reaction["kind"], reaction["item_id"])
-        reaction["title"] = entry.decision if entry is not None else topic.title if topic is not None else ""
+    snapshots, state_path, _state = load_report_context(args)
+    top, task, title = reaction_target(snapshots, reaction["kind"], reaction["item_id"])
+    reaction.update(task=task, title=title, at=reaction_time(datetime.now(timezone.utc)), source="page")
     deliver_reaction(top.spec, reaction)
     store_reaction(state_path, reaction)
     return reaction
@@ -9424,8 +9434,7 @@ def import_reactions(args: argparse.Namespace) -> int:
     try:
         source = sys.stdin.read() if args.file == "-" else Path(args.file).expanduser().read_text(encoding="utf-8")
         documents = parse_artifact_reactions(source)
-        snapshots, state_path = load_report_snapshots(args)
-        apply_review_marks(snapshots, {})
+        snapshots, state_path, state = load_report_context(args)
         delivered = 0
         skipped: list[str] = []
         pending: list[tuple[datetime, int, dict[str, str]]] = []
@@ -9447,10 +9456,11 @@ def import_reactions(args: argparse.Namespace) -> int:
             try:
                 if reaction_delivered(state_path, reaction["id"]):
                     raise ValueError("already delivered")
-                top, reaction["task"] = reaction_target(snapshots, reaction["kind"], reaction["item_id"])
+                top, reaction["task"], reaction["title"] = reaction_target(snapshots, reaction["kind"], reaction["item_id"])
                 if not args.dry_run:
                     deliver_reaction(top.spec, reaction)
                     store_reaction(state_path, reaction)
+                state.history.setdefault((reaction["kind"], reaction["item_id"]), []).append(reaction)
                 delivered += 1
             except ValueError as exc:
                 skipped.append(f"{label}: {exc}")

@@ -131,7 +131,7 @@ question sent from the front page as **New topic** goes to the first configured 
 An answer the owner taps on a decision card reaches Firstmate as an inbox note naming the topic and the decision.
 Record it as an entry from `you` at `quarterdeck` with `Re:` naming the decision. Until then the card shows the
 answer as sent, and the decision no longer counts as needing the owner. Quarterdeck refuses an answer to a decision
-the file already shows answered.
+the file already shows answered, and a second answer to a decision already answered from Quarterdeck.
 
 ## Mistakes
 
