@@ -71,7 +71,9 @@ page with `--allow-marks`:
 - phone notifications that show only the decision's title and open on its card, and one notification when a
   question sent from Quarterdeck is answered.
 
-Still to come, in the next PR: a front page of only **Needs you** and **Changed since you last looked**, with saved
-views, Activity and the other sections reachable through search filters.
-
-Each step keeps the old page reachable until the new one covers what it showed.
+The third step makes the front page short whenever topics exist: **Needs you** (topic decisions with one-tap answers,
+then every other item waiting on the owner) and **Changed since you last looked** (one row per topic), the ask box,
+and search. Saved views, the Activity section, Underway, Charted Next and reports give way to search with the filters
+All, Needs you, Underway, Waiting, Queued and Done. "Since you last looked" is kept on the device, so it needs no
+login and no server state. The previous page stays at `classic.html` for one release so nothing is lost while the
+owner gets used to the new one.

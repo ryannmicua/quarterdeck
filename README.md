@@ -50,7 +50,9 @@ for server requirements, phone setup and withdrawal behavior.
   page lists the topics. On the page `serve --allow-marks` serves, a decision
   is answered with one tap and five seconds to undo, and an ask box on each
   thread and on the front page sends a question to Firstmate under the topic it
-  shows. `quarterdeck topics check` reports mistakes in the files. See [Keep topic threads](docs/how-to/keep-topic-threads.md) and the
+  shows. With topics, the front page holds only Needs you and Changed since you
+  last looked; everything else is behind search, and the previous page stays at
+  `classic.html` for one release. `quarterdeck topics check` reports mistakes in the files. See [Keep topic threads](docs/how-to/keep-topic-threads.md) and the
   [topic files reference](docs/reference/topic-files.md).
 - Captain board: when a home has `data/captain-board.json`, the desk groups
   decisions still in play, with background items collapsed. Items

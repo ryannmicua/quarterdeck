@@ -5,11 +5,28 @@ Firstmate needs answered, and everything said about it in chat or on Quarterdeck
 a file in its home; Quarterdeck shows it as a page. The file format is in the
 [topic files reference](../reference/topic-files.md).
 
+## Use the front page (owner)
+
+When a home keeps topic files, Quarterdeck's front page holds only what needs you and what changed:
+
+- **Needs you:** every topic decision still waiting on you, oldest first, with one-tap answers on the served page,
+  then every other item waiting on you (desk calls, held tasks, reports) as a row that opens it on the previous page.
+- **Changed since you last looked:** one row per topic with something new from Firstmate or anyone else since you
+  last left the page on this device, with "+N more" when there is more than one entry. The first time, it shows the
+  last two days. Reloading the page keeps the same starting point.
+- **Ask Firstmate**, on the served page, with **Goes to** (see below).
+- **Everything else is in Search:** underway, waiting and queued work, reports and finished work, all searchable,
+  with the filters All, Needs you, Underway, Waiting, Queued and Done. A search with no match lists the topics and
+  offers to ask Firstmate.
+
+The previous page, with its saved views, Activity, desk and details, stays at `classic.html` for this release; the
+front page and search link to it, and it links back. With no topic files, or with `render --all` or `--lavish`, the
+front page is the previous page, as before.
+
 ## Read a thread (owner)
 
-1. Open Quarterdeck. When the home keeps topic files, a **Topics** section sits under **Needs you**. Each row shows
-   the topic, its **Now** line, how many decisions are open and when it was last written to. Topics with open
-   decisions come first.
+1. Open a topic from **Needs you**, **Changed since you last looked**, search, or the **Topics** list on the
+   previous page.
 2. Tap a topic. Its page starts with the state: **Now**, **Waiting on**, **Pieces** (backlog tasks with their state)
    and **Links**.
 3. **Open decisions** come next, one per question, each with Firstmate's recommendation and the options.
@@ -35,7 +52,7 @@ of the page with "About: <the question>" above it. Remove that line to ask about
 - **On a thread:** type in the box at the bottom and tap **Send**. Your question appears at the end of the
   conversation as waiting, and Firstmate's answer appears there when it writes it. The page reloads about once a
   minute while you are not typing.
-- **On the front page:** the **Ask Firstmate** box sits in the **Topics** section. Under it, **Goes to** shows the
+- **On the front page:** under the **Ask Firstmate** box, **Goes to** shows the
   topic your question will be filed under: Firstmate's guess from your words, or **New topic**. Tap **Change** to
   pick another topic or **New topic** before you send.
 - **By voice:** use the microphone on your phone's keyboard. The words land in the box for you to check; nothing is
@@ -50,7 +67,7 @@ that shows its question only, and tapping it opens the card. A decision you answ
 When Firstmate answers a question you sent from a thread, one notification says "Firstmate answered" and names the
 topic.
 
-When a home has no topic files, the front page has no Topics section and nothing else changes.
+When a home has no topic files, the front page stays as it was and nothing else changes.
 
 ## Start a topic (Firstmate)
 
