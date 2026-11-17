@@ -114,8 +114,10 @@ Re: images-host
 Wait. Ask the vendor again on Friday.
 ```
 
-Open decisions are pinned above the conversation and counted on the front page. An answered decision stays in the
-conversation with the first line of its answer.
+Decisions still awaiting the owner's answer are pinned above the conversation and counted on the front page.
+Once its answer is recorded in the topic file, a decision stays in the conversation with the first line of its answer.
+For cards answered from Quarterdeck before the file records them, see
+[Answer a decision](../how-to/keep-topic-threads.md#answer-a-decision-owner-served-page).
 
 ### Questions sent from Quarterdeck
 
@@ -130,12 +132,11 @@ question sent from the front page as **New topic** goes to the first configured 
 
 An answer the owner gives on a decision card, a tapped option or words typed under **Answer in words**, reaches
 Firstmate as an inbox note naming the topic and the decision, with the whole answer. Record it as an entry from `you`
-at `quarterdeck` with `Re:` naming the decision. Until then the card is folded to one line: the question,
-"Answered:" and the answer (cut to about 80 characters, the rest shown on tap) and when it was sent. The line stays
-under **Needs you** and **Open decisions** but no longer counts, on every device and after a reload, because it is
-drawn from Quarterdeck's own record of the delivered answer. Once a `Re:` names the decision, the line is gone.
-An answer that could not be delivered is not recorded, so its card stays open. Quarterdeck refuses an answer to a
-decision the file already shows answered, and a second answer to a decision already answered from Quarterdeck.
+at `quarterdeck` with `Re:` naming the decision. Quarterdeck keeps its own record of delivered answers; failed
+deliveries are not recorded. Quarterdeck refuses an answer to a decision the file already shows answered, and a
+second answer to a decision already answered from Quarterdeck. The
+[answering guide](../how-to/keep-topic-threads.md#answer-a-decision-owner-served-page) describes the card's display,
+counts and persistence until the file records the answer.
 
 ## Mistakes
 

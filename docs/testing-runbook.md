@@ -549,6 +549,12 @@ fictional homes, profiles and state after capturing screenshots and responses.
 
 ## Answered decision cards
 
+For validation confined to a worktree, run an unchanged disposable copy of `quarterdeck.py` and `templates/` in
+a child directory, with fictional homes and private XDG state in sibling directories. Review state is
+intentionally refused beneath the directory containing the running `quarterdeck.py`; putting test `TMPDIR`
+beneath the original checkout therefore requires running copied tests, scripts and documentation examples beside
+that disposable copy too. Remove the copy and all private state after stopping its server and browser.
+
 Run `PYTHONPATH=tests python3 -m unittest -v test_quarterdeck.TopicAskTests`. These cover the folded line after an
 answer (as a reload or another device sees it), the cut to about 80 characters with the whole answer in the
 disclosure, the uncounted line under Needs you, its removal once a `Re:` names the decision, a failed delivery that
@@ -559,8 +565,10 @@ The in-page fold runs in the browser only. Serve a fictional home with `--allow-
 five-second Undo each card folds, the Needs you or Open decisions count and the tab title drop by one, and a reload
 shows the same lines. Serve again with an inbox that exits non-zero: the card stays open with "Not sent" and
 its option buttons and **Answer in words** controls. Once the inbox works, tap an option again or resend the typed
-answer with **Send**; after the five-second Undo it delivers. Append a fictional `Re:` and reload past the 30-second cache:
-the line is gone. Check that the page scrolls to its end and back with no sideways overflow.
+answer with **Send**; after the five-second Undo it delivers. Append a fictional `Re:` and reload past the
+30-second cache. The first request can serve the cached page while a background rebuild runs; reload again once
+that rebuild completes and verify the line is gone. Check that the page scrolls to its end and back with no
+sideways overflow.
 
 ## Refresh transfer and report Undo
 
