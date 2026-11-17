@@ -283,8 +283,12 @@ payload or invalidate its failed submission's id.
 [topic files reference](topic-files.md)) and prints one line per mistake,
 `<file>:<line>: error|warning: <what is wrong>`, then a count. With no `FILE` it
 checks every configured home's topics, or the one from `--home` or `FM_HOME`.
-Pieces are checked against the backlog when the home is known. Exit status is 1
-when any error is found, 0 otherwise, and 2 when a local home cannot be read. `render`
+Pieces are checked against the backlog when the home is known. Exit status is 0
+with no errors (warnings are allowed), 1 for topic-file errors, and 2 when the
+check is incomplete because configuration, a local home or backlog, topic-directory
+discovery, or local secondmate discovery cannot be read or resolved. An absent
+optional topics directory is valid. Named-file checks do not discover unrelated
+homes. `render`
 and `serve` write one `topic-<id>.html` page per topic; when two homes share a
 topic id, each page name also carries a short hash of its home.
 

@@ -83,7 +83,7 @@ An entry may start with field lines, before its message. Field names are not cas
 
 | Field | Value | Meaning |
 | --- | --- | --- |
-| `Id:` | One word of letters, digits, dots, dashes or underscores, unique in the file. | Lets later entries name this one. |
+| `Id:` | At most 64 letters, digits, dots, dashes or underscores, starting with a letter or digit, unique in the file. | Lets later entries name this one. |
 | `Re:` | One or more ids, separated by commas. | This entry answers or replies to those entries. |
 | `Decision:` | The question, written to be answered. | Makes the entry a decision card. Needs an `Id`. |
 | `Options:` | Answers separated by `\|`, such as `Merge \| Hold \| Not now`. | The choices. Leave it out when the answer needs words. |
@@ -119,14 +119,16 @@ conversation with the first line of its answer.
 
 ### Questions sent from Quarterdeck
 
-Questions the owner sends from Quarterdeck carry an id that starts with `ask-`, such as `ask-3f9c2a1b`. Copy the
+Sending questions is reserved for the [following PRs](../explanation/topic-threads.md#what-comes-next).
+The format reserves ids starting with `ask-`, such as `ask-3f9c2a1b`, for those questions. Copy the
 question into the file as an entry from `you` at `quarterdeck` with that `Id:`, and answer it with `Re:` naming the
 same id. A `Re:` that names an `ask-` id is allowed even when the question itself is not in the file.
 
 ## Mistakes
 
-Quarterdeck never refuses a topic file. It shows what it can read and lists each mistake at the bottom of the thread
-page. `quarterdeck topics check` prints the same list:
+For a file with a valid topic id, Quarterdeck shows what it can read and lists each mistake at the bottom of the
+thread page. An unreadable file or one over 2 MB gets an error-only thread; an invalid topic id gets no thread page.
+`quarterdeck topics check` reports these errors too and prints the same problem list:
 
 ```text
 data/topics/maple-harbor-catalog.md:14: error: an entry heading starts with its time, like `## 2026-03-04 08:12 | firstmate | chat`; 'soon' is not a time
@@ -134,7 +136,7 @@ data/topics/maple-harbor-catalog.md: warning: Pieces names maple-99, which is no
 1 topic file checked: 1 error, 1 warning.
 ```
 
-It exits 1 when there is an error and 0 otherwise.
+See the [CLI reference](cli-and-config.md) for checker exit statuses, including incomplete checks.
 
 | Level | Mistakes |
 | --- | --- |

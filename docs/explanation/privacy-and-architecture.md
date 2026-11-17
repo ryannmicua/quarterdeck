@@ -13,9 +13,10 @@ named in [activity cards](../how-to/watch-activity-cards.md#open-the-documents-a
 `data/captain-board.json` board (see the
 [board file reference](../reference/captain-board.md)), and the optional
 `data/topics/*.md` topic files Firstmate writes, one conversation per topic (see
-the [topic files reference](../reference/topic-files.md)). Each topic becomes a
-`topic-<id>.html` thread page beside the main page, with the topic's text and
-any `data/` documents its Links name; `quarterdeck topics check` reads the same
+the [topic files reference](../reference/topic-files.md)). Generated thread pages sit
+beside the main page (see the [CLI reference](../reference/cli-and-config.md) for filenames),
+with the topic's text and eligible `data/` documents named in its Links or conversation;
+`quarterdeck topics check` reads the same
 files and writes nothing. For each
 configured parent home, Quarterdeck also reads the optional
 `data/secondmates.md` route registry. Each local route's `home:` field points

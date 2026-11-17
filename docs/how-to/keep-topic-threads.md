@@ -54,5 +54,5 @@ When a home has no topic files, the front page has no Topics section and nothing
 ## Fix a mistake the page reports
 
 The bottom of a thread page lists any mistakes in its file, such as "Line 14: an entry heading starts with its
-time". Quarterdeck shows the rest of the file, so a mistake may hide one entry or field, never the whole topic. Ask
-Firstmate to run `quarterdeck topics check` and fix the file.
+time". Ask Firstmate to run `quarterdeck topics check` and fix the file. See the
+[reference's error handling](../reference/topic-files.md#mistakes) for files that cannot produce a readable thread.

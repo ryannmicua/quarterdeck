@@ -21,8 +21,8 @@ Firstmate already holds the conversation, but it replies only in chat. Quarterde
 sees, and reading chat transcripts to guess the topic of each message is not reliable. So Firstmate writes each
 message about a topic, chat or not, to `data/topics/<topic-id>.md`, and Quarterdeck reads that file.
 
-This keeps Quarterdeck's boundary: it reads a home's files and writes none of them. The format is plain Markdown so
-that Firstmate can write it by hand with no tool, and tolerant so that one mistake hides one line, not the topic.
+Quarterdeck reads topic files and never changes them. The format is plain Markdown so
+that Firstmate can write it by hand with no tool, and tolerant so readable messages survive malformed fields.
 `quarterdeck topics check` exists because a hand-written file will have mistakes, and the first mate needs to find
 them before the owner does.
 

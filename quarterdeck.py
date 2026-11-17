@@ -7296,12 +7296,8 @@ def show_help(args: argparse.Namespace) -> int:
 
 
 # --- Topic threads -------------------------------------------------------------
-# One conversation per topic. Firstmate keeps each topic in <home data>/topics/<topic-id>.md; Quarterdeck only reads
-# it. The file starts with a `# Title` line and state lines (Now, Waiting on, Pieces, Links, Status), then holds one
-# `## <time> | <who> | <where>` entry per message, oldest first. Field lines at the top of an entry (Id, Re, Decision,
-# Options, Recommend) make it a decision card or tie it to an earlier entry. docs/reference/topic-files.md is the
-# contract; `quarterdeck topics check` reports mistakes in plain words. Parsing never fails: a mistake becomes a
-# problem on the topic and the rest of the file still shows.
+# Firstmate owns topic files; Quarterdeck only reads them. The format and error-handling contract live in
+# docs/reference/topic-files.md. Keep parsing tolerant so a malformed field does not hide unrelated messages.
 
 TOPICS_DIR_NAME = "topics"
 TOPIC_ID_RE = re.compile(r"[a-z0-9][a-z0-9-]{0,63}")
