@@ -10514,6 +10514,86 @@ Re: the certificate, I sent it.
             self.assertEqual(empty.returncode, 0)
             self.assertIn("No topic files found", empty.stdout)
 
+    def test_invalid_offsets_report_problems_and_preserve_other_topics(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            offsets = ("+24:00", "-24:00", "+08:99", "-0899")
+            source = "# Bad zones\n" + "".join(
+                f"## 2026-03-02 08:00{zone} | you | chat\nMessage.\n" for zone in offsets)
+            home = self.home_with_topics(root, {"zones.md": source, "good.md": "# Good\n"})
+            topics = quarterdeck.read_topics(home / "data")
+            bad = next(topic for topic in topics if topic.topic_id == "zones")
+            self.assertEqual([problem.line for problem in bad.errors], [2, 4, 6, 8])
+            self.assertTrue(all(entry.at is None for entry in bad.entries))
+            result = self.run_cli(["topics", "check", "--home", str(home)], root)
+            self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
+            self.assertIn("2 topic files checked: 4 errors, 0 warnings.", result.stdout)
+            output = root / "out" / "index.html"
+            rendered = self.run_cli(["render", "--home", str(home), "--output", str(output), "--no-snapshot"], root)
+            self.assertEqual(rendered.returncode, 0, rendered.stderr)
+            self.assertTrue((output.parent / "topic-good.html").is_file())
+            self.assertIn("Message.", (output.parent / "topic-zones.html").read_text())
+
+    def test_malformed_urls_warn_and_render_as_escaped_text(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            source = """# Broken addresses
+Links: https://[broken?a=1&b=2 [<label>](https://[broken)
+Now: [<now>](https://[broken)
+Waiting on: you - [<wait>](https://[broken)
+
+## 2026-03-02 09:00 | firstmate | chat
+Id: choice
+Decision: Choose?
+
+[<decision>](https://[broken)
+
+## 2026-03-02 10:00 | you | chat
+
+[<message>](https://[broken) and https://[broken?a=1&b=2
+"""
+            home = self.home_with_topics(root, {"urls.md": source})
+            result = self.run_cli(["topics", "check", "--home", str(home)], root)
+            self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+            self.assertEqual(result.stdout.count("urls.md:2: warning:"), 2)
+            output = root / "out" / "index.html"
+            rendered = self.run_cli(["render", "--home", str(home), "--output", str(output), "--no-snapshot"], root)
+            self.assertEqual(rendered.returncode, 0, rendered.stderr)
+            page = (output.parent / "topic-urls.html").read_text()
+            self.assertNotIn('href="https://[broken', page)
+            self.assertIn("https://[broken?a=1&amp;b=2", page)
+            for label in ("label", "now", "wait", "decision", "message"):
+                self.assertIn(f"&lt;{label}&gt;", page)
+                self.assertNotIn(f"<{label}>", page)
+            self.assertEqual(page.count("&lt;decision&gt;"), 2, "both pinned and conversation copies render")
+
+    def test_unavailable_homes_make_topic_checks_incomplete(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            home = self.home_with_topics(root, {"good.md": "# Good\n"})
+            missing = root / "missing-home"
+            file = home / "data" / "topics" / "good.md"
+            for files in ([], [str(file)]):
+                with self.subTest(files=files):
+                    result = self.run_cli(["topics", "check", *files, "--home", str(missing)], root)
+                    self.assertEqual(result.returncode, 2, result.stdout + result.stderr)
+                    self.assertIn("error: Firstmate home is not a directory:", result.stdout)
+                    self.assertNotIn("no mistakes", result.stdout)
+                    self.assertNotIn("No topic files found", result.stdout)
+            config = root / "homes.json"
+            config.write_text(json.dumps({"homes": [
+                {"label": "Missing", "path": str(missing)},
+                {"label": "Readable", "path": str(home)},
+            ]}))
+            result = self.run_cli(["topics", "check", "--config", str(config)], root)
+            self.assertEqual(result.returncode, 2, result.stdout + result.stderr)
+            self.assertIn("Missing: error:", result.stdout)
+            self.assertIn("1 topic file checked:", result.stdout)
+            self.assertNotIn("no mistakes", result.stdout)
+            result = self.run_cli(["topics", "check", "--home", str(home)], root)
+            self.assertEqual((result.returncode, result.stdout), (0, "1 topic file checked: no mistakes.\n"),
+                             "a registered remote secondmate is not an unreadable home")
+
     def test_render_without_topic_files_is_unchanged(self) -> None:
         with tempfile.TemporaryDirectory() as temp:
             root = Path(temp)

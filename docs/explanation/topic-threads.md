@@ -61,9 +61,12 @@ the pages follow the system's light or dark setting.
 This first step ships the file format, the checker and read-only thread pages. Later steps add, in order:
 
 - an ask box on each thread and on the front page, sending to Firstmate through the same `bin/fm-inbox.sh note`
-  path reactions use, with the topic attached;
+  path reactions use, with the topic attached; before sending a front-page question, choosing or changing its
+  guessed topic, including **New topic**; dictated words landing in the ask box to check before sending, never
+  sent by themselves;
 - one-tap answers on decision cards, with the same five-second Undo report marks use, and **Discuss**;
-- phone notifications that name the decision and open on its card, and a notification when a question is answered;
-- a front page of only **Needs you** and **Changed since you last looked**, with everything else behind search.
+- phone notifications that show only the decision title and open on its card, and a notification when a question is answered;
+- a front page of only **Needs you** and **Changed since you last looked**, with saved views, Activity and the other
+  sections reachable through search filters. These come in the following PRs.
 
 Each step keeps the old page reachable until the new one covers what it showed.

@@ -504,8 +504,11 @@ def markdown_inline(value: str) -> str:
 
     def link(match: re.Match[str]) -> str:
         label, target = match.group(1), match.group(2).strip()
-        parsed = urlparse(target)
-        safe = parsed.scheme in {"http", "https", "mailto"} and (parsed.scheme == "mailto" or bool(parsed.netloc))
+        try:
+            parsed = urlparse(target)
+            safe = parsed.scheme in {"http", "https", "mailto"} and (parsed.scheme == "mailto" or bool(parsed.netloc))
+        except ValueError:
+            safe = False
         rendered_label = markdown_inline(label)
         if safe:
             return keep(f'<a href="{html.escape(target, quote=True)}">{rendered_label}</a>')
@@ -7382,12 +7385,15 @@ def topic_time(raw: str) -> datetime | None:
     if not match:
         return None
     year, month, day, hour, minute, second, zone = match.groups()
-    offset = timezone.utc
-    if zone and zone.upper() not in {"Z", "UTC"}:
-        sign = -1 if zone[0] == "-" else 1
-        digits = zone[1:].replace(":", "")
-        offset = timezone(sign * timedelta(hours=int(digits[:2]), minutes=int(digits[2:])))
     try:
+        offset = timezone.utc
+        if zone and zone.upper() not in {"Z", "UTC"}:
+            sign = -1 if zone[0] == "-" else 1
+            digits = zone[1:].replace(":", "")
+            hours, minutes = int(digits[:2]), int(digits[2:])
+            if hours > 23 or minutes > 59:
+                return None
+            offset = timezone(sign * timedelta(hours=hours, minutes=minutes))
         return datetime(int(year), int(month), int(day), int(hour), int(minute), int(second or 0), tzinfo=offset)
     except ValueError:
         return None
@@ -7517,7 +7523,11 @@ def parse_topic(source: str, path: Path, topic_id: str) -> Topic:
                 found = TOPIC_LINK_RE.findall(value)
                 for link in found:
                     target = topic_link_target(link)
-                    if not (target.startswith("data/") or urlparse(target).scheme in {"http", "https"}):
+                    try:
+                        valid = target.startswith("data/") or urlparse(target).scheme in {"http", "https"}
+                    except ValueError:
+                        valid = False
+                    if not valid:
                         problem(number, "warning", f"{link} does not point to an http(s) address or a data/ path, "
                                 "so it shows as plain text")
                     topic.links.append(link.rstrip(".;"))
@@ -8051,6 +8061,7 @@ TOPICS_FRONT_CSS = """
 def topics_check(args: argparse.Namespace) -> int:
     """Report every mistake in topic files: the files named, or every configured home's data/topics/."""
     checked: list[tuple[str, Topic]] = []
+    incomplete: dict[str, str] = {}
     try:
         if args.files:
             chosen = selected_homes(args)[0] if args.home else None
@@ -8067,11 +8078,15 @@ def topics_check(args: argparse.Namespace) -> int:
                             path.resolve().parent.name == TOPICS_DIR_NAME and (data_dir / "backlog.md").is_file()) else None
                     snapshot = nearby[data_dir]
                 if snapshot is not None:
+                    if snapshot.error and not snapshot.spec.remote_host:
+                        incomplete[snapshot.spec.label] = snapshot.error
                     topic.problems.extend(check_topic_pieces(topic, snapshot))
                 checked.append((name, topic))
         else:
             snapshots = all_snapshots(selected_homes(args))
             for snapshot in snapshots:
+                if snapshot.error and not snapshot.spec.remote_host:
+                    incomplete[snapshot.spec.label] = snapshot.error
                 for topic in snapshot.topics:
                     topic.problems.extend(check_topic_pieces(topic, snapshot))
                     shown = display_path(topic.path, snapshot.spec.home) if snapshot.spec.home else str(topic.path)
@@ -8079,7 +8094,9 @@ def topics_check(args: argparse.Namespace) -> int:
     except (OSError, ValueError) as exc:
         print(f"quarterdeck: {exc}", file=sys.stderr)
         return 2
-    errors = warnings = 0
+    errors, warnings = len(incomplete), 0
+    for label, error in incomplete.items():
+        print(f"{label}: error: {error}")
     for name, topic in checked:
         for problem in sorted(topic.problems, key=lambda problem: problem.line):
             where = f"{name}:{problem.line}" if problem.line else name
@@ -8089,14 +8106,16 @@ def topics_check(args: argparse.Namespace) -> int:
             else:
                 warnings += 1
     if not checked:
+        if incomplete:
+            return 2
         print("No topic files found. Firstmate keeps them in data/topics/<topic-id>.md in its home.")
         return 0
     files = f"{len(checked)} topic file{'s' if len(checked) != 1 else ''}"
-    if not errors and not warnings:
+    if not errors and not warnings and not incomplete:
         print(f"{files} checked: no mistakes.")
     else:
         print(f"{files} checked: {errors} error{'s' if errors != 1 else ''}, {warnings} warning{'s' if warnings != 1 else ''}.")
-    return 1 if errors else 0
+    return 2 if incomplete else 1 if errors else 0
 
 
 # --- Adoption -----------------------------------------------------------------

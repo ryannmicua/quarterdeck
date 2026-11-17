@@ -1,5 +1,19 @@
 # Targeted testing
 
+## Topic input failures
+
+Run `PYTHONPATH=tests python3 -m unittest -v test_quarterdeck.TopicTests`.
+The topic-format contract requires invalid offset hours and minutes to produce
+numbered errors without losing other topics, malformed URLs to warn in Links
+and render as escaped text throughout a thread, and unavailable homes to print
+problems and make the checker exit 2 even alongside readable files. The
+regressions exercise file loading, the checker CLI and generated HTML, rejecting
+crashes, normalized invalid offsets and false clean checks. Existing topic tests
+cover valid offsets, links, backlog references and thread rendering.
+All homes and outputs are disposable fictional fixtures with isolated config
+and state; no real home scripts or inbox writes are needed. Fixtures clean up
+automatically.
+
 ## Attention feed refresh failures
 
 Run `PYTHONPATH=tests python3 -m unittest -v test_quarterdeck.AttentionTests.test_failed_refresh_keeps_last_good_needs_you_list test_quarterdeck.AttentionTests.test_empty_cached_feed_stays_incomplete_until_refresh_recovers test_quarterdeck.AttentionTests.test_only_decisions_errors_collapse_diagnostics`.

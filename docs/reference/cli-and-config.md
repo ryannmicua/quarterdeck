@@ -284,7 +284,7 @@ payload or invalidate its failed submission's id.
 `<file>:<line>: error|warning: <what is wrong>`, then a count. With no `FILE` it
 checks every configured home's topics, or the one from `--home` or `FM_HOME`.
 Pieces are checked against the backlog when the home is known. Exit status is 1
-when any error is found, 0 otherwise, and 2 when no home can be read. `render`
+when any error is found, 0 otherwise, and 2 when a local home cannot be read. `render`
 and `serve` write one `topic-<id>.html` page per topic; when two homes share a
 topic id, each page name also carries a short hash of its home.
 
