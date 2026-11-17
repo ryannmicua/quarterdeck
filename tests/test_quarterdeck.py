@@ -11279,14 +11279,14 @@ let source = '';
 process.stdin.on('data', chunk => { source += chunk; });
 process.stdin.on('end', () => {
   const script = source.split('<script>').pop().split('</script>')[0];
-  const run = href => {
+  const run = (href, hidden = false) => {
     const calls = {replaced: [], states: [], timers: []};
     const store = {'quarterdeck-reload-scroll': '420'};
     const context = {
       URL,
       location: {href, replace: url => calls.replaced.push(url)},
       history: {replaceState: (_state, _title, url) => calls.states.push(String(url))},
-      document: {body: {dataset: {refresh: '60'}}, querySelector: () => null},
+      document: {hidden, body: {dataset: {refresh: '60'}}, querySelector: () => null},
       sessionStorage: {getItem: key => store[key] ?? null, setItem: (key, value) => { store[key] = value; }},
       setInterval: (fn, ms) => calls.timers.push([fn, ms]),
       window: null,
@@ -11301,6 +11301,9 @@ process.stdin.on('end', () => {
   first.calls.timers[0][0]();
   assert.deepEqual(first.calls.replaced, ['http://127.0.0.1:8765/index.html?qd_refresh=1#needs']);
   assert.equal(first.store['quarterdeck-reload-scroll'], '75');
+  const background = run('http://127.0.0.1:8765/index.html', true);
+  background.calls.timers[0][0]();
+  assert.deepEqual(background.calls.replaced, [], 'a hidden tab does not reload');
   const second = run('http://127.0.0.1:8765/index.html?qd_refresh=1#needs');
   assert.deepEqual(second.calls.states, ['http://127.0.0.1:8765/index.html#needs']);
   assert.equal(second.calls.scrolled, 420);
@@ -11309,4 +11312,51 @@ process.stdin.on('end', () => {
         script = quarterdeck.topic_ask_script()
         result = subprocess.run(["node", "-e", harness], input=script, capture_output=True, text=True, check=False)
         self.assertEqual(result.returncode, 0, result.stderr)
+
+    @unittest.skipUnless(shutil.which("node"), "Node is required to execute the generated script")
+    def test_a_page_loaded_in_a_hidden_tab_still_moves_changed_since_when_you_come_back(self) -> None:
+        harness = r"""
+const assert = require('assert');
+const vm = require('vm');
+let source = '';
+process.stdin.on('data', chunk => { source += chunk; });
+process.stdin.on('end', () => {
+  const script = source.split('<script>').pop().split('</script>')[0];
+  const hour = 3600000, now = Date.now();
+  const session = {'quarterdeck-look-from': String(now - 48 * hour), 'quarterdeck-hidden-at': String(now - 5 * hour)};
+  const store = data => ({getItem: key => data[key] ?? null, setItem: (key, value) => { data[key] = String(value); },
+                          removeItem: key => { delete data[key]; }});
+  const listeners = {};
+  const document = {visibilityState: 'hidden', querySelectorAll: () => [], getElementById: () => null,
+                    addEventListener: (name, fn) => { listeners[name] = fn; }};
+  vm.runInNewContext(script, {document, sessionStorage: store(session), localStorage: store({}), Date, Number, String, Intl,
+                              addEventListener: () => {}});
+  assert.equal(session['quarterdeck-hidden-at'], String(now - 5 * hour), 'a load while hidden keeps when you looked away');
+  document.visibilityState = 'visible';
+  listeners.visibilitychange();
+  assert.equal(session['quarterdeck-look-from'], String(now - 5 * hour), 'coming back moves the starting point');
+  assert.equal(session['quarterdeck-hidden-at'], undefined);
+});
+"""
+        script = quarterdeck.FRONT_SCRIPT.replace("%(first)d", "48")
+        result = subprocess.run(["node", "-e", harness], input=script, capture_output=True, text=True, check=False)
+        self.assertEqual(result.returncode, 0, result.stderr)
+
+    def test_the_front_page_never_claims_an_all_clear_it_could_not_read(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            home = TopicTests.home_with_topics(self, root, {"quiet.md": "# Quiet work\nNow: Nothing to decide.\n"})  # type: ignore[arg-type]
+            args = argparse.Namespace(home=str(home), config=None, title=None, no_snapshot=True)
+            with patch.dict(os.environ, {"XDG_CONFIG_HOME": str(root / "config"), "XDG_STATE_HOME": str(root / "state")}):
+                _config, homes, bearings = quarterdeck.load_site(args)
+                unread = quarterdeck.front_page_html(homes, "Quarterdeck", bearings, [])
+                bearings.attention = {"ok": False, "homes": []}
+                partial = quarterdeck.front_page_html(homes, "Quarterdeck", bearings, [])
+                bearings.attention = {"ok": True, "homes": []}
+                clear = quarterdeck.front_page_html(homes, "Quarterdeck", bearings, [])
+        for page in (unread, partial):
+            needs = page.split('id="needs"', 1)[1].split("</section>", 1)[0]
+            self.assertIn("not a confirmed all clear", needs)
+            self.assertNotIn("Nothing needs you right now", needs)
+        self.assertIn("Nothing needs you right now.", clear.split('id="needs"', 1)[1].split("</section>", 1)[0])
 

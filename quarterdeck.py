@@ -8140,7 +8140,7 @@ TOPIC_ASK_SCRIPT = """
       }
       const every = Number(document.body.dataset.refresh || 0);
       if (every > 0) setInterval(() => {
-        if (document.querySelector("[data-mutation-pending]")) return;
+        if (document.hidden || document.querySelector("[data-mutation-pending]")) return;
         try { sessionStorage.setItem(SCROLL, String(window.scrollY)); } catch (error) { /* reloads at the top */ }
         const next = new URL(location.href);
         next.searchParams.set("qd_refresh", "1");
@@ -8675,6 +8675,10 @@ FRONT_SCRIPT = """
         write(sessionStorage, BASE, from);
       }
       function rebase() {
+        if (document.visibilityState === "hidden") {
+          if (!read(sessionStorage, HIDDEN)) write(sessionStorage, HIDDEN, Date.now());
+          return;
+        }
         const hidden = read(sessionStorage, HIDDEN);
         if (hidden > from && Date.now() - hidden > AWAY_MS) {
           from = hidden;
@@ -8925,9 +8929,14 @@ def front_page_html(homes: list[HomeSnapshot], title: str, bearings: Bearings, c
     loose = front_loose_rows(cards, found, homes, bearings)
     total = len(decisions) + len(waits) + len(loose)
     needs_class = ' class="needs"' if total else ""
+    attention = bearings.attention
+    unread = attention is None or needs_unread(attention)
+    empty = ("Could not read everything that might need you, so this is not a confirmed all clear."
+             if unread else "Nothing needs you right now.")
     needs_block = (
         f'<section aria-labelledby="needs-h" id="needs"><h2 id="needs-h"{needs_class}>Needs you <span class="n">{total}</span></h2>'
-        + ("" if total else '<p class="empty">Nothing needs you right now.</p>')
+        + ("".join(attention_errors_html(attention)) if attention is not None else "")
+        + ("" if total else f'<p class="empty">{empty}</p>')
         + "".join(card for _at, card in decisions)
         + (f'<ul class="rows">{"".join(waits)}</ul>' if waits else "")
         + (f'<h3 class="needs-group">Not yet in a topic</h3><ul class="rows">{"".join(loose)}</ul>' if loose else "")
