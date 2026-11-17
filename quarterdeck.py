@@ -11626,7 +11626,9 @@ def make_parser() -> argparse.ArgumentParser:
         "check", help="report mistakes in topic files",
         description=(
             "Check the named topic files, or every configured home's data/topics/*.md. Prints one line per mistake "
-            "(file:line: error|warning: what is wrong) and a count. Exits 1 when any error is found, otherwise 0. "
+            "(file:line: error|warning: what is wrong) and a count. Exits 1 when any error is found, "
+            "2 when the check is incomplete because configuration, a local home or backlog, its secondmate registry "
+            "or its topics folder could not be read or resolved, and 0 otherwise. "
             "Pieces are checked against the backlog when a home is known (--home, FM_HOME or the configured homes)."
         ),
     )
