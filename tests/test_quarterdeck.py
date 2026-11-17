@@ -10594,6 +10594,56 @@ Decision: Choose?
             self.assertEqual((result.returncode, result.stdout), (0, "1 topic file checked: no mistakes.\n"),
                              "a registered remote secondmate is not an unreadable home")
 
+    def test_bare_addresses_inside_code_stay_as_written(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            source = """# Code samples
+
+## 2026-03-02 09:00 | firstmate | chat
+Id: fetch
+Decision: Run it?
+
+```
+curl https://example.com/api
+```
+
+## 2026-03-02 10:00 | you | chat
+
+Try `wget https://example.com/file` or see https://example.com/outside
+
+~~~
+open https://example.com/tilde
+~~~
+"""
+            home = self.home_with_topics(root, {"code.md": source})
+            output = root / "out" / "index.html"
+            rendered = self.run_cli(["render", "--home", str(home), "--output", str(output), "--no-snapshot"], root)
+            self.assertEqual(rendered.returncode, 0, rendered.stderr)
+            page = (output.parent / "topic-code.html").read_text()
+            self.assertEqual(page.count("<pre><code>curl https://example.com/api</code></pre>"), 2)
+            self.assertIn("<code>wget https://example.com/file</code>", page)
+            self.assertIn("<pre><code>open https://example.com/tilde</code></pre>", page)
+            self.assertIn('<a href="https://example.com/outside">https://example.com/outside</a>', page)
+            self.assertNotIn("](https://", page)
+
+    @unittest.skipIf(hasattr(os, "geteuid") and os.geteuid() == 0, "root can read any directory")
+    def test_unreadable_topics_directory_makes_check_incomplete(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            home = self.home_with_topics(root, {"good.md": "# Good\n"})
+            topics = home / "data" / "topics"
+            topics.chmod(0)
+            try:
+                result = self.run_cli(["topics", "check", "--home", str(home)], root)
+                output = root / "out" / "index.html"
+                rendered = self.run_cli(["render", "--home", str(home), "--output", str(output), "--no-snapshot"], root)
+            finally:
+                topics.chmod(0o755)
+            self.assertEqual(result.returncode, 2, result.stdout + result.stderr)
+            self.assertIn(f"error: could not read {topics}", result.stdout)
+            self.assertNotIn("No topic files found", result.stdout)
+            self.assertEqual(rendered.returncode, 0, rendered.stderr)
+
     def test_render_without_topic_files_is_unchanged(self) -> None:
         with tempfile.TemporaryDirectory() as temp:
             root = Path(temp)

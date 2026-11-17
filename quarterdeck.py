@@ -124,6 +124,7 @@ class HomeSnapshot:
     backlog_changed: datetime | None = None
     review_state: ReviewState | None = None
     topics: list[Topic] = field(default_factory=list)
+    topics_error: str | None = None
 
 
 def markdown_text(value: str) -> str:
@@ -7600,10 +7601,9 @@ def read_topic_file(path: Path) -> Topic:
 def read_topics(data_dir: Path) -> list[Topic]:
     """Every <data>/topics/*.md file, by name. Names starting with `.` or `_` are drafts and are skipped."""
     directory = data_dir / TOPICS_DIR_NAME
-    try:
-        paths = sorted(path for path in directory.glob("*.md") if not path.name.startswith((".", "_")))
-    except OSError:
+    if not directory.is_dir():
         return []
+    paths = sorted(path for path in directory.iterdir() if path.name.endswith(".md") and not path.name.startswith((".", "_")))
     return [read_topic_file(path) for path in paths]
 
 
@@ -7782,9 +7782,21 @@ def topic_who_text(who: str) -> str:
 
 
 def topic_markdown(text: str) -> str:
-    """An entry's text as safe HTML: Markdown, with bare https addresses made into links."""
-    linked = TOPIC_BARE_URL_RE.sub(lambda match: f"[{match.group(0)}]({match.group(0)})", text)
-    return render_markdown(linked)
+    """An entry's text as safe HTML: Markdown, with bare https addresses outside code made into links."""
+    lines: list[str] = []
+    fence: str | None = None
+    for line in text.splitlines():
+        if fence is not None:
+            if re.match(r"^\s*" + re.escape(fence) + r"\s*$", line):
+                fence = None
+        elif opening := re.match(r"^\s*(```|~~~)", line):
+            fence = opening.group(1)
+        else:
+            line = "".join(part if index % 2 else TOPIC_BARE_URL_RE.sub(
+                lambda match: f"[{match.group(0)}]({match.group(0)})", part)
+                for index, part in enumerate(re.split(r"(`[^`]+`)", line)))
+        lines.append(line)
+    return render_markdown("\n".join(lines))
 
 
 def topic_stamp(value: datetime, show: str) -> str:
@@ -8085,8 +8097,8 @@ def topics_check(args: argparse.Namespace) -> int:
         else:
             snapshots = all_snapshots(selected_homes(args))
             for snapshot in snapshots:
-                if snapshot.error and not snapshot.spec.remote_host:
-                    incomplete[snapshot.spec.label] = snapshot.error
+                if (snapshot.error or snapshot.topics_error) and not snapshot.spec.remote_host:
+                    incomplete[snapshot.spec.label] = snapshot.error or snapshot.topics_error or ""
                 for topic in snapshot.topics:
                     topic.problems.extend(check_topic_pieces(topic, snapshot))
                     shown = display_path(topic.path, snapshot.spec.home) if snapshot.spec.home else str(topic.path)
@@ -11039,7 +11051,10 @@ def load_home_snapshot(spec: HomeSpec, discover_secondmates: bool = False) -> Ho
             snapshot.error = str(exc)
         if snapshot.data_dir is not None:
             snapshot.board = read_captain_board(snapshot.data_dir)
-            snapshot.topics = read_topics(snapshot.data_dir)
+            try:
+                snapshot.topics = read_topics(snapshot.data_dir)
+            except OSError as exc:
+                snapshot.topics_error = f"could not read {snapshot.data_dir / TOPICS_DIR_NAME}: {exc}"
 
     if discover_secondmates and spec.home is not None and not spec.remote_host:
         registry_path = spec.home / "data" / "secondmates.md"
