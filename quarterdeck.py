@@ -493,6 +493,19 @@ def hidden_summary(
     return "Not shown: " + "; ".join(notes) + "." if notes else None
 
 
+MARKDOWN_LINK_RE = re.compile(r"(?<!!)\[([^\]]+)\]\(([^)]+)\)")
+
+
+def malformed_markdown_url(value: str) -> bool:
+    """Whether a Markdown link outside code spans has an address that cannot be parsed."""
+    for match in MARKDOWN_LINK_RE.finditer(re.sub(r"`[^`]+`", "", value)):
+        try:
+            urlparse(match.group(2).strip())
+        except ValueError:
+            return True
+    return False
+
+
 def markdown_inline(value: str) -> str:
     protected: list[str] = []
 
@@ -505,14 +518,17 @@ def markdown_inline(value: str) -> str:
 
     def link(match: re.Match[str]) -> str:
         label, target = match.group(1), match.group(2).strip()
-        parsed = urlparse(target)
-        safe = parsed.scheme in {"http", "https", "mailto"} and (parsed.scheme == "mailto" or bool(parsed.netloc))
+        try:
+            parsed = urlparse(target)
+            safe = parsed.scheme in {"http", "https", "mailto"} and (parsed.scheme == "mailto" or bool(parsed.netloc))
+        except ValueError:
+            safe = False
         rendered_label = markdown_inline(label)
         if safe:
             return keep(f'<a href="{html.escape(target, quote=True)}">{rendered_label}</a>')
         return keep(rendered_label)
 
-    value = re.sub(r"(?<!!)\[([^\]]+)\]\(([^)]+)\)", link, value)
+    value = MARKDOWN_LINK_RE.sub(link, value)
     value = html.escape(value, quote=False)
     value = re.sub(r"\*\*(.+?)\*\*|__(.+?)__", lambda m: f"<strong>{m.group(1) or m.group(2)}</strong>", value)
     value = re.sub(
@@ -5046,9 +5062,9 @@ def board_entry_html(
     parts: list[str] = []  # the ask is already the line under the title; the body does not say it again
     if item.detail:
         detail_warning = ""
-        try:
+        if not malformed_markdown_url(item.detail):
             detail = render_markdown(item.detail)
-        except ValueError:
+        else:
             detail_warning = (
                 f'<div class="warning"><p>{html.escape(BOARD_FILENAME)} item {html.escape(item.id)}: '
                 "detail contains a malformed Markdown URL and was shown as text.</p></div>"
@@ -7306,14 +7322,10 @@ TOPIC_TASK_ID_RE = re.compile(r"[A-Za-z0-9][\w.-]{0,127}")
 TOPIC_ASK_PREFIX = "ask-"  # ids Quarterdeck gives the questions it sends; a reply may name one the file never shows
 TOPIC_FILE_LIMIT = 2_000_000
 TOPIC_PAGE_PREFIX = "topic-"
-TOPIC_STATE_KEYS = {
-    "now": "now", "waiting on": "waiting", "waiting for": "waiting", "pieces": "pieces", "piece": "pieces",
-    "links": "links", "link": "links", "status": "status",
-}
-TOPIC_ENTRY_KEYS = {
-    "id": "id", "re": "re", "decision": "decision", "options": "options", "recommend": "recommend",
-    "recommended": "recommend", "recommendation": "recommend",
-}
+TOPIC_STATE_KEYS = {"now": "now", "waiting on": "waiting", "pieces": "pieces", "links": "links", "status": "status"}
+TOPIC_ENTRY_KEYS = {"id": "id", "re": "re", "decision": "decision", "options": "options", "recommend": "recommend"}
+TOPIC_STATE_HINTS = {"waiting for": "Waiting on", "waiting": "Waiting on", "piece": "Pieces", "link": "Links"}
+TOPIC_ENTRY_HINTS = {"recommended": "Recommend", "recommendation": "Recommend", "option": "Options"}
 TOPIC_SPEAKERS = {"you": "you", "owner": "you", "captain": "you", "firstmate": "firstmate", "first mate": "firstmate"}
 TOPIC_PLACES = {"chat": "chat", "quarterdeck": "quarterdeck", "here": "quarterdeck"}
 TOPIC_PLACE_TEXT = {"chat": "in chat", "quarterdeck": "on Quarterdeck"}
@@ -7508,7 +7520,11 @@ def parse_topic(source: str, path: Path, topic_id: str) -> Topic:
                 topic.title = text[2:].strip()
                 continue
             match = TOPIC_FIELD_RE.match(text)
-            key = TOPIC_STATE_KEYS.get(" ".join(match.group(1).lower().split())) if match else None
+            name = " ".join(match.group(1).lower().split()) if match else ""
+            key = TOPIC_STATE_KEYS.get(name)
+            if match is not None and name in TOPIC_STATE_HINTS:
+                problem(number, "warning", f"{match.group(1).strip()} is not a field; did you mean {TOPIC_STATE_HINTS[name]}?")
+                continue
             if match is None or key is None:
                 hint = "the title must be the first line, " if text.startswith("#") else ""
                 problem(number, "warning", f"{hint}this line is not a # Title, Now, Waiting on, Pieces, Links or Status "
@@ -7548,7 +7564,10 @@ def parse_topic(source: str, path: Path, topic_id: str) -> Topic:
             continue
         if in_fields:
             match = TOPIC_FIELD_RE.match(line.strip())
-            key = TOPIC_ENTRY_KEYS.get(match.group(1).strip().lower()) if match else None
+            name = " ".join(match.group(1).lower().split()) if match else ""
+            key = TOPIC_ENTRY_KEYS.get(name)
+            if match is not None and name in TOPIC_ENTRY_HINTS:
+                problem(number, "warning", f"{match.group(1).strip()} is not a field; did you mean {TOPIC_ENTRY_HINTS[name]}?")
             if match is not None and key is not None:
                 value = match.group(2).strip()
                 if key == "re":
@@ -7790,7 +7809,7 @@ def topic_who_text(who: str) -> str:
 
 
 def topic_markdown(text: str) -> str:
-    """An entry's text as safe HTML: Markdown, with bare https addresses outside code made into links."""
+    """An entry's text as safe HTML: Markdown, with bare https addresses outside code and links made into links."""
     lines: list[str] = []
     fence: str | None = None
     for line in text.splitlines():
@@ -7798,20 +7817,9 @@ def topic_markdown(text: str) -> str:
         if outside and fence is None:
             line = "".join(part if index % 2 else TOPIC_BARE_URL_RE.sub(
                 lambda match: f"[{match.group(0)}]({match.group(0)})", part)
-                for index, part in enumerate(re.split(r"(`[^`]+`)", line)))
+                for index, part in enumerate(re.split(r"(`[^`]+`|!?\[[^\]]+\]\([^)]+\))", line)))
         lines.append(line)
-    try:
-        return render_markdown("\n".join(lines))
-    except ValueError:
-        return f"<p>{html.escape(text, quote=False)}</p>"
-
-
-def topic_inline(text: str) -> str:
-    """A one-line topic value as safe HTML; text with a malformed link address shows as written."""
-    try:
-        return markdown_inline(text)
-    except ValueError:
-        return html.escape(text, quote=False)
+    return render_markdown("\n".join(lines))
 
 
 def topic_stamp(value: datetime, show: str) -> str:
@@ -7842,24 +7850,24 @@ def topic_link_html(link: str, data_dir: Path | None, pages: dict[str, str] | No
                 assert pages is not None
                 pages[name], pages[raw_name] = built
                 text = link[1:link.index("](")] if link.startswith("[") else label
-                return f'<a href="{html.escape(name, quote=True)}">{topic_inline(text)}</a>'
+                return f'<a href="{html.escape(name, quote=True)}">{markdown_inline(text)}</a>'
         return f'<span class="piece-id">{html.escape(target)}</span>'
     if link.startswith("["):
-        return topic_inline(link)
-    return topic_inline(f"[{link}]({link})")
+        return markdown_inline(link)
+    return markdown_inline(f"[{link}]({link})")
 
 
 def topic_state_html(topic: Topic, snapshot: HomeSnapshot, item_pages: dict[str, str],
                      pages: dict[str, str] | None, main_href: str) -> str:
     rows = []
     if topic.now:
-        rows.append(("Now", f"<p style=\"margin:0\">{topic_inline(topic.now)}</p>"))
+        rows.append(("Now", f"<p style=\"margin:0\">{markdown_inline(topic.now)}</p>"))
     if topic.waiting:
         waits = []
         for who, what in topic.waiting:
             mine = topic_speaker(who) == "you"
             name = f'<span class="{"you" if mine else "who"}">{html.escape(topic_who_text(topic_speaker(who)))}</span>'
-            waits.append(f"<li>{name}{': ' + topic_inline(what) if what else ''}</li>")
+            waits.append(f"<li>{name}{': ' + markdown_inline(what) if what else ''}</li>")
         rows.append(("Waiting on", f"<ul>{''.join(waits)}</ul>"))
     if topic.pieces:
         items = snapshot_items(snapshot)
@@ -8112,8 +8120,9 @@ def topics_check(args: argparse.Namespace) -> int:
         else:
             snapshots = all_snapshots(selected_homes(args))
             for snapshot in snapshots:
-                if (snapshot.error or snapshot.topics_error) and not snapshot.spec.remote_host:
-                    incomplete[snapshot.spec.label] = snapshot.error or snapshot.topics_error or ""
+                failures = [error for error in (snapshot.error, snapshot.topics_error, snapshot.registry_error) if error]
+                if failures and not snapshot.spec.remote_host:
+                    incomplete[snapshot.spec.label] = "; ".join(failures)
                 for topic in snapshot.topics:
                     topic.problems.extend(check_topic_pieces(topic, snapshot))
                     shown = display_path(topic.path, snapshot.spec.home) if snapshot.spec.home else str(topic.path)
@@ -10244,7 +10253,8 @@ def referenced_docs(text: str, data_dir: Path) -> list[tuple[Path, str]]:
         try:
             path = (root / directory / name).resolve()
             path.relative_to(root)
-            usable = path.is_file() and path.stat().st_size <= DOC_PAGE_LIMIT
+            draft = path.parent == root / TOPICS_DIR_NAME and path.name.startswith(("_", "."))
+            usable = not draft and path.is_file() and path.stat().st_size <= DOC_PAGE_LIMIT
         except (OSError, ValueError):
             continue
         if usable and all(path != seen for seen, _label in found):

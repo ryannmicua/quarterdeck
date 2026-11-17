@@ -139,7 +139,7 @@ It exits 1 when there is an error and 0 otherwise.
 | Level | Mistakes |
 | --- | --- |
 | error | A missing `# Title` line; a file name that is not a topic id; an entry heading without a readable time or without who; a `Decision` without an `Id`; an empty `Decision`; an `Id` used twice; a `Re:` naming an id no earlier entry has; a file that cannot be read or is over 2 MB. |
-| warning | A head line that is not a known field; an empty field; a piece that is not a task id or not in the backlog; a link that is not http(s) or `data/`; an unknown `Status`; a missing or unknown where; extra heading parts; an entry with no text; an entry dated before the one above it; `Options` or `Recommend` without a `Decision`; a decision with one option; a recommendation that is not an option; an unclosed code block. |
+| warning | A head line that is not a known field; a misspelled field such as `Waiting for` or `Recommended`, named with the spelling to use; an empty field; a piece that is not a task id or not in the backlog; a link that is not http(s) or `data/`; an unknown `Status`; a missing or unknown where; extra heading parts; an entry with no text; an entry dated before the one above it; `Options` or `Recommend` without a `Decision`; a decision with one option; a recommendation that is not an option; an unclosed code block. |
 
 Pieces are checked against the backlog when the home is known: with `--home`, with `FM_HOME` or the configured homes
 when no file is named, or when a named file sits in `<home>/data/topics/` beside `<home>/data/backlog.md`.

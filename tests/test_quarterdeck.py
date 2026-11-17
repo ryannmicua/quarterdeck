@@ -10682,6 +10682,92 @@ Thanks.
             self.assertEqual(result.stdout.count("hostless.md:2: warning:"), 1, result.stdout)
             self.assertIn("[Preview](https:///preview) does not point", result.stdout)
 
+    def test_misspelled_fields_are_named_with_the_documented_spelling(self) -> None:
+        source = """# Spelling
+Waiting for: you - approve
+Piece: maple-21
+Link: https://example.com/a
+
+## 2026-03-02 09:00 | firstmate | chat
+Id: pick
+Decision: Which?
+Options: A | B
+Recommended: A
+
+Pick one.
+"""
+        topic = quarterdeck.parse_topic(source, Path("spelling.md"), "spelling")
+        self.assertEqual((topic.waiting, topic.pieces, topic.links), ([], [], []))
+        self.assertEqual(topic.entries[0].recommend, "")
+        self.assertEqual([(problem.line, problem.text) for problem in topic.problems], [
+            (2, "Waiting for is not a field; did you mean Waiting on?"),
+            (3, "Piece is not a field; did you mean Pieces?"),
+            (4, "Link is not a field; did you mean Links?"),
+            (10, "Recommended is not a field; did you mean Recommend?"),
+        ])
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            home = self.home_with_topics(root, {"spelling.md": source})
+            result = self.run_cli(["topics", "check", "--home", str(home)], root)
+            self.assertIn("spelling.md:2: warning: Waiting for is not a field; did you mean Waiting on?", result.stdout)
+            output = root / "out" / "index.html"
+            rendered = self.run_cli(["render", "--home", str(home), "--output", str(output), "--no-snapshot"], root)
+            self.assertEqual(rendered.returncode, 0, rendered.stderr)
+            self.assertIn("Recommended is not a field; did you mean Recommend?", (output.parent / "topic-spelling.html").read_text())
+
+    def test_topic_drafts_are_never_published_as_documents(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            source = """# Drafts
+Links: data/topics/_draft.md, data/topics/shown.md
+
+## 2026-03-02 09:00 | firstmate | chat
+See data/topics/_draft.md and data/topics/.hidden.md.
+"""
+            home = self.home_with_topics(root, {"drafts.md": source, "shown.md": "# Shown\n"})
+            topics = home / "data" / "topics"
+            (topics / "_draft.md").write_text("# Secret draft\nprivate words\n", encoding="utf-8")
+            (topics / ".hidden.md").write_text("# Hidden\nprivate words\n", encoding="utf-8")
+            output = root / "out" / "index.html"
+            rendered = self.run_cli(["render", "--home", str(home), "--output", str(output), "--no-snapshot"], root)
+            self.assertEqual(rendered.returncode, 0, rendered.stderr)
+            published = [path for path in output.parent.iterdir() if path.is_file()]
+            self.assertFalse([path.name for path in published if "private words" in path.read_text(errors="replace")])
+            self.assertTrue(any("Shown" in path.read_text(errors="replace") and path.name.startswith("doc-") for path in published),
+                            "a published topic file is still linked as a document")
+
+    def test_unreadable_secondmate_registry_makes_check_incomplete(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            home = self.home_with_topics(root, {"good.md": "# Good\n"})
+            registry = home / "data" / "secondmates.md"
+            registry.unlink()
+            registry.mkdir()
+            result = self.run_cli(["topics", "check", "--home", str(home)], root)
+            self.assertEqual(result.returncode, 2, result.stdout + result.stderr)
+            self.assertIn(f"error: {registry}:", result.stdout)
+            self.assertNotIn("no mistakes", result.stdout)
+
+    def test_addresses_inside_markdown_links_are_not_relinked(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            source = """# Labels
+
+## 2026-03-02 09:00 | you | chat
+See [API at https://example.com/docs](https://example.com/overview) and **bold** [ok](https://example.com/ok).
+Broken [here](https://[x) stays text.
+"""
+            home = self.home_with_topics(root, {"labels.md": source})
+            output = root / "out" / "index.html"
+            rendered = self.run_cli(["render", "--home", str(home), "--output", str(output), "--no-snapshot"], root)
+            self.assertEqual(rendered.returncode, 0, rendered.stderr)
+            page = (output.parent / "topic-labels.html").read_text()
+            self.assertIn('<a href="https://example.com/overview">API at https://example.com/docs</a>', page)
+            self.assertNotIn('href="https://example.com/docs"', page)
+            self.assertIn("<strong>bold</strong>", page, "a malformed link elsewhere keeps the rest formatted")
+            self.assertIn('<a href="https://example.com/ok">ok</a>', page)
+            self.assertIn("Broken here stays text.", page)
+
     def test_render_without_topic_files_is_unchanged(self) -> None:
         with tempfile.TemporaryDirectory() as temp:
             root = Path(temp)
