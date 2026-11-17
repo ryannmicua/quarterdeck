@@ -10984,6 +10984,7 @@ class TopicAskTests(unittest.TestCase):
         self.assertIn("When does the import finish?", pending)
         self.assertIn("Waiting for Firstmate’s answer", pending)
 
+        self.assertIn("1 open decision", self.fresh_page("index.html"))
         status, body = self.send(request, "decision", "maple-harbor-catalog/merge-42", "Merge", number=2)
         self.assertEqual(status, 200, body)
         self.assertIn('answer on decision merge-42 in topic maple-harbor-catalog (\'Merge PR 42 now?\')', self.notes()[-1])
@@ -10992,6 +10993,9 @@ class TopicAskTests(unittest.TestCase):
         card = self.fresh_page("topic-maple-harbor-catalog.html").split('id="decision-merge-42"', 1)[1].split("</article>", 1)[0]
         self.assertIn("You answered <b>Merge</b> from Quarterdeck", card)
         self.assertNotIn("data-option", card)
+        thread = self.fresh_page("topic-maple-harbor-catalog.html")
+        self.assertIn('Open decisions <span class="n">0</span>', thread)
+        self.assertNotIn("open decision", self.fresh_page("index.html"))
 
         status, body = self.send(request, "topic", quarterdeck.NEW_TOPIC_ITEM, "Start on the spring sale banners", number=3)
         self.assertEqual(status, 200, body)

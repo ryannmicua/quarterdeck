@@ -7722,10 +7722,15 @@ def assign_topic_pages(homes: list[HomeSnapshot]) -> list[tuple[HomeSnapshot, To
     return found
 
 
-def topic_order(topic: Topic) -> tuple[int, float]:
-    """Topics with open decisions first, then the most recently written."""
+def topic_awaiting(topic: Topic, state: ReviewState | None) -> list[TopicEntry]:
+    """The open decisions that still need the owner: not answered in the file nor from Quarterdeck."""
+    return [entry for entry in topic.open_decisions() if not topic_sent(state, "decision", f"{topic.ref}/{entry.entry_id}")]
+
+
+def topic_order(topic: Topic, state: ReviewState | None) -> tuple[int, float]:
+    """Topics with decisions that need the owner first, then the most recently written."""
     last = topic.last_at
-    return (-len(topic.open_decisions()), -(last.timestamp() if last else 0.0))
+    return (-len(topic_awaiting(topic, state)), -(last.timestamp() if last else 0.0))
 
 
 TOPIC_CSS = """
@@ -7974,7 +7979,7 @@ TOPIC_ASK_SCRIPT = """
         const toggle = form.querySelector(".route-toggle"), list = form.querySelector(".route-list");
         let manual = false;
         function hold() {
-          if (form.dataset.sending || document.activeElement === field || field.value.trim() || manual || (about && !about.hidden)) {
+          if (form.dataset.sending || document.activeElement === field || field.value.trim() || (about && !about.hidden)) {
             form.dataset.mutationPending = "true";
           } else {
             delete form.dataset.mutationPending;
@@ -8011,7 +8016,11 @@ TOPIC_ASK_SCRIPT = """
         }
         field.value = readDraft(draftKey);
         grow(field);
-        field.addEventListener("input", () => { saveDraft(draftKey, field.value); grow(field); guess(); hold(); });
+        field.addEventListener("input", () => {
+          saveDraft(draftKey, field.value); grow(field);
+          if (!field.value.trim()) manual = false;
+          guess(); hold();
+        });
         field.addEventListener("focus", hold);
         field.addEventListener("blur", hold);
         if (about) {
@@ -8328,7 +8337,7 @@ def topic_page_html(topic: Topic, snapshot: HomeSnapshot, multi_home: bool, gene
         topic_decision_html(entry, topic.ref, live, answered_here.get(entry.entry_id)) for entry in open_decisions
     )
     decisions_block = (
-        f'<section aria-labelledby="open-h"><h2 class="needs" id="open-h">Open decisions <span class="n">{len(open_decisions)}</span></h2>'
+        f'<section aria-labelledby="open-h"><h2 class="needs" id="open-h">Open decisions <span class="n">{len(open_decisions) - len(answered_here)}</span></h2>'
         f"{decisions}</section>" if open_decisions else ""
     )
     log: list[str] = []
@@ -8425,9 +8434,7 @@ def topic_push_cards(homes: list[HomeSnapshot]) -> list[dict[str, object]]:
     for snapshot, topic in assign_topic_pages(homes):
         state = snapshot.review_state
         home = str(snapshot.spec.home)
-        for entry in topic.open_decisions():
-            if topic_sent(state, "decision", f"{topic.ref}/{entry.entry_id}"):
-                continue
+        for entry in topic_awaiting(topic, state):
             cards.append({"id": f"topic-decision:{home}/{topic.ref}/{entry.entry_id}", "section": "needs_you",
                           "title": entry.decision, "push_url": f"./{topic.page}#decision-{entry.entry_id}"})
         responses = topic.responses()
@@ -8477,7 +8484,7 @@ def topics_section_html(homes: list[HomeSnapshot], now: datetime, allow_marks: b
     multi_home = len(all_snapshots(homes)) > 1
 
     def row(snapshot: HomeSnapshot, topic: Topic) -> str:
-        open_count = len(topic.open_decisions())
+        open_count = len(topic_awaiting(topic, snapshot.review_state))
         meta = []
         if open_count:
             meta.append(f'<b class="topic-needs">{open_count} open decision{"s" if open_count != 1 else ""}</b>')
@@ -8491,8 +8498,8 @@ def topics_section_html(homes: list[HomeSnapshot], now: datetime, allow_marks: b
                 f'{html.escape(topic.title or topic.topic_id)}</span>{now_line}'
                 f'<span class="topic-meta">{" · ".join(meta)}</span></a></li>')
 
-    active = sorted(((s, t) for s, t in found if t.status != "done"), key=lambda pair: topic_order(pair[1]))
-    done = sorted(((s, t) for s, t in found if t.status == "done"), key=lambda pair: topic_order(pair[1]))
+    active = sorted(((s, t) for s, t in found if t.status != "done"), key=lambda pair: topic_order(pair[1], pair[0].review_state))
+    done = sorted(((s, t) for s, t in found if t.status == "done"), key=lambda pair: topic_order(pair[1], pair[0].review_state))
     rows = "".join(row(snapshot, topic) for snapshot, topic in active)
     closed = (
         f'<details class="topic-done"><summary>Closed topics <span class="count">{len(done)}</span></summary>'
