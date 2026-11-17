@@ -238,8 +238,8 @@ drop the hold, and hides the card once the note is delivered. See
 ## Where the sections come from
 
 When any home keeps [topic files](keep-topic-threads.md), the served front page
-is the short one (Needs you, Changed since you last looked, the ask box and
-search), and the sections below appear on `classic.html` for this release.
+is the short one (Needs you, Changed since you last looked, Topics, the ask
+box and search), and the sections below appear on `classic.html` for this release.
 
 When a home has an executable `bin/fm-bearings-snapshot.sh`, Quarterdeck runs it
 with `--json` and `FM_HOME` set, under a 15-second timeout, so the page and
