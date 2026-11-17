@@ -110,6 +110,12 @@ is recorded. `quarterdeck reactions import FILE` runs the same delivery for the
 reactions recorded in the cloud artifact, skipping ids already delivered.
 Unsent reply text stays in the browser; see the
 [reply draft rules](../how-to/serve-the-page.md#react-to-calls-and-reports-from-the-page).
+The same endpoint takes a question about a topic (`kind` `topic`, the topic's
+page name or `+new` for a new topic) and an answer to a topic decision (`kind`
+`decision`, `<topic>/<decision id>`), each as text only. The note asks Firstmate
+to record it in `data/topics/<topic-id>.md`; Quarterdeck itself never writes the
+topic file. A topic, decision or answer that does not exist, or a decision the
+file already shows answered or that was already answered from Quarterdeck, is refused before anything is sent.
 Each configured home is loaded independently. A missing or unreadable home
 shows its own error while other sections still render.
 
@@ -215,10 +221,12 @@ an address a visitor chose. While subscriptions exist, a timer rebuilds the page
 about once a minute even with no browsers open. After each page build Quarterdeck
 compares the Needs-you cards with its record and, for each new one, posts one message to each
 subscription's push service: an encrypted payload (RFC 8291) signed with
-Quarterdeck's own key (RFC 8292). The payload holds only "1 new item needs you",
-a tag and a link to that tag; the tag is a hash of the card's identity, so no
-title, task name or text leaves the machine, and the push service sees only
-ciphertext. Lifecycle tracking follows the behavior in the serving guide.
+Quarterdeck's own key (RFC 8292). The payload holds the item's title (a call's
+title or a topic decision's question; for an answered question, "Firstmate
+answered" and the topic's title), a tag and a link to that card; the tag is a
+hash of the card's identity. No recommendation, detail or other text is sent.
+The push service sees only ciphertext, but the title shows on the phone's lock
+screen to anyone holding the phone. Lifecycle tracking follows the behavior in the serving guide.
 Transient delivery failures leave the item pending for the next check; once at
 least one push service accepts a message, it is not retried for other phones.
 The uncached push-key response also lists server-confirmed inactive tags; page-open

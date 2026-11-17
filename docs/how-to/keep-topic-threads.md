@@ -16,8 +16,39 @@ a file in its home; Quarterdeck shows it as a page. The file format is in the
 4. **Conversation** is everything said about the topic, oldest first, grouped by day in your time zone. Your own
    messages carry a rule down their left edge. Each one says whether it was said in chat or on Quarterdeck.
 
-The thread pages are read-only for now. Answer a decision in the Firstmate chat; Firstmate records the answer in
-the file, and the decision leaves **Open decisions** on the next refresh.
+A page written by `quarterdeck render` is read-only: answer a decision in the Firstmate chat. On the page that
+`quarterdeck serve --allow-marks` serves, you can answer and ask from the page itself, as below.
+
+## Answer a decision (owner, served page)
+
+1. On an open decision, tap one of its options. The recommended one is filled in.
+2. The card says "Sending … in 5 s" with **Undo**. Tap **Undo** to take it back; otherwise it is sent to Firstmate
+   when the five seconds run out.
+3. The card then shows your answer as sent, and the decision stops counting as needing you. It leaves **Open
+   decisions** once Firstmate records your answer in the topic.
+
+A decision with no options, or one you want to talk through, has **Discuss**: it opens the ask box at the bottom
+of the page with "About: <the question>" above it. Remove that line to ask about the topic in general.
+
+## Ask Firstmate (owner, served page)
+
+- **On a thread:** type in the box at the bottom and tap **Send**. Your question appears at the end of the
+  conversation as waiting, and Firstmate's answer appears there when it writes it. The page reloads about once a
+  minute while you are not typing.
+- **On the front page:** the **Ask Firstmate** box sits in the **Topics** section. Under it, **Goes to** shows the
+  topic your question will be filed under: Firstmate's guess from your words, or **New topic**. Tap **Change** to
+  pick another topic or **New topic** before you send.
+- **By voice:** use the microphone on your phone's keyboard. The words land in the box for you to check; nothing is
+  sent until you tap **Send**.
+- What you type is kept on this device as a draft for a week. If sending fails, the box says "Not sent, your words
+  are kept" and the reason; send again when Firstmate is reachable.
+
+## Get notified (owner, served page)
+
+With [phone notifications](serve-the-page.md#get-phone-notifications) on, an open decision sends one notification
+that shows its question only, and tapping it opens the card. A decision you answered from the page is withdrawn.
+When Firstmate answers a question you sent from a thread, one notification says "Firstmate answered" and names the
+topic.
 
 When a home has no topic files, the front page has no Topics section and nothing else changes.
 
@@ -47,6 +78,10 @@ When a home has no topic files, the front page has no Topics section and nothing
   answers, `Options:` and `Recommend:`. Write one decision per question.
 - When the owner answers, in chat or anywhere else, append their answer as an entry from `you` with `Re:` naming
   the decision's id. That closes it.
+- A question or an answer sent from Quarterdeck arrives as an inbox note that names the topic and says what to
+  write: the question as an entry from `you` at `quarterdeck` with `Id: ask-…`, answered with `Re: ask-…`; an
+  answer as an entry from `you` at `quarterdeck` with `Re:` naming the decision. A question for a **New topic**
+  needs a topic first.
 - When a decision no longer matters, append a `firstmate` entry with `Re:` naming it and saying why.
 - When the work is finished, set `Status: done`.
 - Run `quarterdeck topics check` after editing. With no file named it checks every configured home.

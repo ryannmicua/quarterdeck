@@ -47,8 +47,10 @@ for server requirements, phone setup and withdrawal behavior.
 - Topic threads: when Firstmate keeps `data/topics/<topic-id>.md` files, each
   topic gets a thread page with what stands now, what waits on whom, its
   backlog tasks, the open decisions and the whole conversation, and the front
-  page lists the topics. `quarterdeck topics check` reports mistakes in the
-  files. See [Keep topic threads](docs/how-to/keep-topic-threads.md) and the
+  page lists the topics. On the page `serve --allow-marks` serves, a decision
+  is answered with one tap and five seconds to undo, and an ask box on each
+  thread and on the front page sends a question to Firstmate under the topic it
+  shows. `quarterdeck topics check` reports mistakes in the files. See [Keep topic threads](docs/how-to/keep-topic-threads.md) and the
   [topic files reference](docs/reference/topic-files.md).
 - Captain board: when a home has `data/captain-board.json`, the desk groups
   decisions still in play, with background items collapsed. Items

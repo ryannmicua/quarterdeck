@@ -280,6 +280,26 @@ def _record_from_line(line: str, section: str, headers: list[str] | None) -> Rec
     )
 
 
+BACKLOG_PATH_RE = re.compile(r"(?<![\w./-])data/([\w.-]{1,128})/([\w.-]{1,128}\.md)(?![\w-])")
+BACKLOG_PATH_TEXT_LIMIT = 2_000
+
+
+def backlog_report_target(data_dir: Path, value: str) -> Path | None:
+    """The report file a backlog field names, or None. The field is free text: only a documented
+    `data/<id>/<file>.md` path inside it, within the home's data directory, ever reaches the filesystem, and an OS
+    error on it means no report rather than a failed home."""
+    match = BACKLOG_PATH_RE.search(value[:BACKLOG_PATH_TEXT_LIMIT])
+    if match is None or match.group(1) in {".", ".."}:
+        return None
+    try:
+        root = data_dir.resolve()
+        target = (root / match.group(1) / match.group(2)).resolve()
+        target.relative_to(root)
+        return target if target.is_file() else None
+    except (OSError, ValueError):
+        return None
+
+
 def parse_backlog(source: str, data_dir: Path, reports: list[Report]) -> list[Record]:
     records: list[Record] = []
     section = ""
@@ -310,10 +330,9 @@ def parse_backlog(source: str, data_dir: Path, reports: list[Report]) -> list[Re
         report = report_by_id.get(identifier)
         if report is None:
             explicit = value_for(record.fields, "report_path", "report")
-            if explicit:
-                target = (data_dir.parent / explicit).resolve()
-                if target.is_file() and target.name == "report.md":
-                    report = next((item for item in reports if item.path == target), None)
+            target = backlog_report_target(data_dir, explicit) if explicit else None
+            if target is not None and target.name == "report.md":
+                report = next((item for item in reports if item.path == target), None)
         record.report = report.path if report else None
         if report:
             try:
@@ -786,7 +805,7 @@ def source_pages(
             )
     if bearings is not None:
         pages.update(bearings.item_pages)
-    pages.update(topic_pages(homes, bearings, pages))
+    pages.update(topic_pages(homes, bearings, pages, allow_marks))
     pages[ADOPTION_PAGE] = adoption_page_html(adoption_summary(homes, bearings.generated if bearings else datetime.now(timezone.utc)), main_href)
     return pages
 
@@ -1110,6 +1129,7 @@ class ReviewState:
     relations: dict[tuple[str, str], list[str]] = field(default_factory=dict)  # (kind, key) -> task ids
     reactions: dict[tuple[str, str], dict[str, str]] = field(default_factory=dict)  # (kind, item id) -> latest delivered
     delivered: dict[tuple[str, str], list[str]] = field(default_factory=dict)  # (kind, item id) -> delivered ids
+    history: dict[tuple[str, str], list[dict[str, str]]] = field(default_factory=dict)  # (kind, item id) -> all, oldest first
 
     def relevance_of(self, kind: str, key: str) -> tuple[str, str]:
         return self.relevance.get((kind, key), ("current", ""))
@@ -1195,6 +1215,7 @@ def load_review_state(path: Path) -> ReviewState:
             keys = ("id", "item_id", "kind", "task", "reaction", "text", "at", "source")
             state.reactions[(row[2], row[1])] = dict(zip(keys, row))
             state.delivered.setdefault((row[2], row[1]), []).append(row[0])
+            state.history.setdefault((row[2], row[1]), []).append(dict(zip(keys, row)))
     return state
 
 
@@ -1566,7 +1587,7 @@ def build_html(
     attention_block = attention_html(bearings.attention, allow_marks) if bearings else ""
     cards = activity_cards(bearings.attention, board, reactions, home_data_dirs(homes), bearings.item_pages, bearings.main_href) if bearings else []
     cards_block = cards_html(cards, bearings.attention, generated, bool(refresh_seconds)) if bearings else ""
-    topics_block = topics_section_html(homes, generated)
+    topics_block = topics_section_html(homes, generated, allow_marks)
     activity_block = activity_html(cards, bearings.attention, generated) if bearings else ""
     if activity_block:
         section_counts["activity"] = sum(card["section"] != "needs_you" for card in cards)
@@ -2056,7 +2077,7 @@ def build_html(
     {details_block}
     <footer>{html.escape(introductory_text)} {footer_label} · generated {timestamp} · source files open as readable pages beside this one.</footer>
   </main>
-  {lavish_script}{NAV_SCRIPT}{refresh_script}{reload_script}{mark_script}{reaction_script}{wait_script}{cards_script}{push_script}
+  {lavish_script}{NAV_SCRIPT}{refresh_script}{reload_script}{mark_script}{reaction_script}{wait_script}{cards_script}{push_script}{topic_ask_script() if allow_marks and topics_block else ""}
 </body>
 </html>
 '''
@@ -6005,7 +6026,7 @@ def site_builder(
         if push is not None:
             attention = bearings.attention
             try:
-                push.observe(activity, complete=attention is not None and not needs_unread(attention))
+                push.observe(activity + topic_push_cards(homes), complete=attention is not None and not needs_unread(attention))
             except Exception as exc:  # noqa: BLE001 - a notification problem must never stop the page
                 print(f"quarterdeck: could not check for new needs-you items to notify: {exc}", file=sys.stderr, flush=True)
         cards = cards_payload(activity, bearings.generated)
@@ -6131,7 +6152,9 @@ PUSH_SUBSCRIPTIONS_NAME = "push-subscriptions.json"
 PUSH_ITEMS_NAME = "push-items.json"
 PUSH_SUBJECT = "https://github.com/ryannmicua/quarterdeck"
 PUSH_TITLE = APP_NAME
-PUSH_BODY = "1 new item needs you"
+PUSH_BODY = "1 new item needs you"  # only when an item has no title
+PUSH_ANSWER_TITLE = "Firstmate answered"
+PUSH_TEXT_LIMIT = 120
 PUSH_TTL_SECONDS = 86400
 PUSH_TIMEOUT_SECONDS = 10
 PUSH_MAX_SUBSCRIPTIONS = 20
@@ -6261,6 +6284,20 @@ def read_private_json(path: Path) -> dict[str, object] | None:
     return value if isinstance(value, dict) else None
 
 
+def push_message(tag: str, card: dict[str, object]) -> dict[str, object]:
+    """A new-item message. The lock screen shows the item's title only (a decision's question, a call's title, the topic
+    of an answered question), never its recommendation or detail; tapping opens the item's card."""
+    text = " ".join(str(card.get("title") or "").split())
+    if len(text) > PUSH_TEXT_LIMIT:
+        text = text[:PUSH_TEXT_LIMIT - 1].rstrip() + "…"
+    message: dict[str, object] = {"type": "new", "tag": tag, "body": text or PUSH_BODY}
+    if card.get("section") == "answered":
+        message["title"] = PUSH_ANSWER_TITLE
+    if card.get("push_url"):
+        message["url"] = card["push_url"]
+    return message
+
+
 class PushNotifier:
     """Phone notifications for new needs-you items: one message per new item, a withdrawal when it goes.
 
@@ -6352,9 +6389,13 @@ class PushNotifier:
         return {"subscribed": False}
 
     def observe(self, cards: list[dict[str, object]], complete: bool) -> list[dict[str, object]]:
-        """Record the needs-you items on show and return the messages this change calls for (and send them)."""
+        """Record the needs-you items on show and return the messages this change calls for (and send them).
+
+        A card in the `answered` section (a question Firstmate answered) is announced once and never withdrawn."""
         now = self.clock()
-        current = {push_tag(card) for card in cards if card.get("section") == "needs_you"}
+        by_tag = {push_tag(card): card for card in cards if card.get("section") in {"needs_you", "answered"}}
+        current = {tag for tag, card in by_tag.items() if card.get("section") == "needs_you"}
+        answered = set(by_tag) - current
         messages: list[dict[str, object]] = []
         with self.send_lock, self.lock:
             stored = read_private_json(self.items_path)
@@ -6374,10 +6415,15 @@ class PushNotifier:
                 else:
                     record.update(active=True, gone_at=None)
                 if items[tag].get("shown") is None:
-                    messages.append({"type": "new", "tag": tag})
+                    messages.append(push_message(tag, by_tag[tag]))
+            for tag in sorted(answered):
+                if tag not in items:
+                    items[tag] = {"active": True, "shown": False if first else None, "gone_at": None, "answer": True}
+                    if not first:
+                        messages.append(push_message(tag, by_tag[tag]))
             if complete:
                 for tag, record in items.items():
-                    if tag in current:
+                    if tag in current or record.get("answer"):
                         continue
                     if record.get("active"):
                         record.update(active=False, gone_at=now)
@@ -6396,8 +6442,9 @@ class PushNotifier:
         tag = str(message["tag"])
         if message["type"] == "withdraw":
             return json.dumps({"type": "withdraw", "tag": tag}).encode("utf-8")
-        return json.dumps({"type": "new", "tag": tag, "title": PUSH_TITLE, "body": PUSH_BODY,
-                           "url": f"./#need-{tag}"}).encode("utf-8")
+        return json.dumps({"type": "new", "tag": tag, "title": str(message.get("title") or PUSH_TITLE),
+                           "body": str(message.get("body") or PUSH_BODY),
+                           "url": str(message.get("url") or f"./#need-{tag}")}).encode("utf-8")
 
     def send_all(self, messages: list[dict[str, object]]) -> None:
         with self.send_lock:
@@ -6858,14 +6905,15 @@ def make_handler(
                 clean_reaction(body)
             except (ValueError, UnicodeDecodeError):
                 self.send_text(400, "Expected JSON {\"id\": 8 to 64 letters, digits, dots, dashes or underscores, "
-                               "\"kind\": \"call\" | \"report\", \"item_id\": ..., "
+                               "\"kind\": \"call\" | \"report\" | \"topic\" | \"decision\", \"item_id\": ..., "
                                "\"reaction\": \"approve\" | \"hold\" | \"not-now\" | \"question\" | \"\", "
                                f"\"text\": ...}} with a reaction or text (text up to {REACTION_TEXT_LIMIT} characters)\n")
                 return
             try:
                 reaction = deliver(body)
             except ValueError as exc:
-                missing = str(exc).startswith(("no report matches", "no captain call matches", "no home matches"))
+                missing = str(exc).startswith(("no report matches", "no captain call matches", "no home matches",
+                                               "no topic matches", "no decision matches"))
                 delivery = str(exc).startswith(("fm-inbox.sh", "no executable", "could not start"))
                 self.send_text(404 if missing else 502 if delivery else 409, f"{exc}\n")
                 return
@@ -7361,6 +7409,11 @@ class Topic:
     problems: list[TopicProblem] = field(default_factory=list)
     page: str = ""  # the generated page's file name; empty when the topic cannot have one
 
+    @property
+    def ref(self) -> str:
+        """The name a reaction uses for this topic: its page name without `topic-` and `.html`."""
+        return self.page[len(TOPIC_PAGE_PREFIX):-len(".html")] if self.page else ""
+
     def responses(self) -> dict[str, list[TopicEntry]]:
         """Every entry that answers or replies to an id, keyed by that id, in file order."""
         found: dict[str, list[TopicEntry]] = {}
@@ -7669,10 +7722,15 @@ def assign_topic_pages(homes: list[HomeSnapshot]) -> list[tuple[HomeSnapshot, To
     return found
 
 
-def topic_order(topic: Topic) -> tuple[int, float]:
-    """Topics with open decisions first, then the most recently written."""
+def topic_awaiting(topic: Topic, state: ReviewState | None) -> list[TopicEntry]:
+    """The open decisions that still need the owner: not answered in the file nor from Quarterdeck."""
+    return [entry for entry in topic.open_decisions() if not topic_sent(state, "decision", f"{topic.ref}/{entry.entry_id}")]
+
+
+def topic_order(topic: Topic, state: ReviewState | None) -> tuple[int, float]:
+    """Topics with decisions that need the owner first, then the most recently written."""
     last = topic.last_at
-    return (-len(topic.open_decisions()), -(last.timestamp() if last else 0.0))
+    return (-len(topic_awaiting(topic, state)), -(last.timestamp() if last else 0.0))
 
 
 TOPIC_CSS = """
@@ -7749,6 +7807,33 @@ h2.needs .n { color: var(--signal); }
 .problems summary { min-height: 44px; display: flex; align-items: center; cursor: pointer; font-weight: 600; color: var(--ink); }
 .problems ul { margin: .2rem 0 .6rem; padding-left: 1.2rem; }
 .footnote { margin: 2.4rem 0 0; font-size: .82rem; color: var(--soft); overflow-wrap: anywhere; }
+button { font: 600 1rem/1.2 var(--sans); color: inherit; cursor: pointer; }
+.answer { display: flex; flex-wrap: wrap; align-items: center; gap: .5rem 1rem; margin: .8rem 0 0; }
+.answer[hidden] { display: none; }
+.opts-row { display: flex; flex-wrap: wrap; gap: .5rem; }
+.opt { min-height: 48px; padding: 0 1.1rem; border: 1.5px solid var(--ink); border-radius: 2px; background: transparent; }
+.opt.recommended { background: var(--ink); color: var(--ground); }
+.opt:hover { box-shadow: inset 0 -3px 0 var(--signal); }
+.opt:active { transform: translateY(1px); }
+.discuss, .undo, .linkish { min-height: 48px; padding: 0 .2rem; border: 0; background: none; text-decoration: underline;
+  text-decoration-thickness: 1px; text-underline-offset: .2em; }
+.answer-status { margin: .8rem 0 0; font: .95rem/1.45 var(--sans); }
+.answer-status[hidden] { display: none; }
+.answer-status .undo { margin-left: .4rem; font-weight: 700; }
+.decision.sent { border-left-color: var(--rule); }
+.entry.pending .ties { color: var(--signal); }
+.ask { position: sticky; bottom: 0; z-index: 4; margin: 2rem -1rem 0; padding: .7rem 1rem calc(.8rem + env(safe-area-inset-bottom));
+  background: var(--ground); border-top: 2px solid var(--ink); }
+.ask label { display: block; margin: 0 0 .35rem; font: 600 .8rem var(--sans); letter-spacing: .08em; text-transform: uppercase; color: var(--soft); }
+.ask .about { display: flex; flex-wrap: wrap; align-items: baseline; gap: 0 .5rem; margin: 0 0 .4rem; font: .9rem/1.4 var(--sans); }
+.ask .about[hidden] { display: none; }
+.ask .about .linkish { min-height: 32px; }
+.ask-row { display: flex; align-items: flex-end; gap: .6rem; }
+.ask-text { flex: 1; min-width: 0; min-height: 48px; max-height: 40vh; padding: .65rem .7rem; border: 1px solid var(--soft); border-radius: 2px;
+  background: transparent; color: var(--ink); font: 1rem/1.45 var(--serif); resize: none; }
+.ask-send { min-height: 48px; padding: 0 1.2rem; border: 0; border-radius: 2px; background: var(--ink); color: var(--ground); }
+.ask-send:disabled { opacity: .6; cursor: progress; }
+.ask-status { margin: .35rem 0 0; min-height: 1.2em; font: .88rem/1.4 var(--sans); color: var(--soft); }
 @media (max-width: 30rem) {
   body { font-size: 17px; }
   .state > div { grid-template-columns: minmax(0, 1fr); }
@@ -7787,6 +7872,256 @@ TOPIC_TIME_SCRIPT = """
       }
     })();
   </script>"""
+
+
+TOPIC_ASK_STOP_WORDS = (
+    "the and for with this that what when will can you are was have has not now from about please could would should "
+    "does did how why which there their our its into than then them they just still also any all get got let make need "
+    "want firstmate topic"
+)
+TOPIC_ASK_SCRIPT = """
+  <script>
+    (function () {
+      // Questions and decision answers from the served page go to Firstmate through /api/reactions, like reactions do.
+      const ENDPOINT = "%(endpoint)s", DRAFT_MS = 7 * 86400000, UNDO_MS = 5000;
+      const STOP = new Set("%(stop)s".split(" "));
+      function newId() {
+        return Array.from(crypto.getRandomValues(new Uint8Array(16)), byte => byte.toString(16).padStart(2, "0")).join("");
+      }
+      async function send(payload, box) {
+        // An unchanged retry keeps its id, so Firstmate never receives the same message twice.
+        const key = JSON.stringify(payload);
+        if (box.dataset.sendKey !== key) { box.dataset.sendKey = key; box.dataset.sendId = newId(); }
+        const response = await fetch(ENDPOINT, {
+          method: "POST", credentials: "same-origin", headers: {"Content-Type": "application/json"},
+          body: JSON.stringify({id: box.dataset.sendId, kind: payload.kind, item_id: payload.item_id, reaction: "", text: payload.text}),
+        });
+        if (!response.ok) throw new Error((await response.text()).trim() || "HTTP " + response.status);
+        delete box.dataset.sendKey;
+        delete box.dataset.sendId;
+        return response.json();
+      }
+      function readDraft(key) {
+        try {
+          const draft = JSON.parse(localStorage.getItem(key) || "null");
+          if (draft && typeof draft.text === "string" && Date.now() - draft.at < DRAFT_MS) return draft.text;
+          localStorage.removeItem(key);
+        } catch (_) {}
+        return "";
+      }
+      function saveDraft(key, text) {
+        try { if (text) localStorage.setItem(key, JSON.stringify({text, at: Date.now()})); else localStorage.removeItem(key); } catch (_) {}
+      }
+      function grow(field) {
+        field.style.height = "auto";
+        field.style.height = Math.min(field.scrollHeight + 2, window.innerHeight * 0.4) + "px";
+      }
+
+      // A decision card: one tap starts five seconds to undo, then the answer is sent.
+      for (const card of document.querySelectorAll("[data-decision]")) {
+        const row = card.querySelector(".answer"), status = card.querySelector(".answer-status");
+        let timer = null, tick = null;
+        function settle(text) {
+          clearTimeout(timer);
+          clearInterval(tick);
+          delete card.dataset.mutationPending;
+          row.hidden = false;
+          status.textContent = text;
+          status.hidden = !text;
+        }
+        card.addEventListener("click", event => {
+          if (event.target.closest("[data-undo-answer]")) {
+            settle("Not sent. Pick an answer when you are ready.");
+            row.querySelector("[data-option], [data-discuss]").focus();
+            return;
+          }
+          const option = event.target.closest("[data-option]");
+          if (!option || card.dataset.mutationPending) return;
+          const choice = option.dataset.option;
+          let left = UNDO_MS / 1000;
+          card.dataset.mutationPending = "true";
+          row.hidden = true;
+          const label = document.createElement("span");
+          const undo = document.createElement("button");
+          undo.type = "button";
+          undo.className = "undo";
+          undo.dataset.undoAnswer = "";
+          undo.textContent = "Undo";
+          status.replaceChildren(label, undo);
+          status.hidden = false;
+          const show = () => { label.textContent = "Sending \u201c" + choice + "\u201d in " + left + " s"; };
+          show();
+          undo.focus();
+          tick = setInterval(() => { left -= 1; if (left > 0) show(); }, 1000);
+          timer = setTimeout(async () => {
+            clearInterval(tick);
+            undo.remove();
+            label.textContent = "Sending \u201c" + choice + "\u201d\u2026";
+            try {
+              await send({kind: "decision", item_id: card.dataset.decision, text: choice}, card);
+              delete card.dataset.mutationPending;
+              card.classList.add("sent");
+              status.textContent = "Sent to Firstmate: \u201c" + choice + "\u201d. The card closes when Firstmate records it.";
+            } catch (error) {
+              settle("Not sent: " + error.message + " Tap an answer to try again.");
+            }
+          }, UNDO_MS);
+        });
+      }
+
+      // The ask box: drafts are kept on this device; nothing is sent until Send, so dictated words can be checked first.
+      for (const form of document.querySelectorAll("form[data-ask]")) {
+        const field = form.querySelector(".ask-text"), status = form.querySelector(".ask-status");
+        const submit = form.querySelector(".ask-send"), about = form.querySelector(".about");
+        const front = form.dataset.ask === "front";
+        const draftKey = "quarterdeck-ask:" + (front ? "front" : form.dataset.topic);
+        const routes = Array.from(form.querySelectorAll("input[name=route]"));
+        const toggle = form.querySelector(".route-toggle"), list = form.querySelector(".route-list");
+        let manual = false;
+        function hold() {
+          if (form.dataset.sending || document.activeElement === field || field.value.trim() || (about && !about.hidden)) {
+            form.dataset.mutationPending = "true";
+          } else {
+            delete form.dataset.mutationPending;
+          }
+        }
+        function setAbout(id, question) {
+          if (!about) return;
+          about.dataset.id = id || "";
+          about.querySelector(".about-text").textContent = question || "";
+          about.hidden = !id;
+          hold();
+        }
+        function words(text) {
+          return new Set((String(text).toLowerCase().match(/[a-z0-9]{3,}/g) || []).filter(word => !STOP.has(word)));
+        }
+        function chosen() { return routes.find(route => route.checked) || routes[routes.length - 1]; }
+        function showRoute() {
+          const route = chosen();
+          form.querySelector(".route-name").textContent = route.dataset.title;
+          form.querySelector(".route-how").textContent = manual ? "your choice" : field.value.trim() ? "Firstmate's guess" : "";
+        }
+        function guess() {
+          if (manual || !routes.length) return;
+          const said = words(field.value);
+          let best = routes[routes.length - 1], top = 0;
+          for (const route of routes) {
+            if (route.value === "%(new)s") continue;
+            let score = 0;
+            for (const word of words(route.dataset.words)) if (said.has(word)) score += 1;
+            if (score > top) { top = score; best = route; }
+          }
+          best.checked = true;
+          showRoute();
+        }
+        field.value = readDraft(draftKey);
+        grow(field);
+        field.addEventListener("input", () => {
+          saveDraft(draftKey, field.value); grow(field);
+          if (!field.value.trim()) manual = false;
+          guess(); hold();
+        });
+        field.addEventListener("focus", hold);
+        field.addEventListener("blur", hold);
+        if (about) {
+          about.querySelector(".linkish").addEventListener("click", () => { setAbout("", ""); field.focus(); });
+          document.addEventListener("click", event => {
+            const discuss = event.target.closest("[data-discuss]");
+            if (!discuss) return;
+            event.preventDefault();
+            setAbout(discuss.dataset.discuss, discuss.dataset.question);
+            field.focus();
+            form.scrollIntoView({block: "end"});
+          });
+        }
+        if (toggle) {
+          toggle.addEventListener("click", () => {
+            const open = list.hidden;
+            list.hidden = !open;
+            toggle.setAttribute("aria-expanded", String(open));
+          });
+          for (const route of routes) route.addEventListener("change", () => {
+            manual = true;
+            showRoute();
+            hold();
+            list.hidden = true;
+            toggle.setAttribute("aria-expanded", "false");
+            toggle.focus();
+          });
+          guess();
+        }
+        hold();
+        form.addEventListener("submit", async event => {
+          event.preventDefault();
+          if (form.dataset.sending) return;
+          const text = field.value.trim();
+          if (!text) { status.textContent = "Write your question first."; field.focus(); return; }
+          const aboutId = about && !about.hidden ? about.dataset.id : "";
+          const message = aboutId ? "About decision " + aboutId + " (" + about.querySelector(".about-text").textContent + "): " + text : text;
+          const route = routes.length ? chosen() : null;
+          form.dataset.sending = "true";
+          hold();
+          submit.disabled = true;
+          status.textContent = "Sending\u2026";
+          try {
+            await send({kind: "topic", item_id: route ? route.value : form.dataset.topic, text: message}, form);
+            field.value = "";
+            saveDraft(draftKey, "");
+            grow(field);
+            setAbout("", "");
+            if (route) {
+              status.textContent = route.value === "%(new)s" ? "Sent to Firstmate as a new topic."
+                : "Sent to Firstmate under " + route.dataset.title + ". The answer appears in that topic.";
+              manual = false;
+              guess();
+            } else {
+              status.textContent = "Sent. The answer appears here when Firstmate writes it.";
+              addPending(message);
+            }
+          } catch (error) {
+            status.textContent = "Not sent, your words are kept. " + error.message;
+          }
+          submit.disabled = false;
+          delete form.dataset.sending;
+          hold();
+        });
+      }
+      function addPending(text) {
+        const log = document.getElementById("log");
+        if (!log) return;
+        const entry = document.createElement("li");
+        entry.className = "entry you pending";
+        const head = document.createElement("p");
+        head.className = "entry-head";
+        const who = document.createElement("span");
+        who.className = "who";
+        who.textContent = "You";
+        const when = document.createElement("span");
+        when.textContent = "just now";
+        const where = document.createElement("span");
+        where.textContent = "on Quarterdeck";
+        head.append(who, when, where);
+        const body = document.createElement("div");
+        body.className = "prose";
+        const paragraph = document.createElement("p");
+        paragraph.textContent = text;
+        body.append(paragraph);
+        const ties = document.createElement("p");
+        ties.className = "ties";
+        ties.textContent = "Waiting for Firstmate\u2019s answer";
+        entry.append(head, body, ties);
+        log.append(entry);
+      }
+      // While served, reload now and then so answers appear; never while something is being typed or sent.
+      const every = Number(document.body.dataset.refresh || 0);
+      if (every > 0) setInterval(() => { if (!document.querySelector("[data-mutation-pending]")) location.reload(); }, every * 1000);
+    })();
+  </script>"""
+
+
+def topic_ask_script() -> str:
+    return (TOPIC_ASK_SCRIPT.replace("%(endpoint)s", REACTION_ENDPOINT).replace("%(stop)s", TOPIC_ASK_STOP_WORDS)
+            .replace("%(new)s", NEW_TOPIC_ITEM))
 
 
 def topic_who_text(who: str) -> str:
@@ -7878,16 +8213,39 @@ def topic_state_html(topic: Topic, snapshot: HomeSnapshot, item_pages: dict[str,
     return '<dl class="state">' + "".join(f"<div><dt>{label}</dt><dd>{value}</dd></div>" for label, value in rows) + "</dl>"
 
 
-def topic_decision_html(entry: TopicEntry) -> str:
-    """An open decision card, pinned above the conversation: the question, its context, the recommendation and options."""
+def topic_decision_html(entry: TopicEntry, ref: str = "", live: bool = False, sent: dict[str, str] | None = None) -> str:
+    """An open decision card, pinned above the conversation: the question, its context, the recommendation and options.
+
+    On the served page with writes on (`live`), each option is a one-tap answer with five seconds to undo, and Discuss
+    opens the ask box about this card. `sent` is an answer already sent from Quarterdeck that the file does not show yet.
+    """
+    decision_id = html.escape(entry.entry_id, quote=True)
+    active = live and sent is None
+    data = f' data-decision="{html.escape(f"{ref}/{entry.entry_id}", quote=True)}"' if active else ""
     asked = f"Asked {topic_stamp(entry.at, 'full')}" if entry.at else "Asked"
-    parts = [f'<article class="decision" id="decision-{html.escape(entry.entry_id, quote=True)}">',
+    parts = [f'<article class="decision{" sent" if sent else ""}" id="decision-{decision_id}"{data}>',
              f'<p class="asked">{asked}</p><h3>{html.escape(entry.decision)}</h3>']
     if entry.text:
         parts.append(f'<div class="prose">{topic_markdown(entry.text)}</div>')
     if entry.recommend:
         parts.append(f'<p class="rec">First mate recommends <b>{html.escape(entry.recommend)}</b>.</p>')
-    if entry.options:
+    if sent is not None:
+        when = parse_board_time(sent.get("at"))
+        stamp = f" {topic_stamp(when, 'full')}" if when else ""
+        parts.append(f'<p class="answer-status">You answered <b>{html.escape(sent.get("text", ""))}</b> from Quarterdeck{stamp}. '
+                     "The card closes when Firstmate records it.</p>")
+    elif active:
+        recommended = entry.recommend.casefold()
+        buttons = "".join(
+            f'<button type="button" class="opt{" recommended" if option.casefold() == recommended else ""}" '
+            f'data-option="{html.escape(option, quote=True)}">{html.escape(option)}</button>'
+            for option in entry.options
+        )
+        row = f'<div class="opts-row" role="group" aria-label="Answer">{buttons}</div>' if buttons else ""
+        parts.append(f'<div class="answer">{row}<button type="button" class="discuss" data-discuss="{decision_id}" '
+                     f'data-question="{html.escape(entry.decision, quote=True)}">Discuss</button></div>'
+                     '<p class="answer-status" aria-live="polite" hidden></p>')
+    elif entry.options:
         parts.append(f'<p class="opts">Options: {" · ".join(html.escape(option) for option in entry.options)}</p>')
     parts.append("</article>")
     return "".join(parts)
@@ -7925,6 +8283,8 @@ def topic_entry_html(entry: TopicEntry, by_id: dict[str, TopicEntry],
         what = earlier.decision or topic_reply_summary(earlier) or target
         verb = "Answers" if earlier.decision else "Replies to"
         ties.append(f'{verb} <a href="#entry-{html.escape(target, quote=True)}">{html.escape(what)}</a>')
+    if entry.who == "you" and entry.entry_id.startswith(TOPIC_ASK_PREFIX) and entry.entry_id not in responses:
+        ties.append("Waiting for Firstmate’s answer")
     if entry.decision:
         replies = responses.get(entry.entry_id, [])
         if replies:
@@ -7943,17 +8303,43 @@ def topic_entry_html(entry: TopicEntry, by_id: dict[str, TopicEntry],
     return "".join(parts)
 
 
+def topic_pending_ask_html(reaction: dict[str, str], answers: list[TopicEntry]) -> str:
+    """A question sent from Quarterdeck that the topic file does not show yet, at the end of the conversation."""
+    when = parse_board_time(reaction.get("at"))
+    head = '<span class="who">You</span>' + (topic_stamp(when, "clock") if when else "") + "<span>on Quarterdeck</span>"
+    tie = (f"Answered: {html.escape(topic_reply_summary(answers[-1]))}" if answers else "Waiting for Firstmate’s answer")
+    return (f'<li class="entry you{"" if answers else " pending"}" id="entry-{html.escape(topic_ask_id(reaction["id"]), quote=True)}">'
+            f'<p class="entry-head">{head}</p><div class="prose"><p>{html.escape(reaction.get("text", ""))}</p></div>'
+            f'<p class="ties">{tie}</p></li>')
+
+
+def topic_sent(state: ReviewState | None, kind: str, item_id: str) -> list[dict[str, str]]:
+    return list(state.history.get((kind, item_id), [])) if state is not None else []
+
+
 def topic_page_html(topic: Topic, snapshot: HomeSnapshot, multi_home: bool, generated: datetime,
                     item_pages: dict[str, str], pages: dict[str, str] | None = None,
-                    main_href: str = "index.html") -> str:
-    """The thread page: the topic's state, its open decisions, then the whole conversation in file order."""
+                    main_href: str = "index.html", live: bool = False, refresh_seconds: int | None = None) -> str:
+    """The thread page: the topic's state, its open decisions, then the whole conversation in file order.
+
+    With writes on (`live`) it adds one-tap answers, Discuss and the ask box, and shows what was sent from Quarterdeck
+    until Firstmate writes it into the file."""
     title = topic.title or topic.topic_id
     by_id = {entry.entry_id: entry for entry in topic.entries if entry.entry_id}
     responses = topic.responses()
     open_decisions = topic.open_decisions()
-    decisions = "".join(topic_decision_html(entry) for entry in open_decisions)
+    state = snapshot.review_state
+    answered_here = {
+        entry.entry_id: sent[-1] for entry in open_decisions
+        if (sent := topic_sent(state, "decision", f"{topic.ref}/{entry.entry_id}"))
+    }
+    decisions = "".join(
+        topic_decision_html(entry, topic.ref, live, answered_here.get(entry.entry_id)) for entry in open_decisions
+    )
+    awaiting = len(topic_awaiting(topic, state))
+    heading_class = ' class="needs"' if awaiting else ""
     decisions_block = (
-        f'<section aria-labelledby="open-h"><h2 class="needs" id="open-h">Open decisions <span class="n">{len(open_decisions)}</span></h2>'
+        f'<section aria-labelledby="open-h"><h2{heading_class} id="open-h">Open decisions <span class="n">{awaiting}</span></h2>'
         f"{decisions}</section>" if open_decisions else ""
     )
     log: list[str] = []
@@ -7966,9 +8352,14 @@ def topic_page_html(topic: Topic, snapshot: HomeSnapshot, multi_home: bool, gene
                 log.append(f'<li class="day">{day}</li>')
                 last_day = day
         log.append(topic_entry_html(entry, by_id, responses, snapshot.data_dir, pages, main_href))
+    for reaction in topic_sent(state, "topic", topic.ref):
+        ask = topic_ask_id(reaction["id"])
+        if ask not in by_id:
+            log.append(topic_pending_ask_html(reaction, responses.get(ask, [])))
     log_block = (
         f'<section aria-labelledby="log-h"><h2 id="log-h">Conversation <span class="n">{len(topic.entries)}</span></h2>'
-        + (f'<ol class="log" id="log">{"".join(log)}</ol>' if log else '<p class="empty">Nothing written here yet.</p>')
+        + (f'<ol class="log" id="log">{"".join(log)}</ol>' if log else
+           '<p class="empty">Nothing written here yet.</p>' + ('<ol class="log" id="log"></ol>' if live else ""))
         + "</section>"
     )
     problems = ""
@@ -7986,6 +8377,15 @@ def topic_page_html(topic: Topic, snapshot: HomeSnapshot, multi_home: bool, gene
     home = f'<span class="home">{html.escape(snapshot.spec.label)}</span>' if multi_home else ""
     source = display_path(topic.path, snapshot.spec.home) if snapshot.spec.home else str(topic.path)
     closed = '<p class="closed">This topic is closed.</p>' if topic.status == "done" else ""
+    ask = (
+        f'<form class="ask" id="ask" data-ask="thread" data-topic="{html.escape(topic.ref, quote=True)}">'
+        '<label for="ask-text">Ask Firstmate about this topic</label>'
+        '<p class="about" hidden>About: <span class="about-text"></span><button type="button" class="linkish">Remove</button></p>'
+        '<div class="ask-row"><textarea class="ask-text" id="ask-text" rows="1" autocapitalize="sentences" '
+        f'maxlength="{REACTION_TEXT_LIMIT}"></textarea><button type="submit" class="ask-send">Send</button></div>'
+        '<p class="ask-status" aria-live="polite"></p></form>'
+    ) if live else ""
+    refresh = f' data-refresh="{int(refresh_seconds)}"' if live and refresh_seconds else ""
     return f'''<!doctype html>
 <html lang="en">
 <head>
@@ -7995,7 +8395,7 @@ def topic_page_html(topic: Topic, snapshot: HomeSnapshot, multi_home: bool, gene
   <title>{html.escape(title)} · Quarterdeck</title>
   <style>{TOPIC_CSS}</style>
 </head>
-<body>
+<body{refresh}>
   <nav class="bar" aria-label="Quarterdeck"><a href="{html.escape(main_href, quote=True)}">&larr; Quarterdeck</a>{home}</nav>
   <main>
     <h1>{html.escape(title)}</h1>
@@ -8005,34 +8405,88 @@ def topic_page_html(topic: Topic, snapshot: HomeSnapshot, multi_home: bool, gene
     {log_block}
     {problems}
     <p class="footnote">Read from {html.escape(source)} · built {topic_stamp(generated, "full")}</p>
+    {ask}
   </main>
-  {TOPIC_TIME_SCRIPT}
+  {TOPIC_TIME_SCRIPT}{topic_ask_script() if live else ""}
 </body>
 </html>
 '''
 
 
-def topic_pages(homes: list[HomeSnapshot], bearings: Bearings | None, pages: dict[str, str]) -> dict[str, str]:
-    """Build every topic page; documents the topics link to are registered in `pages` too."""
+def topic_pages(homes: list[HomeSnapshot], bearings: Bearings | None, pages: dict[str, str],
+                allow_marks: bool = False) -> dict[str, str]:
+    """Build every topic page; documents the topics link to are registered in `pages` too.
+
+    `allow_marks` is the served page with writes on: it adds the ask box and one-tap answers, and reloads now and then."""
     built: dict[str, str] = {}
     generated = bearings.generated if bearings else datetime.now(timezone.utc)
     item_pages = bearings.item_pages if bearings else {}
     main_href = bearings.main_href if bearings else "index.html"
     multi_home = len(all_snapshots(homes)) > 1
     for snapshot, topic in assign_topic_pages(homes):
-        built[topic.page] = topic_page_html(topic, snapshot, multi_home, generated, item_pages, pages, main_href)
+        built[topic.page] = topic_page_html(topic, snapshot, multi_home, generated, item_pages, pages, main_href,
+                                            live=allow_marks, refresh_seconds=DEFAULT_REFRESH_SECONDS if allow_marks else None)
     return built
 
 
-def topics_section_html(homes: list[HomeSnapshot], now: datetime) -> str:
-    """The front page's list of topics: one row each, open decisions first. Empty when no home keeps topic files."""
+def topic_push_cards(homes: list[HomeSnapshot]) -> list[dict[str, object]]:
+    """Phone-notification items from the topics: each open decision not yet answered from Quarterdeck needs you, and
+    each question sent from Quarterdeck that Firstmate has answered in the file is announced once."""
+    cards: list[dict[str, object]] = []
+    for snapshot, topic in assign_topic_pages(homes):
+        state = snapshot.review_state
+        home = str(snapshot.spec.home)
+        for entry in topic_awaiting(topic, state):
+            cards.append({"id": f"topic-decision:{home}/{topic.ref}/{entry.entry_id}", "section": "needs_you",
+                          "title": entry.decision, "push_url": f"./{topic.page}#decision-{entry.entry_id}"})
+        responses = topic.responses()
+        for reaction in topic_sent(state, "topic", topic.ref):
+            ask = topic_ask_id(reaction["id"])  # the question has this anchor whether or not the file shows it yet
+            if any(reply.who != "you" for reply in responses.get(ask, [])):
+                cards.append({"id": f"topic-answer:{home}/{topic.ref}/{ask}", "section": "answered",
+                              "title": topic.title or topic.topic_id, "push_url": f"./{topic.page}#entry-{ask}"})
+    return cards
+
+
+def topic_route_words(topic: Topic) -> str:
+    """The words a front-page question is matched against to guess its topic."""
+    waits = " ".join(f"{who} {what}" for who, what in topic.waiting)
+    return " ".join((topic.title, topic.topic_id.replace("-", " "), topic.now, waits, " ".join(topic.pieces)))
+
+
+def topic_front_ask_html(topics: list[Topic]) -> str:
+    """The front page's ask box. It shows which topic the question goes to before it is sent: Firstmate's guess from
+    the words typed, which the owner can change, or New topic."""
+    routes = "".join(
+        f'<label class="route-option"><input type="radio" name="route" value="{html.escape(topic.ref, quote=True)}" '
+        f'data-title="{html.escape(topic.title or topic.topic_id, quote=True)}" '
+        f'data-words="{html.escape(topic_route_words(topic), quote=True)}"> {html.escape(topic.title or topic.topic_id)}</label>'
+        for topic in topics
+    )
+    routes += (f'<label class="route-option"><input type="radio" name="route" value="{NEW_TOPIC_ITEM}" data-title="New topic" '
+               'data-words="" checked> New topic</label>')
+    return (
+        '<form class="front-ask" data-ask="front" id="topic-ask"><label class="ask-label" for="front-ask-text">Ask Firstmate</label>'
+        f'<textarea class="ask-text" id="front-ask-text" rows="2" autocapitalize="sentences" maxlength="{REACTION_TEXT_LIMIT}">'
+        '</textarea><p class="route">Goes to <b class="route-name">New topic</b> <span class="route-how"></span> '
+        '<button type="button" class="route-toggle" aria-expanded="false" aria-controls="route-list">Change</button></p>'
+        f'<fieldset class="route-list" id="route-list" hidden><legend>Send it to</legend>{routes}</fieldset>'
+        '<p class="ask-row"><button type="submit" class="ask-send">Send</button></p>'
+        '<p class="ask-status" aria-live="polite"></p></form>'
+    )
+
+
+def topics_section_html(homes: list[HomeSnapshot], now: datetime, allow_marks: bool = False) -> str:
+    """The front page's list of topics: one row each, open decisions first. Empty when no home keeps topic files.
+
+    With writes on, an ask box above the list sends a question to Firstmate under the topic it shows."""
     found = assign_topic_pages(homes)
     if not found:
         return ""
     multi_home = len(all_snapshots(homes)) > 1
 
     def row(snapshot: HomeSnapshot, topic: Topic) -> str:
-        open_count = len(topic.open_decisions())
+        open_count = len(topic_awaiting(topic, snapshot.review_state))
         meta = []
         if open_count:
             meta.append(f'<b class="topic-needs">{open_count} open decision{"s" if open_count != 1 else ""}</b>')
@@ -8046,18 +8500,19 @@ def topics_section_html(homes: list[HomeSnapshot], now: datetime) -> str:
                 f'{html.escape(topic.title or topic.topic_id)}</span>{now_line}'
                 f'<span class="topic-meta">{" · ".join(meta)}</span></a></li>')
 
-    active = sorted(((s, t) for s, t in found if t.status != "done"), key=lambda pair: topic_order(pair[1]))
-    done = sorted(((s, t) for s, t in found if t.status == "done"), key=lambda pair: topic_order(pair[1]))
+    active = sorted(((s, t) for s, t in found if t.status != "done"), key=lambda pair: topic_order(pair[1], pair[0].review_state))
+    done = sorted(((s, t) for s, t in found if t.status == "done"), key=lambda pair: topic_order(pair[1], pair[0].review_state))
     rows = "".join(row(snapshot, topic) for snapshot, topic in active)
     closed = (
         f'<details class="topic-done"><summary>Closed topics <span class="count">{len(done)}</span></summary>'
         f'<ul class="topic-list">{"".join(row(snapshot, topic) for snapshot, topic in done)}</ul></details>'
         if done else ""
     )
+    ask = topic_front_ask_html([topic for _snapshot, topic in active]) if allow_marks else ""
     return (
         f'<section class="dashboard-section topics" id="topics"><div class="section-head"><div><h2>Topics</h2>'
         "<p>One conversation per piece of work, with what stands now and what Firstmate asked you.</p></div>"
-        f'<span class="count">{len(active)}</span></div>'
+        f'<span class="count">{len(active)}</span></div>{ask}'
         + (f'<ul class="topic-list">{rows}</ul>' if rows else '<p class="empty">Every topic is closed.</p>')
         + closed + "</section>"
     )
@@ -8075,6 +8530,22 @@ TOPICS_FRONT_CSS = """
     .topic-needs { color: var(--gold-ink); }
     .topic-done { margin-top: .8rem; }
     .topic-done > summary { display: flex; align-items: center; gap: .5rem; min-height: 44px; cursor: pointer; color: var(--sea); font-weight: 700; }
+    .front-ask { margin: 0 0 1rem; }
+    .front-ask .ask-label { display: block; margin-bottom: .3rem; font-weight: 700; }
+    .front-ask .ask-text { display: block; width: 100%; min-height: 3.2rem; max-height: 40vh; padding: .55rem .6rem; border: 1px solid var(--muted);
+      border-radius: 4px; background: var(--paper); color: var(--ink); font: inherit; font-size: 1rem; line-height: 1.4; resize: none; }
+    .front-ask .route { display: flex; flex-wrap: wrap; align-items: center; gap: 0 .45rem; margin: .35rem 0 0; font-size: .92rem; }
+    .front-ask .route-how { color: var(--muted); }
+    .front-ask .route-toggle, .front-ask .ask-send { min-height: 44px; padding: 0 .9rem; border: 1px solid var(--sea); border-radius: 4px;
+      background: var(--paper); color: var(--ink); font: inherit; font-weight: 700; cursor: pointer; }
+    .front-ask .ask-send { background: var(--sea); color: var(--paper); }
+    .front-ask .route-list { margin: .4rem 0; padding: .4rem .8rem; border: 1px solid var(--line); border-radius: 4px; }
+    .front-ask .route-list[hidden] { display: none; }
+    .front-ask .route-option { display: flex; align-items: center; gap: .5rem; min-height: 44px; }
+    .front-ask .route-option input { width: 1.2rem; height: 1.2rem; accent-color: var(--sea); }
+    .front-ask .ask-row { margin: .5rem 0 0; }
+    .front-ask .ask-status { margin: .3rem 0 0; min-height: 1.2em; color: var(--muted); font-size: .9rem; }
+    .front-ask :focus-visible { outline: 3px solid var(--gold); outline-offset: 2px; }
 """
 
 
@@ -8743,7 +9214,9 @@ REACTION_TEXT_LIMIT = 20_000
 REACTION_BODY_LIMIT = 6 * REACTION_TEXT_LIMIT + 4096
 REACTIONS_VERSION = 1
 REACTION_LABELS = {"approve": "Approve", "hold": "Hold", "not-now": "Not now", "question": "Question"}
-REACTION_KINDS = ("call", "report")
+REACTION_KINDS = ("call", "report", "topic", "decision")
+TOPIC_REACTION_KINDS = ("topic", "decision")  # a question sent from Quarterdeck, and an answer to a decision card
+NEW_TOPIC_ITEM = "+new"  # a front-page question for a topic Firstmate has not started yet
 REACTION_ID_RE = re.compile(r"[A-Za-z0-9._-]{8,64}")
 INBOX_SCRIPT = Path("bin") / "fm-inbox.sh"
 INBOX_TIMEOUT_SECONDS = 15
@@ -8761,6 +9234,8 @@ def clean_reaction(raw: dict[str, object], where: str = "reaction") -> dict[str,
         raise ValueError(f"{where} needs an item_id")
     if reaction not in ("", *REACTION_LABELS):
         raise ValueError(f"{where} has an unknown reaction {reaction!r}; expected one of {', '.join(REACTION_LABELS)}")
+    if kind in TOPIC_REACTION_KINDS and reaction:
+        raise ValueError(f"{where} on a {kind} carries text only, no quick reaction")
     if not isinstance(text, str) or len(text) > REACTION_TEXT_LIMIT:
         raise ValueError(f"{where} text must be at most {REACTION_TEXT_LIMIT} characters")
     text = " ".join(text.split())
@@ -8780,8 +9255,32 @@ def reaction_summary(reaction: dict[str, str]) -> str:
     return f"{label}: {text}" if label and text else label or text
 
 
+def topic_ask_id(reaction_id: str) -> str:
+    """The id a question sent from Quarterdeck carries in the topic file: `ask-` and the start of its reaction id."""
+    return TOPIC_ASK_PREFIX + reaction_id[:16]
+
+
 def reaction_note(reaction: dict[str, str], home_label: str) -> str:
-    """The one line Firstmate receives: the item, task, reaction, text and time."""
+    """The one line Firstmate receives: the item, task, reaction, text and time.
+
+    A question or a decision answer also says how to record it in the topic file, so the thread shows it."""
+    if reaction["kind"] == "topic":
+        ask = topic_ask_id(reaction["id"])
+        if reaction["item_id"] == NEW_TOPIC_ITEM:
+            return (f"Quarterdeck ask {ask} for a new topic, home {home_label}, at {reaction['at']}: \"{reaction['text']}\". "
+                    f"Start or pick a topic in data/topics/ for it, add it there as an entry from you at quarterdeck "
+                    f"with Id: {ask}, and answer it with Re: {ask}.")
+        topic = reaction["task"]
+        title = reaction.get("title", "")
+        return (f"Quarterdeck ask {ask} on topic {topic}{f' ({title!r})' if title else ''}, home {home_label}, "
+                f"at {reaction['at']}: \"{reaction['text']}\". Add it to data/topics/{topic}.md as an entry from you "
+                f"at quarterdeck with Id: {ask}, and answer it there with Re: {ask}.")
+    if reaction["kind"] == "decision":
+        topic, _sep, decision = reaction["task"].partition("/")
+        title = reaction.get("title", "")
+        return (f"Quarterdeck answer on decision {decision} in topic {topic}{f' ({title!r})' if title else ''}, "
+                f"home {home_label}, at {reaction['at']}: \"{reaction['text']}\". Record it in data/topics/{topic}.md "
+                f"as an entry from you at quarterdeck with Re: {decision}.")
     label = REACTION_LABELS.get(reaction["reaction"], "reply")
     body = f"Quarterdeck reaction: {label} on {reaction['kind']} {reaction['item_id']}"
     if reaction["task"]:
@@ -8792,16 +9291,60 @@ def reaction_note(reaction: dict[str, str], home_label: str) -> str:
     return body
 
 
-def reaction_target(snapshots: list[HomeSnapshot], kind: str, item_id: str) -> tuple[HomeSnapshot, str]:
-    """Resolve a reaction's item to (the configured home to notify, the item's task id)."""
-    if kind == "report":
+def topic_reaction_lookup(
+    snapshots: list[HomeSnapshot], kind: str, item_id: str,
+) -> tuple[HomeSnapshot, Topic | None, TopicEntry | None]:
+    """The home, topic and decision a question or answer names. `+new` names no topic: the first local home takes it.
+
+    Raises ValueError for an unknown topic or decision, and for a decision already answered in the topic file or
+    from Quarterdeck."""
+    if kind == "topic" and item_id == NEW_TOPIC_ITEM:
+        home = next((snapshot for snapshot in snapshots if snapshot.spec.home is not None and not snapshot.spec.remote_host), None)
+        if home is None:
+            raise ValueError("no home matches: no local home can take a new topic")
+        return home, None, None
+    ref, decision_id = (item_id.rpartition("/")[0], item_id.rpartition("/")[2]) if kind == "decision" else (item_id, "")
+    found = next(((owner, topic) for owner, topic in assign_topic_pages(snapshots) if topic.ref == ref), None)
+    if found is None:
+        raise ValueError(f"no topic matches: {ref}")
+    owner, topic = found
+    if kind == "topic":
+        return owner, topic, None
+    entry = next((entry for entry in topic.entries if entry.decision and entry.entry_id == decision_id), None)
+    if entry is None:
+        raise ValueError(f"no decision matches: {decision_id} in topic {topic.topic_id}")
+    if decision_id in topic.responses():
+        raise ValueError(f"the topic file already records an answer to {decision_id}")
+    if topic_sent(owner.review_state, "decision", item_id):
+        raise ValueError(f"an answer to {decision_id} was already sent from Quarterdeck")
+    return owner, topic, entry
+
+
+def topic_reaction_target(snapshots: list[HomeSnapshot], kind: str, item_id: str) -> tuple[HomeSnapshot, str, str]:
+    owner, topic, entry = topic_reaction_lookup(snapshots, kind, item_id)
+    if topic is None:
+        return owner, "", ""
+    if entry is not None:
+        return owner, f"{topic.topic_id}/{entry.entry_id}", entry.decision
+    return owner, topic.topic_id, topic.title
+
+
+def reaction_target(snapshots: list[HomeSnapshot], kind: str, item_id: str) -> tuple[HomeSnapshot, str, str]:
+    """Resolve a reaction's item to (the configured home to notify, the item's task id, its title).
+
+    A topic's task is its topic id, and a decision's is `<topic id>/<decision id>`. Only topics and decisions carry a
+    title: the topic's title, or the decision's question."""
+    title = ""
+    if kind in TOPIC_REACTION_KINDS:
+        owner, task, title = topic_reaction_target(snapshots, kind, item_id)
+    elif kind == "report":
         owner, report = unique_report(snapshots, item_id)
         items = backlog_items(owner.backlog_markdown, owner) if (
             owner.backlog_markdown is not None and not owner.error
         ) else []
         item = report_backlog_item(items, report)
         task = item.id if item else report.path.parent.name
-    else:
+    else:  # a captain call
         owners = call_owners(snapshots).get(item_id, [])
         if not owners:
             raise ValueError(f"no captain call matches: {item_id}")
@@ -8811,7 +9354,7 @@ def reaction_target(snapshots: list[HomeSnapshot], kind: str, item_id: str) -> t
         owner = owners[0]
         task = item_id.partition("/")[2]
     top = next(s for s in snapshots if any(member is owner for member in all_snapshots([s])))
-    return top, task
+    return top, task, title
 
 
 def deliver_reaction(
@@ -8870,12 +9413,17 @@ def reaction_delivered(state_path: Path, reaction_id: str) -> bool:
 
 
 def send_reaction(args: argparse.Namespace, raw: dict[str, object]) -> dict[str, str]:
-    """Deliver a reaction made on the served page and record it; shared with the page's Send button."""
+    """Deliver a reaction made on the served page and record it; shared with the page's Send button.
+
+    A retry of a reaction already recorded returns the recorded one without delivering it again."""
     reaction = clean_reaction(raw)
-    snapshots, state_path = load_report_snapshots(args)
-    apply_review_marks(snapshots, {})
-    top, task = reaction_target(snapshots, reaction["kind"], reaction["item_id"])
-    reaction.update(task=task, at=reaction_time(datetime.now(timezone.utc)), source="page")
+    snapshots, state_path, state = load_report_context(args)
+    stored = next((sent for sent in state.history.get((reaction["kind"], reaction["item_id"]), [])
+                   if sent["id"] == reaction["id"]), None)
+    if stored is not None:
+        return stored
+    top, task, title = reaction_target(snapshots, reaction["kind"], reaction["item_id"])
+    reaction.update(task=task, title=title, at=reaction_time(datetime.now(timezone.utc)), source="page")
     deliver_reaction(top.spec, reaction)
     store_reaction(state_path, reaction)
     return reaction
@@ -8901,8 +9449,7 @@ def import_reactions(args: argparse.Namespace) -> int:
     try:
         source = sys.stdin.read() if args.file == "-" else Path(args.file).expanduser().read_text(encoding="utf-8")
         documents = parse_artifact_reactions(source)
-        snapshots, state_path = load_report_snapshots(args)
-        apply_review_marks(snapshots, {})
+        snapshots, state_path, state = load_report_context(args)
         delivered = 0
         skipped: list[str] = []
         pending: list[tuple[datetime, int, dict[str, str]]] = []
@@ -8924,10 +9471,11 @@ def import_reactions(args: argparse.Namespace) -> int:
             try:
                 if reaction_delivered(state_path, reaction["id"]):
                     raise ValueError("already delivered")
-                top, reaction["task"] = reaction_target(snapshots, reaction["kind"], reaction["item_id"])
+                top, reaction["task"], reaction["title"] = reaction_target(snapshots, reaction["kind"], reaction["item_id"])
                 if not args.dry_run:
                     deliver_reaction(top.spec, reaction)
                     store_reaction(state_path, reaction)
+                state.history.setdefault((reaction["kind"], reaction["item_id"]), []).append(reaction)
                 delivered += 1
             except ValueError as exc:
                 skipped.append(f"{label}: {exc}")
