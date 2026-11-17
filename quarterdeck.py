@@ -7568,6 +7568,7 @@ def parse_topic(source: str, path: Path, topic_id: str) -> Topic:
             key = TOPIC_ENTRY_KEYS.get(name)
             if match is not None and name in TOPIC_ENTRY_HINTS:
                 problem(number, "warning", f"{match.group(1).strip()} is not a field; did you mean {TOPIC_ENTRY_HINTS[name]}?")
+                continue
             if match is not None and key is not None:
                 value = match.group(2).strip()
                 if key == "re":
@@ -8124,7 +8125,6 @@ def topics_check(args: argparse.Namespace) -> int:
                 if failures and not snapshot.spec.remote_host:
                     incomplete[snapshot.spec.label] = "; ".join(failures)
                 for topic in snapshot.topics:
-                    topic.problems.extend(check_topic_pieces(topic, snapshot))
                     shown = display_path(topic.path, snapshot.spec.home) if snapshot.spec.home else str(topic.path)
                     checked.append((f"{snapshot.spec.label}: {shown}" if len(snapshots) > 1 else shown, topic))
     except (OSError, ValueError) as exc:
@@ -11080,6 +11080,8 @@ def load_home_snapshot(spec: HomeSpec, discover_secondmates: bool = False) -> Ho
                 snapshot.topics = read_topics(snapshot.data_dir)
             except OSError as exc:
                 snapshot.topics_error = f"could not read {snapshot.data_dir / TOPICS_DIR_NAME}: {exc}"
+            for topic in snapshot.topics:
+                topic.problems.extend(check_topic_pieces(topic, snapshot))
 
     if discover_secondmates and spec.home is not None and not spec.remote_host:
         registry_path = spec.home / "data" / "secondmates.md"

@@ -10768,6 +10768,37 @@ Broken [here](https://[x) stays text.
             self.assertIn('<a href="https://example.com/ok">ok</a>', page)
             self.assertIn("Broken here stays text.", page)
 
+    def test_a_misspelled_field_does_not_hide_the_fields_after_it(self) -> None:
+        source = """# Choice
+
+## 2026-03-02 09:00 | firstmate | chat
+Recommended: Merge
+Id: choice
+Decision: Merge?
+Options: Merge | Wait
+
+Context.
+"""
+        topic = quarterdeck.parse_topic(source, Path("choice.md"), "choice")
+        entry = topic.entries[0]
+        self.assertEqual((entry.entry_id, entry.decision, entry.options, entry.text),
+                         ("choice", "Merge?", ["Merge", "Wait"], "Context."))
+        self.assertEqual([(problem.line, problem.text) for problem in topic.problems],
+                         [(4, "Recommended is not a field; did you mean Recommend?")])
+
+    def test_thread_page_lists_missing_pieces_once_like_the_checker(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            home = self.home_with_topics(root, {"pieces.md": "# Pieces\nPieces: maple-21, missing-99\n"})
+            result = self.run_cli(["topics", "check", "--home", str(home)], root)
+            self.assertEqual(result.stdout.count("Pieces names missing-99, which is not in the backlog"), 1, result.stdout)
+            self.assertNotIn("maple-21, which", result.stdout)
+            output = root / "out" / "index.html"
+            rendered = self.run_cli(["render", "--home", str(home), "--output", str(output), "--no-snapshot"], root)
+            self.assertEqual(rendered.returncode, 0, rendered.stderr)
+            page = (output.parent / "topic-pieces.html").read_text()
+            self.assertEqual(page.count("Pieces names missing-99, which is not in the backlog"), 1)
+
     def test_render_without_topic_files_is_unchanged(self) -> None:
         with tempfile.TemporaryDirectory() as temp:
             root = Path(temp)
