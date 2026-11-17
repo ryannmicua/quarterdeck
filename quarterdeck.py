@@ -7780,7 +7780,7 @@ def topic_markdown(text: str) -> str:
 def topic_stamp(value: datetime, show: str) -> str:
     """A <time> written in UTC; the page script rewrites it in the reader's time zone."""
     utc = value.astimezone(timezone.utc)
-    text = utc.strftime("%H:%M UTC") if show == "clock" else utc.strftime("%-d %b %H:%M UTC")
+    text = utc.strftime("%H:%M UTC") if show == "clock" else f"{utc.day} {utc.strftime('%b %H:%M')} UTC"
     return f'<time datetime="{utc.isoformat().replace("+00:00", "Z")}" data-show="{show}">{text}</time>'
 
 
@@ -7930,7 +7930,8 @@ def topic_page_html(topic: Topic, snapshot: HomeSnapshot, multi_home: bool, gene
     last_day = ""
     for entry in topic.entries:
         if entry.at is not None:
-            day = entry.at.astimezone(timezone.utc).strftime("%a %-d %b")
+            utc = entry.at.astimezone(timezone.utc)
+            day = f"{utc.strftime('%a')} {utc.day} {utc.strftime('%b')}"
             if day != last_day:
                 log.append(f'<li class="day">{day}</li>')
                 last_day = day
