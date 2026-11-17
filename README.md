@@ -48,7 +48,8 @@ for server requirements, phone setup and withdrawal behavior.
   topic gets a thread page with what stands now, what waits on whom, its
   backlog tasks, the open decisions and the whole conversation, and the front
   page lists the topics. On the page `serve --allow-marks` serves, a decision
-  is answered with one tap and five seconds to undo, and an ask box on each
+  is answered with one tap or in words and five seconds to undo, then folds to
+  one line with the answer until Firstmate records it, and an ask box on each
   thread and on the front page sends a question to Firstmate under the topic it
   shows. With topics, the front page holds only Needs you (open topic
   decisions, waits on you, and items not yet in a topic), Changed since you last looked, Topics, the ask

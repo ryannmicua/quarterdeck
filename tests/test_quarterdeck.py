@@ -10995,7 +10995,7 @@ class TopicAskTests(unittest.TestCase):
         self.assertIn('"Merge". Record it in data/topics/maple-harbor-catalog.md as an entry from you at quarterdeck with Re: merge-42.',
                       self.notes()[-1])
         card = self.fresh_page("topic-maple-harbor-catalog.html").split('id="decision-merge-42"', 1)[1].split("</article>", 1)[0]
-        self.assertIn("You answered <b>Merge</b> from Quarterdeck", card)
+        self.assertIn('<span class="q">Merge PR 42 now?</span><span class="said">Answered: <b>Merge</b></span><time ', card)
         self.assertNotIn("data-option", card)
         thread = self.fresh_page("topic-maple-harbor-catalog.html")
         self.assertIn('<h2 id="open-h">Open decisions <span class="n">0</span></h2>', thread)
@@ -11007,6 +11007,87 @@ class TopicAskTests(unittest.TestCase):
         self.assertEqual(status, 200, body)
         self.assertIn("for a new topic", self.notes()[-1])
         self.assertIn("Start or pick a topic in data/topics/", self.notes()[-1])
+
+    def test_an_answered_card_folds_to_one_line_after_reload_until_the_file_records_the_answer(self) -> None:
+        request = self.serve()
+        words = ("Hold it until the vendor confirms the image quota, then merge first thing on Monday morning, "
+                 "and tell the shop team before it goes live.")
+        self.assertGreater(len(words), quarterdeck.ANSWER_PREVIEW_LIMIT)
+        status, body = self.send(request, "decision", "maple-harbor-catalog/merge-42", words)
+        self.assertEqual(status, 200, body)
+        self.assertIn(f'"{words}". Record it in data/topics/maple-harbor-catalog.md', self.notes()[-1], "the whole answer is sent")
+        short = quarterdeck.answer_preview(words)
+        self.assertTrue(short.endswith("…") and len(short) <= quarterdeck.ANSWER_PREVIEW_LIMIT, short)
+
+        # A reload, here or on another device, rebuilds from the server's record of the delivered answer.
+        thread = self.fresh_page("topic-maple-harbor-catalog.html")
+        card = thread.split('<article class="decision answered" id="decision-merge-42">', 1)[1].split("</article>", 1)[0]
+        self.assertIn(f'<details class="said-line"><summary><span class="q">Merge PR 42 now?</span>'
+                      f'<span class="said">Answered: <b>{html.escape(short)}</b></span><time ', card)
+        self.assertIn(f'<p class="said-full">{html.escape(words)}</p></details>', card, "the whole answer is a tap away")
+        for gone in ("data-decision", "data-option", "Answer in words", "First mate recommends", "The patch switches"):
+            self.assertNotIn(gone, card)
+        self.assertIn('Open decisions <span class="n">0</span>', thread, "a folded card does not count")
+        front = self.fresh_page("index.html")
+        needs = front.split('id="needs"', 1)[1].split("</section>", 1)[0]
+        self.assertIn('<article class="decision answered" id="decision-maple-harbor-catalog-merge-42">', needs,
+                      "the answered card stays under Needs you as one line")
+        self.assertIn('Needs you <span class="n">1</span>', front, "only the wait on you counts")
+        self.assertIn("<title>(1) Quarterdeck</title>", front)
+
+        with self.topic_file.open("a", encoding="utf-8") as stream:
+            stream.write("\n## 2026-03-05 10:00 | you | quarterdeck\nRe: merge-42\nHold until the quota is confirmed.\n")
+        thread = self.fresh_page("topic-maple-harbor-catalog.html")
+        self.assertNotIn('id="decision-merge-42"', thread, "recorded in the file: the folded card is gone")
+        self.assertNotIn('id="open-h"', thread)
+        self.assertIn("Settled by you: Hold until the quota is confirmed.", thread)
+        front = self.fresh_page("index.html")
+        self.assertNotIn("decision-maple-harbor-catalog-merge-42", front)
+        self.assertIn('Needs you <span class="n">1</span>', front)
+
+    def test_a_short_answer_folds_without_a_disclosure_and_the_empty_note_waits_for_the_last_counted_item(self) -> None:
+        self.topic_file.write_text(self.topic_file.read_text(encoding="utf-8").replace("Waiting on: you - merge PR 42\n", ""),
+                                   encoding="utf-8")
+        request = self.serve()
+        front = self.fresh_page("index.html")
+        self.assertIn('Needs you <span class="n">1</span>', front)
+        empty = '<p class="empty" data-needs-empty hidden>Could not read everything that might need you'
+        self.assertIn(empty, front, "the page script shows it when the last counted card is answered; with no snapshot "
+                                    "it is not a confirmed all clear")
+        self.assertEqual(self.send(request, "decision", "maple-harbor-catalog/merge-42", "Hold")[0], 200)
+        front = self.fresh_page("index.html")
+        card = front.split('<article class="decision answered" id="decision-maple-harbor-catalog-merge-42">', 1)[1].split("</article>", 1)[0]
+        self.assertTrue(card.startswith('<p class="said-line"><span class="q">Merge PR 42 now?</span>'
+                                        '<span class="said">Answered: <b>Hold</b></span><time '), card)
+        self.assertNotIn("<details", card)
+        self.assertIn('Needs you <span class="n">0</span>', front)
+        self.assertIn(empty.replace(" hidden>", ">"), front)
+        self.assertIn("<title>Quarterdeck</title>", front)
+
+    def test_a_failed_answer_leaves_the_card_open_counted_and_ready_to_try_again(self) -> None:
+        request = self.serve()
+        with patch.dict(os.environ, {"QD_TEST_FAIL": "1"}):
+            status, body = self.send(request, "decision", "maple-harbor-catalog/merge-42", "Merge")
+        self.assertEqual(status, 502, body)
+        self.assertIn("fm-inbox.sh exited with status 1", body)
+        thread = self.fresh_page("topic-maple-harbor-catalog.html")
+        card = thread.split('id="decision-merge-42"', 1)[1].split("</article>", 1)[0]
+        self.assertIn('data-decision="maple-harbor-catalog/merge-42"', thread)
+        self.assertIn('data-option="Merge"', card)
+        self.assertNotIn("Answered:", card)
+        self.assertIn('Open decisions <span class="n">1</span>', thread)
+        self.assertIn('Needs you <span class="n">2</span>', self.fresh_page("index.html"))
+        status, body = self.send(request, "decision", "maple-harbor-catalog/merge-42", "Merge")
+        self.assertEqual(status, 200, f"the same answer goes through once Firstmate is reachable: {body}")
+        self.assertIn('class="decision answered" id="decision-merge-42"', self.fresh_page("topic-maple-harbor-catalog.html"))
+
+    def test_answer_previews_cut_at_about_eighty_characters(self) -> None:
+        self.assertEqual(quarterdeck.answer_preview("Merge"), "Merge")
+        exact = "x" * quarterdeck.ANSWER_PREVIEW_LIMIT
+        self.assertEqual(quarterdeck.answer_preview(exact), exact)
+        self.assertEqual(quarterdeck.answer_preview(exact + "y"), "x" * (quarterdeck.ANSWER_PREVIEW_LIMIT - 1) + "…")
+        self.assertEqual(quarterdeck.answer_preview("abcdefghi " * 10), "abcdefghi " * 7 + "abcdefghi…",
+                         "a space before the cut is dropped")
 
     def test_unknown_answered_or_malformed_topic_reactions_are_refused_and_not_sent(self) -> None:
         request = self.serve()
@@ -11068,6 +11149,8 @@ class TopicAskTests(unittest.TestCase):
         self.assertIn('<button type="button" class="opt recommended" data-option="Merge">Merge</button>', card)
         self.assertIn('<button type="button" class="opt" data-option="Hold">Hold</button>', card)
         self.assertIn('data-discuss="merge-42" data-question="Merge PR 42 now?">Discuss</button>', card)
+        self.assertIn('<form class="words" data-words-answer><label for="words-decision-merge-42">Answer in words</label>', card)
+        self.assertIn('<textarea class="ask-text" id="words-decision-merge-42" rows="1"', card)
         self.assertIn('<form class="ask" id="ask" data-ask="thread" data-topic="maple-harbor-catalog">', page)
         self.assertIn(f'<body data-refresh="{quarterdeck.DEFAULT_REFRESH_SECONDS}">', page)
         self.assertIn(quarterdeck.REACTION_ENDPOINT, page)
@@ -11082,7 +11165,7 @@ class TopicAskTests(unittest.TestCase):
                                           self.root, self.root / "config")
         self.assertEqual(result.returncode, 0, result.stderr)
         rendered = (output.parent / "topic-maple-harbor-catalog.html").read_text(encoding="utf-8")
-        for live_only in ("data-ask", "data-option", "data-discuss", "data-refresh", quarterdeck.REACTION_ENDPOINT):
+        for live_only in ("data-ask", "data-option", "data-discuss", "data-words-answer", "data-refresh", quarterdeck.REACTION_ENDPOINT):
             self.assertNotIn(live_only, rendered)
         self.assertIn("Options: Merge · Hold · Not now", rendered)
         self.assertNotIn("data-ask", output.read_text(encoding="utf-8"))

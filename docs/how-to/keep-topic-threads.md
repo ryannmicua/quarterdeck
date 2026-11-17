@@ -11,7 +11,7 @@ When a home keeps topic files, Quarterdeck's front page holds only what needs yo
 ask box and search:
 
 - **Needs you:** every topic decision still waiting on your answer, oldest first, with one-tap answers on the served
-  page, then every `Waiting on: you` line of an open topic, then, under **Not yet in a topic**, every other item that
+  page; a decision you answered from Quarterdeck stays as one uncounted line until Firstmate records it; then every `Waiting on: you` line of an open topic, then, under **Not yet in a topic**, every other item that
   needs you (a desk call, a held task, a report to review) whose task is no open topic's piece. Each such row opens
   the item's own page, or its card on the previous page when it has none. Firstmate gathers old items with no topic
   into one **Older items** topic so they can be cleared in one sitting; once an item's task is a topic's piece, it
@@ -50,14 +50,19 @@ A page written by `quarterdeck render` is read-only: answer a decision in the Fi
 
 ## Answer a decision (owner, served page)
 
-1. On an open decision, tap one of its options. The recommended one is filled in.
+1. On an open decision, tap one of its options. The recommended one is filled in. To answer in your own words, or
+   when the decision has no options, type under **Answer in words** and tap **Send**.
 2. The card says "Sending … in 5 s" with **Undo**. Tap **Undo** to take it back; otherwise it is sent to Firstmate
    when the five seconds run out.
-3. The card then shows your answer as sent, and the decision stops counting as needing you. It leaves **Open
-   decisions** once Firstmate records your answer in the topic.
+3. The card folds to one line: the question, "Answered:" with your answer, and when you sent it. A long answer is cut
+   to about 80 characters; tap the line to read all of it. The decision stops counting as needing you. The line
+   stays after a reload and on your other devices, and goes away once Firstmate records your answer in the topic.
+4. If the answer could not be sent, the card stays open and says "Not sent" with the reason. Tap an option again,
+   or use **Send** under **Answer in words** to resend your typed answer.
 
-A decision with no options, or one you want to talk through, has **Discuss**: it opens the ask box at the bottom
-of the page with "About: <the question>" above it. Remove that line to ask about the topic in general.
+**Discuss** is for a decision you want to talk through: it opens the ask box at the bottom of the page with
+"About: <the question>" above it, and sends a question, not an answer. Remove that line to ask about the topic in
+general.
 
 ## Ask Firstmate (owner, served page)
 
