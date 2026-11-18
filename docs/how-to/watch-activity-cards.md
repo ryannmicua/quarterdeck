@@ -22,9 +22,9 @@ for a task held for the captain also shows what the
 | For your information | One per result to read. | The attention feed and the captain board. |
 | Done recently | Recently merged work, answered or closed captain calls, and dated finished tasks. | The fleet ledger and backlog, including registered homes. |
 
-Needs you leads the page, oldest opening time first, falling back to the last
+Needs you leads the page, newest opening time first, falling back to the last
 activity time when the opening time is missing or invalid; unknown times come
-last. The other three sections sit inside
+last. Items with the same time keep their existing order. The other three sections sit inside
 Activity, in that order, newest first. Quiet and
 stale decisions and dated decisions that are not yet due stay out. Information
 cards follow the [waiting queue's priority scope](see-recent-work.md); needs-you

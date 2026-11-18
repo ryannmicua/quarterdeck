@@ -11582,11 +11582,14 @@ def activity_cards(
     ranked: list[dict[str, object]] = []
     for section, _title in CARD_SECTIONS:
         chosen = [card for card in cards if card["section"] == section]
-        if section == "needs_you":  # the longest wait first; a card with no time goes last
+        if section == "needs_you":  # newest opening first; a card with no time goes last
+            def opened(card: dict[str, object]) -> datetime | None:
+                return parse_when(str(card.get("opened_at") or "")) or parse_when(str(card.get("at") or ""))
+
             chosen.sort(key=lambda card: (
-                parse_when(str(card.get("opened_at") or "")) or parse_when(str(card.get("at") or ""))
-                or datetime.max.replace(tzinfo=timezone.utc)
-            ))
+                (when := opened(card)) is not None,
+                when.astimezone(timezone.utc) if when else datetime.min.replace(tzinfo=timezone.utc),
+            ), reverse=True)
         else:
             chosen.sort(key=lambda card: str(card["at"] or ""), reverse=True)
         ranked.extend(chosen)
@@ -11632,7 +11635,7 @@ def card_section_html(cards: list[dict[str, object]], now: datetime, sections: t
 
 
 def cards_html(cards: list[dict[str, object]], attention: dict[str, object] | None, now: datetime, live: bool) -> str:
-    """The first section of the page: only what needs the captain, longest wait first."""
+    """The first section of the page: only what needs the captain, newest opening first."""
     if attention is None:
         return ""
     needs = sum(card["section"] == "needs_you" for card in cards)
@@ -11642,7 +11645,7 @@ def cards_html(cards: list[dict[str, object]], attention: dict[str, object] | No
         f'<section class="dashboard-section cards-feed" id="cards" data-live="{1 if live else 0}" data-poll="{CARDS_POLL_SECONDS}" '
         f'data-endpoint="{CARDS_PAGE}" aria-label="Needs you"><div class="section-head"><div>'
         '<h2>Needs you <span class="count" id="cards-count" hidden>0</span></h2>'
-        "<p>What is waiting on you, longest wait first. Tap a card to read it. "
+        "<p>What is waiting on you, newest first. Tap a card to read it. "
         + ("New cards slide in here without a reload." if live else "Reload to see new cards.") + "</p></div></div>"
         + "".join(attention_errors_html(attention))
         + f'<p class="empty" id="cards-empty"{" hidden" if needs else ""}>{empty}</p>'

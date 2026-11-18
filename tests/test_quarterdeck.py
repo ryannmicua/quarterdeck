@@ -6843,31 +6843,32 @@ class ActivityCardTests(unittest.TestCase):
         bearings.attention = quarterdeck.attention_view(snapshots, ATTENTION_NOW, all_decisions=True)
         return snapshots, bearings
 
-    def test_needs_you_cards_come_first_oldest_wait_first_and_the_rest_newest_first(self) -> None:
+    def test_needs_you_cards_come_first_newest_wait_first_and_the_rest_newest_first(self) -> None:
         with tempfile.TemporaryDirectory() as temp:
             snapshots, bearings = self.site(Path(temp))
             cards = quarterdeck.site_cards(snapshots, bearings, False)
             self.assertEqual([(card["section"], card["title"]) for card in cards], [
-                ("needs_you", "Kelp survey scope"), ("needs_you", "Approve the tide table format"),
-                ("needs_you", "Pick the new harbor map vendor"), ("recent", "Started: Buoy light refit"),
+                ("needs_you", "Pick the new harbor map vendor"), ("needs_you", "Approve the tide table format"),
+                ("needs_you", "Kelp survey scope"), ("recent", "Started: Buoy light refit"),
                 ("done", "Merged: dock-notes"), ("done", "Closed: moot-call"),
                 ("done", "Answered: Approve the tide table format"), ("done", "Merged: Fix the pier lights"),
             ])
             self.assertEqual([card["opened_at"] for card in cards[:3]],
-                             ["2026-06-02T09:00:00Z", "2026-06-10", "2026-07-01T09:00:00Z"])
+                             ["2026-07-01T09:00:00Z", "2026-06-10", "2026-06-02T09:00:00Z"])
             self.assertEqual(cards[1]["summary"], "Format choice", "the first line of the ask sits under the title")
             self.assertEqual(cards[1]["status"], "Decision waiting")
 
-    def test_needs_you_order_uses_parsed_opening_times_with_activity_fallback(self) -> None:
+    def test_needs_you_order_uses_newest_parsed_opening_times_with_activity_fallback(self) -> None:
         items = [
             {"key": "invented/new", "title": "New", "opened_at": "2026-07-02", "at": "2026-07-02T00:00:00Z"},
+            {"key": "invented/tie", "title": "Tie", "opened_at": "2026-07-02", "at": "2026-07-03T00:00:00Z"},
             {"key": "invented/old", "title": "Old", "opened_at": "2026-07-01", "at": "2026-07-03T00:00:00Z"},
             {"key": "invented/offset", "title": "Offset", "opened_at": "2026-07-02T01:00:00+08:00", "at": None},
             {"key": "invented/fallback", "title": "Fallback", "opened_at": "invalid", "at": "2026-07-01T12:00:00Z"},
             {"key": "invented/unknown", "title": "Unknown", "at": "invalid"},
         ]
-        expected = ["call:invented/old", "call:invented/fallback", "call:invented/offset",
-                    "call:invented/new", "call:invented/unknown"]
+        expected = ["call:invented/new", "call:invented/tie", "call:invented/offset",
+                    "call:invented/fallback", "call:invented/old", "call:invented/unknown"]
         for kind in ("decisions", "needs_you"):
             for scoped in (False, True):
                 with self.subTest(kind=kind, scoped=scoped):
