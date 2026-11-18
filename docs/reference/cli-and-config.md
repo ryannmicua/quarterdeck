@@ -4,8 +4,8 @@
 
 ```text
 quarterdeck render [--home PATH] [--output PATH] [--config FILE] [--title TEXT] [--all] [--lavish] [--no-snapshot]
-quarterdeck serve [--host ADDRESS ...] [--port N] [--home PATH] [--config FILE] [--title TEXT] [--no-snapshot] [--allow-marks] [--watch-waits] [--tls-cert FILE --tls-key FILE]
-quarterdeck service [--write] [--allow-marks] [--watch-waits] [--tls-cert FILE --tls-key FILE] [--host ADDRESS ...] [--port N] [--home PATH] [--config FILE]
+quarterdeck serve [--host ADDRESS ...] [--port N] [--base-path PATH] [--home PATH] [--config FILE] [--title TEXT] [--no-snapshot] [--allow-marks] [--watch-waits] [--tls-cert FILE --tls-key FILE]
+quarterdeck service [--write] [--allow-marks] [--watch-waits] [--tls-cert FILE --tls-key FILE] [--host ADDRESS ...] [--port N] [--base-path PATH] [--home PATH] [--config FILE]
 quarterdeck url [--json]
 quarterdeck reactions import FILE|- [--dry-run] [--home PATH] [--config FILE]
 quarterdeck reports list [--home PATH] [--config FILE]
@@ -196,7 +196,18 @@ which write only Quarterdeck's own state; available when the Python
 `cryptography` package is installed and `--no-snapshot` is omitted). With
 `--no-snapshot`, notifications, their controls and endpoints are off because
 Quarterdeck cannot tell when a needs-you item is answered; the startup message
-explains this limitation. All other writes remain refused.
+explains this limitation. All other writes remain refused. Endpoint paths above
+are relative to the configured base path.
+
+`--base-path PATH` (config `base_path`; default none) is the URL prefix a
+reverse proxy serves Quarterdeck under, such as `/qd`: a plain path with a
+leading slash and no query. Every endpoint, service-worker address and scope a
+page contains carries it. The proxy must pass it through; requests without it
+redirect with status 308 to the same path beneath it, preserving the query and
+method; the bare prefix redirects to `PATH/`. `--base-path /` disables a
+configured prefix. With no prefix, serving remains at the root. See
+[the proxy example](../how-to/serve-the-page.md#serve-it-under-a-path-prefix-behind-a-reverse-proxy).
+
 `--tls-cert FILE` and `--tls-key FILE`, given together, serve `https` with that
 PEM certificate chain and key instead of plain `http`. `--watch-waits` also runs the captain-wait watcher in a
 background thread; see [Captain waits](#captain-waits).
@@ -209,8 +220,13 @@ options (certificate and key paths become absolute), or with `--write` writes it
 prints the address or addresses configured in the installed user
 service; it does not check whether the service is running. If no unit is
 installed, it labels the default `serve` address shown, which a plain
-`quarterdeck serve` uses. A foreground serve started with custom `--host` or
-`--port` is not detected and serves wherever those flags point. The URLs use
+`quarterdeck serve` uses. The URL prefix follows `serve` precedence: the unit's
+explicit `--base-path`, then `base_path` from its `--config` file or, without
+that option, the default private config, then no prefix. Without a unit, the
+default private config still supplies the prefix. These are Quarterdeck's own
+addresses, not a reverse proxy's public address. A foreground serve started
+with custom `--host`, `--port` or `--base-path` is not detected and serves
+wherever those flags point. The URLs use
 `https` when the unit has `--tls-cert`. IPv6 URLs use
 brackets, and scoped IPv6 zone separators use `%25` in URLs. Add `--json` for
 an object containing `urls`, raw configured `hosts`, and `source`; when no unit
@@ -319,6 +335,7 @@ keys are accepted:
 | `output_dir` | string path | `${XDG_STATE_HOME:-~/.local/state}/quarterdeck` | Directory for `index.html`; `~` is expanded and relative paths use the current working directory. |
 | `homes` | array of objects | unset | Homes to render together. Each object has `path` (required), `label` (optional), `data_dir` (optional) and `transcripts` (optional). |
 | `captain_waits` | object | unset | Settings for the captain-wait watcher; see [Captain waits](#captain-waits). |
+| `base_path` | string | none | See the `--base-path` contract under [Command](#command). |
 
 Each home object's `path` is the Firstmate home. `label` is shown above its
 review sections; if omitted, Quarterdeck uses the last path component. An

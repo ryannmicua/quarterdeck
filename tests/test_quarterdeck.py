@@ -10073,7 +10073,7 @@ class PushNotificationTests(unittest.TestCase):
 
     @unittest.skipUnless(shutil.which("node"), "node is not installed")
     def test_page_closes_only_server_withdrawn_tags_despite_delayed_worker_setup(self) -> None:
-        script = quarterdeck.PUSH_PAGE_SCRIPT.strip().removeprefix("<script>").removesuffix("</script>")
+        script = quarterdeck.push_page_script().strip().removeprefix("<script>").removesuffix("</script>")
         harness = r"""
 const assert = require('node:assert/strict');
 const input = JSON.parse(require('node:fs').readFileSync(0, 'utf8'));
@@ -10324,14 +10324,15 @@ async function fire(name, event) {
 
     @unittest.skipUnless(shutil.which("node"), "node is not installed")
     def test_page_script_hides_the_control_on_plain_http_and_offers_it_on_https(self) -> None:
-        script = quarterdeck.PUSH_PAGE_SCRIPT.split("<script>", 1)[1].rsplit("</script>", 1)[0]
+        self.addCleanup(quarterdeck.set_base_path, quarterdeck.BASE_PATH)
         harness = r"""
 const vm = require("node:vm");
+const assert = require("node:assert/strict");
 function element(hidden) { return {hidden, textContent: "", dataset: {}, disabled: false, listeners: {},
   addEventListener(type, fn) { this.listeners[type] = fn; }}; }
 async function run(secure, subscribed, pushManager = true) {
   const box = element(true), button = element(true), note = element(false);
-  const posts = [];
+  const posts = [], requests = [], workers = [];
   const subscription = {endpoint: "https://fcm.googleapis.com/fcm/send/x", options: {applicationServerKey: null},
     toJSON() { return {endpoint: this.endpoint, keys: {p256dh: "p", auth: "a"}}; }, unsubscribe: async () => true};
   let current = subscribed ? subscription : null;
@@ -10339,38 +10340,54 @@ async function run(secure, subscribed, pushManager = true) {
     getSubscription: async () => current, subscribe: async () => (current = subscription)}};
   const context = {
     window: {isSecureContext: secure, PushManager: pushManager ? function () {} : undefined, Notification: {}},
-    navigator: {serviceWorker: {register: async () => registration, ready: Promise.resolve(registration)}},
+    navigator: {serviceWorker: {register: async (url, options) => {
+      workers.push([url, options.scope]); return registration;
+    }, ready: Promise.resolve(registration)}},
     Notification: {permission: "default", requestPermission: async () => "granted"},
     document: {getElementById: id => ({"push-control": box, "push-toggle": button, "push-note": note})[id],
                querySelectorAll: () => []},
     sessionStorage: {getItem: () => "", setItem() {}},
-    fetch: async (path, options) => { if (options && options.method === "POST") posts.push([path, JSON.parse(options.body)]);
+    fetch: async (path, options) => { requests.push(path);
+      if (options && options.method === "POST") posts.push([path, JSON.parse(options.body)]);
       return {ok: true, json: async () => ({key: "BAAA", withdrawn: []})}; },
     atob: text => Buffer.from(text, "base64").toString("binary"), Uint8Array, Set, Array, Promise, Error, String, JSON,
   };
   if (!pushManager) delete context.window.PushManager;
   vm.runInNewContext(SCRIPT, context);
   await new Promise(resolve => setTimeout(resolve, 20));
-  return {box, button, note, posts, registration, click: async () => { await button.listeners.click(); await new Promise(r => setTimeout(r, 20)); }};
+  return {box, button, note, posts, requests, workers, registration, click: async () => { await button.listeners.click(); await new Promise(r => setTimeout(r, 20)); }};
 }
 (async () => {
   const plain = await run(false, false);
   if (!plain.box.hidden) throw new Error("control shown on plain http");
+  assert.deepEqual(plain.requests, []);
+  assert.deepEqual(plain.workers, []);
   const tab = await run(true, false, false);
   if (tab.box.hidden || !tab.button.hidden || !/Home Screen/.test(tab.note.textContent)) throw new Error("no home-screen hint: " + tab.note.textContent);
   const off = await run(true, false);
+  assert.deepEqual(off.requests, [EXPECTED.key]);
+  assert.deepEqual(off.workers, [[EXPECTED.worker, EXPECTED.scope]]);
   if (off.box.hidden || off.button.hidden || off.button.textContent !== "Turn on notifications") throw new Error("not offered: " + off.button.textContent);
   await off.click();
   if (off.note.textContent !== "Notifications: on" || off.button.textContent !== "Turn off notifications") throw new Error("not on: " + off.note.textContent);
-  if (off.posts.length !== 1 || off.posts[0][0] !== "/api/push/subscribe") throw new Error("no subscribe post " + JSON.stringify(off.posts));
+  if (off.posts.length !== 1 || off.posts[0][0] !== EXPECTED.subscribe) throw new Error("no subscribe post " + JSON.stringify(off.posts));
   await off.click();
-  if (off.button.textContent !== "Turn on notifications" || off.posts[1][0] !== "/api/push/unsubscribe") throw new Error("not off");
+  if (off.button.textContent !== "Turn on notifications" || off.posts[1][0] !== EXPECTED.unsubscribe) throw new Error("not off");
+  assert.deepEqual(off.requests, [EXPECTED.key, EXPECTED.subscribe, EXPECTED.unsubscribe]);
   if (off.button.dataset.mutationPending) throw new Error("still pending");
 })().catch(error => { console.error(error); process.exitCode = 1; });
 """
-        result = subprocess.run(["node", "-e", "const SCRIPT = " + json.dumps(script) + ";" + harness],
-                                capture_output=True, text=True)
-        self.assertEqual(result.returncode, 0, result.stderr)
+        cases = [("", {"key": "/api/push/key", "worker": "/sw.js", "scope": "/",
+                       "subscribe": "/api/push/subscribe", "unsubscribe": "/api/push/unsubscribe"}),
+                 ("/qd", {"key": "/qd/api/push/key", "worker": "/qd/sw.js", "scope": "/qd/",
+                          "subscribe": "/qd/api/push/subscribe", "unsubscribe": "/qd/api/push/unsubscribe"})]
+        for base, expected in cases:
+            with self.subTest(base_path=base):
+                quarterdeck.set_base_path(base)
+                script = quarterdeck.push_page_script().split("<script>", 1)[1].rsplit("</script>", 1)[0]
+                setup = "const SCRIPT = " + json.dumps(script) + "; const EXPECTED = " + json.dumps(expected) + ";"
+                result = subprocess.run(["node", "-e", setup + harness], capture_output=True, text=True)
+                self.assertEqual(result.returncode, 0, result.stderr)
 
 
 EXAMPLE_TOPIC = ROOT / "docs" / "reference" / "examples" / "maple-harbor-catalog.md"
@@ -11516,3 +11533,177 @@ process.stdin.on('end', () => {
             self.assertNotIn("Nothing needs you right now", needs)
         self.assertIn("Nothing needs you right now.", clear.split('id="needs"', 1)[1].split("</section>", 1)[0])
 
+
+
+class BasePathTests(unittest.TestCase):
+    """The base path lets a reverse proxy serve Quarterdeck under a prefix such as /qd."""
+
+    def setUp(self) -> None:
+        self.addCleanup(quarterdeck.set_base_path, "")
+        temp = tempfile.TemporaryDirectory()
+        self.addCleanup(temp.cleanup)
+        self.root = Path(temp.name)
+        env = patch.dict(os.environ, {"XDG_STATE_HOME": str(self.root / "state"), "XDG_CONFIG_HOME": str(self.root / "config")})
+        env.start()
+        self.addCleanup(env.stop)
+        self.home = BearingsTests().make_home(self.root / "home")
+
+    def serve(self, base: str):
+        import http.client
+        from http.server import ThreadingHTTPServer
+        base = quarterdeck.set_base_path(base)
+        args = argparse.Namespace(home=str(self.home), config=None, title=None, no_snapshot=True)
+        cache = quarterdeck.SiteCache(quarterdeck.site_builder(args, True), 30)
+        handler = quarterdeck.make_handler(
+            cache, lambda *a: quarterdeck.set_report_action(args, *a), lambda raw: quarterdeck.send_reaction(args, raw),
+            base_path=base,
+        )
+        server = ThreadingHTTPServer(("127.0.0.1", 0), handler)
+        threading.Thread(target=server.serve_forever, daemon=True).start()
+        self.addCleanup(lambda: (server.shutdown(), server.server_close()))
+        port = server.server_address[1]
+
+        def request(method: str, path: str, body: object = None):
+            connection = http.client.HTTPConnection("127.0.0.1", port, timeout=10)
+            connection.request(method, path, json.dumps(body) if body is not None else None,
+                               {"Content-Type": "application/json"})
+            response = connection.getresponse()
+            result = response.status, response.headers, response.read().decode("utf-8")
+            connection.close()
+            return result
+        return request
+
+    def test_normalize_accepts_plain_prefixes_and_rejects_the_rest(self) -> None:
+        for given, expected in [(None, ""), ("", ""), ("/", ""), ("/qd", "/qd"), ("/qd/", "/qd"), (" /a/b ", "/a/b")]:
+            self.assertEqual(quarterdeck.normalize_base_path(given), expected)
+        for bad in ["qd", "/qd?x", "/q d", "//qd", "/../qd", "/qd/./x", "/qd#a", 7]:
+            with self.subTest(bad=bad), self.assertRaises(ValueError):
+                quarterdeck.normalize_base_path(bad)
+
+    def test_config_and_flag_set_the_prefix_and_the_flag_wins(self) -> None:
+        config = self.root / "q.json"
+        config.write_text(json.dumps({"base_path": "/qd/"}), encoding="utf-8")
+        parser = quarterdeck.make_parser()
+        self.assertEqual(quarterdeck.effective_base_path(parser.parse_args(["serve", "--config", str(config)])), "/qd")
+        self.assertEqual(quarterdeck.effective_base_path(parser.parse_args(["serve", "--config", str(config), "--base-path", "/x"])), "/x")
+        self.assertEqual(quarterdeck.effective_base_path(parser.parse_args(["serve", "--config", str(config), "--base-path", "/"])), "")
+        self.assertEqual(quarterdeck.effective_base_path(parser.parse_args(["serve"])), "")
+        config.write_text(json.dumps({"base_path": "qd"}), encoding="utf-8")
+        with self.assertRaisesRegex(ValueError, "config base path"):
+            quarterdeck.load_config(config)
+        with redirect_stderr(io.StringIO()), self.assertRaises(SystemExit):
+            parser.parse_args(["serve", "--base-path", "qd"])
+
+    def test_default_pages_keep_root_endpoints(self) -> None:
+        request = self.serve("")
+        page = request("GET", "/")[2]
+        self.assertIn('"/api/reactions"', page)
+        self.assertIn('"endpoint": "/api/views"', page)
+        self.assertNotIn("/qd", page)
+        self.assertEqual(request("POST", "/api/reports/review", {"report_id": "x"})[0], 400)
+
+    def test_pages_endpoints_carry_the_prefix(self) -> None:
+        request = self.serve("/qd")
+        status, _headers, page = request("GET", "/qd/")
+        self.assertEqual(status, 200)
+        for endpoint in ("/qd/api/reactions", "/qd/api/reports/review"):
+            self.assertIn(f'"{endpoint}"', page)
+        self.assertIn('"endpoint": "/qd/api/views"', page)
+        self.assertNotRegex(page, r'"/api/')
+        self.assertEqual(quarterdeck.base_url("/api/x"), "/qd/api/x")
+
+    def test_prefixed_requests_are_served(self) -> None:
+        request = self.serve("/qd")
+        for path in ("/qd/", "/qd/index.html"):
+            with self.subTest(path=path):
+                status, _headers, body = request("GET", path)
+                self.assertEqual((status, "<html" in body), (200, True))
+        self.assertEqual(request("GET", "/qd/missing.html")[0], 404)
+        self.assertEqual(request("POST", "/qd/api/other", {})[0], 405)
+
+    def test_unprefixed_requests_redirect_under_the_prefix(self) -> None:
+        request = self.serve("/qd")
+        paths = ["/", "/index.html", "/manifest.webmanifest", "/sw.js", "/qdx/",
+                 "/api/push/key", "/api/reports/review", "/api/reactions", "/api/views",
+                 "/api/waits/discard", "/api/push/subscribe", "/api/push/unsubscribe",
+                 "/doc-a%23b.html"]
+        for method in ("GET", "POST"):
+            for path in paths:
+                with self.subTest(method=method, path=path):
+                    status, headers, body = request(method, path + "?a=1&b=%2F", {})
+                    self.assertEqual((status, headers["Location"], body),
+                                     (308, "/qd" + path + "?a=1&b=%2F", ""))
+
+    def test_bare_prefix_redirects_to_the_slash_form(self) -> None:
+        request = self.serve("/qd")
+        for method in ("GET", "POST"):
+            for query in ("", "?qd_refresh=1"):
+                with self.subTest(method=method, query=query):
+                    status, headers, _body = request(method, "/qd" + query, {})
+                    self.assertEqual((status, headers["Location"]), (308, "/qd/" + query))
+        self.assertEqual(self.serve("")("GET", "/qd")[0], 404)
+
+    def test_prefixed_post_reaches_the_endpoint(self) -> None:
+        request = self.serve("/qd")
+        status, _headers, _body = request("POST", "/qd/api/reports/review", {"report_id": "x"})
+        self.assertEqual(status, 400)  # the prefix was stripped and the mark route parsed the bad body
+        status, _headers, body = request("POST", "/qd/api/reactions", {})
+        self.assertEqual(status, 400, body)
+
+    def test_url_and_unit_carry_the_prefix(self) -> None:
+        parser = quarterdeck.make_parser()
+        unit = quarterdeck.service_unit(parser.parse_args(["service", "--port", "9100", "--base-path", "/qd"]))
+        default_unit = quarterdeck.service_unit(parser.parse_args(["service"]))
+        for generated, expected in ((unit, "/qd"), (default_unit, None)):
+            with self.subTest(base_path=expected):
+                commands = parse_systemd_unit(generated)["Service"]["ExecStart"]
+                self.assertEqual(len(commands), 1)
+                command = commands[0]
+                self.assertEqual(command[2], "serve")
+                self.assertEqual(parser.parse_args(command[2:]).base_path, expected)
+                if expected is None:
+                    self.assertNotIn("--base-path", command[3:])
+        unit_path = self.root / "config" / "systemd" / "user" / "quarterdeck.service"
+        unit_path.parent.mkdir(parents=True)
+        unit_path.write_text(unit, encoding="utf-8")
+        output = io.StringIO()
+        with redirect_stdout(output):
+            self.assertEqual(quarterdeck.main(["url"]), 0)
+        self.assertIn("http://127.0.0.1:9100/qd/", output.getvalue())
+
+    def test_url_uses_serve_config_precedence(self) -> None:
+        parser = quarterdeck.make_parser()
+        unit_path = self.root / "config" / "systemd" / "user" / "quarterdeck.service"
+        unit_path.parent.mkdir(parents=True)
+        unit = quarterdeck.service_unit(parser.parse_args(["service", "--port", "9100"]))
+        default_config = self.root / "config" / "quarterdeck.json"
+        default_config.write_text(json.dumps({"base_path": "/qd"}), encoding="utf-8")
+        selected_config = self.root / "selected.json"
+        selected_config.write_text(json.dumps({"base_path": "/selected"}), encoding="utf-8")
+        cases = [([], "/qd/"), (["--config", str(selected_config)], "/selected/"),
+                 (["--base-path", "/flag"], "/flag/"),
+                 (["--config", str(selected_config), "--base-path", "/flag"], "/flag/"),
+                 (["--base-path", "/"], "/")]
+        for options, suffix in cases:
+            configured_unit = (unit if not options else quarterdeck.service_unit(
+                parser.parse_args(["service", "--port", "9100", *options])))
+            unit_path.write_text(configured_unit, encoding="utf-8")
+            for output_options in ([], ["--json"]):
+                with self.subTest(options=options, output_options=output_options):
+                    output = io.StringIO()
+                    with redirect_stdout(output):
+                        self.assertEqual(quarterdeck.main(["url", *output_options]), 0)
+                    expected = "http://127.0.0.1:9100" + suffix
+                    if output_options:
+                        self.assertEqual(json.loads(output.getvalue())["urls"], [expected])
+                    else:
+                        self.assertEqual(output.getvalue().splitlines()[0], expected)
+
+    def test_url_without_a_service_uses_default_config(self) -> None:
+        config = self.root / "config" / "quarterdeck.json"
+        config.parent.mkdir(parents=True)
+        config.write_text(json.dumps({"base_path": "/qd"}), encoding="utf-8")
+        output = io.StringIO()
+        with redirect_stdout(output):
+            self.assertEqual(quarterdeck.main(["url", "--json"]), 0)
+        self.assertEqual(json.loads(output.getvalue())["urls"], ["http://127.0.0.1:8765/qd/"])

@@ -123,6 +123,9 @@ for server requirements, phone setup and withdrawal behavior.
 - `quarterdeck serve` serves the page over HTTP, or HTTPS with `--tls-cert`
   and `--tls-key`. `quarterdeck service` can print or write a systemd user
   unit; see the [serving guide](docs/how-to/serve-the-page.md).
+- `--base-path /qd` (or `base_path` in config) serves the page under a path
+  prefix behind a reverse proxy, such as Caddy, so the address needs no port
+  number; see [the proxy example](docs/how-to/serve-the-page.md#serve-it-under-a-path-prefix-behind-a-reverse-proxy).
 - [Phone notifications](docs/how-to/serve-the-page.md#get-phone-notifications)
   for new needs-you items, carrying no work content.
 - Scout reports with an explicit recommendation when the report states one.

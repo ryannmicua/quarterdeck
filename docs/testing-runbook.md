@@ -1,5 +1,49 @@
 # Targeted testing
 
+## Reverse proxy path prefix
+
+Run `PYTHONPATH=tests python3 -m unittest -v test_quarterdeck.BasePathTests`.
+The pass-through contract requires prefixed pages and actions to reach their
+handlers, while bare-prefix and unprefixed GET/POST requests return 308 beneath
+the prefix with their queries intact. Encoded path characters must stay encoded
+in redirect locations. Root serving remains unchanged without a prefix.
+The URL CLI must report the installed service's explicit prefix, selected config,
+or default config in that order, including a config created after installation;
+text and JSON output must agree. These checks reject unprefixed content aliases
+and stale root URLs. Generated units are parsed into normalized ExecStart
+arguments, then passed to the CLI parser to verify the explicit prefix and the
+default's omitted option; text elsewhere in the unit cannot satisfy this check.
+Run `PYTHONPATH=tests python3 -m unittest -v test_quarterdeck.PushNotificationTests.test_page_script_hides_the_control_on_plain_http_and_offers_it_on_https`
+to execute the notification script in Node at root and under `/qd`. Recorded
+fetches and worker registration must use the expected key, subscribe and
+unsubscribe URLs, worker URL and scope, rejecting inactive or root-only calls.
+Node is required; all browser boundaries are local stubs with no network calls.
+Fixtures use disposable homes, config and state, with local
+HTTP servers that clean themselves up; no real inbox writes or push delivery run.
+The Caddy example preserves the browser's Host for HTTPS upstreams, as required
+by the same-origin write checks; this Python test does not execute Caddy.
+
+### Live HTTPS prefix walkthrough
+
+Live checked 2026-11-18 with fictional home data, the real `serve` CLI,
+Caddy 2.11.9 and disposable Chromium. Use unused ports (check listeners first),
+private XDG directories outside the checkout and homes, and a disposable TLS
+certificate. Keep these directories within the test runner's authorized evidence
+location when its workspace boundary requires that. Adapt the documented Caddy
+pass-through example to those local addresses, preserving Host and the query.
+
+Open `/qd?filter=waiting&x=%2F`; verify the final `/qd/` URL retains the query.
+Follow a topic, its report and the classic page; mark a report, send a report
+reaction and topic question, and save a view. A saved view reloads immediately:
+wait for its new view button rather than transient “Saved” text. Verify delivered
+notes only in the fictional home's inbox recorder. Check the real browser's
+worker URL and scope are `/qd/sw.js` and `/qd/`, and fetch the manifest, icon
+and key beneath the prefix. Exercise unprefixed GET/POST redirects, encoded
+paths, malformed prefixed actions, root mode and service URL/config precedence.
+Capture desktop/phone screenshots and HTTP/CLI transcripts. Never subscribe a
+real device. Stop and await every browser/server child and remove tools, fixture
+homes and private runtime state, retaining evidence only.
+
 ## Topic input failures
 
 Run `PYTHONPATH=tests python3 -m unittest -v test_quarterdeck.TopicTests`.

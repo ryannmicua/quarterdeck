@@ -286,6 +286,51 @@ To keep it running when you are logged out, run `loginctl enable-linger $USER`.
 For example, `quarterdeck service --host 127.0.0.1 --host ::1 --write` binds
 both loopback families; the unit carries one `--host` per address.
 
+## Serve it under a path prefix behind a reverse proxy
+
+A port number is hard to remember. A reverse proxy on the standard HTTPS port can
+forward one path, such as `/qd/`, to Quarterdeck so the address is
+`https://dashboard.example.org/qd/`. Tell Quarterdeck the prefix with
+`--base-path /qd` (or `"base_path": "/qd"` in the JSON config; the flag wins, and
+`--base-path /` turns a configured prefix off):
+
+```sh
+quarterdeck serve --allow-marks --host 192.0.2.10 --port 8765 \
+  --tls-cert cert.pem --tls-key key.pem --base-path /qd
+```
+
+Configure the proxy to pass the prefix through. See the
+[CLI reference](../reference/cli-and-config.md#command) for prefix routing,
+redirects and notification scope.
+
+A Caddy example, with placeholder names. Point the proxy at a non-loopback
+address Quarterdeck listens on: a server bound only to loopback refuses a
+request whose `Host` is not loopback, and the page's write requests need the
+browser's `Origin` to match the `Host` the proxy passes on. Caddy 2.11+ rewrites
+`Host` for HTTPS upstreams by default; `header_up Host {hostport}` preserves the
+browser-facing authority ([Caddy HTTPS proxy documentation](https://caddyserver.com/docs/caddyfile/directives/reverse_proxy#https)).
+
+```caddyfile
+dashboard.example.org {
+    redir /qd /qd/?{query} 308
+    handle /qd* {
+        reverse_proxy https://192.0.2.10:8765 {
+            header_up Host {hostport}
+            transport http {
+                tls_insecure_skip_verify  # Quarterdeck's own certificate is self-signed
+            }
+        }
+    }
+}
+```
+
+This passes the prefix through.
+`quarterdeck service --base-path /qd` writes the option into the unit. Use
+`quarterdeck url` to inspect Quarterdeck's own address; see the
+[CLI reference](../reference/cli-and-config.md#command) for URL resolution.
+The proxy does not add a login; see the security
+section below.
+
 ## Security: loopback by default
 
 The page contains real task names, hold reasons, reports and paths. There is
