@@ -89,9 +89,8 @@ With `--allow-marks`, the served page can send your phone one notification
 whenever a new item needs you: a desk call, a held task, or an open decision in a
 [topic thread](keep-topic-threads.md). The notification shows the item's title
 only, such as a decision's question, never its recommendation or detail;
-tapping it opens Quarterdeck on that card. When topics exist, an item that belongs
-to no topic opens on its row under **Not yet in a topic** on the front page, and an
-item whose task is a topic's piece opens that topic. When Firstmate answers a question you
+tapping it opens Quarterdeck on that card. With topics, see the
+[topic front-page guide](keep-topic-threads.md) for notification destinations. When Firstmate answers a question you
 sent from a topic thread, one notification says "Firstmate answered" with the
 topic's title. The same item never sends a second alert. Withdrawal behavior
 depends on the phone browser, as described below.

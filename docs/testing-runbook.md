@@ -538,6 +538,15 @@ their existing order; unknown times come last.
 Polling without completeness evidence must replace an old all-clear with a
 neutral empty message, while preserving active replies during reconciliation.
 
+For live ordering checks, use a fictional home with executable `fm-attention.sh`
+and `fm-bearings-snapshot.sh` JSON fixtures, then run both `render` and `serve`.
+Keep generated output and XDG state outside the checkout (the CLI enforces this);
+the gate evidence directory is suitable during an isolated test phase. Check the
+served `cards.json` HTML fragments as well as the visible list. An undated feed
+decision without recent activity is a background decision and does not enter the
+Needs you feed; use an undated topic wait to exercise unknown timestamps live.
+Stop the server and disposable browser, then remove the fictional home/profile.
+
 
 Live browser recipe for this flow: serve the fictional attention fixture with
 isolated XDG config/state and `--allow-marks`, shifting fixture timestamps to
