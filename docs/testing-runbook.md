@@ -10,7 +10,10 @@ in redirect locations. Root serving remains unchanged without a prefix.
 The URL CLI must report the installed service's explicit prefix, selected config,
 or default config in that order, including a config created after installation;
 text and JSON output must agree. These checks reject unprefixed content aliases
-and stale root URLs. Fixtures use disposable homes, config and state, with local
+and stale root URLs. Generated units are parsed into normalized ExecStart
+arguments, then passed to the CLI parser to verify the explicit prefix and the
+default's omitted option; text elsewhere in the unit cannot satisfy this check.
+Fixtures use disposable homes, config and state, with local
 HTTP servers that clean themselves up; no real inbox writes or push delivery run.
 The Caddy example preserves the browser's Host for HTTPS upstreams, as required
 by the same-origin write checks; this Python test does not execute Caddy.

@@ -11640,8 +11640,16 @@ class BasePathTests(unittest.TestCase):
     def test_url_and_unit_carry_the_prefix(self) -> None:
         parser = quarterdeck.make_parser()
         unit = quarterdeck.service_unit(parser.parse_args(["service", "--port", "9100", "--base-path", "/qd"]))
-        self.assertIn('"--base-path" "/qd"', unit)
-        self.assertNotIn("--base-path", quarterdeck.service_unit(parser.parse_args(["service"])))
+        default_unit = quarterdeck.service_unit(parser.parse_args(["service"]))
+        for generated, expected in ((unit, "/qd"), (default_unit, None)):
+            with self.subTest(base_path=expected):
+                commands = parse_systemd_unit(generated)["Service"]["ExecStart"]
+                self.assertEqual(len(commands), 1)
+                command = commands[0]
+                self.assertEqual(command[2], "serve")
+                self.assertEqual(parser.parse_args(command[2:]).base_path, expected)
+                if expected is None:
+                    self.assertNotIn("--base-path", command[3:])
         unit_path = self.root / "config" / "systemd" / "user" / "quarterdeck.service"
         unit_path.parent.mkdir(parents=True)
         unit_path.write_text(unit, encoding="utf-8")
