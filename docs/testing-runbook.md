@@ -516,21 +516,36 @@ plus one emoji must be refused. Both page and artifact counters follow it.
 Fixtures and inbox receivers are fictional, cleanup is automatic, and these
 checks do not send messages to real homes.
 
-For opening-time order and live empty states, run:
+For opening-time order across both renderers and live empty states, run:
 
 ```sh
 PYTHONPATH=tests python3 -m unittest -v \
-  test_quarterdeck.ActivityCardTests.test_needs_you_cards_come_first_oldest_wait_first_and_the_rest_newest_first \
-  test_quarterdeck.ActivityCardTests.test_needs_you_order_uses_parsed_opening_times_with_activity_fallback \
-  test_quarterdeck.ActivityCardTests.test_polling_preserves_busy_cards_and_reconciles_idle_cards
+  test_quarterdeck.ActivityCardTests.test_needs_you_cards_come_first_newest_wait_first_and_the_rest_newest_first \
+  test_quarterdeck.ActivityCardTests.test_needs_you_order_uses_newest_parsed_opening_times_with_activity_fallback \
+  test_quarterdeck.ActivityCardTests.test_polling_preserves_busy_cards_and_reconciles_idle_cards \
+  test_quarterdeck.FrontPageTests.test_needs_you_orders_decisions_waits_and_loose_cards_together_newest_first
 ```
 
-The ordering oracle is elapsed wait since opening, even after recent activity;
+The ordering oracle is newest opening first, even after recent activity;
 missing or invalid openings fall back to activity, with unknown times last.
-Offset timestamps compare as instants. Initial HTML and cards JSON must agree,
+Offset timestamps compare as instants, and equal times retain their input order.
+Initial HTML and cards JSON must agree,
 including decisions and other needs-you items from priority and overflow lists.
+The topic front page interleaves decisions, waits and loose cards in both static and
+served modes. Waits use the latest dated topic entry because their state lines have
+no start timestamp. Equal times retain decisions, then waits, then loose cards in
+their existing order; unknown times come last.
 Polling without completeness evidence must replace an old all-clear with a
 neutral empty message, while preserving active replies during reconciliation.
+
+For live ordering checks, use a fictional home with executable `fm-attention.sh`
+and `fm-bearings-snapshot.sh` JSON fixtures, then run both `render` and `serve`.
+Keep generated output and XDG state outside the checkout (the CLI enforces this);
+the gate evidence directory is suitable during an isolated test phase. Check the
+served `cards.json` HTML fragments as well as the visible list. An undated feed
+decision without recent activity is a background decision and does not enter the
+Needs you feed; use an undated topic wait to exercise unknown timestamps live.
+Stop the server and disposable browser, then remove the fictional home/profile.
 
 
 Live browser recipe for this flow: serve the fictional attention fixture with

@@ -8992,8 +8992,16 @@ def card_topic(card: dict[str, object], found: list[tuple[HomeSnapshot, Topic]])
                  and report_reference(snapshot.spec.label, "").split("/", 1)[0] == home), None)
 
 
+def needs_card_time(card: dict[str, object]) -> datetime | None:
+    return parse_when(str(card.get("opened_at") or "")) or parse_when(str(card.get("at") or ""))
+
+
+def needs_time_key(when: datetime | None) -> tuple[bool, datetime]:
+    return when is not None, when.astimezone(timezone.utc) if when else datetime.min.replace(tzinfo=timezone.utc)
+
+
 def front_loose_rows(cards: list[dict[str, object]], found: list[tuple[HomeSnapshot, Topic]],
-                     homes: list[HomeSnapshot], bearings: Bearings) -> list[str]:
+                     homes: list[HomeSnapshot], bearings: Bearings) -> list[tuple[datetime | None, str]]:
     """One row per needs-you card that belongs to no open topic, opening the item's own page when it has one."""
     pages = {}
     for snapshot in all_snapshots(homes):
@@ -9011,8 +9019,8 @@ def front_loose_rows(cards: list[dict[str, object]], found: list[tuple[HomeSnaps
         href = pages.get(str(card["id"]).partition(":")[2]) or f"{CLASSIC_PAGE}#need-{tag}"
         summary = str(card.get("summary") or "")
         line = f'<span class="row-line">{html.escape(summary)}</span>' if summary else ""
-        rows.append(f'<li id="need-{tag}" data-push-tag="{tag}"><a class="row" href="{html.escape(href, quote=True)}">'
-                    f'<span class="row-title">{html.escape(str(card.get("title") or ""))}</span>{line}</a></li>')
+        rows.append((needs_card_time(card), f'<ul class="rows"><li id="need-{tag}" data-push-tag="{tag}"><a class="row" href="{html.escape(href, quote=True)}">'
+                    f'<span class="row-title">{html.escape(str(card.get("title") or ""))}</span>{line}</a></li></ul>'))
     return rows
 
 
@@ -9039,13 +9047,13 @@ def front_topic_rows(found: list[tuple[HomeSnapshot, Topic]], now: datetime, mul
 def front_page_html(homes: list[HomeSnapshot], title: str, bearings: Bearings, cards: list[dict[str, object]],
                     allow_marks: bool = False, refresh_seconds: int | None = None, push_enabled: bool = False) -> str:
     """The short front page shown when topics exist: Needs you, Changed since you last looked, Topics, the ask box
-    and search, and nothing else. Needs you lists the topics' open decisions and waits on you, then every needs-you
-    card whose task is no open topic's piece, under "Not yet in a topic", until Firstmate gathers it into one."""
+    and search, and nothing else. Needs you orders open decisions, waits on you and cards outside topics
+    together, newest first."""
     generated = bearings.generated
     found = assign_topic_pages(homes)
     multi_home = len(all_snapshots(homes)) > 1
-    decisions: list[tuple[datetime, str]] = []
-    waits: list[str] = []
+    decisions: list[tuple[datetime | None, str]] = []
+    waits: list[tuple[datetime | None, str]] = []
     awaiting = 0
     for snapshot, topic in found:
         if topic.status == "done":
@@ -9055,13 +9063,13 @@ def front_page_html(homes: list[HomeSnapshot], title: str, bearings: Bearings, c
             # topic file records the answer.
             sent = topic_sent(snapshot.review_state, "decision", f"{topic.ref}/{entry.entry_id}")
             awaiting += not sent
-            decisions.append((entry.at or generated,
+            decisions.append((entry.at,
                               topic_decision_html(entry, topic.ref, allow_marks, sent[-1] if sent else None, topic)))
         for what in topic_waits_on_you(topic):
-            waits.append(f'<li><a class="row" href="{html.escape(topic.page, quote=True)}"><span class="row-meta">'
-                         f'{html.escape(topic.title or topic.topic_id)} · waiting on you</span><span class="row-title">{html.escape(what)}</span></a></li>')
-    decisions.sort(key=lambda pair: pair[0])
+            waits.append((topic.last_at, f'<ul class="rows"><li><a class="row" href="{html.escape(topic.page, quote=True)}"><span class="row-meta">'
+                         f'{html.escape(topic.title or topic.topic_id)} · waiting on you</span><span class="row-title">{html.escape(what)}</span></a></li></ul>'))
     loose = front_loose_rows(cards, found, homes, bearings)
+    needs = sorted(decisions + waits + loose, key=lambda pair: needs_time_key(pair[0]), reverse=True)
     total = awaiting + len(waits) + len(loose)
     needs_class = ' class="needs"' if total else ""
     attention = bearings.attention
@@ -9073,9 +9081,7 @@ def front_page_html(homes: list[HomeSnapshot], title: str, bearings: Bearings, c
         f'<span class="n">{total}</span></h2>'
         + ("".join(attention_errors_html(attention)) if attention is not None else "")
         + f'<p class="empty" data-needs-empty{"" if not total else " hidden"}>{empty}</p>'
-        + "".join(card for _at, card in decisions)
-        + (f'<ul class="rows">{"".join(waits)}</ul>' if waits else "")
-        + (f'<h3 class="needs-group">Not yet in a topic</h3><ul class="rows">{"".join(loose)}</ul>' if loose else "")
+        + "".join(row for _at, row in needs)
         + "</section>"
     )
     changed = front_changed_rows(found, multi_home)
@@ -11582,11 +11588,8 @@ def activity_cards(
     ranked: list[dict[str, object]] = []
     for section, _title in CARD_SECTIONS:
         chosen = [card for card in cards if card["section"] == section]
-        if section == "needs_you":  # the longest wait first; a card with no time goes last
-            chosen.sort(key=lambda card: (
-                parse_when(str(card.get("opened_at") or "")) or parse_when(str(card.get("at") or ""))
-                or datetime.max.replace(tzinfo=timezone.utc)
-            ))
+        if section == "needs_you":  # newest opening first; a card with no time goes last
+            chosen.sort(key=lambda card: needs_time_key(needs_card_time(card)), reverse=True)
         else:
             chosen.sort(key=lambda card: str(card["at"] or ""), reverse=True)
         ranked.extend(chosen)
@@ -11632,7 +11635,7 @@ def card_section_html(cards: list[dict[str, object]], now: datetime, sections: t
 
 
 def cards_html(cards: list[dict[str, object]], attention: dict[str, object] | None, now: datetime, live: bool) -> str:
-    """The first section of the page: only what needs the captain, longest wait first."""
+    """The first section of the page: only what needs the captain, newest opening first."""
     if attention is None:
         return ""
     needs = sum(card["section"] == "needs_you" for card in cards)
@@ -11642,7 +11645,7 @@ def cards_html(cards: list[dict[str, object]], attention: dict[str, object] | No
         f'<section class="dashboard-section cards-feed" id="cards" data-live="{1 if live else 0}" data-poll="{CARDS_POLL_SECONDS}" '
         f'data-endpoint="{CARDS_PAGE}" aria-label="Needs you"><div class="section-head"><div>'
         '<h2>Needs you <span class="count" id="cards-count" hidden>0</span></h2>'
-        "<p>What is waiting on you, longest wait first. Tap a card to read it. "
+        "<p>What is waiting on you, newest first. Tap a card to read it. "
         + ("New cards slide in here without a reload." if live else "Reload to see new cards.") + "</p></div></div>"
         + "".join(attention_errors_html(attention))
         + f'<p class="empty" id="cards-empty"{" hidden" if needs else ""}>{empty}</p>'
