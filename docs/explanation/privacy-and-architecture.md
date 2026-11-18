@@ -215,10 +215,11 @@ Needs-you observation times with subsequent visits. See
 For notification prerequisites, setup and phone-specific withdrawal behavior, see
 [Get phone notifications](../how-to/serve-the-page.md#get-phone-notifications).
 Nothing is sent until a browser turns them on from the page. They use standard
-Web Push. The page's service worker (`/sw.js`) subscribes with the browser's own
-push service, and `POST /api/push/subscribe` stores that subscription (an
+Web Push. The page's service worker subscribes with the browser's own
+push service, and the subscription endpoint stores that subscription (an
 endpoint URL and the browser's public keys) under the same origin, content-type
-and no-key rules as the other writes. Only endpoints on the Google, Apple,
+and no-key rules as the other writes. See the [CLI reference](../reference/cli-and-config.md#command)
+for endpoint paths and prefix routing. Only endpoints on the Google, Apple,
 Mozilla and Microsoft push services are accepted, so the server never posts to
 an address a visitor chose. While subscriptions exist, a timer rebuilds the page
 about once a minute even with no browsers open. After each page build Quarterdeck

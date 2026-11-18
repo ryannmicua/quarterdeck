@@ -299,12 +299,9 @@ quarterdeck serve --allow-marks --host 192.0.2.10 --port 8765 \
   --tls-cert cert.pem --tls-key key.pem --base-path /qd
 ```
 
-With a prefix set, every endpoint and the service-worker address and scope in a
-page carry it, and pages link to each other relatively, so they stay under the
-prefix. The proxy must pass the prefix through. Requests without it redirect
-with status 308 to the same path beneath the prefix, preserving the query string
-and HTTP method. A request to the bare prefix (`/qd`) redirects to `/qd/`.
-With no prefix, which is the default, nothing changes.
+Configure the proxy to pass the prefix through. See the
+[CLI reference](../reference/cli-and-config.md#command) for prefix routing,
+redirects and notification scope.
 
 A Caddy example, with placeholder names. Point the proxy at a non-loopback
 address Quarterdeck listens on: a server bound only to loopback refuses a
@@ -328,9 +325,10 @@ dashboard.example.org {
 ```
 
 This passes the prefix through.
-`quarterdeck service --base-path /qd` writes the option into the unit, and
-`quarterdeck url` then prints the prefixed address (it shows Quarterdeck's own
-address, not the proxy's). The proxy does not add a login; see the security
+`quarterdeck service --base-path /qd` writes the option into the unit. Use
+`quarterdeck url` to inspect Quarterdeck's own address; see the
+[CLI reference](../reference/cli-and-config.md#command) for URL resolution.
+The proxy does not add a login; see the security
 section below.
 
 ## Security: loopback by default
