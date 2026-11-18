@@ -11282,6 +11282,48 @@ class FrontPageTests(unittest.TestCase):
                 self.assertIn(f'data-filter="{key}"', search)
             self.assertTrue(all(item["u"] for item in index))
 
+    def test_needs_you_orders_decisions_waits_and_loose_cards_together_newest_first(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            home = TopicTests.home_with_topics(self, root, {
+                "harbor.md": """# Harbor
+Waiting on: you - Wait latest
+Waiting on: you - Wait tie
+
+## 2026-11-17 09:00 | firstmate | chat
+Id: older
+Decision: Decision older
+
+## 2026-11-18 09:00 | firstmate | chat
+Id: newer
+Decision: Decision newer
+""",
+                "unknown.md": "# Unknown\nWaiting on: you - Wait unknown\n",
+            })
+            args = argparse.Namespace(home=str(home), config=None, title=None, no_snapshot=True)
+            with patch.dict(os.environ, {"XDG_CONFIG_HOME": str(root / "config"), "XDG_STATE_HOME": str(root / "state")}):
+                _config, homes, bearings = quarterdeck.load_site(args)
+            items = [
+                {"key": "invented/latest", "title": "Loose latest", "opened_at": "2026-11-19", "at": None},
+                {"key": "invented/tie", "title": "Loose tie", "opened_at": "2026-11-18T17:00:00+08:00", "at": None},
+                {"key": "invented/middle", "title": "Loose middle", "opened_at": "invalid", "at": "2026-11-17T12:00:00Z"},
+                {"key": "invented/unknown", "title": "Loose unknown", "at": "invalid"},
+            ]
+            attention = {"homes": [{"label": "invented", "errors": [], "waiting": {"needs_you": items}}]}
+            cards = quarterdeck.activity_cards(attention, None, None)
+            for live in (False, True):
+                with self.subTest(live=live):
+                    front = quarterdeck.front_page_html(homes, "Quarterdeck", bearings, cards, allow_marks=live)
+                    needs = front.split('id="needs"', 1)[1].split("</section>", 1)[0]
+                    expected = ["Loose latest", "Decision newer", "Wait latest", "Wait tie", "Loose tie",
+                                "Loose middle", "Decision older", "Wait unknown", "Loose unknown"]
+                    positions = [needs.index(title) for title in expected]
+                    self.assertEqual(positions, sorted(positions), "calendar chronology, with discovery order on ties")
+                    classic = quarterdeck.cards_html(cards, attention, bearings.generated, live)
+                    positions = [classic.index(title) for title in
+                                 ("Loose latest", "Loose tie", "Loose middle", "Loose unknown")]
+                    self.assertEqual(positions, sorted(positions))
+
     def test_without_topics_or_with_all_the_page_is_unchanged(self) -> None:
         with tempfile.TemporaryDirectory() as temp:
             root = Path(temp)
@@ -11349,7 +11391,7 @@ class FrontPageTests(unittest.TestCase):
         front = pages["index.html"]
         needs = front.split('id="needs"', 1)[1].split("</section>", 1)[0]
         self.assertIn('Needs you <span class="n">4</span>', needs, "the decision, the wait on you and the two cards in no topic")
-        group = needs.split("Not yet in a topic", 1)[1]
+        group = needs
         tag = quarterdeck.push_tag(loose)
         self.assertIn(f'<li id="need-{tag}" data-push-tag="{tag}">', group)
         self.assertIn("Choose the Amber Kite import format", group)
