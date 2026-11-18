@@ -286,6 +286,48 @@ To keep it running when you are logged out, run `loginctl enable-linger $USER`.
 For example, `quarterdeck service --host 127.0.0.1 --host ::1 --write` binds
 both loopback families; the unit carries one `--host` per address.
 
+## Serve it under a path prefix behind a reverse proxy
+
+A port number is hard to remember. A reverse proxy on the standard HTTPS port can
+forward one path, such as `/qd/`, to Quarterdeck so the address is
+`https://dashboard.example.org/qd/`. Tell Quarterdeck the prefix with
+`--base-path /qd` (or `"base_path": "/qd"` in the JSON config; the flag wins, and
+`--base-path /` turns a configured prefix off):
+
+```sh
+quarterdeck serve --allow-marks --host 192.0.2.10 --port 8765 \
+  --tls-cert cert.pem --tls-key key.pem --base-path /qd
+```
+
+With a prefix set, every endpoint and the service-worker address and scope in a
+page carry it, and pages link to each other relatively, so they stay under the
+prefix. Quarterdeck accepts requests with or without the prefix, so the proxy
+may strip it or pass it through. A request to the bare prefix (`/qd`) redirects to
+`/qd/`. With no prefix, which is the default, nothing changes.
+
+A Caddy example, with placeholder names. Point the proxy at a non-loopback
+address Quarterdeck listens on: a server bound only to loopback refuses a
+request whose `Host` is not loopback, and the page's write requests need the
+browser's `Origin` to match the `Host` the proxy passes on (Caddy's default).
+
+```caddyfile
+dashboard.example.org {
+    handle /qd* {
+        reverse_proxy https://192.0.2.10:8765 {
+            transport http {
+                tls_insecure_skip_verify  # Quarterdeck's own certificate is self-signed
+            }
+        }
+    }
+}
+```
+
+This passes the prefix through. To strip it instead, use `handle_path /qd*`.
+`quarterdeck service --base-path /qd` writes the option into the unit, and
+`quarterdeck url` then prints the prefixed address (it shows Quarterdeck's own
+address, not the proxy's). The proxy does not add a login; see the security
+section below.
+
 ## Security: loopback by default
 
 The page contains real task names, hold reasons, reports and paths. There is

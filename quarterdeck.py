@@ -39,7 +39,50 @@ from urllib.parse import parse_qs, quote, unquote, urlparse
 
 
 DEFAULT_TITLE = "Quarterdeck"
-ALLOWED_CONFIG_KEYS = {"page_title", "output_dir", "homes", "captain_waits"}
+ALLOWED_CONFIG_KEYS = {"page_title", "output_dir", "homes", "captain_waits", "base_path"}
+
+# The URL path prefix a reverse proxy serves Quarterdeck under ("" when it is served at the root). `serve` sets it
+# once at startup; every absolute path Quarterdeck writes into a page goes through base_url().
+BASE_PATH = ""
+BASE_PATH_RE = re.compile(r"/[A-Za-z0-9._~-]+(?:/[A-Za-z0-9._~-]+)*")
+
+
+def normalize_base_path(value: object) -> str:
+    """Return the canonical prefix ("/qd"), or "" for none; raise ValueError when it is not a plain path."""
+    if value is None:
+        return ""
+    if not isinstance(value, str):
+        raise ValueError("base path must be a string such as /qd")
+    text = value.strip()
+    if text.strip("/") == "":
+        return ""
+    text = text.rstrip("/")
+    if not BASE_PATH_RE.fullmatch(text) or any(part in {".", ".."} for part in text.split("/")):
+        raise ValueError(f"base path must start with / and use only letters, digits and - . _ ~ between slashes: {value!r}")
+    return text
+
+
+def set_base_path(value: object) -> str:
+    global BASE_PATH
+    BASE_PATH = normalize_base_path(value)
+    return BASE_PATH
+
+
+def base_url(path: str) -> str:
+    """Prefix an absolute server path ("/api/views", "/sw.js") with the configured base path."""
+    return BASE_PATH + path
+
+
+def strip_base_path(path: str, base: str) -> str | None:
+    """The request path without the prefix; the path as given when it has none; None for the bare prefix."""
+    if not base:
+        return path
+    if path == base:
+        return None
+    if path.startswith(base + "/"):
+        return path[len(base):]
+    return path
+
 PR_URL_RE = re.compile(r"https://github\.com/[^\s|)]+/pull/\d+", re.IGNORECASE)
 SECONDMATE_ENTRY_RE = re.compile(
     r"^\s*[-*]\s+(?P<id>[A-Za-z0-9][A-Za-z0-9._-]*)\s+-\s+(?P<summary>.*?)\s+\((?P<attributes>.*)\)\s*$"
@@ -714,7 +757,7 @@ def source_page_html(
         )
         review = (
             f'<section class="review-actions" aria-label="Review this report">{actions}{back}</section>'
-            f"<script>{DOC_MARK_SCRIPT}</script>{MARK_SCRIPT.replace('__ENDPOINT__', MARK_ENDPOINT)}"
+            f"<script>{DOC_MARK_SCRIPT}</script>{MARK_SCRIPT.replace('__ENDPOINT__', base_url(MARK_ENDPOINT))}"
         )
     return f'''<!doctype html>
 <html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
@@ -1595,7 +1638,7 @@ def build_html(
     cards_link = '<a class="cards-new" id="cards-new" href="#cards" hidden></a>' if cards_block else ""
     serve_push = bool(push_enabled and allow_marks and refresh_seconds)
     push_control = PUSH_CONTROL_HTML if serve_push else ""
-    push_script = PUSH_PAGE_SCRIPT if serve_push else ""
+    push_script = push_page_script() if serve_push else ""
     metrics_html = "".join(
         f'<div class="metric"><b>{count}</b><span>{html.escape(label)}</span></div>'
         for count, label in zip(counts, metric_labels)
@@ -1681,8 +1724,8 @@ def build_html(
       note.hidden = false;
     }
   </script>"""
-    mark_script = MARK_SCRIPT.replace("__ENDPOINT__", MARK_ENDPOINT) if allow_marks else ""
-    wait_script = WAIT_SCRIPT.replace("__ENDPOINT__", WAITS_DISCARD_ENDPOINT) if allow_marks else ""
+    mark_script = MARK_SCRIPT.replace("__ENDPOINT__", base_url(MARK_ENDPOINT)) if allow_marks else ""
+    wait_script = WAIT_SCRIPT.replace("__ENDPOINT__", base_url(WAITS_DISCARD_ENDPOINT)) if allow_marks else ""
     reaction_script = f"""
   <script>
     function reactionId(box, payload) {{
@@ -1790,7 +1833,7 @@ def build_html(
       status.textContent = "Sending…";
       const payload = {{kind: box.dataset.reactionKind, item_id: box.dataset.reactionItem, reaction: reaction, text: text}};
       try {{
-        const response = await fetch("{REACTION_ENDPOINT}", {{
+        const response = await fetch("{base_url(REACTION_ENDPOINT)}", {{
           method: "POST",
           headers: {{"Content-Type": "application/json"}},
           body: JSON.stringify({{id: reactionId(box, payload), ...payload}}),
@@ -4292,7 +4335,7 @@ def views_html(view: dict[str, object], homes: list[dict[str, object]], now: dat
     startup = str(view["default_view"])
     multi_home = len(homes) > 1
     data = {
-        "default": startup, "endpoint": VIEWS_ENDPOINT if allow_marks else "", "titles": VIEW_SECTION_TITLES,
+        "default": startup, "endpoint": base_url(VIEWS_ENDPOINT) if allow_marks else "", "titles": VIEW_SECTION_TITLES,
         "views": [{"name": entry["name"], "sections": entry["layout"]} for entry in built],
         "priorities": view["priority_projects"],
     }
@@ -5735,6 +5778,11 @@ def load_config(path: Path | None) -> dict[str, object]:
         raise ValueError(f"unsupported config key(s): {', '.join(unknown)}")
     if "page_title" in config and not isinstance(config["page_title"], str):
         raise ValueError("config page_title must be a string")
+    if "base_path" in config:
+        try:
+            normalize_base_path(config["base_path"])
+        except ValueError as exc:
+            raise ValueError(f"config {exc}") from exc
     if "output_dir" in config and not isinstance(config["output_dir"], str):
         raise ValueError("config output_dir must be a path string")
     if "homes" in config:
@@ -6564,7 +6612,7 @@ PUSH_CONTROL_HTML = (
     '<span class="push-control" id="push-control" hidden><span id="push-note" role="status"></span>'
     '<button type="button" class="push-toggle" id="push-toggle" hidden>Turn on notifications</button></span>'
 )
-PUSH_PAGE_SCRIPT = """
+PUSH_PAGE_TEMPLATE = """
   <script>
     (function () {
       const box = document.getElementById("push-control");
@@ -6638,7 +6686,7 @@ PUSH_PAGE_SCRIPT = """
         key = String(data.key || "");
         withdrawn = new Set(data.withdrawn);
         if (!key) throw new Error("no key");
-        return navigator.serviceWorker.register("/%(worker)s").then(() => navigator.serviceWorker.ready);
+        return navigator.serviceWorker.register("%(worker)s", {scope: "%(scope)s"}).then(() => navigator.serviceWorker.ready);
       }).then(registration => {
         // An item that no longer needs you loses its notification when the page opens, on every platform.
         registration.getNotifications().then(list => list.forEach(item => {
@@ -6660,8 +6708,15 @@ PUSH_PAGE_SCRIPT = """
         });
       }).then(settle).catch(() => { box.hidden = true; });
     })();
-  </script>""".replace("%(key)s", PUSH_KEY_ENDPOINT).replace("%(subscribe)s", PUSH_SUBSCRIBE_ENDPOINT).replace(
-    "%(unsubscribe)s", PUSH_UNSUBSCRIBE_ENDPOINT).replace("%(worker)s", PUSH_WORKER_PATH)
+  </script>"""
+
+
+def push_page_script() -> str:
+    """The notification control's script, with the endpoints, worker and scope under the configured base path."""
+    return (PUSH_PAGE_TEMPLATE.replace("%(key)s", base_url(PUSH_KEY_ENDPOINT))
+            .replace("%(subscribe)s", base_url(PUSH_SUBSCRIBE_ENDPOINT))
+            .replace("%(unsubscribe)s", base_url(PUSH_UNSUBSCRIBE_ENDPOINT))
+            .replace("%(worker)s", base_url("/" + PUSH_WORKER_PATH)).replace("%(scope)s", base_url("/")))
 
 
 
@@ -6673,6 +6728,7 @@ def make_handler(
     discard_wait_to: Callable[[dict[str, object]], dict[str, object]] | None = None,
     visit_log: VisitLog | None = None,
     push: PushNotifier | None = None,
+    base_path: str = "",
 ) -> type[BaseHTTPRequestHandler]:
     """Build the request handler; POST is refused unless set_mark, send_reaction_to, save_view_to, discard_wait_to
     or push is given."""
@@ -6703,7 +6759,9 @@ def make_handler(
             if not self.host_allowed():
                 self.send_text(403, "Host is not allowed\n")
                 return
-            path = unquote(urlparse(self.path).path)
+            path = self.route_path(unquote(urlparse(self.path).path))
+            if path is None:
+                return
             name = "index.html" if path in {"/", "/index.html"} else path.lstrip("/")
             if name in APP_ICON_PATHS:
                 self.send_text(200, app_asset(name) or b"", APP_ICON_PATHS[name], cache="public, max-age=86400")
@@ -6742,6 +6800,18 @@ def make_handler(
             self.send_text(200, pages[name], f"{'application' if kind == 'json' else 'text'}/{kind}; charset=utf-8",
                            sandbox=name.startswith((DOC_PREFIX, RAW_PREFIX)))
 
+        def route_path(self, path: str) -> str | None:
+            """The request path without the base path; None once the bare prefix has been redirected to "prefix/"."""
+            routed = strip_base_path(path, base_path)
+            if routed is None:
+                query = urlparse(self.path).query
+                self.send_response(308)
+                self.send_header("Location", base_path + "/" + ("?" + query if query else ""))
+                self.send_header("Content-Length", "0")
+                self.send_header("Cache-Control", "no-store")
+                self.end_headers()
+            return routed
+
         def host_allowed(self) -> bool:
             return not (is_loopback(str(self.server.server_address[0])) and not request_host_is_loopback(
                 self.headers.get("Host")
@@ -6762,7 +6832,9 @@ def make_handler(
             return None
 
         def do_POST(self) -> None:  # noqa: N802 - http.server naming
-            path = urlparse(self.path).path
+            path = self.route_path(urlparse(self.path).path)
+            if path is None:
+                return
             if send_reaction_to is not None and path == REACTION_ENDPOINT:
                 self.post_reaction(send_reaction_to)
                 return
@@ -6982,6 +7054,25 @@ def request_host_is_loopback(value: str | None) -> bool:
         return False
 
 
+def base_path_option(value: str) -> str:
+    try:
+        return normalize_base_path(value)
+    except ValueError as exc:
+        raise argparse.ArgumentTypeError(str(exc)) from exc
+
+
+def effective_base_path(args: argparse.Namespace) -> str:
+    """--base-path when given (even as "" to switch a configured prefix off), else the config's base_path, else none."""
+    given = getattr(args, "base_path", None)
+    if given is not None:
+        return normalize_base_path(given)
+    config_path = getattr(args, "config", None)
+    if config_path is None:
+        default_path = default_config_path()
+        config_path = default_path if default_path.is_file() else None
+    return normalize_base_path(load_config(config_path).get("base_path"))
+
+
 def bind_hosts(args: argparse.Namespace) -> list[str]:
     hosts = list(dict.fromkeys(args.host or [DEFAULT_HOST]))
     return hosts
@@ -7073,13 +7164,15 @@ def serve(args: argparse.Namespace) -> int:
             save_view_to = lambda raw: save_view_request(args, raw)  # noqa: E731
             discard_wait_to = lambda raw: discard_wait(args, str(raw["key"]), str(raw["hold_set"]))  # noqa: E731
         tls = tls_context(args)
+        configured_base = effective_base_path(args)
+        set_base_path(configured_base)
         push = (PushNotifier(default_output_dir())
                 if getattr(args, "allow_marks", False) and not getattr(args, "no_snapshot", False) and push_crypto_available()
                 else None)
         cache = SiteCache(site_builder(args, getattr(args, "allow_marks", False), push))
         cache.get()
         visit_log = VisitLog(visits_path()) if getattr(args, "allow_marks", False) else None
-        handler = make_handler(cache, set_mark, send_reaction_to, save_view_to, discard_wait_to, visit_log, push)
+        handler = make_handler(cache, set_mark, send_reaction_to, save_view_to, discard_wait_to, visit_log, push, configured_base)
         port = args.port
         for host in bind_hosts(args):
             server = make_server(host, port, handler, tls)
@@ -7095,7 +7188,7 @@ def serve(args: argparse.Namespace) -> int:
         shown = f"[{host}]" if ":" in host else host
         access = ("report review marks, reactions, view saves and wait discards enabled"
                   if getattr(args, "allow_marks", False) else "read-only")
-        print(f"Serving Quarterdeck at {'https' if tls else 'http'}://{shown}:{port}/ ({access}; Ctrl+C to stop)", flush=True)
+        print(f"Serving Quarterdeck at {'https' if tls else 'http'}://{shown}:{port}{BASE_PATH}/ ({access}; Ctrl+C to stop)", flush=True)
     if getattr(args, "allow_marks", False):
         print("Phone notifications: " + (
             "off, because --no-snapshot cannot tell when a needs-you item is answered" if getattr(args, "no_snapshot", False)
@@ -7142,6 +7235,8 @@ def service_unit(args: argparse.Namespace) -> str:
     for host in bind_hosts(args):
         command += ["--host", host]
     command += ["--port", str(args.port)]
+    if getattr(args, "base_path", None) is not None:
+        command += ["--base-path", args.base_path]
     if getattr(args, "allow_marks", False):
         command.append("--allow-marks")
     if getattr(args, "watch_waits", False):
@@ -7251,14 +7346,32 @@ def configured_service_addresses() -> tuple[list[str], int, str, str]:
     return list(dict.fromkeys(hosts or [DEFAULT_HOST])), port, f"installed service unit {unit_path}", scheme
 
 
+def configured_service_base_path() -> str:
+    """The base path the installed unit serves under: its --base-path, else its config file's base_path, else none."""
+    unit_path = Path(os.environ.get("XDG_CONFIG_HOME") or "~/.config").expanduser() / "systemd/user/quarterdeck.service"
+    if not unit_path.is_file():
+        return ""
+    match = re.search(r"(?m)^ExecStart=(.*)$", unit_path.read_text(encoding="utf-8"))
+    if not match:
+        return ""
+    command = shlex.split(match.group(1).replace("%%", "%"))
+    options = {command[i]: command[i + 1] for i in range(len(command) - 1) if command[i] in {"--base-path", "--config"}}
+    if "--base-path" in options:
+        return normalize_base_path(options["--base-path"])
+    if "--config" in options:
+        return normalize_base_path(load_config(Path(options["--config"])).get("base_path"))
+    return ""
+
+
 def url(args: argparse.Namespace) -> int:
     try:
         hosts, port, source, scheme = configured_service_addresses()
+        base = configured_service_base_path()
     except (OSError, ValueError) as exc:
         print(f"quarterdeck: {exc}", file=sys.stderr)
         return 2
     addresses = [
-        f"{scheme}://[{host.replace('%', '%25', 1)}]:{port}/" if ":" in host else f"{scheme}://{host}:{port}/"
+        f"{scheme}://[{host.replace('%', '%25', 1)}]:{port}{base}/" if ":" in host else f"{scheme}://{host}:{port}{base}/"
         for host in hosts
     ]
     if args.as_json:
@@ -8253,7 +8366,7 @@ TOPIC_ASK_SCRIPT = """
 
 
 def topic_ask_script() -> str:
-    return (TOPIC_ASK_SCRIPT.replace("%(endpoint)s", REACTION_ENDPOINT).replace("%(stop)s", TOPIC_ASK_STOP_WORDS)
+    return (TOPIC_ASK_SCRIPT.replace("%(endpoint)s", base_url(REACTION_ENDPOINT)).replace("%(stop)s", TOPIC_ASK_STOP_WORDS)
             .replace("%(new)s", NEW_TOPIC_ITEM).replace("%(limit)s", str(ANSWER_PREVIEW_LIMIT)))
 
 
@@ -9119,7 +9232,7 @@ def front_page_html(homes: list[HomeSnapshot], title: str, bearings: Bearings, c
     if allow_marks:
         scripts += topic_ask_script()
     if serve_push:
-        scripts += PUSH_PAGE_SCRIPT
+        scripts += push_page_script()
     tab = f"({total}) {title}" if total else title
     return deck_page(tab, body, scripts, refresh_seconds if allow_marks else None,
                      head=APP_LINKS if refresh_seconds else "")
@@ -12368,6 +12481,7 @@ def add_serve_options(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--port", type=port_number, default=DEFAULT_PORT, help=f"port to listen on (default {DEFAULT_PORT})")
     parser.add_argument("--allow-marks", action="store_true", help="enable report marks, reactions to Firstmate, saved-view edits and discarding captain waits (default: read-only; no key, anyone who can open the page can mark, react, edit views or discard)")
     parser.add_argument("--watch-waits", action="store_true", help="also run the captain-wait watcher in the background (see 'quarterdeck waits watch')")
+    parser.add_argument("--base-path", type=base_path_option, metavar="PATH", help="URL path prefix when a reverse proxy serves Quarterdeck under one, such as /qd; overrides base_path in config (default: none). Requests with or without the prefix are accepted, a request to the bare prefix redirects to PATH/, and every link and endpoint Quarterdeck writes carries it")
     parser.add_argument("--tls-cert", metavar="FILE", help="serve https with this PEM certificate chain (with --tls-key); phone notifications need https")
     parser.add_argument("--tls-key", metavar="FILE", help="the PEM private key for --tls-cert")
     parser.add_argument("--home", help="serve this Firstmate home instead of configured homes or FM_HOME")
