@@ -200,8 +200,9 @@ explains this limitation. All other writes remain refused.
 `--base-path PATH` (config `base_path`; default none) is the URL prefix a
 reverse proxy serves Quarterdeck under, such as `/qd`: a plain path with a
 leading slash and no query. Every endpoint, service-worker address and scope a
-page contains carries it; requests with or without it are accepted; the bare
-prefix redirects to `PATH/`. See
+page contains carries it. The proxy must pass it through; requests without it
+redirect with status 308 to the same path beneath it, preserving the query and
+method; the bare prefix redirects to `PATH/`. See
 [the proxy example](../how-to/serve-the-page.md#serve-it-under-a-path-prefix-behind-a-reverse-proxy).
 `--tls-cert FILE` and `--tls-key FILE`, given together, serve `https` with that
 PEM certificate chain and key instead of plain `http`. `--watch-waits` also runs the captain-wait watcher in a

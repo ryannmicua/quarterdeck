@@ -1,5 +1,20 @@
 # Targeted testing
 
+## Reverse proxy path prefix
+
+Run `PYTHONPATH=tests python3 -m unittest -v test_quarterdeck.BasePathTests`.
+The pass-through contract requires prefixed pages and actions to reach their
+handlers, while bare-prefix and unprefixed GET/POST requests return 308 beneath
+the prefix with their queries intact. Encoded path characters must stay encoded
+in redirect locations. Root serving remains unchanged without a prefix.
+The URL CLI must report the installed service's explicit prefix, selected config,
+or default config in that order, including a config created after installation;
+text and JSON output must agree. These checks reject unprefixed content aliases
+and stale root URLs. Fixtures use disposable homes, config and state, with local
+HTTP servers that clean themselves up; no real inbox writes or push delivery run.
+The Caddy example preserves the browser's Host for HTTPS upstreams, as required
+by the same-origin write checks; this Python test does not execute Caddy.
+
 ## Topic input failures
 
 Run `PYTHONPATH=tests python3 -m unittest -v test_quarterdeck.TopicTests`.

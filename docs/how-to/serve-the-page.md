@@ -301,19 +301,24 @@ quarterdeck serve --allow-marks --host 192.0.2.10 --port 8765 \
 
 With a prefix set, every endpoint and the service-worker address and scope in a
 page carry it, and pages link to each other relatively, so they stay under the
-prefix. Quarterdeck accepts requests with or without the prefix, so the proxy
-may strip it or pass it through. A request to the bare prefix (`/qd`) redirects to
-`/qd/`. With no prefix, which is the default, nothing changes.
+prefix. The proxy must pass the prefix through. Requests without it redirect
+with status 308 to the same path beneath the prefix, preserving the query string
+and HTTP method. A request to the bare prefix (`/qd`) redirects to `/qd/`.
+With no prefix, which is the default, nothing changes.
 
 A Caddy example, with placeholder names. Point the proxy at a non-loopback
 address Quarterdeck listens on: a server bound only to loopback refuses a
 request whose `Host` is not loopback, and the page's write requests need the
-browser's `Origin` to match the `Host` the proxy passes on (Caddy's default).
+browser's `Origin` to match the `Host` the proxy passes on. Caddy 2.11+ rewrites
+`Host` for HTTPS upstreams by default; `header_up Host {hostport}` preserves the
+browser-facing authority ([Caddy HTTPS proxy documentation](https://caddyserver.com/docs/caddyfile/directives/reverse_proxy#https)).
 
 ```caddyfile
 dashboard.example.org {
+    redir /qd /qd/ 308
     handle /qd* {
         reverse_proxy https://192.0.2.10:8765 {
+            header_up Host {hostport}
             transport http {
                 tls_insecure_skip_verify  # Quarterdeck's own certificate is self-signed
             }
@@ -322,7 +327,7 @@ dashboard.example.org {
 }
 ```
 
-This passes the prefix through. To strip it instead, use `handle_path /qd*`.
+This passes the prefix through.
 `quarterdeck service --base-path /qd` writes the option into the unit, and
 `quarterdeck url` then prints the prefixed address (it shows Quarterdeck's own
 address, not the proxy's). The proxy does not add a login; see the security

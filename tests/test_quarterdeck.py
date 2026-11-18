@@ -11531,7 +11531,7 @@ class BasePathTests(unittest.TestCase):
         self.addCleanup(env.stop)
         self.home = BearingsTests().make_home(self.root / "home")
 
-    def serve(self, base: str, handler_base: str | None = None):
+    def serve(self, base: str):
         import http.client
         from http.server import ThreadingHTTPServer
         base = quarterdeck.set_base_path(base)
@@ -11539,7 +11539,7 @@ class BasePathTests(unittest.TestCase):
         cache = quarterdeck.SiteCache(quarterdeck.site_builder(args, True), 30)
         handler = quarterdeck.make_handler(
             cache, lambda *a: quarterdeck.set_report_action(args, *a), lambda raw: quarterdeck.send_reaction(args, raw),
-            base_path=base if handler_base is None else handler_base,
+            base_path=base,
         )
         server = ThreadingHTTPServer(("127.0.0.1", 0), handler)
         threading.Thread(target=server.serve_forever, daemon=True).start()
@@ -11578,10 +11578,12 @@ class BasePathTests(unittest.TestCase):
             parser.parse_args(["serve", "--base-path", "qd"])
 
     def test_default_pages_keep_root_endpoints(self) -> None:
-        page = self.serve("")("GET", "/")[2]
+        request = self.serve("")
+        page = request("GET", "/")[2]
         self.assertIn('"/api/reactions"', page)
         self.assertIn('"endpoint": "/api/views"', page)
         self.assertNotIn("/qd", page)
+        self.assertEqual(request("POST", "/api/reports/review", {"report_id": "x"})[0], 400)
 
     def test_pages_endpoints_and_worker_carry_the_prefix(self) -> None:
         request = self.serve("/qd")
@@ -11597,25 +11599,35 @@ class BasePathTests(unittest.TestCase):
         self.assertNotRegex(quarterdeck.push_page_script(), r'"/api/|"/sw\.js')
         self.assertEqual(quarterdeck.base_url("/api/x"), "/qd/api/x")
 
-    def test_requests_work_with_and_without_the_prefix(self) -> None:
+    def test_prefixed_requests_are_served(self) -> None:
         request = self.serve("/qd")
-        bare = request("GET", "/")
-        self.assertEqual(bare[0], 200)
-        for path in ("/qd/", "/qd/index.html", "/index.html"):
+        for path in ("/qd/", "/qd/index.html"):
             with self.subTest(path=path):
                 status, _headers, body = request("GET", path)
                 self.assertEqual((status, "<html" in body), (200, True))
         self.assertEqual(request("GET", "/qd/missing.html")[0], 404)
-        self.assertEqual(request("GET", "/qdx/")[0], 404)
         self.assertEqual(request("POST", "/qd/api/other", {})[0], 405)
+
+    def test_unprefixed_requests_redirect_under_the_prefix(self) -> None:
+        request = self.serve("/qd")
+        paths = ["/", "/index.html", "/manifest.webmanifest", "/sw.js", "/qdx/",
+                 "/api/push/key", "/api/reports/review", "/api/reactions", "/api/views",
+                 "/api/waits/discard", "/api/push/subscribe", "/api/push/unsubscribe",
+                 "/doc-a%23b.html"]
+        for method in ("GET", "POST"):
+            for path in paths:
+                with self.subTest(method=method, path=path):
+                    status, headers, body = request(method, path + "?a=1&b=%2F", {})
+                    self.assertEqual((status, headers["Location"], body),
+                                     (308, "/qd" + path + "?a=1&b=%2F", ""))
 
     def test_bare_prefix_redirects_to_the_slash_form(self) -> None:
         request = self.serve("/qd")
-        status, headers, _body = request("GET", "/qd")
-        self.assertEqual((status, headers["Location"]), (308, "/qd/"))
-        status, headers, _body = request("GET", "/qd?qd_refresh=1")
-        self.assertEqual((status, headers["Location"]), (308, "/qd/?qd_refresh=1"))
-        self.assertEqual(request("POST", "/qd", {})[0], 308)
+        for method in ("GET", "POST"):
+            for query in ("", "?qd_refresh=1"):
+                with self.subTest(method=method, query=query):
+                    status, headers, _body = request(method, "/qd" + query, {})
+                    self.assertEqual((status, headers["Location"]), (308, "/qd/" + query))
         self.assertEqual(self.serve("")("GET", "/qd")[0], 404)
 
     def test_prefixed_post_reaches_the_endpoint(self) -> None:
@@ -11637,3 +11649,40 @@ class BasePathTests(unittest.TestCase):
         with redirect_stdout(output):
             self.assertEqual(quarterdeck.main(["url"]), 0)
         self.assertIn("http://127.0.0.1:9100/qd/", output.getvalue())
+
+    def test_url_uses_serve_config_precedence(self) -> None:
+        parser = quarterdeck.make_parser()
+        unit_path = self.root / "config" / "systemd" / "user" / "quarterdeck.service"
+        unit_path.parent.mkdir(parents=True)
+        unit = quarterdeck.service_unit(parser.parse_args(["service", "--port", "9100"]))
+        default_config = self.root / "config" / "quarterdeck.json"
+        default_config.write_text(json.dumps({"base_path": "/qd"}), encoding="utf-8")
+        selected_config = self.root / "selected.json"
+        selected_config.write_text(json.dumps({"base_path": "/selected"}), encoding="utf-8")
+        cases = [([], "/qd/"), (["--config", str(selected_config)], "/selected/"),
+                 (["--base-path", "/flag"], "/flag/"),
+                 (["--config", str(selected_config), "--base-path", "/flag"], "/flag/"),
+                 (["--base-path", "/"], "/")]
+        for options, suffix in cases:
+            configured_unit = (unit if not options else quarterdeck.service_unit(
+                parser.parse_args(["service", "--port", "9100", *options])))
+            unit_path.write_text(configured_unit, encoding="utf-8")
+            for output_options in ([], ["--json"]):
+                with self.subTest(options=options, output_options=output_options):
+                    output = io.StringIO()
+                    with redirect_stdout(output):
+                        self.assertEqual(quarterdeck.main(["url", *output_options]), 0)
+                    expected = "http://127.0.0.1:9100" + suffix
+                    if output_options:
+                        self.assertEqual(json.loads(output.getvalue())["urls"], [expected])
+                    else:
+                        self.assertEqual(output.getvalue().splitlines()[0], expected)
+
+    def test_url_without_a_service_uses_default_config(self) -> None:
+        config = self.root / "config" / "quarterdeck.json"
+        config.parent.mkdir(parents=True)
+        config.write_text(json.dumps({"base_path": "/qd"}), encoding="utf-8")
+        output = io.StringIO()
+        with redirect_stdout(output):
+            self.assertEqual(quarterdeck.main(["url", "--json"]), 0)
+        self.assertEqual(json.loads(output.getvalue())["urls"], ["http://127.0.0.1:8765/qd/"])

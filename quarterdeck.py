@@ -74,14 +74,14 @@ def base_url(path: str) -> str:
 
 
 def strip_base_path(path: str, base: str) -> str | None:
-    """The request path without the prefix; the path as given when it has none; None for the bare prefix."""
+    """The request path without the prefix, or None when a redirect is required."""
     if not base:
         return path
     if path == base:
         return None
     if path.startswith(base + "/"):
         return path[len(base):]
-    return path
+    return None
 
 PR_URL_RE = re.compile(r"https://github\.com/[^\s|)]+/pull/\d+", re.IGNORECASE)
 SECONDMATE_ENTRY_RE = re.compile(
@@ -6801,12 +6801,13 @@ def make_handler(
                            sandbox=name.startswith((DOC_PREFIX, RAW_PREFIX)))
 
         def route_path(self, path: str) -> str | None:
-            """The request path without the base path; None once the bare prefix has been redirected to "prefix/"."""
+            """The routed path, or None after redirecting beneath the configured prefix."""
             routed = strip_base_path(path, base_path)
             if routed is None:
                 query = urlparse(self.path).query
                 self.send_response(308)
-                self.send_header("Location", base_path + "/" + ("?" + query if query else ""))
+                target = base_path + ("/" if path == base_path else urlparse(self.path).path)
+                self.send_header("Location", target + ("?" + query if query else ""))
                 self.send_header("Content-Length", "0")
                 self.send_header("Cache-Control", "no-store")
                 self.end_headers()
@@ -7347,20 +7348,19 @@ def configured_service_addresses() -> tuple[list[str], int, str, str]:
 
 
 def configured_service_base_path() -> str:
-    """The base path the installed unit serves under: its --base-path, else its config file's base_path, else none."""
+    """Resolve the installed service's prefix using the same precedence as serve."""
     unit_path = Path(os.environ.get("XDG_CONFIG_HOME") or "~/.config").expanduser() / "systemd/user/quarterdeck.service"
     if not unit_path.is_file():
-        return ""
+        return effective_base_path(argparse.Namespace())
     match = re.search(r"(?m)^ExecStart=(.*)$", unit_path.read_text(encoding="utf-8"))
     if not match:
         return ""
     command = shlex.split(match.group(1).replace("%%", "%"))
     options = {command[i]: command[i + 1] for i in range(len(command) - 1) if command[i] in {"--base-path", "--config"}}
-    if "--base-path" in options:
-        return normalize_base_path(options["--base-path"])
-    if "--config" in options:
-        return normalize_base_path(load_config(Path(options["--config"])).get("base_path"))
-    return ""
+    return effective_base_path(argparse.Namespace(
+        base_path=options.get("--base-path"),
+        config=Path(options["--config"]) if "--config" in options else None,
+    ))
 
 
 def url(args: argparse.Namespace) -> int:
@@ -12481,7 +12481,7 @@ def add_serve_options(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--port", type=port_number, default=DEFAULT_PORT, help=f"port to listen on (default {DEFAULT_PORT})")
     parser.add_argument("--allow-marks", action="store_true", help="enable report marks, reactions to Firstmate, saved-view edits and discarding captain waits (default: read-only; no key, anyone who can open the page can mark, react, edit views or discard)")
     parser.add_argument("--watch-waits", action="store_true", help="also run the captain-wait watcher in the background (see 'quarterdeck waits watch')")
-    parser.add_argument("--base-path", type=base_path_option, metavar="PATH", help="URL path prefix when a reverse proxy serves Quarterdeck under one, such as /qd; overrides base_path in config (default: none). Requests with or without the prefix are accepted, a request to the bare prefix redirects to PATH/, and every link and endpoint Quarterdeck writes carries it")
+    parser.add_argument("--base-path", type=base_path_option, metavar="PATH", help="URL path prefix when a reverse proxy serves Quarterdeck under one, such as /qd; overrides base_path in config (default: none). Requests without the prefix redirect beneath it, the bare prefix redirects to PATH/, and every link and endpoint Quarterdeck writes carries it")
     parser.add_argument("--tls-cert", metavar="FILE", help="serve https with this PEM certificate chain (with --tls-key); phone notifications need https")
     parser.add_argument("--tls-key", metavar="FILE", help="the PEM private key for --tls-cert")
     parser.add_argument("--home", help="serve this Firstmate home instead of configured homes or FM_HOME")
