@@ -13,6 +13,11 @@ text and JSON output must agree. These checks reject unprefixed content aliases
 and stale root URLs. Generated units are parsed into normalized ExecStart
 arguments, then passed to the CLI parser to verify the explicit prefix and the
 default's omitted option; text elsewhere in the unit cannot satisfy this check.
+Run `PYTHONPATH=tests python3 -m unittest -v test_quarterdeck.PushNotificationTests.test_page_script_hides_the_control_on_plain_http_and_offers_it_on_https`
+to execute the notification script in Node at root and under `/qd`. Recorded
+fetches and worker registration must use the expected key, subscribe and
+unsubscribe URLs, worker URL and scope, rejecting inactive or root-only calls.
+Node is required; all browser boundaries are local stubs with no network calls.
 Fixtures use disposable homes, config and state, with local
 HTTP servers that clean themselves up; no real inbox writes or push delivery run.
 The Caddy example preserves the browser's Host for HTTPS upstreams, as required

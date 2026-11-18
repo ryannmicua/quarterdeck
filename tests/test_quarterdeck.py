@@ -10324,14 +10324,15 @@ async function fire(name, event) {
 
     @unittest.skipUnless(shutil.which("node"), "node is not installed")
     def test_page_script_hides_the_control_on_plain_http_and_offers_it_on_https(self) -> None:
-        script = quarterdeck.push_page_script().split("<script>", 1)[1].rsplit("</script>", 1)[0]
+        self.addCleanup(quarterdeck.set_base_path, quarterdeck.BASE_PATH)
         harness = r"""
 const vm = require("node:vm");
+const assert = require("node:assert/strict");
 function element(hidden) { return {hidden, textContent: "", dataset: {}, disabled: false, listeners: {},
   addEventListener(type, fn) { this.listeners[type] = fn; }}; }
 async function run(secure, subscribed, pushManager = true) {
   const box = element(true), button = element(true), note = element(false);
-  const posts = [];
+  const posts = [], requests = [], workers = [];
   const subscription = {endpoint: "https://fcm.googleapis.com/fcm/send/x", options: {applicationServerKey: null},
     toJSON() { return {endpoint: this.endpoint, keys: {p256dh: "p", auth: "a"}}; }, unsubscribe: async () => true};
   let current = subscribed ? subscription : null;
@@ -10339,38 +10340,54 @@ async function run(secure, subscribed, pushManager = true) {
     getSubscription: async () => current, subscribe: async () => (current = subscription)}};
   const context = {
     window: {isSecureContext: secure, PushManager: pushManager ? function () {} : undefined, Notification: {}},
-    navigator: {serviceWorker: {register: async () => registration, ready: Promise.resolve(registration)}},
+    navigator: {serviceWorker: {register: async (url, options) => {
+      workers.push([url, options.scope]); return registration;
+    }, ready: Promise.resolve(registration)}},
     Notification: {permission: "default", requestPermission: async () => "granted"},
     document: {getElementById: id => ({"push-control": box, "push-toggle": button, "push-note": note})[id],
                querySelectorAll: () => []},
     sessionStorage: {getItem: () => "", setItem() {}},
-    fetch: async (path, options) => { if (options && options.method === "POST") posts.push([path, JSON.parse(options.body)]);
+    fetch: async (path, options) => { requests.push(path);
+      if (options && options.method === "POST") posts.push([path, JSON.parse(options.body)]);
       return {ok: true, json: async () => ({key: "BAAA", withdrawn: []})}; },
     atob: text => Buffer.from(text, "base64").toString("binary"), Uint8Array, Set, Array, Promise, Error, String, JSON,
   };
   if (!pushManager) delete context.window.PushManager;
   vm.runInNewContext(SCRIPT, context);
   await new Promise(resolve => setTimeout(resolve, 20));
-  return {box, button, note, posts, registration, click: async () => { await button.listeners.click(); await new Promise(r => setTimeout(r, 20)); }};
+  return {box, button, note, posts, requests, workers, registration, click: async () => { await button.listeners.click(); await new Promise(r => setTimeout(r, 20)); }};
 }
 (async () => {
   const plain = await run(false, false);
   if (!plain.box.hidden) throw new Error("control shown on plain http");
+  assert.deepEqual(plain.requests, []);
+  assert.deepEqual(plain.workers, []);
   const tab = await run(true, false, false);
   if (tab.box.hidden || !tab.button.hidden || !/Home Screen/.test(tab.note.textContent)) throw new Error("no home-screen hint: " + tab.note.textContent);
   const off = await run(true, false);
+  assert.deepEqual(off.requests, [EXPECTED.key]);
+  assert.deepEqual(off.workers, [[EXPECTED.worker, EXPECTED.scope]]);
   if (off.box.hidden || off.button.hidden || off.button.textContent !== "Turn on notifications") throw new Error("not offered: " + off.button.textContent);
   await off.click();
   if (off.note.textContent !== "Notifications: on" || off.button.textContent !== "Turn off notifications") throw new Error("not on: " + off.note.textContent);
-  if (off.posts.length !== 1 || off.posts[0][0] !== "/api/push/subscribe") throw new Error("no subscribe post " + JSON.stringify(off.posts));
+  if (off.posts.length !== 1 || off.posts[0][0] !== EXPECTED.subscribe) throw new Error("no subscribe post " + JSON.stringify(off.posts));
   await off.click();
-  if (off.button.textContent !== "Turn on notifications" || off.posts[1][0] !== "/api/push/unsubscribe") throw new Error("not off");
+  if (off.button.textContent !== "Turn on notifications" || off.posts[1][0] !== EXPECTED.unsubscribe) throw new Error("not off");
+  assert.deepEqual(off.requests, [EXPECTED.key, EXPECTED.subscribe, EXPECTED.unsubscribe]);
   if (off.button.dataset.mutationPending) throw new Error("still pending");
 })().catch(error => { console.error(error); process.exitCode = 1; });
 """
-        result = subprocess.run(["node", "-e", "const SCRIPT = " + json.dumps(script) + ";" + harness],
-                                capture_output=True, text=True)
-        self.assertEqual(result.returncode, 0, result.stderr)
+        cases = [("", {"key": "/api/push/key", "worker": "/sw.js", "scope": "/",
+                       "subscribe": "/api/push/subscribe", "unsubscribe": "/api/push/unsubscribe"}),
+                 ("/qd", {"key": "/qd/api/push/key", "worker": "/qd/sw.js", "scope": "/qd/",
+                          "subscribe": "/qd/api/push/subscribe", "unsubscribe": "/qd/api/push/unsubscribe"})]
+        for base, expected in cases:
+            with self.subTest(base_path=base):
+                quarterdeck.set_base_path(base)
+                script = quarterdeck.push_page_script().split("<script>", 1)[1].rsplit("</script>", 1)[0]
+                setup = "const SCRIPT = " + json.dumps(script) + "; const EXPECTED = " + json.dumps(expected) + ";"
+                result = subprocess.run(["node", "-e", setup + harness], capture_output=True, text=True)
+                self.assertEqual(result.returncode, 0, result.stderr)
 
 
 EXAMPLE_TOPIC = ROOT / "docs" / "reference" / "examples" / "maple-harbor-catalog.md"
@@ -11585,7 +11602,7 @@ class BasePathTests(unittest.TestCase):
         self.assertNotIn("/qd", page)
         self.assertEqual(request("POST", "/api/reports/review", {"report_id": "x"})[0], 400)
 
-    def test_pages_endpoints_and_worker_carry_the_prefix(self) -> None:
+    def test_pages_endpoints_carry_the_prefix(self) -> None:
         request = self.serve("/qd")
         status, _headers, page = request("GET", "/qd/")
         self.assertEqual(status, 200)
@@ -11593,10 +11610,6 @@ class BasePathTests(unittest.TestCase):
             self.assertIn(f'"{endpoint}"', page)
         self.assertIn('"endpoint": "/qd/api/views"', page)
         self.assertNotRegex(page, r'"/api/')
-        self.assertEqual(
-            quarterdeck.push_page_script().count('register("/qd/sw.js", {scope: "/qd/"})'), 1)
-        self.assertIn('fetch("/qd/api/push/key"', quarterdeck.push_page_script())
-        self.assertNotRegex(quarterdeck.push_page_script(), r'"/api/|"/sw\.js')
         self.assertEqual(quarterdeck.base_url("/api/x"), "/qd/api/x")
 
     def test_prefixed_requests_are_served(self) -> None:

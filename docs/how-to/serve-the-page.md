@@ -315,7 +315,7 @@ browser-facing authority ([Caddy HTTPS proxy documentation](https://caddyserver.
 
 ```caddyfile
 dashboard.example.org {
-    redir /qd /qd/ 308
+    redir /qd /qd/?{query} 308
     handle /qd* {
         reverse_proxy https://192.0.2.10:8765 {
             header_up Host {hostport}
