@@ -9878,7 +9878,8 @@ CALLS_SCRIPT = """
       const opened = location.hash && document.getElementById(decodeURIComponent(location.hash.slice(1)));
       if (opened && opened.matches("details.call")) {
         opened.open = true;
-        opened.querySelector("summary").focus();
+        // Chrome clears focus when it scrolls to a fragment that cannot take focus, so focus once the page has loaded.
+        addEventListener("load", () => opened.querySelector("summary").focus());
       }
       // Relative times in the meta rows ("2 days ago"), in the reader's own clock.
       const now = Date.now();

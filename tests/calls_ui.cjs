@@ -31,6 +31,8 @@ global.document = {
   querySelectorAll: selector => selector === 'details[data-call]' ? [card] : [],
   querySelector: () => null, getElementById: id => ({queue, 'need-held task': pushed}[id] || null), createElement: () => new Element(), title: 'Quarterdeck'
 };
+const windowListeners = {};
+global.addEventListener = (name, fn) => { windowListeners[name] = fn; };
 global.crypto = require('node:crypto').webcrypto;
 let reducedMotion = true;
 global.matchMedia = () => ({matches: reducedMotion});
@@ -50,6 +52,8 @@ global.fetch = async (url, options) => {
 };
 require('node:vm').runInThisContext(script);
 assert.equal(pushed.open, true, 'A notification link opens the card it names');
+assert.notEqual(pushedSummary.focused, true, 'Focus waits for the load, after the browser scrolls to the fragment');
+windowListeners.load();
 assert.equal(pushedSummary.focused, true, 'A notification link focuses the card it names');
 const submit = mode => words.listeners.submit({preventDefault() {}, submitter: {value: mode}});
 const flush = () => new Promise(resolve => setImmediate(resolve));
