@@ -94,6 +94,12 @@ as measured browser rectangles. Keep browser dependencies/profile in disposable
 workspace storage and review state in the authorized external evidence directory;
 stop and await Chrome and the CLI server, then remove disposable storage.
 
+When seeding a linked Markdown document, use `data/<task>/<file>.md`, then
+follow its `doc-*.html` link. A report can instead open as `rv-*.html`; using
+that route as the document fixture would miss long-text and raw-file checks.
+For repeated-run cards, give the ledger task IDs the same title in the backlog;
+ledger `title` fields alone do not supply the displayed title.
+
 ### Read-only topic pages in a browser
 
 Live checked 2026-11-17 against the real CLI server with fictional homes and

@@ -39,9 +39,10 @@ front page is the previous page, as before.
 
 1. Open a topic from **Needs you**, **Changed since you last looked**, search, or the **Topics** list on the
    previous page.
-2. Tap a topic. Its page starts with the state: **Now**, **Waiting on**, **Pieces** (backlog tasks with their state)
-   and **Links**.
-3. **Open decisions** come next, one per question, each with Firstmate's recommendation and the options.
+2. Tap a topic. On a phone, its page starts with the state: **Now**, **Waiting on**, **Pieces** (backlog tasks with
+   their state) and **Links**.
+3. **Open decisions** come next on a phone, one per question, each with Firstmate's recommendation and the options.
+   On wide screens, decisions sit above the state in the left column, beside the conversation.
 4. **Conversation** is everything said about the topic, oldest first, grouped by day in your time zone. Your own
    messages carry a rule down their left edge. Each one says whether it was said in chat or on Quarterdeck.
 

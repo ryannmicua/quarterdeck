@@ -53,13 +53,11 @@ detail view says the text is not in the snapshot.
 
 ## Read the status line
 
-The page says what it could connect to in two places: a line in the header
-(light text on the dark bar, so it reads in light and dark mode) and a banner
-at the top of the desk, repeated at the top of every detail view. Both show the
+The page says what it could connect to in two places: a line below the header
+and a banner at the top of the desk, repeated at the top of every detail view. Both show the
 same text, so in the Claude app you can tell at a glance whether reactions are
-connected. The banner is green-tinted when connected and amber when the page is
-read-only or reports an error. Reactions,
-**Mark reviewed**, **Discard** and **Discuss with Firstmate** are always drawn;
+connected. The banner uses a red accent when the page is read-only or reports
+an error. Reactions, **Mark reviewed**, **Discard** and **Discuss with Firstmate** are always drawn;
 they are disabled until the matching capability resolves. Each card then
 shows a short hint (`Connecting…`, or `… unavailable, see the note at the
 top.`); the status line carries the full reason.
