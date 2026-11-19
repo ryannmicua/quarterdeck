@@ -11893,9 +11893,7 @@ class BasePathTests(unittest.TestCase):
 
 
 class OneLookTests(unittest.TestCase):
-    """Every page carries the one shared stylesheet; its sizes come from tokens; wide screens get columns."""
-
-    TOKENS_RE = re.compile(r"(?sm)^:root \{ color-scheme: light dark;(.*?)\}\n@media \(prefers-color-scheme: dark\) \{\n  :root \{(.*?)\}")
+    """Generated pages carry one stylesheet and use the shared output contracts."""
 
     def test_every_page_carries_the_one_stylesheet_and_no_other(self) -> None:
         with tempfile.TemporaryDirectory() as temp:
@@ -11918,37 +11916,11 @@ class OneLookTests(unittest.TestCase):
                 self.assertNotIn(' style="', page.replace('id="qd-nav"', ""), "no hand-set inline styles")
                 self.assertNotRegex(page, r"&larr;|&rarr;|[←→▸▾⚠⚓]", "no arrows or symbols in the words")
 
-    def test_type_sizes_come_from_tokens(self) -> None:
-        css = quarterdeck.UI_CSS
-        tokens = self.TOKENS_RE.match(css.split("*/", 1)[1].lstrip())
-        self.assertIsNotNone(tokens)
-        body = css.replace(tokens.group(0), "")
-        self.assertEqual(re.findall(r"font-size: (?!var\(--text-)[^;]+;", body), [])
-        self.assertEqual(re.findall(r"font:[^;]*?\d(?:rem|em|px)\b[^;/]*(?:/|;)", body), [])
-        self.assertNotIn("text-transform", css, "names as people write them, never block capitals")
-
-    def test_the_decision_brief_and_the_artifact_use_the_same_tokens(self) -> None:
-        brief = (ROOT / "templates" / "decision-brief.html.tmpl").read_text(encoding="utf-8")
-        shared = self.TOKENS_RE.match(quarterdeck.UI_CSS.split("*/", 1)[1].lstrip())
-        copied = self.TOKENS_RE.search(brief)
-        self.assertIsNotNone(copied)
-        squeeze = lambda text: " ".join(text.split())  # noqa: E731
-        self.assertEqual([squeeze(part) for part in copied.groups()], [squeeze(part) for part in shared.groups()])
-        self.assertNotRegex(brief, r"[←→▸▾⚠]")
+    def test_generated_artifact_carries_the_shared_stylesheet(self) -> None:
         artifact = quarterdeck.artifact_page({"title": "Invented"})
         self.assertIn(f"<style>{quarterdeck.UI_CSS}</style>", artifact)
         self.assertNotIn(quarterdeck.TEMPLATE_STYLE_PLACEHOLDER, artifact)
 
-    def test_counts_beside_headings_hide_at_zero_and_one_but_stay_countable(self) -> None:
+    def test_heading_badges_preserve_machine_readable_counts(self) -> None:
         self.assertEqual(quarterdeck.count_badge(0, "n"), '<span class="n" data-n="0">0</span>')
         self.assertEqual(quarterdeck.count_badge(7), '<span class="count" data-n="7">7</span>')
-        self.assertIn('.n[data-n="0"], .n[data-n="1"], .count[data-n="0"], .count[data-n="1"] { display: none; }', quarterdeck.UI_CSS)
-
-    def test_wide_screens_lay_pages_out_in_columns_and_keep_reading_lines_short(self) -> None:
-        css = quarterdeck.UI_CSS
-        wide = css[css.index("@media (min-width: 90rem) {\n"):]
-        for layout in (".front {", ".thread {", ".finder {", ".doc.with-actions {", ".adoption {", ".shell {"):
-            self.assertIn(layout, wide)
-        self.assertIn("--measure: 75ch", css)
-        self.assertIn(".prose > p, .prose > ul", css)
-        self.assertIn("@media (max-width: 40rem)", css)

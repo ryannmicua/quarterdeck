@@ -8115,14 +8115,13 @@ footer { border-top: 1px solid var(--rule); margin-top: 3rem; padding-top: 1rem;
   .front > .front-ask { grid-area: ask; }
   .front > .more { grid-area: more; }
   .front #needs-h, .front #changed-h { margin-top: 0; }
-  .thread { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); grid-template-areas: "title title" "open log" "state log" "foot log";
+  .thread { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); grid-template-areas: "title title" "side log";
     gap: 0 4rem; align-items: start; }
-  .thread > h1, .thread > .closed { grid-column: 1 / -1; }
-  .thread > .state { grid-area: state; }
-  .thread > .open { grid-area: open; }
+  .thread > header { grid-area: title; }
+  .thread > .thread-side { grid-area: side; display: flex; flex-direction: column; min-width: 0; }
+  .thread-side > .state { order: 1; margin-top: 1.4rem; }
   .thread > .conversation { grid-area: log; }
-  .thread > .conversation h2, .thread > .open h2 { margin-top: 0; }
-  .thread > .open + .state, .thread > .state { margin-top: 1.4rem; }
+  .thread > .conversation h2, .thread-side > .open h2 { margin-top: 0; }
   .thread > .problems, .thread > .footnote { grid-column: 1; }
   .thread > .ask { grid-column: 1 / -1; }
   .finder { display: grid; grid-template-columns: var(--side) minmax(0, 1fr); gap: 0 3rem; align-items: start; }
@@ -8878,10 +8877,14 @@ def topic_page_html(topic: Topic, snapshot: HomeSnapshot, multi_home: bool, gene
 <body{refresh}>
   <nav class="bar" aria-label="Quarterdeck"><a class="mark" href="{html.escape(main_href, quote=True)}">Quarterdeck</a><span class="bar-links">{home}<a href="{SEARCH_PAGE}">Search</a></span></nav>
   <main class="thread">
-    <h1>{html.escape(title)}</h1>
-    {closed}
-    {topic_state_html(topic, snapshot, item_pages, pages, main_href, generated)}
-    {decisions_block}
+    <header>
+      <h1>{html.escape(title)}</h1>
+      {closed}
+    </header>
+    <div class="thread-side">
+      {topic_state_html(topic, snapshot, item_pages, pages, main_href, generated)}
+      {decisions_block}
+    </div>
     {log_block}
     {problems}
     <p class="footnote">Read from {html.escape(source)}. Built {topic_stamp(generated, "full")}.</p>

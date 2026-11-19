@@ -58,6 +58,23 @@ All homes and outputs are disposable fictional fixtures with isolated config
 and state; no real home scripts or inbox writes are needed. Fixtures clean up
 automatically.
 
+### Shared page output and topic layout
+
+Run `PYTHONPATH=tests python3 -m unittest -v test_quarterdeck.OneLookTests test_quarterdeck.TopicTests`.
+The generated-output checks cover stylesheet inclusion, interface glyphs and
+machine-readable badge counts; they do not prove computed styles or layout.
+Topic tests exercise static and served pages, including decision controls, using
+disposable fictional homes. They require no real inbox writes or push delivery.
+
+For browser layout checks, use a fictional topic with a short open decision and
+a long conversation, plus a closed topic opened from Search. At 1440 and 2240 px,
+verify decisions and state flow together in the left column regardless of
+conversation length, and the title and closed notice precede both columns.
+At 375 px, verify title, closed notice when present, state, decisions and
+conversation retain that reading order without horizontal overflow. Check topics
+without open decisions too. These layout checks require an actual browser;
+matching stylesheet source is not evidence of rendered behavior.
+
 ### Read-only topic pages in a browser
 
 Live checked 2026-11-17 against the real CLI server with fictional homes and
