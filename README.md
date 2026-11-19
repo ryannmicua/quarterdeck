@@ -29,9 +29,9 @@ for server requirements, phone setup and withdrawal behavior.
 
 ## Features
 
-- One look on every screen: every page, the cloud artifact and the decision
-  brief share one stylesheet. Phones get one column with nothing scrolling
-  sideways; screens 1440px and wider get columns (Needs you beside Changed,
+- One look on every screen: generated pages and the cloud artifact share one
+  stylesheet; the standalone decision brief uses the same visual style.
+  Phones get one column; screens 1440px and wider get columns (Needs you beside Changed,
   a topic's state beside its conversation, a report beside its review buttons,
   search filters as a sidebar) while reading lines stay about 75 characters.
 - Needs-you cards and activity: the served page leads with the decisions,

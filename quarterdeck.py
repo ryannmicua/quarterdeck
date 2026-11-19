@@ -753,7 +753,7 @@ def source_page_html(
     title: str, source_path: str, markdown: str, raw_href: str | None = None,
     main_href: str | None = "index.html", actions: str = "", body_html: str | None = None,
 ) -> str:
-    """A readable document page. `actions` is optional review-control markup shown beside the document;
+    """A readable document page. `actions` holds review controls, placed beside it on wide screens;
     `body_html` replaces the rendered Markdown with ready markup (a framed report)."""
     home = (f'<a class="mark" href="{html.escape(main_href, quote=True)}">Quarterdeck</a>' if main_href is not None
             else '<span class="mark">Quarterdeck</span>')
@@ -11784,7 +11784,7 @@ def report_links_html(
             continue
         view, report_pages = result
         pages.update(report_pages)
-        built.append((view, html_title(report_pages[view], report_id).removesuffix(" · Quarterdeck source")))
+        built.append((view, html_title(report_pages[view], report_id).removesuffix(" · Quarterdeck")))
     return [
         f'<a href="{html.escape(view, quote=True)}">Read the report'
         + (f": {html.escape(title)}" if len(built) > 1 else "") + "</a>"

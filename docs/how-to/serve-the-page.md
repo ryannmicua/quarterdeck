@@ -188,7 +188,7 @@ authenticating TLS reverse proxy.
 ## React to calls and reports from the page
 
 With `--allow-marks`, each desk call, related item and report also has
-**Approve**, **Hold**, **Not now** and **Question** buttons, a reply box
+**Approve**, **Hold**, **Not now** and **Ask a question** buttons, a reply box
 and **Send**. Pick a reaction, write a reply, or both, then Send.
 
 Calls on Needs-you cards, the desk and related cards can also show answer

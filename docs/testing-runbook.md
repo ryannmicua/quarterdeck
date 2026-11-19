@@ -78,6 +78,22 @@ conversation retain that reading order without horizontal overflow. Check topics
 without open decisions too. These layout checks require an actual browser;
 matching stylesheet source is not evidence of rendered behavior.
 
+Live checked 2026-11-19 with the real `serve --home <fictional-home>
+--no-snapshot --allow-marks` CLI and isolated Chrome. Check the front page at
+375, 768, 1280, 1440 and 2240 px; classic, search, adoption, topics, exported
+artifact and a filled decision brief at phone and wide widths. Count the classic
+sidebar together with main content when measuring screen use. Open Activity and
+expand a folded repeated-run card; checking a collapsed section misses its layout.
+Search for a report, mark it, reload until the published page offers Unmark, then
+unmark and reload again. A document page's immediate save response offers Undo
+and Back to Quarterdeck; it does not replace its controls until reload. Follow a
+topic's Markdown document link and its raw-file link, including long unbroken
+text and scrollable code. Verify dark-mode overflow and normal/muted text contrast
+against the 4.5:1 normal-text threshold on each page kind. Save screenshots as well
+as measured browser rectangles. Keep browser dependencies/profile in disposable
+workspace storage and review state in the authorized external evidence directory;
+stop and await Chrome and the CLI server, then remove disposable storage.
+
 ### Read-only topic pages in a browser
 
 Live checked 2026-11-17 against the real CLI server with fictional homes and

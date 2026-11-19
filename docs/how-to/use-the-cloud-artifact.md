@@ -129,8 +129,9 @@ filter database documents before saving such a list to avoid replaying old click
 
 ## React and discuss
 
-Each call, related item and report card has **Approve**, **Hold**, **Not now**
-and **Question** buttons, a reply box that grows as you type (the
+Each call, related item and report card has the same
+[reaction buttons as the served page](serve-the-page.md#react-to-calls-and-reports-from-the-page),
+a reply box that grows as you type (the
 [reaction text limit](../reference/cli-and-config.md#reactions) applies;
 a counter appears near the limit and **Send** refuses a longer reply)
 and **Send**. Pick a reaction,

@@ -87,8 +87,7 @@ and opens to Firstmate's dated briefing and clarifications first, with
 [Track what is waiting on you](track-captain-waits.md). A needs-you card opens to the ask, its options and recommendation when the text
 states them, the decision brief and other links, and a link to the item on the
 desk. If the desk has changed since the page loaded, that link refreshes the
-page once pending replies and view edits are finished. With `serve --allow-marks`, it also carries the usual Approve, Hold, Not
-now and Ask a question buttons and reply box, using the desk's
+page once pending replies and view edits are finished. With `serve --allow-marks`, it also carries the desk's
 [reaction controls and drafts](serve-the-page.md#react-to-calls-and-reports-from-the-page).
 A card never acts by itself: a merge or
 anything destructive still waits for your reaction, and Firstmate does the work.
