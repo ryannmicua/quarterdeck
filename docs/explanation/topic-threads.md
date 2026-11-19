@@ -81,9 +81,10 @@ A fourth step, from the owner's ask to make Quarterdeck forget what does not nee
 alone, made **Calls** the default view. Evidence from a week of use showed why he went back to chat: the list
 repeated asks across sources, kept cards he had already answered in conversation, sent most rows to another page
 to decide, and read as a wall of text, while cards with buttons were answered in seconds. So Calls shows one card
-per ask, each with its options as buttons, the recommendation marked, a three-fact meta row and a few words of
-context; an answered card leaves at once; held items explicitly described as having nothing to decide fold under **May be settled** with **Close
-card**, while unanswered decisions stay in the queue regardless of later conversation; and **Changed since you last looked** and the topic list move to the **Topics** tab. The front page below
+per source, each with its options as buttons, the recommendation marked, a three-fact meta row and a few words of
+context; an answered card leaves at once, while an unanswered call stays until it is answered or its record closes
+(Quarterdeck never infers settlement from wording, message counts or age); and **Changed since you last looked**
+and the topic list move to the **Topics** tab. The front page below
 stays at `previous.html` for one release.
 
 **Needs you** kept everything awaiting the owner on that front page; see

@@ -22,10 +22,9 @@ on its card. Topics and Search are the other two tabs.
 - **After an answer** there are five seconds to undo. Then the card leaves the queue for **Sent**, the next call
   opens, and the count and tab title drop by one. A card stays in Sent until Firstmate records the answer in the
   topic file, lifts the hold or removes the wait line; then it is gone. A held item that is held again with a new
-  stamp comes back.
-- **May be settled** folds held items whose note explicitly says there is nothing to decide. Unanswered topic decisions
-  stay in **Your calls** regardless of their age or later conversation. **Close card** tells
-  Firstmate it is settled; its options still answer it.
+  stamp comes back, and so does a wait Firstmate writes about after your answer (it still waits, and says why).
+- **Nothing is guessed away.** An unanswered call stays in **Your calls** whatever its age, the conversation after
+  it, or the wording of its note, until it is answered or its record closes.
 - **Ask Firstmate**, on the served page, with **Goes to** (see below).
 
 Everything is read again on each refresh (every minute on the served page), so a call answered in chat, closed in

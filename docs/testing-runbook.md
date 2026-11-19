@@ -650,7 +650,7 @@ fictional homes, profiles and state after capturing screenshots and responses.
 
 ## Calls view
 
-`CallsPageTests` covers the queue, separate answer targets, May be settled, Sent and custom `render` filenames.
+`CallsPageTests` covers the queue, separate answer targets, Sent, answered waits that come back, and custom `render` filenames.
 Run `PYTHONPATH=tests python3 -m unittest -v test_quarterdeck.CallsPageTests` for focused verification; Node
 executes the generated Calls script against a simulated DOM and delivery boundary to check Undo, failed delivery,
 unchanged retry IDs, question delivery and next-card focus with both motion preferences. The class also checks
@@ -666,7 +666,7 @@ fake `bin/fm-inbox.sh` that appends each note to a log, and isolated XDG state. 
   a reload keeps it in Sent; the next card also opens and receives focus with reduced motion enabled;
 - **Undo** sends nothing and keeps typed words; failed delivery also keeps them, and an unchanged retry keeps
   its message ID; **Ask question** sends a question and keeps the card;
-- **Close card** on a May be settled card sends `Already settled. Close this card.` and shows Closed in Sent;
+- a wait answered with Mark done returns to Your calls once a newer Firstmate entry lands in its topic;
 - the page scrolls to its last element and back with no sideways scroll, on Calls and Topics.
 
 ## Answered decision cards

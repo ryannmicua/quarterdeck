@@ -11818,6 +11818,13 @@ Recommend: Shared bucket
         self.assertIn('data-answer="Merge it"', page)
         self.assertIn('data-answer="Not yet"', page)
         self.assertIn(html.escape(json.dumps({"kind": "call", "item": "fictional/merge-52", "prefix": ""}), quote=True), page)
+        request = self.serve()
+        status, body = self.send(request, "decision", "vendor-images/storage-plan", "Shared bucket")
+        self.assertEqual(status, 200, body)
+        self.assertEqual(len(self.notes()), 1, "an answer goes only to the card it was given on")
+        queue = self.queue(self.fresh_page("index.html"))
+        self.assertNotIn("Which storage plan holds", queue)
+        self.assertIn('<span class="call-line">Choose the storage plan', queue, "the similar wait stays open")
 
     def test_unanswered_decisions_stay_in_calls_after_later_conversation(self) -> None:
         self.write_topic("vendor-images.md", """# Vendor images
@@ -11846,15 +11853,32 @@ What is the fallback for older displays?
         self.assertEqual(status, 200, body)
         self.assertNotIn("Which colour do the catalog labels use?", self.queue(self.fresh_page("index.html")))
 
-    def test_holds_with_an_explicit_nothing_to_decide_note_can_be_closed(self) -> None:
+    def test_every_hold_stays_in_calls_whatever_its_note_says(self) -> None:
         card = {"id": "call:fictional/nap", "section": "needs_you", "title": "Wait for the certificate", "hold_set": None,
                 "summary": "", "wait_summary": "Nothing to decide: Firstmate waits for the certificate.", "ask": "",
                 "wait_kind": "other", "at": "2026-03-01T09:00:00Z"}
         call = quarterdeck.hold_call(card, None)
-        self.assertEqual(call.settled, "Firstmate says there is nothing to decide")
-        self.assertEqual((call.answer, call.kind), (("call", "fictional/nap"), "Your step"))
+        self.assertEqual((call.answer, call.kind, call.sent), (("call", "fictional/nap"), "Your step", None))
+        _config, homes, bearings = quarterdeck.load_site(self.args())
+        page = quarterdeck.calls_page_html(homes, "Quarterdeck", bearings, [card], allow_marks=True)
+        self.assertIn("Nothing to decide: Firstmate waits for the certificate.", self.queue(page), "only a record closes a call")
+        for gone in ("May be settled", "Close card", 'class="settled"'):
+            self.assertNotIn(gone, page)
         merge = quarterdeck.hold_call({**card, "wait_summary": "Give the word to merge PR 9.", "wait_kind": "merge"}, None)
-        self.assertEqual((merge.settled, merge.options, merge.kind), ("", ["Merge it", "Not yet"], "Merge"))
+        self.assertEqual((merge.options, merge.kind), (["Merge it", "Not yet"], "Merge"))
+
+    def test_an_answered_wait_comes_back_when_firstmate_writes_after_the_answer(self) -> None:
+        request = self.serve()
+        status, body = self.send(request, "topic", "maple-harbor-catalog", 'Done: ["merge PR 42", "Not yet"]', number=3)
+        self.assertEqual(status, 200, body)
+        front = self.fresh_page("index.html")
+        self.assertNotIn('<span class="call-line">Merge PR 42</span>', self.queue(front), "answered after the wait was raised")
+        self.assertIn("You answered <b>Not yet</b>", front)
+        with self.topic_file.open("a", encoding="utf-8") as handle:
+            handle.write("\n## 2099-01-01 08:00 | firstmate | chat\nStill waiting on you: the vendor needs your word.\n")
+        front = self.fresh_page("index.html")
+        self.assertIn('<span class="call-line">Merge PR 42</span>', self.queue(front), "an earlier answer no longer counts")
+        self.assertNotIn("You answered <b>Not yet</b>", front)
 
     def test_wait_completion_matches_the_whole_normalized_wait(self) -> None:
         request = self.serve()

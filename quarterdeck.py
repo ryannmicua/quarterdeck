@@ -8118,7 +8118,6 @@ footer { border-top: 1px solid var(--rule); margin-top: 3rem; padding-top: 1rem;
 .call:not([open]) .call-line { display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 2; line-clamp: 2; overflow: hidden; }
 .call-meta { font: var(--text-sm)/1.4 var(--sans); color: var(--soft); }
 .call-body { padding: .2rem .2rem 1.2rem 1rem; border-left: 3px solid var(--signal); }
-.call-why { margin: 0 0 .5rem; font: 600 var(--text-sm)/1.45 var(--sans); color: var(--signal); }
 .call-context { margin: 0 0 .6rem; max-width: var(--measure); }
 .call-facts { margin: 0 0 .7rem; padding-left: 1.2rem; }
 .call-facts li { margin: .15rem 0; }
@@ -8142,8 +8141,6 @@ footer { border-top: 1px solid var(--rule); margin-top: 3rem; padding-top: 1rem;
 .sent-list li { display: grid; gap: .1rem; padding: .6rem 0; border-bottom: 1px solid var(--rule); }
 .sent-line { font: 600 var(--text-md)/1.35 var(--serif); color: var(--soft); }
 .sent-list b { color: var(--ink); }
-.settled > .call-context { font: var(--text-sm)/1.45 var(--sans); color: var(--soft); }
-.settled .call:first-of-type { border-top: 2px solid var(--ink); }
 .calls-side .front-ask { margin-top: 2.4rem; }
 .calls-side .ask-send { background: transparent; color: var(--ink); }  /* the open call's recommended answer is the one primary */
 @media (min-width: 64rem) {
@@ -9451,9 +9448,6 @@ CALL_KIND_LABELS = {"decision": "Pick one", "question": "Open question", "wait":
 CALL_MERGE_OPTIONS = ("Merge it", "Not yet")
 CALL_MERGE_RE = re.compile(r"\b(?:word to merge|merge (?:it|PR\s*#?\d+))\b", re.IGNORECASE)  # a hold the watcher has not sorted yet
 CALL_DONE_PREFIX = "Done: "
-CALL_CLOSE_TEXT = "Already settled. Close this card."
-CALL_NO_ANSWER_RE = re.compile(r"^\W*(?:nothing (?:now|to decide|needed|for you)|no (?:action|answer|decision) needed)\b",
-                               re.IGNORECASE)
 
 
 @dataclass
@@ -9473,7 +9467,6 @@ class Call:
     ask: tuple[str, str, str] = ("", "", "")  # the reaction (kind, item id, text prefix) a question is sent as
     answer_prefix: str = ""  # a wait's normalized text, sent with its answer as Done: [wait, answer]
     sent: dict[str, str] | None = None  # the answer already sent from Quarterdeck, when there is one
-    settled: str = ""  # why the call may be settled already; empty for a live call
     tag: str = ""  # a hold's push tag, so a notification opens it here
     briefing: str = ""
 
@@ -9552,6 +9545,14 @@ def latest_answer(history: list[dict[str, str]], since: str | None = None, prefi
     return None
 
 
+def wait_raised_at(topic: Topic) -> str | None:
+    """When a topic's waits were last stated: a Waiting on line has no time of its own, so this is the newest entry by
+    anyone but the owner. An answer sent before it does not count, so a wait Firstmate keeps after an answer, with an
+    entry saying why it still waits, comes back to Your calls."""
+    times = [entry.at for entry in topic.entries if entry.at is not None and entry.who != "you"]
+    return max(times).astimezone(timezone.utc).isoformat().replace("+00:00", "Z") if times else None
+
+
 def topic_calls(snapshot: HomeSnapshot, topic: Topic, pages: dict[str, str] | None,
                 main_href: str) -> list[Call]:
     """A topic's open decisions and its waits on you, as calls."""
@@ -9572,6 +9573,7 @@ def topic_calls(snapshot: HomeSnapshot, topic: Topic, pages: dict[str, str] | No
             sent=sent[-1] if sent else None,
         ))
     history = topic_sent(state, "topic", topic.ref)
+    raised = wait_raised_at(topic)
     for index, what in enumerate(topic_waits_on_you(topic)):
         prefix = " ".join(what.split())
         calls.append(Call(
@@ -9580,7 +9582,7 @@ def topic_calls(snapshot: HomeSnapshot, topic: Topic, pages: dict[str, str] | No
             context=cut_words(markdown_text(topic.now), CALL_CONTEXT_WORDS) if topic.now else "",
             options=["Mark done"], links=[("Open thread", topic.page)],
             answer=("topic", topic.ref), ask=("topic", topic.ref, f"About “{what}”: "), answer_prefix=prefix,
-            sent=latest_answer(history, prefix=prefix),
+            sent=latest_answer(history, since=raised, prefix=prefix),
         ))
     return calls
 
@@ -9609,7 +9611,6 @@ def hold_call(card: dict[str, object], state: ReviewState | None) -> Call:
     facts = [cut_words(markdown_text(text), CALL_FACT_WORDS) for text in clarifications[-CALL_FACTS:] if text]
     history = state.history.get(("call", key), []) if state is not None else []
     hold = str(card.get("hold_set") or "") or None
-    settled = "Firstmate says there is nothing to decide" if CALL_NO_ANSWER_RE.match(summary or ask) else ""
     links = [(str(label), str(href)) for label, href in card.get("links") or []]  # type: ignore[union-attr]
     return Call(
         key="h-" + re.sub(r"[^A-Za-z0-9_-]", "-", key), line=line,
@@ -9617,7 +9618,7 @@ def hold_call(card: dict[str, object], state: ReviewState | None) -> Call:
         kind=CALL_KIND_LABELS.get(wait_kind, CALL_KIND_LABELS["other"]) if options or wait_kind not in ("choice", "merge")
         else CALL_KIND_LABELS["question"], context=context, facts=facts, options=options,
         recommend=str(card.get("recommend") or ""), links=unique_links(links)[:CALL_LINKS],
-        answer=("call", key), ask=("call", key, ""), sent=latest_answer(history, since=hold), settled=settled,
+        answer=("call", key), ask=("call", key, ""), sent=latest_answer(history, since=hold),
         tag=push_tag(card), briefing=str(card.get("briefing") or ""),
     )
 
@@ -9660,8 +9661,6 @@ def call_meta(call: Call, now: datetime) -> str:
 def call_html(call: Call, now: datetime, live: bool, first: bool = False) -> str:
     """One call card: a disclosure whose summary is the ask and its meta row, and whose body decides it."""
     body: list[str] = []
-    if call.settled:
-        body.append(f'<p class="call-why">{html.escape(call.settled)}.</p>')
     if call.context:
         body.append(f'<p class="call-context">{html.escape(call.context)}</p>')
     if call.facts:
@@ -9674,9 +9673,6 @@ def call_html(call: Call, now: datetime, live: bool, first: bool = False) -> str
             mark = ' <span class="rec-mark">Recommended</span>' if option.casefold() == recommended else ""
             buttons.append(f'<button type="button" class="opt{" recommended" if mark else ""}" '
                            f'data-answer="{html.escape(option, quote=True)}"><span>{html.escape(option)}</span>{mark}</button>')
-        if call.settled:
-            buttons.append(f'<button type="button" class="opt quiet" data-answer="{html.escape(CALL_CLOSE_TEXT, quote=True)}">'
-                           "Close card</button>")
         if buttons:
             body.append('<div class="call-opts" role="group" aria-label="Answer">' + "".join(buttons) + "</div>")
     elif options:
@@ -9721,7 +9717,7 @@ def sent_row_html(call: Call) -> str:
             text = answer
     when = parse_board_time(sent.get("at"))
     stamp = f" · {topic_stamp(when, 'full')}" if when else ""
-    said = "<b>Closed</b>" if text == CALL_CLOSE_TEXT else f"You answered <b>{html.escape(answer_preview(text))}</b>"
+    said = f"You answered <b>{html.escape(answer_preview(text))}</b>"
     return (f'<li><span class="sent-line">{html.escape(call.line)}</span>'
             f'<span class="call-meta">{said}{stamp}</span></li>')
 
@@ -9732,7 +9728,7 @@ CALLS_SCRIPT = """
       // A call card: tapping an option or sending words gives five seconds to undo, then the answer goes to Firstmate
       // through /api/reactions, the card leaves the queue for Sent, and the next
       // call opens. Ask question sends a question about the call and keeps it in place.
-      const ENDPOINT = "%(endpoint)s", UNDO_MS = 5000, LIMIT = %(limit)s, CLOSE = "%(close)s", DONE = "%(done)s";
+      const ENDPOINT = "%(endpoint)s", UNDO_MS = 5000, LIMIT = %(limit)s, DONE = "%(done)s";
       const queue = document.getElementById("queue"), sent = document.getElementById("sent-list");
       function newId() {
         return Array.from(crypto.getRandomValues(new Uint8Array(16)), byte => byte.toString(16).padStart(2, "0")).join("");
@@ -9755,13 +9751,6 @@ CALLS_SCRIPT = """
         for (const count of document.querySelectorAll("[data-calls-n]")) count.textContent = count.dataset.n = String(left);
         const empty = document.querySelector("[data-calls-empty]");
         if (empty) empty.hidden = left > 0;
-        const settled = document.querySelector("section.settled");
-        if (settled) {
-          const open = settled.querySelectorAll("details.call:not([data-leaving])").length;
-          const count = settled.querySelector("h2 .n");
-          if (count) count.textContent = count.dataset.n = String(open);
-          settled.hidden = open === 0;
-        }
         document.title = (left ? "(" + left + ") " : "") + document.title.replace(/^\\(\\d+\\) /, "");
       }
       function toSent(card, text) {
@@ -9772,8 +9761,8 @@ CALLS_SCRIPT = """
         const meta = document.createElement("span");
         meta.className = "call-meta";
         const answer = document.createElement("b");
-        answer.textContent = text === CLOSE ? "Closed" : preview(text);
-        meta.append(text === CLOSE ? "" : "You answered ", answer);
+        answer.textContent = preview(text);
+        meta.append("You answered ", answer);
         row.append(line, meta);
         if (sent) {
           sent.prepend(row);
@@ -9894,18 +9883,17 @@ CALLS_SCRIPT = """
 
 def calls_script() -> str:
     return (CALLS_SCRIPT.replace("%(endpoint)s", base_url(REACTION_ENDPOINT)).replace("%(limit)s", str(ANSWER_PREVIEW_LIMIT))
-            .replace("%(close)s", CALL_CLOSE_TEXT).replace("%(done)s", CALL_DONE_PREFIX))
+            .replace("%(done)s", CALL_DONE_PREFIX))
 
 
 def calls_page_html(homes: list[HomeSnapshot], title: str, bearings: Bearings, cards: list[dict[str, object]],
                     allow_marks: bool = False, refresh_seconds: int | None = None, push_enabled: bool = False,
                     pages: dict[str, str] | None = None, calls_href: str = "index.html") -> str:
     """The default view: only what needs the owner now, each call decidable on its card. Answered calls move to
-    Sent; calls that look settled already fold under May be settled; everything else is one tab away."""
+    Sent, and an unanswered call stays until it is answered or its record closes; everything else is one tab away."""
     calls = collect_calls(homes, bearings, cards, pages)
     now = bearings.generated
-    queue = [call for call in calls if not call.sent and not call.settled]
-    settled = [call for call in calls if not call.sent and call.settled]
+    queue = [call for call in calls if not call.sent]
     answered = sorted((call for call in calls if call.sent), key=lambda call: str((call.sent or {}).get("at", "")), reverse=True)
     attention = bearings.attention
     unread = attention is None or needs_unread(attention)
@@ -9923,14 +9911,6 @@ def calls_page_html(homes: list[HomeSnapshot], title: str, bearings: Bearings, c
         f'<section class="sent" aria-labelledby="sent-h"{"" if answered else " hidden"}><h2 id="sent-h">Sent</h2>'
         f'<ul class="sent-list" id="sent-list">{"".join(sent_row_html(call) for call in answered)}</ul></section>'
     )
-    settled_html = ""
-    if settled:
-        settled_html = (
-            f'<section class="settled" aria-labelledby="settled-h"><h2 id="settled-h">May be settled '
-            f'<span class="n" data-n="{len(settled)}">{len(settled)}</span></h2>'
-            '<p class="call-context">You may have answered these in chat. Close a card, or answer it here.</p>'
-            f'{"".join(call_html(call, now, allow_marks) for call in settled)}</section>'
-        )
     found = assign_topic_pages(homes)
     active = [topic for _snapshot, topic in sorted(found, key=lambda pair: topic_order(pair[1], pair[0].review_state))
               if topic.status != "done"]
@@ -9940,7 +9920,7 @@ def calls_page_html(homes: list[HomeSnapshot], title: str, bearings: Bearings, c
     more = (f'<p class="more">The <a href="{PREVIOUS_PAGE}">previous view</a> stays available for this release.</p>')
     body = (
         tabs_html(calls_href, title, calls_href)
-        + f'<main class="calls-page">{stamp}{queue_html}<aside class="calls-side">{sent_html}{settled_html}{ask}</aside>{more}</main>'
+        + f'<main class="calls-page">{stamp}{queue_html}<aside class="calls-side">{sent_html}{ask}</aside>{more}</main>'
     )
     scripts = (topic_ask_script() + calls_script()) if allow_marks else calls_script()
     if serve_push:

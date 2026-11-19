@@ -31,7 +31,7 @@ for server requirements, phone setup and withdrawal behavior.
 
 - One look on every screen: generated pages and the cloud artifact share one
   stylesheet; the standalone decision brief uses the same visual style.
-  Phones get one column; wider screens get columns (from 1024px, Calls beside Sent, May be settled and the
+  Phones get one column; wider screens get columns (from 1024px, Calls beside Sent and the
   ask box; from 1440px, Changed beside Topics,
   a topic's state beside its conversation, a report beside its review buttons,
   search filters as a sidebar) while reading lines stay about 75 characters.
@@ -61,8 +61,8 @@ for server requirements, phone setup and withdrawal behavior.
   shows. With topics, the page opens on Calls: one queue of open topic
   decisions, waits on you and items not yet in a topic, each with its options
   as buttons and the recommendation marked.
-  An answered call leaves for Sent at once, and calls that look settled fold
-  under May be settled. Changed since you last looked and the topic list are
+  An answered call leaves for Sent at once; an unanswered one stays until
+  it is answered or its record closes. Changed since you last looked and the topic list are
   on the Topics tab, everything else is behind search, and the previous front
   page stays at `previous.html` (and the one before at `classic.html`) for one release. `quarterdeck topics check` reports mistakes in the files. See [Keep topic threads](docs/how-to/keep-topic-threads.md) and the
   [topic files reference](docs/reference/topic-files.md).
