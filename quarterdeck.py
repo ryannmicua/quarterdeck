@@ -745,9 +745,10 @@ def inject_nav(page: str, raw_href: str, main_href: str = "index.html") -> str:
 
 def source_page_html(
     title: str, source_path: str, markdown: str, raw_href: str | None = None,
-    main_href: str | None = "index.html", actions: str = "",
+    main_href: str | None = "index.html", actions: str = "", body_html: str | None = None,
 ) -> str:
-    """A readable document page. `actions` is optional review-control markup shown above the document."""
+    """A readable document page. `actions` is optional review-control markup shown above the document;
+    `body_html` replaces the rendered Markdown with ready markup (a framed report)."""
     nav = qd_nav_html(raw_href, fixed=False, main_href=main_href) if main_href is not None else ""
     review = ""
     if actions:
@@ -759,6 +760,10 @@ def source_page_html(
             f'<section class="review-actions" aria-label="Review this report">{actions}{back}</section>'
             f"<script>{DOC_MARK_SCRIPT}</script>{MARK_SCRIPT.replace('__ENDPOINT__', base_url(MARK_ENDPOINT))}"
         )
+    main = (
+        f'<main style="max-width:1100px">{body_html}</main>' if body_html is not None
+        else f"<main><article>{render_markdown(markdown)}</article></main>"
+    )
     return f'''<!doctype html>
 <html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
 <meta name="quarterdeck-{'gen' + 'erated'}" content="read-only source page"><title>{html.escape(title)} · Quarterdeck source</title>
@@ -783,7 +788,7 @@ code {{ font-family: ui-monospace, SFMono-Regular, Consolas, monospace; backgrou
 pre code {{ background: transparent; padding: 0; }}
 .table-wrap {{ overflow-x: auto; }} table {{ border-collapse: collapse; min-width: 100%; }} th,td {{ border: 1px solid #d8d3c8; padding: .5rem .7rem; text-align: left; vertical-align: top; }}
 th {{ background: #e8e2d5; color: #17324d; }} a {{ color: #176b69; }} blockquote {{ border-left: 3px solid #c98635; margin-left: 0; padding-left: 1rem; color: #52616d; }}
-</style></head><body>{nav}<header><h1>{html.escape(title)}</h1><p>{html.escape(source_path)}</p></header>{review}<main><article>{render_markdown(markdown)}</article></main></body></html>'''
+</style></head><body>{nav}<header><h1>{html.escape(title)}</h1><p>{html.escape(source_path)}</p></header>{review}{main}</body></html>'''
 
 
 def write_generated_page(path: Path, content: str) -> None:
@@ -842,6 +847,10 @@ def source_pages(
                 continue
             name = source_page_filename("report", snapshot.spec.home, report.path)
             actions = report_page_actions(report, ambiguous_ids, incomplete) if allow_marks else ""
+            framed = report_view_pages(report.path.parent, main_href, actions, name, report.title)
+            if framed is not None and framed[1].keys() - {name}:  # a report.html sits beside it: show that
+                pages.update(framed[1])
+                continue
             pages[name] = source_page_html(
                 report.title, display_path(report.path, snapshot.spec.home), report.markdown,
                 main_href=main_href, actions=actions,
@@ -935,7 +944,7 @@ def card(
         report_name = source_page_filename("report", home, record.report)
         report_id = report_reference(snapshot.spec.label, record.report.parent.name)
         links.append(
-            f'<a href="{html.escape(report_name, quote=True)}">Read report <code>{html.escape(report_id)}</code></a>'
+            f'<a href="{html.escape(report_name, quote=True)}">Read the report</a>'
         )
     if snapshot.backlog_path:
         backlog_name = source_page_filename("backlog", home, snapshot.backlog_path)
@@ -961,8 +970,7 @@ def report_card(report: Report, snapshot: HomeSnapshot, lavish: bool = False) ->
         f'<article class="card"{element_id}><p class="eyebrow">Scout report · {review_label} · '
         f'<code>{html.escape(report.report_id)}</code></p>',
         f'<h3>{html.escape(report.title)}</h3>{recommendation}',
-        f'<p class="links"><a href="{html.escape(name, quote=True)}">Read report '
-        f'<code>{html.escape(report.report_id)}</code></a></p>',
+        f'<p class="links"><a href="{html.escape(name, quote=True)}">Read the report</a></p>',
     ]
     if lavish and report.waiting:
         payload = {
@@ -1628,7 +1636,10 @@ def build_html(
         counts=section_counts,
     ) if bearings else ""
     attention_block = attention_html(bearings.attention, allow_marks) if bearings else ""
-    cards = activity_cards(bearings.attention, board, reactions, home_data_dirs(homes), bearings.item_pages, bearings.main_href) if bearings else []
+    cards = activity_cards(
+        bearings.attention, board, reactions, home_data_dirs(homes), bearings.item_pages, bearings.main_href,
+        {snapshot.spec.label: snapshot_items(snapshot) for snapshot in all_snapshots(homes)},
+    ) if bearings else []
     cards_block = cards_html(cards, bearings.attention, generated, bool(refresh_seconds)) if bearings else ""
     topics_block = topics_section_html(homes, generated, allow_marks)
     activity_block = activity_html(cards, bearings.attention, generated) if bearings else ""
@@ -2639,6 +2650,8 @@ class BearingsBuilder:
         bitem.body = item.body
         bitem.pr_url = bitem.pr_url or (item.pr_url if PR_URL_RE.fullmatch(item.pr_url or "") else "")
         report = find_report(item, snapshot)
+        if report is None and (origin := hold_origin_id(item.body)):
+            report = next((r for r in snapshot.reports if r.path.parent.name == origin), None)
         options, recommendation = options_and_recommendation(item.hold_reason, item.body)
         bitem.options = options
         bitem.recommendation = recommendation or (report.recommendation if report and report.recommendation else "")
@@ -2849,7 +2862,7 @@ def bearings_item_html(item: BItem, now: datetime, section: str) -> str:
         else:
             links.append(html.escape(item.artifact))
     if item.report_page:
-        links.append(f'<a href="{html.escape(item.report_page, quote=True)}">Read report <code>{html.escape(item.report_label)}</code></a>')
+        links.append(f'<a href="{html.escape(item.report_page, quote=True)}">Read the report</a>')
     if links:
         parts.append('<p class="links">' + " · ".join(links) + "</p>")
     parts.append("</article>")
@@ -2999,7 +3012,7 @@ def report_list_html(
             cards.append(
                 f'<article class="card"><p class="eyebrow">{html.escape(snapshot.spec.label)} · '
                 f'<code>{html.escape(report.report_id)}</code></p><h3>{html.escape(report.title)}</h3>{reason}'
-                f'<p class="links"><a href="{html.escape(page, quote=True)}">Read report</a></p>{buttons}{reaction}</article>'
+                f'<p class="links"><a href="{html.escape(page, quote=True)}">Read the report</a></p>{buttons}{reaction}</article>'
             )
     content = "".join(cards) or f'<p class="empty">{html.escape(empty)}</p>'
     return (
@@ -3100,7 +3113,7 @@ def bearings_html(
         review_cards.append(
             f'<article class="card"><p class="eyebrow">{html.escape(snapshot.spec.label)} · <code>{html.escape(report.report_id)}</code></p>'
             f'<h3>{html.escape(report.title)}</h3>{recommendation}'
-            f'<p class="links"><a href="{html.escape(page, quote=True)}">Read report</a>{tail}'
+            f'<p class="links"><a href="{html.escape(page, quote=True)}">Read the report</a>{tail}'
             + reaction_html(
                 reactions, "report", report.report_id,
                 not report_mark_unavailable_reason(report.report_id, ambiguous_ids, report_resolution_incomplete),
@@ -5447,7 +5460,7 @@ def related_html(
             if report.recommendation:
                 body = f'<p><strong>Recommendation:</strong> {html.escape(report.recommendation)}</p>'
             page = source_page_filename("report", item.snapshot.spec.home or Path("."), report.path)
-            tail = f'<p class="links"><a href="{html.escape(page, quote=True)}">Read report</a></p>'
+            tail = f'<p class="links"><a href="{html.escape(page, quote=True)}">Read the report</a></p>'
             if can_mark:
                 tail += mark_buttons(
                     report.report_id, ["mark", "discard"], report.fingerprint,
@@ -11567,12 +11580,141 @@ def doc_page(path: Path, label: str, raw_name: str, main_href: str = "index.html
         return None
 
 
-def doc_links_html(text: str, data_dir: Path | None, pages: dict[str, str] | None, main_href: str = "index.html") -> str:
-    """A short list of links to the documents a card names; registers each page in pages. Empty when none exist."""
+REPORT_ID_RE = re.compile(r"[\w][\w.-]{0,127}")
+REPORT_PATH_RE = re.compile(r"(?<![\w./-])data/([\w][\w.-]{0,127})/report\.(?:md|html)(?![\w-])")
+HOLD_ORIGIN_RE = re.compile(r"Captain hold origin:\s*`?([\w][\w.-]{0,127})`?", re.IGNORECASE)
+REPORT_VIEW_PREFIX = "rv-"
+REPORT_MD_PREFIX = "rm-"
+
+
+def report_directory(data_dir: Path | None, report_id: str) -> Path | None:
+    """data/<report_id>/ when it holds a report.md or report.html, else None. Only a direct child of the data
+    directory qualifies, and each report file must really sit in it (a link that escapes is not read)."""
+    if data_dir is None or report_id in {".", ".."} or not REPORT_ID_RE.fullmatch(report_id):
+        return None
+    try:
+        root = data_dir.resolve()
+        directory = (root / report_id).resolve()
+        if directory.parent != root or not directory.is_dir():
+            return None
+    except OSError:
+        return None
+    return directory if read_report_file(directory, "report.md") is not None or read_report_file(directory, "report.html") is not None else None
+
+
+def read_report_file(directory: Path, name: str) -> str | None:
+    """The text of directory/<name> (report.md or report.html), or None when missing, unreadable, too large, or a
+    link leading out of the directory."""
+    try:
+        path = (directory / name).resolve()
+        if path.parent != directory.resolve() or not path.is_file() or path.stat().st_size > DOC_PAGE_LIMIT:
+            return None
+        return path.read_text(encoding="utf-8")
+    except (OSError, UnicodeError):
+        return None
+
+
+def report_ids_in(text: str) -> list[str]:
+    """The report directories a text names through a data/<id>/report.md or report.html path, in order."""
+    found: list[str] = []
+    for match in REPORT_PATH_RE.finditer(text):
+        if match.group(1) not in found:
+            found.append(match.group(1))
+    return found
+
+
+def hold_origin_id(body: str) -> str:
+    """The task id a backlog body's "Captain hold origin: <id>" line names, or an empty string."""
+    match = HOLD_ORIGIN_RE.search(body[:BACKLOG_PATH_TEXT_LIMIT * 5])
+    return match.group(1) if match else ""
+
+
+def html_title(page: str, default: str) -> str:
+    match = re.search(r"<title[^>]*>(.*?)</title>", page, re.IGNORECASE | re.DOTALL)
+    return html.unescape(re.sub(r"\s+", " ", match.group(1)).strip()) if match and match.group(1).strip() else default
+
+
+def report_view_pages(
+    directory: Path, main_href: str = "index.html", actions: str = "", name: str | None = None,
+    title: str = "",
+) -> tuple[str, dict[str, str]] | None:
+    """The pages that show one report: (name of the view, pages by name), or None when it has no readable file.
+
+    With a report.html the view frames it, sandboxed, as the default and links the markdown for agents; with only a
+    report.md it is the rendered markdown."""
+    markdown = read_report_file(directory, "report.md")
+    page = read_report_file(directory, "report.html")
+    if markdown is None and page is None:
+        return None
+    digest = hashlib.sha256(str(directory).encode("utf-8")).hexdigest()[:12]
+    view = name or f"{REPORT_VIEW_PREFIX}{digest}.html"
+    label = f"data/{directory.name}/report." + ("html" if page is not None else "md")
+    if page is None:
+        assert markdown is not None
+        heading = title or next(
+            (markdown_text(m.group(1)) for line in markdown.splitlines() if (m := re.match(r"^\s{0,3}#{1,2}\s+(.+)$", line))),
+            directory.name.replace("-", " ").replace("_", " "),
+        )
+        try:
+            return view, {view: source_page_html(heading, label, markdown, main_href=main_href, actions=actions)}
+        except ValueError:
+            return None
+    heading = title or html_title(page, directory.name.replace("-", " ").replace("_", " "))
+    raw = f"{RAW_PREFIX}rv{digest}.html"
+    pages = {raw: page}
+    note = ""
+    if markdown is not None:
+        md_name = f"{REPORT_MD_PREFIX}{digest}.html"
+        try:
+            pages[md_name] = source_page_html(heading, f"data/{directory.name}/report.md", markdown, main_href=main_href)
+            note = f'<p><a href="{html.escape(md_name, quote=True)}">Agent version (markdown)</a></p>'
+        except ValueError:
+            pass
+    frame = (
+        f'{note}<iframe src="{html.escape(raw, quote=True)}" sandbox="allow-scripts allow-popups" '
+        f'title="{html.escape(heading, quote=True)}" style="width:100%;height:80vh;border:1px solid #d8d3c8;'
+        'border-radius:12px;background:#fff"></iframe>'
+    )
+    pages[view] = source_page_html(heading, label, "", raw, main_href, actions, body_html=frame)
+    return view, pages
+
+
+def report_links_html(
+    report_ids: list[str], data_dir: Path | None, pages: dict[str, str] | None, main_href: str = "index.html",
+) -> list[str]:
+    """One "Read the report" link per report directory (no duplicates); registers each report's pages in pages."""
+    if data_dir is None or pages is None:
+        return []
+    built: list[tuple[str, str]] = []
+    for report_id in dict.fromkeys(report_ids):
+        directory = report_directory(data_dir, report_id)
+        result = report_view_pages(directory, main_href) if directory is not None else None
+        if result is None:
+            continue
+        view, report_pages = result
+        pages.update(report_pages)
+        built.append((view, html_title(report_pages[view], report_id).removesuffix(" · Quarterdeck source")))
+    return [
+        f'<a href="{html.escape(view, quote=True)}">Read the report'
+        + (f": {html.escape(title)}" if len(built) > 1 else "") + "</a>"
+        for view, title in built
+    ]
+
+
+def doc_links_html(
+    text: str, data_dir: Path | None, pages: dict[str, str] | None, main_href: str = "index.html",
+    report_ids: list[str] | None = None,
+) -> str:
+    """A short list of links to the documents a card names; registers each page in pages. Empty when none exist.
+
+    A named data/<id>/report.md or report.html, and any id in report_ids (the card's own task or hold origin),
+    becomes one "Read the report" link to that report's page."""
     if data_dir is None or pages is None:
         return ""
-    items = []
+    items = [f"<li>{link}</li>" for link in report_links_html([*report_ids_in(text), *(report_ids or [])], data_dir, pages, main_href)]
     for path, label in referenced_docs(text, data_dir):
+        if path.name in {"report.md", "report.html"} and path.parent.parent == data_dir.resolve():
+            continue
         digest = hashlib.sha256(str(path).encode("utf-8")).hexdigest()[:12]
         name = f"{DOC_PREFIX}{digest}.html"
         raw_name = f"{RAW_PREFIX}{digest}{'.html' if path.suffix == '.html' else '.txt'}"
@@ -11591,7 +11733,7 @@ def doc_links_html(text: str, data_dir: Path | None, pages: dict[str, str] | Non
 def need_card(
     item: dict[str, object], entry: BoardEntry | None, home: str, multi_home: bool, reactions: ReactionContext | None,
     section: str, data_dir: Path | None = None, doc_pages: dict[str, str] | None = None,
-    main_href: str = "index.html",
+    main_href: str = "index.html", report_ids: list[str] | None = None,
 ) -> dict[str, object]:
     key = str(item["key"])
     ask = str(item.get("ask") or "")
@@ -11634,7 +11776,7 @@ def need_card(
             document_text.extend(str(paragraph.get("text") or "") for paragraph in wait_entry.get("paragraphs") or [])
             if wait_entry.get("type") == "clarification":
                 document_text.append(str(wait_entry.get("asked") or ""))
-    parts.append(doc_links_html("\n".join(document_text), data_dir, doc_pages, main_href))
+    parts.append(doc_links_html("\n".join(document_text), data_dir, doc_pages, main_href, report_ids))
     if entry and entry.number:
         parts.append(f'<p class="links"><a href="#{board_anchor(entry)}" data-desk-link>Show on the desk</a></p>')
     if section == "needs_you":
@@ -11663,7 +11805,7 @@ def home_data_dirs(homes: list[HomeSnapshot]) -> dict[str, Path | None]:
 def activity_cards(
     attention: dict[str, object] | None, board: BoardView | None, reactions: ReactionContext | None,
     data_dirs: dict[str, Path | None] | None = None, doc_pages: dict[str, str] | None = None,
-    main_href: str = "index.html",
+    main_href: str = "index.html", task_items: dict[str, dict[str, BacklogItem]] | None = None,
 ) -> list[dict[str, object]]:
     """The cards for the feed: what needs the captain first, then recent work, information and what was done."""
     if attention is None:
@@ -11691,9 +11833,13 @@ def activity_cards(
                 namespace, separator, _task = str(item["key"]).partition("/")
                 owners = owner_labels.get(namespace, [])
                 owner = owners[0] if len(owners) == 1 else namespace if separator else label
+                task = (task_items or {}).get(owner, {}).get(_task if separator else str(item["key"]))
+                hints = [name for name in (
+                    task.report_dir if task else "", task.id if task else "", hold_origin_id(task.body) if task else "",
+                ) if name]
                 cards.append(need_card(
                     item, entry, owner, multi_home, reactions, section,
-                    (data_dirs or {}).get(owner) if len(owners) == 1 else None, doc_pages, main_href,
+                    (data_dirs or {}).get(owner) if len(owners) == 1 else None, doc_pages, main_href, hints,
                 ))
         cards.extend(work_cards(
             [item for item in home.get("recent_work_6h") or [] if item["event"] == "started"], label, multi_home))
@@ -11789,6 +11935,7 @@ def site_cards(homes: list[HomeSnapshot], bearings: Bearings, allow_marks: bool)
     return activity_cards(
         bearings.attention, board, ReactionContext(enabled=allow_marks, latest=state.reactions, now=bearings.generated),
         home_data_dirs(homes), bearings.item_pages, bearings.main_href,
+        {snapshot.spec.label: snapshot_items(snapshot) for snapshot in snapshots},
     )
 
 

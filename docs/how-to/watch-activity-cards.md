@@ -47,6 +47,17 @@ text, including questions. Files resolve against the task owner's configured
 data directory, including a local secondmate's; an unavailable owner or a
 namespace shared by distinct home labels leaves links out.
 
+### Read the report
+
+A card whose text names `data/<id>/report.md` or `report.html`, whose task has
+a `data/<task>/` report, or whose backlog body says `Captain hold origin: <id>`
+for a task with a report, shows one **Read the report** link (never the path).
+When the directory holds a `report.html`, the report page shows it as the
+default view in a sandboxed frame and links **Agent version (markdown)**;
+otherwise it renders `report.md`. Only a direct child of the data directory
+with a regular file of 2 MB or less is read, and `report.html` is served only
+from there. Under a URL prefix the links carry it as every other page does.
+
 Markdown opens rendered and HTML retains its content and scripts. A link appears
 only for a readable UTF8 regular `.md` or `.html` file of 2 MB or less that really
 sits inside that data directory; missing files and links that escape it are left out.

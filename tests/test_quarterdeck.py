@@ -180,7 +180,7 @@ Use the compact format for the first release.
             self.assertIn("Chart the Willow Quay field guide", page)
             self.assertIn("Secondmate · registered by fictional-firstmate", page)
             self.assertIn("remote host sample-remote", page)
-            self.assertIn("Read report", page)
+            self.assertIn("Read the report", page)
             self.assertNotIn("Gather the Finch field notes", page)
             self.assertIn("Reports needing review", page)
             self.assertIn("Finished Finch report", page)
@@ -188,7 +188,7 @@ Use the compact format for the first release.
             orphan_path = home / "data" / "orphan-35" / "report.md"
             orphan_page = quarterdeck.source_page_filename("report", home, orphan_path)
             self.assertIn('<code>fictional-firstmate/orphan-35</code>', page)
-            self.assertIn(f'href="{orphan_page}">Read report <code>fictional-firstmate/orphan-35</code>', page)
+            self.assertIn(f'href="{orphan_page}">Read the report</a>', page)
             self.assertNotIn("Merge the local sample dependency", page)
             self.assertNotIn("file://", page)
             self.assertIn("Open the home&#x27;s backlog", page)
@@ -2456,7 +2456,7 @@ class BearingsTests(unittest.TestCase):
             self.assertIn("wait for spring (cheaper).", page)
             self.assertIn("waiting 14 days", page)
             self.assertIn("project reef-demo", page)
-            self.assertIn("Read report", page)
+            self.assertIn("Read the report", page)
             self.assertNotIn(PIER_PR, page)
             self.assertIn("harbor-chart — queued behind the chart", page)
             self.assertIn("Firstmate bearings snapshot", page)
@@ -6916,25 +6916,106 @@ class ActivityCardTests(unittest.TestCase):
             self.assertIn(html.escape(ask), body, "the card text is not rewritten")
             self.assertEqual(body.count("<li><a "), 2)
             self.assertIn("Referenced documents", body)
+            self.assertEqual(re.findall(r'<li><a href="rv-[0-9a-f]{12}\.html">([^<]+)</a>', body), ["Read the report"])
+            self.assertNotIn(">report.md</a>", body, "a report is never linked by its raw path")
             names = re.findall(r'<li><a href="(doc-[0-9a-f]{12}\.html)">([^<]+)</a>', body)
-            self.assertEqual([label for _name, label in names], ["report.md", "explainer.html"])
+            self.assertEqual([label for _name, label in names], ["explainer.html"])
             by_label = {label: pages[name] for name, label in names}
-            self.assertIn("<h1>Findings</h1>", by_label["report.md"])
+            view = pages[re.search(r'href="(rv-[0-9a-f]{12}\.html)"', body).group(1)]
+            self.assertIn("<h1>Findings</h1>", view)
             explainer = by_label["explainer.html"]
             self.assertTrue(explainer.startswith("<h1>Explained</h1><script>1</script><nav id=\"qd-nav\""))
             self.assertIn('href="index.html"', explainer)
-            self.assertIn("Back to Quarterdeck", by_label["report.md"])
+            self.assertIn("Back to Quarterdeck", view)
             raw = {name: text for name, text in pages.items() if name.startswith("raw-")}
-            self.assertEqual(sorted(name[-4:] for name in raw), [".txt", "html"])
-            self.assertEqual(sorted(raw.values()), ["# Findings\n\nOwner decisions that remain.\n",
-                                                    "<h1>Explained</h1><script>1</script>"])
-            for name, label in names:
-                self.assertRegex(pages[name], r'href="raw-[0-9a-f]{12}\.(?:txt|html)" style="[^"]*">Open file by itself</a>')
-            self.assertEqual(len(pages), 4)
+            self.assertEqual(list(raw.values()), ["<h1>Explained</h1><script>1</script>"])
+            self.assertEqual(len(pages), 3)
             # Without a data directory, or when two directories are named, nothing guesses a bare name.
             self.assertNotIn("Referenced documents", quarterdeck.activity_cards(attention, None, None, {}, {})[0]["body"])
             bare = quarterdeck.referenced_docs("data/invented-review/report.md and data/other/notes.md plus explainer.html", data)
             self.assertEqual([label for _path, label in bare], ["invented-review/report.md", "other/notes.md"])
+
+    def test_report_links_by_path_origin_and_task(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            data = Path(raw) / "home" / "data"
+            for name in ("scout-a", "scout-b", "task-c"):
+                (data / name).mkdir(parents=True)
+                (data / name / "report.md").write_text(f"# Report {name}\n\nBody.\n")
+            owned = quarterdeck.BacklogItem(
+                "choice-1", "Choose", body="Why this is held.\nCaptain hold origin: scout-b\n")
+            own_report = quarterdeck.BacklogItem("task-c", "Own report task")
+            for key, item, hints in (("choice-1", owned, ["scout-b"]), ("task-c", own_report, ["task-c"])):
+                attention = {"homes": [{"label": "invented", "waiting": {"decisions": [
+                    {"key": f"invented/{key}", "title": item.title, "ask": "No path named here.", "group": "decide", "at": None}]}}]}
+                pages: dict[str, str] = {}
+                cards = quarterdeck.activity_cards(
+                    attention, None, None, {"invented": data}, pages, "index.html", {"invented": {key: item}})
+                links = re.findall(r'<a href="(rv-[0-9a-f]{12}\.html)">Read the report</a>', cards[0]["body"])
+                self.assertEqual(len(links), 1, key)
+                self.assertIn(f"Report {hints[0]}", pages[links[0]])
+            self.assertEqual(quarterdeck.hold_origin_id("x\nCaptain hold origin: scout-b\n"), "scout-b")
+            # Two named reports each get a link that says which one it is; the same one named twice gets one.
+            pages = {}
+            html_text = quarterdeck.doc_links_html(
+                "data/scout-a/report.md and data/scout-b/report.md and data/scout-a/report.html", data, pages)
+            self.assertEqual(html_text.count("Read the report: "), 2)
+            self.assertIn("Read the report: Report scout-a", html_text)
+
+    def test_report_html_is_the_default_view_and_markdown_stays_linked(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            directory = Path(raw) / "data" / "scout-a"
+            directory.mkdir(parents=True)
+            (directory / "report.md").write_text("# Agent notes\n")
+            (directory / "report.html").write_text("<title>For the owner</title><h1>Plain summary</h1>")
+            view, pages = quarterdeck.report_view_pages(directory)
+            frame = pages[view]
+            self.assertIn("<iframe", frame)
+            self.assertIn('sandbox="allow-scripts allow-popups"', frame)
+            raw_name = re.search(r'<iframe src="(raw-[^"]+)"', frame).group(1)
+            self.assertEqual(pages[raw_name], "<title>For the owner</title><h1>Plain summary</h1>")
+            md_name = re.search(r'<a href="(rm-[0-9a-f]{12}\.html)">Agent version \(markdown\)</a>', frame).group(1)
+            self.assertIn("<h1>Agent notes</h1>", pages[md_name])
+            self.assertNotIn("Agent notes", frame)
+            self.assertIn("For the owner", frame)
+            (directory / "report.html").unlink()
+            view, pages = quarterdeck.report_view_pages(directory)
+            self.assertIn("<h1>Agent notes</h1>", pages[view])
+            self.assertEqual(len(pages), 1)
+
+    def test_report_directory_refuses_traversal_and_escapes(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            root = Path(raw)
+            data = root / "data"
+            (data / "good").mkdir(parents=True)
+            (data / "good" / "report.html").write_text("<p>ok</p>")
+            (root / "outside").mkdir()
+            (root / "outside" / "report.md").write_text("# outside\n")
+            (root / "outside" / "secret.html").write_text("<p>secret</p>")
+            (data / "linked").symlink_to(root / "outside")
+            (data / "inner").mkdir()
+            (root / "stolen.html").write_text("<p>stolen</p>")
+            (data / "inner" / "report.html").symlink_to(root / "stolen.html")
+            self.assertEqual(quarterdeck.report_directory(data, "good"), (data / "good").resolve())
+            for bad in ("..", ".", "../outside", "good/../../outside", "linked", "inner", "/etc", "good/x", ""):
+                self.assertIsNone(quarterdeck.report_directory(data, bad), bad)
+            pages: dict[str, str] = {}
+            text = "data/../outside/report.md data/linked/report.md data/inner/report.html"
+            self.assertEqual(quarterdeck.doc_links_html(text, data, pages), "")
+            self.assertEqual(pages, {})
+            self.assertIsNone(quarterdeck.report_view_pages(root / "outside" / "nowhere"))
+
+    def test_served_report_html_is_sandboxed_and_only_from_a_report_directory(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            data = Path(raw) / "data"
+            (data / "scout-a").mkdir(parents=True)
+            (data / "scout-a" / "report.html").write_text("<h1>Mine</h1><script>1</script>")
+            (data / "scout-a" / "private.html").write_text("<p>not served</p>")
+            pages: dict[str, str] = {}
+            quarterdeck.doc_links_html("data/scout-a/report.md", data, pages)
+            names = sorted(pages)
+            self.assertTrue(any(name.startswith("raw-") for name in names))
+            self.assertFalse(any("private" in text for text in pages.values()))
+            self.assertTrue(all(re.fullmatch(r"[\w.-]+\.(?:html|txt)", name) for name in names))
 
     def test_card_documents_use_the_task_owner_in_aggregated_feeds(self) -> None:
         with tempfile.TemporaryDirectory() as raw:
@@ -6969,7 +7050,7 @@ class ActivityCardTests(unittest.TestCase):
                         outputs = [quarterdeck.cards_html(cards, attention, ATTENTION_NOW, False) + quarterdeck.activity_html(cards, attention, ATTENTION_NOW),
                                    json.loads(quarterdeck.cards_payload(cards, ATTENTION_NOW))["cards"][0]["html"]]
                         for output in outputs:
-                            link = re.search(r'href="(doc-[0-9a-f]{12}\.html)"', output)[1]
+                            link = re.search(r'href="(rv-[0-9a-f]{12}\.html)"', output)[1]
                             self.assertIn("<h1>Child Mate report</h1>", pages[link])
                             self.assertNotIn("Parent report", pages[link])
                         unavailable_pages: dict[str, str] = {}
@@ -7015,10 +7096,10 @@ class ActivityCardTests(unittest.TestCase):
                                            "".join(card["html"] for card in json.loads(
                                                quarterdeck.cards_payload(cards, ATTENTION_NOW))["cards"])]
                                 for output in outputs:
-                                    links = re.findall(r'href="(doc-[0-9a-f]{12}\.html)"', output)
+                                    links = re.findall(r'href="(rv-[0-9a-f]{12}\.html)"', output)
                                     self.assertEqual(len(links), 1)
                                     self.assertIn("<h1>Clearwater report</h1>", pages[links[0]])
-                                self.assertEqual(len(pages), 2)
+                                self.assertEqual(len(pages), 1)
 
     def test_card_documents_include_briefings_questions_and_recommendation(self) -> None:
         with tempfile.TemporaryDirectory() as raw:
@@ -7046,10 +7127,10 @@ class ActivityCardTests(unittest.TestCase):
             outputs = [quarterdeck.cards_html(cards, attention, ATTENTION_NOW, False) + quarterdeck.activity_html(cards, attention, ATTENTION_NOW),
                        json.loads(quarterdeck.cards_payload(cards, ATTENTION_NOW))["cards"][0]["html"]]
             for output in outputs:
-                links = re.findall(r'<li><a href="(doc-[0-9a-f]{12}\.html)">([^<]+)</a>', output)
-                self.assertEqual({label for _link, label in links}, set(names))
+                links = re.findall(r'<li><a href="((?:doc|rv)-[0-9a-f]{12}\.html)">([^<]+)</a>', output)
+                self.assertEqual({label for _link, label in links}, (set(names) - {"report.md"}) | {"Read the report"})
                 for link, label in links:
-                    self.assertIn(f"<h1>{label}</h1>", pages[link])
+                    self.assertIn(f"<h1>{'report.md' if label == 'Read the report' else label}</h1>", pages[link])
                     self.assertIn("Back to Quarterdeck", pages[link])
 
     def test_served_document_pages_are_sandboxed_from_the_write_endpoints(self) -> None:
@@ -7135,11 +7216,11 @@ assert.equal(space.style.height, '48px');
                     self.assertEqual(quarterdeck.main(command), 0)
                 generated = list(output.parent.glob("*.html"))
                 prefixes = {path.name.split("-", 1)[0] for path in generated}
-                self.assertTrue({"doc", "report", "backlog"} <= prefixes, prefixes)
+                self.assertTrue({"doc", "rv", "report", "backlog"} <= prefixes, prefixes)
                 docs = [path for path in generated if path.name.startswith("doc-")]
-                self.assertEqual(len(docs), 2)
+                self.assertEqual(len(docs), 1)
                 for path in generated:
-                    if path.name.startswith(("doc-", "report-", "backlog-", "item-")):
+                    if path.name.startswith(("doc-", "rv-", "report-", "backlog-", "item-")):
                         self.assertIn(f'href="{expected}"', path.read_text(), path.name)
                 self.assertTrue((output.parent / quarterdeck.unquote(expected)).is_file())
 
