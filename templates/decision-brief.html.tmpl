@@ -12,81 +12,88 @@
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <title>{{TITLE}}</title>
 <style>
-/* Order: header, decision card, how it works, ship vs. wait, options, known limits, evidence. */
-:root {
-  --bg: #f4f6f5; --surface: #fff; --fg: #1b2420; --muted: #5a665f; --line: #d8dfdb;
-  --accent: #2f6b57; --accent-soft: #e2efe8; --warn: #9a5b12; --warn-soft: #f6ebdb; --bad: #a33a2e; --bad-soft: #f7e3e0;
-  --display: Georgia, "Times New Roman", serif; --body: system-ui, -apple-system, "Segoe UI", sans-serif; --mono: ui-monospace, Menlo, monospace;
-  color-scheme: light;
+/* Order: header, decision card, how it works, ship vs. wait, options, known limits, evidence.
+   The :root tokens are Quarterdeck's own (UI_CSS in quarterdeck.py); a test keeps them the same. */
+:root { color-scheme: light dark;
+  --ground: #f6f4ef; --raised: #fbfaf7; --ink: #1a2129; --soft: #565f68; --rule: #d6d0c4; --faint: #e9e5dc;
+  --signal: #a8321c; --signal-ground: #f6e6e1; --focus: #1d5c87;
+  --serif: Charter, "Bitstream Charter", "Iowan Old Style", "Sitka Text", Cambria, "Noto Serif", Georgia, serif;
+  --sans: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+  --mono: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+  --text-xs: .8rem; --text-sm: .9rem; --text-code: .9em; --text-lead: 1.2rem; --text-md: 1rem; --text-body: 18px; --text-lg: 1.3rem; --text-xl: 1.6rem;
+  --text-title: clamp(1.75rem, 1.4rem + 1.6vw, 2.4rem);
+  --gutter: 1rem; --page: 40rem; --measure: 75ch; --side: 18rem; --tap: 48px; }
+@media (prefers-color-scheme: dark) {
+  :root { --ground: #131619; --raised: #1a1e22; --ink: #ebe7df; --soft: #a3a9af; --rule: #363c42; --faint: #23282d;
+    --signal: #ff8c6e; --signal-ground: #3a211b; --focus: #8ec5ec; }
 }
-@media (prefers-color-scheme: dark) { :root:not([data-theme="light"]) {
-  --bg: #111614; --surface: #19201c; --fg: #e3e9e5; --muted: #9aa69f; --line: #2b3530;
-  --accent: #7cc3a8; --accent-soft: #1e3128; --warn: #e2ac67; --warn-soft: #33281a; --bad: #ef8b7e; --bad-soft: #3a2220;
-  color-scheme: dark;
-} }
-:root[data-theme="dark"] {
-  --bg: #111614; --surface: #19201c; --fg: #e3e9e5; --muted: #9aa69f; --line: #2b3530;
-  --accent: #7cc3a8; --accent-soft: #1e3128; --warn: #e2ac67; --warn-soft: #33281a; --bad: #ef8b7e; --bad-soft: #3a2220;
-  color-scheme: dark;
-}
+@media (max-width: 30rem) { :root { --text-body: 17px; } }
+@media (min-width: 40.01rem) { :root { --gutter: 2rem; --page: 64rem; } }
+@media (min-width: 90rem) { :root { --gutter: 3rem; --page: 150rem; --side: 20rem; } }
 * { box-sizing: border-box; }
-body { margin: 0; background: var(--bg); color: var(--fg); font: 17px/1.55 var(--body); }
-.wrap { max-width: 60rem; margin: 0 auto; padding: 32px 16px 120px; display: flex; flex-direction: column; gap: 40px; }
-h1, h2 { font-family: var(--display); font-weight: 600; margin: 0; line-height: 1.2; }
-h1 { font-size: clamp(1.8rem, 6vw, 2.4rem); } h2 { font-size: 1.35rem; }
-h3 { margin: 0; font-size: 1rem; }
-p { margin: 0; max-width: 65ch; }
-a { color: var(--accent); font-weight: 600; display: inline-flex; align-items: center; min-width: 44px; min-height: 44px; }
-a:focus-visible, button:focus-visible { outline: 3px solid var(--accent); outline-offset: 2px; }
-section { display: flex; flex-direction: column; gap: 14px; }
-.eyebrow { font: 600 .74rem var(--mono); letter-spacing: .08em; text-transform: uppercase; color: var(--muted); }
-.meta { display: flex; flex-wrap: wrap; gap: 8px 16px; font: 500 .85rem var(--mono); color: var(--muted); }
-.chip { display: inline-flex; align-items: center; gap: 6px; }
-.dot { width: 9px; height: 9px; border-radius: 50%; background: var(--accent); }
-.dot.warn { background: var(--warn); } .dot.bad { background: var(--bad); }
-.card { background: var(--surface); border: 1px solid var(--line); border-radius: 12px; padding: 20px; min-width: 0; }
+body { margin: 0; background: var(--ground); color: var(--ink); font: var(--text-body)/1.55 var(--serif); overflow-wrap: anywhere; }
+.wrap { max-width: var(--page); margin: 0 auto; padding: 2rem var(--gutter) 7.5rem; display: flex; flex-direction: column; gap: 2.5rem; }
+h1, h2 { font-family: var(--serif); font-weight: 700; margin: 0; line-height: 1.2; }
+h1 { font-size: var(--text-title); letter-spacing: -.012em; } h2 { font-size: var(--text-lg); }
+h3 { margin: 0; font: 700 var(--text-md)/1.3 var(--sans); }
+p { margin: 0; max-width: var(--measure); }
+a { color: inherit; font-weight: 600; display: inline-flex; align-items: center; min-width: 44px; min-height: 44px; text-underline-offset: .18em; }
+:focus-visible { outline: 3px solid var(--focus); outline-offset: 2px; }
+section { display: flex; flex-direction: column; gap: .9rem; }
+.eyebrow { font: 600 var(--text-sm) var(--sans); color: var(--soft); }
+.meta { display: flex; flex-wrap: wrap; gap: .5rem 1.2rem; font: var(--text-sm) var(--sans); color: var(--soft); }
+.chip { display: inline-flex; align-items: center; gap: .4rem; }
+.dot { width: 9px; height: 9px; border-radius: 50%; background: var(--soft); }
+.dot.warn, .dot.bad { background: var(--signal); }
+.card { background: var(--raised); border: 1px solid var(--rule); border-radius: 2px; padding: 1.2rem; min-width: 0; }
 /* Decision card: recommendation first on narrow screens. */
-.decide { display: grid; grid-template-columns: 1fr minmax(13rem, auto); gap: 20px; align-items: center; }
-.decide .q { font-size: 1.2rem; font-weight: 600; }
-.rec { display: flex; flex-direction: column; gap: 6px; background: var(--accent-soft); padding: 16px 18px; border-radius: 10px; }
-.rec b { font-size: 1.3rem; color: var(--accent); }
-.door { align-self: flex-start; padding: 2px 10px; border-radius: 999px; font: 600 .78rem var(--mono); border: 1px solid currentColor; }
-.door.two-way { color: var(--accent); } .door.one-way { color: var(--bad); }
+.decide { display: grid; grid-template-columns: 1fr minmax(13rem, auto); gap: 1.2rem; align-items: center; border-left: 3px solid var(--signal); }
+.decide .q { font: 700 var(--text-lg)/1.3 var(--serif); }
+.rec { display: flex; flex-direction: column; gap: .35rem; padding: 1rem 1.1rem; border-top: 2px solid var(--ink); font-family: var(--sans); }
+.rec b { font: 700 var(--text-xl)/1.2 var(--serif); }
+.door { align-self: flex-start; font: 600 var(--text-sm) var(--sans); }
+.door.one-way { color: var(--signal); }
 /* How it works: boxes in a row that stack below 700px, so nothing scrolls sideways. */
-.flow { display: flex; align-items: stretch; gap: 10px; }
-.step { flex: 1 1 0; display: flex; flex-direction: column; gap: 4px; padding: 14px; border: 1.5px solid var(--line); border-radius: 10px; background: var(--surface); }
-.step b { font-size: .98rem; } .step span { color: var(--muted); font-size: .85rem; }
-.step.new { border-color: var(--accent); background: var(--accent-soft); }
-.step.removed { border-color: var(--bad); border-style: solid; }
-.arrow { align-self: center; color: var(--muted); font-size: 1.3rem; }
-.arrow.later { font-size: 0; width: 32px; border-top: 2px dashed var(--muted); position: relative; }
-.arrow.later::after { content: ""; position: absolute; right: 0; top: -5px; width: 8px; height: 8px; border-top: 2px solid var(--muted); border-right: 2px solid var(--muted); transform: rotate(45deg); }
-.legend { display: flex; flex-wrap: wrap; gap: 16px; font-size: .85rem; color: var(--muted); margin-top: 12px; }
-.legend span { display: inline-flex; gap: 6px; align-items: center; }
-.sw { width: 16px; height: 10px; border-radius: 3px; display: inline-block; border: 1.5px solid var(--line); }
-.sw.later { height: 0; border: 0; border-top: 2px dashed var(--muted); border-radius: 0; }
-.sw.new { border-color: var(--accent); background: var(--accent-soft); } .sw.removed { border-color: var(--bad); }
+.flow { display: flex; align-items: stretch; gap: .6rem; }
+.step { flex: 1 1 0; display: flex; flex-direction: column; gap: .25rem; padding: .9rem; border: 1px solid var(--rule); border-radius: 2px; background: var(--ground); }
+.step b { font: 700 var(--text-md) var(--sans); } .step span { color: var(--soft); font: var(--text-sm) var(--sans); }
+.step.new { border: 2px solid var(--ink); }
+.step.removed { border-color: var(--signal); border-style: dashed; }
+/* Connectors are drawn lines, not arrow characters. */
+.arrow { align-self: center; flex: none; width: 28px; height: 0; border-top: 2px solid var(--soft); position: relative; font-size: 0; }
+.arrow::after { content: ""; position: absolute; right: 0; top: -5px; width: 8px; height: 8px; border-top: 2px solid var(--soft); border-right: 2px solid var(--soft); transform: rotate(45deg); }
+.arrow.later { border-top-style: dashed; }
+.legend { display: flex; flex-wrap: wrap; gap: 1rem; font: var(--text-sm) var(--sans); color: var(--soft); margin-top: .75rem; }
+.legend span { display: inline-flex; gap: .4rem; align-items: center; }
+.sw { width: 16px; height: 10px; border-radius: 2px; display: inline-block; border: 1px solid var(--rule); }
+.sw.later { height: 0; border: 0; border-top: 2px dashed var(--soft); border-radius: 0; }
+.sw.new { border: 2px solid var(--ink); } .sw.removed { border: 1px dashed var(--signal); }
 /* Ship vs. wait: if-shipped cells left, if-not-shipped cells right. */
-.board { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; }
-.cell { display: flex; flex-direction: column; gap: 10px; }
-.cell.ship { border-top: 4px solid var(--accent); } .cell.wait { border-top: 4px solid var(--bad); }
-.cell ul { margin: 0; padding-left: 1.1rem; display: flex; flex-direction: column; gap: 6px; }
-.tag { font: 600 .74rem var(--mono); letter-spacing: .06em; text-transform: uppercase; }
-.ship .tag { color: var(--accent); } .wait .tag { color: var(--bad); }
-.options, .limits { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 15rem), 1fr)); gap: 16px; }
-.option.recommended { border: 2px solid var(--accent); }
-.limits .card { border-top: 4px solid var(--warn); } .limits .tag { color: var(--warn); }
-footer { font-size: .9rem; color: var(--muted); display: flex; flex-direction: column; gap: 6px; overflow-wrap: anywhere; }
+.board { display: grid; grid-template-columns: 1fr 1fr; gap: 1rem; }
+.cell { display: flex; flex-direction: column; gap: .6rem; }
+.cell.ship { border-top: 3px solid var(--ink); } .cell.wait { border-top: 3px solid var(--signal); }
+.cell ul { margin: 0; padding-left: 1.1rem; display: flex; flex-direction: column; gap: .4rem; }
+.tag { font: 600 var(--text-sm) var(--sans); color: var(--soft); }
+.wait .tag { color: var(--signal); }
+.options, .limits { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 15rem), 1fr)); gap: 1rem; }
+.option.recommended { border: 2px solid var(--ink); }
+.limits .card { border-left: 3px solid var(--signal); }
+footer { font: var(--text-sm)/1.5 var(--sans); color: var(--soft); display: flex; flex-direction: column; gap: .4rem; }
 /* Sticky answer bar: the recommendation and the words to say. */
-.answer { position: fixed; left: 0; right: 0; bottom: 0; padding: 10px 16px calc(10px + env(safe-area-inset-bottom, 0px)); background: var(--surface); border-top: 1px solid var(--line); display: flex; flex-wrap: wrap; gap: 6px 16px; align-items: center; justify-content: center; min-height: 56px; }
-.answer b { color: var(--accent); }
+.answer { position: fixed; left: 0; right: 0; bottom: 0; padding: .6rem 1rem calc(.6rem + env(safe-area-inset-bottom, 0px)); background: var(--ground); border-top: 2px solid var(--ink); display: flex; flex-wrap: wrap; gap: .4rem 1rem; align-items: center; justify-content: center; min-height: 56px; font: var(--text-md) var(--sans); }
+/* Wide screens: the sections sit side by side; reading lines stay at about 75 characters. */
+@media (min-width: 90rem) {
+  .wrap { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 3rem 4rem; align-items: start; }
+  .wrap > header, .wrap > .decide, .wrap > footer { grid-column: 1 / -1; }
+}
 @media (max-width: 700px) {
   .decide, .board, .options, .limits { grid-template-columns: 1fr; }
   .decide .rec { order: -1; }
   .cell.wait { order: 1; }
   .flow { flex-direction: column; }
-  .arrow { transform: rotate(90deg); }
-  .arrow.later { margin: 16px 0; }
+  .arrow { width: 0; height: 22px; border-top: 0; border-left: 2px solid var(--soft); align-self: center; }
+  .arrow.later { border-left-style: dashed; }
+  .arrow::after { right: -5px; top: auto; bottom: 0; transform: rotate(135deg); }
 }
 @media print { .answer { position: static; } }
 </style>
@@ -111,14 +118,14 @@ footer { font-size: .9rem; color: var(--muted); display: flex; flex-direction: c
     <div style="display:flex;flex-direction:column;gap:8px">
       <span class="eyebrow">The decision</span>
       <p class="q">{{QUESTION_IN_BUSINESS_TERMS}}</p>
-      <p style="color:var(--muted)">{{TWO_LINES_OF_CONTEXT}}</p>
+      <p style="color:var(--soft)">{{TWO_LINES_OF_CONTEXT}}</p>
     </div>
     <div class="rec">
       <span class="eyebrow">Recommendation</span>
       <b>{{RECOMMENDATION_VERB}}</b>
       <small>{{ONE_LINE_REASON}}</small>
       <!-- Keep one: two-way door (cheap to undo) or one-way door (hard to undo). -->
-      <span class="door two-way">Two-way door: cheap to undo</span>
+      <span class="door two-way">Two-way door, cheap to undo</span>
     </div>
   </div>
 
@@ -131,9 +138,9 @@ footer { font-size: .9rem; color: var(--muted); display: flex; flex-direction: c
     <div class="card">
       <div class="flow" role="img" aria-label="{{ONE_SENTENCE_FLOW_SUMMARY}}">
         <div class="step"><b>{{STEP_1}}</b><span>{{STEP_1_DETAIL}}</span></div>
-        <span class="arrow" aria-hidden="true">→</span>
+        <span class="arrow" aria-hidden="true"></span>
         <div class="step new"><b>New: {{STEP_2}}</b><span>{{STEP_2_DETAIL}}</span></div>
-        <span class="arrow" aria-hidden="true">→</span>
+        <span class="arrow" aria-hidden="true"></span>
         <div class="step"><b>{{STEP_3}}</b><span>{{STEP_3_DETAIL}}</span></div>
       </div>
       <div class="legend">
@@ -151,19 +158,19 @@ footer { font-size: .9rem; color: var(--muted); display: flex; flex-direction: c
     <h2>What changes either way</h2>
     <div class="board">
       <div class="card cell ship">
-        <span class="tag">If shipped · outcomes</span>
+        <span class="tag">Outcomes if shipped</span>
         <ul><li>{{OUTCOME_IT_ENABLES}}</li><li>{{RISK_IT_CLOSES}}</li></ul>
       </div>
       <div class="card cell wait">
-        <span class="tag">If not shipped · cost of delay</span>
+        <span class="tag">Cost of delay</span>
         <ul><li>{{VALUE_LOST_OR_PAIN_THAT_CONTINUES_WHILE_IT_WAITS}}</li></ul>
       </div>
       <div class="card cell ship">
-        <span class="tag">If shipped · what changes</span>
+        <span class="tag">What changes if shipped</span>
         <ul><li>{{WHO_NOTICES}}</li><li>{{WHAT_FILES_OR_BEHAVIOUR_CHANGE}}</li></ul>
       </div>
       <div class="card cell wait">
-        <span class="tag">If not shipped · exposure</span>
+        <span class="tag">Exposure</span>
         <ul><li>{{RISK_THAT_PERSISTS_AND_HOW_IT_GROWS}}</li></ul>
       </div>
     </div>
@@ -174,7 +181,7 @@ footer { font-size: .9rem; color: var(--muted); display: flex; flex-direction: c
     <span class="eyebrow">Options</span>
     <h2>Your choices</h2>
     <div class="options">
-      <div class="card option recommended"><span class="tag" style="color:var(--accent)">Recommended</span><h3>{{OPTION_A}}</h3><p>{{OPTION_A_TRADEOFF}}</p></div>
+      <div class="card option recommended"><span class="tag">Recommended</span><h3>{{OPTION_A}}</h3><p>{{OPTION_A_TRADEOFF}}</p></div>
       <div class="card option"><h3>{{OPTION_B}}</h3><p>{{OPTION_B_TRADEOFF}}</p></div>
     </div>
   </section>

@@ -700,7 +700,7 @@ def display_path(path: Path, home: Path) -> str:
 
 
 NAV_LINK_STYLE = (
-    "display:inline-block;padding:.55rem .8rem;color:#fffdf8;font:600 15px/1.2 system-ui,sans-serif;"
+    "display:inline-block;padding:.85rem 1rem;color:#f6f4ef;font:600 15px/1.2 system-ui,sans-serif;"
     "text-decoration:underline;background:none;border:0;margin:0"
 )
 
@@ -718,8 +718,8 @@ def qd_nav_html(raw_href: str | None, fixed: bool, main_href: str = "index.html"
     raw = f'<a href="{html.escape(raw_href, quote=True)}" style="{NAV_LINK_STYLE}">Open file by itself</a>' if raw_href else ""
     bar = (
         f'<nav id="qd-nav" aria-label="Quarterdeck" style="{where}display:flex;flex-wrap:wrap;justify-content:space-between;'
-        'box-sizing:border-box;background:#17324d;margin:0;border-top:2px solid #c98635;">'
-        f'<a href="{html.escape(main_href, quote=True)}" style="{NAV_LINK_STYLE}">&larr; Back to Quarterdeck</a>{raw}</nav>'
+        'box-sizing:border-box;background:#1a2129;margin:0;border-top:1px solid #d6d0c4;">'
+        f'<a href="{html.escape(main_href, quote=True)}" style="{NAV_LINK_STYLE}">Back to Quarterdeck</a>{raw}</nav>'
     )
     if fixed:
         bar += '''<div id="qd-nav-space" aria-hidden="true" style="height:6rem;flex-shrink:0;clear:both"></div>
@@ -743,52 +743,37 @@ def inject_nav(page: str, raw_href: str, main_href: str = "index.html") -> str:
     return page + bar
 
 
+def count_badge(count: int, css: str = "count") -> str:
+    """A count beside a heading. The style hides it at 0 or 1: at 0 the section says it is empty, at 1 the one item
+    shows. It stays in the markup so the page's scripts can keep counting down."""
+    return f'<span class="{css}" data-n="{count}">{count}</span>'
+
+
 def source_page_html(
     title: str, source_path: str, markdown: str, raw_href: str | None = None,
     main_href: str | None = "index.html", actions: str = "", body_html: str | None = None,
 ) -> str:
-    """A readable document page. `actions` is optional review-control markup shown above the document;
+    """A readable document page. `actions` is optional review-control markup shown beside the document;
     `body_html` replaces the rendered Markdown with ready markup (a framed report)."""
-    nav = qd_nav_html(raw_href, fixed=False, main_href=main_href) if main_href is not None else ""
+    home = (f'<a class="mark" href="{html.escape(main_href, quote=True)}">Quarterdeck</a>' if main_href is not None
+            else '<span class="mark">Quarterdeck</span>')
+    raw = f'<a href="{html.escape(raw_href, quote=True)}">Open file by itself</a>' if raw_href else ""
+    nav = f'<nav class="bar" aria-label="Quarterdeck">{home}<span class="bar-links">{raw}</span></nav>'
     review = ""
     if actions:
         back = (
-            f'<a id="qd-saved-back" href="{html.escape(main_href, quote=True)}" hidden>&larr; Back to Quarterdeck</a>'
+            f'<a id="qd-saved-back" href="{html.escape(main_href, quote=True)}" hidden>Back to Quarterdeck</a>'
             if main_href is not None else ""
         )
         review = (
             f'<section class="review-actions" aria-label="Review this report">{actions}{back}</section>'
             f"<script>{DOC_MARK_SCRIPT}</script>{MARK_SCRIPT.replace('__ENDPOINT__', base_url(MARK_ENDPOINT))}"
         )
-    main = (
-        f'<main style="max-width:1100px">{body_html}</main>' if body_html is not None
-        else f"<main><article>{render_markdown(markdown)}</article></main>"
-    )
+    body = body_html if body_html is not None else render_markdown(markdown)
     return f'''<!doctype html>
 <html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
-<meta name="quarterdeck-{'gen' + 'erated'}" content="read-only source page"><title>{html.escape(title)} · Quarterdeck source</title>
-<style>
-body {{ margin: 0; background: #f3eddf; color: #20303d; font: 16px/1.65 system-ui, sans-serif; }}
-header {{ background: #17324d; color: #fffdf8; padding: .6rem max(1.2rem, calc((100vw - 850px) / 2)); border-bottom: 4px solid #c98635; }}
-header h1 {{ margin: 0; color: #fffdf8; font: 700 1.2rem/1.3 Georgia, serif; overflow-wrap: anywhere; }}
-header p {{ margin: .15rem 0 0; color: #d8c49b; font-size: .82rem; line-height: 1.35; overflow-wrap: anywhere; }}
-main {{ max-width: 850px; margin: 1.2rem auto 4rem; padding: 0 1.2rem; }}
-article {{ background: #fffdf8; border: 1px solid #d8d3c8; border-radius: 12px; padding: clamp(1.1rem, 4vw, 2.2rem); overflow-wrap: anywhere; }}
-article h1, article h2, article h3, article h4, article h5, article h6 {{ color: #17324d; line-height: 1.25; }}
-.review-actions {{ max-width: 850px; margin: 1rem auto 0; padding: 0 1.2rem; }}
-.review-actions .request-row {{ display: flex; flex-wrap: wrap; align-items: center; gap: .65rem; margin: 0; }}
-.review-actions button {{ min-height: 44px; padding: 0 1rem; border: 1px solid #176b69; border-radius: 8px; background: #e6f1ee; color: #20303d; font: 700 .95rem system-ui, sans-serif; cursor: pointer; }}
-.review-actions button.quiet {{ background: transparent; border-color: #d8d3c8; color: #596774; font-weight: 600; }}
-.review-actions button:disabled {{ opacity: .7; cursor: default; }}
-.review-actions .request-status {{ color: #52616d; font-size: .85rem; }}
-.review-actions #qd-saved-back {{ display: inline-block; margin-top: .4rem; min-height: 44px; line-height: 44px; }}
-.review-actions #qd-saved-back[hidden] {{ display: none; }}
-pre {{ overflow-x: auto; padding: 1rem; background: #172b3b; color: #f7f3e9; border-radius: 8px; }}
-code {{ font-family: ui-monospace, SFMono-Regular, Consolas, monospace; background: #eee8da; padding: .1em .25em; border-radius: 4px; }}
-pre code {{ background: transparent; padding: 0; }}
-.table-wrap {{ overflow-x: auto; }} table {{ border-collapse: collapse; min-width: 100%; }} th,td {{ border: 1px solid #d8d3c8; padding: .5rem .7rem; text-align: left; vertical-align: top; }}
-th {{ background: #e8e2d5; color: #17324d; }} a {{ color: #176b69; }} blockquote {{ border-left: 3px solid #c98635; margin-left: 0; padding-left: 1rem; color: #52616d; }}
-</style></head><body>{nav}<header><h1>{html.escape(title)}</h1><p>{html.escape(source_path)}</p></header>{review}{main}</body></html>'''
+<meta name="quarterdeck-{'gen' + 'erated'}" content="read-only source page"><title>{html.escape(title)} · Quarterdeck</title>
+<style>{UI_CSS}</style></head><body>{nav}<main class="doc{' with-actions' if review else ''}"><h1>{html.escape(title)}</h1><p class="doc-source">{html.escape(source_path)}</p>{review}<article class="prose">{body}</article></main></body></html>'''
 
 
 def write_generated_page(path: Path, content: str) -> None:
@@ -991,7 +976,7 @@ def report_card(report: Report, snapshot: HomeSnapshot, lavish: bool = False) ->
 
 def section_html(title: str, description: str, cards: list[str], empty: str) -> str:
     content = "".join(cards) if cards else f'<p class="empty">{html.escape(empty)}</p>'
-    return f'<div class="dashboard-section"><div class="section-head"><div><h3>{html.escape(title)}</h3><p>{html.escape(description)}</p></div><span class="count">{len(cards)}</span></div><div class="cards">{content}</div></div>'
+    return f'<div class="dashboard-section"><div class="section-head"><div><h3>{html.escape(title)}</h3><p>{html.escape(description)}</p></div>{count_badge(len(cards))}</div><div class="cards">{content}</div></div>'
 
 
 def home_panel(
@@ -1535,15 +1520,16 @@ def status_line_html(
         else:
             opened = [(when, str(item["opened_at"])) for item in waiting.values()
                       if item.get("opened_at") and (when := parse_when(str(item["opened_at"]))) is not None]
-            oldest = f" · oldest {waited_text(min(opened)[1], now)}" if opened else ""
+            oldest = f", oldest {waited_text(min(opened)[1], now)}" if opened else ""
             text, need = f"{len(waiting)} {'needs' if len(waiting) == 1 else 'need'} you{oldest}", "some"
         if stale:
             text += f" ({stale})"
         parts.append(f'<a href="#cards" data-need="{need}">{html.escape(text)}</a>')
-    if underway is not None:
+    if underway:
         parts.append(f'<a href="#underway">{underway} underway</a>')
-    parts.append(f'<a href="#reviews">{plural(reports, "report", "reports")} to review</a>')
-    return f'<p class="status-line" id="status-line" role="status">{" · ".join(parts)}</p>'
+    if reports:
+        parts.append(f'<a href="#reviews">{plural(reports, "report", "reports")} to review</a>')
+    return f'<p class="status-line" id="status-line" role="status">{"".join(parts)}</p>'
 
 
 JUMP_SECTIONS = (
@@ -1563,7 +1549,7 @@ def jump_nav_html(markup: str, counts: dict[str, int]) -> str:
     for anchor, label in JUMP_SECTIONS:
         if f'id="{anchor}"' not in markup:
             continue
-        count = f" <b>{counts[anchor]}</b>" if anchor in counts else ""
+        count = f" <b>{counts[anchor]}</b>" if counts.get(anchor) else ""
         links.append(f'<a href="#{anchor}">{html.escape(label)}{count}</a>')
     for anchor in dict.fromkeys(re.findall(r'id="(recent-background-\d+)"', markup)):
         links.append(f'<a href="#{anchor}">Background decisions</a>')
@@ -1662,7 +1648,7 @@ def build_html(
     ) + set_aside_reports_html(homes, ambiguous_ids, report_resolution_incomplete, allow_marks, reactions)
     details_block = (
         '<details class="dashboard-section" id="details" data-refresh-key="details"><summary>'
-        f'<h2>Details by home</h2><span class="count">{len(homes)}</span></summary>'
+        f'<h2>Details by home</h2>{count_badge(len(homes))}</summary>'
         f'<div class="summary" aria-label="Review counts">{metrics_html}</div>'
         + "".join(home_panel(home, lavish, show_all, decisions) for home in homes) + "</details>"
     )
@@ -1912,8 +1898,8 @@ def build_html(
   </script>""" if refresh_seconds else ""
     )
     footer_label = (
-        "Read-only snapshot except report review marks, reactions sent to Firstmate and saved views" if allow_marks
-        else "Read-only snapshot"
+        "This page is read-only except for report review marks, reactions sent to Firstmate and saved views." if allow_marks
+        else "This page is read-only."
     )
     refresh_note = f" · reloads every {int(refresh_seconds)} seconds" if refresh_seconds else ""
     introductory_text = (
@@ -1953,175 +1939,21 @@ def build_html(
   <meta name="quarterdeck-{'gen' + 'erated'}" content="read-only review page">
   <title>{tab_prefix}{html.escape(title)} · Firstmate review</title>
   {app_links}
-  <style>
-    :root {{ color-scheme: light dark; --navy: #17324d; --sea: #176b69; --sand: #f3eddf; --paper: #fffdf8; --ink: #20303d; --muted: #596774; --line: #d8d3c8; --gold: #c98635; --gold-ink: #9a5f1a; --head: #17324d; --soft: #ffffff70; --warn-bg: #fff8e9; --warn-ink: #624313; --fail-bg: #fff2ee; --fail-ink: #6f251b; --chip: #e6f1ee; }}
-    * {{ box-sizing: border-box; }}
-    body {{ margin: 0; background: var(--sand); color: var(--ink); font: 16px/1.55 system-ui, -apple-system, Segoe UI, sans-serif; }}
-    header {{ background: var(--head); color: #fffdf8; padding: .55rem max(1.2rem, calc((100vw - 1080px) / 2)); border-bottom: 3px solid var(--gold); display: flex; flex-wrap: wrap; align-items: baseline; gap: .1rem 1rem; }}
-    h1 {{ margin: 0; font: 700 1.1rem/1.3 Georgia, serif; letter-spacing: -.01em; }}
-    header p {{ margin: 0; color: #e4e8e8; font-size: .82rem; }}
-    main {{ width: min(1080px, calc(100% - 2.4rem)); margin: 2rem auto 4rem; }}
-    .summary {{ display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: .8rem; margin-bottom: 2rem; }}
-    .metric {{ background: var(--paper); border: 1px solid var(--line); border-radius: 12px; padding: 1rem 1.1rem; }}
-    .metric b {{ display: block; color: var(--sea); font: 700 1.8rem Georgia, serif; }}
-    .metric span {{ color: var(--muted); font-size: .9rem; }}
-    .home {{ margin: 2rem 0 2.5rem; padding: 1.2rem; background: var(--soft); border: 1px solid var(--line); border-radius: 16px; }}
-    .home-head {{ display: flex; justify-content: space-between; gap: 1rem; margin-bottom: 1rem; }}
-    .home h2 {{ margin: 0; color: var(--navy); font: 700 1.8rem Georgia, serif; overflow-wrap: anywhere; }}
-    .home-charter {{ margin: .3rem 0 0; color: var(--ink); font-size: .95rem; max-width: 60ch; }}
-    .home-role {{ margin: 0 0 .25rem; color: var(--sea); font-size: .73rem; text-transform: uppercase; letter-spacing: .09em; font-weight: 700; }}
-    .home-source {{ margin: .35rem 0 0; color: var(--muted); font-size: .83rem; overflow-wrap: anywhere; }}
-    .home-counts {{ display: flex; flex-wrap: wrap; gap: .5rem; margin: .3rem 0 1rem; }}
-    .home-counts span {{ padding: .2rem .6rem; border: 1px solid var(--line); border-radius: 999px; background: var(--paper); color: var(--muted); font-size: .82rem; }}
-    .dashboard-section {{ margin: 1.5rem 0 1.8rem; }}
-    .section-head {{ display: flex; align-items: start; justify-content: space-between; gap: 1rem; margin-bottom: .8rem; }}
-    .section-head h3 {{ margin: 0; color: var(--navy); font: 700 1.35rem Georgia, serif; }}
-    .section-head p {{ margin: .3rem 0; color: var(--muted); }}
-    .count {{ border: 1px solid var(--line); background: var(--paper); color: var(--sea); border-radius: 999px; min-width: 2.2rem; padding: .25rem .65rem; text-align: center; font-weight: 700; }}
-    .cards {{ display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 310px), 1fr)); gap: .8rem; }}
-    .card {{ background: var(--paper); border: 1px solid var(--line); border-top: 3px solid var(--sea); border-radius: 12px; padding: 1rem 1.1rem; min-width: 0; }}
-    .card h3 {{ margin: .1rem 0 .55rem; font-size: 1.08rem; overflow-wrap: anywhere; }}
-    .card p {{ margin: .4rem 0; }}
-    .eyebrow {{ color: var(--muted); font-size: .73rem; text-transform: uppercase; letter-spacing: .09em; font-weight: 700; }}
-    .links {{ margin-top: .8rem !important; font-size: .9rem; }}
-    .links a {{ display: inline-flex; align-items: center; min-height: 44px; padding: .2rem 0; }}
-    .request-row {{ display: flex; flex-wrap: wrap; align-items: center; gap: .65rem; margin-top: .8rem; }}
-    .request-lavish {{ border: 1px solid var(--sea); border-radius: 7px; background: var(--chip); color: var(--ink); padding: .45rem .9rem; min-height: 44px; font: inherit; font-size: .86rem; font-weight: 700; cursor: pointer; }}
-    .request-lavish:focus-visible {{ outline: 3px solid var(--gold); outline-offset: 2px; }}
-    .request-lavish:disabled {{ opacity: .7; cursor: default; }}
-    .request-lavish.quiet {{ background: transparent; border-color: var(--line); color: var(--muted); font-weight: 600; }}
-    .request-status {{ color: var(--muted); font-size: .82rem; }}
-    .reaction {{ margin-top: .6rem; }}
-    .reaction-latest {{ margin: .3rem 0; color: var(--muted); font-size: .85rem; }}
-    .reaction-reply {{ display: block; }}
-    .reaction-text {{ display: block; box-sizing: border-box; width: 100%; min-width: 0; min-height: 5.5rem; max-height: 60vh; padding: .55rem .6rem; border: 1px solid var(--line); border-radius: 7px; background: var(--paper); color: var(--ink); font: inherit; font-size: 1rem; line-height: 1.4; resize: vertical; overflow-y: auto; }}
-    .reaction-text:focus-visible {{ outline: 3px solid var(--gold); outline-offset: 2px; }}
-    .reaction-count {{ display: block; margin-top: .25rem; color: var(--muted); font-size: .82rem; }}
-    .reaction-count[hidden] {{ display: none; }}
-    .reaction-count.over {{ color: #b3261e; font-weight: 700; }}
-    .reaction-latest {{ overflow-wrap: anywhere; }}
-    .reaction-choices {{ display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: .5rem; }}
-    .reaction-answers {{ display: flex; flex-wrap: wrap; gap: .5rem; }}
-    .reaction-answer {{ flex: 1 1 8rem; background: var(--sea); color: var(--paper); }}
-    .reaction-choice[aria-pressed=true] {{ background: var(--sea); color: var(--paper); }}
-    .chip-reaction {{ color: var(--ink); border-color: var(--gold); }}
-    .chip-reaction[hidden], .reaction-latest[hidden] {{ display: none; }}
-    .quiet-summary {{ color: var(--muted); font-size: .82rem; margin: -.5rem 0 1rem; }}
-    a {{ color: var(--sea); font-weight: 650; }}
-    a:focus-visible {{ outline: 3px solid var(--gold); outline-offset: 3px; }}
-    .path {{ color: var(--muted); font-weight: 400; overflow-wrap: anywhere; }}
-    .empty {{ background: var(--soft); border: 1px dashed var(--line); border-radius: 10px; color: var(--muted); padding: 1rem; }}
-    .failure, .warning {{ margin: 1rem 0; border-radius: 10px; padding: 1rem; }}
-    .failure {{ border: 1px solid #b8503c; background: var(--fail-bg); color: var(--fail-ink); }}
-    .warning {{ border: 1px solid #c98635; background: var(--warn-bg); color: var(--warn-ink); }}
-    .failure p, .warning p {{ margin: .35rem 0 0; overflow-wrap: anywhere; }}
-    .secondmates {{ margin: 1.7rem 0 0; padding-left: 1rem; border-left: 3px solid var(--line); }}
-    .secondmates > h3 {{ margin: 0 0 .8rem; color: var(--navy); font: 700 1.2rem Georgia, serif; }}
-    .secondmates .home {{ margin: 1rem 0; background: var(--paper); }}
-    html {{ scroll-padding-top: 4.2rem; }}
-    .status-line {{ margin: 0; padding: 0 max(1.2rem, calc((100vw - 1080px) / 2)); background: var(--paper); border-bottom: 1px solid var(--line); font: 700 1rem/1.3 Georgia, serif; display: flex; flex-wrap: wrap; align-items: center; column-gap: .45rem; }}
-    .status-line a {{ display: inline-flex; align-items: center; min-height: 44px; color: var(--navy); text-decoration-thickness: 1px; }}
-    .status-line a[data-need=some] {{ color: var(--gold-ink); }}
-    .status-line a[data-need=unknown] {{ color: var(--fail-ink); }}
-    .offline-note {{ margin: 0; padding: .5rem max(1.2rem, calc((100vw - 1080px) / 2)); background: var(--warn-bg); color: var(--warn-ink); border-bottom: 1px solid var(--gold); font-size: .9rem; }}
-    .offline-note[hidden] {{ display: none; }}
-    .jump {{ position: sticky; top: 0; z-index: 20; display: flex; flex-wrap: nowrap; gap: .4rem; margin: 0; padding: .35rem max(1.2rem, calc((100vw - 1080px) / 2)); background: var(--sand); border-bottom: 1px solid var(--line); overflow-x: auto; scrollbar-width: none; }}
-    .jump::-webkit-scrollbar {{ display: none; }}
-    .jump a {{ flex: none; display: inline-flex; align-items: center; min-height: 44px; border: 1px solid var(--line); background: var(--paper); border-radius: 999px; padding: 0 .9rem; text-decoration: none; white-space: nowrap; }}
-    .jump b {{ margin-left: .35rem; color: var(--gold-ink); }}
-    .stamp-short, .board-ok-short {{ display: none; }}
-    .dashboard-section h2 {{ margin: 0; color: var(--navy); font: 700 1.5rem Georgia, serif; }}
-    .reviews {{ border: 2px solid var(--gold); border-radius: 14px; padding: 1rem; background: var(--warn-bg); }}
-    .detail-heading {{ margin: 3rem 0 1rem; color: var(--navy); font: 700 1.5rem Georgia, serif; }}
-    .when {{ color: var(--muted); font-size: .88rem; }}
-    .bearing details {{ margin: .6rem 0; }}
-    .bearing summary {{ display: flex; align-items: center; min-height: 44px; cursor: pointer; color: var(--sea); font-weight: 650; }}
-    .bearing .body {{ border-left: 3px solid var(--line); padding-left: .8rem; overflow-wrap: anywhere; }}
-    .generated, .source-note {{ color: #d8c49b; font-size: .85rem; }}
-    .adoption-link {{ display: inline-flex; align-items: center; min-height: 44px; color: #fffdf8; }}
-    .push-control {{ display: inline-flex; flex-wrap: wrap; align-items: center; gap: 0 .5rem; margin-left: 1rem; }}
-    .push-control[hidden] {{ display: none; }}
-    .push-toggle {{ min-height: 44px; padding: 0; border: 0; background: none; color: #fffdf8; font: inherit; text-decoration: underline; cursor: pointer; }}
-    .push-toggle:focus-visible {{ outline: 3px solid var(--gold); outline-offset: 2px; }}
-    .push-toggle:disabled {{ cursor: progress; opacity: .7; }}
-    .source-note {{ color: var(--muted); }}
-    footer {{ border-top: 1px solid var(--line); margin-top: 3rem; padding-top: 1rem; color: var(--muted); font-size: .85rem; }}
-    .board {{ margin-bottom: 1rem; }}
-    .board-item {{ background: var(--paper); border: 1px solid var(--line); border-left: 4px solid var(--sea); border-radius: 12px; margin: .6rem 0; }}
-    .board-item summary {{ display: flex; gap: .8rem; align-items: flex-start; min-height: 3rem; padding: .8rem 1rem; cursor: pointer; list-style: none; }}
-    .board-item summary::-webkit-details-marker {{ display: none; }}
-    .board-item summary:focus-visible {{ outline: 3px solid var(--gold); outline-offset: 2px; }}
-    .board-num {{ flex: none; min-width: 2.2rem; height: 2.2rem; border-radius: 999px; background: var(--sea); color: #fff; font: 700 1.1rem/2.2rem Georgia, serif; text-align: center; }}
-    .board-text {{ display: block; min-width: 0; }}
-    .board-title {{ display: block; color: var(--navy); font: 700 1.2rem/1.3 Georgia, serif; overflow-wrap: anywhere; }}
-    .board-home {{ display: inline-block; margin-top: .15rem; color: var(--muted); font-size: .75rem; text-transform: uppercase; letter-spacing: .08em; }}
-    .board-line {{ display: block; margin-top: .2rem; overflow-wrap: anywhere; }}
-    .board-body {{ border-top: 1px solid var(--line); padding: .3rem 1rem 1rem; overflow-wrap: anywhere; }}
-    .board-links {{ margin: .5rem 0 0; padding-left: 1.1rem; }}
-    .board-links li {{ margin: .6rem 0; }}
-    .board-links a {{ display: inline-block; min-height: 2.75rem; line-height: 2.75rem; }}
-    .board-links .path {{ display: block; margin-top: -.5rem; font-size: .8rem; }}
-    .board-chips, .board-brief {{ display: flex; flex-wrap: wrap; gap: .35rem; margin-top: .45rem; }}
-    .board-brief {{ align-items: center; gap: .5rem; }}
-    .chip {{ display: inline-block; padding: .1rem .55rem; border: 1px solid var(--line); border-radius: 999px; color: var(--muted); font-size: .78rem; overflow-wrap: anywhere; }}
-    .chip-group {{ color: var(--sea); border-color: var(--sea); font-weight: 700; text-transform: uppercase; letter-spacing: .06em; }}
-    .chip-deferred, .chip-sweep {{ color: var(--warn-ink); background: var(--warn-bg); border-color: var(--gold); }}
-    .chip-rec {{ color: var(--ink); background: var(--chip); border-color: var(--sea); border-radius: 12px; font-size: .88rem; padding: .35rem .7rem; }}
-    .rec-label {{ color: var(--sea); font-weight: 700; text-transform: uppercase; letter-spacing: .06em; font-size: .72rem; }}
-    .brief-link {{ display: inline-flex; align-items: center; min-height: 44px; padding: 0 1rem; border: 1px solid var(--sea); border-radius: 10px; background: var(--paper); text-decoration: none; }}
-    details.board-band > summary {{ display: block; min-height: 44px; cursor: pointer; list-style: none; }}
-    details.board-band > summary::-webkit-details-marker, .board-more > summary::-webkit-details-marker {{ display: none; }}
-    details.board-band > summary h2::before {{ content: "▸ "; color: var(--gold); }}
-    details.board-band[open] > summary h2::before {{ content: "▾ "; }}
-    details.board-band > summary:focus-visible, .board-more > summary:focus-visible {{ outline: 3px solid var(--gold); outline-offset: 2px; }}
-    .board-more > summary {{ display: flex; align-items: center; min-height: 44px; padding: 0 1rem; cursor: pointer; list-style: none; color: var(--sea); font-weight: 700; border: 1px dashed var(--line); border-radius: 12px; }}
-    .views {{ display: grid; grid-template-columns: 11rem minmax(0, 1fr); gap: 1.2rem; align-items: start; }}
-    .views-rail {{ display: flex; flex-direction: column; gap: .4rem; }}
-    .views-rail button, .view-editor button {{ min-height: 44px; padding: 0 .9rem; border: 1px solid var(--line); border-radius: 10px; background: var(--paper); color: var(--ink); font: inherit; font-weight: 700; text-align: left; cursor: pointer; }}
-    .views-rail button[aria-pressed=true] {{ border-color: var(--sea); box-shadow: inset 4px 0 0 var(--sea); color: var(--sea); }}
-    .views-rail button:focus-visible, .view-editor button:focus-visible {{ outline: 3px solid var(--gold); outline-offset: 2px; }}
-    .view-section {{ margin: 0 0 1.4rem; }}
-    .view-section h4 {{ margin: .8rem 0 .2rem; color: var(--muted); font-size: .85rem; text-transform: uppercase; letter-spacing: .04em; }}
-    .view-editor {{ margin-top: 1rem; }}
-    .view-editor ul {{ list-style: none; padding: 0; }}
-    .view-editor li {{ display: flex; gap: .5rem; align-items: center; min-height: 44px; }}
-    .view-editor li label {{ flex: 1 1 auto; }}
-    .view-editor input[type=text] {{ min-height: 44px; padding: 0 .6rem; border: 1px solid var(--line); border-radius: 8px; background: var(--paper); color: var(--ink); font: inherit; }}
-    .desk-group {{ margin: .9rem 0 .4rem; font-size: .95rem; color: var(--sea); }}
-    .sweep {{ margin: .2rem 0 .6rem; padding: .6rem .8rem; border: 1px solid var(--gold); border-radius: 10px; background: var(--warn-bg); color: var(--warn-ink); }}
-    .stale {{ color: #ffd48a; }}
-    details.dashboard-section:not(.board-band) > summary {{ display: flex; justify-content: space-between; gap: 1rem; align-items: center; min-height: 3rem; cursor: pointer; list-style: none; }}
-    details.dashboard-section:not(.board-band) > summary::-webkit-details-marker {{ display: none; }}
-    details.dashboard-section:not(.board-band) > summary h2 {{ display: inline; }}
-    details.dashboard-section:not(.board-band) > summary h2::before {{ content: "▸ "; color: var(--gold); }}
-    details.dashboard-section:not(.board-band)[open] > summary h2::before {{ content: "▾ "; }}
-{ACTIVITY_CSS}{TOPICS_FRONT_CSS}    @media (prefers-color-scheme: dark) {{
-      :root {{ --navy: #a9cdee; --sea: #5fc2b9; --sand: #11181f; --paper: #1a242d; --ink: #e3e8ec; --muted: #9aa8b3; --line: #33434f; --gold: #e0a24e; --gold-ink: #e0a24e; --head: #0d2438; --soft: #ffffff10; --warn-bg: #2d2412; --warn-ink: #f0d9a8; --fail-bg: #331b17; --fail-ink: #f3c4bb; --chip: #1f3a37; }}
-      .board-num {{ color: #0b1a18; }}
-    }}
-    @media (max-width: 640px) {{
-      .stamp-long, .generated.board-ok {{ display: none; }}
-      .stamp-short {{ display: inline; }}
-      header {{ padding-top: .4rem; padding-bottom: .4rem; }}
-      .summary {{ grid-template-columns: repeat(2, 1fr); }}
-      .views {{ grid-template-columns: minmax(0, 1fr); }}
-      .views-rail {{ flex-direction: row; flex-wrap: wrap; }}
-      .views-rail button {{ text-align: center; flex: 1 1 auto; }}
-    }}
-    @media print {{ body {{ background: #fff; }} header {{ padding: 1.2rem; }} main {{ width: 100%; margin: 1rem 0; }} .card {{ break-inside: avoid; }} }}
-  </style>
+  <style>{UI_CSS}</style>
 </head>
 <body>
   <span id="top"></span>
   <header>
-    <h1>⚓ {html.escape(title)}</h1>
-    <p class="generated"><span class="stamp-long">Generated at {timestamp}{refresh_note}</span><time class="stamp-short" id="updated" datetime="{iso_seconds(generated.timestamp())}">Updated {generated.strftime("%H:%M")} UTC</time></p>
+    <nav class="bar" aria-label="Quarterdeck"><h1 class="mark">{html.escape(title)}</h1><span class="bar-links">{f'<a href="{html.escape(front_href, quote=True)}">Front page</a>' if front_href else ""}<a href="{ADOPTION_PAGE}">Adoption</a></span></nav>
+    <div class="masthead">
+    <p class="stamp"><span class="stamp-long">Generated at {timestamp}{refresh_note}</span><time class="stamp-short" id="updated" datetime="{iso_seconds(generated.timestamp())}">Updated {generated.strftime("%H:%M")} UTC</time>{push_control}</p>
     {board_status}
     {cards_link}
-    <p class="generated">{f'<a class="adoption-link" href="{html.escape(front_href, quote=True)}">&larr; New front page</a> · ' if front_href else ""}<a class="adoption-link" href="{ADOPTION_PAGE}">Adoption this week</a>{push_control}</p>
+    </div>
   </header>
   <p class="offline-note" id="offline-note" role="status" hidden></p>
   {status_block}
+  <div class="shell">
   {jump_block}
   <main>
     {cards_block}
@@ -2132,8 +1964,9 @@ def build_html(
     {reviewed_block}
     {activity_block}
     {details_block}
-    <footer>{html.escape(introductory_text)} {footer_label} · generated {timestamp} · source files open as readable pages beside this one.</footer>
+    <footer><p>{html.escape(introductory_text)}</p><p>{footer_label} Source files open as readable pages beside this one.</p></footer>
   </main>
+  </div>
   {lavish_script}{NAV_SCRIPT}{refresh_script}{reload_script}{mark_script}{reaction_script}{wait_script}{cards_script}{push_script}{topic_ask_script() if allow_marks and topics_block else ""}
 </body>
 </html>
@@ -3021,7 +2854,7 @@ def report_list_html(
     content = "".join(cards) or f'<p class="empty">{html.escape(empty)}</p>'
     return (
         f'<details class="dashboard-section" id="{section_id}" data-refresh-key="{section_id}">'
-        f'<summary><h2>{html.escape(title)}</h2><span class="count">{len(cards)}</span></summary>'
+        f'<summary><h2>{html.escape(title)}</h2>{count_badge(len(cards))}</summary>'
         f'<p>{html.escape(intro)}</p><div class="cards">{content}</div></details>'
     )
 
@@ -3130,14 +2963,14 @@ def bearings_html(
     if collapse_reviews:
         out.append(
             '<details class="dashboard-section reviews" id="reviews"><summary><h2>Reports waiting on your review</h2>'
-            f'<span class="count">{len(review_cards)}</span></summary>'
+            f'{count_badge(len(review_cards))}</summary>'
             f'<p>Reports whose review state is “needs review”.</p><div class="cards">{reviews_cards}</div></details>'
         )
     else:
         out.append(
             '<div class="dashboard-section reviews" id="reviews"><div class="section-head"><div><h2>Reports waiting on your review</h2>'
             '<p>Reports whose review state is “needs review”.</p></div>'
-            f'<span class="count">{len(review_cards)}</span></div><div class="cards">{reviews_cards}</div></div>'
+            f'{count_badge(len(review_cards))}</div><div class="cards">{reviews_cards}</div></div>'
         )
     for key, title, description, items, empty in sections:
         cards = "".join(bearings_item_html(item, now, key) for item in items)
@@ -3146,11 +2979,11 @@ def bearings_html(
         if key == "charted":  # the longest queue: closed until the captain opens it
             out.append(
                 f'<details class="dashboard-section" id="{key}" data-refresh-key="{key}"><summary>'
-                f'<h2>{html.escape(title)}</h2><span class="count">{len(items)}</span></summary>'
+                f'<h2>{html.escape(title)}</h2>{count_badge(len(items))}</summary>'
                 f'<p>{html.escape(description)}</p><div class="cards">{cards}</div></details>'
             )
             continue
-        count = "" if key == "underway" else f'<span class="count">{len(items)}</span>'
+        count = "" if key == "underway" else f'{count_badge(len(items))}'
         out.append(
             f'<div class="dashboard-section" id="{key}"><div class="section-head"><div><h2>{html.escape(title)}</h2>'
             f'<p>{html.escape(description)}</p></div>{count}</div>'
@@ -5088,9 +4921,9 @@ def board_status_html(view: BoardView, now: datetime) -> str:
     for label, updated, stale in view.status:
         prefix = f"{html.escape(label)}: " if len(view.status) > 1 else ""
         stamp = f" ({updated.astimezone(timezone.utc).strftime('%Y-%m-%d %H:%M UTC')})" if updated else ""
-        flag = f' <strong class="stale">⚠ Board may be out of date: {html.escape(stale)}.</strong>' if stale else ""
+        flag = f' <strong class="stale">The board may be out of date because {html.escape(stale)}.</strong>' if stale else ""
         quiet = "" if stale else " board-ok"  # a plain timestamp folds into "Updated … ago" on a phone; a warning stays
-        lines.append(f'<p class="generated{quiet}">{prefix}Board updated {html.escape(board_age_text(updated, now))}{stamp}{flag}</p>')
+        lines.append(f'<p class="stamp board-note{quiet}">{prefix}Board updated {html.escape(board_age_text(updated, now))}{stamp}.{flag}</p>')
     return "".join(lines)
 
 
@@ -5200,7 +5033,7 @@ def session_desk_html(
         empty = "Nothing from this session is waiting on you. Earlier work is below."
     head = (
         f'<div class="section-head"><div><h2>{html.escape(title)}</h2><p>{html.escape(description)}</p></div>'
-        f'<span class="count">{len(entries)}</span></div>'
+        f'{count_badge(len(entries))}</div>'
     )
     body = []
     for heading, members in view.desk_groups:
@@ -5221,7 +5054,7 @@ def stale_calls_html(view: BoardView, now: datetime, reactions: ReactionContext 
         '<summary><div class="section-head"><div><h2>Marked stale</h2>'
         '<p>One-off or already decided; Firstmate marked these no longer relevant, so they are off your desk. '
         'Bring one back with <code>quarterdeck calls set-relevance TASK current</code>.</p></div>'
-        f'<span class="count">{len(view.stale)}</span></div></summary>'
+        f'{count_badge(len(view.stale))}</div></summary>'
         + "".join(
             board_entry_html(entry, show_home, now, reactions)
             + (f'<p class="source-note">Marked stale: {html.escape(entry.reason)}</p>' if entry.reason else "")
@@ -5276,7 +5109,7 @@ def board_html(
         head = (
             f'<div class="section-head"><div><h2>{html.escape(title)}</h2>'
             f'<p>{html.escape(description)}{" " + html.escape(counts) + "." if counts and key != "desk" else ""}</p></div>'
-            f'<span class="count">{len(entries)}</span></div>'
+            f'{count_badge(len(entries))}</div>'
         )
         if key == "desk" and view.session is not None:
             out.append(session_desk_html(view, now, show_home, reactions))
@@ -5489,7 +5322,7 @@ def related_html(
     )
     return (
         '<details class="dashboard-section related" id="related" data-refresh-key="related">'
-        f'<summary><h2>Related to this session</h2><span class="count">{len(items)}</span></summary>'
+        f'<summary><h2>Related to this session</h2>{count_badge(len(items))}</summary>'
         '<p>Older reports and deferred or held calls that connect to what you are working on now, most related '
         f'first. They are not on your desk.</p><div class="cards">{content}</div></details>'
     )
@@ -7876,127 +7709,460 @@ def topic_order(topic: Topic, state: ReviewState | None) -> tuple[int, float]:
     return (-topic_needs_count(topic, state), -(last.timestamp() if last else 0.0))
 
 
-TOPIC_CSS = """
+# One look for every page: the tokens and components every Quarterdeck page includes. Pages add no styles of their own.
+UI_CSS = """
+/* Tokens: the only colours, type sizes and widths any Quarterdeck page uses. */
 :root { color-scheme: light dark;
-  --ground: #f6f4ef; --ink: #1a2129; --soft: #565f68; --rule: #d6d0c4; --faint: #e9e5dc;
-  --signal: #a8321c; --focus: #1d5c87;
+  --ground: #f6f4ef; --raised: #fbfaf7; --ink: #1a2129; --soft: #565f68; --rule: #d6d0c4; --faint: #e9e5dc;
+  --signal: #a8321c; --signal-ground: #f6e6e1; --focus: #1d5c87;
   --serif: Charter, "Bitstream Charter", "Iowan Old Style", "Sitka Text", Cambria, "Noto Serif", Georgia, serif;
   --sans: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
-  --mono: ui-monospace, "SF Mono", Menlo, Consolas, monospace; }
+  --mono: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+  --text-xs: .8rem; --text-sm: .9rem; --text-code: .9em; --text-lead: 1.2rem; --text-md: 1rem; --text-body: 18px; --text-lg: 1.3rem; --text-xl: 1.6rem;
+  --text-title: clamp(1.75rem, 1.4rem + 1.6vw, 2.4rem);
+  --gutter: 1rem; --page: 40rem; --measure: 75ch; --side: 18rem; --tap: 48px; }
 @media (prefers-color-scheme: dark) {
-  :root { --ground: #131619; --ink: #ebe7df; --soft: #a3a9af; --rule: #363c42; --faint: #23282d; --signal: #ff8c6e; --focus: #8ec5ec; }
+  :root { --ground: #131619; --raised: #1a1e22; --ink: #ebe7df; --soft: #a3a9af; --rule: #363c42; --faint: #23282d;
+    --signal: #ff8c6e; --signal-ground: #3a211b; --focus: #8ec5ec; }
 }
+@media (max-width: 30rem) { :root { --text-body: 17px; } }
+@media (min-width: 40.01rem) { :root { --gutter: 2rem; --page: 64rem; } }
+@media (min-width: 90rem) { :root { --gutter: 3rem; --page: 150rem; --side: 20rem; } }
+
+/* Base */
 * { box-sizing: border-box; }
-html { -webkit-text-size-adjust: 100%; }
-body { margin: 0; background: var(--ground); color: var(--ink); font: 18px/1.55 var(--serif); }
+html { -webkit-text-size-adjust: 100%; scroll-padding-top: 4.5rem; }
+body { margin: 0; background: var(--ground); color: var(--ink); font: var(--text-body)/1.55 var(--serif); overflow-wrap: anywhere; }
 a { color: inherit; text-decoration-thickness: 1px; text-underline-offset: .18em; }
 a:hover { text-decoration-thickness: 2px; }
 :focus-visible { outline: 3px solid var(--focus); outline-offset: 2px; }
-.bar { position: sticky; top: 0; z-index: 5; display: flex; align-items: center; justify-content: space-between;
-  gap: 1rem; padding: 0 max(1rem, calc((100vw - 38rem) / 2)); background: var(--ground);
-  border-bottom: 1px solid var(--rule); font: 600 .95rem/1.2 var(--sans); }
-.bar a { display: inline-flex; align-items: center; min-height: 48px; text-decoration: none; }
+button, input, textarea, select { font: 600 var(--text-md)/1.2 var(--sans); color: inherit; }
+button { cursor: pointer; }
+button:disabled { opacity: .6; cursor: default; }
+code { font-family: var(--mono); font-size: var(--text-code); }
+[hidden] { display: none !important; }
+.sr { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; }
+
+/* Header bar: the page's name on the left, where else to go on the right. */
+.bar { position: sticky; top: 0; z-index: 20; display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between;
+  gap: 0 1.2rem; padding: 0 max(var(--gutter), calc((100vw - var(--page)) / 2 + var(--gutter)));
+  background: var(--ground); border-bottom: 1px solid var(--rule); font: 600 var(--text-sm)/1.2 var(--sans); }
+.bar a, .bar .mark { display: inline-flex; align-items: center; min-height: var(--tap); text-decoration: none; }
 .bar a:hover { text-decoration: underline; }
-.bar .home { color: var(--soft); font-weight: 500; overflow-wrap: anywhere; text-align: right; }
-main { max-width: 40rem; margin: 0 auto; padding: 1.6rem 1rem 5rem; }
-h1 { margin: 0 0 1.2rem; font: 700 clamp(1.75rem, 7vw, 2.4rem)/1.12 var(--serif); letter-spacing: -.012em; overflow-wrap: anywhere; }
-.closed { margin: -.6rem 0 1.2rem; font: 600 .9rem var(--sans); color: var(--soft); }
-.label, h2, .entry-head, .state dt, .decision .asked, .footnote { font-family: var(--sans); }
-.state { margin: 0 0 .5rem; border-top: 2px solid var(--ink); }
-.state > div { display: grid; grid-template-columns: 7rem minmax(0, 1fr); gap: .15rem 1rem; padding: .75rem 0;
-  border-bottom: 1px solid var(--rule); }
-.state dt { padding-top: .2rem; font-size: .8rem; font-weight: 600; letter-spacing: .06em; text-transform: uppercase; color: var(--soft); }
-.state dd { margin: 0; min-width: 0; overflow-wrap: anywhere; }
-.state ul { list-style: none; margin: 0; padding: 0; }
-.state li + li { margin-top: .35rem; }
-.state .you { color: var(--signal); font-weight: 700; }
-.piece-id { font: .8rem var(--mono); color: var(--soft); margin-right: .45rem; }
-.piece-state { font: .85rem var(--sans); color: var(--soft); white-space: nowrap; }
-.piece-state.needs { color: var(--signal); font-weight: 600; }
-.state a { display: inline-block; min-height: 32px; }
-h2 { display: flex; align-items: baseline; gap: .55rem; margin: 2.4rem 0 .9rem; font-size: .8rem; font-weight: 600;
-  letter-spacing: .08em; text-transform: uppercase; color: var(--soft); }
-h2 .n { font-variant-numeric: tabular-nums; color: var(--ink); }
+.bar .mark { font: 700 var(--text-md)/1 var(--serif); letter-spacing: -.01em; }
+.bar-links { display: flex; flex-wrap: wrap; align-items: center; gap: 0 1.2rem; }
+.bar-home { color: var(--soft); font-weight: 500; text-align: right; }
+
+/* Page body */
+main { width: 100%; max-width: var(--page); margin: 0 auto; padding: 1.6rem var(--gutter) 5rem; }
+h1 { margin: 0 0 1.2rem; font: 700 var(--text-title)/1.12 var(--serif); letter-spacing: -.012em; }
+h2 { display: flex; flex-wrap: wrap; align-items: baseline; gap: .5rem; margin: 2.4rem 0 .9rem; font: 700 var(--text-md)/1.3 var(--sans); color: var(--ink); }
+h2 .n { font-variant-numeric: tabular-nums; color: var(--soft); font-weight: 600; }
 h2.needs .n { color: var(--signal); }
-.decision { margin: 0 0 1.4rem; padding: .2rem 0 .2rem 1rem; border-left: 3px solid var(--signal); scroll-margin-top: 4rem; }
-.decision .asked { margin: 0; font-size: .82rem; color: var(--soft); }
-.decision h3 { margin: .2rem 0 .5rem; font: 700 1.32rem/1.25 var(--serif); overflow-wrap: anywhere; }
-.decision .rec { margin: .6rem 0 .2rem; }
-.decision .rec b { font-weight: 700; }
-.decision .opts { margin: .2rem 0 0; color: var(--soft); }
-.prose { overflow-wrap: anywhere; }
-.prose p, .prose ul, .prose ol, .prose pre, .prose blockquote { margin: .35rem 0; }
-.prose ul, .prose ol { padding-left: 1.3rem; }
-.prose h1, .prose h2, .prose h3, .prose h4 { margin: .8rem 0 .3rem; font: 700 1.05rem/1.3 var(--serif); letter-spacing: 0; text-transform: none; color: var(--ink); }
-.prose pre { overflow-x: auto; padding: .7rem .8rem; background: var(--faint); font-size: .85rem; }
-.prose code { font: .85em var(--mono); }
-.prose blockquote { margin-left: 0; padding-left: .9rem; border-left: 2px solid var(--rule); color: var(--soft); }
-.prose .table-wrap { overflow-x: auto; }
-.prose table { border-collapse: collapse; font: .9rem var(--sans); }
-.prose th, .prose td { border-bottom: 1px solid var(--rule); padding: .35rem .6rem .35rem 0; text-align: left; vertical-align: top; }
-.log { list-style: none; margin: 0; padding: 0; border-top: 2px solid var(--ink); }
-.day { margin: 0; padding: 1.1rem 0 .2rem; font: 600 .8rem var(--sans); letter-spacing: .06em; text-transform: uppercase; color: var(--soft); }
-.entry { padding: .8rem 0 .9rem; border-bottom: 1px solid var(--faint); scroll-margin-top: 4rem; }
-.entry.you { padding-left: 1rem; border-left: 2px solid var(--ink); }
-.entry-head { display: flex; flex-wrap: wrap; align-items: baseline; gap: 0 .6rem; margin: 0 0 .15rem; font-size: .85rem; color: var(--soft); }
-.entry-head .who { font-weight: 700; color: var(--ink); }
-.entry-head time { font-variant-numeric: tabular-nums; }
-.entry .ties { margin: .35rem 0 0; font: .88rem/1.45 var(--sans); color: var(--soft); }
-.entry .ties a { color: var(--ink); }
-.entry .asks { margin: .3rem 0 0; font-weight: 700; }
-.entry .docs { margin: .35rem 0 0; padding: 0; list-style: none; font: .9rem var(--sans); }
+.n[data-n="0"], .n[data-n="1"], .count[data-n="0"], .count[data-n="1"] { display: none; }
+h3 { margin: 1.2rem 0 .4rem; font: 700 var(--text-md)/1.3 var(--sans); }
+.stamp, .meta { margin: 0 0 1.4rem; font: var(--text-sm)/1.5 var(--sans); color: var(--soft); }
+.notice { margin: 0 0 1rem; font: var(--text-sm)/1.45 var(--sans); color: var(--soft); }
 .empty { color: var(--soft); }
-.problems { margin: 2.6rem 0 0; padding: .8rem 0 0; border-top: 1px solid var(--rule); font: .9rem/1.5 var(--sans); color: var(--soft); }
-.problems summary { min-height: 44px; display: flex; align-items: center; cursor: pointer; font-weight: 600; color: var(--ink); }
-.problems ul { margin: .2rem 0 .6rem; padding-left: 1.2rem; }
-.footnote { margin: 2.4rem 0 0; font-size: .82rem; color: var(--soft); overflow-wrap: anywhere; }
-button { font: 600 1rem/1.2 var(--sans); color: inherit; cursor: pointer; }
+.footnote { margin: 2.4rem 0 0; font: var(--text-xs)/1.5 var(--sans); color: var(--soft); }
+.more { margin: 2.6rem 0 0; padding-top: 1rem; border-top: 1px solid var(--rule); font: var(--text-md)/1.5 var(--sans); }
+.more a { font-weight: 600; }
+.group-label { margin: 1.4rem 0 .35rem; font: 600 var(--text-sm) var(--sans); color: var(--soft); }
+.closed { margin: -.6rem 0 1.2rem; font: 600 var(--text-sm) var(--sans); color: var(--soft); }
+.path { color: var(--soft); font-weight: 400; }
+
+/* Exceptions: a ruled note, the word says what happened. */
+.failure, .warning { margin: 1rem 0; padding: .7rem 1rem; border-left: 3px solid var(--signal); background: var(--signal-ground);
+  font: var(--text-sm)/1.5 var(--sans); }
+.warning { border-left-color: var(--soft); background: var(--faint); }
+.failure p, .warning p { margin: .35rem 0 0; }
+
+/* Status words: plain text; colour only for the exception that needs you. */
+.status, .piece-state, .result-state { font: var(--text-sm) var(--sans); color: var(--soft); }
+.status.needs, .piece-state.needs, .result-state.needs, .state .you { color: var(--signal); font-weight: 700; }
+.chip { display: inline-block; font: var(--text-xs)/1.5 var(--sans); color: var(--soft); }
+.chip + .chip::before { content: ""; display: inline-block; width: .9rem; }
+.count { font: 600 var(--text-sm) var(--sans); font-variant-numeric: tabular-nums; color: var(--soft); }
+
+/* Buttons: one filled primary per view; the rest outlined or plain links. */
+.btn, .opt, .ask-send, .filter, .request-lavish, .reaction-choice, .reaction-send, .reaction-answer, .views-rail button, .view-editor button,
+.route-toggle.btn { display: inline-flex; align-items: center; justify-content: center; min-height: var(--tap); padding: 0 1.1rem;
+  border: 1.5px solid var(--ink); border-radius: 2px; background: transparent; color: var(--ink); font: 600 var(--text-md)/1.2 var(--sans);
+  text-decoration: none; }
+.btn.primary, .opt.recommended, .ask-send, .reaction-answer, .reaction-choice[aria-pressed=true], .filter[aria-pressed=true] { background: var(--ink); color: var(--ground); }
+.words .ask-send { background: transparent; color: var(--ink); }
+.btn:hover, .opt:hover, .filter:hover { box-shadow: inset 0 -3px 0 var(--signal); }
+.opt:active, .btn:active { transform: translateY(1px); }
+.quiet, .request-lavish.quiet { border-color: var(--rule); color: var(--soft); }
+.linkish, .discuss, .undo, .route-toggle, .push-toggle { min-height: var(--tap); padding: 0 .2rem; border: 0; background: none; color: inherit;
+  font: 600 var(--text-md)/1.2 var(--sans); text-decoration: underline; text-decoration-thickness: 1px; text-underline-offset: .2em; }
+a.discuss { display: inline-flex; align-items: center; }
+
+/* Fields */
+input[type=text], input[type=search], textarea, .ask-text { min-height: var(--tap); padding: .6rem .7rem; border: 1px solid var(--soft); border-radius: 2px;
+  background: transparent; color: var(--ink); font: 400 var(--text-md)/1.45 var(--serif); }
+.field, .ask label, .words label, .ask-label { display: block; margin: 0 0 .35rem; font: 600 var(--text-sm) var(--sans); color: var(--soft); }
+
+/* Row lists: one link per row, title then a line and a quiet meta line. */
+.rows, .topic-list { list-style: none; margin: 0; padding: 0; border-top: 2px solid var(--ink); }
+.rows li, .topic-list li { border-bottom: 1px solid var(--rule); }
+.row, .topic-row { display: grid; gap: .1rem; padding: .75rem 0; min-height: var(--tap); text-decoration: none; }
+.row:hover .row-title, .row:focus-visible .row-title, .topic-row:hover .topic-title { text-decoration: underline; }
+.row-title, .topic-title { font: 700 var(--text-lead)/1.3 var(--serif); }
+.row-line, .topic-now { max-width: var(--measure); }
+.row-meta, .topic-meta { font: var(--text-sm)/1.4 var(--sans); color: var(--soft); }
+.result-kind { font: 600 var(--text-xs) var(--sans); color: var(--soft); }
+
+/* Panels: a raised block with a rule, used for cards, home panels and the desk. */
+.panel, .card, .board-item, .act-card, .home, .headline { min-width: 0; margin: .6rem 0; padding: .9rem 1rem; background: var(--raised);
+  border: 1px solid var(--rule); border-radius: 2px; }
+.card h3 { margin: .1rem 0 .5rem; font: 700 var(--text-lead)/1.3 var(--serif); }
+.card p { margin: .4rem 0; }
+.eyebrow { font: 600 var(--text-xs) var(--sans); color: var(--soft); }
+.cards { display: grid; grid-template-columns: repeat(auto-fill, minmax(min(100%, 20rem), 1fr)); gap: .8rem; }
+.cards .card { margin: 0; }
+
+/* Decisions: the one-tap answer card. */
+.decision { margin: 0 0 1.4rem; padding: .2rem 0 .2rem 1rem; border-left: 3px solid var(--signal); scroll-margin-top: 4rem; max-width: var(--measure); }
+.decision .asked { margin: 0; font: var(--text-xs)/1.4 var(--sans); color: var(--soft); }
+.decision h3 { margin: .2rem 0 .5rem; font: 700 var(--text-lg)/1.25 var(--serif); }
+.decision .rec { margin: .6rem 0 .2rem; }
+.decision .opts { margin: .2rem 0 0; color: var(--soft); }
 .answer { display: flex; flex-wrap: wrap; align-items: center; gap: .5rem 1rem; margin: .8rem 0 0; }
-.answer[hidden] { display: none; }
-.opts-row { display: flex; flex-wrap: wrap; gap: .5rem; }
-.opt { min-height: 48px; padding: 0 1.1rem; border: 1.5px solid var(--ink); border-radius: 2px; background: transparent; }
-.opt.recommended { background: var(--ink); color: var(--ground); }
-.opt:hover { box-shadow: inset 0 -3px 0 var(--signal); }
-.opt:active { transform: translateY(1px); }
-.discuss, .undo, .linkish { min-height: 48px; padding: 0 .2rem; border: 0; background: none; text-decoration: underline;
-  text-decoration-thickness: 1px; text-underline-offset: .2em; }
-.answer-status { margin: .8rem 0 0; font: .95rem/1.45 var(--sans); }
-.answer-status[hidden] { display: none; }
-.answer-status .undo { margin-left: .4rem; font-weight: 700; }
 .answer .words { flex: 1 1 100%; }
-.words .ask-send { border: 1.5px solid var(--ink); background: transparent; color: var(--ink); }
-.words label { display: block; margin: 0 0 .3rem; font: 600 .8rem var(--sans); letter-spacing: .08em; text-transform: uppercase; color: var(--soft); }
+.opts-row { display: flex; flex-wrap: wrap; gap: .5rem; }
+.answer-status { margin: .8rem 0 0; font: var(--text-md)/1.45 var(--sans); }
+.answer-status .undo { margin-left: .4rem; font-weight: 700; }
 .decision.answered { margin: 0 0 .8rem; border-left-color: var(--rule); }
 .decision .said-line { display: flex; flex-wrap: wrap; align-items: baseline; gap: 0 .7rem; margin: 0; min-height: 44px;
-  padding: .55rem 0; font: .95rem/1.45 var(--sans); color: var(--soft); }
+  padding: .55rem 0; font: var(--text-md)/1.45 var(--sans); color: var(--soft); }
 .decision details.said-line { display: block; }
 .decision .said-line summary { display: flex; flex-wrap: wrap; align-items: baseline; gap: 0 .7rem; cursor: pointer; list-style: none; }
 .decision .said-line summary::-webkit-details-marker { display: none; }
 .decision .said-line summary b { text-decoration: underline dotted; text-underline-offset: .2em; }
-.decision .said-line .q { font: 700 1.02rem/1.35 var(--serif); color: var(--ink); overflow-wrap: anywhere; }
-.decision .said-line .said { overflow-wrap: anywhere; }
+.decision .said-line .q { font: 700 var(--text-md)/1.35 var(--serif); color: var(--ink); }
 .decision .said-line b { color: var(--ink); }
-.said-full { margin: .4rem 0 0; font: 1rem/1.5 var(--serif); color: var(--ink); overflow-wrap: anywhere; white-space: pre-wrap; }
-.prose details.said-line summary { cursor: pointer; }
+.said-full { margin: .4rem 0 0; font: var(--text-md)/1.5 var(--serif); color: var(--ink); white-space: pre-wrap; }
+
+/* Prose: rendered Markdown. Paragraphs keep a readable line; tables and code may use the width. */
+.prose p, .prose ul, .prose ol, .prose pre, .prose blockquote { margin: .5rem 0; }
+.prose > p, .prose > ul, .prose > ol, .prose > blockquote, .prose > h1, .prose > h2, .prose > h3, .prose > h4, .prose > h5, .prose > h6 { max-width: var(--measure); }
+.prose ul, .prose ol { padding-left: 1.3rem; }
+.prose h1, .prose h2, .prose h3, .prose h4, .prose h5, .prose h6 { display: block; margin: 1.4rem 0 .4rem; font: 700 var(--text-lg)/1.3 var(--serif); color: var(--ink); }
+.prose h1 { font-size: var(--text-xl); }
+.prose h3, .prose h4, .prose h5, .prose h6 { font-size: var(--text-md); }
+.prose pre { overflow-x: auto; padding: .7rem .8rem; background: var(--faint); font-size: var(--text-sm); }
+.prose blockquote { margin-left: 0; padding-left: .9rem; border-left: 2px solid var(--rule); color: var(--soft); }
+.table-wrap { overflow-x: auto; max-width: 100%; }
+table { border-collapse: collapse; font: var(--text-sm)/1.45 var(--sans); overflow-wrap: normal; }
+th, td { border-bottom: 1px solid var(--rule); padding: .45rem .8rem .45rem 0; text-align: left; vertical-align: top; overflow-wrap: break-word; }
+thead th { border-bottom: 2px solid var(--ink); }
+td { font-variant-numeric: tabular-nums; }
+th small { display: block; color: var(--soft); font-weight: 400; }
+
+/* Topic state: label column then value. */
+.state { margin: 0 0 .5rem; border-top: 2px solid var(--ink); }
+.state > div { display: grid; grid-template-columns: 7rem minmax(0, 1fr); gap: .15rem 1rem; padding: .75rem 0; border-bottom: 1px solid var(--rule); }
+.state dt { padding-top: .2rem; font: 600 var(--text-sm) var(--sans); color: var(--soft); }
+.state dd { margin: 0; min-width: 0; }
+.state dd > p { margin: 0; }
+.state ul { list-style: none; margin: 0; padding: 0; }
+.state li + li { margin-top: .35rem; }
+.state a { display: inline-block; min-height: 32px; }
+.piece-id { font: var(--text-xs) var(--mono); color: var(--soft); margin-right: .45rem; }
+.piece-state { white-space: nowrap; }
+
+/* Conversation log */
+.log { list-style: none; margin: 0; padding: 0; border-top: 2px solid var(--ink); }
+.day { margin: 0; padding: 1.1rem 0 .2rem; font: 600 var(--text-sm) var(--sans); color: var(--soft); }
+.entry { padding: .8rem 0 .9rem; border-bottom: 1px solid var(--faint); scroll-margin-top: 4rem; }
+.entry > .prose, .entry > p { max-width: var(--measure); }
+.entry.you { padding-left: 1rem; border-left: 2px solid var(--ink); }
+.entry-head { display: flex; flex-wrap: wrap; align-items: baseline; gap: 0 .6rem; margin: 0 0 .15rem; font: var(--text-sm) var(--sans); color: var(--soft); }
+.entry-head .who { font-weight: 700; color: var(--ink); }
+.entry-head time { font-variant-numeric: tabular-nums; }
+.entry .ties { margin: .35rem 0 0; font: var(--text-sm)/1.45 var(--sans); color: var(--soft); }
+.entry .ties a { color: var(--ink); }
+.entry .asks { margin: .3rem 0 0; font-weight: 700; }
+.entry .docs { margin: .35rem 0 0; padding: 0; list-style: none; font: var(--text-sm) var(--sans); }
 .entry.pending .ties { color: var(--signal); }
-.ask { position: sticky; bottom: 0; z-index: 4; margin: 2rem -1rem 0; padding: .7rem 1rem calc(.8rem + env(safe-area-inset-bottom));
+.problems { margin: 2.6rem 0 0; padding: .8rem 0 0; border-top: 1px solid var(--rule); font: var(--text-sm)/1.5 var(--sans); color: var(--soft); }
+.problems summary { min-height: 44px; display: flex; align-items: center; cursor: pointer; font-weight: 600; color: var(--ink); }
+.problems ul { margin: .2rem 0 .6rem; padding-left: 1.2rem; }
+
+/* Ask box: a question to Firstmate. On a thread it stays at the bottom of the screen. */
+.ask { position: sticky; bottom: 0; z-index: 4; margin: 2rem calc(-1 * var(--gutter)) 0; padding: .7rem var(--gutter) calc(.8rem + env(safe-area-inset-bottom));
   background: var(--ground); border-top: 2px solid var(--ink); }
-.ask label { display: block; margin: 0 0 .35rem; font: 600 .8rem var(--sans); letter-spacing: .08em; text-transform: uppercase; color: var(--soft); }
-.ask .about { display: flex; flex-wrap: wrap; align-items: baseline; gap: 0 .5rem; margin: 0 0 .4rem; font: .9rem/1.4 var(--sans); }
-.ask .about[hidden] { display: none; }
+.ask .about { display: flex; flex-wrap: wrap; align-items: baseline; gap: 0 .5rem; margin: 0 0 .4rem; font: var(--text-sm)/1.4 var(--sans); }
 .ask .about .linkish { min-height: 32px; }
 .ask-row { display: flex; align-items: flex-end; gap: .6rem; }
-.ask-text { flex: 1; min-width: 0; min-height: 48px; max-height: 40vh; padding: .65rem .7rem; border: 1px solid var(--soft); border-radius: 2px;
-  background: transparent; color: var(--ink); font: 1rem/1.45 var(--serif); resize: none; }
-.ask-send { min-height: 48px; padding: 0 1.2rem; border: 0; border-radius: 2px; background: var(--ink); color: var(--ground); }
-.ask-send:disabled { opacity: .6; cursor: progress; }
-.ask-status { margin: .35rem 0 0; min-height: 1.2em; font: .88rem/1.4 var(--sans); color: var(--soft); }
-@media (max-width: 30rem) {
-  body { font-size: 17px; }
+.ask-text { flex: 1; min-width: 0; max-height: 40vh; resize: none; }
+.ask-status { margin: .35rem 0 0; min-height: 1.2em; font: var(--text-sm)/1.4 var(--sans); color: var(--soft); }
+.front-ask { max-width: 60rem; margin: 2.4rem 0 0; padding-top: .8rem; border-top: 2px solid var(--ink); }
+.front-ask .ask-text { display: block; width: 100%; }
+.front-ask .route { display: flex; flex-wrap: wrap; align-items: center; gap: 0 .5rem; margin: .4rem 0 0; font: var(--text-sm)/1.4 var(--sans); }
+.front-ask .route-how { color: var(--soft); }
+.front-ask .ask-row { margin: .6rem 0 0; }
+.route-list { margin: .3rem 0; padding: .3rem .8rem; border: 1px solid var(--rule); font: var(--text-md)/1.4 var(--sans); }
+.route-list legend { padding: 0 .3rem; font-size: var(--text-xs); color: var(--soft); }
+.route-option { display: flex; align-items: center; gap: .6rem; min-height: 44px; }
+.route-option input { width: 1.2rem; height: 1.2rem; accent-color: var(--ink); }
+
+/* Search */
+.search-box { display: flex; gap: .5rem; margin: 0 0 .8rem; }
+.search-box input { flex: 1; min-width: 0; }
+.filters { display: flex; gap: .5rem; overflow-x: auto; padding: 0 0 .8rem; scrollbar-width: none; }
+.filters::-webkit-scrollbar { display: none; }
+.filter { flex: none; min-height: 44px; padding: 0 .9rem; border-width: 1px; border-color: var(--rule); }
+
+/* Document pages: the source path, the review buttons, then the document. */
+.doc-source { margin: -.6rem 0 1.2rem; font: var(--text-sm)/1.4 var(--sans); color: var(--soft); }
+.review-actions { margin: 0 0 1.4rem; font: var(--text-sm)/1.4 var(--sans); }
+.request-row { display: flex; flex-wrap: wrap; align-items: center; gap: .65rem; margin: .8rem 0 0; }
+.request-status { color: var(--soft); font: var(--text-sm)/1.4 var(--sans); }
+.review-actions #qd-saved-back { display: inline-flex; align-items: center; margin-top: .4rem; min-height: 44px; }
+
+/* Adoption */
+.headline .big { margin: 0 0 .4rem; font: 700 var(--text-lg)/1.35 var(--serif); }
+.headline p { margin: 0 0 .4rem; max-width: var(--measure); }
+.tag { color: var(--soft); font: var(--text-xs) var(--sans); }
+.adoption ul { margin: 0; padding-left: 1.2rem; }
+.adoption li { margin: .3rem 0; }
+
+/* Previous page (classic.html) */
+.status-line { margin: 0; padding: .2rem max(var(--gutter), calc((100vw - var(--page)) / 2 + var(--gutter)));
+  border-bottom: 1px solid var(--rule); font: 600 var(--text-md)/1.3 var(--sans); display: flex; flex-wrap: wrap; align-items: center; column-gap: 1.2rem; }
+.status-line a { display: inline-flex; align-items: center; min-height: 44px; }
+.status-line a[data-need=some], .status-line a[data-need=unknown] { color: var(--signal); }
+.offline-note { margin: 0; padding: .5rem max(var(--gutter), calc((100vw - var(--page)) / 2 + var(--gutter))); background: var(--signal-ground);
+  border-bottom: 1px solid var(--rule); font: var(--text-sm)/1.4 var(--sans); }
+header .bar { position: static; }
+.bar h1.mark { margin: 0; }
+.masthead { padding: .5rem max(var(--gutter), calc((100vw - var(--page)) / 2 + var(--gutter))) .3rem; }
+.masthead .stamp { margin: 0 0 .2rem; }
+.push-control { display: inline-flex; flex-wrap: wrap; align-items: center; gap: 0 .5rem; margin-left: .6rem; }
+.board-note { margin: 0; }
+.board-note .stale { color: var(--signal); }
+.shell { width: 100%; max-width: var(--page); margin: 0 auto; }
+.shell > main { max-width: none; }
+.jump { position: sticky; top: 0; z-index: 10; display: flex; flex-wrap: nowrap; gap: 0 1.1rem; margin: 0; padding: 0 var(--gutter);
+  background: var(--ground); border-bottom: 1px solid var(--rule); overflow-x: auto; scrollbar-width: none; font: 600 var(--text-sm)/1.2 var(--sans); }
+.jump::-webkit-scrollbar { display: none; }
+.jump a { flex: none; display: inline-flex; align-items: center; gap: .35rem; min-height: 44px; text-decoration: none; white-space: nowrap; }
+.jump a:hover { text-decoration: underline; }
+.jump b { color: var(--signal); font-variant-numeric: tabular-nums; }
+.stamp-short, .board-ok-short { display: none; }
+.dashboard-section { margin: 2rem 0; }
+.section-head { display: flex; flex-wrap: wrap; align-items: baseline; column-gap: .6rem; margin-bottom: .8rem; }
+.section-head > div { display: contents; }
+.section-head > div > p { order: 2; flex: 1 0 100%; }
+.section-head h2, .dashboard-section h2 { margin: 0; }
+.section-head p { margin: .3rem 0; color: var(--soft); font: var(--text-sm)/1.45 var(--sans); max-width: var(--measure); }
+details.dashboard-section > summary, details.board-band > summary, .topic-done > summary, .board-more > summary, .bearing summary, #activity > summary {
+  display: flex; flex-wrap: wrap; align-items: baseline; gap: .6rem; min-height: var(--tap); padding-top: .6rem; cursor: pointer; font: 600 var(--text-md)/1.3 var(--sans); }
+details.dashboard-section > summary h2, details.board-band > summary h2 { display: inline; margin: 0; }
+.summary { display: grid; grid-template-columns: repeat(auto-fill, minmax(10rem, 1fr)); gap: .8rem; margin: 1rem 0 2rem; }
+.metric { padding: .6rem 0; border-top: 2px solid var(--ink); }
+.metric b { display: block; font: 700 var(--text-xl)/1.1 var(--serif); font-variant-numeric: tabular-nums; }
+.metric span { color: var(--soft); font: var(--text-sm) var(--sans); }
+.home { margin: 2rem 0; }
+.home-head { display: flex; justify-content: space-between; gap: 1rem; margin-bottom: 1rem; }
+.home h2 { margin: 0; font: 700 var(--text-xl)/1.2 var(--serif); }
+.home-charter { margin: .3rem 0 0; max-width: var(--measure); }
+.home-role, .home-source { margin: 0 0 .25rem; color: var(--soft); font: var(--text-sm)/1.4 var(--sans); }
+.home-counts { display: flex; flex-wrap: wrap; gap: .3rem 1.2rem; margin: .3rem 0 1rem; color: var(--soft); font: var(--text-sm) var(--sans); }
+.secondmates { margin: 1.7rem 0 0; padding-left: 1rem; border-left: 3px solid var(--rule); }
+.secondmates > h3 { margin: 0 0 .8rem; font: 700 var(--text-lg) var(--serif); }
+.links { margin-top: .8rem !important; font: var(--text-sm) var(--sans); }
+.links a { display: inline-flex; align-items: center; min-height: 44px; padding: .2rem 0; font-weight: 600; }
+.when { color: var(--soft); font: var(--text-sm) var(--sans); }
+.bearing .body { border-left: 3px solid var(--rule); padding-left: .8rem; }
+.source-note, .quiet-summary { color: var(--soft); font: var(--text-sm) var(--sans); }
+footer { border-top: 1px solid var(--rule); margin-top: 3rem; padding-top: 1rem; color: var(--soft); font: var(--text-sm)/1.5 var(--sans); }
+.reaction { margin-top: .6rem; }
+.reaction-latest { margin: .3rem 0; color: var(--soft); font: var(--text-sm) var(--sans); }
+.reaction-reply { display: block; }
+.reaction-text { display: block; width: 100%; min-width: 0; min-height: 5.5rem; max-height: 60vh; resize: vertical; overflow-y: auto; }
+.reaction-count { display: block; margin-top: .25rem; color: var(--soft); font: var(--text-xs) var(--sans); }
+.reaction-count.over { color: var(--signal); font-weight: 700; }
+.reaction-choices { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: .5rem; }
+.reaction-answers { display: flex; flex-wrap: wrap; gap: .5rem; }
+.reaction-answer { flex: 1 1 8rem; }
+.board { margin-bottom: 1rem; }
+.board-item { padding: 0; border-left: 3px solid var(--ink); }
+.board-item summary { display: flex; gap: .8rem; align-items: flex-start; min-height: 3rem; padding: .8rem 1rem; cursor: pointer; list-style: none; }
+.board-item summary::-webkit-details-marker, .act-card summary::-webkit-details-marker { display: none; }
+.board-num { flex: none; min-width: 2rem; font: 700 var(--text-lg)/1.3 var(--serif); color: var(--soft); text-align: right; }
+.board-text { display: block; min-width: 0; }
+.board-title { display: block; font: 700 var(--text-lead)/1.3 var(--serif); }
+.board-home { display: inline-block; margin-top: .15rem; color: var(--soft); font: var(--text-xs) var(--sans); }
+.board-line { display: block; margin-top: .2rem; max-width: var(--measure); }
+.board-body { border-top: 1px solid var(--rule); padding: .3rem 1rem 1rem; }
+.board-body > p { max-width: var(--measure); }
+.board-links { margin: .5rem 0 0; padding-left: 1.1rem; }
+.board-links li { margin: .6rem 0; }
+.board-links a { display: inline-block; min-height: 2.75rem; line-height: 2.75rem; }
+.board-links .path { display: block; margin-top: -.5rem; font-size: var(--text-xs); }
+.board-chips, .board-brief { display: flex; flex-wrap: wrap; gap: .35rem; margin-top: .45rem; }
+.board-brief { align-items: center; gap: .5rem; }
+.chip-group { color: var(--ink); font-weight: 700; }
+.chip-deferred, .chip-sweep, .chip-reaction { color: var(--signal); }
+.chip-rec { color: var(--ink); font-size: var(--text-sm); }
+.rec-label { color: var(--soft); font-weight: 700; }
+.brief-link { display: inline-flex; align-items: center; min-height: 44px; font: 600 var(--text-sm) var(--sans); }
+.board-more > summary { color: var(--ink); }
+.views { display: grid; grid-template-columns: 11rem minmax(0, 1fr); gap: 1.2rem; align-items: start; }
+.views-rail { display: flex; flex-direction: column; gap: .4rem; }
+.views-rail button, .view-editor button { justify-content: flex-start; border-width: 1px; border-color: var(--rule); text-align: left; }
+.views-rail button[aria-pressed=true] { border-color: var(--ink); box-shadow: inset 4px 0 0 var(--ink); }
+.view-section { margin: 0 0 1.4rem; }
+.view-section h4 { margin: .8rem 0 .2rem; color: var(--soft); font: 600 var(--text-sm) var(--sans); }
+.view-editor { margin-top: 1rem; }
+.view-editor ul { list-style: none; padding: 0; }
+.view-editor li { display: flex; gap: .5rem; align-items: center; min-height: 44px; }
+.view-editor li label { flex: 1 1 auto; }
+.desk-group { margin: .9rem 0 .4rem; font: 600 var(--text-sm) var(--sans); color: var(--soft); }
+.sweep { margin: .2rem 0 .6rem; padding: .6rem .8rem; border-left: 3px solid var(--signal); background: var(--signal-ground); font: var(--text-sm)/1.45 var(--sans); }
+#cards .act-group { display: none; }
+.cards-new { color: var(--signal); font: 700 var(--text-sm) var(--sans); text-decoration: none; }
+.act-group { margin: 1.1rem 0 .3rem; color: var(--soft); font: 600 var(--text-sm) var(--sans); }
+.act-list { display: grid; gap: 0 1.2rem; }
+.act-card { padding: 0; margin: .5rem 0; border-left: 3px solid var(--rule); }
+.act-card.act-need { border-left-color: var(--signal); }
+.act-card summary { display: block; min-height: 44px; padding: .65rem 1rem; cursor: pointer; list-style: none; }
+.act-top { display: flex; flex-wrap: wrap; align-items: baseline; gap: 0 .6rem; color: var(--soft); font: 600 var(--text-xs) var(--sans); }
+.act-need .act-label { color: var(--signal); }
+.act-time { font-weight: 400; }
+.act-new { display: none; margin-left: auto; color: var(--signal); font-weight: 700; }
+.act-card.unseen .act-new { display: inline; }
+.act-title { display: block; margin-top: .15rem; font: 700 var(--text-lead)/1.3 var(--serif); }
+.act-line { display: block; color: var(--soft); max-width: var(--measure); }
+.act-status { margin-top: .3rem; }
+.act-body { border-top: 1px solid var(--rule); padding: .3rem 1rem 1rem; }
+.act-body > p { max-width: var(--measure); }
+.act-ask { font-weight: 700; }
+.act-docs { margin: .6rem 0; }
+.act-docs-head { margin: 0; font: 600 var(--text-sm) var(--sans); color: var(--soft); }
+.act-docs ul { margin: .2rem 0 0; padding: 0; list-style: none; }
+.act-docs li { margin: 0; padding: .35rem 0; border-top: 1px solid var(--rule); }
+.act-docs a { display: inline-block; min-height: 44px; line-height: 44px; font-weight: 600; }
+.act-docs .path { display: block; margin-top: -.5rem; font-size: var(--text-xs); }
+.act-facts { margin: .4rem 0; padding-left: 1.1rem; }
+.wait { margin: .5rem 0 .8rem; padding-bottom: .4rem; border-bottom: 1px solid var(--rule); }
+.wait-ask { font-weight: 700; }
+.wait-head { margin: .8rem 0 .2rem; font: 600 var(--text-md) var(--sans); }
+.act-card.arrived { animation: act-in .45s ease-out, act-glow 3s ease-out; }
+@keyframes act-in { from { opacity: 0; transform: translateY(-14px); } to { opacity: 1; transform: none; } }
+@keyframes act-glow { from { box-shadow: 0 0 0 3px var(--signal); } to { box-shadow: 0 0 0 0 transparent; } }
+@media (prefers-reduced-motion: reduce) { .act-card.arrived { animation: none; } }
+.topic-meta b, .topic-needs { color: var(--signal); }
+.topic-done { margin-top: .8rem; }
+
+/* Cloud artifact (templates/artifact.html.tmpl): its script builds these blocks. */
+.artifact section, .artifact details.group { margin: 1.6rem 0; }
+.artifact .head { display: flex; flex-wrap: wrap; align-items: baseline; column-gap: .6rem; }
+.artifact .head > div { display: contents; }
+.artifact .head h2, .artifact details.group > summary h2 { margin: 0; }
+.artifact .head p { order: 2; flex: 1 0 100%; margin: .3rem 0 .6rem; color: var(--soft); font: var(--text-sm)/1.45 var(--sans); }
+.artifact details.group > summary { display: flex; align-items: baseline; gap: .6rem; min-height: var(--tap); padding-top: .6rem; cursor: pointer; }
+.artifact .note { margin: .2rem 0 .6rem; max-width: var(--measure); color: var(--soft); font: var(--text-sm)/1.45 var(--sans); }
+.artifact .chips { display: flex; flex-wrap: wrap; gap: .2rem 0; margin-top: .4rem; }
+.artifact .chip.group { color: var(--ink); font-weight: 700; }
+.artifact .chip.warn { color: var(--signal); }
+.artifact .chip.rec { color: var(--ink); }
+.artifact .actions { display: flex; flex-wrap: wrap; gap: .5rem; align-items: center; margin-top: .6rem; }
+.artifact main button { min-height: var(--tap); padding: 0 1rem; border: 1.5px solid var(--ink); border-radius: 2px; background: transparent; color: var(--ink); }
+.artifact main button[aria-pressed="true"] { background: var(--ink); color: var(--ground); }
+.artifact .banner { margin: 0 0 1rem; padding: .6rem 1rem; border-left: 3px solid var(--ink); background: var(--faint); font: 600 var(--text-sm)/1.45 var(--sans); }
+.artifact .banner.off, .artifact .error { border-left: 3px solid var(--signal); background: var(--signal-ground); }
+.artifact .error { margin: .6rem 0; padding: .6rem 1rem; font: var(--text-sm)/1.45 var(--sans); }
+.artifact .sub { margin: 1rem 0 .3rem; font: 600 var(--text-sm) var(--sans); color: var(--soft); }
+.artifact .card.openable { cursor: pointer; }
+.artifact .card .open { margin-top: .6rem; }
+.artifact .detail h2 { margin: .4rem 0 .2rem; font: 700 var(--text-xl)/1.2 var(--serif); }
+.artifact .detail h3 { margin: 1.2rem 0 .3rem; }
+.artifact .block { margin: .4rem 0; padding: .7rem 1rem; background: var(--raised); border: 1px solid var(--rule); }
+.artifact .block p { margin: .3rem 0; max-width: var(--measure); }
+.artifact .linked { border-left: 3px solid var(--ink); }
+.artifact .linked h4 { margin: 0 0 .2rem; font: 700 var(--text-md)/1.3 var(--serif); }
+.artifact .reaction .latest { margin: .3rem 0; color: var(--soft); font: var(--text-sm) var(--sans); }
+.artifact .reaction .choices { display: flex; flex-wrap: wrap; gap: .4rem; }
+.artifact .reaction .reply { display: flex; flex-wrap: wrap; gap: .5rem; align-items: center; margin-top: .5rem; }
+.artifact .reaction textarea { flex: 1 1 100%; width: 100%; min-height: 5.5rem; max-height: 60vh; resize: vertical; }
+.artifact .reaction .count, .artifact .reaction .field { flex: 1 1 100%; margin: 0; }
+.artifact .reaction .count.over { color: var(--signal); font-weight: 700; }
+.artifact .report-body { max-width: var(--measure); white-space: pre-wrap; font: inherit; }
+.artifact .access { color: var(--signal); }
+
+/* Phones: one column, nothing wider than the screen. */
+@media (max-width: 40rem) {
   .state > div { grid-template-columns: minmax(0, 1fr); }
+  .stamp-long, .board-ok { display: none; }
+  .stamp-short { display: inline; }
+  .views { grid-template-columns: minmax(0, 1fr); }
+  .views-rail { flex-direction: row; flex-wrap: wrap; }
+  .views-rail button { flex: 1 1 auto; justify-content: center; }
 }
-@media print { .bar { position: static; } }
+
+/* Wide screens: the page uses the width with columns, never with longer lines. */
+@media (min-width: 90rem) {
+  .front { display: grid; grid-template-columns: minmax(0, 3fr) minmax(0, 2fr); grid-template-areas: "stamp stamp" "needs changed" "needs topics" "needs ask" "more more";
+    grid-template-rows: auto auto auto 1fr auto; gap: 0 4rem; align-items: start; }
+  .front > .stamp { grid-area: stamp; }
+  .front > #needs { grid-area: needs; }
+  .front > #changed { grid-area: changed; }
+  .front > #topics { grid-area: topics; }
+  .front > .front-ask { grid-area: ask; }
+  .front > .more { grid-area: more; }
+  .front #needs-h, .front #changed-h { margin-top: 0; }
+  .thread { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); grid-template-areas: "title title" "state log" "open log" "foot log";
+    gap: 0 4rem; align-items: start; }
+  .thread > h1, .thread > .closed { grid-column: 1 / -1; }
+  .thread > .state { grid-area: state; }
+  .thread > .open { grid-area: open; }
+  .thread > .conversation { grid-area: log; }
+  .thread > .conversation h2 { margin-top: 0; }
+  .thread > .problems, .thread > .footnote { grid-column: 1; }
+  .thread > .ask { grid-column: 1 / -1; }
+  .finder { display: grid; grid-template-columns: var(--side) minmax(0, 1fr); gap: 0 3rem; align-items: start; }
+  .finder > h1, .finder > .more, .finder > .field { grid-column: 1 / -1; }
+  .finder > .search-box { grid-column: 1 / -1; max-width: 50rem; }
+  .finder > .filters { grid-column: 1; grid-row: span 3; flex-direction: column; position: sticky; top: 4rem; }
+  .finder > .filters .filter { justify-content: flex-start; }
+  .finder > h2 { margin-top: 0; }
+  .finder > h2, .finder > #results, .finder > #zero { grid-column: 2; }
+  #results { display: grid; grid-template-columns: repeat(auto-fill, minmax(26rem, 1fr)); gap: 0 2.5rem; border-top: 0; }
+  #results li { border-top: 1px solid var(--rule); border-bottom: 0; }
+  .doc.with-actions { display: grid; grid-template-columns: minmax(0, 1fr) var(--side); grid-template-areas: "title side" "source side" "body side"; gap: 0 3rem; align-items: start; }
+  .doc > h1 { grid-area: title; }
+  .doc > .doc-source { grid-area: source; }
+  .doc > .review-actions { grid-area: side; position: sticky; top: 4rem; padding-top: .6rem; border-top: 2px solid var(--ink); }
+  .doc > article { grid-area: body; }
+  .adoption { display: grid; grid-template-columns: minmax(0, 3fr) minmax(0, 2fr); gap: 0 4rem; align-items: start; }
+  .adoption > h1, .adoption > .meta, .adoption > .headline, .adoption > .note { grid-column: 1 / -1; }
+  .adoption > .headline { max-width: none; }
+  .shell { display: grid; grid-template-columns: var(--side) minmax(0, 1fr); align-items: start; }
+  .shell > .jump { position: sticky; top: 0; flex-direction: column; flex-wrap: nowrap; max-height: calc(100vh - 4rem); overflow-y: auto;
+    padding: 1.6rem 1rem 2rem var(--gutter); border-bottom: 0; border-right: 1px solid var(--rule); background: none; }
+  .shell > .jump a { min-height: 40px; white-space: normal; }
+  .act-list { grid-template-columns: repeat(auto-fill, minmax(30rem, 1fr)); align-items: start; }
+  div.board-band { display: grid; grid-template-columns: repeat(auto-fill, minmax(34rem, 1fr)); gap: 0 1.2rem; align-items: start; }
+  div.board-band > :not(.board-item) { grid-column: 1 / -1; }
+  .artifact section > div:last-child, .artifact details.group > div { display: grid; grid-template-columns: repeat(auto-fill, minmax(30rem, 1fr));
+    gap: 0 1.2rem; align-items: start; }
+  .artifact section > div:last-child > :not(.card), .artifact details.group > div > :not(.card) { grid-column: 1 / -1; }
+  .topic-list { display: grid; grid-template-columns: repeat(auto-fill, minmax(30rem, 1fr)); gap: 0 2.5rem; border-top: 0; }
+  .topic-list li { border-top: 1px solid var(--rule); border-bottom: 0; }
+}
+@media (min-width: 140rem) {
+  .front { grid-template-columns: minmax(0, 4fr) minmax(0, 3fr) minmax(0, 3fr);
+    grid-template-areas: "stamp stamp stamp" "needs changed topics" "needs changed ask" "more more more"; grid-template-rows: auto auto 1fr auto; }
+  .front #topics-h { margin-top: 0; }
+  .thread { grid-template-columns: minmax(0, 2fr) minmax(0, 3fr); }
+}
+@media print { .bar, .jump { position: static; } .ask { position: static; } }
 """
+
 
 TOPIC_TIME_SCRIPT = """
   <script>
@@ -8103,7 +8269,7 @@ TOPIC_ASK_SCRIPT = """
       function uncount() {
         for (const count of document.querySelectorAll("#needs-h .n, #open-h .n")) {
           const left = Math.max(0, Number(count.textContent) - 1);
-          count.textContent = String(left);
+          count.textContent = count.dataset.n = String(left);
           if (left) continue;
           count.parentElement.classList.remove("needs");
           const empty = document.querySelector("[data-needs-empty]");
@@ -8449,7 +8615,7 @@ def topic_state_html(topic: Topic, snapshot: HomeSnapshot, item_pages: dict[str,
                      pages: dict[str, str] | None, main_href: str, now: datetime | None = None) -> str:
     rows = []
     if topic.now:
-        rows.append(("Now", f"<p style=\"margin:0\">{markdown_inline(topic.now)}</p>"))
+        rows.append(("Now", f"<p>{markdown_inline(topic.now)}</p>"))
     if topic.waiting:
         waits = []
         for who, what in topic.waiting:
@@ -8585,7 +8751,7 @@ def topic_entry_html(entry: TopicEntry, by_id: dict[str, TopicEntry],
         question = html.escape(entry.decision)
         if entry.entry_id and entry.entry_id not in responses:  # an open decision is pinned above the conversation
             question = f'<a href="#decision-{html.escape(entry.entry_id, quote=True)}">{question}</a>'
-        parts.append(f'<p class="asks">Asked: {question}</p>')
+        parts.append(f'<p class="asks">{question}</p>')
     if entry.text:
         parts.append(f'<div class="prose">{topic_markdown(entry.text)}</div>')
     ties = []
@@ -8597,7 +8763,7 @@ def topic_entry_html(entry: TopicEntry, by_id: dict[str, TopicEntry],
         verb = "Answers" if earlier.decision else "Replies to"
         ties.append(f'{verb} <a href="#entry-{html.escape(target, quote=True)}">{html.escape(what)}</a>')
     if entry.who == "you" and entry.entry_id.startswith(TOPIC_ASK_PREFIX) and entry.entry_id not in responses:
-        ties.append("Waiting for Firstmate’s answer")
+        ties.append("Not answered yet")
     if entry.decision:
         replies = responses.get(entry.entry_id, [])
         if replies:
@@ -8605,9 +8771,9 @@ def topic_entry_html(entry: TopicEntry, by_id: dict[str, TopicEntry],
             ties.append(f"Settled by {html.escape(topic_who_text(answer.who).lower() if answer.who != 'you' else 'you')}: "
                         f"{html.escape(topic_reply_summary(answer))}")
         else:
-            ties.append("Open: waiting for your answer")
+            ties.append("Not answered yet")
     if ties:
-        parts.append(f'<p class="ties">{" · ".join(ties)}</p>')
+        parts.append(f'<p class="ties">{"<br>".join(ties)}</p>')
     docs = doc_links_html(entry.text, data_dir, pages, main_href) if entry.text else ""
     if docs:
         links = re.findall(r'<a href="[^"]+">[^<]*</a>', docs)
@@ -8620,7 +8786,7 @@ def topic_pending_ask_html(reaction: dict[str, str], answers: list[TopicEntry]) 
     """A question sent from Quarterdeck that the topic file does not show yet, at the end of the conversation."""
     when = parse_board_time(reaction.get("at"))
     head = '<span class="who">You</span>' + (topic_stamp(when, "clock") if when else "") + "<span>on Quarterdeck</span>"
-    tie = (f"Answered: {html.escape(topic_reply_summary(answers[-1]))}" if answers else "Waiting for Firstmate’s answer")
+    tie = (f"Answered: {html.escape(topic_reply_summary(answers[-1]))}" if answers else "Not answered yet")
     return (f'<li class="entry you{"" if answers else " pending"}" id="entry-{html.escape(topic_ask_id(reaction["id"]), quote=True)}">'
             f'<p class="entry-head">{head}</p><div class="prose"><p>{html.escape(reaction.get("text", ""))}</p></div>'
             f'<p class="ties">{tie}</p></li>')
@@ -8652,7 +8818,7 @@ def topic_page_html(topic: Topic, snapshot: HomeSnapshot, multi_home: bool, gene
     awaiting = len(topic_awaiting(topic, state))
     heading_class = ' class="needs"' if awaiting else ""
     decisions_block = (
-        f'<section aria-labelledby="open-h"><h2{heading_class} id="open-h">Open decisions <span class="n">{awaiting}</span></h2>'
+        f'<section class="open" aria-labelledby="open-h"><h2{heading_class} id="open-h">Open decisions {count_badge(awaiting, "n")}</h2>'
         f"{decisions}</section>" if open_decisions else ""
     )
     log: list[str] = []
@@ -8670,7 +8836,7 @@ def topic_page_html(topic: Topic, snapshot: HomeSnapshot, multi_home: bool, gene
         if ask not in by_id:
             log.append(topic_pending_ask_html(reaction, responses.get(ask, [])))
     log_block = (
-        f'<section aria-labelledby="log-h"><h2 id="log-h">Conversation <span class="n">{len(topic.entries)}</span></h2>'
+        f'<section class="conversation" aria-labelledby="log-h"><h2 id="log-h">Conversation {count_badge(len(topic.entries), "n")}</h2>'
         + (f'<ol class="log" id="log">{"".join(log)}</ol>' if log else
            '<p class="empty">Nothing written here yet.</p>' + ('<ol class="log" id="log"></ol>' if live else ""))
         + "</section>"
@@ -8687,7 +8853,7 @@ def topic_page_html(topic: Topic, snapshot: HomeSnapshot, multi_home: bool, gene
             f"<ul>{lines}</ul><p>Some of what Firstmate wrote may be missing above. "
             "<code>quarterdeck topics check</code> lists the same mistakes.</p></details>"
         )
-    home = f'<span class="home">{html.escape(snapshot.spec.label)}</span>' if multi_home else ""
+    home = f'<span class="bar-home">{html.escape(snapshot.spec.label)}</span>' if multi_home else ""
     source = display_path(topic.path, snapshot.spec.home) if snapshot.spec.home else str(topic.path)
     closed = '<p class="closed">This topic is closed.</p>' if topic.status == "done" else ""
     ask = (
@@ -8706,18 +8872,18 @@ def topic_page_html(topic: Topic, snapshot: HomeSnapshot, multi_home: bool, gene
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <meta name="quarterdeck-{'gen' + 'erated'}" content="read-only topic page">
   <title>{html.escape(title)} · Quarterdeck</title>
-  <style>{TOPIC_CSS}</style>
+  <style>{UI_CSS}</style>
 </head>
 <body{refresh}>
-  <nav class="bar" aria-label="Quarterdeck"><a href="{html.escape(main_href, quote=True)}">&larr; Quarterdeck</a>{home}</nav>
-  <main>
+  <nav class="bar" aria-label="Quarterdeck"><a class="mark" href="{html.escape(main_href, quote=True)}">Quarterdeck</a><span class="bar-links">{home}<a href="{SEARCH_PAGE}">Search</a></span></nav>
+  <main class="thread">
     <h1>{html.escape(title)}</h1>
     {closed}
     {topic_state_html(topic, snapshot, item_pages, pages, main_href, generated)}
     {decisions_block}
     {log_block}
     {problems}
-    <p class="footnote">Read from {html.escape(source)} · built {topic_stamp(generated, "full")}</p>
+    <p class="footnote">Read from {html.escape(source)}. Built {topic_stamp(generated, "full")}.</p>
     {ask}
   </main>
   {TOPIC_TIME_SCRIPT}{topic_ask_script() if live else ""}
@@ -8817,7 +8983,7 @@ def topics_section_html(homes: list[HomeSnapshot], now: datetime, allow_marks: b
     done = sorted(((s, t) for s, t in found if t.status == "done"), key=lambda pair: topic_order(pair[1], pair[0].review_state))
     rows = "".join(row(snapshot, topic) for snapshot, topic in active)
     closed = (
-        f'<details class="topic-done"><summary>Closed topics <span class="count">{len(done)}</span></summary>'
+        f'<details class="topic-done"><summary>Closed topics {count_badge(len(done))}</summary>'
         f'<ul class="topic-list">{"".join(row(snapshot, topic) for snapshot, topic in done)}</ul></details>'
         if done else ""
     )
@@ -8825,41 +8991,12 @@ def topics_section_html(homes: list[HomeSnapshot], now: datetime, allow_marks: b
     return (
         f'<section class="dashboard-section topics" id="topics"><div class="section-head"><div><h2>Topics</h2>'
         "<p>One conversation per piece of work, with what stands now and what Firstmate asked you.</p></div>"
-        f'<span class="count">{len(active)}</span></div>{ask}'
+        f'{count_badge(len(active))}</div>{ask}'
         + (f'<ul class="topic-list">{rows}</ul>' if rows else '<p class="empty">Every topic is closed.</p>')
         + closed + "</section>"
     )
 
 
-TOPICS_FRONT_CSS = """
-    .topic-list { list-style: none; margin: 0; padding: 0; border-top: 1px solid var(--line); }
-    .topic-list li { border-bottom: 1px solid var(--line); }
-    .topic-row { display: grid; gap: .1rem; padding: .7rem .2rem; min-height: 44px; color: var(--ink); text-decoration: none; }
-    .topic-row:hover .topic-title, .topic-row:focus-visible .topic-title { text-decoration: underline; }
-    .topic-title { font: 700 1.2rem/1.3 Georgia, serif; color: var(--navy); overflow-wrap: anywhere; }
-    .topic-now { font-weight: 400; overflow-wrap: anywhere; }
-    .topic-meta { color: var(--muted); font-size: .85rem; font-weight: 400; }
-    .topic-meta b { font-weight: 700; }
-    .topic-needs { color: var(--gold-ink); }
-    .topic-done { margin-top: .8rem; }
-    .topic-done > summary { display: flex; align-items: center; gap: .5rem; min-height: 44px; cursor: pointer; color: var(--sea); font-weight: 700; }
-    .front-ask { margin: 0 0 1rem; }
-    .front-ask .ask-label { display: block; margin-bottom: .3rem; font-weight: 700; }
-    .front-ask .ask-text { display: block; width: 100%; min-height: 3.2rem; max-height: 40vh; padding: .55rem .6rem; border: 1px solid var(--muted);
-      border-radius: 4px; background: var(--paper); color: var(--ink); font: inherit; font-size: 1rem; line-height: 1.4; resize: none; }
-    .front-ask .route { display: flex; flex-wrap: wrap; align-items: center; gap: 0 .45rem; margin: .35rem 0 0; font-size: .92rem; }
-    .front-ask .route-how { color: var(--muted); }
-    .front-ask .route-toggle, .front-ask .ask-send { min-height: 44px; padding: 0 .9rem; border: 1px solid var(--sea); border-radius: 4px;
-      background: var(--paper); color: var(--ink); font: inherit; font-weight: 700; cursor: pointer; }
-    .front-ask .ask-send { background: var(--sea); color: var(--paper); }
-    .front-ask .route-list { margin: .4rem 0; padding: .4rem .8rem; border: 1px solid var(--line); border-radius: 4px; }
-    .front-ask .route-list[hidden] { display: none; }
-    .front-ask .route-option { display: flex; align-items: center; gap: .5rem; min-height: 44px; }
-    .front-ask .route-option input { width: 1.2rem; height: 1.2rem; accent-color: var(--sea); }
-    .front-ask .ask-row { margin: .5rem 0 0; }
-    .front-ask .ask-status { margin: .3rem 0 0; min-height: 1.2em; color: var(--muted); font-size: .9rem; }
-    .front-ask :focus-visible { outline: 3px solid var(--gold); outline-offset: 2px; }
-"""
 
 
 # --- Front page and search -------------------------------------------------------
@@ -8878,50 +9015,6 @@ SEARCH_FILTERS = (("all", "All"), ("needs", "Needs you"), ("underway", "Underway
 PIECE_FILTER = {"needs you": "needs", "ready for review": "needs", "underway": "underway", "blocked": "waiting",
                 "queued": "queued", "done": "done", "cancelled": "done"}
 
-FRONT_CSS = """
-.bar .mark { display: inline-flex; align-items: center; min-height: 48px; font: 700 1.05rem/1 var(--serif); letter-spacing: -.01em; }
-.bar-links { display: flex; align-items: center; gap: 1.2rem; }
-.stamp { margin: 0 0 1.4rem; font: .85rem/1.5 var(--sans); color: var(--soft); }
-.stamp .push-control { display: inline-flex; flex-wrap: wrap; align-items: center; gap: 0 .5rem; margin-left: .4rem; }
-.stamp .push-control[hidden] { display: none; }
-.push-toggle { min-height: 44px; padding: 0 .2rem; border: 0; background: none; color: inherit; text-decoration: underline; }
-#needs-h { margin-top: 0; }
-.needs-group { margin: 1.4rem 0 .35rem; font: 600 .8rem var(--sans); letter-spacing: .08em; text-transform: uppercase; color: var(--soft); }
-a.discuss { display: inline-flex; align-items: center; font: 600 1rem/1.2 var(--sans); }
-.rows { list-style: none; margin: 0; padding: 0; border-top: 2px solid var(--ink); }
-.rows li { border-bottom: 1px solid var(--rule); }
-.rows li[hidden] { display: none; }
-.row { display: grid; gap: .1rem; padding: .75rem 0; min-height: 48px; text-decoration: none; }
-.row:hover .row-title, .row:focus-visible .row-title { text-decoration: underline; }
-.row-title { font: 700 1.08rem/1.3 var(--serif); overflow-wrap: anywhere; }
-.row-line { overflow-wrap: anywhere; }
-.row-meta { font: .85rem/1.4 var(--sans); color: var(--soft); }
-.notice { margin: 0 0 1rem; font: .9rem/1.45 var(--sans); color: var(--soft); }
-.more { margin: 2.6rem 0 0; padding-top: 1rem; border-top: 1px solid var(--rule); font: .95rem/1.5 var(--sans); }
-.more a { font-weight: 600; }
-.front-ask { margin: 2.4rem 0 0; padding-top: .8rem; border-top: 2px solid var(--ink); }
-.front-ask .ask-label { display: block; margin: 0 0 .35rem; font: 600 .8rem var(--sans); letter-spacing: .08em; text-transform: uppercase; color: var(--soft); }
-.front-ask .route { display: flex; flex-wrap: wrap; align-items: center; gap: 0 .5rem; margin: .4rem 0 0; font: .92rem/1.4 var(--sans); }
-.front-ask .route-how { color: var(--soft); }
-.route-toggle { min-height: 44px; padding: 0 .2rem; border: 0; background: none; text-decoration: underline; }
-.route-list { margin: .3rem 0; padding: .3rem .8rem; border: 1px solid var(--rule); font: .95rem/1.4 var(--sans); }
-.route-list[hidden] { display: none; }
-.route-list legend { padding: 0 .3rem; font-size: .8rem; color: var(--soft); }
-.route-option { display: flex; align-items: center; gap: .6rem; min-height: 44px; }
-.route-option input { width: 1.2rem; height: 1.2rem; accent-color: var(--ink); }
-.front-ask .ask-text { display: block; width: 100%; }
-.front-ask .ask-row { margin: .6rem 0 0; }
-.search-box { display: flex; gap: .5rem; margin: 0 0 .8rem; }
-.search-box input { flex: 1; min-width: 0; min-height: 48px; padding: 0 .7rem; border: 1px solid var(--soft); border-radius: 2px;
-  background: transparent; color: var(--ink); font: 1.05rem var(--serif); }
-.filters { display: flex; gap: .5rem; overflow-x: auto; padding: 0 0 .8rem; scrollbar-width: none; }
-.filters::-webkit-scrollbar { display: none; }
-.filter { flex: none; min-height: 44px; padding: 0 .9rem; border: 1px solid var(--rule); border-radius: 2px; background: transparent; }
-.filter[aria-pressed=true] { border-color: var(--ink); background: var(--ink); color: var(--ground); }
-.result-kind { font: 600 .78rem var(--sans); letter-spacing: .08em; text-transform: uppercase; color: var(--soft); }
-.result-state.needs { color: var(--signal); font-weight: 600; }
-.sr { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; }
-"""
 
 FRONT_SCRIPT = """
   <script>
@@ -8957,11 +9050,11 @@ FRONT_SCRIPT = """
           const fresh = times.filter(time => time * 1000 > from).length;
           item.hidden = fresh === 0;
           const more = item.querySelector(".row-more");
-          if (more) more.textContent = fresh > 1 ? " \\u00b7 +" + (fresh - 1) + " more" : "";
+          if (more) more.textContent = fresh > 1 ? " \\u00b7 " + (fresh - 1) + (fresh === 2 ? " more entry" : " more entries") : "";
           if (fresh) shown += 1;
         }
         const count = document.getElementById("changed-n");
-        if (count) count.textContent = String(shown);
+        if (count) count.textContent = count.dataset.n = String(shown);
         const empty = document.getElementById("changed-empty");
         if (empty) empty.hidden = shown > 0;
         const since = document.getElementById("changed-since");
@@ -9021,7 +9114,7 @@ SEARCH_SCRIPT = """
           row.append(link);
           return row;
         }));
-        count.textContent = String(found.length);
+        count.textContent = count.dataset.n = String(found.length);
         zero.hidden = found.length > 0;
         document.getElementById("zero-q").textContent = field.value.trim() ? "\\u201c" + field.value.trim() + "\\u201d" : "this filter";
       }
@@ -9064,7 +9157,7 @@ def topic_reports(topic: Topic, snapshot: HomeSnapshot) -> list[Report]:
     return [report for report in snapshot.reports if report.path.parent.name in named]
 
 
-def deck_page(title: str, body: str, scripts: str = "", refresh_seconds: int | None = None, extra_css: str = "",
+def deck_page(title: str, body: str, scripts: str = "", refresh_seconds: int | None = None,
               head: str = "") -> str:
     """A page in the topic threads' visual system: the thread pages, the front page and search."""
     refresh = f' data-refresh="{int(refresh_seconds)}"' if refresh_seconds else ""
@@ -9076,7 +9169,7 @@ def deck_page(title: str, body: str, scripts: str = "", refresh_seconds: int | N
   <meta name="quarterdeck-{'gen' + 'erated'}" content="read-only review page">
   <title>{html.escape(title)}</title>
   {head}
-  <style>{TOPIC_CSS}{FRONT_CSS}{extra_css}</style>
+  <style>{UI_CSS}</style>
 </head>
 <body{refresh}>
 {body}
@@ -9213,7 +9306,7 @@ def front_page_html(homes: list[HomeSnapshot], title: str, bearings: Bearings, c
              if unread else "Nothing needs you right now.")
     needs_block = (
         f'<section aria-labelledby="needs-h" id="needs"><h2 id="needs-h"{needs_class}>Needs you '
-        f'<span class="n">{total}</span></h2>'
+        f'{count_badge(total, "n")}</h2>'
         + ("".join(attention_errors_html(attention)) if attention is not None else "")
         + f'<p class="empty" data-needs-empty{"" if not total else " hidden"}>{empty}</p>'
         + "".join(row for _at, row in needs)
@@ -9222,7 +9315,7 @@ def front_page_html(homes: list[HomeSnapshot], title: str, bearings: Bearings, c
     changed = front_changed_rows(found, multi_home)
     changed_block = (
         '<section aria-labelledby="changed-h" id="changed"><h2 id="changed-h">Changed since you last looked '
-        '<span class="n" id="changed-n"></span></h2>'
+        '<span class="n" id="changed-n" data-n="0"></span></h2>'
         f'<ul class="rows" id="changed-list">{changed}</ul>'
         '<p class="empty" id="changed-empty" hidden>Nothing new since <span id="changed-since">your last look</span>.</p></section>'
     )
@@ -9230,7 +9323,7 @@ def front_page_html(homes: list[HomeSnapshot], title: str, bearings: Bearings, c
     closed = sum(topic.status == "done" for _snapshot, topic in found)
     topics_block = (
         '<section aria-labelledby="topics-h" id="topics"><h2 id="topics-h">Topics '
-        f'<span class="n">{topic_rows.count("<li>")}</span></h2>'
+        f'{count_badge(topic_rows.count("<li>"), "n")}</h2>'
         + (f'<ul class="rows">{topic_rows}</ul>' if topic_rows else '<p class="empty">Every topic is closed.</p>')
         + (f'<p class="row-meta"><a href="{SEARCH_PAGE}?filter=done">{closed} closed topic{"s" if closed != 1 else ""} in Search</a></p>'
            if closed else "") + "</section>"
@@ -9242,13 +9335,13 @@ def front_page_html(homes: list[HomeSnapshot], title: str, bearings: Bearings, c
     push = PUSH_CONTROL_HTML if serve_push else ""
     stamp = f'<p class="stamp">Updated {topic_stamp(generated, "full")}{push}</p>'
     more = (
-        f'<p class="more"><a href="{SEARCH_PAGE}">Everything else is in Search</a>: reports, underway and queued work, '
+        f'<p class="more"><a href="{SEARCH_PAGE}">Search</a> finds everything else, including reports, underway and queued work, '
         f'and what is done. The <a href="{CLASSIC_PAGE}">previous page</a> stays available for this release.</p>'
     )
     body = (
         f'<nav class="bar" aria-label="Quarterdeck"><span class="mark">{html.escape(title)}</span>'
         f'<span class="bar-links"><a href="{SEARCH_PAGE}">Search</a></span></nav>'
-        f"<main>{stamp}{needs_block}{changed_block}{topics_block}{ask}{more}</main>"
+        f'<main class="front">{stamp}{needs_block}{changed_block}{topics_block}{ask}{more}</main>'
     )
     scripts = FRONT_SCRIPT.replace("%(first)d", str(FRONT_FIRST_LOOK_HOURS))
     if allow_marks:
@@ -9311,19 +9404,19 @@ def search_page_html(homes: list[HomeSnapshot], title: str, bearings: Bearings, 
         for key, label in SEARCH_FILTERS
     )
     topics = [topic for _snapshot, topic in assign_topic_pages(homes) if topic.status != "done"]
-    suggestions = " · ".join(f'<a href="{html.escape(topic.page, quote=True)}">{html.escape(topic.title or topic.topic_id)}</a>'
+    suggestions = ", ".join(f'<a href="{html.escape(topic.page, quote=True)}">{html.escape(topic.title or topic.topic_id)}</a>'
                              for topic in topics[:6])
     main = html.escape(bearings.main_href, quote=True)
     ask = (f' <a href="{main}#topic-ask">Ask Firstmate</a> instead.' if allow_marks else "")
     body = (
-        f'<nav class="bar" aria-label="Quarterdeck"><a href="{main}">&larr; {html.escape(title)}</a></nav>'
-        '<main><h1>Search</h1>'
-        '<div class="search-box"><label class="sr" for="q">Search topics, tasks and reports</label>'
-        '<input id="q" type="search" placeholder="Topics, tasks, reports" autocomplete="off" enterkeyhint="search"></div>'
+        f'<nav class="bar" aria-label="Quarterdeck"><a class="mark" href="{main}">{html.escape(title)}</a></nav>'
+        '<main class="finder"><h1>Search</h1>'
+        '<label class="field" for="q">Topics, tasks and reports</label>'
+        '<div class="search-box"><input id="q" type="search" autocomplete="off" enterkeyhint="search"></div>'
         f'<div class="filters" role="group" aria-label="Filter">{filters}</div>'
-        '<h2>Results <span class="n" id="result-n"></span></h2><ul class="rows" id="results" aria-live="polite"></ul>'
+        '<h2>Results <span class="n" id="result-n" data-n="0"></span></h2><ul class="rows" id="results" aria-live="polite"></ul>'
         f'<div id="zero" hidden><p class="empty">Nothing matches <span id="zero-q"></span>.{ask}</p>'
-        + (f'<p class="empty">Topics: {suggestions}</p>' if suggestions else "") + "</div>"
+        + (f'<p class="empty">Open topics include {suggestions}.</p>' if suggestions else "") + "</div>"
         f'<p class="more">The <a href="{CLASSIC_PAGE}">previous page</a> keeps its saved views and Activity for this release.</p></main>'
         f'<script type="application/json" id="search-index">{data}</script>'
     )
@@ -9673,57 +9766,36 @@ def adoption_page_html(summary: dict[str, object], main_href: str = "index.html"
             if len(topics[index]) > len(shown):
                 items += f"<li>and {len(topics[index]) - len(shown)} more</li>"
         topic_lines += f"<h3>{label}</h3><ul>{items}</ul>"
-    notes = (f'<p class="note">Not found yet: {html.escape(", ".join(missing))}. Those rows count as zero.</p>'
+    notes = (f'<p class="note notice">Not found yet: {html.escape(", ".join(missing))}. Those rows count as zero.</p>'
              if missing else "")
     if summary["counting_from"]:
-        notes += f'<p class="note">Triage and Needs-you arrivals: counting from {summary["counting_from"]} (no backfill).</p>'
+        notes += (f'<p class="note notice">Triage and Needs you arrivals are counted from {summary["counting_from"]}, '
+                  "with nothing filled in before that.</p>")
     return f'''<!doctype html>
 <html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
 <meta name="quarterdeck-{'gen' + 'erated'}" content="read-only adoption summary"><title>Adoption · Quarterdeck</title>
-<style>
-:root {{ --navy: #17324d; --sea: #176b69; --sand: #f3eddf; --paper: #fffdf8; --ink: #20303d; --muted: #52616d; --line: #d8d3c8; --gold: #c98635; }}
-* {{ box-sizing: border-box; }}
-body {{ margin: 0; background: var(--sand); color: var(--ink); font: 16px/1.55 system-ui, sans-serif; }}
-header {{ background: var(--navy); color: #fffdf8; padding: 1.2rem max(1rem, calc((100vw - 760px) / 2)); border-bottom: 4px solid var(--gold); }}
-header h1 {{ margin: 0; font: 700 1.6rem Georgia, serif; }}
-header p {{ margin: .3rem 0 0; color: #d8c49b; }}
-header a {{ display: inline-flex; align-items: center; min-height: 44px; color: #fffdf8; }}
-main {{ max-width: 760px; margin: 1.2rem auto 3rem; padding: 0 1rem; }}
-.headline {{ background: var(--paper); border: 1px solid var(--line); border-left: 5px solid var(--sea); border-radius: 12px; padding: 1rem; }}
-.headline p {{ margin: 0 0 .4rem; }} .headline .big {{ font: 700 1.25rem/1.35 Georgia, serif; color: var(--navy); }}
-.table-wrap {{ overflow-x: auto; margin: 1rem 0; background: var(--paper); border: 1px solid var(--line); border-radius: 12px; }}
-table {{ border-collapse: collapse; width: 100%; }} th, td {{ padding: .6rem .8rem; text-align: left; border-bottom: 1px solid var(--line); }}
-thead th {{ color: var(--navy); }} td {{ font-variant-numeric: tabular-nums; width: 6rem; }}
-tbody th {{ font-weight: 600; }} th small {{ display: block; color: var(--muted); font-weight: 400; }}
-h2 {{ color: var(--navy); font: 700 1.25rem Georgia, serif; margin: 1.6rem 0 .3rem; }} h3 {{ margin: .8rem 0 .2rem; color: var(--muted); font-size: .9rem; text-transform: uppercase; letter-spacing: .05em; }}
-ul {{ margin: 0; padding-left: 1.2rem; }} li {{ margin: .3rem 0; overflow-wrap: anywhere; }}
-.tag {{ display: inline-block; padding: 0 .5rem; border: 1px solid var(--line); border-radius: 999px; color: var(--muted); font-size: .8rem; }}
-.note {{ color: var(--muted); font-size: .9rem; }}
-@media (prefers-color-scheme: dark) {{
-  :root {{ --navy: #a9cdee; --sea: #5fc2b9; --sand: #11181f; --paper: #1a242d; --ink: #e3e8ec; --muted: #9aa8b3; --line: #33434f; --gold: #e0a24e; }}
-  header {{ background: #0d2438; }}
-}}
-</style></head><body>
-<header><a href="{html.escape(main_href, quote=True)}">&larr; Back to Quarterdeck</a><h1>Adoption</h1><p>This week ({this_week}) against last week ({last_week})</p></header>
-<main>
+<style>{UI_CSS}</style></head><body>
+<nav class="bar" aria-label="Quarterdeck"><a class="mark" href="{html.escape(main_href, quote=True)}">Quarterdeck</a></nav>
+<main class="adoption">
+<h1>Adoption</h1><p class="meta">This week ({this_week}) against last week ({last_week})</p>
 <section class="headline" aria-label="Summary"><p class="big">{html.escape(headline)}</p><p>{html.escape(compare)}</p></section>
-<h2>Week against week</h2>
+<section aria-labelledby="week-h"><h2 id="week-h">Week against week</h2>
 <div class="table-wrap"><table><thead><tr><th scope="col">Measure</th><th scope="col">This week</th><th scope="col">Last week</th></tr></thead><tbody>
 {row("Status questions asked in chat", "status", "Lower is better.")}
-{row("…Quarterdeck already had the answer", "status_answered")}
+{row("Already answered on Quarterdeck", "status_answered", "Status questions whose answer was already on the page.")}
 {row("Answers sent from Quarterdeck", "answers", "Reactions and replies sent from the page or the artifact.")}
 <tr><th scope="row">Share of answers from Quarterdeck (approximate)</th><td>{measure("answer_share", 0, "%")}</td><td>{measure("answer_share", 1, "%")}</td></tr>
-<tr><th scope="row">Median first-seen wait (approximate)<small>Needs-you arrival to first page visit; grouped by arrival week.</small></th><td>{measure("first_seen_minutes", 0, " min")}</td><td>{measure("first_seen_minutes", 1, " min")}</td></tr>
+<tr><th scope="row">Median first-seen wait (approximate)<small>From a Needs you arrival to the first page visit, grouped by arrival week.</small></th><td>{measure("first_seen_minutes", 0, " minutes")}</td><td>{measure("first_seen_minutes", 1, " minutes")}</td></tr>
 {row("Reports arrived", "arrived")}
 {row("Reports reviewed", "reviewed")}
 {row("Reports discarded", "discarded")}
 {row("Days you visited Quarterdeck", "days")}
 <tr><th scope="row">Visits from a phone<small>Share of all visits.</small></th><td>{phone_share(0)}</td><td>{phone_share(1)}</td></tr>
-</tbody></table></div>
-<h2>What you had to ask about</h2>
-{topic_lines}
+</tbody></table></div></section>
+<section aria-labelledby="asked-h"><h2 id="asked-h">What you had to ask about</h2>
+{topic_lines}</section>
 {notes}
-<p class="note">Only tags are kept: the topic and whether Quarterdeck had the answer. Chat messages are never stored. Visits are logged on this machine with the time, the page and phone or desktop only.</p>
+<p class="note notice">Only tags are kept: the topic and whether Quarterdeck had the answer. Chat messages are never stored. Visits are logged on this machine with the time, the page and phone or desktop only.</p>
 </main></body></html>'''
 
 
@@ -9995,6 +10067,7 @@ REACTION_TEXT_LIMIT = 20_000
 REACTION_BODY_LIMIT = 6 * REACTION_TEXT_LIMIT + 4096
 REACTIONS_VERSION = 1
 REACTION_LABELS = {"approve": "Approve", "hold": "Hold", "not-now": "Not now", "question": "Question"}
+REACTION_BUTTONS = {**REACTION_LABELS, "question": "Ask a question"}  # a button says what it does; notes keep the labels
 REACTION_KINDS = ("call", "report", "topic", "decision")
 TOPIC_REACTION_KINDS = ("topic", "decision")  # a question sent from Quarterdeck, and an answer to a decision card
 NEW_TOPIC_ITEM = "+new"  # a front-page question for a topic Firstmate has not started yet
@@ -10386,14 +10459,14 @@ def reaction_html(
         return latest if text else ""
     buttons = "".join(
         f'<button class="request-lavish reaction-choice" type="button" aria-pressed="false" '
-        f'data-reaction-choice="{name}">{label}</button>' for name, label in REACTION_LABELS.items()
+        f'data-reaction-choice="{name}">{label}</button>' for name, label in REACTION_BUTTONS.items()
     )
     return (
         f'<div class="reaction" data-reaction-kind="{kind}" data-reaction-item="{html.escape(item_id, quote=True)}">'
         f'{latest}{answer_buttons_html(call_text) if kind == "call" else ""}'
         f'<div class="request-row reaction-choices">{buttons}</div>'
-        f'<div class="request-row reaction-reply"><textarea class="reaction-text" rows="2" data-limit="{REACTION_TEXT_LIMIT}" '
-        f'placeholder="Reply to Firstmate (optional)" aria-label="Reply to Firstmate" '
+        f'<div class="request-row reaction-reply"><span class="field" aria-hidden="true">Reply to Firstmate (optional)</span>'
+        f'<textarea class="reaction-text" rows="2" data-limit="{REACTION_TEXT_LIMIT}" aria-label="Reply to Firstmate" '
         f'autocapitalize="sentences" enterkeyhint="enter"></textarea>'
         f'<span class="reaction-count" aria-live="polite" hidden></span></div>'
         f'<div class="request-row"><button class="request-lavish reaction-send" type="button">Send</button>'
@@ -11937,7 +12010,7 @@ def activity_html(cards: list[dict[str, object]], attention: dict[str, object] |
     count = sum(card["section"] != "needs_you" for card in cards)
     return (
         '<details class="dashboard-section cards-feed" id="activity" data-refresh-key="activity"><summary>'
-        f'<h2>Activity</h2><span class="count" id="activity-count">{count}</span></summary>'
+        f'<h2>Activity</h2><span class="count" id="activity-count" data-n="{count}">{count}</span></summary>'
         "<p>What Firstmate started, merged and finished lately, and information to read. Nothing here needs an answer.</p>"
         f'<p class="empty" id="activity-empty"{" hidden" if count else ""}>Nothing new from Firstmate.</p>'
         + card_section_html(cards, now, CARD_SECTIONS[1:]) + "</details>"
@@ -11957,46 +12030,6 @@ def site_cards(homes: list[HomeSnapshot], bearings: Bearings, allow_marks: bool)
     )
 
 
-ACTIVITY_CSS = """
-    .cards-feed .section-head h2 { margin: 0; }
-    #cards .act-group { display: none; }
-    #activity > summary { display: flex; align-items: center; gap: .6rem; min-height: 44px; cursor: pointer; }
-    #activity > summary h2 { margin: 0; }
-    #cards-count, .cards-new { background: var(--gold); border-color: var(--gold); color: #1b1305; }
-    .cards-new { border-radius: 999px; padding: .1rem .6rem; font-size: .8rem; font-weight: 700; text-decoration: none; }
-    .cards-new[hidden], #cards-count[hidden], .act-section[hidden], #cards-empty[hidden] { display: none; }
-    .act-group { margin: 1.1rem 0 .3rem; color: var(--muted); font: 700 .78rem system-ui, sans-serif; text-transform: uppercase; letter-spacing: .09em; }
-    .act-card { background: var(--paper); border: 1px solid var(--line); border-left: 4px solid var(--sea); border-radius: 12px; margin: .5rem 0; }
-    .act-card.act-need { border-left: 7px solid var(--gold); }
-    .act-card summary { display: block; min-height: 44px; padding: .65rem 1rem; cursor: pointer; list-style: none; }
-    .act-card summary::-webkit-details-marker { display: none; }
-    .act-card summary:focus-visible { outline: 3px solid var(--gold); outline-offset: 2px; }
-    .act-top { display: flex; align-items: center; gap: .6rem; color: var(--muted); font-size: .75rem; text-transform: uppercase; letter-spacing: .07em; font-weight: 700; }
-    .act-need .act-label { color: var(--gold); }
-    .act-time { text-transform: none; letter-spacing: 0; font-weight: 400; }
-    .act-new { display: none; margin-left: auto; padding: 0 .55rem; border-radius: 999px; background: var(--gold); color: #1b1305; letter-spacing: .03em; }
-    .act-card.unseen .act-new { display: inline-block; }
-    .act-title { display: block; margin-top: .15rem; color: var(--navy); font-weight: 700; overflow-wrap: anywhere; }
-    .act-line { display: block; color: var(--muted); overflow-wrap: anywhere; }
-    .act-status { margin-top: .3rem; }
-    .act-body { border-top: 1px solid var(--line); padding: .3rem 1rem 1rem; overflow-wrap: anywhere; }
-    .act-ask { font-weight: 650; }
-    .act-docs { margin: .6rem 0; }
-    .act-docs-head { margin: 0; font-size: .8rem; font-weight: 700; text-transform: uppercase; letter-spacing: .07em; color: var(--muted); }
-    .act-docs ul { margin: .2rem 0 0; padding: 0; list-style: none; }
-    .act-docs li { margin: 0; padding: .35rem 0; border-top: 1px solid var(--line); }
-    .act-docs a { display: inline-block; min-height: 44px; line-height: 44px; font-weight: 650; }
-    .act-docs .path { display: block; margin-top: -.5rem; font-size: .8rem; overflow-wrap: anywhere; }
-    .act-facts { margin: .4rem 0; padding-left: 1.1rem; }
-    .wait { margin: .5rem 0 .8rem; padding-bottom: .4rem; border-bottom: 1px solid var(--line); }
-    .wait-ask { font-weight: 650; }
-    .wait-head { margin: .8rem 0 .2rem; font-size: .95rem; color: var(--navy); }
-    .act-card[hidden] { display: none; }
-    .act-card.arrived { animation: act-in .45s ease-out, act-glow 3s ease-out; }
-    @keyframes act-in { from { opacity: 0; transform: translateY(-14px); } to { opacity: 1; transform: none; } }
-    @keyframes act-glow { from { box-shadow: 0 0 0 3px var(--gold); } to { box-shadow: 0 0 0 0 transparent; } }
-    @media (prefers-reduced-motion: reduce) { .act-card.arrived { animation: none; } }
-"""
 
 WAIT_SCRIPT = """
   <script>
@@ -12151,7 +12184,7 @@ ACTIVITY_SCRIPT = """
         empty.hidden = needs > 0;
         const activity = document.getElementById("activity-count");
         if (activity) {
-          activity.textContent = String(cards().length - needs);
+          activity.textContent = activity.dataset.n = String(cards().length - needs);
           document.getElementById("activity-empty").hidden = cards().length > needs;
         }
         times();
@@ -12205,6 +12238,7 @@ ACTIONS_VERSION = 1
 ARTIFACT_TEMPLATE = Path(__file__).resolve().parent / "templates" / "artifact.html.tmpl"
 SNAPSHOT_PLACEHOLDER = "__QUARTERDECK_SNAPSHOT__"
 TEMPLATE_TITLE_PLACEHOLDER = "__QUARTERDECK_TITLE__"
+TEMPLATE_STYLE_PLACEHOLDER = "__QUARTERDECK_STYLE__"
 
 
 def iso_or_none(value: datetime | None) -> str | None:
@@ -12327,8 +12361,10 @@ def artifact_page(snapshot: dict[str, object]) -> str:
         template = ARTIFACT_TEMPLATE.read_text(encoding="utf-8")
     except OSError as exc:
         raise ValueError(f"could not read the artifact template {ARTIFACT_TEMPLATE}: {exc}") from exc
-    if template.count(SNAPSHOT_PLACEHOLDER) != 1:
-        raise ValueError(f"{ARTIFACT_TEMPLATE} must contain {SNAPSHOT_PLACEHOLDER} exactly once")
+    for placeholder in (SNAPSHOT_PLACEHOLDER, TEMPLATE_STYLE_PLACEHOLDER):
+        if template.count(placeholder) != 1:
+            raise ValueError(f"{ARTIFACT_TEMPLATE} must contain {placeholder} exactly once")
+    template = template.replace(TEMPLATE_STYLE_PLACEHOLDER, UI_CSS)
     payload = json.dumps(snapshot, ensure_ascii=False, separators=(",", ":"))
     payload = payload.replace("<", "\\u003c").replace(">", "\\u003e").replace("&", "\\u0026").replace("\u2028", "\\u2028").replace("\u2029", "\\u2029")
     return template.replace(TEMPLATE_TITLE_PLACEHOLDER, html.escape(str(snapshot["title"]))).replace(SNAPSHOT_PLACEHOLDER, payload)
