@@ -793,3 +793,19 @@ and removes backlog holds. Unknown notification identities now wait for a
 complete observation; incomplete polls preserve stored history, and recovery
 announces a genuinely new item once without repeating existing items. The
 fixture and intercepted encrypted deliveries clean themselves up.
+
+## Report reference routing
+
+Run the focused report-link checks with fictional temporary homes:
+
+```sh
+PYTHONPATH=tests python3 -m unittest -v test_quarterdeck.ActivityCardTests test_quarterdeck.TopicTests test_quarterdeck.BacklogFreeTextPathTests
+```
+
+The report access contract requires scout pages to refuse HTML beside escaped
+Markdown, while honoring configured data roots. Activity cards and topic
+conversation entries must retain links for bare report filenames beside a named
+document. Both bearings and activity cards must resolve hold origins through the
+origin task's explicit report directory. Topic Links for either report format
+must open the shared report view, with HTML first and Markdown still available.
+These checks create disposable fixtures only; they do not touch real homes.

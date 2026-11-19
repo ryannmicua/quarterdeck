@@ -38,7 +38,7 @@ a count, such as "Finished ×4", that lists each run newest first.
 ## Open the documents a card names
 
 When a needs-you or information card's text names a document, such as
-`data/<id>/report.md` or a bare `explainer.html` beside it, the card shows a
+`data/<id>/summary.md` or a bare `explainer.html` beside it, the card shows a
 **Referenced documents** list with one link per file. A bare name resolves only
 when the text includes a `data/<id>/<file>.md` or `.html` reference and all such
 references name the same directory. References are collected from the title,
@@ -50,14 +50,34 @@ namespace shared by distinct home labels leaves links out.
 Markdown opens rendered and HTML retains its content and scripts. A link appears
 only for a readable UTF8 regular `.md` or `.html` file of 2 MB or less that really
 sits inside that data directory; missing files and links that escape it are left out.
-The card text is not changed. Every opened document carries a small bar with
+The card text is not changed. Report references use the [report view](#read-the-report)
+below. Other opened documents carry a small bar with
 **Back to Quarterdeck** and **Open file by itself**. The second link opens the
 original file with no bar: markdown as plain text, HTML as its own page. The bar
 stays at the bottom of the viewport on HTML documents, with space reserved at
-the document's end so its final content remains readable. Other site report and
-backlog pages carry the back link only; standalone `reports read` output omits it.
+the document's end so its final content remains readable. Backlog pages carry
+the back link only; standalone `reports read` output omits it.
 Links also work in a rendered snapshot with a custom filename or `--lavish`; keep its
-generated document pages beside the main page. For served HTML sandboxing, see
+generated document pages beside the main page. Links respect the configured URL
+prefix. For served HTML sandboxing, see
+[Privacy and architecture](../explanation/privacy-and-architecture.md).
+
+### Read the report
+
+A card shows **Read the report** for each report directory named by a
+`data/<id>/report.md` or `data/<id>/report.html` reference, including bare report
+filenames resolved beside another named document. It also links reports belonging
+to the card's task or to the task named by `Captain hold origin: <id>` in its
+backlog body, using an explicit report directory or the task ID. Repeated
+references to the same directory share one link; multiple reports include their
+titles in the links.
+
+Topic **Links** and conversation entries use this report view too. When a readable
+`report.html` is available, the page shows it first and offers **Open file by
+itself**, plus **Agent version (markdown)** when readable Markdown is available.
+Otherwise it renders `report.md` with a back link. This applies to report pages
+opened from the site; `quarterdeck reports read` still generates a page from the
+Markdown. Report-file boundaries and sandboxing are described in
 [Privacy and architecture](../explanation/privacy-and-architecture.md).
 
 A needs-you card for a task held for the captain shows the kind of ask and a

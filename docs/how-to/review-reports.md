@@ -1,5 +1,8 @@
 # Read and track report reviews
 
+To open a report from a card or topic, follow **Read the report**; see the
+[report-view guide](watch-activity-cards.md#read-the-report).
+
 Quarterdeck lists discovered reports from each selected Firstmate home. List
 them with their review state:
 

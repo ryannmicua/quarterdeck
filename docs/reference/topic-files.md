@@ -53,7 +53,7 @@ line, in any order. Change them in place as the work moves; they always describe
 | `Now:` | no | One or two sentences on where the work stands. Several `Now:` lines are joined. | First row of the state. |
 | `Waiting on:` | yes | `who - what`, one line per wait. `who` is `you` for the owner, or any name. The dash may be `-`, `–` or `—` with spaces around it; with no dash the whole line is who. | Waits on `you` show in the signal colour, and each counts under **Needs you** on the front page while the topic is open. |
 | `Pieces:` | yes | Backlog task ids, separated by commas or spaces. | Each task's title, state and item page link from the backlog; a recent unreviewed report of a piece shows under **To review**. |
-| `Links:` | yes | `[label](https://...)`, bare `https://` addresses, `[label](data/<id>/<file>)` or `data/<id>/<file>.md` paths, separated by commas. | Links; a `data/` document opens as a readable page. A named `data/<id>/report.md` that is unreviewed and under two weeks old also shows under **To review**. |
+| `Links:` | yes | `[label](https://...)`, bare `https://` addresses, `[label](data/<id>/<file>)` or `data/<id>/<file>.md` / `.html` paths, separated by commas. | Links; a `data/` document opens as a readable page. Report paths use the [shared report view](../how-to/watch-activity-cards.md#read-the-report). A discovered report named through either `report.md` or `report.html` that is unreviewed and under two weeks old also shows under **To review**. |
 | `Status:` | no | `open` (the default) or `done`. | A done topic leaves the front page and is found in search. |
 
 Blank lines and single-line `<!-- comments -->` in the head are ignored. Any other line is a mistake and is not shown.
