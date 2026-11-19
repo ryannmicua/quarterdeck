@@ -11771,11 +11771,11 @@ class CallsPageTests(unittest.TestCase):
         sent = front.split('id="sent-list">', 1)[1].split("</ul>", 1)[0]
         self.assertIn('<span class="sent-line">Merge PR 42 now?</span>', sent)
         self.assertIn("You answered <b>Merge</b>", sent)
-        status, body = self.send(request, "topic", "maple-harbor-catalog", "Done: merge PR 42", number=2)
+        status, body = self.send(request, "topic", "maple-harbor-catalog", 'Done: ["merge PR 42", "Mark done"]', number=2)
         self.assertEqual(status, 200, body)
         self.assertTrue(self.notes()[-1].startswith("Quarterdeck wait done on topic maple-harbor-catalog"), self.notes()[-1])
         self.assertIn("Remove that Waiting on: you line from data/topics/maple-harbor-catalog.md", self.notes()[-1])
-        self.assertNotIn("Done: merge PR 42", self.fresh_page("topic-maple-harbor-catalog.html"), "no unanswered question")
+        self.assertNotIn("Mark done", self.fresh_page("topic-maple-harbor-catalog.html"), "no unanswered question")
         front = self.fresh_page("index.html")
         self.assertIn('data-calls-n data-n="0">0</span>', front)
         self.assertIn("You answered <b>Done</b>", front)
@@ -11858,13 +11858,11 @@ What is the fallback for older displays?
 
     def test_wait_completion_matches_the_whole_normalized_wait(self) -> None:
         request = self.serve()
-        for index, (selected, answer) in enumerate((("42", ""), ("4", ""), ("42", " (Checked twice)"),
-                                                   ("4", " (Checked twice)"))):
+        for index, (selected, answer) in enumerate((("42", "Mark done"), ("4", "Checked twice"))):
             name = f"waits-{index}"
             self.write_topic(name + ".md", f"# Review waits {index}\nWaiting on: you - review   PR 4\n"
                              "Waiting on: you - review PR 42\n")
-            text = ("Done: " + json.dumps([f"Done: review PR {selected}", "Checked twice"])
-                    if answer else f"Done: review PR {selected}")
+            text = "Done: " + json.dumps([f"review PR {selected}", answer])
             status, body = self.send(request, "topic", name, text, number=index + 20)
             self.assertEqual(status, 200, body)
             front = self.fresh_page("index.html")
@@ -11874,13 +11872,13 @@ What is the fallback for older displays?
             self.assertNotIn(f'data-call="w-{name}-{0 if selected == "4" else 1}"', queue)
             sent = front.split('id="sent-list">', 1)[1].split("</ul>", 1)[0]
             self.assertIn(f'<span class="sent-line">Review PR {selected}</span>', sent)
-            self.assertIn(f'You answered <b>{"Checked twice" if answer else "Done"}</b>', sent)
+            self.assertIn(f'You answered <b>{"Done" if answer == "Mark done" else answer}</b>', sent)
 
     def test_wait_answers_with_parentheses_cannot_complete_another_wait(self) -> None:
         self.write_topic("parentheses.md", "# Parentheses\nWaiting on: you - review PR 4\n"
                          "Waiting on: you - review PR 4 (optional)\n")
         request = self.serve()
-        status, body = self.send(request, "topic", "parentheses", 'Done: ["Done: review PR 4 (optional)", "Checked (twice)"]')
+        status, body = self.send(request, "topic", "parentheses", 'Done: ["review PR 4 (optional)", "Checked (twice)"]')
         self.assertEqual(status, 200, body)
         front = self.fresh_page("index.html")
         self.assertIn('data-call="w-parentheses-0"', self.queue(front))

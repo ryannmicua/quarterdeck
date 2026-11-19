@@ -9471,7 +9471,7 @@ class Call:
     links: list[tuple[str, str]] = field(default_factory=list)  # (label, href)
     answer: tuple[str, str] = ("", "")  # the reaction (kind, item id) an answer is sent as
     ask: tuple[str, str, str] = ("", "", "")  # the reaction (kind, item id, text prefix) a question is sent as
-    answer_prefix: str = ""  # put before an answer's text, such as "Done: " on a wait
+    answer_prefix: str = ""  # a wait's normalized text, sent with its answer as Done: [wait, answer]
     sent: dict[str, str] | None = None  # the answer already sent from Quarterdeck, when there is one
     settled: str = ""  # why the call may be settled already; empty for a live call
     tag: str = ""  # a hold's push tag, so a notification opens it here
@@ -9536,7 +9536,7 @@ def wait_answer(text: str, prefix: str) -> str | None:
         if isinstance(value, list) and len(value) == 2 and all(isinstance(part, str) for part in value):
             identity, answer = value
             return ("Done" if answer == "Mark done" else answer) if " ".join(identity.split()) == prefix else None
-    return "Done" if text == prefix else None
+    return None
 
 
 def latest_answer(history: list[dict[str, str]], since: str | None = None, prefix: str = "") -> dict[str, str] | None:
@@ -9573,7 +9573,7 @@ def topic_calls(snapshot: HomeSnapshot, topic: Topic, pages: dict[str, str] | No
         ))
     history = topic_sent(state, "topic", topic.ref)
     for index, what in enumerate(topic_waits_on_you(topic)):
-        prefix = f"{CALL_DONE_PREFIX}{' '.join(what.split())}"
+        prefix = " ".join(what.split())
         calls.append(Call(
             key=f"w-{topic.ref}-{index}", line=call_line(what[:1].upper() + what[1:]),
             where=topic.title or topic.topic_id, asked=None, kind=CALL_KIND_LABELS["wait"],

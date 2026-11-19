@@ -93,7 +93,7 @@ const flush = () => new Promise(resolve => setImmediate(resolve));
   card.listeners.click({target: {closest: () => ({dataset: {answer: 'Mark done'}})}});
   await timeout();
   assert.deepEqual([requests.at(-1).kind, requests.at(-1).item_id, requests.at(-1).text],
-    ['topic', 'maple-harbor-catalog', 'Done: ["Done: merge PR 42","Mark done"]'], 'Mark done only completes the selected wait');
+    ['topic', 'maple-harbor-catalog', 'Done: ["merge PR 42","Mark done"]'], 'Mark done only completes the selected wait');
   for (const reduced of [true, false]) {
     for (const inQueue of [true, false]) {
       reducedMotion = reduced;
