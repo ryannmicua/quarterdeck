@@ -8905,7 +8905,7 @@ def topic_page_html(topic: Topic, snapshot: HomeSnapshot, multi_home: bool, gene
         log.append(topic_entry_html(entry, by_id, responses, snapshot.data_dir, pages, main_href))
     for reaction in topic_sent(state, "topic", topic.ref):
         ask = topic_ask_id(reaction["id"])
-        if ask not in by_id and not reaction.get("text", "").startswith(CALL_DONE_PREFIX):  # a wait marked done is no question
+        if ask not in by_id and wait_done(reaction.get("text", "")) is None:  # a wait marked done is no question
             log.append(topic_pending_ask_html(reaction, responses.get(ask, [])))
     log_block = (
         f'<section class="conversation" aria-labelledby="log-h"><h2 id="log-h">Conversation {count_badge(len(topic.entries), "n")}</h2>'
@@ -9519,22 +9519,29 @@ def unique_links(links: list[tuple[str, str]]) -> list[tuple[str, str]]:
     return out
 
 
-def wait_answer(text: str, prefix: str) -> str | None:
-    text, prefix = " ".join(text.split()), " ".join(prefix.split())
-    if text.startswith(CALL_DONE_PREFIX):
-        try:
-            value = json.loads(text[len(CALL_DONE_PREFIX):])
-        except ValueError:
-            value = None
-        if isinstance(value, list) and len(value) == 2 and all(isinstance(part, str) for part in value):
-            identity, answer = value
-            return ("Done" if answer == "Mark done" else answer) if " ".join(identity.split()) == prefix else None
+def wait_done(text: str) -> tuple[str, str] | None:
+    """A wait marked done from Calls, sent as Done: [wait, answer]: its (wait, answer), or None for any other text."""
+    text = " ".join(text.split())
+    if not text.startswith(CALL_DONE_PREFIX):
+        return None
+    try:
+        value = json.loads(text[len(CALL_DONE_PREFIX):])
+    except ValueError:
+        return None
+    if isinstance(value, list) and len(value) == 2 and all(isinstance(part, str) for part in value):
+        return value[0], value[1]
     return None
 
 
-def latest_answer(history: list[dict[str, str]], since: str | None = None, prefix: str = "") -> dict[str, str] | None:
-    """The newest delivered answer (not a question) after `since`, matching a complete wait prefix when one is given."""
-    floor = parse_board_time(since) if since else None
+def wait_answer(text: str, prefix: str) -> str | None:
+    done = wait_done(text)
+    if done is None or " ".join(done[0].split()) != " ".join(prefix.split()):
+        return None
+    return "Done" if done[1] == "Mark done" else done[1]
+
+
+def latest_answer(history: list[dict[str, str]], floor: datetime | None = None, prefix: str = "") -> dict[str, str] | None:
+    """The newest delivered answer (not a question) after `floor`, matching a complete wait prefix when one is given."""
     for reaction in reversed(history):
         if reaction.get("reaction") == "question" or (prefix and wait_answer(reaction.get("text", ""), prefix) is None):
             continue
@@ -9545,12 +9552,12 @@ def latest_answer(history: list[dict[str, str]], since: str | None = None, prefi
     return None
 
 
-def wait_raised_at(topic: Topic) -> str | None:
+def wait_raised_at(topic: Topic) -> datetime | None:
     """When a topic's waits were last stated: a Waiting on line has no time of its own, so this is the newest entry by
     anyone but the owner. An answer sent before it does not count, so a wait Firstmate keeps after an answer, with an
     entry saying why it still waits, comes back to Your calls."""
     times = [entry.at for entry in topic.entries if entry.at is not None and entry.who != "you"]
-    return max(times).astimezone(timezone.utc).isoformat().replace("+00:00", "Z") if times else None
+    return max(times) if times else None
 
 
 def topic_calls(snapshot: HomeSnapshot, topic: Topic, pages: dict[str, str] | None,
@@ -9582,7 +9589,7 @@ def topic_calls(snapshot: HomeSnapshot, topic: Topic, pages: dict[str, str] | No
             context=cut_words(markdown_text(topic.now), CALL_CONTEXT_WORDS) if topic.now else "",
             options=["Mark done"], links=[("Open thread", topic.page)],
             answer=("topic", topic.ref), ask=("topic", topic.ref, f"About “{what}”: "), answer_prefix=prefix,
-            sent=latest_answer(history, since=raised, prefix=prefix),
+            sent=latest_answer(history, floor=raised, prefix=prefix),
         ))
     return calls
 
@@ -9610,7 +9617,7 @@ def hold_call(card: dict[str, object], state: ReviewState | None) -> Call:
         context = cut_words(markdown_text(explanation), CALL_CONTEXT_WORDS)
     facts = [cut_words(markdown_text(text), CALL_FACT_WORDS) for text in clarifications[-CALL_FACTS:] if text]
     history = state.history.get(("call", key), []) if state is not None else []
-    hold = str(card.get("hold_set") or "") or None
+    hold = parse_board_time(card.get("hold_set")) or needs_card_time(card)
     links = [(str(label), str(href)) for label, href in card.get("links") or []]  # type: ignore[union-attr]
     return Call(
         key="h-" + re.sub(r"[^A-Za-z0-9_-]", "-", key), line=line,
@@ -9618,7 +9625,7 @@ def hold_call(card: dict[str, object], state: ReviewState | None) -> Call:
         kind=CALL_KIND_LABELS.get(wait_kind, CALL_KIND_LABELS["other"]) if options or wait_kind not in ("choice", "merge")
         else CALL_KIND_LABELS["question"], context=context, facts=facts, options=options,
         recommend=str(card.get("recommend") or ""), links=unique_links(links)[:CALL_LINKS],
-        answer=("call", key), ask=("call", key, ""), sent=latest_answer(history, since=hold),
+        answer=("call", key), ask=("call", key, ""), sent=latest_answer(history, floor=hold),
         tag=push_tag(card), briefing=str(card.get("briefing") or ""),
     )
 
@@ -9867,6 +9874,11 @@ CALLS_SCRIPT = """
             say("Not sent, your words are kept. " + error.message);
           }
         });
+      }
+      const opened = location.hash && document.getElementById(decodeURIComponent(location.hash.slice(1)));
+      if (opened && opened.matches("details.call")) {
+        opened.open = true;
+        opened.querySelector("summary").focus();
       }
       // Relative times in the meta rows ("2 days ago"), in the reader's own clock.
       const now = Date.now();
@@ -10735,7 +10747,7 @@ def reaction_note(reaction: dict[str, str], home_label: str) -> str:
                     f"with Id: {ask}, and answer it with Re: {ask}.")
         topic = reaction["task"]
         title = reaction.get("title", "")
-        if reaction["text"].startswith(CALL_DONE_PREFIX):  # Mark done on a wait, from the Calls view
+        if wait_done(reaction["text"]) is not None:  # Mark done on a wait, from the Calls view
             return (f"Quarterdeck wait done on topic {topic}{f' ({title!r})' if title else ''}, home {home_label}, "
                     f"at {reaction['at']}: \"{reaction['text']}\". Remove that Waiting on: you line from "
                     f"data/topics/{topic}.md, or say in the topic why it still waits.")

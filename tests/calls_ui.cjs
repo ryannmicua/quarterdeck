@@ -23,9 +23,13 @@ card.classList = {add() {}};
 card.remove = () => { card.removed = true; card.parentElement = null; };
 card.parentElement = queue;
 card.nextElementSibling = next;
+const pushed = new Element(), pushedSummary = new Element();
+pushed.matches = selector => selector === "details.call";
+pushed.querySelector = () => pushedSummary;
+global.location = {hash: '#need-held%20task'};
 global.document = {
   querySelectorAll: selector => selector === 'details[data-call]' ? [card] : [],
-  querySelector: () => null, getElementById: id => id === "queue" ? queue : null, createElement: () => new Element(), title: 'Quarterdeck'
+  querySelector: () => null, getElementById: id => ({queue, 'need-held task': pushed}[id] || null), createElement: () => new Element(), title: 'Quarterdeck'
 };
 global.crypto = require('node:crypto').webcrypto;
 let reducedMotion = true;
@@ -45,6 +49,8 @@ global.fetch = async (url, options) => {
   return {ok: true, json: async () => ({ok: true})};
 };
 require('node:vm').runInThisContext(script);
+assert.equal(pushed.open, true, 'A notification link opens the card it names');
+assert.equal(pushedSummary.focused, true, 'A notification link focuses the card it names');
 const submit = mode => words.listeners.submit({preventDefault() {}, submitter: {value: mode}});
 const flush = () => new Promise(resolve => setImmediate(resolve));
 (async () => {

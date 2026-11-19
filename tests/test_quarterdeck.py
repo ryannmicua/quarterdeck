@@ -11195,6 +11195,17 @@ class TopicAskTests(unittest.TestCase):
         self.assertIn("When does the import finish?", pending)
         self.assertIn("Not answered yet", pending)
 
+        status, body = request("POST", quarterdeck.REACTION_ENDPOINT, {
+            "id": "fedcba9876543210" * 2, "kind": "topic", "item_id": "maple-harbor-catalog", "reaction": "",
+            "text": "Done: deployed the hotfix, can you verify?"})
+        self.assertEqual(status, 200, body)
+        ask = "ask-fedcba9876543210"
+        note = self.notes()[-1]
+        self.assertTrue(note.startswith(f"Quarterdeck ask {ask} on topic maple-harbor-catalog"), "free text starting Done: is a question")
+        self.assertIn(f"with Id: {ask}", note)
+        pending = self.fresh_page("topic-maple-harbor-catalog.html").split(f'id="entry-{ask}"', 1)[1].split("</li>", 1)[0]
+        self.assertIn("Not answered yet", pending)
+
         self.assertIn("1 open decision", self.fresh_page(quarterdeck.CLASSIC_PAGE))
         self.assertIn('Needs you <span class="n" data-n="2">2</span>', self.fresh_page(quarterdeck.PREVIOUS_PAGE), "the decision and the wait on you")
         status, body = self.send(request, "decision", "maple-harbor-catalog/merge-42", "Merge", number=2)
@@ -11954,6 +11965,8 @@ What is the fallback for older displays?
         self.assertEqual((quarterdeck.hold_call(card, state).sent or {}).get("id"), "r1", "a question is not an answer")
         again = quarterdeck.hold_call({**card, "hold_set": "2026-03-04T00:00:00Z"}, state)
         self.assertIsNone(again.sent, "held again after the answer: back in the queue")
+        unstamped = quarterdeck.hold_call({**card, "hold_set": "filed 2026-03-04", "opened_at": "2026-03-04T00:00:00Z"}, state)
+        self.assertIsNone(unstamped.sent, "held again with no hold-set stamp: the card's opening time is the floor")
 
     def test_context_is_one_short_paragraph_and_three_facts(self) -> None:
         words = " ".join(f"word{index}" for index in range(40))
