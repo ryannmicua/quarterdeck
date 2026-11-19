@@ -63,6 +63,9 @@ automatically.
 Run `PYTHONPATH=tests python3 -m unittest -v test_quarterdeck.OneLookTests test_quarterdeck.TopicTests`.
 The generated-output checks cover stylesheet inclusion, interface glyphs and
 machine-readable badge counts; they do not prove computed styles or layout.
+For classic-page naming and stylesheet inclusion, run
+`PYTHONPATH=tests python3 -m unittest -v test_quarterdeck.PhoneFixTests.test_page_uses_one_name_per_thing_and_shared_stylesheet`.
+This checks generated output, not rendered muted-text contrast.
 Topic tests exercise static and served pages, including decision controls, using
 disposable fictional homes. They require no real inbox writes or push delivery.
 

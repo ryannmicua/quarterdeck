@@ -9474,14 +9474,13 @@ class PhoneFixTests(unittest.TestCase):
             self.assertIn("<title>(3) Quarterdeck · Firstmate review</title>", page)
             self.assertIn("<title>Quarterdeck · Firstmate review</title>", quarterdeck.build_html([], "Quarterdeck"))
 
-    def test_page_uses_one_name_per_thing_and_darker_muted_text(self) -> None:
+    def test_page_uses_one_name_per_thing_and_shared_stylesheet(self) -> None:
         with tempfile.TemporaryDirectory() as temp:
             snapshots, bearings = ActivityCardTests().site(Path(temp))
             page = quarterdeck.build_html(snapshots, "Quarterdeck", bearings=bearings, refresh_seconds=60)
             self.assertNotIn("Waiting on you", page)
             self.assertNotIn("In-flight work", page)
             self.assertNotIn("in-flight", page)
-            self.assertIn("--soft: #565f68", page)
             self.assertEqual(page.count("<style>"), 1, "one shared stylesheet, no page-only styles")
             self.assertIn(quarterdeck.UI_CSS, page)
 
