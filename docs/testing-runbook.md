@@ -648,6 +648,27 @@ and 15-second card poll to run before the 60-second page reload; verify neutral
 empty wording on the original page. Stop browser/server children and remove
 fictional homes, profiles and state after capturing screenshots and responses.
 
+## Calls view
+
+`CallsPageTests` covers the queue, separate answer targets, Sent, answered waits that come back, and custom `render` filenames.
+Run `PYTHONPATH=tests python3 -m unittest -v test_quarterdeck.CallsPageTests` for focused verification; Node
+executes the generated Calls script against a simulated DOM and delivery boundary to check Undo, failed delivery,
+unchanged retry IDs, question delivery and next-card focus with both motion preferences. The class also checks
+whole-wait completion, retention of unanswered decisions after later conversation, and held-item briefing excerpts
+with a full saved-text disclosure. All fixtures and messages are fictional. For a live check, serve a fictional
+home whose topics hold a decision with options, a `Waiting on: you` line that repeats it, a decision more than a
+day old with three later owner questions, and an executable `bin/fm-attention.sh` feeding a captain hold; give it a
+fake `bin/fm-inbox.sh` that appends each note to a log, and isolated XDG state. At 390px and 1440px:
+
+- an unanswered decision stays in Your calls despite later owner questions; completing review PR 42 leaves review PR 4 open;
+- similar asks keep separate cards, each with its own controls; one tap sends only that card's answer;
+- after the five-second Undo the card moves to Sent, the next call opens, and the count and tab title drop;
+  a reload keeps it in Sent; the next card also opens and receives focus with reduced motion enabled;
+- **Undo** sends nothing and keeps typed words; failed delivery also keeps them, and an unchanged retry keeps
+  its message ID; **Ask question** sends a question and keeps the card;
+- a wait answered with Mark done returns to Your calls once a newer Firstmate entry lands in its topic;
+- the page scrolls to its last element and back with no sideways scroll, on Calls and Topics.
+
 ## Answered decision cards
 
 For validation confined to a worktree, run an unchanged disposable copy of `quarterdeck.py` and `templates/` in

@@ -31,7 +31,8 @@ for server requirements, phone setup and withdrawal behavior.
 
 - One look on every screen: generated pages and the cloud artifact share one
   stylesheet; the standalone decision brief uses the same visual style.
-  Phones get one column; screens 1440px and wider get columns (Needs you beside Changed,
+  Phones get one column; wider screens get columns (from 1024px, Calls beside Sent and the
+  ask box; from 1440px, Changed beside Topics,
   a topic's state beside its conversation, a report beside its review buttons,
   search filters as a sidebar) while reading lines stay about 75 characters.
   Heading counts appear only when there is more than one item.
@@ -57,10 +58,13 @@ for server requirements, phone setup and withdrawal behavior.
   is answered with one tap or in words and five seconds to undo, then folds to
   one line with the answer until Firstmate records it, and an ask box on each
   thread and on the front page sends a question to Firstmate under the topic it
-  shows. With topics, the front page holds only Needs you (open topic
-  decisions, waits on you, and items not yet in a topic), Changed since you last looked, Topics, the ask
-  box and search; everything else is behind search, and the previous page
-  stays at `classic.html` for one release. `quarterdeck topics check` reports mistakes in the files. See [Keep topic threads](docs/how-to/keep-topic-threads.md) and the
+  shows. With topics, the page opens on Calls: one queue of open topic
+  decisions, waits on you and items not yet in a topic, each with its options
+  as buttons and the recommendation marked.
+  An answered call leaves for Sent at once; an unanswered one stays until
+  it is answered or its record closes. Changed since you last looked and the topic list are
+  on the Topics tab, everything else is behind search, and the previous front
+  page stays at `previous.html` (and the one before at `classic.html`) for one release. `quarterdeck topics check` reports mistakes in the files. See [Keep topic threads](docs/how-to/keep-topic-threads.md) and the
   [topic files reference](docs/reference/topic-files.md).
 - Captain board: when a home has `data/captain-board.json`, the desk groups
   decisions still in play, with background items collapsed. Items

@@ -5,10 +5,33 @@ Firstmate needs answered, and everything said about it in chat or on Quarterdeck
 a file in its home; Quarterdeck shows it as a page. The file format is in the
 [topic files reference](../reference/topic-files.md).
 
-## Use the front page (owner)
+## Decide on Calls (owner)
 
-When a home keeps topic files, Quarterdeck's front page holds only what needs you, what changed, your topics, the
-ask box and search:
+When a home keeps topic files, Quarterdeck opens on **Calls**: one queue of what needs you now, each call decidable
+on its card. Topics and Search are the other two tabs.
+
+- **Your calls** lists every open topic decision, `Waiting on: you` line and held item outside topics, newest first;
+  a wait, which has no time of its own, comes last. The first call is open; tap another to open it instead.
+- **Separate sources keep separate cards.** Similar wording does not establish that two asks are the same;
+  an answer goes only to the source of the card you answered.
+- **A card** shows the ask, a meta row (topic, how long it has waited, the kind of ask), up to about 30 words of
+  context and three facts, the options as buttons with the recommended one marked, and its thread, report or brief
+  links. Held items include short briefing and clarification excerpts; **Full briefing** opens the full saved text.
+  A wait offers **Mark done**; a held item that asks for a merge offers **Merge it** and **Not yet**.
+  **Answer in words** sends typed words as the answer; **Ask question** sends them as a question and keeps the card.
+- **After an answer** there are five seconds to undo. Then the card leaves the queue for **Sent**, the next call
+  opens, and the count and tab title drop by one. A card stays in Sent until Firstmate records the answer in the
+  topic file, lifts the hold or removes the wait line; then it is gone. A held item that is held again with a new
+  stamp comes back, and so does a wait Firstmate writes about after your answer (it still waits, and says why).
+- **Nothing is guessed away.** An unanswered call stays in **Your calls** whatever its age, the conversation after
+  it, or the wording of its note, until it is answered or its record closes.
+- **Ask Firstmate**, on the served page, with **Goes to** (see below).
+
+Everything is read again on each refresh (every minute on the served page), so a call answered in chat, closed in
+the backlog or merged leaves on the next refresh once Firstmate records it. Quarterdeck keeps only the answers it
+sent.
+
+The **Topics** tab holds **Changed since you last looked** and the topic list:
 
 - **Needs you:** every open topic decision, `Waiting on: you` line and item outside topics, together newest first.
   Decisions use their opening time; topic waits have no separate start timestamp and use the topic's latest dated
@@ -29,15 +52,15 @@ A report counts as waiting for your review for two weeks. After that it stays fi
 no longer counts as awaiting review; nothing is changed in its review record. A recent report also shows under
 **To review** on the topic whose **Links** or **Pieces** name it.
 
-The previous page, with its desk, saved views, Activity, reports and details, stays at `classic.html` for this
-release; the front page and search link to it, and it links back. A notification for an item that belongs to no
-topic opens on its **Needs you** row; one for an item whose task is a topic's piece opens that topic. With
-no topic files, or with `render --all` or `--lavish`, the
-front page is the previous page, as before.
+The front page before Calls, with **Needs you**, **Changed since you last looked**, **Topics** and the ask box on
+one page, stays at `previous.html` for this release, and the page before that, with its desk, saved views,
+Activity, reports and details, stays at `classic.html`. A notification for an item that belongs to no topic opens
+on its card on Calls; one for an item whose task is a topic's piece opens that topic. With no topic files, or with
+`render --all` or `--lavish`, the main page is the classic page, as before.
 
 ## Read a thread (owner)
 
-1. Open a topic from **Needs you**, **Changed since you last looked**, search, or the **Topics** list on the
+1. Open a topic from a call's meta row or **Open thread**, **Changed since you last looked**, search, or the **Topics** list on the
    previous page.
 2. Tap a topic. On a phone, its page starts with the state: **Now**, **Waiting on**, **Pieces** (backlog tasks with
    their state) and **Links**.
