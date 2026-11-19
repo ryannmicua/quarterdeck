@@ -4078,7 +4078,7 @@ async function click(report, text) {
     assert.ok(body, 'report body in the detail view opened from ' + section);
     assert.ok(elements.root.querySelectorAll('h2').some(h => h.textContent === harbor.title));
     assert.equal(elements.root.querySelectorAll('section').length, 0, 'the detail view replaces the list');
-    elements.root.querySelectorAll('button').find(b => b.textContent.startsWith('←')).listeners.click(); await flush();
+    elements.root.querySelectorAll('button').find(b => b.textContent === 'Back to the desk').listeners.click(); await flush();
     assert.ok(document.getElementById(section), 'Back returns to the list');
   }
   assert.equal(elements.root.querySelectorAll('script').length, 0);
