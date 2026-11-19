@@ -76,13 +76,12 @@ top.`); the status line carries the full reason.
 | `Downloads are unavailable in this view.` | A download button was pressed without the `downloads` capability. |
 | `Render error: …` | Something threw while drawing the page or one card. The rest of the page keeps working; report the message. |
 
-The thin gold rule under the header is decoration, not a status. The **On
-your desk** badge counts cards, not the sub-headings between them.
+The **On your desk** count counts cards, not the sub-headings between them.
 
 ## Open a card for details
 
 Click a card, or its **View details** button, to open its detail view in the
-page. **← Back to the desk** (or Escape) returns to the list where you were,
+page. **Back to the desk** (or Escape) returns to the list where you were,
 with the same groups open. The detail view holds what you need to decide:
 
 - For a captain call: the title, the ask, Firstmate's recommendation, the full

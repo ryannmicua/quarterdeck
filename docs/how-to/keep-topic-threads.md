@@ -17,11 +17,11 @@ ask box and search:
   as one uncounted line until Firstmate records it. Items outside topics open their own page, or their card on the
   previous page when they have none. Once an item's task is a topic's piece, it shows through that topic instead.
 - **Changed since you last looked:** one row per topic with something new from Firstmate or anyone else since you
-  last left the page on this device, with "+N more" when there is more than one entry. The first time, it shows the
+  last left the page on this device, with "N more entries" when there is more than one. The first time, it shows the
   last two days. Reloading the page keeps the same starting point.
 - **Topics:** every open topic, those needing you first, with its **Now** line. Closed topics are in search.
 - **Ask Firstmate**, on the served page, with **Goes to** (see below).
-- **Everything else is in Search:** reports, underway, waiting and queued work, and finished work, all searchable,
+- **Search** finds everything else: reports, underway, waiting and queued work, and finished work,
   with the filters All, Needs you, Underway, Waiting, Queued and Done. A search with no match lists the topics and
   offers to ask Firstmate.
 

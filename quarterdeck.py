@@ -7955,7 +7955,7 @@ header .bar { position: static; }
 .dashboard-section { margin: 2rem 0; }
 .section-head { display: flex; flex-wrap: wrap; align-items: baseline; column-gap: .6rem; margin-bottom: .8rem; }
 .section-head > div { display: contents; }
-.section-head > div > p { order: 2; flex: 1 0 100%; }
+.section-head > div > p { order: 2; flex: 1 0 100%; max-width: none; }
 .section-head h2, .dashboard-section h2 { margin: 0; }
 .section-head p { margin: .3rem 0; color: var(--soft); font: var(--text-sm)/1.45 var(--sans); max-width: var(--measure); }
 details.dashboard-section > summary, details.board-band > summary, .topic-done > summary, .board-more > summary, .bearing summary, #activity > summary {
@@ -8115,13 +8115,14 @@ footer { border-top: 1px solid var(--rule); margin-top: 3rem; padding-top: 1rem;
   .front > .front-ask { grid-area: ask; }
   .front > .more { grid-area: more; }
   .front #needs-h, .front #changed-h { margin-top: 0; }
-  .thread { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); grid-template-areas: "title title" "state log" "open log" "foot log";
+  .thread { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); grid-template-areas: "title title" "open log" "state log" "foot log";
     gap: 0 4rem; align-items: start; }
   .thread > h1, .thread > .closed { grid-column: 1 / -1; }
   .thread > .state { grid-area: state; }
   .thread > .open { grid-area: open; }
   .thread > .conversation { grid-area: log; }
-  .thread > .conversation h2 { margin-top: 0; }
+  .thread > .conversation h2, .thread > .open h2 { margin-top: 0; }
+  .thread > .open + .state, .thread > .state { margin-top: 1.4rem; }
   .thread > .problems, .thread > .footnote { grid-column: 1; }
   .thread > .ask { grid-column: 1 / -1; }
   .finder { display: grid; grid-template-columns: var(--side) minmax(0, 1fr); gap: 0 3rem; align-items: start; }

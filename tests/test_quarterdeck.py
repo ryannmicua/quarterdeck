@@ -4970,7 +4970,7 @@ const card = (root, title) => root.all('article').find(c => c.children.some(n =>
   assert.ok(buttons(root, 'Approve').length === 1 && !buttons(root, 'Approve')[0].disabled, 'reaction controls are in the detail view');
   snaps[0]({docs: []});  // a database snapshot re-renders; the detail view stays
   assert.ok(root.all('h2').some(h => h.textContent === 'Title c1'));
-  buttons(root, '← Back to the desk')[0].listeners.click(); await flush();
+  buttons(root, 'Back to the desk')[0].listeners.click(); await flush();
   assert.ok(card(root, 'Title c2'));
   assert.ok(root.all('details').find(d => d.id === 'week').open, 'group stays open after Back');
   assert.equal(root.all('details').find(d => d.id === 'parked').open, false);
@@ -4979,7 +4979,7 @@ const card = (root, title) => root.all('article').find(c => c.children.some(n =>
   assert.ok(parkedCard.closest('details'), 'the parked card sits inside its group');
   parkedCard.listeners.click({target: parkedCard.children.find(n => n.tag === 'h3')}); await flush();
   assert.ok(root.all('h2').some(h => h.textContent === 'Title c3'), 'a parked card body click opens its detail view');
-  buttons(root, '← Back to the desk')[0].listeners.click(); await flush();
+  buttons(root, 'Back to the desk')[0].listeners.click(); await flush();
 
   // Resolving null: controls stay, disabled, with a one-line reason in the header and on the controls.
   root = boot(async () => null); await flush();

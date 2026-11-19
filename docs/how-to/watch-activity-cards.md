@@ -17,7 +17,7 @@ for a task held for the captain also shows what the
 
 | Section | Cards | Source |
 | --- | --- | --- |
-| Needs you | One per decision, merge or review waiting on you. Distinct gold edge and a status chip such as "Decision waiting" or "PR ready to merge". | The attention feed and the captain board. |
+| Needs you | One per decision, merge or review waiting on you. A red left edge and a status word such as "Decision waiting" or "PR ready to merge". | The attention feed and the captain board. |
 | Recent work, last 6 hours | One per task started. | `state/fleet-ledger.jsonl`. |
 | For your information | One per result to read. | The attention feed and the captain board. |
 | Done recently | Recently merged work, answered or closed captain calls, and dated finished tasks. | The fleet ledger and backlog, including registered homes. |
@@ -51,8 +51,8 @@ Markdown opens rendered and HTML retains its content and scripts. A link appears
 only for a readable UTF8 regular `.md` or `.html` file of 2 MB or less that really
 sits inside that data directory; missing files and links that escape it are left out.
 The card text is not changed. Report references use the [report view](#read-the-report)
-below. Other opened documents carry a small bar with
-**Back to Quarterdeck** and **Open file by itself**. The second link opens the
+below. Other opened documents carry a small bar with a
+link back to Quarterdeck and **Open file by itself**. The second link opens the
 original file with no bar: markdown as plain text, HTML as its own page. The bar
 stays at the bottom of the viewport on HTML documents, with space reserved at
 the document's end so its final content remains readable. Backlog pages carry
@@ -88,7 +88,7 @@ and opens to Firstmate's dated briefing and clarifications first, with
 states them, the decision brief and other links, and a link to the item on the
 desk. If the desk has changed since the page loaded, that link refreshes the
 page once pending replies and view edits are finished. With `serve --allow-marks`, it also carries the usual Approve, Hold, Not
-now and Question buttons and reply box, using the desk's
+now and Ask a question buttons and reply box, using the desk's
 [reaction controls and drafts](serve-the-page.md#react-to-calls-and-reports-from-the-page).
 A card never acts by itself: a merge or
 anything destructive still waits for your reaction, and Firstmate does the work.

@@ -401,7 +401,7 @@ Also run `render --output <disposable-output>/index.html` and follow its links.
 Use same-path parent/child reports with distinct headings to check ownership;
 make the child unavailable and confirm no parent fallback. An HTML explainer's
 script should run, but its sandbox must block storage and write-endpoint access.
-Each opened document must show the Back to Quarterdeck bar, and Open file by
+Each opened document must show the bar that links back to Quarterdeck, and Open file by
 itself must return the unmodified file at 375px and desktop width.
 Scroll a long HTML document to its final control and confirm it clears the bar,
 including after resizing so the links wrap. The focused navigation regressions
