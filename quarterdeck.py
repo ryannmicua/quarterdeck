@@ -847,7 +847,10 @@ def source_pages(
                 continue
             name = source_page_filename("report", snapshot.spec.home, report.path)
             actions = report_page_actions(report, ambiguous_ids, incomplete) if allow_marks else ""
-            framed = report_view_pages(report.path.parent, main_href, actions, name, report.title)
+            framed = report_view_pages(
+                report.path.parent, main_href, actions, name, report.title,
+                data_dir=snapshot.spec.data_dir or snapshot.data_dir or snapshot.spec.home / "data",
+            )
             if framed is not None and framed[1].keys() - {name}:  # a report.html sits beside it: show that
                 pages.update(framed[1])
                 continue
@@ -2149,7 +2152,7 @@ BLOCKER_FIELD_RE = re.compile(
     r"\b(?P<key>blocked[-_]by|waiting[-_](?:on|for)):\s*(?P<value>\S+)", re.I
 )
 BULLET_ITEM_RE = re.compile(r"^-\s+\[(?P<mark>[ xX])\]\s+(?P<id>[A-Za-z0-9][\w.-]*)\s+-\s+(?P<rest>.*)$")
-REPORT_PATH_RE = re.compile(r"\bdata/([\w.-]+)/report\.md\b")
+REPORT_PATH_RE = re.compile(r"(?<![\w./-])data/([\w][\w.-]{0,127})/report\.(?:md|html)(?![\w-])")
 DATE_RE = re.compile(r"\d{4}-\d{2}-\d{2}(?:[T ]\d{2}:\d{2}(?::\d{2})?(?:Z|[+-]\d{2}:?\d{2})?)?")
 OPTIONS_RE = re.compile(r"(?is)\boptions?\s*(?:\([^)]*\))?\s*:\s*(.+?)(?=\n\s*\n|\brecommend(?:ation|ed)?\s*:|\Z)")
 RECOMMENDATION_RE = re.compile(r"(?is)\brecommend(?:ation|ed)?\s*:\s*(.+?)(?=\n\s*\n|\boptions?\s*:|\Z)")
@@ -2651,7 +2654,8 @@ class BearingsBuilder:
         bitem.pr_url = bitem.pr_url or (item.pr_url if PR_URL_RE.fullmatch(item.pr_url or "") else "")
         report = find_report(item, snapshot)
         if report is None and (origin := hold_origin_id(item.body)):
-            report = next((r for r in snapshot.reports if r.path.parent.name == origin), None)
+            target, origin_item, _ = self.lookup(snapshot, "", origin)
+            report = find_report(origin_item, target) if origin_item is not None else None
         options, recommendation = options_and_recommendation(item.hold_reason, item.body)
         bitem.options = options
         bitem.recommendation = recommendation or (report.recommendation if report and report.recommendation else "")
@@ -8418,6 +8422,11 @@ def topic_link_html(link: str, data_dir: Path | None, pages: dict[str, str] | No
     """One Links item: a Markdown link, a bare address, or a data/ document opened as a readable page."""
     target = topic_link_target(link)
     if target.startswith("data/"):
+        if REPORT_PATH_RE.fullmatch(target):
+            links = report_links_html(report_ids_in(target), data_dir, pages, main_href)
+            if links:
+                return links[0]
+            return f'<span class="piece-id">{html.escape(target)}</span>'
         docs = referenced_docs(target, data_dir) if data_dir is not None and pages is not None else []
         if docs:
             path, label = docs[0]
@@ -11581,7 +11590,6 @@ def doc_page(path: Path, label: str, raw_name: str, main_href: str = "index.html
 
 
 REPORT_ID_RE = re.compile(r"[\w][\w.-]{0,127}")
-REPORT_PATH_RE = re.compile(r"(?<![\w./-])data/([\w][\w.-]{0,127})/report\.(?:md|html)(?![\w-])")
 HOLD_ORIGIN_RE = re.compile(r"Captain hold origin:\s*`?([\w][\w.-]{0,127})`?", re.IGNORECASE)
 REPORT_VIEW_PREFIX = "rv-"
 REPORT_MD_PREFIX = "rm-"
@@ -11636,12 +11644,18 @@ def html_title(page: str, default: str) -> str:
 
 def report_view_pages(
     directory: Path, main_href: str = "index.html", actions: str = "", name: str | None = None,
-    title: str = "",
+    title: str = "", *, data_dir: Path,
 ) -> tuple[str, dict[str, str]] | None:
     """The pages that show one report: (name of the view, pages by name), or None when it has no readable file.
 
     With a report.html the view frames it, sandboxed, as the default and links the markdown for agents; with only a
     report.md it is the rendered markdown."""
+    try:
+        directory = directory.resolve()
+        if directory.parent != data_dir.resolve():
+            return None
+    except OSError:
+        return None
     markdown = read_report_file(directory, "report.md")
     page = read_report_file(directory, "report.html")
     if markdown is None and page is None:
@@ -11688,7 +11702,7 @@ def report_links_html(
     built: list[tuple[str, str]] = []
     for report_id in dict.fromkeys(report_ids):
         directory = report_directory(data_dir, report_id)
-        result = report_view_pages(directory, main_href) if directory is not None else None
+        result = report_view_pages(directory, main_href, data_dir=data_dir) if directory is not None else None
         if result is None:
             continue
         view, report_pages = result
@@ -11711,8 +11725,12 @@ def doc_links_html(
     becomes one "Read the report" link to that report's page."""
     if data_dir is None or pages is None:
         return ""
-    items = [f"<li>{link}</li>" for link in report_links_html([*report_ids_in(text), *(report_ids or [])], data_dir, pages, main_href)]
-    for path, label in referenced_docs(text, data_dir):
+    docs = referenced_docs(text, data_dir)
+    resolved_reports = [path.parent.name for path, _ in docs
+                        if path.name in {"report.md", "report.html"} and path.parent.parent == data_dir.resolve()]
+    items = [f"<li>{link}</li>" for link in report_links_html(
+        [*report_ids_in(text), *resolved_reports, *(report_ids or [])], data_dir, pages, main_href)]
+    for path, label in docs:
         if path.name in {"report.md", "report.html"} and path.parent.parent == data_dir.resolve():
             continue
         digest = hashlib.sha256(str(path).encode("utf-8")).hexdigest()[:12]
@@ -11834,9 +11852,9 @@ def activity_cards(
                 owners = owner_labels.get(namespace, [])
                 owner = owners[0] if len(owners) == 1 else namespace if separator else label
                 task = (task_items or {}).get(owner, {}).get(_task if separator else str(item["key"]))
-                hints = [name for name in (
-                    task.report_dir if task else "", task.id if task else "", hold_origin_id(task.body) if task else "",
-                ) if name]
+                origin = (task_items or {}).get(owner, {}).get(hold_origin_id(task.body)) if task else None
+                hints = [name for related in (task, origin) if related is not None
+                         for name in (related.report_dir, related.id) if name]
                 cards.append(need_card(
                     item, entry, owner, multi_home, reactions, section,
                     (data_dirs or {}).get(owner) if len(owners) == 1 else None, doc_pages, main_href, hints,

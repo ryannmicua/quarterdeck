@@ -6949,7 +6949,7 @@ class ActivityCardTests(unittest.TestCase):
                     {"key": f"invented/{key}", "title": item.title, "ask": "No path named here.", "group": "decide", "at": None}]}}]}
                 pages: dict[str, str] = {}
                 cards = quarterdeck.activity_cards(
-                    attention, None, None, {"invented": data}, pages, "index.html", {"invented": {key: item}})
+                    attention, None, None, {"invented": data}, pages, "index.html", {"invented": {key: item, "scout-b": quarterdeck.BacklogItem("scout-b", "Origin")}})
                 links = re.findall(r'<a href="(rv-[0-9a-f]{12}\.html)">Read the report</a>', cards[0]["body"])
                 self.assertEqual(len(links), 1, key)
                 self.assertIn(f"Report {hints[0]}", pages[links[0]])
@@ -6961,13 +6961,116 @@ class ActivityCardTests(unittest.TestCase):
             self.assertEqual(html_text.count("Read the report: "), 2)
             self.assertIn("Read the report: Report scout-a", html_text)
 
+    def test_scout_view_does_not_publish_html_beside_an_escaped_markdown(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            root = Path(raw)
+            home = root / "home"
+            data = root / "configured-data"
+            (data / "scout").mkdir(parents=True)
+            outside = root / "outside"
+            outside.mkdir()
+            (outside / "notes.md").write_text("# Existing scout notes\n")
+            (outside / "report.html").write_text("<p>Unreferenced private HTML</p>")
+            (data / "scout" / "report.md").symlink_to(outside / "notes.md")
+            home.mkdir()
+            (data / "backlog.md").write_text("# Backlog\n")
+            snapshot = quarterdeck.load_home_snapshot(quarterdeck.HomeSpec("invented", home, data_dir=data))
+            pages = quarterdeck.source_pages([snapshot])
+            self.assertTrue(snapshot.reports)
+            self.assertFalse(any("Unreferenced private HTML" in page for page in pages.values()))
+            self.assertIsNone(quarterdeck.report_view_pages(outside, data_dir=data))
+            (data / "safe").mkdir()
+            (data / "safe" / "report.md").write_text("# Safe scout\n")
+            (data / "safe" / "report.html").write_text("<p>Captain summary</p>")
+            snapshot = quarterdeck.load_home_snapshot(quarterdeck.HomeSpec("invented", home, data_dir=data))
+            pages = quarterdeck.source_pages([snapshot])
+            self.assertIn("<p>Captain summary</p>", pages.values())
+
+    def test_bare_reports_and_topic_links_open_the_report_view(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            data = Path(raw) / "data"
+            directory = data / "scout"
+            directory.mkdir(parents=True)
+            (directory / "summary.md").write_text("# Summary\n")
+            (directory / "report.md").write_text("# Agent report\n")
+            (directory / "report.html").write_text("<p>Captain report</p>")
+            for filename in ("report.md", "report.html"):
+                with self.subTest(filename=filename):
+                    pages = {}
+                    links = quarterdeck.doc_links_html(f"See data/scout/summary.md and {filename}", data, pages)
+                    view = re.search(r'href="(rv-[^"]+)"', links).group(1)
+                    self.assertIn("<iframe", pages[view])
+                    self.assertIn("Agent version (markdown)", pages[view])
+                    self.assertEqual(links.count("Read the report"), 1)
+                    entry = quarterdeck.TopicEntry(1, ATTENTION_NOW, "firstmate", "chat",
+                                                   text=f"See data/scout/summary.md and {filename}")
+                    conversation_pages = {}
+                    conversation = quarterdeck.topic_entry_html(entry, {}, {}, data, conversation_pages, "index.html")
+                    self.assertIn(f'href="{view}"', conversation)
+                    self.assertEqual(conversation_pages[view], pages[view])
+                    for target in (f"data/scout/{filename}", f"[Findings](data/scout/{filename})"):
+                        topic_pages = {}
+                        topic_link = quarterdeck.topic_link_html(target, data, topic_pages, "index.html")
+                        self.assertIn(f'href="{view}"', topic_link)
+                        self.assertEqual(topic_pages[view], pages[view])
+
+    def test_hold_origin_uses_the_origins_explicit_report_directory(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            home = Path(raw) / "home"
+            data = home / "data"
+            (data / "storage-findings").mkdir(parents=True)
+            (data / "storage-findings" / "report.md").write_text("# Storage evidence\n")
+            (data / "backlog.md").write_text(
+                "# Backlog\n\n## Queued\n\n"
+                "- [ ] scout-a - Scout data/storage-findings/report.md\n"
+                "- [ ] choice - Decide (held: true) (hold-kind: captain)\n"
+                "  Captain hold origin: scout-a\n")
+            snapshot = quarterdeck.load_home_snapshot(quarterdeck.HomeSpec("invented", home))
+            items = quarterdeck.snapshot_items(snapshot)
+            bearings = quarterdeck.BearingsBuilder([snapshot], ATTENTION_NOW, use_snapshot=False)
+            item = quarterdeck.BItem(title="Decide", owner="invented", item_id="choice")
+            bearings.decorate(item, snapshot, items["choice"])
+            expected = quarterdeck.source_page_filename("report", home, data / "storage-findings" / "report.md")
+            self.assertEqual(item.report_page, expected)
+            for kind in ("decisions", "needs_you", "informational"):
+                pages = {}
+                attention = {"homes": [{"label": "invented", "waiting": {kind: [
+                    {"key": "invented/choice", "title": "Decide", "ask": "Choose", "group": "decide", "at": None}]}}]}
+                cards = quarterdeck.activity_cards(attention, None, None, {"invented": data}, pages,
+                                                   task_items={"invented": items})
+                view = re.search(r'href="(rv-[^"]+)"', cards[0]["body"]).group(1)
+                self.assertIn("<h1>Storage evidence</h1>", pages[view])
+
+    def test_report_paths_in_backlog_and_topics_share_both_formats(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            home = Path(raw)
+            data = home / "data"
+            directory = data / "storage-findings"
+            directory.mkdir(parents=True)
+            (directory / "report.md").write_text("# Storage evidence\n")
+            snapshot = quarterdeck.HomeSnapshot(quarterdeck.HomeSpec("invented", home), data_dir=data,
+                                                reports=quarterdeck.read_reports(data))
+            for extension in ("md", "html"):
+                for location in ("title", "body"):
+                    with self.subTest(extension=extension, location=location):
+                        path = f"data/storage-findings/report.{extension}"
+                        source = (f"- [ ] scout-a - Scout {path}\n" if location == "title"
+                                  else f"- [ ] scout-a - Scout\n  See {path}\n")
+                        item = quarterdeck.backlog_items(source, snapshot)[0]
+                        self.assertEqual(item.report_dir, "storage-findings")
+                        self.assertEqual(quarterdeck.find_report(item, snapshot).path, directory / "report.md")
+                        topic = quarterdeck.Topic("storage", data / "topics" / "storage.md", links=[path])
+                        self.assertEqual(quarterdeck.topic_reports(topic, snapshot), snapshot.reports)
+            missing = quarterdeck.backlog_items("- [ ] absent - See data/absent/report.html\n", snapshot)[0]
+            self.assertIsNone(quarterdeck.find_report(missing, snapshot))
+
     def test_report_html_is_the_default_view_and_markdown_stays_linked(self) -> None:
         with tempfile.TemporaryDirectory() as raw:
             directory = Path(raw) / "data" / "scout-a"
             directory.mkdir(parents=True)
             (directory / "report.md").write_text("# Agent notes\n")
             (directory / "report.html").write_text("<title>For the owner</title><h1>Plain summary</h1>")
-            view, pages = quarterdeck.report_view_pages(directory)
+            view, pages = quarterdeck.report_view_pages(directory, data_dir=directory.parent)
             frame = pages[view]
             self.assertIn("<iframe", frame)
             self.assertIn('sandbox="allow-scripts allow-popups"', frame)
@@ -6978,7 +7081,7 @@ class ActivityCardTests(unittest.TestCase):
             self.assertNotIn("Agent notes", frame)
             self.assertIn("For the owner", frame)
             (directory / "report.html").unlink()
-            view, pages = quarterdeck.report_view_pages(directory)
+            view, pages = quarterdeck.report_view_pages(directory, data_dir=directory.parent)
             self.assertIn("<h1>Agent notes</h1>", pages[view])
             self.assertEqual(len(pages), 1)
 
@@ -7002,7 +7105,7 @@ class ActivityCardTests(unittest.TestCase):
             text = "data/../outside/report.md data/linked/report.md data/inner/report.html"
             self.assertEqual(quarterdeck.doc_links_html(text, data, pages), "")
             self.assertEqual(pages, {})
-            self.assertIsNone(quarterdeck.report_view_pages(root / "outside" / "nowhere"))
+            self.assertIsNone(quarterdeck.report_view_pages(root / "outside" / "nowhere", data_dir=data))
 
     def test_served_report_html_is_sandboxed_and_only_from_a_report_directory(self) -> None:
         with tempfile.TemporaryDirectory() as raw:
@@ -10948,10 +11051,9 @@ Context.
             self.assertIn('<span class="piece-state needs">needs you</span>', page, "paper-27 is review ready")
             self.assertIn('<span class="piece-state">blocked</span>', page)
             self.assertIn('href="https://example.com/maple-harbor/preview">Catalog preview</a>', page)
-            report = home / "data" / "amber-18" / "report.md"
-            digest = quarterdeck.hashlib.sha256(str(report.resolve()).encode("utf-8")).hexdigest()[:12]
-            self.assertIn(f'<a href="doc-{digest}.html">amber-18/report.md</a>', page)
-            self.assertTrue((output.parent / f"doc-{digest}.html").is_file())
+            report_link = re.search(r'<a href="(rv-[^"]+)">Read the report</a>', page)
+            self.assertIsNotNone(report_link)
+            self.assertIn("Amber", (output.parent / report_link.group(1)).read_text())
             self.assertIn('<time datetime="2026-03-02T08:12:00Z" data-show="clock">08:12 UTC</time>', page)
             self.assertIn("in chat", page)
             self.assertIn("on Quarterdeck", page)
