@@ -12,8 +12,8 @@ on its card. Topics and Search are the other two tabs.
 
 - **Your calls** lists every open topic decision, `Waiting on: you` line and held item outside topics, newest first;
   a wait, which has no time of its own, comes last. The first call is open; tap another to open it instead.
-- **One card per ask.** When a wait or a held item asks the same thing as a decision (or a wait the same as a held
-  item), they share one card, and an answer there goes to each of them.
+- **Separate sources keep separate cards.** Similar wording does not establish that two asks are the same;
+  an answer goes only to the source of the card you answered.
 - **A card** shows the ask, a meta row (topic, how long it has waited, the kind of ask), up to about 30 words of
   context and three facts, the options as buttons with the recommended one marked, and its thread, report or brief
   links. A wait offers **Mark done**; a held item that asks for a merge offers **Merge it** and **Not yet**.

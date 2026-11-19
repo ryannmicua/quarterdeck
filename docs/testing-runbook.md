@@ -650,15 +650,19 @@ fictional homes, profiles and state after capturing screenshots and responses.
 
 ## Calls view
 
-`CallsPageTests` covers the queue, merging, May be settled, Sent and `render`. For a live check, serve a fictional
+`CallsPageTests` covers the queue, separate answer targets, May be settled, Sent and custom `render` filenames.
+Run `PYTHONPATH=tests python3 -m unittest -v test_quarterdeck.CallsPageTests` for focused verification; Node
+executes the generated Calls script against a simulated DOM and delivery boundary to check Undo, failed delivery,
+unchanged retry IDs and question delivery. All fixtures and messages are fictional. For a live check, serve a fictional
 home whose topics hold a decision with options, a `Waiting on: you` line that repeats it, a decision more than a
 day old with three later owner entries, and an executable `bin/fm-attention.sh` feeding a captain hold; give it a
 fake `bin/fm-inbox.sh` that appends each note to a log, and isolated XDG state. At 390px and 1440px:
 
-- the repeated wait shares the decision's card, and one tap sends two notes: the answer and `Done: <wait>`;
+- similar asks keep separate cards, each with its own controls; one tap sends only that card's answer;
 - after the five-second Undo the card moves to Sent, the next call opens, and the count and tab title drop;
   a reload keeps it in Sent;
-- **Undo** sends nothing; **Ask question** sends a question and keeps the card;
+- **Undo** sends nothing and keeps typed words; failed delivery also keeps them, and an unchanged retry keeps
+  its message ID; **Ask question** sends a question and keeps the card;
 - **Close card** on a May be settled card sends `Already settled. Close this card.` and shows Closed in Sent;
 - the page scrolls to its last element and back with no sideways scroll, on Calls and Topics.
 

@@ -59,8 +59,8 @@ for server requirements, phone setup and withdrawal behavior.
   one line with the answer until Firstmate records it, and an ask box on each
   thread and on the front page sends a question to Firstmate under the topic it
   shows. With topics, the page opens on Calls: one queue of open topic
-  decisions, waits on you and items not yet in a topic, merged where they
-  repeat, each with its options as buttons and the recommendation marked.
+  decisions, waits on you and items not yet in a topic, each with its options
+  as buttons and the recommendation marked.
   An answered call leaves for Sent at once, and calls that look settled fold
   under May be settled. Changed since you last looked and the topic list are
   on the Topics tab, everything else is behind search, and the previous front

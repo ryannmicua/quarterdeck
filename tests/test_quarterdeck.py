@@ -11784,7 +11784,7 @@ class CallsPageTests(unittest.TestCase):
             handle.write("\n## 2026-03-05 08:00 | you | quarterdeck\nRe: merge-42\nMerge\n")
         self.assertNotIn("Merge PR 42 now?", self.fresh_page("index.html"), "recorded in the file: gone for good")
 
-    def test_the_same_ask_from_two_sources_is_one_card_answered_in_both(self) -> None:
+    def test_similar_asks_keep_separate_cards_and_answer_targets(self) -> None:
         self.write_topic("vendor-images.md", """# Vendor images
 Waiting on: you - choose the storage plan for the vendor product images
 
@@ -11801,20 +11801,23 @@ Recommend: Shared bucket
 """)
         front = self.fresh_page("index.html")
         queue = self.queue(front)
-        self.assertEqual(queue.count('<details class="call"'), 3, "the wait joins the decision's card beside the example's two")
-        self.assertNotIn('<span class="call-line">Choose the storage plan', queue)
-        targets = json.loads(html.unescape(re.search(
-            r'id="call-d-vendor-images-storage-plan" data-call="[^"]+" data-targets="([^"]+)"', queue).group(1)))  # type: ignore[union-attr]
-        self.assertEqual(targets, [
-            {"kind": "decision", "item": "vendor-images/storage-plan", "prefix": ""},
-            {"kind": "topic", "item": "vendor-images", "prefix": "Done: choose the storage plan for the vendor product images"},
-        ])
+        self.assertEqual(queue.count('<details class="call"'), 4)
+        self.assertIn('<span class="call-line">Choose the storage plan', queue)
+        target = json.loads(html.unescape(re.search(
+            r'id="call-d-vendor-images-storage-plan" data-call="[^"]+" data-target="([^"]+)"', queue).group(1)))
+        self.assertEqual(target, {"kind": "decision", "item": "vendor-images/storage-plan", "prefix": ""})
         self.assertIn("<li>The shared bucket is ready today.</li>", queue)
         self.assertNotIn("A fourth point", queue, "at most three facts")
-        two = [quarterdeck.Call(key=name, source="decision", line=name, where="", where_href="", asked=None, kind="",
-                                words=quarterdeck.call_words("which storage plan holds the vendor product images"))
-               for name in ("one", "two")]
-        self.assertEqual(len(quarterdeck.merge_calls(two)), 2, "two decisions never merge")
+        _config, homes, bearings = quarterdeck.load_site(self.args())
+        card = {"id": "call:fictional/merge-52", "section": "needs_you", "title": "Vendor images storage plan",
+                "wait_summary": "Vendor product images storage plan needs word to merge", "wait_kind": "merge"}
+        page = quarterdeck.calls_page_html(homes, "Quarterdeck", bearings, [card], allow_marks=True)
+        self.assertEqual(self.queue(page).count('<details class="call"'), 5)
+        hold = quarterdeck.hold_call(card, None)
+        self.assertIn(f'id="need-{hold.tag}"', page)
+        self.assertIn('data-answer="Merge it"', page)
+        self.assertIn('data-answer="Not yet"', page)
+        self.assertIn(html.escape(json.dumps({"kind": "call", "item": "fictional/merge-52", "prefix": ""}), quote=True), page)
 
     def test_a_call_talked_past_or_with_nothing_to_decide_folds_under_may_be_settled(self) -> None:
         self.write_topic("vendor-images.md", """# Vendor images
@@ -11867,16 +11870,30 @@ Ship the labels with the catalog.
         self.assertEqual(quarterdeck.call_context(""), ("", []))
 
     def test_render_writes_calls_as_the_main_file_with_topics_and_the_previous_view_beside_it(self) -> None:
-        output = self.root / "out" / "index.html"
+        output = self.root / "out" / "deck.html"
         result = TopicTests.run_cli(self, ["render", "--home", str(self.home), "--output", str(output), "--no-snapshot"], self.root)  # type: ignore[arg-type]
         self.assertEqual(result.returncode, 0, result.stderr)
         front = output.read_text(encoding="utf-8")
+        self.assertIn('<a href="deck.html" aria-current="page">Calls</a>', front)
+        for page in (front, (output.parent / quarterdeck.TOPICS_PAGE).read_text(encoding="utf-8")):
+            self.assertIn('<a class="mark" href="deck.html">', page)
+            self.assertRegex(page, r'<a href="deck.html"(?: aria-current="page")?>Calls</a>')
         self.assertIn("Your calls", front)
         self.assertIn("Could not read everything that might need you", front, "no snapshot: never a false all clear")
         self.assertIn("<li>Merge", front, "a rendered page lists the options without buttons")
         self.assertNotIn('data-answer="', front)
         for name in (quarterdeck.TOPICS_PAGE, quarterdeck.PREVIOUS_PAGE, quarterdeck.CLASSIC_PAGE, quarterdeck.SEARCH_PAGE):
             self.assertTrue((output.parent / name).is_file(), name)
+
+    @unittest.skipUnless(shutil.which("node"), "Node is required to execute the generated script")
+    def test_call_delivery_preserves_words_and_retries_the_same_message(self) -> None:
+        page = quarterdeck.site_builder(self.args(), True)()["index.html"]
+        targets = [json.loads(html.unescape(value)) for value in re.findall(r'data-target="([^"]+)"', self.queue(page))]
+        payload = {"script": quarterdeck.calls_script().split("<script>", 1)[1].split("</script>", 1)[0],
+                   "targets": targets}
+        result = subprocess.run(["node", str(ROOT / "tests" / "calls_ui.cjs")], input=json.dumps(payload),
+                                capture_output=True, text=True, check=False)
+        self.assertEqual(result.returncode, 0, result.stderr)
 
     @unittest.skipUnless(shutil.which("node"), "Node is required to check the generated script")
     def test_the_calls_script_parses(self) -> None:
