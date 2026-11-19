@@ -29,6 +29,12 @@ for server requirements, phone setup and withdrawal behavior.
 
 ## Features
 
+- One look on every screen: generated pages and the cloud artifact share one
+  stylesheet; the standalone decision brief uses the same visual style.
+  Phones get one column; screens 1440px and wider get columns (Needs you beside Changed,
+  a topic's state beside its conversation, a report beside its review buttons,
+  search filters as a sidebar) while reading lines stay about 75 characters.
+  Heading counts appear only when there is more than one item.
 - Needs-you cards and activity: the served page leads with the decisions,
   merges and anything else waiting on you, each a card that
   opens to the ask, options and links and uses the desk's
@@ -96,9 +102,10 @@ for server requirements, phone setup and withdrawal behavior.
   reports tied to the desk. A status line in the header and at the top of the
   desk says whether reactions are connected. See
   [Use the cloud artifact](docs/how-to/use-the-cloud-artifact.md).
-- Compact header: the page opens on one status line (what needs you, how many
-  are underway, how many reports wait, each linking to its section), then a
-  sticky strip of section links, then the cards that need you.
+- Compact header on the previous page: a status line says what needs you and
+  shows nonzero underway and report totals, each linking to its section.
+  Section links form a sticky strip on smaller screens and a sidebar on wide
+  screens, followed by the cards that need you.
 - Bearings-shaped page: Captain's Call, Underway, and Charted Next, each
   rendered with an empty-state sentence. Charted Next and Details by home start
   collapsed; Underway says how long each task has run. Recent work uses the

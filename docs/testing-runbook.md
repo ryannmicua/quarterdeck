@@ -58,6 +58,48 @@ All homes and outputs are disposable fictional fixtures with isolated config
 and state; no real home scripts or inbox writes are needed. Fixtures clean up
 automatically.
 
+### Shared page output and topic layout
+
+Run `PYTHONPATH=tests python3 -m unittest -v test_quarterdeck.OneLookTests test_quarterdeck.TopicTests`.
+The generated-output checks cover stylesheet inclusion, interface glyphs and
+machine-readable badge counts; they do not prove computed styles or layout.
+For classic-page naming and stylesheet inclusion, run
+`PYTHONPATH=tests python3 -m unittest -v test_quarterdeck.PhoneFixTests.test_page_uses_one_name_per_thing_and_shared_stylesheet`.
+This checks generated output, not rendered muted-text contrast.
+Topic tests exercise static and served pages, including decision controls, using
+disposable fictional homes. They require no real inbox writes or push delivery.
+
+For browser layout checks, use a fictional topic with a short open decision and
+a long conversation, plus a closed topic opened from Search. At 1440 and 2240 px,
+verify decisions and state flow together in the left column regardless of
+conversation length, and the title and closed notice precede both columns.
+At 375 px, verify title, closed notice when present, state, decisions and
+conversation retain that reading order without horizontal overflow. Check topics
+without open decisions too. These layout checks require an actual browser;
+matching stylesheet source is not evidence of rendered behavior.
+
+Live checked 2026-11-19 with the real `serve --home <fictional-home>
+--no-snapshot --allow-marks` CLI and isolated Chrome. Check the front page at
+375, 768, 1280, 1440 and 2240 px; classic, search, adoption, topics, exported
+artifact and a filled decision brief at phone and wide widths. Count the classic
+sidebar together with main content when measuring screen use. Open Activity and
+expand a folded repeated-run card; checking a collapsed section misses its layout.
+Search for a report, mark it, reload until the published page offers Unmark, then
+unmark and reload again. A document page's immediate save response offers Undo
+and Back to Quarterdeck; it does not replace its controls until reload. Follow a
+topic's Markdown document link and its raw-file link, including long unbroken
+text and scrollable code. Verify dark-mode overflow and normal/muted text contrast
+against the 4.5:1 normal-text threshold on each page kind. Save screenshots as well
+as measured browser rectangles. Keep browser dependencies/profile in disposable
+workspace storage and review state in the authorized external evidence directory;
+stop and await Chrome and the CLI server, then remove disposable storage.
+
+When seeding a linked Markdown document, use `data/<task>/<file>.md`, then
+follow its `doc-*.html` link. A report can instead open as `rv-*.html`; using
+that route as the document fixture would miss long-text and raw-file checks.
+For repeated-run cards, give the ledger task IDs the same title in the backlog;
+ledger `title` fields alone do not supply the displayed title.
+
 ### Read-only topic pages in a browser
 
 Live checked 2026-11-17 against the real CLI server with fictional homes and
@@ -401,7 +443,7 @@ Also run `render --output <disposable-output>/index.html` and follow its links.
 Use same-path parent/child reports with distinct headings to check ownership;
 make the child unavailable and confirm no parent fallback. An HTML explainer's
 script should run, but its sandbox must block storage and write-endpoint access.
-Each opened document must show the Back to Quarterdeck bar, and Open file by
+Each opened document must show the bar that links back to Quarterdeck, and Open file by
 itself must return the unmodified file at 375px and desktop width.
 Scroll a long HTML document to its final control and confirm it clears the bar,
 including after resizing so the links wrap. The focused navigation regressions

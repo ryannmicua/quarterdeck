@@ -17,11 +17,11 @@ ask box and search:
   as one uncounted line until Firstmate records it. Items outside topics open their own page, or their card on the
   previous page when they have none. Once an item's task is a topic's piece, it shows through that topic instead.
 - **Changed since you last looked:** one row per topic with something new from Firstmate or anyone else since you
-  last left the page on this device, with "+N more" when there is more than one entry. The first time, it shows the
+  last left the page on this device, with "N more entries" when there is more than one. The first time, it shows the
   last two days. Reloading the page keeps the same starting point.
 - **Topics:** every open topic, those needing you first, with its **Now** line. Closed topics are in search.
 - **Ask Firstmate**, on the served page, with **Goes to** (see below).
-- **Everything else is in Search:** reports, underway, waiting and queued work, and finished work, all searchable,
+- **Search** finds everything else: reports, underway, waiting and queued work, and finished work,
   with the filters All, Needs you, Underway, Waiting, Queued and Done. A search with no match lists the topics and
   offers to ask Firstmate.
 
@@ -39,9 +39,10 @@ front page is the previous page, as before.
 
 1. Open a topic from **Needs you**, **Changed since you last looked**, search, or the **Topics** list on the
    previous page.
-2. Tap a topic. Its page starts with the state: **Now**, **Waiting on**, **Pieces** (backlog tasks with their state)
-   and **Links**.
-3. **Open decisions** come next, one per question, each with Firstmate's recommendation and the options.
+2. Tap a topic. On a phone, its page starts with the state: **Now**, **Waiting on**, **Pieces** (backlog tasks with
+   their state) and **Links**.
+3. **Open decisions** come next on a phone, one per question, each with Firstmate's recommendation and the options.
+   On wide screens, decisions sit above the state in the left column, beside the conversation.
 4. **Conversation** is everything said about the topic, oldest first, grouped by day in your time zone. Your own
    messages carry a rule down their left edge. Each one says whether it was said in chat or on Quarterdeck.
 

@@ -1,8 +1,9 @@
 <!doctype html>
 <!--
   Quarterdeck cloud artifact template, version 1.
-  `quarterdeck export --artifact FILE` fills the title and snapshot
-  placeholders below and writes the page outside any repository. Publish the
+  `quarterdeck export --artifact FILE` fills the title, style and snapshot
+  placeholders below and writes the page outside any repository. The style
+  is Quarterdeck's one stylesheet, the same on every page. Publish the
   result as a private Claude artifact with capabilities
   {db: {}, downloads: true, comments: {composer_only: true}}.
   Report clicks are stored in the artifact's own shared database (collection
@@ -16,78 +17,12 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <title>__QUARTERDECK_TITLE__</title>
-<style>
-:root {
-  --bg: #f4f1ea; --surface: #fffdf8; --fg: #20303d; --muted: #657482; --line: #d8d3c8;
-  --accent: #176b69; --accent-soft: #e6f1ee; --head: #17324d; --gold: #c98635; --warn: #624313; --warn-soft: #fff8e9;
-  color-scheme: light dark;
-}
-@media (prefers-color-scheme: dark) { :root {
-  --bg: #11181f; --surface: #1a242d; --fg: #e3e8ec; --muted: #9aa8b3; --line: #33434f;
-  --accent: #5fc2b9; --accent-soft: #1f3a37; --head: #0d2438; --gold: #e0a24e; --warn: #f0d9a8; --warn-soft: #2d2412;
-} }
-* { box-sizing: border-box; }
-body { margin: 0; background: var(--bg); color: var(--fg); font: 16px/1.5 system-ui, -apple-system, "Segoe UI", sans-serif; }
-header { background: var(--head); color: #fffdf8; padding: .55rem max(1rem, calc((100vw - 60rem) / 2)); border-bottom: 3px solid var(--gold); display: flex; flex-wrap: wrap; gap: .1rem 1rem; align-items: baseline; }
-h1 { margin: 0; font: 700 1.1rem/1.3 Georgia, serif; }
-header p { margin: 0; font-size: .82rem; color: #e4e8e8; }
-header p.status { flex: 1 1 100%; font-size: .95rem; font-weight: 650; color: #fffdf8; }
-main { width: min(60rem, calc(100% - 2rem)); margin: 1.2rem auto 4rem; }
-h2 { margin: 0; font: 700 1.25rem/1.3 Georgia, serif; }
-section, details.group { margin: 1.4rem 0; }
-.head { display: flex; justify-content: space-between; gap: 1rem; align-items: baseline; }
-.head p, .note { margin: .2rem 0 .6rem; color: var(--muted); font-size: .9rem; }
-.count { border: 1px solid var(--line); background: var(--surface); border-radius: 999px; min-width: 2rem; padding: .1rem .6rem; text-align: center; font-weight: 700; color: var(--accent); }
-details.group > summary { cursor: pointer; min-height: 44px; display: flex; align-items: center; justify-content: space-between; gap: 1rem; list-style: none; }
-details.group > summary::-webkit-details-marker { display: none; }
-details.group > summary h2::before { content: "▸ "; color: var(--gold); }
-details.group[open] > summary h2::before { content: "▾ "; }
-.card { background: var(--surface); border: 1px solid var(--line); border-left: 4px solid var(--accent); border-radius: 10px; padding: .8rem 1rem; margin: .6rem 0; }
-.card h3 { margin: 0 0 .2rem; font: 700 1.05rem/1.3 Georgia, serif; overflow-wrap: anywhere; }
-.card p { margin: .3rem 0; overflow-wrap: anywhere; }
-.chips { display: flex; flex-wrap: wrap; gap: .35rem; margin-top: .4rem; }
-.chip { border: 1px solid var(--line); border-radius: 999px; padding: .05rem .55rem; font-size: .78rem; color: var(--muted); }
-.chip.group { color: var(--accent); border-color: var(--accent); font-weight: 700; text-transform: uppercase; letter-spacing: .05em; }
-.chip.warn { color: var(--warn); background: var(--warn-soft); border-color: var(--gold); }
-.chip.rec { color: var(--fg); background: var(--accent-soft); border-color: var(--accent); }
-.actions { display: flex; flex-wrap: wrap; gap: .5rem; align-items: center; margin-top: .6rem; }
-button { font: inherit; font-size: .88rem; font-weight: 700; min-height: 44px; padding: 0 .9rem; border: 1px solid var(--accent); border-radius: 8px; background: var(--accent-soft); color: var(--fg); cursor: pointer; }
-button:disabled { opacity: .6; cursor: default; }
-button:focus-visible, a:focus-visible, summary:focus-visible { outline: 3px solid var(--gold); outline-offset: 2px; }
-a { color: var(--accent); font-weight: 650; }
-.empty { border: 1px dashed var(--line); border-radius: 10px; color: var(--muted); padding: .8rem 1rem; }
-.sub { margin: 1rem 0 .3rem; font-size: .95rem; color: var(--accent); }
-.status { color: var(--muted); font-size: .85rem; }
-.banner { border: 1px solid var(--accent); border-left-width: 6px; background: var(--accent-soft); color: var(--fg); border-radius: 10px; padding: .6rem 1rem; margin: 0 0 1rem; font-size: .95rem; font-weight: 650; overflow-wrap: anywhere; }
-.banner.off { border-color: var(--gold); background: var(--warn-soft); color: var(--warn); }
-.card.openable { cursor: pointer; }
-.card .open { margin-top: .6rem; }
-.detail h2 { margin: .4rem 0 .2rem; font-size: 1.4rem; }
-.detail h3 { margin: 1.2rem 0 .3rem; font: 700 1rem/1.3 Georgia, serif; color: var(--accent); }
-.detail .block { background: var(--surface); border: 1px solid var(--line); border-radius: 10px; padding: .7rem 1rem; margin: .4rem 0; }
-.detail .block p { margin: .3rem 0; overflow-wrap: anywhere; }
-.detail .linked { border-left: 4px solid var(--accent); }
-.detail .linked h4 { margin: 0 0 .2rem; font: 700 1rem/1.3 Georgia, serif; overflow-wrap: anywhere; }
-footer { border-top: 1px solid var(--line); margin-top: 3rem; padding-top: 1rem; color: var(--muted); font-size: .85rem; }
-.reaction { margin-top: .6rem; }
-.reaction .latest { margin: .3rem 0; color: var(--muted); font-size: .85rem; }
-.reaction .choices { display: flex; flex-wrap: wrap; gap: .4rem; }
-.reaction button[aria-pressed="true"] { background: var(--accent); color: var(--surface); }
-.reaction .reply { display: flex; flex-wrap: wrap; gap: .5rem; align-items: center; margin-top: .5rem; }
-.reaction textarea { display: block; box-sizing: border-box; flex: 1 1 100%; width: 100%; min-width: 0; min-height: 5.5rem; max-height: 60vh; padding: .55rem .6rem; border: 1px solid var(--line); border-radius: 8px; background: var(--surface); color: var(--fg); font: inherit; font-size: 1rem; line-height: 1.4; resize: vertical; overflow-y: auto; }
-.reaction .count { flex: 1 1 100%; color: var(--muted); font-size: .82rem; }
-.reaction .count.over { color: var(--warn); font-weight: 700; }
-.reaction .count[hidden] { display: none; }
-.report-body { white-space: pre-wrap; overflow-wrap: anywhere; font: inherit; }
-.access { color: var(--warn); }
-.error { border: 1px solid var(--gold); background: var(--warn-soft); color: var(--warn); border-radius: 10px; padding: .6rem 1rem; margin: .6rem 0; overflow-wrap: anywhere; }
-</style>
+<style>__QUARTERDECK_STYLE__</style>
 </head>
-<body>
+<body class="artifact">
 <header>
-  <h1 id="title">⚓ Quarterdeck</h1>
-  <p id="generated"></p>
-  <p id="sync" class="status"></p>
+  <nav class="bar" aria-label="Quarterdeck"><h1 class="mark" id="title">Quarterdeck</h1></nav>
+  <div class="masthead"><p class="stamp" id="generated"></p><p id="sync" class="stamp status"></p></div>
 </header>
 <main id="root"></main>
 <script type="application/json" id="qd-snapshot">__QUARTERDECK_SNAPSHOT__</script>
@@ -97,7 +32,7 @@ footer { border-top: 1px solid var(--line); margin-top: 3rem; padding-top: 1rem;
   var snapshot = JSON.parse(document.getElementById("qd-snapshot").textContent);
   var COLLECTION = "qd-actions";
   var INBOX = "qd-inbox";
-  var REACTIONS = [["approve", "Approve"], ["hold", "Hold"], ["not-now", "Not now"], ["question", "Question"]];
+  var REACTIONS = [["approve", "Approve"], ["hold", "Hold"], ["not-now", "Not now"], ["question", "Question", "Ask a question"]];
   var TEXT_LIMIT = 20000;
   var actionDocs = {};   // report id -> latest recorded action document
   var inboxDocs = {};    // reaction id -> recorded reaction document
@@ -137,8 +72,8 @@ footer { border-top: 1px solid var(--line); margin-top: 3rem; padding-top: 1rem;
   function ago(iso) {
     if (!iso) return "";
     var minutes = Math.max(0, Math.round((Date.now() - Date.parse(iso)) / 60000));
-    if (minutes < 60) return minutes + " min ago";
-    if (minutes < 2880) return Math.round(minutes / 60) + " h ago";
+    if (minutes < 60) return minutes + (minutes === 1 ? " minute ago" : " minutes ago");
+    if (minutes < 2880) return Math.round(minutes / 60) + (Math.round(minutes / 60) === 1 ? " hour ago" : " hours ago");
     return Math.round(minutes / 1440) + " days ago";
   }
   function docId(reportId) { return encodeURIComponent(reportId).replace(/%/g, "_"); }
@@ -231,7 +166,7 @@ footer { border-top: 1px solid var(--line); margin-top: 3rem; padding-top: 1rem;
     var status = el("span", { "class": "status", "aria-live": "polite", text: draft.status });
     var choices = el("div", { "class": "choices" });
     REACTIONS.forEach(function (pair) {
-      var button = el("button", { type: "button", "aria-pressed": String(draft.reaction === pair[0]), text: pair[1] });
+      var button = el("button", { type: "button", "aria-pressed": String(draft.reaction === pair[0]), text: pair[2] || pair[1] });
       button.disabled = draft.sending || !db;
       button.addEventListener("click", function () {
         if (!db) return;
@@ -245,7 +180,7 @@ footer { border-top: 1px solid var(--line); margin-top: 3rem; padding-top: 1rem;
       });
       choices.appendChild(button);
     });
-    var input = el("textarea", { rows: "2", placeholder: "Reply to Firstmate (optional)", "aria-label": "Reply to Firstmate", "data-draft": key });
+    var input = el("textarea", { rows: "2", "aria-label": "Reply to Firstmate", "data-draft": key });
     var count = el("span", { "class": "count", "aria-live": "polite" });
     function grow(node) {
       if (!node.offsetParent) return;
@@ -304,7 +239,7 @@ footer { border-top: 1px solid var(--line); margin-top: 3rem; padding-top: 1rem;
     var view = { choices: choices, input: input, status: status, count: count };
     (composers[key] || (composers[key] = [])).push(view);
     box.appendChild(choices);
-    box.appendChild(el("div", { "class": "reply" }, [input, count, send, status]));
+    box.appendChild(el("div", { "class": "reply" }, [el("span", { "class": "field", "aria-hidden": "true", text: "Reply to Firstmate (optional)" }), input, count, send, status]));
     showCount(view);
     setTimeout(function () { grow(input); }, 0);
     var discuss = el("button", { type: "button", text: "Discuss with Firstmate" });
@@ -445,7 +380,7 @@ footer { border-top: 1px solid var(--line); margin-top: 3rem; padding-top: 1rem;
   function group(id, title, note, count, nodes, emptyText, open) {
     var body = el("div", {}, nodes.length ? nodes : [el("p", { "class": "empty", text: emptyText })]);
     var details = el("details", { "class": "group", id: id }, [
-      el("summary", {}, [el("h2", { text: title }), el("span", { "class": "count", text: String(count) })]),
+      el("summary", {}, [el("h2", { text: title }), el("span", { "class": "count", "data-n": String(count), text: String(count) })]),
       el("p", { "class": "note", text: note }),
       body,
     ]);
@@ -455,7 +390,7 @@ footer { border-top: 1px solid var(--line); margin-top: 3rem; padding-top: 1rem;
   // `count` is the number of cards; `nodes` may also hold sub-headings, which are not items.
   function openSection(id, title, note, nodes, emptyText, count) {
     return el("section", { id: id }, [
-      el("div", { "class": "head" }, [el("div", {}, [el("h2", { text: title }), el("p", { text: note })]), el("span", { "class": "count", text: String(count) })]),
+      el("div", { "class": "head" }, [el("div", {}, [el("h2", { text: title }), el("p", { text: note })]), el("span", { "class": "count", "data-n": String(count), text: String(count) })]),
       el("div", {}, nodes.length ? nodes : [el("p", { "class": "empty", text: emptyText })]),
     ]);
   }
@@ -504,7 +439,7 @@ footer { border-top: 1px solid var(--line); margin-top: 3rem; padding-top: 1rem;
     return el("div", { "class": "block linked" }, kids);
   }
   function backButton() {
-    var back = el("button", { type: "button", text: "← Back to the desk" });
+    var back = el("button", { type: "button", text: "Back to the desk" });
     back.addEventListener("click", closeDetail);
     return back;
   }
@@ -793,7 +728,7 @@ footer { border-top: 1px solid var(--line); margin-top: 3rem; padding-top: 1rem;
   if (document.addEventListener) document.addEventListener("keydown", function (event) {
     if (event.key === "Escape" && viewStack.length && !(event.target && /^(INPUT|TEXTAREA)$/.test(event.target.tagName))) closeDetail();
   });
-  document.getElementById("title").textContent = "⚓ " + (snapshot.title || "Quarterdeck");
+  document.getElementById("title").textContent = snapshot.title || "Quarterdeck";
   document.getElementById("generated").textContent = "Snapshot " + (snapshot.generated_at || "") + (snapshot.generated_at ? " (" + ago(snapshot.generated_at) + ")" : "");
   render();  // controls appear at once, disabled, and light up as each capability resolves
 

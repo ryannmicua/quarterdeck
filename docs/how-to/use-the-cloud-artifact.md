@@ -53,13 +53,11 @@ detail view says the text is not in the snapshot.
 
 ## Read the status line
 
-The page says what it could connect to in two places: a line in the header
-(light text on the dark bar, so it reads in light and dark mode) and a banner
-at the top of the desk, repeated at the top of every detail view. Both show the
+The page says what it could connect to in two places: a line below the header
+and a banner at the top of the desk, repeated at the top of every detail view. Both show the
 same text, so in the Claude app you can tell at a glance whether reactions are
-connected. The banner is green-tinted when connected and amber when the page is
-read-only or reports an error. Reactions,
-**Mark reviewed**, **Discard** and **Discuss with Firstmate** are always drawn;
+connected. The banner uses a red accent when the page is read-only or reports
+an error. Reactions, **Mark reviewed**, **Discard** and **Discuss with Firstmate** are always drawn;
 they are disabled until the matching capability resolves. Each card then
 shows a short hint (`Connecting…`, or `… unavailable, see the note at the
 top.`); the status line carries the full reason.
@@ -76,13 +74,12 @@ top.`); the status line carries the full reason.
 | `Downloads are unavailable in this view.` | A download button was pressed without the `downloads` capability. |
 | `Render error: …` | Something threw while drawing the page or one card. The rest of the page keeps working; report the message. |
 
-The thin gold rule under the header is decoration, not a status. The **On
-your desk** badge counts cards, not the sub-headings between them.
+The **On your desk** count counts cards, not the sub-headings between them.
 
 ## Open a card for details
 
 Click a card, or its **View details** button, to open its detail view in the
-page. **← Back to the desk** (or Escape) returns to the list where you were,
+page. **Back to the desk** (or Escape) returns to the list where you were,
 with the same groups open. The detail view holds what you need to decide:
 
 - For a captain call: the title, the ask, Firstmate's recommendation, the full
@@ -130,8 +127,9 @@ filter database documents before saving such a list to avoid replaying old click
 
 ## React and discuss
 
-Each call, related item and report card has **Approve**, **Hold**, **Not now**
-and **Question** buttons, a reply box that grows as you type (the
+Each call, related item and report card has the same
+[reaction buttons as the served page](serve-the-page.md#react-to-calls-and-reports-from-the-page),
+a reply box that grows as you type (the
 [reaction text limit](../reference/cli-and-config.md#reactions) applies;
 a counter appears near the limit and **Send** refuses a longer reply)
 and **Send**. Pick a reaction,

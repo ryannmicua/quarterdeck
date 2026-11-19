@@ -170,7 +170,7 @@ same content fingerprint in the same state database, and reloads the page. A
 report that changes afterwards returns to "needs review". **Discard** takes a
 report off the list without marking it reviewed; discarded reports are in a
 collapsed "Discarded reports" section with **Undiscard**. Each report's own
-page carries the same buttons above the document; after a click it offers
+page carries the same buttons above the document (beside it on wide screens); after a click it offers
 **Back to Quarterdeck** instead of reloading.
 
 There is no key or login: anyone who can open the page can mark or unmark
@@ -188,7 +188,7 @@ authenticating TLS reverse proxy.
 ## React to calls and reports from the page
 
 With `--allow-marks`, each desk call, related item and report also has
-**Approve**, **Hold**, **Not now** and **Question** buttons, a reply box
+**Approve**, **Hold**, **Not now** and **Ask a question** buttons, a reply box
 and **Send**. Pick a reaction, write a reply, or both, then Send.
 
 Calls on Needs-you cards, the desk and related cards can also show answer

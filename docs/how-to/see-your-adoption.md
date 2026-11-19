@@ -1,7 +1,7 @@
 # See how much you use Quarterdeck
 
-The **Adoption this week** link in the page header opens `adoption.html`, a
-small phone-first page that compares this week (Monday to today, in the
+The **Adoption** link in the previous page's header opens `adoption.html`, a
+small page that compares this week (Monday to today, in the
 machine's time zone) with last week. The goal is fewer status questions in the
 Firstmate chat, because Quarterdeck already shows the answer.
 
@@ -20,7 +20,7 @@ page. Damaged lines are skipped. Only tags are kept: never the chat messages.
 Triage and Needs-you history starts when collection begins, with no backfill:
 reports and Needs-you cards already present at the first served build are
 recorded without a time and never count as arrivals or first-seen waits.
-The page shows "counting from <date>" for the first seven days. Appearance means
+The page says arrivals are "counted from <date>" for the first seven days. Appearance means
 first observed by the server and a load is not proof that a particular card
 was read, so first-seen waits are estimates. Stable card IDs
 and captain-hold identities identify appearances; activity timestamp updates do

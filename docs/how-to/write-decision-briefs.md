@@ -19,7 +19,7 @@ section only where the template marks it optional.
 | # | Section | Holds | Answers |
 | --- | --- | --- | --- |
 | 0 | Header | Eyebrow (`Decision brief · <project> · <item>`), a short title the captain can say aloud (the same as the board `title`), status chips for checks, size and caveats. | What is this? |
-| 1 | Decision card | The question in business terms, two lines of context, and a recommendation box: a verb (Merge, Approve, Choose B, Wait), a one-line reason, and a reversibility badge (two-way door: cheap to undo; one-way door: hard to undo). | What do you want, and what do you recommend? |
+| 1 | Decision card | The question in business terms, two lines of context, and a recommendation box: a verb (Merge, Approve, Choose B, Wait), a one-line reason, and a reversibility badge (two-way door, cheap to undo; one-way door, hard to undo). | What do you want, and what do you recommend? |
 | 2 | How it works | One flow of at most six boxes with a legend. | How does it connect? |
 | 3 | Ship vs. wait | Four cells: outcomes it enables and risks it closes, what changes, **Cost of delay**, and **Exposure**. | What do I get, what changes, and what keeps hurting if I wait? |
 | 4 | Options (decide only) | Two to four option cards, each with a one-line tradeoff; the recommended one is marked. | What are my choices? |
@@ -47,7 +47,10 @@ in section 5 or the footer.
 - Write the `aria-label` as one sentence that says the whole flow. It doubles
   as the spoken summary.
 - The boxes stack vertically below 700px, so the diagram never scrolls
-  sideways on a phone.
+  sideways on a phone. On screens 1440px and wider the sections after the
+  decision card sit two to a row.
+- Connectors are drawn lines, so the template has no arrow characters to
+  copy; keep `<span class="arrow" aria-hidden="true"></span>` empty.
 
 ## Fill and publish (Firstmate)
 
