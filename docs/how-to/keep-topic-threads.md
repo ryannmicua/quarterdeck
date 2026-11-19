@@ -16,14 +16,15 @@ on its card. Topics and Search are the other two tabs.
   an answer goes only to the source of the card you answered.
 - **A card** shows the ask, a meta row (topic, how long it has waited, the kind of ask), up to about 30 words of
   context and three facts, the options as buttons with the recommended one marked, and its thread, report or brief
-  links. A wait offers **Mark done**; a held item that asks for a merge offers **Merge it** and **Not yet**.
+  links. Held items include short briefing and clarification excerpts; **Full briefing** opens the full saved text.
+  A wait offers **Mark done**; a held item that asks for a merge offers **Merge it** and **Not yet**.
   **Answer in words** sends typed words as the answer; **Ask question** sends them as a question and keeps the card.
 - **After an answer** there are five seconds to undo. Then the card leaves the queue for **Sent**, the next call
   opens, and the count and tab title drop by one. A card stays in Sent until Firstmate records the answer in the
   topic file, lifts the hold or removes the wait line; then it is gone. A held item that is held again with a new
   stamp comes back.
-- **May be settled** folds the calls that look settled already: a decision more than a day old after which you wrote
-  three or more entries in its topic, or a held item whose note says there is nothing to decide. **Close card** tells
+- **May be settled** folds held items whose note explicitly says there is nothing to decide. Unanswered topic decisions
+  stay in **Your calls** regardless of their age or later conversation. **Close card** tells
   Firstmate it is settled; its options still answer it.
 - **Ask Firstmate**, on the served page, with **Goes to** (see below).
 

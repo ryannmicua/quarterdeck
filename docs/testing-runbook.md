@@ -653,14 +653,17 @@ fictional homes, profiles and state after capturing screenshots and responses.
 `CallsPageTests` covers the queue, separate answer targets, May be settled, Sent and custom `render` filenames.
 Run `PYTHONPATH=tests python3 -m unittest -v test_quarterdeck.CallsPageTests` for focused verification; Node
 executes the generated Calls script against a simulated DOM and delivery boundary to check Undo, failed delivery,
-unchanged retry IDs and question delivery. All fixtures and messages are fictional. For a live check, serve a fictional
+unchanged retry IDs, question delivery and next-card focus with both motion preferences. The class also checks
+whole-wait completion, retention of unanswered decisions after later conversation, and held-item briefing excerpts
+with a full saved-text disclosure. All fixtures and messages are fictional. For a live check, serve a fictional
 home whose topics hold a decision with options, a `Waiting on: you` line that repeats it, a decision more than a
-day old with three later owner entries, and an executable `bin/fm-attention.sh` feeding a captain hold; give it a
+day old with three later owner questions, and an executable `bin/fm-attention.sh` feeding a captain hold; give it a
 fake `bin/fm-inbox.sh` that appends each note to a log, and isolated XDG state. At 390px and 1440px:
 
+- an unanswered decision stays in Your calls despite later owner questions; completing review PR 42 leaves review PR 4 open;
 - similar asks keep separate cards, each with its own controls; one tap sends only that card's answer;
 - after the five-second Undo the card moves to Sent, the next call opens, and the count and tab title drop;
-  a reload keeps it in Sent;
+  a reload keeps it in Sent; the next card also opens and receives focus with reduced motion enabled;
 - **Undo** sends nothing and keeps typed words; failed delivery also keeps them, and an unchanged retry keeps
   its message ID; **Ask question** sends a question and keeps the card;
 - **Close card** on a May be settled card sends `Already settled. Close this card.` and shows Closed in Sent;

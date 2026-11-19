@@ -82,8 +82,8 @@ alone, made **Calls** the default view. Evidence from a week of use showed why h
 repeated asks across sources, kept cards he had already answered in conversation, sent most rows to another page
 to decide, and read as a wall of text, while cards with buttons were answered in seconds. So Calls shows one card
 per ask, each with its options as buttons, the recommendation marked, a three-fact meta row and a few words of
-context; an answered card leaves at once; calls that look talked past fold under **May be settled** with **Close
-card**; and **Changed since you last looked** and the topic list move to the **Topics** tab. The front page below
+context; an answered card leaves at once; held items explicitly described as having nothing to decide fold under **May be settled** with **Close
+card**, while unanswered decisions stay in the queue regardless of later conversation; and **Changed since you last looked** and the topic list move to the **Topics** tab. The front page below
 stays at `previous.html` for one release.
 
 **Needs you** kept everything awaiting the owner on that front page; see

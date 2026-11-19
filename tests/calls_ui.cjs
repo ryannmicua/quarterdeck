@@ -5,23 +5,31 @@ class Element {
   addEventListener(name, fn) { this.listeners[name] = fn; }
   replaceChildren(...children) { this.children = children; }
   append() {}
-  focus() {}
+  focus() { this.focused = true; }
 }
 const field = new Element(), words = new Element(), status = new Element(), opts = new Element();
 words.querySelector = () => field;
-const card = new Element();
+const card = new Element(), next = new Element(), summary = new Element();
+next.matches = selector => selector === "details.call";
+next.querySelector = () => summary;
+const queue = {
+  querySelectorAll: () => card.parentElement === queue ? [card, next] : [next],
+  querySelector: () => card.parentElement === queue ? card : next
+};
 card.dataset = {target: JSON.stringify(targets[0]), askKind: 'topic', askItem: 'maple-harbor-catalog', askPrefix: 'About decision: '};
 card.querySelector = selector => ({'.call-status': status, '.call-opts': opts, '[data-call-words]': words,
   '[data-answer], textarea': field, '.call-line': {textContent: 'Merge PR 42 now?'}}[selector]);
 card.classList = {add() {}};
-card.remove = () => { card.removed = true; };
-card.parentElement = null;
+card.remove = () => { card.removed = true; card.parentElement = null; };
+card.parentElement = queue;
+card.nextElementSibling = next;
 global.document = {
   querySelectorAll: selector => selector === 'details[data-call]' ? [card] : [],
-  querySelector: () => null, getElementById: () => null, createElement: () => new Element(), title: 'Quarterdeck'
+  querySelector: () => null, getElementById: id => id === "queue" ? queue : null, createElement: () => new Element(), title: 'Quarterdeck'
 };
 global.crypto = require('node:crypto').webcrypto;
-global.matchMedia = () => ({matches: true});
+let reducedMotion = true;
+global.matchMedia = () => ({matches: reducedMotion});
 let timeout;
 global.setTimeout = fn => { timeout = fn; return 1; };
 global.clearTimeout = () => { timeout = null; };
@@ -60,6 +68,8 @@ const flush = () => new Promise(resolve => setImmediate(resolve));
   assert.deepEqual([requests[0].kind, requests[0].item_id, requests[0].text],
     ['decision', 'maple-harbor-catalog/merge-42', original], 'Answer only the selected decision, never its similar wait');
   assert.equal(card.removed, true, 'A successful answer leaves the queue');
+  assert.equal(next.open, true, 'Reduced motion must still advance to the next call');
+  assert.equal(summary.focused, true, 'Reduced motion must still focus the next call');
   card.removed = false;
   delete card.dataset.mutationPending;
   field.value = 'Why now?';
@@ -83,6 +93,22 @@ const flush = () => new Promise(resolve => setImmediate(resolve));
   card.listeners.click({target: {closest: () => ({dataset: {answer: 'Mark done'}})}});
   await timeout();
   assert.deepEqual([requests.at(-1).kind, requests.at(-1).item_id, requests.at(-1).text],
-    ['topic', 'maple-harbor-catalog', 'Done: merge PR 42'], 'Mark done only completes the selected wait');
+    ['topic', 'maple-harbor-catalog', 'Done: ["Done: merge PR 42","Mark done"]'], 'Mark done only completes the selected wait');
+  for (const reduced of [true, false]) {
+    for (const inQueue of [true, false]) {
+      reducedMotion = reduced;
+      card.parentElement = inQueue ? queue : {};
+      card.removed = false;
+      delete card.dataset.mutationPending;
+      next.open = false;
+      summary.focused = false;
+      card.listeners.click({target: {closest: () => ({dataset: {answer: 'Mark done'}})}});
+      await timeout();
+      assert.equal(next.open, inQueue, 'Only queue answers advance the next call, with either motion preference');
+      assert.equal(summary.focused, inQueue, 'Only queue answers focus the next call, with either motion preference');
+      if (!reduced) timeout();
+      assert.equal(card.removed, true);
+    }
+  }
   await flush();
 })().catch(error => { console.error(error); process.exitCode = 1; });

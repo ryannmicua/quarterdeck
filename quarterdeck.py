@@ -9446,8 +9446,6 @@ CALL_CONTEXT_WORDS = 30
 CALL_FACT_WORDS = 16
 CALL_FACTS = 3
 CALL_LINKS = 3
-CALL_SETTLED_ENTRIES = 3  # the owner's own entries in a topic after a decision that suggest it was settled in talk
-CALL_SETTLED_AGE = timedelta(hours=24)
 CALL_KIND_LABELS = {"decision": "Pick one", "question": "Open question", "wait": "Your step", "merge": "Merge", "choice": "Pick one",
                     "screen": "Look", "login": "Login", "other": "Your step"}
 CALL_MERGE_OPTIONS = ("Merge it", "Not yet")
@@ -9477,6 +9475,7 @@ class Call:
     sent: dict[str, str] | None = None  # the answer already sent from Quarterdeck, when there is one
     settled: str = ""  # why the call may be settled already; empty for a live call
     tag: str = ""  # a hold's push tag, so a notification opens it here
+    briefing: str = ""
 
 
 def cut_words(text: str, limit: int) -> str:
@@ -9527,19 +9526,24 @@ def unique_links(links: list[tuple[str, str]]) -> list[tuple[str, str]]:
     return out
 
 
-def owner_entries_after(topic: Topic, entry: TopicEntry) -> int:
-    """How many times the owner wrote in the topic after the decision was asked, other than to answer it."""
-    if entry.at is None:
-        return 0
-    return sum(1 for other in topic.entries if other.who == "you" and other.at is not None and other.at > entry.at
-               and entry.entry_id not in other.re_ids)
+def wait_answer(text: str, prefix: str) -> str | None:
+    text, prefix = " ".join(text.split()), " ".join(prefix.split())
+    if text.startswith(CALL_DONE_PREFIX):
+        try:
+            value = json.loads(text[len(CALL_DONE_PREFIX):])
+        except ValueError:
+            value = None
+        if isinstance(value, list) and len(value) == 2 and all(isinstance(part, str) for part in value):
+            identity, answer = value
+            return ("Done" if answer == "Mark done" else answer) if " ".join(identity.split()) == prefix else None
+    return "Done" if text == prefix else None
 
 
 def latest_answer(history: list[dict[str, str]], since: str | None = None, prefix: str = "") -> dict[str, str] | None:
-    """The newest delivered answer (not a question) after `since`, whose text starts with `prefix` when one is given."""
+    """The newest delivered answer (not a question) after `since`, matching a complete wait prefix when one is given."""
     floor = parse_board_time(since) if since else None
     for reaction in reversed(history):
-        if reaction.get("reaction") == "question" or (prefix and not reaction.get("text", "").startswith(prefix)):
+        if reaction.get("reaction") == "question" or (prefix and wait_answer(reaction.get("text", ""), prefix) is None):
             continue
         when = parse_board_time(reaction.get("at"))
         if floor is not None and (when is None or when < floor):
@@ -9548,7 +9552,7 @@ def latest_answer(history: list[dict[str, str]], since: str | None = None, prefi
     return None
 
 
-def topic_calls(snapshot: HomeSnapshot, topic: Topic, now: datetime, pages: dict[str, str] | None,
+def topic_calls(snapshot: HomeSnapshot, topic: Topic, pages: dict[str, str] | None,
                 main_href: str) -> list[Call]:
     """A topic's open decisions and its waits on you, as calls."""
     calls: list[Call] = []
@@ -9558,9 +9562,6 @@ def topic_calls(snapshot: HomeSnapshot, topic: Topic, now: datetime, pages: dict
         sent = topic_sent(state, "decision", item)
         context, facts = call_context(entry.text)
         line = call_line(entry.decision)
-        talked = owner_entries_after(topic, entry)
-        settled = (f"You wrote {talked} times in this topic since it was asked"
-                   if talked >= CALL_SETTLED_ENTRIES and entry.at is not None and now - entry.at >= CALL_SETTLED_AGE else "")
         calls.append(Call(
             key=f"d-{topic.ref}-{entry.entry_id}", line=line, where=topic.title or topic.topic_id,
             asked=entry.at, kind=CALL_KIND_LABELS["decision" if entry.options else "question"],
@@ -9568,11 +9569,11 @@ def topic_calls(snapshot: HomeSnapshot, topic: Topic, now: datetime, pages: dict
             links=unique_links([("Open thread", f"{topic.page}#decision-{entry.entry_id}"),
                                 *entry_links(entry.text, snapshot, pages, main_href)]),
             answer=("decision", item), ask=("topic", topic.ref, f"About decision {entry.entry_id} ({entry.decision}): "),
-            sent=sent[-1] if sent else None, settled=settled,
+            sent=sent[-1] if sent else None,
         ))
     history = topic_sent(state, "topic", topic.ref)
     for index, what in enumerate(topic_waits_on_you(topic)):
-        prefix = f"{CALL_DONE_PREFIX}{what}"
+        prefix = f"{CALL_DONE_PREFIX}{' '.join(what.split())}"
         calls.append(Call(
             key=f"w-{topic.ref}-{index}", line=call_line(what[:1].upper() + what[1:]),
             where=topic.title or topic.topic_id, asked=None, kind=CALL_KIND_LABELS["wait"],
@@ -9596,6 +9597,16 @@ def hold_call(card: dict[str, object], state: ReviewState | None) -> Call:
     context = cut_words(markdown_text(title), CALL_CONTEXT_WORDS) if call_line(title) != line else ""
     if ask and call_line(first_line(ask)) != line and not context:
         context = cut_words(markdown_text(ask), CALL_CONTEXT_WORDS)
+    wait = card.get("wait") or {}
+    entries = wait.get("entries") or []
+    briefing = [str(paragraph.get("text") or "") for entry in entries if entry.get("type") == "briefing"
+                for paragraph in entry.get("paragraphs") or []]
+    clarifications = [" ".join(str(paragraph.get("text") or "") for paragraph in entry.get("paragraphs") or [])
+                      for entry in entries if entry.get("type") == "clarification"]
+    explanation = "\n\n".join(briefing) or str(card.get("detail") or "")
+    if explanation:
+        context = cut_words(markdown_text(explanation), CALL_CONTEXT_WORDS)
+    facts = [cut_words(markdown_text(text), CALL_FACT_WORDS) for text in clarifications[-CALL_FACTS:] if text]
     history = state.history.get(("call", key), []) if state is not None else []
     hold = str(card.get("hold_set") or "") or None
     settled = "Firstmate says there is nothing to decide" if CALL_NO_ANSWER_RE.match(summary or ask) else ""
@@ -9604,10 +9615,10 @@ def hold_call(card: dict[str, object], state: ReviewState | None) -> Call:
         key="h-" + re.sub(r"[^A-Za-z0-9_-]", "-", key), line=line,
         where=str(card.get("project") or "") or "Backlog", asked=needs_card_time(card),
         kind=CALL_KIND_LABELS.get(wait_kind, CALL_KIND_LABELS["other"]) if options or wait_kind not in ("choice", "merge")
-        else CALL_KIND_LABELS["question"], context=context, options=options,
+        else CALL_KIND_LABELS["question"], context=context, facts=facts, options=options,
         recommend=str(card.get("recommend") or ""), links=unique_links(links)[:CALL_LINKS],
         answer=("call", key), ask=("call", key, ""), sent=latest_answer(history, since=hold), settled=settled,
-        tag=push_tag(card),
+        tag=push_tag(card), briefing=str(card.get("briefing") or ""),
     )
 
 
@@ -9618,7 +9629,7 @@ def collect_calls(homes: list[HomeSnapshot], bearings: Bearings, cards: list[dic
     calls: list[Call] = []
     for snapshot, topic in found:
         if topic.status != "done":
-            calls.extend(topic_calls(snapshot, topic, bearings.generated, pages, bearings.main_href))
+            calls.extend(topic_calls(snapshot, topic, pages, bearings.main_href))
     state = next((snapshot.review_state for snapshot in all_snapshots(homes) if snapshot.review_state is not None), None)
     for card in cards:
         if card.get("section") == "needs_you" and str(card.get("id", "")).startswith("call:") and card_topic(card, found) is None:
@@ -9677,6 +9688,8 @@ def call_html(call: Call, now: datetime, live: bool, first: bool = False) -> str
     if call.links:
         body.append('<p class="call-links">' + "".join(
             f'<a href="{html.escape(href, quote=True)}">{html.escape(label)}</a>' for label, href in call.links[:CALL_LINKS + 1]) + "</p>")
+    if call.briefing:
+        body.append('<details class="call-briefing"><summary>Full briefing</summary>' + call.briefing + '</details>')
     if live:
         field_id = f"words-{call.key}"
         body.append(
@@ -9702,8 +9715,10 @@ def call_html(call: Call, now: datetime, live: bool, first: bool = False) -> str
 def sent_row_html(call: Call) -> str:
     sent = call.sent or {}
     text = reaction_summary(sent) if "reaction" in sent else sent.get("text", "")
-    if call.answer_prefix and text.startswith(call.answer_prefix):
-        text = text[len(call.answer_prefix):].strip().removeprefix("(").removesuffix(")") or "Done"
+    if call.answer_prefix:
+        answer = wait_answer(text, call.answer_prefix)
+        if answer is not None:
+            text = answer
     when = parse_board_time(sent.get("at"))
     stamp = f" · {topic_stamp(when, 'full')}" if when else ""
     said = "<b>Closed</b>" if text == CALL_CLOSE_TEXT else f"You answered <b>{html.escape(answer_preview(text))}</b>"
@@ -9717,7 +9732,7 @@ CALLS_SCRIPT = """
       // A call card: tapping an option or sending words gives five seconds to undo, then the answer goes to Firstmate
       // through /api/reactions, the card leaves the queue for Sent, and the next
       // call opens. Ask question sends a question about the call and keeps it in place.
-      const ENDPOINT = "%(endpoint)s", UNDO_MS = 5000, LIMIT = %(limit)s, CLOSE = "%(close)s";
+      const ENDPOINT = "%(endpoint)s", UNDO_MS = 5000, LIMIT = %(limit)s, CLOSE = "%(close)s", DONE = "%(done)s";
       const queue = document.getElementById("queue"), sent = document.getElementById("sent-list");
       function newId() {
         return Array.from(crypto.getRandomValues(new Uint8Array(16)), byte => byte.toString(16).padStart(2, "0")).join("");
@@ -9769,11 +9784,11 @@ CALLS_SCRIPT = """
         card.dataset.leaving = "true";
         card.classList.add("leaving");
         const done = () => { card.remove(); recount(); };
-        if (matchMedia("(prefers-reduced-motion: reduce)").matches) done(); else setTimeout(done, 260);
         if (next && next !== card && card.parentElement === queue) {
           next.open = true;
           next.querySelector("summary").focus({preventScroll: true});
         }
+        if (matchMedia("(prefers-reduced-motion: reduce)").matches) done(); else setTimeout(done, 260);
       }
       for (const card of document.querySelectorAll("details[data-call]")) {
         const status = card.querySelector(".call-status"), opts = card.querySelector(".call-opts");
@@ -9793,7 +9808,7 @@ CALLS_SCRIPT = """
           clearInterval(tick);
           say("Sending \\u201c" + preview(text) + "\\u201d\\u2026");
           try {
-            const body = target.prefix ? (text === "Mark done" ? target.prefix : target.prefix + " (" + text + ")") : text;
+            const body = target.prefix ? DONE + JSON.stringify([target.prefix, text]) : text;
             await post(card, target.kind, target.item, body, "");
             toSent(card, text);
           } catch (error) {
@@ -9857,7 +9872,7 @@ CALLS_SCRIPT = """
             field.value = "";
             hold();
             busy(false);
-            say("Question sent. Firstmate answers in the thread.");
+            say("Question sent to Firstmate.");
           } catch (error) {
             busy(false);
             say("Not sent, your words are kept. " + error.message);
@@ -9879,7 +9894,7 @@ CALLS_SCRIPT = """
 
 def calls_script() -> str:
     return (CALLS_SCRIPT.replace("%(endpoint)s", base_url(REACTION_ENDPOINT)).replace("%(limit)s", str(ANSWER_PREVIEW_LIMIT))
-            .replace("%(close)s", CALL_CLOSE_TEXT))
+            .replace("%(close)s", CALL_CLOSE_TEXT).replace("%(done)s", CALL_DONE_PREFIX))
 
 
 def calls_page_html(homes: list[HomeSnapshot], title: str, bearings: Bearings, cards: list[dict[str, object]],
@@ -12459,11 +12474,13 @@ def need_card(
     if ask:
         parts.append(f'<p class="act-ask">{html.escape(ask)}</p>')
     detail = entry.item.detail if entry else ""
+    detail_html = ""
     if detail:
         try:
-            parts.append(f'<div class="body">{render_markdown(detail)}</div>')
+            detail_html = f'<div class="body">{render_markdown(detail)}</div>'
         except ValueError:
-            parts.append(f'<div class="body">{html.escape(detail)}</div>')
+            detail_html = f'<div class="body">{html.escape(detail)}</div>'
+        parts.append(detail_html)
     options, found = options_and_recommendation(ask)
     recommendation = (entry.item.recommendation if entry else "") or found
     if options:
@@ -12501,6 +12518,7 @@ def need_card(
         # The raw pieces the Calls view builds its own card from.
         "ask": ask, "project": str(item.get("project") or ""), "wait_kind": str(wait.get("kind") or "") if wait else "",
         "wait_summary": str(wait.get("summary") or "") if wait else "", "recommend": recommendation,
+        "wait": wait, "detail": detail, "briefing": (wait_html(wait, False) if wait else "") + detail_html,
         "links": links + [(html.unescape(re.sub(r"<[^>]+>", "", label)), html.unescape(href))
                           for href, label in re.findall(r'<a href="([^"]+)">(.*?)</a>', docs)],
     }

@@ -11734,7 +11734,7 @@ class CallsPageTests(unittest.TestCase):
 
     @staticmethod
     def queue(page: str) -> str:
-        return page.split('<div id="queue">', 1)[1].split("</section>", 1)[0]
+        return page.split('<div id="queue">', 1)[1].split('</div></section><aside class="calls-side">', 1)[0]
 
     def test_calls_is_the_default_view_and_each_call_carries_its_answers(self) -> None:
         pages = quarterdeck.site_builder(self.args(), True)()
@@ -11819,7 +11819,7 @@ Recommend: Shared bucket
         self.assertIn('data-answer="Not yet"', page)
         self.assertIn(html.escape(json.dumps({"kind": "call", "item": "fictional/merge-52", "prefix": ""}), quote=True), page)
 
-    def test_a_call_talked_past_or_with_nothing_to_decide_folds_under_may_be_settled(self) -> None:
+    def test_unanswered_decisions_stay_in_calls_after_later_conversation(self) -> None:
         self.write_topic("vendor-images.md", """# Vendor images
 
 ## 2026-03-01 09:00 | firstmate | chat
@@ -11828,21 +11828,25 @@ Decision: Which colour do the catalog labels use?
 Options: Navy | Sand
 
 ## 2026-03-01 10:00 | you | chat
-Navy for the spring sale, sand after.
+What are the accessibility risks?
 
 ## 2026-03-01 11:00 | you | chat
-And keep the sale banner short.
+Can I see the contrast comparison?
 
 ## 2026-03-02 09:00 | you | chat
-Ship the labels with the catalog.
+What is the fallback for older displays?
 """)
         front = self.fresh_page("index.html")
-        self.assertNotIn("Which colour do the catalog labels use?", self.queue(front))
-        settled = front.split('class="settled"', 1)[1].split("</section>", 1)[0]
-        self.assertIn("May be settled", settled)
-        self.assertIn("You wrote 3 times in this topic since it was asked.", settled)
-        self.assertIn(f'data-answer="{quarterdeck.CALL_CLOSE_TEXT}">Close card</button>', settled)
-        self.assertIn('data-answer="Navy"', settled, "it can still be answered")
+        self.assertIn("Which colour do the catalog labels use?", self.queue(front))
+        self.assertIn('data-answer="Navy"', self.queue(front))
+        self.assertIn('data-calls-n data-n="3">3</span>', front)
+        self.assertNotIn('class="settled"', front)
+        request = self.serve()
+        status, body = self.send(request, "decision", "vendor-images/label-colour", "Navy")
+        self.assertEqual(status, 200, body)
+        self.assertNotIn("Which colour do the catalog labels use?", self.queue(self.fresh_page("index.html")))
+
+    def test_holds_with_an_explicit_nothing_to_decide_note_can_be_closed(self) -> None:
         card = {"id": "call:fictional/nap", "section": "needs_you", "title": "Wait for the certificate", "hold_set": None,
                 "summary": "", "wait_summary": "Nothing to decide: Firstmate waits for the certificate.", "ask": "",
                 "wait_kind": "other", "at": "2026-03-01T09:00:00Z"}
@@ -11851,6 +11855,73 @@ Ship the labels with the catalog.
         self.assertEqual((call.answer, call.kind), (("call", "fictional/nap"), "Your step"))
         merge = quarterdeck.hold_call({**card, "wait_summary": "Give the word to merge PR 9.", "wait_kind": "merge"}, None)
         self.assertEqual((merge.settled, merge.options, merge.kind), ("", ["Merge it", "Not yet"], "Merge"))
+
+    def test_wait_completion_matches_the_whole_normalized_wait(self) -> None:
+        request = self.serve()
+        for index, (selected, answer) in enumerate((("42", ""), ("4", ""), ("42", " (Checked twice)"),
+                                                   ("4", " (Checked twice)"))):
+            name = f"waits-{index}"
+            self.write_topic(name + ".md", f"# Review waits {index}\nWaiting on: you - review   PR 4\n"
+                             "Waiting on: you - review PR 42\n")
+            text = ("Done: " + json.dumps([f"Done: review PR {selected}", "Checked twice"])
+                    if answer else f"Done: review PR {selected}")
+            status, body = self.send(request, "topic", name, text, number=index + 20)
+            self.assertEqual(status, 200, body)
+            front = self.fresh_page("index.html")
+            queue = self.queue(front)
+            other = "4" if selected == "42" else "42"
+            self.assertIn(f'data-call="w-{name}-{0 if other == "4" else 1}"', queue)
+            self.assertNotIn(f'data-call="w-{name}-{0 if selected == "4" else 1}"', queue)
+            sent = front.split('id="sent-list">', 1)[1].split("</ul>", 1)[0]
+            self.assertIn(f'<span class="sent-line">Review PR {selected}</span>', sent)
+            self.assertIn(f'You answered <b>{"Checked twice" if answer else "Done"}</b>', sent)
+
+    def test_wait_answers_with_parentheses_cannot_complete_another_wait(self) -> None:
+        self.write_topic("parentheses.md", "# Parentheses\nWaiting on: you - review PR 4\n"
+                         "Waiting on: you - review PR 4 (optional)\n")
+        request = self.serve()
+        status, body = self.send(request, "topic", "parentheses", 'Done: ["Done: review PR 4 (optional)", "Checked (twice)"]')
+        self.assertEqual(status, 200, body)
+        front = self.fresh_page("index.html")
+        self.assertIn('data-call="w-parentheses-0"', self.queue(front))
+        self.assertNotIn('data-call="w-parentheses-1"', self.queue(front))
+        self.assertIn('You answered <b>Checked (twice)</b>', front)
+
+    def test_hold_cards_show_briefing_clarifications_and_the_full_saved_source(self) -> None:
+        briefing = "The waived check only measures coverage on generated files. " + " ".join(["background"] * 40)
+        clarification = "The migration preserves all rows. " + " ".join(["detail"] * 20)
+        wait = {"key": "fictional/merge-7", "hold_set": "2026-03-01T09:00:00Z", "briefing": "ready", "kind": "merge",
+                "summary": "Merge PR 7 with one check waived", "entries": [
+                    {"type": "briefing", "at": "2026-03-01T09:01:00Z", "paragraphs": [{"text": briefing}]},
+                    {"type": "clarification", "at": "2026-03-01T09:02:00Z", "asked": "Is the migration safe?",
+                     "paragraphs": [{"text": clarification}]}], "earlier_entries": []}
+        item = {"key": "fictional/merge-7", "title": "Catalog migration", "ask": "Give the word to merge",
+                "group": "decision", "at": "2026-03-01T09:00:00Z", "wait": wait}
+        entry = quarterdeck.BoardEntry(quarterdeck.BoardItem("merge-7", "decision", "Catalog migration",
+                                                           "Give the word to merge", detail="Full migration rationale."), "Fictional")
+        _config, homes, bearings = quarterdeck.load_site(self.args())
+        for live in (False, True):
+            with self.subTest(live=live):
+                card = quarterdeck.need_card(item, entry, "Fictional", False, None, "needs_you")
+                page = quarterdeck.calls_page_html(homes, "Quarterdeck", bearings, [card], allow_marks=live)
+                hold = self.queue(page).split('id="need-', 1)[1]
+                context = hold.split('<p class="call-context">', 1)[1].split('</p>', 1)[0]
+                self.assertIn("The waived check only measures coverage on generated files.", context)
+                self.assertLessEqual(len(context.split()), 30)
+                facts = hold.split('<ul class="call-facts">', 1)[1].split('</ul>', 1)[0]
+                self.assertIn("The migration preserves all rows.", facts)
+                self.assertLessEqual(len(re.sub('<[^>]+>', '', facts).split()), 16)
+                full = hold.split('<summary>Full briefing</summary>', 1)[1].split('</details>', 1)[0]
+                self.assertIn(briefing, full)
+                self.assertIn(clarification, full)
+                self.assertIn("Is the migration safe?", full)
+                self.assertIn("Full migration rationale.", full)
+                self.assertNotIn('wait-discard', full)
+                self.assertEqual('data-answer="Merge it"' in hold, live)
+        card = quarterdeck.need_card({**item, "wait": None}, entry, "Fictional", False, None, "needs_you")
+        call = quarterdeck.hold_call(card, None)
+        self.assertEqual(call.context, "Full migration rationale.")
+        self.assertIn("Full migration rationale.", call.briefing)
 
     def test_a_hold_answered_from_quarterdeck_stays_sent_until_it_is_held_again(self) -> None:
         history = [{"id": "r1", "reaction": "", "text": "Approve the plan", "at": "2026-03-02T10:00:00.000Z"},
