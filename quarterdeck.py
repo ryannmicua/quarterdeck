@@ -9049,7 +9049,7 @@ def report_awaits_review(report: Report, now: datetime) -> bool:
 
 
 def topic_reports(topic: Topic, snapshot: HomeSnapshot) -> list[Report]:
-    """The reports a topic names: a data/<id>/report.md in its Links, or a piece whose task the report belongs to."""
+    """Discovered reports named in Links (either report format) or belonging to a piece."""
     named: set[str] = set()
     for link in topic.links:
         match = REPORT_PATH_RE.search(topic_link_target(link))

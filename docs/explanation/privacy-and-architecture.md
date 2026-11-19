@@ -8,7 +8,8 @@ directory and adds a labeled section to one self-contained page.
 single-home invocation. In a home list, each entry may set its own `data_dir`;
 otherwise that home's `data/` directory is used.
 
-The inputs include `data/backlog.md`, `data/<id>/report.md` files, documents
+The inputs include `data/backlog.md`, `data/<id>/report.md` files and their optional
+`report.html` companions, documents
 named in [activity cards](../how-to/watch-activity-cards.md#open-the-documents-a-card-names), the optional
 `data/captain-board.json` board (see the
 [board file reference](../reference/captain-board.md)), and the optional
@@ -171,7 +172,13 @@ repository.
 Quarterdeck writes readable HTML copies of linked reports, reports needing
 review, and the backlog beside the main page; the dependency-free Markdown
 renderer escapes source HTML. `quarterdeck reports read <id>` uses the same
-renderer. The [CLI reference](../reference/cli-and-config.md) documents its
+renderer. Site report pages can instead show a captain-facing HTML companion;
+see the [report-view guide](../how-to/watch-activity-cards.md#read-the-report).
+That HTML is copied unchanged into a frame with
+`sandbox="allow-scripts allow-popups"`, including in rendered snapshots. The shared
+report view only reads UTF8 regular report files of 2 MB or less whose resolved
+parent is a direct child of the configured data directory; symlinks escaping the
+report directory are refused. The [CLI reference](../reference/cli-and-config.md) documents its
 output path, report IDs, and collision handling.
 
 Referenced activity-card HTML is copied as written, including scripts, plus one
