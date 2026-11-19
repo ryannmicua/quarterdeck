@@ -648,6 +648,20 @@ and 15-second card poll to run before the 60-second page reload; verify neutral
 empty wording on the original page. Stop browser/server children and remove
 fictional homes, profiles and state after capturing screenshots and responses.
 
+## Calls view
+
+`CallsPageTests` covers the queue, merging, May be settled, Sent and `render`. For a live check, serve a fictional
+home whose topics hold a decision with options, a `Waiting on: you` line that repeats it, a decision more than a
+day old with three later owner entries, and an executable `bin/fm-attention.sh` feeding a captain hold; give it a
+fake `bin/fm-inbox.sh` that appends each note to a log, and isolated XDG state. At 390px and 1440px:
+
+- the repeated wait shares the decision's card, and one tap sends two notes: the answer and `Done: <wait>`;
+- after the five-second Undo the card moves to Sent, the next call opens, and the count and tab title drop;
+  a reload keeps it in Sent;
+- **Undo** sends nothing; **Ask question** sends a question and keeps the card;
+- **Close card** on a May be settled card sends `Already settled. Close this card.` and shows Closed in Sent;
+- the page scrolls to its last element and back with no sideways scroll, on Calls and Topics.
+
 ## Answered decision cards
 
 For validation confined to a worktree, run an unchanged disposable copy of `quarterdeck.py` and `templates/` in

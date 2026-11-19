@@ -11033,7 +11033,7 @@ Context.
             self.assertIn('href="topic-maple-harbor-catalog.html"', classic)
             self.assertIn("1 open decision", classic)
             self.assertIn('href="index.html">Front page</a>', classic)
-            front = output.read_text(encoding="utf-8")
+            front = (output.parent / quarterdeck.PREVIOUS_PAGE).read_text(encoding="utf-8")
             self.assertIn('<a href="topic-maple-harbor-catalog.html">Maple Harbor catalog launch</a> · Asked', front)
             page = (output.parent / "topic-maple-harbor-catalog.html").read_text(encoding="utf-8")
             self.assertIn("<h1>Maple Harbor catalog launch</h1>", page)
@@ -11196,7 +11196,7 @@ class TopicAskTests(unittest.TestCase):
         self.assertIn("Not answered yet", pending)
 
         self.assertIn("1 open decision", self.fresh_page(quarterdeck.CLASSIC_PAGE))
-        self.assertIn('Needs you <span class="n" data-n="2">2</span>', self.fresh_page("index.html"), "the decision and the wait on you")
+        self.assertIn('Needs you <span class="n" data-n="2">2</span>', self.fresh_page(quarterdeck.PREVIOUS_PAGE), "the decision and the wait on you")
         status, body = self.send(request, "decision", "maple-harbor-catalog/merge-42", "Merge", number=2)
         self.assertEqual(status, 200, body)
         self.assertIn('answer on decision merge-42 in topic maple-harbor-catalog (\'Merge PR 42 now?\')', self.notes()[-1])
@@ -11208,7 +11208,7 @@ class TopicAskTests(unittest.TestCase):
         thread = self.fresh_page("topic-maple-harbor-catalog.html")
         self.assertIn('<h2 id="open-h">Open decisions <span class="n" data-n="0">0</span></h2>', thread)
         self.assertNotIn("open decision", self.fresh_page(quarterdeck.CLASSIC_PAGE))
-        self.assertIn('Needs you <span class="n" data-n="1">1</span>', self.fresh_page("index.html"),
+        self.assertIn('Needs you <span class="n" data-n="1">1</span>', self.fresh_page(quarterdeck.PREVIOUS_PAGE),
                       "an answer sent from Quarterdeck takes the decision off the front page; the wait on you stays")
 
         status, body = self.send(request, "topic", quarterdeck.NEW_TOPIC_ITEM, "Start on the spring sale banners", number=3)
@@ -11236,7 +11236,7 @@ class TopicAskTests(unittest.TestCase):
         for gone in ("data-decision", "data-option", "Answer in words", "First mate recommends", "The patch switches"):
             self.assertNotIn(gone, card)
         self.assertIn('Open decisions <span class="n" data-n="0">0</span>', thread, "a folded card does not count")
-        front = self.fresh_page("index.html")
+        front = self.fresh_page(quarterdeck.PREVIOUS_PAGE)
         needs = front.split('id="needs"', 1)[1].split("</section>", 1)[0]
         self.assertIn('<article class="decision answered" id="decision-maple-harbor-catalog-merge-42">', needs,
                       "the answered card stays under Needs you as one line")
@@ -11249,7 +11249,7 @@ class TopicAskTests(unittest.TestCase):
         self.assertNotIn('id="decision-merge-42"', thread, "recorded in the file: the folded card is gone")
         self.assertNotIn('id="open-h"', thread)
         self.assertIn("Settled by you: Hold until the quota is confirmed.", thread)
-        front = self.fresh_page("index.html")
+        front = self.fresh_page(quarterdeck.PREVIOUS_PAGE)
         self.assertNotIn("decision-maple-harbor-catalog-merge-42", front)
         self.assertIn('Needs you <span class="n" data-n="1">1</span>', front)
 
@@ -11257,13 +11257,13 @@ class TopicAskTests(unittest.TestCase):
         self.topic_file.write_text(self.topic_file.read_text(encoding="utf-8").replace("Waiting on: you - merge PR 42\n", ""),
                                    encoding="utf-8")
         request = self.serve()
-        front = self.fresh_page("index.html")
+        front = self.fresh_page(quarterdeck.PREVIOUS_PAGE)
         self.assertIn('Needs you <span class="n" data-n="1">1</span>', front)
         empty = '<p class="empty" data-needs-empty hidden>Could not read everything that might need you'
         self.assertIn(empty, front, "the page script shows it when the last counted card is answered; with no snapshot "
                                     "it is not a confirmed all clear")
         self.assertEqual(self.send(request, "decision", "maple-harbor-catalog/merge-42", "Hold")[0], 200)
-        front = self.fresh_page("index.html")
+        front = self.fresh_page(quarterdeck.PREVIOUS_PAGE)
         card = front.split('<article class="decision answered" id="decision-maple-harbor-catalog-merge-42">', 1)[1].split("</article>", 1)[0]
         self.assertTrue(card.startswith('<p class="said-line"><span class="q">Merge PR 42 now?</span>'
                                         '<span class="said">Answered: <b>Hold</b></span><time '), card)
@@ -11284,7 +11284,7 @@ class TopicAskTests(unittest.TestCase):
         self.assertIn('data-option="Merge"', card)
         self.assertNotIn("Answered:", card)
         self.assertIn('Open decisions <span class="n" data-n="1">1</span>', thread)
-        self.assertIn('Needs you <span class="n" data-n="2">2</span>', self.fresh_page("index.html"))
+        self.assertIn('Needs you <span class="n" data-n="2">2</span>', self.fresh_page(quarterdeck.PREVIOUS_PAGE))
         status, body = self.send(request, "decision", "maple-harbor-catalog/merge-42", "Merge")
         self.assertEqual(status, 200, f"the same answer goes through once Firstmate is reachable: {body}")
         self.assertIn('class="decision answered" id="decision-merge-42"', self.fresh_page("topic-maple-harbor-catalog.html"))
@@ -11434,7 +11434,7 @@ class FrontPageTests(unittest.TestCase):
             old = time.time() - 20 * 86400
             os.utime(home / "data" / "paper-27" / "report.md", (old, old))  # a report over two weeks old
             output = self.render(root, home)
-            front = output.read_text(encoding="utf-8")
+            front = (output.parent / quarterdeck.PREVIOUS_PAGE).read_text(encoding="utf-8")
             self.assertIn('Needs you <span class="n" data-n="2">2</span>', front, "the open decision and the wait on you")
             needs = front.split('id="needs"', 1)[1].split("</section>", 1)[0]
             self.assertIn('<span class="row-meta">Maple Harbor catalog launch · waiting on you</span><span class="row-title">merge PR 42</span>', needs)
@@ -11552,7 +11552,9 @@ Decision: Decision newer
         self.assertIn('<body data-refresh="60">', front)
         for name in ("index.html", quarterdeck.CLASSIC_PAGE, quarterdeck.SEARCH_PAGE, "topic-maple-harbor-catalog.html"):
             self.assertIn(name, pages)
-        self.assertIn("Changed since you last looked", pages["index.html"])
+        self.assertIn("Changed since you last looked", pages[quarterdeck.PREVIOUS_PAGE])
+        self.assertIn("Changed since you last looked", pages[quarterdeck.TOPICS_PAGE])
+        self.assertIn("Your calls", pages["index.html"])
         self.assertIn('href="index.html">Front page</a>', pages[quarterdeck.CLASSIC_PAGE])
 
     def test_needs_you_cards_outside_topics_stay_on_the_front_page_and_notifications_open_where_they_show(self) -> None:
@@ -11587,7 +11589,7 @@ Decision: Decision newer
         decision = next(item for item in seen if str(item["id"]).startswith("topic-decision:"))
         self.assertEqual(decision["push_url"], "./topic-maple-harbor-catalog.html#decision-merge-42")
 
-        front = pages["index.html"]
+        front = pages[quarterdeck.PREVIOUS_PAGE]
         needs = front.split('id="needs"', 1)[1].split("</section>", 1)[0]
         self.assertIn('Needs you <span class="n" data-n="4">4</span>', needs, "the decision, the wait on you and the two cards in no topic")
         group = needs
@@ -11715,6 +11717,173 @@ process.stdin.on('end', () => {
             self.assertNotIn("Nothing needs you right now", needs)
         self.assertIn("Nothing needs you right now.", clear.split('id="needs"', 1)[1].split("</section>", 1)[0])
 
+
+
+class CallsPageTests(unittest.TestCase):
+    """The default view: one queue of calls, each decidable on its card; answered calls leave it at once."""
+
+    setUp = TopicAskTests.setUp
+    args = TopicAskTests.args
+    serve = TopicAskTests.serve
+    fresh_page = TopicAskTests.fresh_page
+    notes = TopicAskTests.notes
+    send = TopicAskTests.send
+
+    def write_topic(self, name: str, text: str) -> None:
+        (self.home / "data" / "topics" / name).write_text(text, encoding="utf-8")
+
+    @staticmethod
+    def queue(page: str) -> str:
+        return page.split('<div id="queue">', 1)[1].split("</section>", 1)[0]
+
+    def test_calls_is_the_default_view_and_each_call_carries_its_answers(self) -> None:
+        pages = quarterdeck.site_builder(self.args(), True)()
+        front = pages["index.html"]
+        self.assertIn('Your calls <span class="n" data-calls-n data-n="2">2</span>', front, "the open decision and the wait on you")
+        self.assertIn("<title>(2) Quarterdeck</title>", front)
+        queue = self.queue(front)
+        self.assertEqual(queue.count('<details class="call" name="calls"'), 2)
+        self.assertIn('<span class="call-line">Merge PR 42 now?</span>', queue)
+        self.assertIn('<button type="button" class="opt recommended" data-answer="Merge"><span>Merge</span> '
+                      '<span class="rec-mark">Recommended</span></button>', queue)
+        self.assertIn('data-answer="Not now"', queue)
+        self.assertIn('Maple Harbor catalog launch · <time datetime="2026-03-03T14:05:00Z" data-ago>', queue, "the meta row")
+        self.assertIn("The patch switches the product pages to the new catalog.", queue, "the context, cut short")
+        self.assertIn('<a href="topic-maple-harbor-catalog.html#decision-merge-42">Open thread</a>', queue)
+        self.assertIn('<span class="call-line">Merge PR 42</span>', queue, "the wait on you")
+        self.assertIn('data-answer="Mark done"', queue)
+        self.assertEqual(queue.count(" open><summary>"), 1, "only the first call is open")
+        self.assertIn('<a href="index.html" aria-current="page">Calls</a><a href="topics.html">Topics</a>', front)
+        self.assertIn(f'<a href="{quarterdeck.PREVIOUS_PAGE}">previous view</a>', front)
+        for gone in ("Changed since you last looked", "Needs you", "Topics <span"):
+            self.assertNotIn(gone, front)
+        self.assertIn("Changed since you last looked", pages[quarterdeck.TOPICS_PAGE])
+        self.assertIn('<a href="index.html">Calls</a>', pages[quarterdeck.PREVIOUS_PAGE])
+        self.assertLess(len(front.encode("utf-8")), 80_000)
+
+    def test_an_answered_call_leaves_the_queue_for_sent_and_a_wait_marked_done_goes_too(self) -> None:
+        request = self.serve()
+        status, body = self.send(request, "decision", "maple-harbor-catalog/merge-42", "Merge")
+        self.assertEqual(status, 200, body)
+        front = self.fresh_page("index.html")
+        self.assertIn('data-calls-n data-n="1">1</span>', front)
+        self.assertNotIn("Merge PR 42 now?", self.queue(front))
+        sent = front.split('id="sent-list">', 1)[1].split("</ul>", 1)[0]
+        self.assertIn('<span class="sent-line">Merge PR 42 now?</span>', sent)
+        self.assertIn("You answered <b>Merge</b>", sent)
+        status, body = self.send(request, "topic", "maple-harbor-catalog", "Done: merge PR 42", number=2)
+        self.assertEqual(status, 200, body)
+        self.assertTrue(self.notes()[-1].startswith("Quarterdeck wait done on topic maple-harbor-catalog"), self.notes()[-1])
+        self.assertIn("Remove that Waiting on: you line from data/topics/maple-harbor-catalog.md", self.notes()[-1])
+        self.assertNotIn("Done: merge PR 42", self.fresh_page("topic-maple-harbor-catalog.html"), "no unanswered question")
+        front = self.fresh_page("index.html")
+        self.assertIn('data-calls-n data-n="0">0</span>', front)
+        self.assertIn("You answered <b>Done</b>", front)
+        self.assertIn("<title>Quarterdeck</title>", front)
+        with self.topic_file.open("a", encoding="utf-8") as handle:
+            handle.write("\n## 2026-03-05 08:00 | you | quarterdeck\nRe: merge-42\nMerge\n")
+        self.assertNotIn("Merge PR 42 now?", self.fresh_page("index.html"), "recorded in the file: gone for good")
+
+    def test_the_same_ask_from_two_sources_is_one_card_answered_in_both(self) -> None:
+        self.write_topic("vendor-images.md", """# Vendor images
+Waiting on: you - choose the storage plan for the vendor product images
+
+## 2026-03-04 09:00 | firstmate | chat
+Id: storage-plan
+Decision: Which storage plan holds the vendor product images?
+Options: Shared bucket | Own bucket
+Recommend: Shared bucket
+
+- The shared bucket is ready today.
+- An own bucket waits a week for the vendor's quota.
+- Either moves later in an hour.
+- A fourth point stays in the thread.
+""")
+        front = self.fresh_page("index.html")
+        queue = self.queue(front)
+        self.assertEqual(queue.count('<details class="call"'), 3, "the wait joins the decision's card beside the example's two")
+        self.assertNotIn('<span class="call-line">Choose the storage plan', queue)
+        targets = json.loads(html.unescape(re.search(
+            r'id="call-d-vendor-images-storage-plan" data-call="[^"]+" data-targets="([^"]+)"', queue).group(1)))  # type: ignore[union-attr]
+        self.assertEqual(targets, [
+            {"kind": "decision", "item": "vendor-images/storage-plan", "prefix": ""},
+            {"kind": "topic", "item": "vendor-images", "prefix": "Done: choose the storage plan for the vendor product images"},
+        ])
+        self.assertIn("<li>The shared bucket is ready today.</li>", queue)
+        self.assertNotIn("A fourth point", queue, "at most three facts")
+        two = [quarterdeck.Call(key=name, source="decision", line=name, where="", where_href="", asked=None, kind="",
+                                words=quarterdeck.call_words("which storage plan holds the vendor product images"))
+               for name in ("one", "two")]
+        self.assertEqual(len(quarterdeck.merge_calls(two)), 2, "two decisions never merge")
+
+    def test_a_call_talked_past_or_with_nothing_to_decide_folds_under_may_be_settled(self) -> None:
+        self.write_topic("vendor-images.md", """# Vendor images
+
+## 2026-03-01 09:00 | firstmate | chat
+Id: label-colour
+Decision: Which colour do the catalog labels use?
+Options: Navy | Sand
+
+## 2026-03-01 10:00 | you | chat
+Navy for the spring sale, sand after.
+
+## 2026-03-01 11:00 | you | chat
+And keep the sale banner short.
+
+## 2026-03-02 09:00 | you | chat
+Ship the labels with the catalog.
+""")
+        front = self.fresh_page("index.html")
+        self.assertNotIn("Which colour do the catalog labels use?", self.queue(front))
+        settled = front.split('class="settled"', 1)[1].split("</section>", 1)[0]
+        self.assertIn("May be settled", settled)
+        self.assertIn("You wrote 3 times in this topic since it was asked.", settled)
+        self.assertIn(f'data-answer="{quarterdeck.CALL_CLOSE_TEXT}">Close card</button>', settled)
+        self.assertIn('data-answer="Navy"', settled, "it can still be answered")
+        card = {"id": "call:fictional/nap", "section": "needs_you", "title": "Wait for the certificate", "hold_set": None,
+                "summary": "", "wait_summary": "Nothing to decide: Firstmate waits for the certificate.", "ask": "",
+                "wait_kind": "other", "at": "2026-03-01T09:00:00Z"}
+        call = quarterdeck.hold_call(card, None)
+        self.assertEqual(call.settled, "Firstmate says there is nothing to decide")
+        self.assertEqual((call.answer, call.kind), (("call", "fictional/nap"), "Your step"))
+        merge = quarterdeck.hold_call({**card, "wait_summary": "Give the word to merge PR 9.", "wait_kind": "merge"}, None)
+        self.assertEqual((merge.settled, merge.options, merge.kind), ("", ["Merge it", "Not yet"], "Merge"))
+
+    def test_a_hold_answered_from_quarterdeck_stays_sent_until_it_is_held_again(self) -> None:
+        history = [{"id": "r1", "reaction": "", "text": "Approve the plan", "at": "2026-03-02T10:00:00.000Z"},
+                   {"id": "r2", "reaction": "question", "text": "Why now?", "at": "2026-03-03T10:00:00.000Z"}]
+        state = quarterdeck.ReviewState(history={("call", "fictional/plan"): history})
+        card = {"id": "call:fictional/plan", "section": "needs_you", "title": "Approve the plan", "ask": "Approve the plan.",
+                "hold_set": "2026-03-01T00:00:00Z"}
+        self.assertEqual((quarterdeck.hold_call(card, state).sent or {}).get("id"), "r1", "a question is not an answer")
+        again = quarterdeck.hold_call({**card, "hold_set": "2026-03-04T00:00:00Z"}, state)
+        self.assertIsNone(again.sent, "held again after the answer: back in the queue")
+
+    def test_context_is_one_short_paragraph_and_three_facts(self) -> None:
+        words = " ".join(f"word{index}" for index in range(40))
+        context, facts = quarterdeck.call_context(f"{words}\n\n```\ncode\n```\n\n1. **First** fact\n2. Second fact\n")
+        self.assertEqual(context, " ".join(words.split()[:30]) + "…")
+        self.assertEqual(facts, ["First fact", "Second fact"])
+        self.assertEqual(quarterdeck.call_context(""), ("", []))
+
+    def test_render_writes_calls_as_the_main_file_with_topics_and_the_previous_view_beside_it(self) -> None:
+        output = self.root / "out" / "index.html"
+        result = TopicTests.run_cli(self, ["render", "--home", str(self.home), "--output", str(output), "--no-snapshot"], self.root)  # type: ignore[arg-type]
+        self.assertEqual(result.returncode, 0, result.stderr)
+        front = output.read_text(encoding="utf-8")
+        self.assertIn("Your calls", front)
+        self.assertIn("Could not read everything that might need you", front, "no snapshot: never a false all clear")
+        self.assertIn("<li>Merge", front, "a rendered page lists the options without buttons")
+        self.assertNotIn('data-answer="', front)
+        for name in (quarterdeck.TOPICS_PAGE, quarterdeck.PREVIOUS_PAGE, quarterdeck.CLASSIC_PAGE, quarterdeck.SEARCH_PAGE):
+            self.assertTrue((output.parent / name).is_file(), name)
+
+    @unittest.skipUnless(shutil.which("node"), "Node is required to check the generated script")
+    def test_the_calls_script_parses(self) -> None:
+        script = quarterdeck.calls_script().split("<script>", 1)[1].split("</script>", 1)[0]
+        result = subprocess.run(["node", "-e", "new Function(require('fs').readFileSync(0, 'utf8'))"], input=script,
+                                capture_output=True, text=True, check=False)
+        self.assertEqual(result.returncode, 0, result.stderr)
 
 
 class BasePathTests(unittest.TestCase):
