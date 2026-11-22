@@ -24,7 +24,7 @@ from contextlib import contextmanager, redirect_stderr, redirect_stdout
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from html.parser import HTMLParser
-from unittest.mock import patch
+from unittest.mock import call, patch
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
@@ -4391,7 +4391,7 @@ const desk = addCopy();
 const report = addCopy('report');
 const expired = addCopy('call', 'home/expired');
 const handlers = {};
-globalThis.document = {activeElement: null, addEventListener: (n, f) => { handlers[n] = f; },
+globalThis.document = {body: {dataset: {}}, activeElement: null, addEventListener: (n, f) => { handlers[n] = f; },
   querySelector: () => null, querySelectorAll: s => s === '.reaction-text' ? fields : []};
 let reloaded = 0, deferred = 0;
 globalThis.location = {protocol: 'file:', reload() { reloaded++; }};
@@ -8947,7 +8947,7 @@ const assert = require('node:assert/strict');
 globalThis.location = {protocol: 'http:', href: 'http://localhost/?view=waiting&qd_refresh=1#cards',
   reload() { this.requested = this.href; }};
 globalThis.history = {replaceState(_state, _title, url) { location.href = String(url); }};
-globalThis.document = {querySelectorAll: () => [], querySelector: () => null, getElementById: () => null,
+globalThis.document = {body: {dataset: {}}, querySelectorAll: () => [], querySelector: () => null, getElementById: () => null,
   dispatchEvent() {}, open() {}, write(page) { this.page = page; }, close() {}};
 globalThis.fetch = async url => { location.requested = String(url); return {ok: true, text: async () => '<p>refreshed</p>'}; };
 """
@@ -9750,6 +9750,7 @@ class Button {
   }
 }
 globalThis.document = {
+  body: {dataset: {}},
   addEventListener(name, fn) { if (name === 'click') handlers.push(fn); },
   createElement: () => new Button(),
   querySelectorAll: selector => selector === "[data-mark-report]" && row ?
@@ -9846,7 +9847,7 @@ const writes = [];
 let requests = 0;
 globalThis.location = {protocol: 'http:', href: 'http://localhost/', reload() { reloads++; }};
 globalThis.history = {replaceState() {}};
-globalThis.document = {querySelectorAll: () => fields,
+globalThis.document = {body: {dataset: {}}, querySelectorAll: () => fields,
   querySelector: selector => blocked && selector.includes(blocked.selector) ? blocked : null,
   dispatchEvent() {}, open() {}, write(page) { writes.push(page); }, close() {},
   getElementById: id => id === 'offline-note' ? note : id === 'updated' ? stamp : null};
@@ -11858,8 +11859,10 @@ Recommend: Shared bucket
             (1, "captain.answered", "answered-hold", {"mode": "done"}),
             (1, "captain.answered", "moot-hold", {"mode": "reconciled"}),
             (1, "captain.answered", "older-merge", {"mode": "reconciled"}),
-            (25, "task.dispatched", "mate/shared-item", {"project": "sketch"}),
-            (19, "task.merged", "mate/shared-item", {"pr": "https://example.invalid/pr/7"}),
+            (25, "task.dispatched", "mate-fictional-notes/shared-item", {"project": "sketch"}),
+            (19, "task.merged", "mate/shared-item", {"pr": "https://example.invalid/pr/6"}),
+            (4, "task.pr_ready", "mate/archived", {"pr": "https://example.invalid/pr/8"}),
+            (2, "task.merged", "mate/archived", {}),
         ]
         write_ledger(self.home, records)
         (self.home / "data" / "backlog.md").write_text(
@@ -11880,7 +11883,7 @@ Recommend: Shared bucket
         configured_homes = []
         for index, (label, home) in enumerate((("North", self.home), ("South", other))):
             child = AttentionTests().make_home(self.root / f"child-{index}", ledger="", script=False)
-            merged = " (merged: 2026-01-09T17:45:00Z)" if index == 0 else ""
+            merged = " (merged: 2026-01-09T17:45:00Z) https://github.com/example/fictional/pull/7" if index == 0 else ""
             (child / "data" / "backlog.md").write_text(
                 f"# Backlog\n\n## Working\n\n- [ ] shared-item - Child work {index}{merged}\n", encoding="utf-8",
             )
@@ -11892,13 +11895,22 @@ Recommend: Shared bucket
             configured_homes.append({"label": label, "path": str(home)})
         config = self.root / "quarterdeck.json"
         config.write_text(json.dumps({"homes": configured_homes}), encoding="utf-8")
-        args = argparse.Namespace(home=None, config=config, title=None, no_snapshot=True)
+        args = argparse.Namespace(home=None, config=config, title=None, no_snapshot=False)
         build_bearings = quarterdeck.build_bearings
-        with patch.object(quarterdeck, "build_bearings", side_effect=lambda homes, **kwargs: build_bearings(homes, now, **kwargs)):
+        attention_view = quarterdeck.attention_view
+
+        def feed(home, _data):
+            return {"open_decisions": [], "in_flight": [
+                {"task": "mate-fictional-notes/archived", "title": "Archived child work"}
+            ] if home == self.home else []}
+
+        with patch.object(quarterdeck, "build_bearings",
+                          side_effect=lambda homes, **kwargs: build_bearings(homes, now, **(kwargs | {"use_snapshot": False}))), \
+             patch.object(quarterdeck, "attention_view", side_effect=lambda *a, **kw: attention_view(*a, **kw, feed_runner=feed)):
             pages = quarterdeck.site_builder(args, True)()
         calls = pages["index.html"]
         recap = calls.split('id="recap-list">', 1)[1].split("</ul>", 1)[0]
-        self.assertEqual(recap.count("<li "), 19)
+        self.assertEqual(recap.count("<li "), 20)
         ordered = ("Overnight closure", "Child work 0", "Child work 1", "Closure with malformed ledger",
                    "Table merge", "older-merge", "boundary-merge")
         self.assertEqual(sorted(ordered, key=recap.index), list(ordered))
@@ -11906,11 +11918,16 @@ Recommend: Shared bucket
         self.assertRegex(recap, r'older-merge</span><span class="call-meta">Merged · North')
         self.assertRegex(recap, r'Table merge</span><span class="call-meta">Merged · South')
         self.assertIn("Merged · mate — Fictional notes. (North) · sketch", recap)
+        self.assertIn('<span class="sent-line">Archived child work</span>'
+                      '<span class="call-meta">Merged · mate — Fictional notes. (North)', recap)
+        self.assertNotIn("https://example.invalid/pr/8", recap)
+        self.assertNotIn("https://example.invalid/pr/6", recap)
         winning_time = datetime(2026, 1, 9, 17, 45, tzinfo=timezone.utc).timestamp()
         self.assertIn(f'data-time="{winning_time}"><span class="sent-line">'
-                      '<a href="https://example.invalid/pr/7">Child work 0</a>', recap)
-        for index, label in enumerate(("North", "South")):
-            self.assertIn(f'<a href="https://example.invalid/pr/7">Child work {index}</a></span>'
+                      '<a href="https://github.com/example/fictional/pull/7">Child work 0</a>', recap)
+        for index, (label, link) in enumerate((("North", "https://github.com/example/fictional/pull/7"),
+                                               ("South", "https://example.invalid/pr/7"))):
+            self.assertIn(f'<a href="{link}">Child work {index}</a></span>'
                           f'<span class="call-meta">Merged · mate — Fictional notes. ({label})', recap)
         for excluded in ("expired", "future", "released-hold", "answered-hold", "moot-hold"):
             self.assertNotIn(excluded, recap)
@@ -11919,13 +11936,14 @@ Recommend: Shared bucket
         harness = r"""
 const assert = require('node:assert/strict');
 const vm = require('node:vm');
-const {calls, thread, builtAt} = JSON.parse(require('node:fs').readFileSync(0, 'utf8'));
+const {calls, thread, classic, builtAt} = JSON.parse(require('node:fs').readFileSync(0, 'utf8'));
 const hour = 3600000;
 let now = builtAt;
 const local = new Map();
 const storage = map => ({getItem: key => map.get(key), setItem: (key, value) => map.set(key, value),
                         removeItem: key => map.delete(key)});
-function open(page, session = new Map()) {
+function open(page, visibilityState = 'visible') {
+  const session = new Map();
   const markup = page.match(/<section[^>]* id="recap"[^>]*>[\s\S]*?<\/section>/)?.[0];
   const rows = [...(markup ?? '').matchAll(/<li data-time="([^"]+)">([\s\S]*?)<\/li>/g)]
     .map(([, time, html]) => ({dataset: {time}, html, hidden: false}));
@@ -11935,21 +11953,32 @@ function open(page, session = new Map()) {
   const listeners = {};
   const timers = [], replacements = [];
   const addEventListener = (event, fn) => (listeners[event] ??= []).push(fn);
-  const document = {visibilityState: 'visible', get hidden() { return this.visibilityState === 'hidden'; },
+  const fire = event => listeners[event]?.forEach(fn => fn());
+  const document = {visibilityState, get hidden() { return this.visibilityState === 'hidden'; },
     body: {dataset: {refresh: page.match(/<body data-refresh="(\d+)"/)?.[1]}},
     querySelectorAll: () => [], querySelector: () => null,
     getElementById: id => ({recap, 'recap-n': count})[id] ?? null,
+    dispatchEvent: event => fire(event.type), open: () => fire('pagehide'),
+    write: html => replacements.push(html), close: () => {},
     addEventListener};
   class Clock extends Date { static now() { return now; } }
+  const location = {href: 'http://localhost/', protocol: 'http:', hash: '', replace: href => replacements.push(href)};
   const context = vm.createContext({document, Date: Clock, localStorage: storage(local), sessionStorage: storage(session),
-    URL, location: {href: 'http://localhost/', hash: '', replace: href => replacements.push(href)}, window: {scrollY: 0},
-    addEventListener, setInterval: fn => timers.push(fn)});
-  for (const [, script] of page.matchAll(/<script>([\s\S]*?)<\/script>/g)) vm.runInContext(script, context);
-  return {document, fire: event => listeners[event]?.forEach(fn => fn()), rows, count, recap, timers, replacements};
+    URL, location, window: {scrollY: 0}, history: {replaceState: (_, __, url) => { location.href = String(url); }},
+    Event, fetch: async () => ({ok: true, text: async () => '<p>refreshed</p>'}),
+    addEventListener, setInterval: fn => timers.push(fn), setTimeout});
+  for (const [, script] of page.matchAll(/<script>([\s\S]*?)<\/script>/g)) {
+    if (page !== classic || /quarterdeck-look-from|function quarterdeckReload/.test(script)) vm.runInContext(script, context);
+  }
+  return {document, fire, rows, count, recap, timers, replacements, refresh: context.quarterdeckReload};
 }
-const firstVisit = open(calls);
+now -= 5 * 60000;
+const firstVisit = open(calls, 'hidden');
+now = builtAt;
+firstVisit.document.visibilityState = 'visible';
+firstVisit.fire('visibilitychange');
 assert.equal(firstVisit.rows.find(row => row.html.includes('boundary-merge')).hidden, true);
-assert.equal(firstVisit.count.dataset.n, '18');
+assert.equal(firstVisit.count.dataset.n, '19');
 now = builtAt - 25 * hour;
 const threadVisit = open(thread);
 now += hour;
@@ -11973,8 +12002,8 @@ const visit = open(calls);
 assert.equal(visit.rows.find(row => row.html.includes('Overnight closure')).hidden, false);
 assert.equal(visit.rows.find(row => row.html.includes('older-merge')).hidden, true);
 assert.equal(visit.recap.hidden, false);
-assert.equal(visit.count.textContent, '17');
-assert.equal(visit.count.dataset.n, '17');
+assert.equal(visit.count.textContent, '18');
+assert.equal(visit.count.dataset.n, '18');
 visit.document.visibilityState = 'hidden';
 visit.fire('visibilitychange');
 now += 3 * 60000;
@@ -11984,9 +12013,27 @@ assert.equal(visit.rows.every(row => row.hidden), true);
 assert.equal(visit.recap.hidden, true);
 assert.equal(visit.count.textContent, '0');
 assert.equal(visit.count.dataset.n, '0');
+
+(async () => {
+  local.clear();
+  now = builtAt - 25 * hour;
+  const classicVisit = open(classic);
+  now += hour;
+  classicVisit.fire('pagehide');
+  now = builtAt - 17 * hour;
+  const classicRefresh = open(classic);
+  classicRefresh.refresh();
+  await new Promise(resolve => setImmediate(resolve));
+  assert.deepEqual(classicRefresh.replacements, ['<p>refreshed</p>']);
+  now = builtAt;
+  const back = open(calls);
+  assert.equal(back.rows.find(row => row.html.includes('older-merge')).hidden, true);
+  assert.equal(back.rows.find(row => row.html.includes('Overnight closure')).hidden, false);
+})().catch(error => { console.error(error); process.exitCode = 1; });
 """
         result = subprocess.run(["node", "-e", harness], capture_output=True, text=True, input=json.dumps({
-            "calls": calls, "thread": thread, "builtAt": int(now.timestamp() * 1000),
+            "calls": calls, "thread": thread, "classic": pages[quarterdeck.CLASSIC_PAGE],
+            "builtAt": int(now.timestamp() * 1000),
         }))
         self.assertEqual(result.returncode, 0, result.stderr)
 
@@ -12130,6 +12177,9 @@ What is the fallback for older displays?
 
     def test_render_writes_calls_as_the_main_file_with_topics_and_the_previous_view_beside_it(self) -> None:
         output = self.root / "out" / "deck.html"
+        ledger = self.home / quarterdeck.LEDGER_PATH
+        ledger.parent.mkdir(exist_ok=True)
+        ledger.write_text(json.dumps({"v": 1, "ts": time.time() - 3600, "event": "task.merged", "task": "recent-merge"}) + "\n")
         result = TopicTests.run_cli(self, ["render", "--home", str(self.home), "--output", str(output), "--no-snapshot"], self.root)  # type: ignore[arg-type]
         self.assertEqual(result.returncode, 0, result.stderr)
         front = output.read_text(encoding="utf-8")
@@ -12138,11 +12188,34 @@ What is the fallback for older displays?
             self.assertIn('<a class="mark" href="deck.html">', page)
             self.assertRegex(page, r'<a href="deck.html"(?: aria-current="page")?>Calls</a>')
         self.assertIn("Your calls", front)
+        self.assertIn('<span class="sent-line">recent-merge</span><span class="call-meta">Merged', front)
         self.assertIn("Could not read everything that might need you", front, "no snapshot: never a false all clear")
         self.assertIn("<li>Merge", front, "a rendered page lists the options without buttons")
         self.assertNotIn('data-answer="', front)
         for name in (quarterdeck.TOPICS_PAGE, quarterdeck.PREVIOUS_PAGE, quarterdeck.CLASSIC_PAGE, quarterdeck.SEARCH_PAGE):
             self.assertTrue((output.parent / name).is_file(), name)
+
+    def test_classic_only_builds_skip_the_extra_child_ledger_read_for_calls(self) -> None:
+        child = AttentionTests().make_home(self.root / "child", ledger="", script=False)
+        ledger = child / quarterdeck.LEDGER_PATH
+        ledger.write_text(json.dumps({"v": 1, "ts": time.time() - 3600, "event": "task.merged", "task": "child-merge"}) + "\n")
+        (child / "data" / "backlog.md").unlink()
+        (self.home / "data" / "secondmates.md").write_text(f"- mate - Fictional notes. (home: {child})\n")
+        with patch.object(quarterdeck, "read_fleet_ledger", wraps=quarterdeck.read_fleet_ledger) as read:
+            page = quarterdeck.site_builder(self.args())()["index.html"]
+            self.assertIn(call(ledger), read.call_args_list)
+            self.assertIn('<span class="sent-line">child-merge</span>', page)
+            read.reset_mock()
+            args = self.args()
+            args.output, args.all, args.lavish = str(self.root / "classic-only.html"), True, False
+            with redirect_stdout(io.StringIO()):
+                self.assertEqual(quarterdeck.render(args), 0)
+            self.assertNotIn(call(ledger), read.call_args_list)
+            read.reset_mock()
+            self.topic_file.unlink()
+            pages = quarterdeck.site_builder(self.args())()
+            self.assertNotIn(quarterdeck.TOPICS_PAGE, pages)
+            self.assertNotIn(call(ledger), read.call_args_list)
 
     @unittest.skipUnless(shutil.which("node"), "Node is required to execute the generated script")
     def test_call_delivery_preserves_words_and_retries_the_same_message(self) -> None:

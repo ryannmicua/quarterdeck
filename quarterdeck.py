@@ -1684,6 +1684,7 @@ def build_html(
         return;
       }
       if (location.protocol !== "http:" && location.protocol !== "https:") {
+        document.body.dataset.qdRefreshing = "1";
         location.reload();
         return;
       }
@@ -1701,6 +1702,7 @@ def build_html(
         }
         quarterdeckOffline(false);
         history.replaceState(null, "", url);
+        document.body.dataset.qdRefreshing = "1";
         document.dispatchEvent(new Event("quarterdeck-replace"));
         document.open();
         document.write(page);
@@ -1967,7 +1969,7 @@ def build_html(
     <footer><p>{html.escape(introductory_text)}</p><p>{footer_label} Source files open as readable pages beside this one.</p></footer>
   </main>
   </div>
-  {lavish_script}{NAV_SCRIPT}{refresh_script}{reload_script}{mark_script}{reaction_script}{wait_script}{cards_script}{push_script}{topic_ask_script() if allow_marks and topics_block else ""}
+  {LAST_LOOK_SCRIPT if not lavish else ""}{lavish_script}{NAV_SCRIPT}{refresh_script}{reload_script}{mark_script}{reaction_script}{wait_script}{cards_script}{push_script}{topic_ask_script() if allow_marks and topics_block else ""}
 </body>
 </html>
 '''
@@ -3282,11 +3284,11 @@ def recap_completions(sources: list[CompletionSource], now: datetime) -> list[di
     items: dict[CompletionKey, BacklogItem] = {}
     titles: dict[CompletionKey, str] = {}
     projects: dict[CompletionKey, str] = {}
-    prs: dict[CompletionKey, str] = {}
     completed: dict[CompletionKey, tuple[float, str, str]] = {}
+    scopes: dict[int, list[HomeSnapshot]] = {}
 
     def key_for(source: HomeSnapshot, task: str) -> CompletionKey:
-        owner, local_task = task_owner(source, task.strip())
+        owner, local_task = task_reference_owner(source, task, scopes[id(source)])
         if id(owner) not in owner_keys:
             spec = owner.spec
             identity: CompletionOwner = (id(owner),)
@@ -3304,9 +3306,27 @@ def recap_completions(sources: list[CompletionSource], now: datetime) -> list[di
 
     ledger = []
     for source, records, feed_titles in sources:
+        if id(source) not in scopes:
+            family = all_snapshots([source])
+            scopes.update((id(member), family) for member in family)
         ledger.extend((source, record) for record in records)
         for task, title in feed_titles.items():
             titles.setdefault(key_for(source, task), title)
+
+    for source, record in sorted(ledger, key=lambda entry: entry[1]["ts"]):
+        stamp = float(record["ts"])  # type: ignore[arg-type]
+        if stamp > end:
+            break
+        event, project, pr = record["event"], record.get("project"), record.get("pr")
+        if event not in {"task.dispatched", "task.merged"}:
+            continue
+        key = key_for(source, str(record["task"]))
+        if event == "task.dispatched" and isinstance(project, str):
+            projects[key] = project
+        if event == "task.merged":
+            finish(key, stamp, "merged", pr if isinstance(pr, str) else "")
+
+    for source, _, _ in sources:
         for item in backlog_items(source.backlog_markdown or "", source):
             key = key_for(source, item.id)
             items[key] = item
@@ -3314,22 +3334,7 @@ def recap_completions(sources: list[CompletionSource], now: datetime) -> list[di
                 for field in ("merged", "done", "closed"):
                     when = parse_when(item.attrs.get(field, ""))
                     if when is not None:
-                        finish(key, when.timestamp(), "merged" if field == "merged" else "closed")
-
-    for source, record in sorted(ledger, key=lambda entry: entry[1]["ts"]):
-        stamp = float(record["ts"])  # type: ignore[arg-type]
-        if stamp > end:
-            break
-        event, project, pr = record["event"], record.get("project"), record.get("pr")
-        if event not in {"task.dispatched", "task.pr_ready", "task.merged"}:
-            continue
-        key = key_for(source, str(record["task"]))
-        if event == "task.dispatched" and isinstance(project, str):
-            projects[key] = project
-        if event in {"task.pr_ready", "task.merged"} and isinstance(pr, str):
-            prs[key] = pr
-        if event == "task.merged":
-            finish(key, stamp, "merged", pr if isinstance(pr, str) else "")
+                        finish(key, when.timestamp(), "merged" if field == "merged" else "closed", item.pr_url)
 
     by_owner: dict[CompletionOwner, list[dict[str, object]]] = {}
     for key, (stamp, event, pr) in completed.items():
@@ -3339,7 +3344,7 @@ def recap_completions(sources: list[CompletionSource], now: datetime) -> list[di
             "task": task, "time": stamp, "event": event,
             "title": plain_title((item.title if item else "") or titles.get(key, "")) or task,
             "project": projects.get(key) or (item.project if item else ""),
-            "pr": pr or prs.get(key) or (item.pr_url if item else ""),
+            "pr": pr,
         })
     return [{"label": owners[key].label, "parent": owners[key].parent_label, "items": rows}
             for key, rows in by_owner.items()]
@@ -4889,12 +4894,17 @@ def task_owner(snapshot: HomeSnapshot, task: str) -> tuple[HomeSnapshot, str]:
     return task_owner(child, rest) if child is not None else (snapshot, task)
 
 
-def task_key(snapshot: HomeSnapshot, task: str, snapshots: list[HomeSnapshot]) -> str:
-    _prefix, separator, rest = task.strip().partition("/")
-    owner = next((s for s in snapshots if separator and report_reference(s.spec.label, rest) == task.strip()), None)
+def task_reference_owner(snapshot: HomeSnapshot, task: str, snapshots: list[HomeSnapshot]) -> tuple[HomeSnapshot, str]:
+    task = task.strip()
+    _prefix, separator, rest = task.partition("/")
+    owner = next((s for s in snapshots if separator and report_reference(s.spec.label, rest) == task), None)
     if owner is not None:
-        return report_reference(owner.spec.label, rest)
-    owner, task = task_owner(snapshot, task.strip())
+        return owner, rest
+    return task_owner(snapshot, task)
+
+
+def task_key(snapshot: HomeSnapshot, task: str, snapshots: list[HomeSnapshot]) -> str:
+    owner, task = task_reference_owner(snapshot, task, snapshots)
     return report_reference(owner.spec.label, task)
 
 
@@ -6003,7 +6013,7 @@ def site_builder(
     args: argparse.Namespace, allow_marks: bool = False, push: PushNotifier | None = None,
 ) -> Callable[[], dict[str, str]]:
     def build() -> dict[str, str]:
-        config, homes, bearings = load_site(args)
+        config, homes, bearings = load_site(args, include_calls=True)
         configured_title = config.get("page_title")
         title = args.title or (configured_title if isinstance(configured_title, str) else None) or DEFAULT_TITLE
         found = assign_topic_pages(homes)
@@ -9197,16 +9207,13 @@ LAST_LOOK_SCRIPT = """
       const AWAY_MS = 120000;
       function read(store, key) { try { return Number(store.getItem(key)) || 0; } catch (_) { return 0; } }
       function write(store, key, value) { try { store.setItem(key, String(value)); } catch (_) {} }
-      let from = read(sessionStorage, BASE);
-      if (!from) {
-        from = read(localStorage, LEFT) || Date.now() - %(first)d * 3600000;
-        write(sessionStorage, BASE, from);
-      }
+      let from = 0;
       function rebase() {
+        if (document.visibilityState === "hidden") return;
         from = Math.max(from, read(sessionStorage, BASE));
-        if (document.visibilityState === "hidden") {
-          if (!read(sessionStorage, HIDDEN)) write(sessionStorage, HIDDEN, Date.now());
-          return;
+        if (!from) {
+          from = read(localStorage, LEFT) || Date.now() - %(first)d * 3600000;
+          write(sessionStorage, BASE, from);
         }
         const hidden = read(sessionStorage, HIDDEN);
         if (hidden > from && Date.now() - hidden > AWAY_MS) {
@@ -9216,12 +9223,13 @@ LAST_LOOK_SCRIPT = """
         try { sessionStorage.removeItem(HIDDEN); } catch (_) {}
       }
       function depart() {
-        if (document.body.dataset.qdRefreshing || read(sessionStorage, HIDDEN)) return;
+        if (!from || document.body.dataset.qdRefreshing || read(sessionStorage, HIDDEN)) return;
         const left = Date.now();
         write(sessionStorage, HIDDEN, left);
         write(localStorage, LEFT, left);
       }
       function show() {
+        if (!from) return;
         const recap = document.getElementById("recap");
         if (recap) {
           let shown = 0;
@@ -13372,7 +13380,8 @@ def load_home_snapshot(spec: HomeSpec, discover_secondmates: bool = False) -> Ho
     return snapshot
 
 
-def load_site(args: argparse.Namespace, main_href: str = "index.html") -> tuple[dict[str, object], list[HomeSnapshot], Bearings]:
+def load_site(args: argparse.Namespace, main_href: str = "index.html", *,
+              include_calls: bool = False) -> tuple[dict[str, object], list[HomeSnapshot], Bearings]:
     """Read the configured homes and review marks, then classify them into bearings."""
     if args.config is None:
         default_path = default_config_path()
@@ -13396,7 +13405,8 @@ def load_site(args: argparse.Namespace, main_href: str = "index.html") -> tuple[
     bearings.attention = attention_view(
         homes, bearings.generated, all_decisions=True, use_feed=use_snapshot,
         priority_projects=list(document.get("priority_projects", [])),  # type: ignore[call-overload]
-        saved_views=effective_views(document), all_views=True, waits=waits, completions_out=bearings.completions,
+        saved_views=effective_views(document), all_views=True, waits=waits,
+        completions_out=bearings.completions if include_calls and assign_topic_pages(homes) else None,
     )
     if waits_error:
         bearings.attention["waits_error"] = waits_error
@@ -13411,7 +13421,7 @@ def render(args: argparse.Namespace) -> int:
         if args.lavish:
             main_path = Path(main_name)
             main_name = f"{main_path.stem}.lavish{main_path.suffix or '.html'}"
-        config, homes, bearings = load_site(args, main_href=quote(main_name, safe=""))
+        config, homes, bearings = load_site(args, main_href=quote(main_name, safe=""), include_calls=not args.lavish and not args.all)
         configured_output = config.get("output_dir")
         output_dir = Path(configured_output).expanduser() if isinstance(configured_output, str) else default_output_dir()
         output_path = Path(args.output).expanduser() if args.output else output_dir / "index.html"
