@@ -11848,8 +11848,8 @@ Recommend: Shared bucket
             "# Backlog\n\n## Done\n\n"
             "- [x] overnight - Overnight closure (done: 2026-01-09T18:00:00Z)\n"
             "  Earlier proposal: https://github.com/example/fictional/pull/5\n"
-            "- [x] day-only - Closed with a date (done: 2026-01-09)\n"
-            "- [x] older-merge - older-merge (done: 2026-01-09T12:00:00Z)\n"
+            "- [x] day-only - Finished with a date (state: merged) (done: 2026-01-09)\n"
+            "- [x] older-merge - older-merge (merged: 2026-01-09) (done: 2026-01-09T12:00:00Z)\n"
             "- [x] expired - Expired closure (closed: 2026-01-08T11:00:00Z)\n"
             "- [x] future - Future closure (closed: 2026-01-10T13:00:00Z)\n\n"
             "## Working\n\n- [ ] archived - Parent work sharing an ID\n", encoding="utf-8",
@@ -11858,9 +11858,9 @@ Recommend: Shared bucket
         (other / "data" / "backlog.md").write_text(
             "# Backlog\n\n## Done\n\n"
             "- [x] broken-ledger - Closure with malformed ledger (closed: 2026-01-09T16:00:00Z)\n\n"
-            "| ID | Task | State | Merged |\n"
+            "| ID | Task | State | Closed |\n"
             "| --- | --- | --- | --- |\n"
-            "| table-merge | Table merge | working | 2026-01-09T15:00:00Z |\n",
+            "| table-merge | Table merge | merged | 2026-01-09T15:00:00Z |\n",
             encoding="utf-8",
         )
         configured_homes = []
@@ -11901,6 +11901,7 @@ Recommend: Shared bucket
         self.assertIn('<a href="https://example.invalid/pr/4">older-merge</a></span>'
                       '<span class="call-meta">Merged · Mate', recap)
         self.assertIn('<time datetime="2026-01-09">09 Jan 2026</time>', recap)
+        self.assertIn('Finished with a date</span><span class="call-meta">Merged · Mate', recap)
         self.assertRegex(recap, r'Table merge</span><span class="call-meta">Merged · South')
         self.assertIn("Merged · mate — Fictional notes. (Mate) · sketch", recap)
         self.assertIn('<span class="sent-line">Archived child work</span>'
@@ -11922,7 +11923,7 @@ Recommend: Shared bucket
         harness = r"""
 const assert = require('node:assert/strict');
 const vm = require('node:vm');
-const {calls, thread, classic, source, builtAt} = JSON.parse(require('node:fs').readFileSync(0, 'utf8'));
+const {calls, thread, classic, source, adoption, builtAt} = JSON.parse(require('node:fs').readFileSync(0, 'utf8'));
 const hour = 3600000;
 let now = builtAt;
 const local = new Map();
@@ -11931,11 +11932,11 @@ const storage = map => ({getItem: key => map.get(key), setItem: (key, value) => 
 function open(page, visibilityState = 'visible') {
   const session = new Map();
   const markup = page.match(/<section[^>]* id="recap"[^>]*>[\s\S]*?<\/section>/)?.[0];
-  const rows = [...(markup ?? '').matchAll(/<li data-time="([^"]+)"(?: data-day="(1)")? data-task="([^"]+)"(?: data-merged="(1)")?( hidden)?>([\s\S]*?)<\/li>/g)]
-    .map(([, time, day, task, merged, hidden, html]) => ({dataset: {time, day, task, merged}, html, hidden: Boolean(hidden)}));
+  const rows = [...(markup ?? '').matchAll(/<li data-time="([^"]+)"(?: data-day="(1)")? data-task="([^"]+)"(?: data-merged="(1)")?>([\s\S]*?)<\/li>/g)]
+    .map(([, time, day, task, merged, html]) => ({dataset: {time, day, task, merged}, html, hidden: false}));
   const badge = markup?.match(/id="recap-n" data-n="([^"]+)">([^<]*)/);
   const count = badge && {dataset: {n: badge[1]}, textContent: badge[2]};
-  const recap = markup && {querySelectorAll: selector => selector === 'li' ? rows : [], hidden: false};
+  const recap = markup && {querySelectorAll: selector => selector === 'li' ? rows : [], hidden: / hidden>/.test(markup)};
   const listeners = {};
   const timers = [], replacements = [];
   const addEventListener = (event, fn) => (listeners[event] ??= []).push(fn);
@@ -11960,9 +11961,12 @@ function open(page, visibilityState = 'visible') {
 }
 now -= 5 * 60000;
 const firstVisit = open(calls, 'hidden');
+assert.equal(firstVisit.recap.hidden, true);
+assert.equal(firstVisit.count.dataset.n, '0');
 now = builtAt;
 firstVisit.document.visibilityState = 'visible';
 firstVisit.fire('visibilitychange');
+assert.equal(firstVisit.recap.hidden, false);
 assert.equal(firstVisit.rows.find(row => row.html.includes('boundary-merge')).hidden, true);
 assert.equal(firstVisit.count.dataset.n, '20');
 assert.equal(firstVisit.rows.filter(row => !row.hidden && row.html.includes('older-merge')).length, 1);
@@ -12001,7 +12005,7 @@ assert.equal(visit.rows.find(row => row.html.includes('older-merge')).hidden, tr
 assert.equal(visit.recap.hidden, false);
 assert.equal(visit.count.textContent, '19');
 assert.equal(visit.count.dataset.n, '19');
-assert.equal(visit.rows.find(row => row.html.includes('Closed with a date')).hidden, false);
+assert.equal(visit.rows.find(row => row.html.includes('Finished with a date')).hidden, false);
 visit.document.visibilityState = 'hidden';
 visit.fire('visibilitychange');
 now += 3 * 60000;
@@ -12012,15 +12016,17 @@ assert.equal(visit.recap.hidden, true);
 assert.equal(visit.count.textContent, '0');
 assert.equal(visit.count.dataset.n, '0');
 
-local.clear();
-now = builtAt - 25 * hour;
-const sourceVisit = open(source);
-now += hour;
-sourceVisit.fire('pagehide');
-now = builtAt;
-const afterSource = open(calls);
-assert.equal(afterSource.rows.find(row => row.html.includes('older-merge')).hidden, true);
-assert.equal(afterSource.rows.find(row => row.html.includes('Overnight closure')).hidden, false);
+for (const page of [source, adoption]) {
+  local.clear();
+  now = builtAt - 25 * hour;
+  const otherPage = open(page);
+  now += hour;
+  otherPage.fire('pagehide');
+  now = builtAt;
+  const back = open(calls);
+  assert.equal(back.rows.some(row => !row.hidden && row.html.includes('older-merge')), false);
+  assert.equal(back.rows.find(row => row.html.includes('Overnight closure')).hidden, false);
+}
 
 local.clear();
 now = builtAt - 24 * hour;
@@ -12033,7 +12039,7 @@ now = builtAt;
 firstTab.document.visibilityState = 'visible';
 firstTab.fire('visibilitychange');
 assert.equal(firstTab.rows.find(row => row.html.includes('Overnight closure')).hidden, true);
-assert.equal(firstTab.rows.find(row => row.html.includes('Closed with a date')).hidden, false);
+assert.equal(firstTab.rows.find(row => row.html.includes('Finished with a date')).hidden, false);
 
 local.clear();
 now = builtAt - 60 * hour;
@@ -12066,6 +12072,7 @@ assert.equal(stale.rows.find(row => row.html.includes('Overnight closure')).hidd
 """
         result = subprocess.run(["node", "-e", harness], capture_output=True, text=True, input=json.dumps({
             "calls": calls, "thread": thread, "classic": pages[quarterdeck.CLASSIC_PAGE], "source": source,
+            "adoption": pages[quarterdeck.ADOPTION_PAGE],
             "builtAt": int(now.timestamp() * 1000),
         }))
         self.assertEqual(result.returncode, 0, result.stderr)
@@ -12261,9 +12268,11 @@ What is the fallback for older displays?
             )
         ledger = self.home / quarterdeck.LEDGER_PATH
         ledger.parent.mkdir(exist_ok=True)
-        ledger.write_text(json.dumps({"v": 1, "ts": now.timestamp() - 7200,
-                                      "event": "task.merged", "task": "publish",
-                                      "pr": "https://example.invalid/pr/5"}) + "\n")
+        ledger.write_text("".join(json.dumps({"v": 1, "ts": now.timestamp() - 7200, **record}) + "\n" for record in (
+            {"event": "task.merged", "task": "publish", "pr": "https://example.invalid/pr/5"},
+            {"event": "task.dispatched", "task": "north/publish", "project": "Briefing"},
+            {"event": "task.merged", "task": "north/publish", "pr": "https://example.invalid/pr/6"},
+        )))
         config = self.root / "quarterdeck.json"
         config.write_text(json.dumps({"homes": [
             {"label": "North", "path": str(self.home)},
@@ -12272,8 +12281,10 @@ What is the fallback for older displays?
         args = argparse.Namespace(home=None, config=config, title=None, no_snapshot=True)
         page = quarterdeck.site_builder(args)()["index.html"]
         recap = page.split('id="recap-list">', 1)[1].split("</ul>", 1)[0]
-        for label in ("North", "South"):
-            self.assertIn(f'{label} publication</span><span class="call-meta">Closed · {label}', recap)
+        self.assertIn('<a href="https://example.invalid/pr/6">North publication</a></span>'
+                      '<span class="call-meta">Merged · North · Briefing', recap)
+        self.assertIn('South publication</span><span class="call-meta">Closed · South', recap)
+        self.assertNotIn("Merged · South", recap)
         self.assertNotIn("https://example.invalid/pr/5", recap)
 
     def test_shared_ledger_uses_the_registered_route_when_one_view_lacks_it(self) -> None:

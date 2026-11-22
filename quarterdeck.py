@@ -3241,7 +3241,7 @@ def recap_completions(sources: list[CompletionSource], now: datetime) -> list[di
     items: dict[CompletionKey, BacklogItem] = {}
     titles: dict[CompletionKey, str] = {}
     projects: dict[CompletionKey, str] = {}
-    completed: dict[tuple[CompletionKey, str, bool], tuple[float, str]] = {}
+    completed: dict[tuple[CompletionKey, str, int], tuple[float, str, bool]] = {}
     scopes: dict[int, list[HomeSnapshot]] = {}
 
     def key_for(source: HomeSnapshot, task: str, *, fleet: bool = False) -> CompletionKey:
@@ -3258,22 +3258,23 @@ def recap_completions(sources: list[CompletionSource], now: datetime) -> list[di
         return owner_keys[id(owner)], local_task
 
     def finish(key: CompletionKey, stamp: float, event: str, pr: str = "", *, day: bool = False) -> None:
-        candidate = (key, event, day)
+        if not start - 86400 < stamp <= end:
+            return
+        utc_day = int(stamp // 86400)
+        candidate = (key, event, utc_day)
         previous = completed.get(candidate)
-        in_window = stamp <= end and (stamp + 86400 > start if day else stamp >= start)
-        if in_window and (previous is None or stamp > previous[0]):
-            completed[candidate] = (stamp, pr)
+        if (utc_day + 1) * 86400 > start and (previous is None or (not day, stamp) > (not previous[2], previous[0])):
+            completed[candidate] = (stamp, pr, day)
 
     ledger = []
-    ledger_sources: dict[Path, dict[Path, list[HomeSnapshot]]] = {}
+    ledger_sources: dict[Path, list[HomeSnapshot]] = {}
     for source, records, feed_titles in sources:
         if id(source) not in scopes:
             family = all_snapshots([source])
             scopes.update((id(member), family) for member in family)
         assert source.spec.home is not None
         ledger_home = source.spec.home.resolve()
-        data = (source.data_dir or source.spec.data_dir or ledger_home / "data").resolve()
-        ledger_sources.setdefault(ledger_home, {}).setdefault(data, []).append(source)
+        ledger_sources.setdefault(ledger_home, []).append(source)
         ledger.extend((ledger_home, record) for record in records)
         for task, title in feed_titles.items():
             titles.setdefault(key_for(source, task, fleet=True), title)
@@ -3286,10 +3287,8 @@ def recap_completions(sources: list[CompletionSource], now: datetime) -> list[di
         if event not in {"task.dispatched", "task.merged"}:
             continue
         task = str(record["task"]).strip()
-        keys = set()
-        for aliases in ledger_sources[ledger_home].values():
-            resolved = {key_for(source, task, fleet=True) for source in aliases}
-            keys.update({key for key in resolved if key[1] != task} or resolved)
+        resolved = {key_for(source, task, fleet=True) for source in ledger_sources[ledger_home]}
+        keys = {key for key in resolved if key[1] != task} or resolved
         if len(keys) != 1:
             continue
         key = keys.pop()
@@ -3303,14 +3302,18 @@ def recap_completions(sources: list[CompletionSource], now: datetime) -> list[di
             key = key_for(source, item.id)
             items[key] = item
             if item.done:
+                state = normalized_state(item.attrs.get("state") or item.attrs.get("status") or item.state)
                 for field in ("merged", "done", "closed"):
                     value = item.attrs.get(field, "")
                     when = parse_when(value)
                     if when is not None:
-                        finish(key, when.timestamp(), "merged" if field == "merged" else "closed", day=is_date_only(value))
+                        event = "merged" if field == "merged" or state == "merged" else "closed"
+                        finish(key, when.timestamp(), event, day=is_date_only(value))
 
     by_owner: dict[CompletionOwner, list[dict[str, object]]] = {}
-    for (key, event, day), (stamp, pr) in completed.items():
+    for (key, event, _), (stamp, pr, day) in completed.items():
+        if not day and stamp < start:
+            continue
         owner_id, task = key
         item = items.get(key)
         by_owner.setdefault(owner_id, []).append({
@@ -10020,8 +10023,6 @@ def recap_html(groups: list[dict[str, object]]) -> str:
     items = recap_items(groups)
     if not items:
         return ""
-    merged = {item["key"] for item in items if item["event"] == "merged"}
-    shown = set()
     rows = []
     for item in items:
         pr = item.get("pr")
@@ -10036,19 +10037,15 @@ def recap_html(groups: list[dict[str, object]]) -> str:
         is_merge = item["event"] == "merged"
         merged_attr = ' data-merged="1"' if is_merge else ""
         verb = "Merged" if is_merge else "Closed"
-        key = item["key"]
-        hidden = key in shown or (key in merged and not is_merge)
-        if not hidden:
-            shown.add(key)
-        identity = html.escape(str(key), quote=True)
+        identity = html.escape(str(item["key"]), quote=True)
         rows.append(
             f'<li data-time="{timestamp}"{day} data-task="{identity}"'
-            f'{merged_attr}{" hidden" if hidden else ""}><span class="sent-line">{link}</span>'
+            f'{merged_attr}><span class="sent-line">{link}</span>'
             f'<span class="call-meta">{verb}{" · " + html.escape(where) if where else ""}'
             f' · {stamp}</span></li>')
     return (
-        '<section class="sent recap" id="recap" aria-labelledby="recap-h"><h2 id="recap-h">Finished since you last looked '
-        f'<span class="n" id="recap-n" data-n="{len(shown)}">{len(shown)}</span></h2>'
+        '<section class="sent recap" id="recap" aria-labelledby="recap-h" hidden><h2 id="recap-h">Finished since you last looked '
+        '<span class="n" id="recap-n" data-n="0">0</span></h2>'
         f'<ul class="sent-list" id="recap-list">{"".join(rows)}</ul></section>'
     )
 
@@ -10570,7 +10567,7 @@ def adoption_page_html(summary: dict[str, object], main_href: str = "index.html"
 {topic_lines}</section>
 {notes}
 <p class="note notice">Only tags are kept: the topic and whether Quarterdeck had the answer. Chat messages are never stored. Visits are logged on this machine with the time, the page and phone or desktop only.</p>
-</main></body></html>'''
+</main>{LAST_LOOK_SCRIPT}</body></html>'''
 
 
 def default_output_dir() -> Path:
