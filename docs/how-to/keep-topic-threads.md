@@ -23,6 +23,10 @@ on its card. Topics and Search are the other two tabs.
   opens, and the count and tab title drop by one. A card stays in Sent until Firstmate records the answer in the
   topic file, lifts the hold or removes the wait line; then it is gone. A held item that is held again with a new
   stamp comes back, and so does a wait Firstmate writes about after your answer (it still waits, and says why).
+- **Finished since you last looked** sits above Sent: work merged or closed in the last 48 hours, newest first, that
+  is newer than the last time you looked away from Quarterdeck on this device (the last 48 hours on a first visit). It
+  reads the same ledger and backlog as the rest of the page and is hidden when nothing finished. Use it to answer
+  "what happened while I was away" without asking Firstmate.
 - **Nothing is guessed away.** An unanswered call stays in **Your calls** whatever its age, the conversation after
   it, or the wording of its note, until it is answered or its record closes.
 - **Ask Firstmate**, on the served page, with **Goes to** (see below).

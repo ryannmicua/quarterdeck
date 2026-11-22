@@ -11837,6 +11837,30 @@ Recommend: Shared bucket
         self.assertNotIn("Which storage plan holds", queue)
         self.assertIn('<span class="call-line">Choose the storage plan', queue, "the similar wait stays open")
 
+    def test_calls_recap_lists_work_finished_in_the_last_two_days(self) -> None:
+        now = datetime(2026, 1, 10, 12, 0, tzinfo=timezone.utc)
+        merged = {"at": "2026-01-10T08:00:00Z", "task": "t-1", "title": "Ship <b>vendor</b> images", "project": "vendor",
+                  "pr": "https://example.invalid/pr/7"}
+        older = {"at": "2026-01-09T08:00:00Z", "task": "t-2", "title": "Older merge", "project": "vendor", "pr": None}
+        attention = {"homes": [{"label": "fictional", "errors": [], "complete": True, "recent_work": {"windows": [
+            {"merged": [merged]}, {"merged": []}, {"merged": [older]}]},
+            "done_recent": [{"event": "finished", "task": "t-3", "title": "Closed note", "project": "", "pr": "",
+                             "at": "2026-01-10T09:00:00Z", "home": "fictional"}]}]}
+        page = quarterdeck.recap_html(attention)
+        self.assertIn("Finished since you last looked", page)
+        self.assertIn('<a href="https://example.invalid/pr/7">Ship &lt;b&gt;vendor&lt;/b&gt; images</a>', page)
+        self.assertLess(page.index("Closed note"), page.index("Ship"), "newest first")
+        self.assertLess(page.index("Ship"), page.index("Older merge"))
+        self.assertIn("Merged · vendor", page)
+        self.assertIn("Finished", page)
+        self.assertEqual(quarterdeck.recap_html({"homes": []}), "")
+        self.assertEqual(quarterdeck.recap_html(None), "")
+        _config, homes, bearings = quarterdeck.load_site(self.args())
+        bearings.attention = attention
+        calls = quarterdeck.calls_page_html(homes, "Quarterdeck", bearings, [])
+        self.assertIn('id="recap-list"', calls)
+        self.assertIn("quarterdeck-left-at", calls)
+
     def test_unanswered_decisions_stay_in_calls_after_later_conversation(self) -> None:
         self.write_topic("vendor-images.md", """# Vendor images
 
