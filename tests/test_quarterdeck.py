@@ -11893,7 +11893,7 @@ Recommend: Shared bucket
             pages = quarterdeck.site_builder(args, True)()
         calls = pages["index.html"]
         recap = calls.split('id="recap-list">', 1)[1].split("</ul>", 1)[0]
-        self.assertEqual(recap.count("<li "), 21)
+        self.assertEqual(recap.count("<li "), 22)
         ordered = ("Overnight closure", "Child work 0", "Child work 1", "Closure with malformed ledger",
                    "Table merge", "older-merge", "boundary-merge")
         self.assertEqual(sorted(ordered, key=recap.index), list(ordered))
@@ -11910,8 +11910,8 @@ Recommend: Shared bucket
         self.assertNotIn("https://example.invalid/pr/8", recap)
         self.assertNotIn("https://example.invalid/pr/6", recap)
         winning_time = datetime(2026, 1, 9, 17, 45, tzinfo=timezone.utc).timestamp()
-        self.assertIn(f'data-time="{winning_time}"><span class="sent-line">'
-                      'Child work 0</span>', recap)
+        self.assertRegex(recap, rf'data-time="{re.escape(str(winning_time))}"[^>]*><span class="sent-line">'
+                                'Child work 0</span>')
         self.assertIn('<a href="https://example.invalid/pr/7">Child work 1</a></span>'
                       '<span class="call-meta">Merged · mate — Fictional notes. (South)', recap)
         for excluded in ("expired", "future", "released-hold", "answered-hold", "moot-hold"):
@@ -11931,8 +11931,8 @@ const storage = map => ({getItem: key => map.get(key), setItem: (key, value) => 
 function open(page, visibilityState = 'visible') {
   const session = new Map();
   const markup = page.match(/<section[^>]* id="recap"[^>]*>[\s\S]*?<\/section>/)?.[0];
-  const rows = [...(markup ?? '').matchAll(/<li data-time="([^"]+)"(?: data-day="(1)")?>([\s\S]*?)<\/li>/g)]
-    .map(([, time, day, html]) => ({dataset: {time, day}, html, hidden: false}));
+  const rows = [...(markup ?? '').matchAll(/<li data-time="([^"]+)"(?: data-day="(1)")? data-task="([^"]+)"(?: data-merged="(1)")?( hidden)?>([\s\S]*?)<\/li>/g)]
+    .map(([, time, day, task, merged, hidden, html]) => ({dataset: {time, day, task, merged}, html, hidden: Boolean(hidden)}));
   const badge = markup?.match(/id="recap-n" data-n="([^"]+)">([^<]*)/);
   const count = badge && {dataset: {n: badge[1]}, textContent: badge[2]};
   const recap = markup && {querySelectorAll: selector => selector === 'li' ? rows : [], hidden: false};
@@ -11965,6 +11965,17 @@ firstVisit.document.visibilityState = 'visible';
 firstVisit.fire('visibilitychange');
 assert.equal(firstVisit.rows.find(row => row.html.includes('boundary-merge')).hidden, true);
 assert.equal(firstVisit.count.dataset.n, '20');
+assert.equal(firstVisit.rows.filter(row => !row.hidden && row.html.includes('older-merge')).length, 1);
+assert.equal(firstVisit.rows.find(row => !row.hidden && row.html.includes('older-merge')).html.includes('pr/4'), true);
+now = builtAt - 26 * hour;
+open(thread).fire('pagehide');
+now = builtAt;
+const afterMerge = open(calls);
+const newlyClosed = afterMerge.rows.filter(row => !row.hidden && row.html.includes('older-merge'));
+assert.equal(newlyClosed.length, 1);
+assert.match(newlyClosed[0].html, /<span class="sent-line">older-merge<\/span><span class="call-meta">Closed/);
+assert.equal(afterMerge.count.dataset.n, '20');
+local.clear();
 now = builtAt - 25 * hour;
 const threadVisit = open(thread);
 now += hour;
@@ -12028,8 +12039,12 @@ local.clear();
 now = builtAt - 60 * hour;
 open(thread).fire('pagehide');
 now = builtAt + 23 * hour;
+const lateClosure = open(calls).rows.filter(row => !row.hidden && row.html.includes('older-merge'));
+assert.equal(lateClosure.length, 1);
+assert.match(lateClosure[0].html, /class="call-meta">Closed/);
+now = builtAt + 25 * hour;
 const stale = open(calls);
-assert.equal(stale.rows.find(row => row.html.includes('older-merge')).hidden, true);
+assert.equal(stale.rows.some(row => !row.hidden && row.html.includes('older-merge')), false);
 assert.equal(stale.rows.find(row => row.html.includes('Overnight closure')).hidden, false);
 
 (async () => {
@@ -12260,6 +12275,28 @@ What is the fallback for older displays?
         for label in ("North", "South"):
             self.assertIn(f'{label} publication</span><span class="call-meta">Closed · {label}', recap)
         self.assertNotIn("https://example.invalid/pr/5", recap)
+
+    def test_shared_ledger_uses_the_registered_route_when_one_view_lacks_it(self) -> None:
+        mate = AttentionTests().make_home(self.root / "mate", ledger="", script=False)
+        design = AttentionTests().make_home(self.root / "design", ledger="", script=False)
+        (design / "data" / "backlog.md").write_text("# Backlog\n\n- [ ] publish - Publish the design\n")
+        (self.home / "data" / "secondmates.md").write_text(f"- mate - Fictional mate. (home: {mate})\n")
+        (mate / "data" / "secondmates.md").write_text(f"- design - Fictional design. (home: {design})\n")
+        stamp = time.time() - 3600
+        (mate / quarterdeck.LEDGER_PATH).write_text("".join(json.dumps(record) + "\n" for record in (
+            {"v": 1, "ts": stamp - 600, "event": "task.dispatched", "task": "design/publish", "project": "Sketch"},
+            {"v": 1, "ts": stamp, "event": "task.merged", "task": "design/publish", "pr": "https://example.invalid/pr/9"},
+        )))
+        config = self.root / "quarterdeck.json"
+        config.write_text(json.dumps({"homes": [
+            {"label": "North", "path": str(self.home)}, {"label": "Mate", "path": str(mate)},
+        ]}))
+        args = argparse.Namespace(home=None, config=config, title=None, no_snapshot=True)
+        page = quarterdeck.site_builder(args)()["index.html"]
+        recap = page.split('id="recap-list">', 1)[1].split("</ul>", 1)[0]
+        self.assertEqual(recap.count("<li "), 1)
+        self.assertIn('<a href="https://example.invalid/pr/9">Publish the design</a></span>'
+                      '<span class="call-meta">Merged · Sketch', recap)
 
     @unittest.skipUnless(shutil.which("node"), "Node is required to execute the generated script")
     def test_call_delivery_preserves_words_and_retries_the_same_message(self) -> None:

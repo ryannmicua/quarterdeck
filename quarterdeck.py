@@ -3241,7 +3241,7 @@ def recap_completions(sources: list[CompletionSource], now: datetime) -> list[di
     items: dict[CompletionKey, BacklogItem] = {}
     titles: dict[CompletionKey, str] = {}
     projects: dict[CompletionKey, str] = {}
-    completed: dict[CompletionKey, tuple[float, str, str, bool]] = {}
+    completed: dict[tuple[CompletionKey, str, bool], tuple[float, str]] = {}
     scopes: dict[int, list[HomeSnapshot]] = {}
 
     def key_for(source: HomeSnapshot, task: str, *, fleet: bool = False) -> CompletionKey:
@@ -3252,26 +3252,28 @@ def recap_completions(sources: list[CompletionSource], now: datetime) -> list[di
             spec = owner.spec
             identity: CompletionOwner = (id(owner),)
             if spec.home is not None and not spec.remote_host and not spec.unavailable_reason:
-                identity = (spec.home.resolve(), (owner.data_dir or spec.home / "data").resolve())
+                identity = (spec.home.resolve(), (owner.data_dir or spec.data_dir or spec.home / "data").resolve())
             owner_keys[id(owner)] = identity
             owners.setdefault(identity, spec)
         return owner_keys[id(owner)], local_task
 
     def finish(key: CompletionKey, stamp: float, event: str, pr: str = "", *, day: bool = False) -> None:
-        previous = completed.get(key)
+        candidate = (key, event, day)
+        previous = completed.get(candidate)
         in_window = stamp <= end and (stamp + 86400 > start if day else stamp >= start)
-        if in_window and (previous is None or (event == "merged", stamp) > (previous[1] == "merged", previous[0])):
-            completed[key] = (stamp, event, pr, day)
+        if in_window and (previous is None or stamp > previous[0]):
+            completed[candidate] = (stamp, pr)
 
     ledger = []
-    ledger_sources: dict[Path, list[HomeSnapshot]] = {}
+    ledger_sources: dict[Path, dict[Path, list[HomeSnapshot]]] = {}
     for source, records, feed_titles in sources:
         if id(source) not in scopes:
             family = all_snapshots([source])
             scopes.update((id(member), family) for member in family)
         assert source.spec.home is not None
         ledger_home = source.spec.home.resolve()
-        ledger_sources.setdefault(ledger_home, []).append(source)
+        data = (source.data_dir or source.spec.data_dir or ledger_home / "data").resolve()
+        ledger_sources.setdefault(ledger_home, {}).setdefault(data, []).append(source)
         ledger.extend((ledger_home, record) for record in records)
         for task, title in feed_titles.items():
             titles.setdefault(key_for(source, task, fleet=True), title)
@@ -3283,7 +3285,11 @@ def recap_completions(sources: list[CompletionSource], now: datetime) -> list[di
         event, project, pr = record["event"], record.get("project"), record.get("pr")
         if event not in {"task.dispatched", "task.merged"}:
             continue
-        keys = {key_for(source, str(record["task"]), fleet=True) for source in ledger_sources[ledger_home]}
+        task = str(record["task"]).strip()
+        keys = set()
+        for aliases in ledger_sources[ledger_home].values():
+            resolved = {key_for(source, task, fleet=True) for source in aliases}
+            keys.update({key for key in resolved if key[1] != task} or resolved)
         if len(keys) != 1:
             continue
         key = keys.pop()
@@ -3304,7 +3310,7 @@ def recap_completions(sources: list[CompletionSource], now: datetime) -> list[di
                         finish(key, when.timestamp(), "merged" if field == "merged" else "closed", day=is_date_only(value))
 
     by_owner: dict[CompletionOwner, list[dict[str, object]]] = {}
-    for key, (stamp, event, pr, day) in completed.items():
+    for (key, event, day), (stamp, pr) in completed.items():
         owner_id, task = key
         item = items.get(key)
         by_owner.setdefault(owner_id, []).append({
@@ -9200,16 +9206,23 @@ LAST_LOOK_SCRIPT = """
         const recap = document.getElementById("recap");
         if (recap) {
           const floor = Date.now() - %(first)d * 3600000;
-          let shown = 0;
+          const shown = new Map();
           for (const item of recap.querySelectorAll("li")) {
             const time = Number(item.dataset.time) * 1000;
             const dayEnd = time + 86400000;
             item.hidden = item.dataset.day ? dayEnd <= from || dayEnd <= floor : time <= from || time < floor;
-            if (!item.hidden) shown += 1;
+            if (item.hidden) continue;
+            const previous = shown.get(item.dataset.task);
+            if (previous && (previous.dataset.merged || !item.dataset.merged)) {
+              item.hidden = true;
+            } else {
+              if (previous) previous.hidden = true;
+              shown.set(item.dataset.task, item);
+            }
           }
           const count = document.getElementById("recap-n");
-          count.textContent = count.dataset.n = String(shown);
-          recap.hidden = shown === 0;
+          count.textContent = count.dataset.n = String(shown.size);
+          recap.hidden = shown.size === 0;
         }
         let shown = 0;
         for (const item of document.querySelectorAll("#changed-list li")) {
@@ -9996,7 +10009,8 @@ def recap_items(groups: list[dict[str, object]]) -> list[dict[str, object]]:
     items = []
     for index, (name, group) in enumerate(zip(names, groups), 1):
         label = f"{name} · Home {index}" if names.count(name) > 1 else name
-        items.extend(dict(item, home=label if len(groups) > 1 else "") for item in group["items"])
+        items.extend(dict(item, home=label if len(groups) > 1 else "", key=f'{index}:{item["task"]}')
+                     for item in group["items"])
     return sorted(items, key=lambda item: float(item["time"]), reverse=True)  # type: ignore[arg-type]
 
 
@@ -10006,6 +10020,8 @@ def recap_html(groups: list[dict[str, object]]) -> str:
     items = recap_items(groups)
     if not items:
         return ""
+    merged = {item["key"] for item in items if item["event"] == "merged"}
+    shown = set()
     rows = []
     for item in items:
         pr = item.get("pr")
@@ -10017,14 +10033,22 @@ def recap_html(groups: list[dict[str, object]]) -> str:
         when = datetime.fromtimestamp(timestamp, timezone.utc)
         day = ' data-day="1"' if item["day"] else ""
         stamp = (f'<time datetime="{when.date()}">{when:%d %b %Y}</time>' if day else topic_stamp(when, "full"))
-        verb = "Merged" if item["event"] == "merged" else "Closed"
+        is_merge = item["event"] == "merged"
+        merged_attr = ' data-merged="1"' if is_merge else ""
+        verb = "Merged" if is_merge else "Closed"
+        key = item["key"]
+        hidden = key in shown or (key in merged and not is_merge)
+        if not hidden:
+            shown.add(key)
+        identity = html.escape(str(key), quote=True)
         rows.append(
-            f'<li data-time="{timestamp}"{day}><span class="sent-line">{link}</span>'
+            f'<li data-time="{timestamp}"{day} data-task="{identity}"'
+            f'{merged_attr}{" hidden" if hidden else ""}><span class="sent-line">{link}</span>'
             f'<span class="call-meta">{verb}{" · " + html.escape(where) if where else ""}'
             f' · {stamp}</span></li>')
     return (
         '<section class="sent recap" id="recap" aria-labelledby="recap-h"><h2 id="recap-h">Finished since you last looked '
-        f'<span class="n" id="recap-n" data-n="{len(items)}">{len(items)}</span></h2>'
+        f'<span class="n" id="recap-n" data-n="{len(shown)}">{len(shown)}</span></h2>'
         f'<ul class="sent-list" id="recap-list">{"".join(rows)}</ul></section>'
     )
 
