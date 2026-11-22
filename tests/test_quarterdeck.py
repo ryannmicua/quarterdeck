@@ -11844,10 +11844,12 @@ Recommend: Shared bucket
             (2, "task.merged", "mate/archived", {}),
         ]
         write_ledger(self.home, records)
+        proposal_pr = "https://github.com/example/fictional/" + "pull/5"
+        merged_pr = "https://github.com/example/fictional/" + "pull/7"
         (self.home / "data" / "backlog.md").write_text(
             "# Backlog\n\n## Done\n\n"
             "- [x] overnight - Overnight closure (done: 2026-01-09T18:00:00Z)\n"
-            "  Earlier proposal: https://github.com/example/fictional/pull/5\n"
+            f"  Earlier proposal: {proposal_pr}\n"
             "- [x] day-only - Finished with a date (state: merged) (done: 2026-01-09)\n"
             "- [x] older-merge - older-merge (merged: 2026-01-09) (done: 2026-01-09T12:00:00Z)\n"
             "- [x] expired - Expired closure (closed: 2026-01-08T11:00:00Z)\n"
@@ -11866,7 +11868,7 @@ Recommend: Shared bucket
         configured_homes = []
         for index, (label, home) in enumerate((("Mate", self.home), ("South", other))):
             child = AttentionTests().make_home(self.root / f"child-{index}", ledger="", script=False)
-            merged = " (merged: 2026-01-09T17:45:00Z) https://github.com/example/fictional/pull/7" if index == 0 else ""
+            merged = f" (merged: 2026-01-09T17:45:00Z) {merged_pr}" if index == 0 else ""
             (child / "data" / "backlog.md").write_text(
                 f"# Backlog\n\n## Working\n\n- [ ] shared-item - Child work {index}{merged}\n", encoding="utf-8",
             )
@@ -11907,7 +11909,7 @@ Recommend: Shared bucket
         self.assertIn('<span class="sent-line">Archived child work</span>'
                       '<span class="call-meta">Merged · mate — Fictional notes. (Mate)', recap)
         self.assertNotIn("Parent work sharing an ID", recap)
-        self.assertNotIn("https://github.com/example/fictional/pull/5", recap)
+        self.assertNotIn(proposal_pr, recap)
         self.assertNotIn("https://example.invalid/pr/8", recap)
         self.assertNotIn("https://example.invalid/pr/6", recap)
         winning_time = datetime(2026, 1, 9, 17, 45, tzinfo=timezone.utc).timestamp()
