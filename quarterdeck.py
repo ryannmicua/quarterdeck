@@ -2071,6 +2071,7 @@ class Bearings:
     linked_reports: set[Path] = field(default_factory=set)
     attention: dict[str, object] | None = None
     main_href: str = "index.html"
+    completions: list[dict[str, object]] = field(default_factory=list)
 
 
 HOLD_REASON_PREFIX = "fm-hold-v1:"
@@ -3236,9 +3237,7 @@ def recent_work(records: list[dict[str, object]] | None, snapshot: HomeSnapshot,
             "merged_count": len(merged), "started_count": len(started), "answered_count": answered,
             "merged": merged, "started": started,
         })
-    recap_start = end - RECAP_HOURS * 3600
-    bounded = [r for r in reversed(ordered) if recap_start <= float(r["ts"]) <= end]  # type: ignore[arg-type]
-    latest = [r for r in bounded if float(r["ts"]) >= end - RECENT_HOURS * 3600]  # type: ignore[arg-type]
+    latest = [r for r in reversed(ordered) if end - RECENT_HOURS * 3600 <= float(r["ts"]) <= end]  # type: ignore[arg-type]
     last_6h = [
         describe(r) | ({"event": "merged", "via": r.get("via") if isinstance(r.get("via"), str) else None}
                        if r["event"] == "task.merged" else
@@ -3256,25 +3255,94 @@ def recent_work(records: list[dict[str, object]] | None, snapshot: HomeSnapshot,
             "event": "merged" if event == "task.merged" else "closed" if mode == "reconciled" else "answered",
             "via": record.get("via"), "home": snapshot.spec.label,
         })
-    completed = {}
-    for record in bounded:
-        if record["event"] == "task.merged":
-            completed.setdefault(str(record["task"]), describe(record) | {"event": "merged", "time": record["ts"]})
     for task, item in items.items():
-        if not item.done:
+        if not item.done or task in done:
             continue
-        times = [when.timestamp() for name in ("merged", "done", "closed")
-                 if (when := parse_when(item.attrs.get(name, ""))) is not None]
-        if not times:
-            continue
-        details = {"task": task, "title": plain_title(item.title), "project": item.project, "pr": item.pr_url}
-        if task not in done and end - RECENT_HOURS * 3600 <= times[0] <= end:
-            done[task] = details | {"at": iso_seconds(times[0]), "event": "finished", "home": snapshot.spec.label}
-        closure = max((stamp for stamp in times if recap_start <= stamp <= end), default=None)
-        if closure is not None and (task not in completed or closure > completed[task]["time"]):
-            completed[task] = details | {"event": "closed", "time": closure}
+        when = next((parsed for name in ("merged", "done", "closed")
+                     if (parsed := parse_when(item.attrs.get(name, ""))) is not None), None)
+        if when is not None and end - RECENT_HOURS * 3600 <= when.timestamp() <= end:
+            done[task] = {
+                "task": task, "title": plain_title(item.title), "project": item.project, "pr": item.pr_url,
+                "at": iso_seconds(when.timestamp()), "event": "finished", "home": snapshot.spec.label,
+            }
     return {"ledger_starts_at": iso_seconds(starts) if starts is not None else None, "windows": windows,
-            "last_6h": last_6h, "done_recent": list(done.values()), "completed": list(completed.values())}
+            "last_6h": last_6h, "done_recent": list(done.values())}
+
+
+CompletionSource = tuple[HomeSnapshot, list[dict[str, object]], dict[str, str]]
+CompletionOwner = tuple[Path, Path] | tuple[int]
+CompletionKey = tuple[CompletionOwner, str]
+
+
+def recap_completions(sources: list[CompletionSource], now: datetime) -> list[dict[str, object]]:
+    end = now.timestamp()
+    start = end - RECAP_HOURS * 3600
+    owner_keys: dict[int, CompletionOwner] = {}
+    owners: dict[CompletionOwner, HomeSpec] = {}
+    items: dict[CompletionKey, BacklogItem] = {}
+    titles: dict[CompletionKey, str] = {}
+    projects: dict[CompletionKey, str] = {}
+    prs: dict[CompletionKey, str] = {}
+    completed: dict[CompletionKey, tuple[float, str, str]] = {}
+
+    def key_for(source: HomeSnapshot, task: str) -> CompletionKey:
+        owner, local_task = task_owner(source, task.strip())
+        if id(owner) not in owner_keys:
+            spec = owner.spec
+            identity: CompletionOwner = (id(owner),)
+            if spec.home is not None and not spec.remote_host and not spec.unavailable_reason:
+                identity = (spec.home.resolve(), (owner.data_dir or spec.home / "data").resolve())
+            owner_keys[id(owner)] = identity
+            owners.setdefault(identity, spec)
+        return owner_keys[id(owner)], local_task
+
+    def finish(key: CompletionKey, stamp: float, event: str, pr: str = "") -> None:
+        previous = completed.get(key)
+        if start <= stamp <= end and (previous is None or stamp > previous[0]
+                                      or (stamp == previous[0] and event == "merged" and previous[1] == "closed")):
+            completed[key] = (stamp, event, pr)
+
+    ledger = []
+    for source, records, feed_titles in sources:
+        ledger.extend((source, record) for record in records)
+        for task, title in feed_titles.items():
+            titles.setdefault(key_for(source, task), title)
+        for item in backlog_items(source.backlog_markdown or "", source):
+            key = key_for(source, item.id)
+            items[key] = item
+            if item.done:
+                for field in ("merged", "done", "closed"):
+                    when = parse_when(item.attrs.get(field, ""))
+                    if when is not None:
+                        finish(key, when.timestamp(), "merged" if field == "merged" else "closed")
+
+    for source, record in sorted(ledger, key=lambda entry: entry[1]["ts"]):
+        stamp = float(record["ts"])  # type: ignore[arg-type]
+        if stamp > end:
+            break
+        event, project, pr = record["event"], record.get("project"), record.get("pr")
+        if event not in {"task.dispatched", "task.pr_ready", "task.merged"}:
+            continue
+        key = key_for(source, str(record["task"]))
+        if event == "task.dispatched" and isinstance(project, str):
+            projects[key] = project
+        if event in {"task.pr_ready", "task.merged"} and isinstance(pr, str):
+            prs[key] = pr
+        if event == "task.merged":
+            finish(key, stamp, "merged", pr if isinstance(pr, str) else "")
+
+    by_owner: dict[CompletionOwner, list[dict[str, object]]] = {}
+    for key, (stamp, event, pr) in completed.items():
+        owner_id, task = key
+        item = items.get(key)
+        by_owner.setdefault(owner_id, []).append({
+            "task": task, "time": stamp, "event": event,
+            "title": plain_title((item.title if item else "") or titles.get(key, "")) or task,
+            "project": projects.get(key) or (item.project if item else ""),
+            "pr": pr or prs.get(key) or (item.pr_url if item else ""),
+        })
+    return [{"label": owners[key].label, "parent": owners[key].parent_label, "items": rows}
+            for key, rows in by_owner.items()]
 
 
 def decision_key(snapshot: HomeSnapshot, row: dict[str, object]) -> str:
@@ -3309,6 +3377,7 @@ def home_attention(
     snapshot: HomeSnapshot, now: datetime, all_decisions: bool = False,
     use_feed: bool = True, feed_runner: Callable[[Path, Path | None], dict[str, object]] = run_attention_feed,
     board_activity: dict[str, float] | None = None, projects_out: dict[str, str] | None = None,
+    completion_sources: list[CompletionSource] | None = None,
 ) -> dict[str, object]:
     spec = snapshot.spec
     since = now.timestamp() - DEFAULT_RECENT_DAYS * 86400
@@ -3316,7 +3385,6 @@ def home_attention(
     view: dict[str, object] = {
         "label": spec.label, "home": str(spec.home) if spec.home else None, "ok": True, "errors": errors,
         "ledger": None, "recent_work": None, "recent_work_6h": [], "done_recent": [], "show_recent": False,
-        "completions": [],
         "decision_relevance": {"recent_days": DEFAULT_RECENT_DAYS, "since": iso_seconds(since)}, "decisions": None,
     }
     if spec.home is None or spec.remote_host:
@@ -3362,22 +3430,21 @@ def home_attention(
         owner_spec = owner.spec
         if owner_spec.home is None or owner_spec.remote_host or owner_spec.unavailable_reason:
             continue
+        if owner is not snapshot and owner.error and completion_sources is None:
+            continue
         local_records = records or []
         if owner is not snapshot:
             try:
                 local_records = read_fleet_ledger(owner_spec.home / LEDGER_PATH) or []
             except AttentionSourceError as exc:
-                errors.append(exc.as_dict())
+                if not owner.error:
+                    errors.append(exc.as_dict())
                 local_records = []
-        work = recent_work(local_records, owner, feed_titles if owner is snapshot else {}, now)
-        completed = work.pop("completed")
-        if completed:
-            view["completions"].append({
-                "home": str(owner_spec.home.resolve()),
-                "data": str((owner.data_dir or owner_spec.home / "data").resolve()),
-                "label": owner_spec.label, "parent": owner_spec.parent_label, "items": completed,
-            })
+        titles = feed_titles if owner is snapshot else {}
+        if completion_sources is not None:
+            completion_sources.append((owner, local_records, titles))
         if owner is snapshot and ledger_ok:
+            work = recent_work(local_records, owner, titles, now)
             view["recent_work_6h"] = work.pop("last_6h")
             view["done_recent"] = work.pop("done_recent")
             view["show_recent"] = bool(view["recent_work_6h"])
@@ -3385,7 +3452,7 @@ def home_attention(
         if owner.error:
             continue
         if owner is not snapshot:
-            view["done_recent"].extend(work["done_recent"])
+            view["done_recent"].extend(recent_work(local_records, owner, titles, now)["done_recent"])
         normalized.extend(dict(record, task=task_key(owner, str(record["task"]), snapshots)) for record in local_records)
     if projects_out is not None:
         for owner in snapshots:
@@ -3737,11 +3804,16 @@ def attention_view(
     priority_projects: list[str] | None = None, project: str | None = None, show_more: bool = False,
     saved_views: tuple[list[dict[str, object]], str] | None = None, view_name: str | None = None, all_views: bool = False,
     waits: dict[str, dict[str, object]] | None = None,
+    completions_out: list[dict[str, object]] | None = None,
 ) -> dict[str, object]:
     now = now or datetime.now(timezone.utc)
     board_activity = board_engagement(homes)
     projects: dict[str, str] = {}
-    views = [home_attention(snapshot, now, True, use_feed, feed_runner, board_activity, projects) for snapshot in homes]
+    completion_sources: list[CompletionSource] | None = [] if completions_out is not None else None
+    views = [home_attention(snapshot, now, True, use_feed, feed_runner, board_activity, projects, completion_sources)
+             for snapshot in homes]
+    if completions_out is not None and completion_sources is not None:
+        completions_out.extend(recap_completions(completion_sources, now))
     shared = {"schema": ATTENTION_SCHEMA, "generated": iso_seconds(now.timestamp()), "homes": views}
     decisions = decision_rows(homes, shared)
     board = board_view(homes, now, fallback=True, decisions=decisions)
@@ -8627,6 +8699,7 @@ TOPIC_ASK_SCRIPT = """
         try { sessionStorage.setItem(SCROLL, String(window.scrollY)); } catch (error) { /* reloads at the top */ }
         const next = new URL(location.href);
         next.searchParams.set("qd_refresh", "1");
+        document.body.dataset.qdRefreshing = "1";
         location.replace(next.href);
       }
       if (every > 0) {
@@ -9142,6 +9215,12 @@ LAST_LOOK_SCRIPT = """
         }
         try { sessionStorage.removeItem(HIDDEN); } catch (_) {}
       }
+      function depart() {
+        if (document.body.dataset.qdRefreshing || read(sessionStorage, HIDDEN)) return;
+        const left = Date.now();
+        write(sessionStorage, HIDDEN, left);
+        write(localStorage, LEFT, left);
+      }
       function show() {
         const recap = document.getElementById("recap");
         if (recap) {
@@ -9172,15 +9251,13 @@ LAST_LOOK_SCRIPT = """
       }
       rebase();
       show();
-      addEventListener("pagehide", () => write(localStorage, LEFT, Date.now()));
+      addEventListener("pagehide", depart);
       addEventListener("pageshow", event => {
         if (event.persisted) { rebase(); show(); }
       });
       document.addEventListener("visibilitychange", () => {
-        if (document.visibilityState === "hidden") {
-          write(localStorage, LEFT, Date.now());
-          write(sessionStorage, HIDDEN, Date.now());
-        } else {
+        if (document.visibilityState === "hidden") depart();
+        else {
           rebase();
           show();
         }
@@ -9934,36 +10011,21 @@ def calls_script() -> str:
             .replace("%(done)s", CALL_DONE_PREFIX))
 
 
-def recap_items(attention: dict[str, object] | None) -> list[dict[str, object]]:
-    owners: dict[tuple[str, str], tuple[str, str | None]] = {}
-    found: dict[tuple[tuple[str, str], str], dict[str, object]] = {}
-    for home in (attention or {}).get("homes", []):
-        for group in home.get("completions", []):
-            owner = (group["home"], group["data"])
-            owners.setdefault(owner, (group["label"], group["parent"]))
-            for item in group["items"]:
-                key = (owner, item["task"])
-                if key not in found or item["time"] > found[key]["time"]:
-                    found[key] = item
-
-    labels = [label for label, _ in owners.values()]
-    names = {
-        owner: f"{label} ({parent})" if labels.count(label) > 1 and parent else label
-        for owner, (label, parent) in owners.items()
-    }
-    duplicates = [name for name in names.values()]
-    for index, (owner, name) in enumerate(names.items(), 1):
-        if duplicates.count(name) > 1:
-            names[owner] = f"{name} · Home {index}"
-
-    items = [dict(item, home=names[owner] if len(owners) > 1 else "") for (owner, _), item in found.items()]
+def recap_items(groups: list[dict[str, object]]) -> list[dict[str, object]]:
+    labels = [str(group["label"]) for group in groups]
+    names = [f'{label} ({group["parent"]})' if labels.count(label) > 1 and group["parent"] else label
+             for label, group in zip(labels, groups)]
+    items = []
+    for index, (name, group) in enumerate(zip(names, groups), 1):
+        label = f"{name} · Home {index}" if names.count(name) > 1 else name
+        items.extend(dict(item, home=label if len(groups) > 1 else "") for item in group["items"])
     return sorted(items, key=lambda item: float(item["time"]), reverse=True)  # type: ignore[arg-type]
 
 
-def recap_html(attention: dict[str, object] | None) -> str:
+def recap_html(groups: list[dict[str, object]]) -> str:
     """The Calls side column's "Finished since you last looked": a row per finished piece of work, with the script
     hiding what is older than the last look. Shown only when something finished in the last 48 hours."""
-    items = recap_items(attention)
+    items = recap_items(groups)
     if not items:
         return ""
     rows = []
@@ -10021,7 +10083,7 @@ def calls_page_html(homes: list[HomeSnapshot], title: str, bearings: Bearings, c
     more = (f'<p class="more">The <a href="{PREVIOUS_PAGE}">previous view</a> stays available for this release.</p>')
     body = (
         tabs_html(calls_href, title, calls_href)
-        + f'<main class="calls-page">{stamp}{queue_html}<aside class="calls-side">{recap_html(attention)}{sent_html}{ask}</aside>{more}</main>'
+        + f'<main class="calls-page">{stamp}{queue_html}<aside class="calls-side">{recap_html(bearings.completions)}{sent_html}{ask}</aside>{more}</main>'
     )
     scripts = (topic_ask_script() + calls_script()) if allow_marks else calls_script()
     if serve_push:
@@ -13334,7 +13396,7 @@ def load_site(args: argparse.Namespace, main_href: str = "index.html") -> tuple[
     bearings.attention = attention_view(
         homes, bearings.generated, all_decisions=True, use_feed=use_snapshot,
         priority_projects=list(document.get("priority_projects", [])),  # type: ignore[call-overload]
-        saved_views=effective_views(document), all_views=True, waits=waits,
+        saved_views=effective_views(document), all_views=True, waits=waits, completions_out=bearings.completions,
     )
     if waits_error:
         bearings.attention["waits_error"] = waits_error

@@ -5883,6 +5883,7 @@ class AttentionTests(unittest.TestCase):
             self.assertEqual(result.returncode, 0, result.stderr)
             data = json.loads(result.stdout)
             self.assertEqual(data["homes"][0]["decision_relevance"]["recent_days"], 3)
+            self.assertNotIn("completions", data["homes"][0])
             self.assertIsInstance(data["homes"][0]["decisions"]["background"], list)
             self.assertEqual(self.run_cli("--home", str(home)).returncode, 2)
             self.assertEqual(self.run_cli("--json", "--recent-days", "0", "--home", str(home)).returncode, 2)
@@ -11857,6 +11858,8 @@ Recommend: Shared bucket
             (1, "captain.answered", "answered-hold", {"mode": "done"}),
             (1, "captain.answered", "moot-hold", {"mode": "reconciled"}),
             (1, "captain.answered", "older-merge", {"mode": "reconciled"}),
+            (25, "task.dispatched", "mate/shared-item", {"project": "sketch"}),
+            (19, "task.merged", "mate/shared-item", {"pr": "https://example.invalid/pr/7"}),
         ]
         write_ledger(self.home, records)
         (self.home / "data" / "backlog.md").write_text(
@@ -11868,43 +11871,57 @@ Recommend: Shared bucket
         other = AttentionTests().make_home(self.root / "other", ledger='{"v":99}\n', script=False)
         (other / "data" / "backlog.md").write_text(
             "# Backlog\n\n## Done\n\n"
-            "- [x] broken-ledger - Closure with malformed ledger (closed: 2026-01-09T16:00:00Z)\n",
+            "- [x] broken-ledger - Closure with malformed ledger (closed: 2026-01-09T16:00:00Z)\n\n"
+            "| ID | Task | State | Merged |\n"
+            "| --- | --- | --- | --- |\n"
+            "| table-merge | Table merge | working | 2026-01-09T15:00:00Z |\n",
             encoding="utf-8",
         )
-        snapshots = []
+        configured_homes = []
         for index, (label, home) in enumerate((("North", self.home), ("South", other))):
             child = AttentionTests().make_home(self.root / f"child-{index}", ledger="", script=False)
+            merged = " (merged: 2026-01-09T17:45:00Z)" if index == 0 else ""
             (child / "data" / "backlog.md").write_text(
-                f"# Backlog\n\n## Working\n\n- [ ] shared-item - Child work {index}\n", encoding="utf-8",
+                f"# Backlog\n\n## Working\n\n- [ ] shared-item - Child work {index}{merged}\n", encoding="utf-8",
             )
-            write_ledger(child, [(18.5 + index, "task.merged", "shared-item", {"pr": "https://example.invalid/pr/7"})])
+            if index == 1:
+                write_ledger(child, [(19.5, "task.merged", "shared-item", {"pr": "https://example.invalid/pr/7"})])
             (home / "data" / "secondmates.md").write_text(
                 f"- mate - Fictional notes. (home: {child}; projects: notes; added 2026-01-04)\n", encoding="utf-8",
             )
-            snapshots.append(quarterdeck.load_home_snapshot(quarterdeck.HomeSpec(label, home), discover_secondmates=True))
-        bearings = quarterdeck.build_bearings(snapshots, now, use_snapshot=False)
-        bearings.attention = quarterdeck.attention_view(snapshots, now, use_feed=False)
-        calls = quarterdeck.calls_page_html(snapshots, "Quarterdeck", bearings, [])
+            configured_homes.append({"label": label, "path": str(home)})
+        config = self.root / "quarterdeck.json"
+        config.write_text(json.dumps({"homes": configured_homes}), encoding="utf-8")
+        args = argparse.Namespace(home=None, config=config, title=None, no_snapshot=True)
+        build_bearings = quarterdeck.build_bearings
+        with patch.object(quarterdeck, "build_bearings", side_effect=lambda homes, **kwargs: build_bearings(homes, now, **kwargs)):
+            pages = quarterdeck.site_builder(args, True)()
+        calls = pages["index.html"]
         recap = calls.split('id="recap-list">', 1)[1].split("</ul>", 1)[0]
-        self.assertEqual(recap.count("<li "), 18)
+        self.assertEqual(recap.count("<li "), 19)
         ordered = ("Overnight closure", "Child work 0", "Child work 1", "Closure with malformed ledger",
-                   "older-merge", "boundary-merge")
+                   "Table merge", "older-merge", "boundary-merge")
         self.assertEqual(sorted(ordered, key=recap.index), list(ordered))
         self.assertRegex(recap, r'Overnight closure</span><span class="call-meta">Closed · North')
         self.assertRegex(recap, r'older-merge</span><span class="call-meta">Merged · North')
+        self.assertRegex(recap, r'Table merge</span><span class="call-meta">Merged · South')
+        self.assertIn("Merged · mate — Fictional notes. (North) · sketch", recap)
+        winning_time = datetime(2026, 1, 9, 17, 45, tzinfo=timezone.utc).timestamp()
+        self.assertIn(f'data-time="{winning_time}"><span class="sent-line">'
+                      '<a href="https://example.invalid/pr/7">Child work 0</a>', recap)
         for index, label in enumerate(("North", "South")):
             self.assertIn(f'<a href="https://example.invalid/pr/7">Child work {index}</a></span>'
                           f'<span class="call-meta">Merged · mate — Fictional notes. ({label})', recap)
         for excluded in ("expired", "future", "released-hold", "answered-hold", "moot-hold"):
             self.assertNotIn(excluded, recap)
 
-        thread = quarterdeck.topic_pages(snapshots, bearings, {})["topic-maple-harbor-catalog.html"]
+        thread = pages["topic-maple-harbor-catalog.html"]
         harness = r"""
 const assert = require('node:assert/strict');
 const vm = require('node:vm');
 const {calls, thread, builtAt} = JSON.parse(require('node:fs').readFileSync(0, 'utf8'));
 const hour = 3600000;
-let now = builtAt - 25 * hour;
+let now = builtAt;
 const local = new Map();
 const storage = map => ({getItem: key => map.get(key), setItem: (key, value) => map.set(key, value),
                         removeItem: key => map.delete(key)});
@@ -11916,35 +11933,53 @@ function open(page, session = new Map()) {
   const count = badge && {dataset: {n: badge[1]}, textContent: badge[2]};
   const recap = markup && {querySelectorAll: selector => selector === 'li' ? rows : [], hidden: false};
   const listeners = {};
-  const document = {visibilityState: 'visible', querySelectorAll: () => [],
+  const timers = [], replacements = [];
+  const addEventListener = (event, fn) => (listeners[event] ??= []).push(fn);
+  const document = {visibilityState: 'visible', get hidden() { return this.visibilityState === 'hidden'; },
+    body: {dataset: {refresh: page.match(/<body data-refresh="(\d+)"/)?.[1]}},
+    querySelectorAll: () => [], querySelector: () => null,
     getElementById: id => ({recap, 'recap-n': count})[id] ?? null,
-    addEventListener: (event, fn) => { listeners[event] = fn; }};
+    addEventListener};
   class Clock extends Date { static now() { return now; } }
   const context = vm.createContext({document, Date: Clock, localStorage: storage(local), sessionStorage: storage(session),
-    location: {hash: ''}, addEventListener: document.addEventListener});
+    URL, location: {href: 'http://localhost/', hash: '', replace: href => replacements.push(href)}, window: {scrollY: 0},
+    addEventListener, setInterval: fn => timers.push(fn)});
   for (const [, script] of page.matchAll(/<script>([\s\S]*?)<\/script>/g)) vm.runInContext(script, context);
-  return {document, listeners, rows, count, recap};
+  return {document, fire: event => listeners[event]?.forEach(fn => fn()), rows, count, recap, timers, replacements};
 }
-now = builtAt;
 const firstVisit = open(calls);
 assert.equal(firstVisit.rows.find(row => row.html.includes('boundary-merge')).hidden, true);
-assert.equal(firstVisit.count.dataset.n, '17');
+assert.equal(firstVisit.count.dataset.n, '18');
 now = builtAt - 25 * hour;
 const threadVisit = open(thread);
 now += hour;
-threadVisit.listeners.pagehide?.();
+threadVisit.document.visibilityState = 'hidden';
+threadVisit.fire('visibilitychange');
+now = builtAt - 17 * hour;
+threadVisit.fire('pagehide');
+const afterClose = open(calls);
+assert.equal(afterClose.rows.find(row => row.html.includes('Overnight closure')).hidden, false,
+             'closing a hidden thread preserves when the reader left it');
+assert.equal(afterClose.rows.find(row => row.html.includes('older-merge')).hidden, true);
+const refreshing = open(thread);
+now = builtAt - 16 * hour;
+refreshing.timers[0]();
+assert.equal(new URL(refreshing.replacements[0]).searchParams.get('qd_refresh'), '1');
+refreshing.fire('pagehide');
+refreshing.document.visibilityState = 'hidden';
+refreshing.fire('visibilitychange');
 now = builtAt;
 const visit = open(calls);
 assert.equal(visit.rows.find(row => row.html.includes('Overnight closure')).hidden, false);
 assert.equal(visit.rows.find(row => row.html.includes('older-merge')).hidden, true);
 assert.equal(visit.recap.hidden, false);
-assert.equal(visit.count.textContent, '16');
-assert.equal(visit.count.dataset.n, '16');
+assert.equal(visit.count.textContent, '17');
+assert.equal(visit.count.dataset.n, '17');
 visit.document.visibilityState = 'hidden';
-visit.listeners.visibilitychange();
+visit.fire('visibilitychange');
 now += 3 * 60000;
 visit.document.visibilityState = 'visible';
-visit.listeners.visibilitychange();
+visit.fire('visibilitychange');
 assert.equal(visit.rows.every(row => row.hidden), true);
 assert.equal(visit.recap.hidden, true);
 assert.equal(visit.count.textContent, '0');
