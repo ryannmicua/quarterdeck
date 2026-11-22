@@ -181,18 +181,14 @@ parent is a direct child of the configured data directory; symlinks escaping the
 report directory are refused. The [CLI reference](../reference/cli-and-config.md) documents its
 output path, report IDs, and collision handling.
 
-Referenced activity-card HTML is copied as written, including scripts, plus one
-inline-styled navigation bar and a spacer with a script that reserves the bar's
-measured height. These are inserted before the last closing `</body>`, or appended
-when there is no closing body tag. For navigation and opening the original file,
-see [the activity-card guide](../how-to/watch-activity-cards.md#open-the-documents-a-card-names).
-Original-file copies use `raw-*.html`, or `raw-*.txt` for Markdown, and receive the
-same sandbox header as the document pages.
-When served by `quarterdeck serve`,
-document pages receive `Content-Security-Policy: sandbox allow-scripts allow-popups`:
-scripts may run, but without the serving origin's storage or access to its write
-endpoints. This HTTP header does not apply to files opened directly from a
-rendered snapshot.
+Quarterdeck displays linked documents in its own navigation wrapper so they
+share the site's last-look clock. It renders Markdown as escaped HTML and
+displays original HTML in a sandboxed frame. Original-file copies use
+`raw-*.html` or `raw-*.txt` and receive
+`Content-Security-Policy: sandbox allow-scripts allow-popups` when served.
+The sandbox isolates scripts from Quarterdeck's origin, storage and write
+endpoints. The frame's sandbox also applies in rendered snapshots. See the
+[activity-card guide](../how-to/watch-activity-cards.md#open-the-documents-a-card-names).
 
 Review marks, discards, relevance and relations are stored separately from
 rendered pages in a SQLite database at

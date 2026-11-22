@@ -699,50 +699,6 @@ def display_path(path: Path, home: Path) -> str:
         return str(path)
 
 
-NAV_LINK_STYLE = (
-    "display:inline-block;padding:.85rem 1rem;color:#f6f4ef;font:600 15px/1.2 system-ui,sans-serif;"
-    "text-decoration:underline;background:none;border:0;margin:0"
-)
-
-
-def qd_nav_html(raw_href: str | None, fixed: bool, main_href: str = "index.html") -> str:
-    """The small bar every served document page carries: back to Quarterdeck, and the file by itself when raw_href.
-
-    Inline styles keep the bar's presentation local without adding stylesheet rules to the document.
-    A fixed bar reserves its measured height at the end of the document.
-    """
-    where = (
-        "position:fixed;left:0;right:0;bottom:0;z-index:2147483647;padding-bottom:env(safe-area-inset-bottom);"
-        if fixed else "position:relative;"
-    )
-    raw = f'<a href="{html.escape(raw_href, quote=True)}" style="{NAV_LINK_STYLE}">Open file by itself</a>' if raw_href else ""
-    bar = (
-        f'<nav id="qd-nav" aria-label="Quarterdeck" style="{where}display:flex;flex-wrap:wrap;justify-content:space-between;'
-        'box-sizing:border-box;background:#1a2129;margin:0;border-top:1px solid #d6d0c4;">'
-        f'<a href="{html.escape(main_href, quote=True)}" style="{NAV_LINK_STYLE}">Back to Quarterdeck</a>{raw}</nav>'
-    )
-    if fixed:
-        bar += '''<div id="qd-nav-space" aria-hidden="true" style="height:6rem;flex-shrink:0;clear:both"></div>
-<script>(() => {
-const nav = document.getElementById('qd-nav');
-const space = document.getElementById('qd-nav-space');
-const reserve = () => { space.style.height = nav.getBoundingClientRect().height + 'px'; };
-reserve();
-new ResizeObserver(reserve).observe(nav);
-})();</script>'''
-    return bar
-
-
-def inject_nav(page: str, raw_href: str, main_href: str = "index.html") -> str:
-    """Add the bar to an HTML document just before its closing body tag (or at its end), leaving the rest untouched."""
-    bar = qd_nav_html(raw_href, fixed=True, main_href=main_href)
-    closing = list(re.finditer(r"</body\s*>", page, re.IGNORECASE))
-    if closing:
-        at = closing[-1].start()
-        return page[:at] + bar + page[at:]
-    return page + bar
-
-
 def count_badge(count: int, css: str = "count") -> str:
     """A count beside a heading. The style hides it at 0 or 1: at 0 the section says it is empty, at 1 the one item
     shows. It stays in the markup so the page's scripts can keep counting down."""
@@ -2074,6 +2030,7 @@ class Bearings:
     attention: dict[str, object] | None = None
     main_href: str = "index.html"
     completions: list[dict[str, object]] = field(default_factory=list)
+    topic_pages: list[tuple[HomeSnapshot, Topic]] = field(default_factory=list)
 
 
 HOLD_REASON_PREFIX = "fm-hold-v1:"
@@ -3284,11 +3241,11 @@ def recap_completions(sources: list[CompletionSource], now: datetime) -> list[di
     items: dict[CompletionKey, BacklogItem] = {}
     titles: dict[CompletionKey, str] = {}
     projects: dict[CompletionKey, str] = {}
-    completed: dict[CompletionKey, tuple[float, str, str]] = {}
+    completed: dict[CompletionKey, tuple[float, str, str, bool]] = {}
     scopes: dict[int, list[HomeSnapshot]] = {}
 
-    def key_for(source: HomeSnapshot, task: str, *, from_ledger: bool = False) -> CompletionKey:
-        owner, local_task = task_owner(source, task.strip()) if from_ledger else (source, task)
+    def key_for(source: HomeSnapshot, task: str, *, fleet: bool = False) -> CompletionKey:
+        owner, local_task = task_owner(source, task.strip()) if fleet else (source, task)
         if owner is source:
             owner, local_task = task_reference_owner(source, task, scopes[id(source)])
         if id(owner) not in owner_keys:
@@ -3300,29 +3257,36 @@ def recap_completions(sources: list[CompletionSource], now: datetime) -> list[di
             owners.setdefault(identity, spec)
         return owner_keys[id(owner)], local_task
 
-    def finish(key: CompletionKey, stamp: float, event: str, pr: str = "") -> None:
+    def finish(key: CompletionKey, stamp: float, event: str, pr: str = "", *, day: bool = False) -> None:
         previous = completed.get(key)
-        if start <= stamp <= end and (previous is None or stamp > previous[0]
-                                      or (stamp == previous[0] and event == "merged" and previous[1] == "closed")):
-            completed[key] = (stamp, event, pr)
+        in_window = stamp <= end and (stamp + 86400 > start if day else stamp >= start)
+        if in_window and (previous is None or (event == "merged", stamp) > (previous[1] == "merged", previous[0])):
+            completed[key] = (stamp, event, pr, day)
 
     ledger = []
+    ledger_sources: dict[Path, list[HomeSnapshot]] = {}
     for source, records, feed_titles in sources:
         if id(source) not in scopes:
             family = all_snapshots([source])
             scopes.update((id(member), family) for member in family)
-        ledger.extend((source, record) for record in records)
+        assert source.spec.home is not None
+        ledger_home = source.spec.home.resolve()
+        ledger_sources.setdefault(ledger_home, []).append(source)
+        ledger.extend((ledger_home, record) for record in records)
         for task, title in feed_titles.items():
-            titles.setdefault(key_for(source, task), title)
+            titles.setdefault(key_for(source, task, fleet=True), title)
 
-    for source, record in sorted(ledger, key=lambda entry: entry[1]["ts"]):
+    for ledger_home, record in sorted(ledger, key=lambda entry: entry[1]["ts"]):
         stamp = float(record["ts"])  # type: ignore[arg-type]
         if stamp > end:
             break
         event, project, pr = record["event"], record.get("project"), record.get("pr")
         if event not in {"task.dispatched", "task.merged"}:
             continue
-        key = key_for(source, str(record["task"]), from_ledger=True)
+        keys = {key_for(source, str(record["task"]), fleet=True) for source in ledger_sources[ledger_home]}
+        if len(keys) != 1:
+            continue
+        key = keys.pop()
         if event == "task.dispatched" and isinstance(project, str):
             projects[key] = project
         if event == "task.merged":
@@ -3334,16 +3298,17 @@ def recap_completions(sources: list[CompletionSource], now: datetime) -> list[di
             items[key] = item
             if item.done:
                 for field in ("merged", "done", "closed"):
-                    when = parse_when(item.attrs.get(field, ""))
+                    value = item.attrs.get(field, "")
+                    when = parse_when(value)
                     if when is not None:
-                        finish(key, when.timestamp(), "merged" if field == "merged" else "closed")
+                        finish(key, when.timestamp(), "merged" if field == "merged" else "closed", day=is_date_only(value))
 
     by_owner: dict[CompletionOwner, list[dict[str, object]]] = {}
-    for key, (stamp, event, pr) in completed.items():
+    for key, (stamp, event, pr, day) in completed.items():
         owner_id, task = key
         item = items.get(key)
         by_owner.setdefault(owner_id, []).append({
-            "task": task, "time": stamp, "event": event,
+            "task": task, "time": stamp, "event": event, "day": day,
             "title": plain_title((item.title if item else "") or titles.get(key, "")) or task,
             "project": projects.get(key) or (item.project if item else ""),
             "pr": pr,
@@ -6018,7 +5983,7 @@ def site_builder(
         config, homes, bearings = load_site(args, include_calls=True)
         configured_title = config.get("page_title")
         title = args.title or (configured_title if isinstance(configured_title, str) else None) or DEFAULT_TITLE
-        found = assign_topic_pages(homes)
+        found = bearings.topic_pages
         previous = build_html(
             homes, title, bearings=bearings, refresh_seconds=DEFAULT_REFRESH_SECONDS, allow_marks=allow_marks,
             push_enabled=push is not None, front_href="index.html" if found else None,
@@ -6759,7 +6724,7 @@ def make_handler(
                     print(f"quarterdeck: could not log the visit: {exc}", file=sys.stderr, flush=True)
             kind = "json" if name.endswith(".json") else "plain" if name.endswith(".txt") else "html"
             self.send_text(200, pages[name], f"{'application' if kind == 'json' else 'text'}/{kind}; charset=utf-8",
-                           sandbox=name.startswith((DOC_PREFIX, RAW_PREFIX)))
+                           sandbox=name.startswith(RAW_PREFIX))
 
         def route_path(self, path: str) -> str | None:
             """The routed path, or None after redirecting beneath the configured prefix."""
@@ -9217,9 +9182,9 @@ LAST_LOOK_SCRIPT = """
           from = read(localStorage, LEFT) || Date.now() - %(first)d * 3600000;
           write(sessionStorage, BASE, from);
         }
-        const hidden = read(sessionStorage, HIDDEN);
-        if (hidden > from && Date.now() - hidden > AWAY_MS) {
-          from = hidden;
+        const hidden = read(sessionStorage, HIDDEN), left = read(localStorage, LEFT);
+        if (hidden && (left > hidden || Date.now() - hidden > AWAY_MS)) {
+          from = Math.max(from, hidden, left);
           write(sessionStorage, BASE, from);
         }
         try { sessionStorage.removeItem(HIDDEN); } catch (_) {}
@@ -9234,9 +9199,12 @@ LAST_LOOK_SCRIPT = """
         if (!from) return;
         const recap = document.getElementById("recap");
         if (recap) {
+          const floor = Date.now() - %(first)d * 3600000;
           let shown = 0;
           for (const item of recap.querySelectorAll("li")) {
-            item.hidden = Number(item.dataset.time) * 1000 <= from;
+            const time = Number(item.dataset.time) * 1000;
+            const dayEnd = time + 86400000;
+            item.hidden = item.dataset.day ? dayEnd <= from || dayEnd <= floor : time <= from || time < floor;
             if (!item.hidden) shown += 1;
           }
           const count = document.getElementById("recap-n");
@@ -10047,11 +10015,13 @@ def recap_html(groups: list[dict[str, object]]) -> str:
         where = " · ".join(part for part in (str(item["home"]), str(item.get("project") or "")) if part)
         timestamp = float(item["time"])  # type: ignore[arg-type]
         when = datetime.fromtimestamp(timestamp, timezone.utc)
+        day = ' data-day="1"' if item["day"] else ""
+        stamp = (f'<time datetime="{when.date()}">{when:%d %b %Y}</time>' if day else topic_stamp(when, "full"))
         verb = "Merged" if item["event"] == "merged" else "Closed"
         rows.append(
-            f'<li data-time="{timestamp}"><span class="sent-line">{link}</span>'
+            f'<li data-time="{timestamp}"{day}><span class="sent-line">{link}</span>'
             f'<span class="call-meta">{verb}{" · " + html.escape(where) if where else ""}'
-            f' · {topic_stamp(when, "full")}</span></li>')
+            f' · {stamp}</span></li>')
     return (
         '<section class="sent recap" id="recap" aria-labelledby="recap-h"><h2 id="recap-h">Finished since you last looked '
         f'<span class="n" id="recap-n" data-n="{len(items)}">{len(items)}</span></h2>'
@@ -12438,10 +12408,13 @@ def doc_page(path: Path, label: str, raw_name: str, main_href: str = "index.html
         text = path.read_text(encoding="utf-8")
     except (OSError, UnicodeError):
         return None
-    if path.suffix == ".html":
-        return inject_nav(text, raw_name, main_href), text
     try:
-        return source_page_html(label, f"data/{label}", text, raw_name, main_href), text
+        frame = (
+            f'<iframe src="{html.escape(raw_name, quote=True)}" sandbox="allow-scripts allow-popups" '
+            f'title="{html.escape(label, quote=True)}" style="width:100%;height:80vh;border:1px solid #d8d3c8;'
+            'border-radius:12px;background:#fff"></iframe>'
+        ) if path.suffix == ".html" else None
+        return source_page_html(label, f"data/{label}", text, raw_name, main_href, body_html=frame), text
     except ValueError:
         return None
 
@@ -13398,6 +13371,8 @@ def load_site(args: argparse.Namespace, main_href: str = "index.html", *,
     apply_review_marks(homes, load_review_state(state_path))
     use_snapshot = not getattr(args, "no_snapshot", False)
     bearings = build_bearings(homes, use_snapshot=use_snapshot, main_href=main_href)
+    if include_calls:
+        bearings.topic_pages = assign_topic_pages(homes)
     try:
         document = read_preferences(preferences_path(args))
     except ValueError:
@@ -13408,9 +13383,7 @@ def load_site(args: argparse.Namespace, main_href: str = "index.html", *,
         homes, bearings.generated, all_decisions=True, use_feed=use_snapshot,
         priority_projects=list(document.get("priority_projects", [])),  # type: ignore[call-overload]
         saved_views=effective_views(document), all_views=True, waits=waits,
-        completions_out=bearings.completions if include_calls and any(
-            TOPIC_ID_RE.fullmatch(topic.topic_id) for snapshot in all_snapshots(homes) for topic in snapshot.topics
-        ) else None,
+        completions_out=bearings.completions if bearings.topic_pages else None,
     )
     if waits_error:
         bearings.attention["waits_error"] = waits_error
@@ -13435,7 +13408,7 @@ def render(args: argparse.Namespace) -> int:
         output_path = output_path.resolve()
         validate_output_path(output_path, homes)
         output_path.parent.mkdir(parents=True, exist_ok=True)
-        front = bool(assign_topic_pages(homes)) and not args.lavish and not args.all
+        front = bool(bearings.topic_pages)
         index = build_html(homes, title, lavish=args.lavish, show_all=args.all, bearings=bearings,
                            front_href=output_path.name if front else None)
         activity = site_cards(homes, bearings, False) if front else []

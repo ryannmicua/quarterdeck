@@ -6925,7 +6925,8 @@ class ActivityCardTests(unittest.TestCase):
             view = pages[re.search(r'href="(rv-[0-9a-f]{12}\.html)"', body).group(1)]
             self.assertIn("<h1>Findings</h1>", view)
             explainer = by_label["explainer.html"]
-            self.assertTrue(explainer.startswith("<h1>Explained</h1><script>1</script><nav id=\"qd-nav\""))
+            self.assertRegex(explainer, r'<iframe src="raw-[0-9a-f]{12}\.html" sandbox="allow-scripts allow-popups"')
+            self.assertNotIn("<script>1</script>", explainer)
             self.assertIn('href="index.html"', explainer)
             self.assertIn('<a class="mark" href="index.html">Quarterdeck</a>', view)
             raw = {name: text for name, text in pages.items() if name.startswith("raw-")}
@@ -7237,54 +7238,32 @@ class ActivityCardTests(unittest.TestCase):
                     self.assertIn(f"<h1>{'report.md' if label == 'Read the report' else label}</h1>", pages[link])
                     self.assertRegex(pages[link], r'Back to Quarterdeck|class="mark" href="index.html">Quarterdeck</a>')
 
-    def test_served_document_pages_are_sandboxed_from_the_write_endpoints(self) -> None:
-        cache = type("Cache", (), {"get": lambda self: {"doc-aaaaaaaaaaaa.html": "<p>x</p>", "index.html": "<p>i</p>"}})()
+    def test_served_document_wrappers_keep_raw_html_sandboxed(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            data = Path(temp)
+            (data / "briefing").mkdir()
+            (data / "briefing" / "notes.md").write_text("# Notes\n\n<script>raw Markdown</script>")
+            (data / "briefing" / "explainer.html").write_text("<script>raw HTML</script>")
+            pages = {}
+            links = quarterdeck.doc_links_html("data/briefing/notes.md and data/briefing/explainer.html", data, pages)
+            targets = {label: name for name, label in re.findall(r'<li><a href="([^"]+)">([^<]+)</a>', links)}
+        cache = type("Cache", (), {"get": lambda self: pages})()
         server = quarterdeck.ThreadingHTTPServer(("127.0.0.1", 0), quarterdeck.make_handler(cache))
         threading.Thread(target=server.serve_forever, daemon=True).start()
         self.addCleanup(server.server_close)
         self.addCleanup(server.shutdown)
         base = f"http://127.0.0.1:{server.server_address[1]}/"
-        with urllib.request.urlopen(base + "doc-aaaaaaaaaaaa.html") as response:
-            self.assertIn("sandbox", response.headers["Content-Security-Policy"])
-        with urllib.request.urlopen(base) as response:
+        with urllib.request.urlopen(base + targets["notes.md"]) as response:
             self.assertIsNone(response.headers["Content-Security-Policy"])
-
-    def test_nav_bar_is_added_without_touching_the_page_it_joins(self) -> None:
-        page = "<!doctype html><html><body class=x><script>go()</script></BODY></html>"
-        out = quarterdeck.inject_nav(page, "raw-aaaaaaaaaaaa.html")
-        self.assertEqual(out.replace(quarterdeck.qd_nav_html("raw-aaaaaaaaaaaa.html", fixed=True), ""), page)
-        self.assertLess(out.index("go()"), out.index('id="qd-nav"'))
-        self.assertLess(out.index('id="qd-nav"'), out.index("</BODY>"))
-        self.assertEqual(quarterdeck.inject_nav("<p>x</p>", "r.html").count('<nav id="qd-nav"'), 1)
-        self.assertNotIn("Open file", quarterdeck.qd_nav_html(None, fixed=False))
-
-    def test_document_bar_reserves_its_height_after_wrapping(self) -> None:
-        node = shutil.which("node")
-        if node is None:
-            self.skipTest("node is required to execute document navigation")
-        page = quarterdeck.inject_nav("<p>Final control</p>", "raw-aaaaaaaaaaaa.html")
-        script = re.findall(r"<script>(.*?)</script>", page, re.DOTALL)[0]
-        harness = '''
-const assert = require('node:assert/strict');
-let height = 48;
-let resize;
-const nav = {getBoundingClientRect: () => ({height})};
-const space = {style: {}};
-global.document = {getElementById: id => ({'qd-nav': nav, 'qd-nav-space': space})[id]};
-global.ResizeObserver = class {
-  constructor(callback) { resize = callback; }
-  observe(element) { assert.equal(element, nav); }
-};
-'''
-        checks = '''
-assert.equal(space.style.height, '48px');
-height = 96; resize();
-assert.equal(space.style.height, '96px');
-height = 48; resize();
-assert.equal(space.style.height, '48px');
-'''
-        result = subprocess.run([node, "-e", harness + script + checks], capture_output=True, text=True)
-        self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertIn("&lt;script&gt;raw Markdown&lt;/script&gt;", response.read().decode())
+        with urllib.request.urlopen(base + targets["explainer.html"]) as response:
+            self.assertIsNone(response.headers["Content-Security-Policy"])
+            wrapper = response.read().decode()
+        self.assertNotIn("<script>raw HTML</script>", wrapper)
+        raw = re.search(r'<iframe src="([^"]+)" sandbox="allow-scripts allow-popups"', wrapper)[1]
+        with urllib.request.urlopen(base + raw) as response:
+            self.assertIn("sandbox", response.headers["Content-Security-Policy"])
+            self.assertEqual(response.read().decode(), "<script>raw HTML</script>")
 
     def test_rendered_document_navigation_uses_the_main_filename(self) -> None:
         for output_name, lavish, expected in (
@@ -11851,7 +11830,7 @@ Recommend: Shared bucket
             }) + "\n" for age, event, task, details in records), encoding="utf-8")
 
         records = [(2, "task.merged", f"new-{i}", {}) for i in range(12)] + [
-            (28, "task.merged", "older-merge", {}),
+            (28, "task.merged", "older-merge", {"pr": "https://example.invalid/pr/4"}),
             (48, "task.merged", "boundary-merge", {}),
             (49, "task.merged", "expired-merge", {}),
             (-1, "task.merged", "future-merge", {}),
@@ -11869,6 +11848,8 @@ Recommend: Shared bucket
             "# Backlog\n\n## Done\n\n"
             "- [x] overnight - Overnight closure (done: 2026-01-09T18:00:00Z)\n"
             "  Earlier proposal: https://github.com/example/fictional/pull/5\n"
+            "- [x] day-only - Closed with a date (done: 2026-01-09)\n"
+            "- [x] older-merge - older-merge (done: 2026-01-09T12:00:00Z)\n"
             "- [x] expired - Expired closure (closed: 2026-01-08T11:00:00Z)\n"
             "- [x] future - Future closure (closed: 2026-01-10T13:00:00Z)\n\n"
             "## Working\n\n- [ ] archived - Parent work sharing an ID\n", encoding="utf-8",
@@ -11903,7 +11884,7 @@ Recommend: Shared bucket
 
         def feed(home, _data):
             return {"open_decisions": [], "in_flight": [
-                {"task": "mate-fictional-notes/archived", "title": "Archived child work"}
+                {"task": "mate/archived", "title": "Archived child work"}
             ] if home == self.home else []}
 
         with patch.object(quarterdeck, "build_bearings",
@@ -11912,12 +11893,14 @@ Recommend: Shared bucket
             pages = quarterdeck.site_builder(args, True)()
         calls = pages["index.html"]
         recap = calls.split('id="recap-list">', 1)[1].split("</ul>", 1)[0]
-        self.assertEqual(recap.count("<li "), 20)
+        self.assertEqual(recap.count("<li "), 21)
         ordered = ("Overnight closure", "Child work 0", "Child work 1", "Closure with malformed ledger",
                    "Table merge", "older-merge", "boundary-merge")
         self.assertEqual(sorted(ordered, key=recap.index), list(ordered))
         self.assertRegex(recap, r'<span class="sent-line">Overnight closure</span><span class="call-meta">Closed · Mate')
-        self.assertRegex(recap, r'older-merge</span><span class="call-meta">Merged · Mate')
+        self.assertIn('<a href="https://example.invalid/pr/4">older-merge</a></span>'
+                      '<span class="call-meta">Merged · Mate', recap)
+        self.assertIn('<time datetime="2026-01-09">09 Jan 2026</time>', recap)
         self.assertRegex(recap, r'Table merge</span><span class="call-meta">Merged · South')
         self.assertIn("Merged · mate — Fictional notes. (Mate) · sketch", recap)
         self.assertIn('<span class="sent-line">Archived child work</span>'
@@ -11948,8 +11931,8 @@ const storage = map => ({getItem: key => map.get(key), setItem: (key, value) => 
 function open(page, visibilityState = 'visible') {
   const session = new Map();
   const markup = page.match(/<section[^>]* id="recap"[^>]*>[\s\S]*?<\/section>/)?.[0];
-  const rows = [...(markup ?? '').matchAll(/<li data-time="([^"]+)">([\s\S]*?)<\/li>/g)]
-    .map(([, time, html]) => ({dataset: {time}, html, hidden: false}));
+  const rows = [...(markup ?? '').matchAll(/<li data-time="([^"]+)"(?: data-day="(1)")?>([\s\S]*?)<\/li>/g)]
+    .map(([, time, day, html]) => ({dataset: {time, day}, html, hidden: false}));
   const badge = markup?.match(/id="recap-n" data-n="([^"]+)">([^<]*)/);
   const count = badge && {dataset: {n: badge[1]}, textContent: badge[2]};
   const recap = markup && {querySelectorAll: selector => selector === 'li' ? rows : [], hidden: false};
@@ -11981,7 +11964,7 @@ now = builtAt;
 firstVisit.document.visibilityState = 'visible';
 firstVisit.fire('visibilitychange');
 assert.equal(firstVisit.rows.find(row => row.html.includes('boundary-merge')).hidden, true);
-assert.equal(firstVisit.count.dataset.n, '19');
+assert.equal(firstVisit.count.dataset.n, '20');
 now = builtAt - 25 * hour;
 const threadVisit = open(thread);
 now += hour;
@@ -12005,8 +11988,9 @@ const visit = open(calls);
 assert.equal(visit.rows.find(row => row.html.includes('Overnight closure')).hidden, false);
 assert.equal(visit.rows.find(row => row.html.includes('older-merge')).hidden, true);
 assert.equal(visit.recap.hidden, false);
-assert.equal(visit.count.textContent, '18');
-assert.equal(visit.count.dataset.n, '18');
+assert.equal(visit.count.textContent, '19');
+assert.equal(visit.count.dataset.n, '19');
+assert.equal(visit.rows.find(row => row.html.includes('Closed with a date')).hidden, false);
 visit.document.visibilityState = 'hidden';
 visit.fire('visibilitychange');
 now += 3 * 60000;
@@ -12026,6 +12010,27 @@ now = builtAt;
 const afterSource = open(calls);
 assert.equal(afterSource.rows.find(row => row.html.includes('older-merge')).hidden, true);
 assert.equal(afterSource.rows.find(row => row.html.includes('Overnight closure')).hidden, false);
+
+local.clear();
+now = builtAt - 24 * hour;
+const firstTab = open(calls);
+firstTab.document.visibilityState = 'hidden';
+firstTab.fire('visibilitychange');
+now = builtAt - 16 * hour;
+open(thread).fire('pagehide');
+now = builtAt;
+firstTab.document.visibilityState = 'visible';
+firstTab.fire('visibilitychange');
+assert.equal(firstTab.rows.find(row => row.html.includes('Overnight closure')).hidden, true);
+assert.equal(firstTab.rows.find(row => row.html.includes('Closed with a date')).hidden, false);
+
+local.clear();
+now = builtAt - 60 * hour;
+open(thread).fire('pagehide');
+now = builtAt + 23 * hour;
+const stale = open(calls);
+assert.equal(stale.rows.find(row => row.html.includes('older-merge')).hidden, true);
+assert.equal(stale.rows.find(row => row.html.includes('Overnight closure')).hidden, false);
 
 (async () => {
   local.clear();
@@ -12229,6 +12234,32 @@ What is the fallback for older displays?
             pages = quarterdeck.site_builder(self.args())()
             self.assertNotIn(quarterdeck.TOPICS_PAGE, pages)
             self.assertNotIn(call(ledger), read.call_args_list)
+
+    def test_shared_ledger_does_not_complete_tasks_in_two_data_directories(self) -> None:
+        alternate = self.root / "alternate-data"
+        alternate.mkdir()
+        now = datetime.now(timezone.utc)
+        recent = (now - timedelta(hours=1)).isoformat()
+        for label, data in (("North", self.home / "data"), ("South", alternate)):
+            (data / "backlog.md").write_text(
+                f"# Backlog\n\n- [x] publish - {label} publication (closed: {recent})\n",
+            )
+        ledger = self.home / quarterdeck.LEDGER_PATH
+        ledger.parent.mkdir(exist_ok=True)
+        ledger.write_text(json.dumps({"v": 1, "ts": now.timestamp() - 7200,
+                                      "event": "task.merged", "task": "publish",
+                                      "pr": "https://example.invalid/pr/5"}) + "\n")
+        config = self.root / "quarterdeck.json"
+        config.write_text(json.dumps({"homes": [
+            {"label": "North", "path": str(self.home)},
+            {"label": "South", "path": str(self.home), "data_dir": str(alternate)},
+        ]}))
+        args = argparse.Namespace(home=None, config=config, title=None, no_snapshot=True)
+        page = quarterdeck.site_builder(args)()["index.html"]
+        recap = page.split('id="recap-list">', 1)[1].split("</ul>", 1)[0]
+        for label in ("North", "South"):
+            self.assertIn(f'{label} publication</span><span class="call-meta">Closed · {label}', recap)
+        self.assertNotIn("https://example.invalid/pr/5", recap)
 
     @unittest.skipUnless(shutil.which("node"), "Node is required to execute the generated script")
     def test_call_delivery_preserves_words_and_retries_the_same_message(self) -> None:
