@@ -3028,6 +3028,7 @@ WINDOW_TITLES = {"last_12h": "Last 12 hours", "12h_to_24h": "12–24 hours ago",
 DEFAULT_RECENT_DAYS = 3
 RECENT_LIST_LIMIT = 6
 RECENT_HOURS = 6
+RECAP_HOURS = 48
 PRIORITY_LIMIT = 3
 PREFERENCES_VERSION = 1
 VIEW_LIMIT = 8
@@ -3235,7 +3236,9 @@ def recent_work(records: list[dict[str, object]] | None, snapshot: HomeSnapshot,
             "merged_count": len(merged), "started_count": len(started), "answered_count": answered,
             "merged": merged, "started": started,
         })
-    latest = [r for r in reversed(ordered) if end - RECENT_HOURS * 3600 <= float(r["ts"]) <= end]  # type: ignore[arg-type]
+    recap_start = end - RECAP_HOURS * 3600
+    bounded = [r for r in reversed(ordered) if recap_start <= float(r["ts"]) <= end]  # type: ignore[arg-type]
+    latest = [r for r in bounded if float(r["ts"]) >= end - RECENT_HOURS * 3600]  # type: ignore[arg-type]
     last_6h = [
         describe(r) | ({"event": "merged", "via": r.get("via") if isinstance(r.get("via"), str) else None}
                        if r["event"] == "task.merged" else
@@ -3253,18 +3256,25 @@ def recent_work(records: list[dict[str, object]] | None, snapshot: HomeSnapshot,
             "event": "merged" if event == "task.merged" else "closed" if mode == "reconciled" else "answered",
             "via": record.get("via"), "home": snapshot.spec.label,
         })
+    completed = {}
+    for record in bounded:
+        if record["event"] == "task.merged":
+            completed.setdefault(str(record["task"]), describe(record) | {"event": "merged", "time": record["ts"]})
     for task, item in items.items():
-        if not item.done or task in done:
+        if not item.done:
             continue
-        when = next((parsed for name in ("merged", "done", "closed")
-                     if (parsed := parse_when(item.attrs.get(name, ""))) is not None), None)
-        if when is not None and end - RECENT_HOURS * 3600 <= when.timestamp() <= end:
-            done[task] = {
-                "task": task, "title": plain_title(item.title), "project": item.project, "pr": item.pr_url,
-                "at": iso_seconds(when.timestamp()), "event": "finished", "home": snapshot.spec.label,
-            }
+        times = [when.timestamp() for name in ("merged", "done", "closed")
+                 if (when := parse_when(item.attrs.get(name, ""))) is not None]
+        if not times:
+            continue
+        details = {"task": task, "title": plain_title(item.title), "project": item.project, "pr": item.pr_url}
+        if task not in done and end - RECENT_HOURS * 3600 <= times[0] <= end:
+            done[task] = details | {"at": iso_seconds(times[0]), "event": "finished", "home": snapshot.spec.label}
+        closure = max((stamp for stamp in times if recap_start <= stamp <= end), default=None)
+        if closure is not None and (task not in completed or closure > completed[task]["time"]):
+            completed[task] = details | {"event": "closed", "time": closure}
     return {"ledger_starts_at": iso_seconds(starts) if starts is not None else None, "windows": windows,
-            "last_6h": last_6h, "done_recent": list(done.values())}
+            "last_6h": last_6h, "done_recent": list(done.values()), "completed": list(completed.values())}
 
 
 def decision_key(snapshot: HomeSnapshot, row: dict[str, object]) -> str:
@@ -3306,6 +3316,7 @@ def home_attention(
     view: dict[str, object] = {
         "label": spec.label, "home": str(spec.home) if spec.home else None, "ok": True, "errors": errors,
         "ledger": None, "recent_work": None, "recent_work_6h": [], "done_recent": [], "show_recent": False,
+        "completions": [],
         "decision_relevance": {"recent_days": DEFAULT_RECENT_DAYS, "since": iso_seconds(since)}, "decisions": None,
     }
     if spec.home is None or spec.remote_host:
@@ -3345,24 +3356,36 @@ def home_attention(
             "path": str(LEDGER_PATH), "present": records is not None, "version": LEDGER_VERSION,
             "records": len(records or []),
         }
-        work = recent_work(records, snapshot, feed_titles, now)
-        view["recent_work_6h"] = work.pop("last_6h")
-        view["done_recent"] = work.pop("done_recent")
-        view["show_recent"] = bool(view["recent_work_6h"])
-        view["recent_work"] = work
     snapshots = all_snapshots([snapshot])
     normalized: list[dict[str, object]] = []
     for owner in snapshots:
-        if owner.error or owner.spec.home is None or owner.spec.remote_host:
+        owner_spec = owner.spec
+        if owner_spec.home is None or owner_spec.remote_host or owner_spec.unavailable_reason:
             continue
         local_records = records or []
         if owner is not snapshot:
             try:
-                local_records = read_fleet_ledger(owner.spec.home / LEDGER_PATH) or []
+                local_records = read_fleet_ledger(owner_spec.home / LEDGER_PATH) or []
             except AttentionSourceError as exc:
                 errors.append(exc.as_dict())
                 local_records = []
-            view["done_recent"].extend(recent_work(local_records, owner, {}, now)["done_recent"])
+        work = recent_work(local_records, owner, feed_titles if owner is snapshot else {}, now)
+        completed = work.pop("completed")
+        if completed:
+            view["completions"].append({
+                "home": str(owner_spec.home.resolve()),
+                "data": str((owner.data_dir or owner_spec.home / "data").resolve()),
+                "label": owner_spec.label, "parent": owner_spec.parent_label, "items": completed,
+            })
+        if owner is snapshot and ledger_ok:
+            view["recent_work_6h"] = work.pop("last_6h")
+            view["done_recent"] = work.pop("done_recent")
+            view["show_recent"] = bool(view["recent_work_6h"])
+            view["recent_work"] = work
+        if owner.error:
+            continue
+        if owner is not snapshot:
+            view["done_recent"].extend(work["done_recent"])
         normalized.extend(dict(record, task=task_key(owner, str(record["task"]), snapshots)) for record in local_records)
     if projects_out is not None:
         for owner in snapshots:
@@ -8962,7 +8985,7 @@ def topic_page_html(topic: Topic, snapshot: HomeSnapshot, multi_home: bool, gene
     <p class="footnote">Read from {html.escape(source)}. Built {topic_stamp(generated, "full")}.</p>
     {ask}
   </main>
-  {TOPIC_TIME_SCRIPT}{topic_ask_script() if live else ""}
+  {TOPIC_TIME_SCRIPT}{LAST_LOOK_SCRIPT}{topic_ask_script() if live else ""}
 </body>
 </html>
 '''
@@ -9085,17 +9108,16 @@ def topics_section_html(homes: list[HomeSnapshot], now: datetime, allow_marks: b
 CLASSIC_PAGE = "classic.html"
 SEARCH_PAGE = "search.html"
 FRONT_CHANGED_ENTRIES = 30  # the newest entries per topic that "changed since you last looked" counts
-FRONT_FIRST_LOOK_HOURS = 48  # with no earlier visit on this device, changes from this long ago count as new
 SEARCH_FILTERS = (("all", "All"), ("needs", "Needs you"), ("underway", "Underway"), ("waiting", "Waiting"),
                   ("queued", "Queued"), ("done", "Done"))
 PIECE_FILTER = {"needs you": "needs", "ready for review": "needs", "underway": "underway", "blocked": "waiting",
                 "queued": "queued", "done": "done", "cancelled": "done"}
 
 
-FRONT_SCRIPT = """
+LAST_LOOK_SCRIPT = """
   <script>
     (function () {
-      // "Changed since you last looked": entries newer than the moment you last looked away from this page on this
+      // Entries newer than the moment you last looked away from Quarterdeck on this
       // device. The automatic reload keeps the same starting point; coming back after the page was hidden for a while
       // (another app, a locked phone) moves it to when you looked away.
       const LEFT = "quarterdeck-left-at", BASE = "quarterdeck-look-from", HIDDEN = "quarterdeck-hidden-at";
@@ -9108,6 +9130,7 @@ FRONT_SCRIPT = """
         write(sessionStorage, BASE, from);
       }
       function rebase() {
+        from = Math.max(from, read(sessionStorage, BASE));
         if (document.visibilityState === "hidden") {
           if (!read(sessionStorage, HIDDEN)) write(sessionStorage, HIDDEN, Date.now());
           return;
@@ -9120,6 +9143,17 @@ FRONT_SCRIPT = """
         try { sessionStorage.removeItem(HIDDEN); } catch (_) {}
       }
       function show() {
+        const recap = document.getElementById("recap");
+        if (recap) {
+          let shown = 0;
+          for (const item of recap.querySelectorAll("li")) {
+            item.hidden = Number(item.dataset.time) * 1000 <= from;
+            if (!item.hidden) shown += 1;
+          }
+          const count = document.getElementById("recap-n");
+          count.textContent = count.dataset.n = String(shown);
+          recap.hidden = shown === 0;
+        }
         let shown = 0;
         for (const item of document.querySelectorAll("#changed-list li")) {
           const times = (item.dataset.times || "").split(",").filter(Boolean).map(Number);
@@ -9139,6 +9173,9 @@ FRONT_SCRIPT = """
       rebase();
       show();
       addEventListener("pagehide", () => write(localStorage, LEFT, Date.now()));
+      addEventListener("pageshow", event => {
+        if (event.persisted) { rebase(); show(); }
+      });
       document.addEventListener("visibilitychange", () => {
         if (document.visibilityState === "hidden") {
           write(localStorage, LEFT, Date.now());
@@ -9149,7 +9186,7 @@ FRONT_SCRIPT = """
         }
       });
     })();
-  </script>"""
+  </script>""".replace("%(first)d", str(RECAP_HOURS))
 
 SEARCH_SCRIPT = """
   <script>
@@ -9249,7 +9286,7 @@ def deck_page(title: str, body: str, scripts: str = "", refresh_seconds: int | N
 </head>
 <body{refresh}>
 {body}
-{TOPIC_TIME_SCRIPT}{scripts}
+{TOPIC_TIME_SCRIPT}{LAST_LOOK_SCRIPT}{scripts}
 </body>
 </html>
 '''
@@ -9421,9 +9458,7 @@ def front_page_html(homes: list[HomeSnapshot], title: str, bearings: Bearings, c
         + f'<a href="{SEARCH_PAGE}">Search</a></span></nav>'
         f'<main class="front">{stamp}{needs_block}{changed_block}{topics_block}{ask}{more}</main>'
     )
-    scripts = FRONT_SCRIPT.replace("%(first)d", str(FRONT_FIRST_LOOK_HOURS))
-    if allow_marks:
-        scripts += topic_ask_script()
+    scripts = topic_ask_script() if allow_marks else ""
     if serve_push:
         scripts += push_page_script()
     tab = f"({total}) {title}" if total else title
@@ -9899,109 +9934,56 @@ def calls_script() -> str:
             .replace("%(done)s", CALL_DONE_PREFIX))
 
 
-RECAP_LIMIT = 12
-RECAP_VERBS = {"merged": "Merged", "closed": "Closed", "answered": "Done", "finished": "Finished"}
-
-RECAP_SCRIPT = """
-  <script>
-    (function () {
-      // "Finished since you last looked": the same starting point as the Topics tab (when you last looked away from
-      // Quarterdeck on this device, or the last %(first)d hours on a first visit), kept for the whole visit.
-      const LEFT = "quarterdeck-left-at", BASE = "quarterdeck-look-from", HIDDEN = "quarterdeck-hidden-at";
-      const AWAY_MS = 120000;
-      function read(store, key) { try { return Number(store.getItem(key)) || 0; } catch (_) { return 0; } }
-      function write(store, key, value) { try { store.setItem(key, String(value)); } catch (_) {} }
-      let from = read(sessionStorage, BASE);
-      if (!from) {
-        from = read(localStorage, LEFT) || Date.now() - %(first)d * 3600000;
-        write(sessionStorage, BASE, from);
-      }
-      function rebase() {
-        if (document.visibilityState === "hidden") {
-          if (!read(sessionStorage, HIDDEN)) write(sessionStorage, HIDDEN, Date.now());
-          return;
-        }
-        const hidden = read(sessionStorage, HIDDEN);
-        if (hidden > from && Date.now() - hidden > AWAY_MS) {
-          from = hidden;
-          write(sessionStorage, BASE, from);
-        }
-        try { sessionStorage.removeItem(HIDDEN); } catch (_) {}
-      }
-      function show() {
-        let shown = 0;
-        for (const item of document.querySelectorAll("#recap-list li")) {
-          item.hidden = Number(item.dataset.time) * 1000 <= from;
-          if (!item.hidden) shown += 1;
-        }
-        const count = document.getElementById("recap-n");
-        if (count) count.textContent = String(shown);
-        const empty = document.getElementById("recap-empty");
-        if (empty) empty.hidden = shown > 0;
-        const since = document.getElementById("recap-since");
-        if (since) since.textContent = new Intl.DateTimeFormat(undefined, {day: "numeric", month: "short", hour: "2-digit", minute: "2-digit"}).format(new Date(from));
-      }
-      rebase();
-      show();
-      addEventListener("pagehide", () => write(localStorage, LEFT, Date.now()));
-      document.addEventListener("visibilitychange", () => {
-        if (document.visibilityState === "hidden") {
-          write(localStorage, LEFT, Date.now());
-          write(sessionStorage, HIDDEN, Date.now());
-        } else {
-          rebase();
-          show();
-        }
-      });
-    })();
-  </script>"""
-
-
 def recap_items(attention: dict[str, object] | None) -> list[dict[str, object]]:
-    """Work finished in the last 48 hours, newest first, one entry per task: what the ledger says merged, plus what
-    the backlog or an answer closed. Quarterdeck reads these from the needs-you feed it already has."""
-    found: dict[tuple[str, str], dict[str, object]] = {}
-    for home in (attention or {}).get("homes", []) or []:  # type: ignore[union-attr]
-        if not isinstance(home, dict):
-            continue
-        label = str(home.get("label") or "")
-        windows = (home.get("recent_work") or {}).get("windows", []) if isinstance(home.get("recent_work"), dict) else []
-        pool = [dict(item, event="merged") for window in windows for item in window.get("merged", [])]
-        pool += [item for item in home.get("done_recent") or [] if item.get("event") in RECAP_VERBS]
-        for item in pool:
-            when = parse_when(str(item.get("at") or ""))
-            if when is None:
-                continue
-            key = (str(item.get("home") or label), str(item.get("task") or item.get("title")))
-            if key not in found or when.timestamp() > float(found[key]["time"]):  # type: ignore[arg-type]
-                found[key] = {**item, "time": when.timestamp(), "home": key[0]}
-    return sorted(found.values(), key=lambda item: float(item["time"]), reverse=True)  # type: ignore[arg-type]
+    owners: dict[tuple[str, str], tuple[str, str | None]] = {}
+    found: dict[tuple[tuple[str, str], str], dict[str, object]] = {}
+    for home in (attention or {}).get("homes", []):
+        for group in home.get("completions", []):
+            owner = (group["home"], group["data"])
+            owners.setdefault(owner, (group["label"], group["parent"]))
+            for item in group["items"]:
+                key = (owner, item["task"])
+                if key not in found or item["time"] > found[key]["time"]:
+                    found[key] = item
+
+    labels = [label for label, _ in owners.values()]
+    names = {
+        owner: f"{label} ({parent})" if labels.count(label) > 1 and parent else label
+        for owner, (label, parent) in owners.items()
+    }
+    duplicates = [name for name in names.values()]
+    for index, (owner, name) in enumerate(names.items(), 1):
+        if duplicates.count(name) > 1:
+            names[owner] = f"{name} · Home {index}"
+
+    items = [dict(item, home=names[owner] if len(owners) > 1 else "") for (owner, _), item in found.items()]
+    return sorted(items, key=lambda item: float(item["time"]), reverse=True)  # type: ignore[arg-type]
 
 
 def recap_html(attention: dict[str, object] | None) -> str:
     """The Calls side column's "Finished since you last looked": a row per finished piece of work, with the script
     hiding what is older than the last look. Shown only when something finished in the last 48 hours."""
-    items = recap_items(attention)[:RECAP_LIMIT]
+    items = recap_items(attention)
     if not items:
         return ""
-    multi = len({str(item["home"]) for item in items}) > 1
     rows = []
     for item in items:
         pr = item.get("pr")
         title = html.escape(plain_title(str(item.get("title") or item.get("task") or "")))
         link = (f'<a href="{html.escape(str(pr), quote=True)}">{title}</a>'
                 if isinstance(pr, str) and pr.startswith("https://") else title)
-        where = " · ".join(part for part in (str(item["home"]) if multi else "", str(item.get("project") or "")) if part)
-        when = datetime.fromtimestamp(float(item["time"]), timezone.utc)  # type: ignore[arg-type]
+        where = " · ".join(part for part in (str(item["home"]), str(item.get("project") or "")) if part)
+        timestamp = float(item["time"])  # type: ignore[arg-type]
+        when = datetime.fromtimestamp(timestamp, timezone.utc)
+        verb = "Merged" if item["event"] == "merged" else "Closed"
         rows.append(
-            f'<li data-time="{int(float(item["time"]))}"><span class="sent-line">{link}</span>'  # type: ignore[arg-type]
-            f'<span class="call-meta">{RECAP_VERBS[str(item.get("event"))]}{" · " + html.escape(where) if where else ""}'
+            f'<li data-time="{timestamp}"><span class="sent-line">{link}</span>'
+            f'<span class="call-meta">{verb}{" · " + html.escape(where) if where else ""}'
             f' · {topic_stamp(when, "full")}</span></li>')
     return (
-        '<section class="sent recap" aria-labelledby="recap-h"><h2 id="recap-h">Finished since you last looked '
-        '<span class="n" id="recap-n" data-n="0"></span></h2>'
-        f'<ul class="sent-list" id="recap-list">{"".join(rows)}</ul>'
-        '<p class="empty" id="recap-empty" hidden>Nothing finished since <span id="recap-since">your last look</span>.</p></section>'
+        '<section class="sent recap" id="recap" aria-labelledby="recap-h"><h2 id="recap-h">Finished since you last looked '
+        f'<span class="n" id="recap-n" data-n="{len(items)}">{len(items)}</span></h2>'
+        f'<ul class="sent-list" id="recap-list">{"".join(rows)}</ul></section>'
     )
 
 
@@ -10042,7 +10024,6 @@ def calls_page_html(homes: list[HomeSnapshot], title: str, bearings: Bearings, c
         + f'<main class="calls-page">{stamp}{queue_html}<aside class="calls-side">{recap_html(attention)}{sent_html}{ask}</aside>{more}</main>'
     )
     scripts = (topic_ask_script() + calls_script()) if allow_marks else calls_script()
-    scripts += RECAP_SCRIPT.replace("%(first)d", str(FRONT_FIRST_LOOK_HOURS))
     if serve_push:
         scripts += push_page_script()
     tab = f"({count}) {title}" if count else title
@@ -10075,9 +10056,7 @@ def topics_page_html(homes: list[HomeSnapshot], title: str, bearings: Bearings, 
         '<p class="empty" id="changed-empty" hidden>Nothing new since <span id="changed-since">your last look</span>.</p></section>'
         + (topic_front_ask_html(active) if allow_marks else "") + "</main>"
     )
-    scripts = FRONT_SCRIPT.replace("%(first)d", str(FRONT_FIRST_LOOK_HOURS))
-    if allow_marks:
-        scripts += topic_ask_script()
+    scripts = topic_ask_script() if allow_marks else ""
     return deck_page(f"Topics · {title}", body, scripts, refresh_seconds if allow_marks else None,
                      head=APP_LINKS if refresh_seconds else "")
 
