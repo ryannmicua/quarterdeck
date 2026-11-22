@@ -773,7 +773,7 @@ def source_page_html(
     return f'''<!doctype html>
 <html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
 <meta name="quarterdeck-{'gen' + 'erated'}" content="read-only source page"><title>{html.escape(title)} · Quarterdeck</title>
-<style>{UI_CSS}</style></head><body>{nav}<main class="doc{' with-actions' if review else ''}"><h1>{html.escape(title)}</h1><p class="doc-source">{html.escape(source_path)}</p>{review}<article class="prose">{body}</article></main></body></html>'''
+<style>{UI_CSS}</style></head><body>{nav}<main class="doc{' with-actions' if review else ''}"><h1>{html.escape(title)}</h1><p class="doc-source">{html.escape(source_path)}</p>{review}<article class="prose">{body}</article></main>{LAST_LOOK_SCRIPT if main_href is not None else ""}</body></html>'''
 
 
 def write_generated_page(path: Path, content: str) -> None:
@@ -3287,8 +3287,10 @@ def recap_completions(sources: list[CompletionSource], now: datetime) -> list[di
     completed: dict[CompletionKey, tuple[float, str, str]] = {}
     scopes: dict[int, list[HomeSnapshot]] = {}
 
-    def key_for(source: HomeSnapshot, task: str) -> CompletionKey:
-        owner, local_task = task_reference_owner(source, task, scopes[id(source)])
+    def key_for(source: HomeSnapshot, task: str, *, from_ledger: bool = False) -> CompletionKey:
+        owner, local_task = task_owner(source, task.strip()) if from_ledger else (source, task)
+        if owner is source:
+            owner, local_task = task_reference_owner(source, task, scopes[id(source)])
         if id(owner) not in owner_keys:
             spec = owner.spec
             identity: CompletionOwner = (id(owner),)
@@ -3320,7 +3322,7 @@ def recap_completions(sources: list[CompletionSource], now: datetime) -> list[di
         event, project, pr = record["event"], record.get("project"), record.get("pr")
         if event not in {"task.dispatched", "task.merged"}:
             continue
-        key = key_for(source, str(record["task"]))
+        key = key_for(source, str(record["task"]), from_ledger=True)
         if event == "task.dispatched" and isinstance(project, str):
             projects[key] = project
         if event == "task.merged":
@@ -3334,7 +3336,7 @@ def recap_completions(sources: list[CompletionSource], now: datetime) -> list[di
                 for field in ("merged", "done", "closed"):
                     when = parse_when(item.attrs.get(field, ""))
                     if when is not None:
-                        finish(key, when.timestamp(), "merged" if field == "merged" else "closed", item.pr_url)
+                        finish(key, when.timestamp(), "merged" if field == "merged" else "closed")
 
     by_owner: dict[CompletionOwner, list[dict[str, object]]] = {}
     for key, (stamp, event, pr) in completed.items():
@@ -13406,7 +13408,9 @@ def load_site(args: argparse.Namespace, main_href: str = "index.html", *,
         homes, bearings.generated, all_decisions=True, use_feed=use_snapshot,
         priority_projects=list(document.get("priority_projects", [])),  # type: ignore[call-overload]
         saved_views=effective_views(document), all_views=True, waits=waits,
-        completions_out=bearings.completions if include_calls and assign_topic_pages(homes) else None,
+        completions_out=bearings.completions if include_calls and any(
+            TOPIC_ID_RE.fullmatch(topic.topic_id) for snapshot in all_snapshots(homes) for topic in snapshot.topics
+        ) else None,
     )
     if waits_error:
         bearings.attention["waits_error"] = waits_error

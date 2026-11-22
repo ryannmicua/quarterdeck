@@ -11868,8 +11868,10 @@ Recommend: Shared bucket
         (self.home / "data" / "backlog.md").write_text(
             "# Backlog\n\n## Done\n\n"
             "- [x] overnight - Overnight closure (done: 2026-01-09T18:00:00Z)\n"
+            "  Earlier proposal: https://github.com/example/fictional/pull/5\n"
             "- [x] expired - Expired closure (closed: 2026-01-08T11:00:00Z)\n"
-            "- [x] future - Future closure (closed: 2026-01-10T13:00:00Z)\n", encoding="utf-8",
+            "- [x] future - Future closure (closed: 2026-01-10T13:00:00Z)\n\n"
+            "## Working\n\n- [ ] archived - Parent work sharing an ID\n", encoding="utf-8",
         )
         other = AttentionTests().make_home(self.root / "other", ledger='{"v":99}\n', script=False)
         (other / "data" / "backlog.md").write_text(
@@ -11881,7 +11883,7 @@ Recommend: Shared bucket
             encoding="utf-8",
         )
         configured_homes = []
-        for index, (label, home) in enumerate((("North", self.home), ("South", other))):
+        for index, (label, home) in enumerate((("Mate", self.home), ("South", other))):
             child = AttentionTests().make_home(self.root / f"child-{index}", ledger="", script=False)
             merged = " (merged: 2026-01-09T17:45:00Z) https://github.com/example/fictional/pull/7" if index == 0 else ""
             (child / "data" / "backlog.md").write_text(
@@ -11914,29 +11916,30 @@ Recommend: Shared bucket
         ordered = ("Overnight closure", "Child work 0", "Child work 1", "Closure with malformed ledger",
                    "Table merge", "older-merge", "boundary-merge")
         self.assertEqual(sorted(ordered, key=recap.index), list(ordered))
-        self.assertRegex(recap, r'Overnight closure</span><span class="call-meta">Closed · North')
-        self.assertRegex(recap, r'older-merge</span><span class="call-meta">Merged · North')
+        self.assertRegex(recap, r'<span class="sent-line">Overnight closure</span><span class="call-meta">Closed · Mate')
+        self.assertRegex(recap, r'older-merge</span><span class="call-meta">Merged · Mate')
         self.assertRegex(recap, r'Table merge</span><span class="call-meta">Merged · South')
-        self.assertIn("Merged · mate — Fictional notes. (North) · sketch", recap)
+        self.assertIn("Merged · mate — Fictional notes. (Mate) · sketch", recap)
         self.assertIn('<span class="sent-line">Archived child work</span>'
-                      '<span class="call-meta">Merged · mate — Fictional notes. (North)', recap)
+                      '<span class="call-meta">Merged · mate — Fictional notes. (Mate)', recap)
+        self.assertNotIn("Parent work sharing an ID", recap)
+        self.assertNotIn("https://github.com/example/fictional/pull/5", recap)
         self.assertNotIn("https://example.invalid/pr/8", recap)
         self.assertNotIn("https://example.invalid/pr/6", recap)
         winning_time = datetime(2026, 1, 9, 17, 45, tzinfo=timezone.utc).timestamp()
         self.assertIn(f'data-time="{winning_time}"><span class="sent-line">'
-                      '<a href="https://github.com/example/fictional/pull/7">Child work 0</a>', recap)
-        for index, (label, link) in enumerate((("North", "https://github.com/example/fictional/pull/7"),
-                                               ("South", "https://example.invalid/pr/7"))):
-            self.assertIn(f'<a href="{link}">Child work {index}</a></span>'
-                          f'<span class="call-meta">Merged · mate — Fictional notes. ({label})', recap)
+                      'Child work 0</span>', recap)
+        self.assertIn('<a href="https://example.invalid/pr/7">Child work 1</a></span>'
+                      '<span class="call-meta">Merged · mate — Fictional notes. (South)', recap)
         for excluded in ("expired", "future", "released-hold", "answered-hold", "moot-hold"):
             self.assertNotIn(excluded, recap)
 
         thread = pages["topic-maple-harbor-catalog.html"]
+        source = pages[quarterdeck.source_page_filename("backlog", self.home, self.home / "data" / "backlog.md")]
         harness = r"""
 const assert = require('node:assert/strict');
 const vm = require('node:vm');
-const {calls, thread, classic, builtAt} = JSON.parse(require('node:fs').readFileSync(0, 'utf8'));
+const {calls, thread, classic, source, builtAt} = JSON.parse(require('node:fs').readFileSync(0, 'utf8'));
 const hour = 3600000;
 let now = builtAt;
 const local = new Map();
@@ -12014,6 +12017,16 @@ assert.equal(visit.recap.hidden, true);
 assert.equal(visit.count.textContent, '0');
 assert.equal(visit.count.dataset.n, '0');
 
+local.clear();
+now = builtAt - 25 * hour;
+const sourceVisit = open(source);
+now += hour;
+sourceVisit.fire('pagehide');
+now = builtAt;
+const afterSource = open(calls);
+assert.equal(afterSource.rows.find(row => row.html.includes('older-merge')).hidden, true);
+assert.equal(afterSource.rows.find(row => row.html.includes('Overnight closure')).hidden, false);
+
 (async () => {
   local.clear();
   now = builtAt - 25 * hour;
@@ -12032,7 +12045,7 @@ assert.equal(visit.count.dataset.n, '0');
 })().catch(error => { console.error(error); process.exitCode = 1; });
 """
         result = subprocess.run(["node", "-e", harness], capture_output=True, text=True, input=json.dumps({
-            "calls": calls, "thread": thread, "classic": pages[quarterdeck.CLASSIC_PAGE],
+            "calls": calls, "thread": thread, "classic": pages[quarterdeck.CLASSIC_PAGE], "source": source,
             "builtAt": int(now.timestamp() * 1000),
         }))
         self.assertEqual(result.returncode, 0, result.stderr)
