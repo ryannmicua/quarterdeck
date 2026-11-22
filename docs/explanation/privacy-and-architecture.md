@@ -174,25 +174,20 @@ review, and the backlog beside the main page; the dependency-free Markdown
 renderer escapes source HTML. `quarterdeck reports read <id>` uses the same
 renderer. Site report pages can instead show a captain-facing HTML companion;
 see the [report-view guide](../how-to/watch-activity-cards.md#read-the-report).
-That HTML is copied unchanged into a frame with
-`sandbox="allow-scripts allow-popups"`, including in rendered snapshots. The shared
-report view only reads UTF8 regular report files of 2 MB or less whose resolved
-parent is a direct child of the configured data directory; symlinks escaping the
-report directory are refused. The [CLI reference](../reference/cli-and-config.md) documents its
-output path, report IDs, and collision handling.
+The shared report view only reads UTF8 regular report files of 2 MB or less
+whose resolved parent is a direct child of the configured data directory;
+symlinks escaping the report directory are refused. The
+[CLI reference](../reference/cli-and-config.md) documents its output path,
+report IDs, and collision handling.
 
-Referenced activity-card HTML is copied as written, including scripts, plus one
-inline-styled navigation bar and a spacer with a script that reserves the bar's
-measured height. These are inserted before the last closing `</body>`, or appended
-when there is no closing body tag. For navigation and opening the original file,
-see [the activity-card guide](../how-to/watch-activity-cards.md#open-the-documents-a-card-names).
-Original-file copies use `raw-*.html`, or `raw-*.txt` for Markdown, and receive the
-same sandbox header as the document pages.
-When served by `quarterdeck serve`,
-document pages receive `Content-Security-Policy: sandbox allow-scripts allow-popups`:
-scripts may run, but without the serving origin's storage or access to its write
-endpoints. This HTTP header does not apply to files opened directly from a
-rendered snapshot.
+Linked documents and site reports use Quarterdeck's navigation wrapper, which
+can access the site's browser storage for the last-look time. For HTML previews
+the wrapper loads the unchanged content in a frame with
+`sandbox="allow-scripts allow-popups"`, including in rendered snapshots.
+Original-file copies use `raw-*.html` or `raw-*.txt` and receive
+`Content-Security-Policy: sandbox allow-scripts allow-popups` when served.
+These sandboxes isolate source scripts from Quarterdeck's origin, storage and write
+endpoints. See the [activity-card guide](../how-to/watch-activity-cards.md#open-the-documents-a-card-names).
 
 Review marks, discards, relevance and relations are stored separately from
 rendered pages in a SQLite database at

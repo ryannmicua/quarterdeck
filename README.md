@@ -62,7 +62,8 @@ for server requirements, phone setup and withdrawal behavior.
   decisions, waits on you and items not yet in a topic, each with its options
   as buttons and the recommendation marked.
   An answered call leaves for Sent at once; an unanswered one stays until
-  it is answered or its record closes. Changed since you last looked and the topic list are
+  it is answered or its record closes. Use **Finished since you last looked** to catch up on completed work.
+  **Changed since you last looked** and the topic list are
   on the Topics tab, everything else is behind search, and the previous front
   page stays at `previous.html` (and the one before at `classic.html`) for one release. `quarterdeck topics check` reports mistakes in the files. See [Keep topic threads](docs/how-to/keep-topic-threads.md) and the
   [topic files reference](docs/reference/topic-files.md).

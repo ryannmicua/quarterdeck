@@ -23,6 +23,11 @@ on its card. Topics and Search are the other two tabs.
   opens, and the count and tab title drop by one. A card stays in Sent until Firstmate records the answer in the
   topic file, lifts the hold or removes the wait line; then it is gone. A held item that is held again with a new
   stamp comes back, and so does a wait Firstmate writes about after your answer (it still waits, and says why).
+- **Finished since you last looked** sits above Sent. It shows work the ledger or backlog records as merged or
+  closed after your last look and within the past 48 hours, newest first. A date-only backlog entry qualifies when
+  its UTC day overlaps that interval. Each task appears once, with a merge preferred when both a merge and a
+  closure qualify. A merge title links to its pull request when the ledger supplies an HTTPS link. The section
+  appears only when there is qualifying work.
 - **Nothing is guessed away.** An unanswered call stays in **Your calls** whatever its age, the conversation after
   it, or the wording of its note, until it is answered or its record closes.
 - **Ask Firstmate**, on the served page, with **Goes to** (see below).
@@ -39,14 +44,19 @@ The **Topics** tab holds **Changed since you last looked** and the topic list:
   their existing order. Decisions offer one-tap answers on the served page; an answer sent from Quarterdeck stays
   as one uncounted line until Firstmate records it. Items outside topics open their own page, or their card on the
   previous page when they have none. Once an item's task is a topic's piece, it shows through that topic instead.
-- **Changed since you last looked:** one row per topic with something new from Firstmate or anyone else since you
-  last left the page on this device, with "N more entries" when there is more than one. The first time, it shows the
-  last two days. Reloading the page keeps the same starting point.
+- **Changed since you last looked:** one row per topic with something new from Firstmate or anyone else after
+  your last look, with "N more entries" when there is more than one.
 - **Topics:** every open topic, those needing you first, with its **Now** line. Closed topics are in search.
 - **Ask Firstmate**, on the served page, with **Goes to** (see below).
 - **Search** finds everything else: reports, underway, waiting and queued work, and finished work,
   with the filters All, Needs you, Underway, Waiting, Queued and Done. A search with no match lists the topics and
   offers to ask Firstmate.
+
+Calls and Topics use the same last-look time, stored in your browser for this site. On your first visit, the
+starting point is 48 hours ago. Automatic refreshes keep the cutoff for the current visit. When you return after
+more than two minutes away, Quarterdeck moves the cutoff to the time you left. If another Quarterdeck tab recorded
+a more recent departure while you were away, Quarterdeck uses that time even after a shorter absence. Linked
+document previews count as Quarterdeck pages.
 
 A report counts as waiting for your review for two weeks. After that it stays findable in search (under All) but
 no longer counts as awaiting review; nothing is changed in its review record. A recent report also shows under

@@ -443,19 +443,15 @@ Also run `render --output <disposable-output>/index.html` and follow its links.
 Use same-path parent/child reports with distinct headings to check ownership;
 make the child unavailable and confirm no parent fallback. An HTML explainer's
 script should run, but its sandbox must block storage and write-endpoint access.
-Each opened document must show the bar that links back to Quarterdeck, and Open file by
-itself must return the unmodified file at 375px and desktop width.
-Scroll a long HTML document to its final control and confirm it clears the bar,
-including after resizing so the links wrap. The focused navigation regressions
-are `ActivityCardTests.test_document_bar_reserves_its_height_after_wrapping`,
-`ActivityCardTests.test_rendered_document_navigation_uses_the_main_filename`, and
-`ActivityCardTests.test_standalone_report_has_no_site_back_link`. They execute the
-generated spacer script with supplied browser geometry, render default/custom/Lavish
-sites and check their emitted back-link destinations, and run standalone report
-output. The geometry check covers resize handling, not browser layout; use the
-manual scroll check above for layout. The required destinations and unobscured
-final control come from the navigation contract; stale `index.html` links, a
-fixed-height spacer, and a standalone back link must fail these checks.
+At 375px and desktop width, check that the wrapper bar links back to Quarterdeck
+and **Open file by itself** returns the unmodified file. Scroll a long preview
+inside its frame to reach the final control, including after resizing the wrapper
+so its links wrap. `ActivityCardTests.test_served_document_wrappers_keep_raw_html_sandboxed`
+checks escaped Markdown, the HTML frame and the raw response's sandbox header.
+`ActivityCardTests.test_rendered_document_navigation_uses_the_main_filename`
+checks the back links in default, custom-name and Lavish renders.
+`ActivityCardTests.test_standalone_report_has_no_site_back_link` exercises
+standalone report output.
 Retain screenshots and HTTP output; stop servers, close test tabs and remove
 fictional homes/state afterward.
 The fixtures use disposable fictional homes; set `TMPDIR` to a directory inside

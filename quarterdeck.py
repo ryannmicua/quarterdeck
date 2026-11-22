@@ -699,50 +699,6 @@ def display_path(path: Path, home: Path) -> str:
         return str(path)
 
 
-NAV_LINK_STYLE = (
-    "display:inline-block;padding:.85rem 1rem;color:#f6f4ef;font:600 15px/1.2 system-ui,sans-serif;"
-    "text-decoration:underline;background:none;border:0;margin:0"
-)
-
-
-def qd_nav_html(raw_href: str | None, fixed: bool, main_href: str = "index.html") -> str:
-    """The small bar every served document page carries: back to Quarterdeck, and the file by itself when raw_href.
-
-    Inline styles keep the bar's presentation local without adding stylesheet rules to the document.
-    A fixed bar reserves its measured height at the end of the document.
-    """
-    where = (
-        "position:fixed;left:0;right:0;bottom:0;z-index:2147483647;padding-bottom:env(safe-area-inset-bottom);"
-        if fixed else "position:relative;"
-    )
-    raw = f'<a href="{html.escape(raw_href, quote=True)}" style="{NAV_LINK_STYLE}">Open file by itself</a>' if raw_href else ""
-    bar = (
-        f'<nav id="qd-nav" aria-label="Quarterdeck" style="{where}display:flex;flex-wrap:wrap;justify-content:space-between;'
-        'box-sizing:border-box;background:#1a2129;margin:0;border-top:1px solid #d6d0c4;">'
-        f'<a href="{html.escape(main_href, quote=True)}" style="{NAV_LINK_STYLE}">Back to Quarterdeck</a>{raw}</nav>'
-    )
-    if fixed:
-        bar += '''<div id="qd-nav-space" aria-hidden="true" style="height:6rem;flex-shrink:0;clear:both"></div>
-<script>(() => {
-const nav = document.getElementById('qd-nav');
-const space = document.getElementById('qd-nav-space');
-const reserve = () => { space.style.height = nav.getBoundingClientRect().height + 'px'; };
-reserve();
-new ResizeObserver(reserve).observe(nav);
-})();</script>'''
-    return bar
-
-
-def inject_nav(page: str, raw_href: str, main_href: str = "index.html") -> str:
-    """Add the bar to an HTML document just before its closing body tag (or at its end), leaving the rest untouched."""
-    bar = qd_nav_html(raw_href, fixed=True, main_href=main_href)
-    closing = list(re.finditer(r"</body\s*>", page, re.IGNORECASE))
-    if closing:
-        at = closing[-1].start()
-        return page[:at] + bar + page[at:]
-    return page + bar
-
-
 def count_badge(count: int, css: str = "count") -> str:
     """A count beside a heading. The style hides it at 0 or 1: at 0 the section says it is empty, at 1 the one item
     shows. It stays in the markup so the page's scripts can keep counting down."""
@@ -773,7 +729,7 @@ def source_page_html(
     return f'''<!doctype html>
 <html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
 <meta name="quarterdeck-{'gen' + 'erated'}" content="read-only source page"><title>{html.escape(title)} · Quarterdeck</title>
-<style>{UI_CSS}</style></head><body>{nav}<main class="doc{' with-actions' if review else ''}"><h1>{html.escape(title)}</h1><p class="doc-source">{html.escape(source_path)}</p>{review}<article class="prose">{body}</article></main></body></html>'''
+<style>{UI_CSS}</style></head><body>{nav}<main class="doc{' with-actions' if review else ''}"><h1>{html.escape(title)}</h1><p class="doc-source">{html.escape(source_path)}</p>{review}<article class="prose">{body}</article></main>{LAST_LOOK_SCRIPT if main_href is not None else ""}</body></html>'''
 
 
 def write_generated_page(path: Path, content: str) -> None:
@@ -1684,6 +1640,7 @@ def build_html(
         return;
       }
       if (location.protocol !== "http:" && location.protocol !== "https:") {
+        document.body.dataset.qdRefreshing = "1";
         location.reload();
         return;
       }
@@ -1701,6 +1658,7 @@ def build_html(
         }
         quarterdeckOffline(false);
         history.replaceState(null, "", url);
+        document.body.dataset.qdRefreshing = "1";
         document.dispatchEvent(new Event("quarterdeck-replace"));
         document.open();
         document.write(page);
@@ -1967,7 +1925,7 @@ def build_html(
     <footer><p>{html.escape(introductory_text)}</p><p>{footer_label} Source files open as readable pages beside this one.</p></footer>
   </main>
   </div>
-  {lavish_script}{NAV_SCRIPT}{refresh_script}{reload_script}{mark_script}{reaction_script}{wait_script}{cards_script}{push_script}{topic_ask_script() if allow_marks and topics_block else ""}
+  {LAST_LOOK_SCRIPT if not lavish else ""}{lavish_script}{NAV_SCRIPT}{refresh_script}{reload_script}{mark_script}{reaction_script}{wait_script}{cards_script}{push_script}{topic_ask_script() if allow_marks and topics_block else ""}
 </body>
 </html>
 '''
@@ -2071,6 +2029,8 @@ class Bearings:
     linked_reports: set[Path] = field(default_factory=set)
     attention: dict[str, object] | None = None
     main_href: str = "index.html"
+    completions: list[dict[str, object]] = field(default_factory=list)
+    topic_pages: list[tuple[HomeSnapshot, Topic]] = field(default_factory=list)
 
 
 HOLD_REASON_PREFIX = "fm-hold-v1:"
@@ -3028,6 +2988,7 @@ WINDOW_TITLES = {"last_12h": "Last 12 hours", "12h_to_24h": "12–24 hours ago",
 DEFAULT_RECENT_DAYS = 3
 RECENT_LIST_LIMIT = 6
 RECENT_HOURS = 6
+RECAP_HOURS = 48
 PRIORITY_LIMIT = 3
 PREFERENCES_VERSION = 1
 VIEW_LIMIT = 8
@@ -3267,6 +3228,104 @@ def recent_work(records: list[dict[str, object]] | None, snapshot: HomeSnapshot,
             "last_6h": last_6h, "done_recent": list(done.values())}
 
 
+CompletionSource = tuple[HomeSnapshot, list[dict[str, object]], dict[str, str]]
+CompletionOwner = tuple[Path, Path] | tuple[int]
+CompletionKey = tuple[CompletionOwner, str]
+
+
+def recap_completions(sources: list[CompletionSource], now: datetime) -> list[dict[str, object]]:
+    end = now.timestamp()
+    start = end - RECAP_HOURS * 3600
+    owner_keys: dict[int, CompletionOwner] = {}
+    owners: dict[CompletionOwner, HomeSpec] = {}
+    items: dict[CompletionKey, BacklogItem] = {}
+    titles: dict[CompletionKey, str] = {}
+    projects: dict[CompletionKey, str] = {}
+    completed: dict[tuple[CompletionKey, str, int], tuple[float, str, bool]] = {}
+    scopes: dict[int, list[HomeSnapshot]] = {}
+
+    def key_for(source: HomeSnapshot, task: str, *, fleet: bool = False) -> CompletionKey:
+        owner, local_task = task_owner(source, task.strip()) if fleet else (source, task)
+        if owner is source:
+            owner, local_task = task_reference_owner(source, task, scopes[id(source)])
+        if id(owner) not in owner_keys:
+            spec = owner.spec
+            identity: CompletionOwner = (id(owner),)
+            if spec.home is not None and not spec.remote_host and not spec.unavailable_reason:
+                identity = (spec.home.resolve(), (owner.data_dir or spec.data_dir or spec.home / "data").resolve())
+            owner_keys[id(owner)] = identity
+            owners.setdefault(identity, spec)
+        return owner_keys[id(owner)], local_task
+
+    def finish(key: CompletionKey, stamp: float, event: str, pr: str = "", *, day: bool = False) -> None:
+        if not start - 86400 < stamp <= end:
+            return
+        utc_day = int(stamp // 86400)
+        candidate = (key, event, utc_day)
+        previous = completed.get(candidate)
+        if (utc_day + 1) * 86400 > start and (previous is None or (not day, stamp) > (not previous[2], previous[0])):
+            completed[candidate] = (stamp, pr, day)
+
+    ledger = []
+    ledger_sources: dict[Path, list[HomeSnapshot]] = {}
+    for source, records, feed_titles in sources:
+        if id(source) not in scopes:
+            family = all_snapshots([source])
+            scopes.update((id(member), family) for member in family)
+        assert source.spec.home is not None
+        ledger_home = source.spec.home.resolve()
+        ledger_sources.setdefault(ledger_home, []).append(source)
+        ledger.extend((ledger_home, record) for record in records)
+        for task, title in feed_titles.items():
+            titles.setdefault(key_for(source, task, fleet=True), title)
+
+    for ledger_home, record in sorted(ledger, key=lambda entry: entry[1]["ts"]):
+        stamp = float(record["ts"])  # type: ignore[arg-type]
+        if stamp > end:
+            break
+        event, project, pr = record["event"], record.get("project"), record.get("pr")
+        if event not in {"task.dispatched", "task.merged"}:
+            continue
+        task = str(record["task"]).strip()
+        resolved = {key_for(source, task, fleet=True) for source in ledger_sources[ledger_home]}
+        keys = {key for key in resolved if key[1] != task} or resolved
+        if len(keys) != 1:
+            continue
+        key = keys.pop()
+        if event == "task.dispatched" and isinstance(project, str):
+            projects[key] = project
+        if event == "task.merged":
+            finish(key, stamp, "merged", pr if isinstance(pr, str) else "")
+
+    for source, _, _ in sources:
+        for item in backlog_items(source.backlog_markdown or "", source):
+            key = key_for(source, item.id)
+            items[key] = item
+            if item.done:
+                state = normalized_state(item.attrs.get("state") or item.attrs.get("status") or item.state)
+                for field in ("merged", "done", "closed"):
+                    value = item.attrs.get(field, "")
+                    when = parse_when(value)
+                    if when is not None:
+                        event = "merged" if field == "merged" or state == "merged" else "closed"
+                        finish(key, when.timestamp(), event, day=is_date_only(value))
+
+    by_owner: dict[CompletionOwner, list[dict[str, object]]] = {}
+    for (key, event, _), (stamp, pr, day) in completed.items():
+        if not day and stamp < start:
+            continue
+        owner_id, task = key
+        item = items.get(key)
+        by_owner.setdefault(owner_id, []).append({
+            "task": task, "time": stamp, "event": event, "day": day,
+            "title": plain_title((item.title if item else "") or titles.get(key, "")) or task,
+            "project": projects.get(key) or (item.project if item else ""),
+            "pr": pr,
+        })
+    return [{"label": owners[key].label, "parent": owners[key].parent_label, "items": rows}
+            for key, rows in by_owner.items()]
+
+
 def decision_key(snapshot: HomeSnapshot, row: dict[str, object]) -> str:
     if row.get("kind") == "keyed" and row.get("key"):
         owner = next((child.spec.label for child in snapshot.children if child.spec.route_id == row["task"]), str(row["task"]))
@@ -3299,6 +3358,7 @@ def home_attention(
     snapshot: HomeSnapshot, now: datetime, all_decisions: bool = False,
     use_feed: bool = True, feed_runner: Callable[[Path, Path | None], dict[str, object]] = run_attention_feed,
     board_activity: dict[str, float] | None = None, projects_out: dict[str, str] | None = None,
+    completion_sources: list[CompletionSource] | None = None,
 ) -> dict[str, object]:
     spec = snapshot.spec
     since = now.timestamp() - DEFAULT_RECENT_DAYS * 86400
@@ -3345,24 +3405,35 @@ def home_attention(
             "path": str(LEDGER_PATH), "present": records is not None, "version": LEDGER_VERSION,
             "records": len(records or []),
         }
-        work = recent_work(records, snapshot, feed_titles, now)
-        view["recent_work_6h"] = work.pop("last_6h")
-        view["done_recent"] = work.pop("done_recent")
-        view["show_recent"] = bool(view["recent_work_6h"])
-        view["recent_work"] = work
     snapshots = all_snapshots([snapshot])
     normalized: list[dict[str, object]] = []
     for owner in snapshots:
-        if owner.error or owner.spec.home is None or owner.spec.remote_host:
+        owner_spec = owner.spec
+        if owner_spec.home is None or owner_spec.remote_host or owner_spec.unavailable_reason:
+            continue
+        if owner is not snapshot and owner.error and completion_sources is None:
             continue
         local_records = records or []
         if owner is not snapshot:
             try:
-                local_records = read_fleet_ledger(owner.spec.home / LEDGER_PATH) or []
+                local_records = read_fleet_ledger(owner_spec.home / LEDGER_PATH) or []
             except AttentionSourceError as exc:
-                errors.append(exc.as_dict())
+                if not owner.error:
+                    errors.append(exc.as_dict())
                 local_records = []
-            view["done_recent"].extend(recent_work(local_records, owner, {}, now)["done_recent"])
+        titles = feed_titles if owner is snapshot else {}
+        if completion_sources is not None:
+            completion_sources.append((owner, local_records, titles))
+        if owner is snapshot and ledger_ok:
+            work = recent_work(local_records, owner, titles, now)
+            view["recent_work_6h"] = work.pop("last_6h")
+            view["done_recent"] = work.pop("done_recent")
+            view["show_recent"] = bool(view["recent_work_6h"])
+            view["recent_work"] = work
+        if owner.error:
+            continue
+        if owner is not snapshot:
+            view["done_recent"].extend(recent_work(local_records, owner, titles, now)["done_recent"])
         normalized.extend(dict(record, task=task_key(owner, str(record["task"]), snapshots)) for record in local_records)
     if projects_out is not None:
         for owner in snapshots:
@@ -3714,11 +3785,16 @@ def attention_view(
     priority_projects: list[str] | None = None, project: str | None = None, show_more: bool = False,
     saved_views: tuple[list[dict[str, object]], str] | None = None, view_name: str | None = None, all_views: bool = False,
     waits: dict[str, dict[str, object]] | None = None,
+    completions_out: list[dict[str, object]] | None = None,
 ) -> dict[str, object]:
     now = now or datetime.now(timezone.utc)
     board_activity = board_engagement(homes)
     projects: dict[str, str] = {}
-    views = [home_attention(snapshot, now, True, use_feed, feed_runner, board_activity, projects) for snapshot in homes]
+    completion_sources: list[CompletionSource] | None = [] if completions_out is not None else None
+    views = [home_attention(snapshot, now, True, use_feed, feed_runner, board_activity, projects, completion_sources)
+             for snapshot in homes]
+    if completions_out is not None and completion_sources is not None:
+        completions_out.extend(recap_completions(completion_sources, now))
     shared = {"schema": ATTENTION_SCHEMA, "generated": iso_seconds(now.timestamp()), "homes": views}
     decisions = decision_rows(homes, shared)
     board = board_view(homes, now, fallback=True, decisions=decisions)
@@ -4794,12 +4870,17 @@ def task_owner(snapshot: HomeSnapshot, task: str) -> tuple[HomeSnapshot, str]:
     return task_owner(child, rest) if child is not None else (snapshot, task)
 
 
-def task_key(snapshot: HomeSnapshot, task: str, snapshots: list[HomeSnapshot]) -> str:
-    _prefix, separator, rest = task.strip().partition("/")
-    owner = next((s for s in snapshots if separator and report_reference(s.spec.label, rest) == task.strip()), None)
+def task_reference_owner(snapshot: HomeSnapshot, task: str, snapshots: list[HomeSnapshot]) -> tuple[HomeSnapshot, str]:
+    task = task.strip()
+    _prefix, separator, rest = task.partition("/")
+    owner = next((s for s in snapshots if separator and report_reference(s.spec.label, rest) == task), None)
     if owner is not None:
-        return report_reference(owner.spec.label, rest)
-    owner, task = task_owner(snapshot, task.strip())
+        return owner, rest
+    return task_owner(snapshot, task)
+
+
+def task_key(snapshot: HomeSnapshot, task: str, snapshots: list[HomeSnapshot]) -> str:
+    owner, task = task_reference_owner(snapshot, task, snapshots)
     return report_reference(owner.spec.label, task)
 
 
@@ -5908,10 +5989,10 @@ def site_builder(
     args: argparse.Namespace, allow_marks: bool = False, push: PushNotifier | None = None,
 ) -> Callable[[], dict[str, str]]:
     def build() -> dict[str, str]:
-        config, homes, bearings = load_site(args)
+        config, homes, bearings = load_site(args, include_calls=True)
         configured_title = config.get("page_title")
         title = args.title or (configured_title if isinstance(configured_title, str) else None) or DEFAULT_TITLE
-        found = assign_topic_pages(homes)
+        found = bearings.topic_pages
         previous = build_html(
             homes, title, bearings=bearings, refresh_seconds=DEFAULT_REFRESH_SECONDS, allow_marks=allow_marks,
             push_enabled=push is not None, front_href="index.html" if found else None,
@@ -6652,7 +6733,7 @@ def make_handler(
                     print(f"quarterdeck: could not log the visit: {exc}", file=sys.stderr, flush=True)
             kind = "json" if name.endswith(".json") else "plain" if name.endswith(".txt") else "html"
             self.send_text(200, pages[name], f"{'application' if kind == 'json' else 'text'}/{kind}; charset=utf-8",
-                           sandbox=name.startswith((DOC_PREFIX, RAW_PREFIX)))
+                           sandbox=name.startswith(RAW_PREFIX))
 
         def route_path(self, path: str) -> str | None:
             """The routed path, or None after redirecting beneath the configured prefix."""
@@ -8604,6 +8685,7 @@ TOPIC_ASK_SCRIPT = """
         try { sessionStorage.setItem(SCROLL, String(window.scrollY)); } catch (error) { /* reloads at the top */ }
         const next = new URL(location.href);
         next.searchParams.set("qd_refresh", "1");
+        document.body.dataset.qdRefreshing = "1";
         location.replace(next.href);
       }
       if (every > 0) {
@@ -8962,7 +9044,7 @@ def topic_page_html(topic: Topic, snapshot: HomeSnapshot, multi_home: bool, gene
     <p class="footnote">Read from {html.escape(source)}. Built {topic_stamp(generated, "full")}.</p>
     {ask}
   </main>
-  {TOPIC_TIME_SCRIPT}{topic_ask_script() if live else ""}
+  {TOPIC_TIME_SCRIPT}{LAST_LOOK_SCRIPT}{topic_ask_script() if live else ""}
 </body>
 </html>
 '''
@@ -9085,41 +9167,66 @@ def topics_section_html(homes: list[HomeSnapshot], now: datetime, allow_marks: b
 CLASSIC_PAGE = "classic.html"
 SEARCH_PAGE = "search.html"
 FRONT_CHANGED_ENTRIES = 30  # the newest entries per topic that "changed since you last looked" counts
-FRONT_FIRST_LOOK_HOURS = 48  # with no earlier visit on this device, changes from this long ago count as new
 SEARCH_FILTERS = (("all", "All"), ("needs", "Needs you"), ("underway", "Underway"), ("waiting", "Waiting"),
                   ("queued", "Queued"), ("done", "Done"))
 PIECE_FILTER = {"needs you": "needs", "ready for review": "needs", "underway": "underway", "blocked": "waiting",
                 "queued": "queued", "done": "done", "cancelled": "done"}
 
 
-FRONT_SCRIPT = """
+LAST_LOOK_SCRIPT = """
   <script>
     (function () {
-      // "Changed since you last looked": entries newer than the moment you last looked away from this page on this
+      // Entries newer than the moment you last looked away from Quarterdeck on this
       // device. The automatic reload keeps the same starting point; coming back after the page was hidden for a while
       // (another app, a locked phone) moves it to when you looked away.
       const LEFT = "quarterdeck-left-at", BASE = "quarterdeck-look-from", HIDDEN = "quarterdeck-hidden-at";
       const AWAY_MS = 120000;
       function read(store, key) { try { return Number(store.getItem(key)) || 0; } catch (_) { return 0; } }
       function write(store, key, value) { try { store.setItem(key, String(value)); } catch (_) {} }
-      let from = read(sessionStorage, BASE);
-      if (!from) {
-        from = read(localStorage, LEFT) || Date.now() - %(first)d * 3600000;
-        write(sessionStorage, BASE, from);
-      }
+      let from = 0;
       function rebase() {
-        if (document.visibilityState === "hidden") {
-          if (!read(sessionStorage, HIDDEN)) write(sessionStorage, HIDDEN, Date.now());
-          return;
+        if (document.visibilityState === "hidden") return;
+        from = Math.max(from, read(sessionStorage, BASE));
+        if (!from) {
+          from = read(localStorage, LEFT) || Date.now() - %(first)d * 3600000;
+          write(sessionStorage, BASE, from);
         }
-        const hidden = read(sessionStorage, HIDDEN);
-        if (hidden > from && Date.now() - hidden > AWAY_MS) {
-          from = hidden;
+        const hidden = read(sessionStorage, HIDDEN), left = read(localStorage, LEFT);
+        if (hidden && (left > hidden || Date.now() - hidden > AWAY_MS)) {
+          from = Math.max(from, hidden, left);
           write(sessionStorage, BASE, from);
         }
         try { sessionStorage.removeItem(HIDDEN); } catch (_) {}
       }
+      function depart() {
+        if (!from || document.body.dataset.qdRefreshing || read(sessionStorage, HIDDEN)) return;
+        const left = Date.now();
+        write(sessionStorage, HIDDEN, left);
+        write(localStorage, LEFT, left);
+      }
       function show() {
+        if (!from) return;
+        const recap = document.getElementById("recap");
+        if (recap) {
+          const floor = Date.now() - %(first)d * 3600000;
+          const shown = new Map();
+          for (const item of recap.querySelectorAll("li")) {
+            const time = Number(item.dataset.time) * 1000;
+            const dayEnd = time + 86400000;
+            item.hidden = item.dataset.day ? dayEnd <= from || dayEnd <= floor : time <= from || time < floor;
+            if (item.hidden) continue;
+            const previous = shown.get(item.dataset.task);
+            if (previous && (previous.dataset.merged || !item.dataset.merged)) {
+              item.hidden = true;
+            } else {
+              if (previous) previous.hidden = true;
+              shown.set(item.dataset.task, item);
+            }
+          }
+          const count = document.getElementById("recap-n");
+          count.textContent = count.dataset.n = String(shown.size);
+          recap.hidden = shown.size === 0;
+        }
         let shown = 0;
         for (const item of document.querySelectorAll("#changed-list li")) {
           const times = (item.dataset.times || "").split(",").filter(Boolean).map(Number);
@@ -9138,18 +9245,19 @@ FRONT_SCRIPT = """
       }
       rebase();
       show();
-      addEventListener("pagehide", () => write(localStorage, LEFT, Date.now()));
+      addEventListener("pagehide", depart);
+      addEventListener("pageshow", event => {
+        if (event.persisted) { rebase(); show(); }
+      });
       document.addEventListener("visibilitychange", () => {
-        if (document.visibilityState === "hidden") {
-          write(localStorage, LEFT, Date.now());
-          write(sessionStorage, HIDDEN, Date.now());
-        } else {
+        if (document.visibilityState === "hidden") depart();
+        else {
           rebase();
           show();
         }
       });
     })();
-  </script>"""
+  </script>""".replace("%(first)d", str(RECAP_HOURS))
 
 SEARCH_SCRIPT = """
   <script>
@@ -9249,7 +9357,7 @@ def deck_page(title: str, body: str, scripts: str = "", refresh_seconds: int | N
 </head>
 <body{refresh}>
 {body}
-{TOPIC_TIME_SCRIPT}{scripts}
+{TOPIC_TIME_SCRIPT}{LAST_LOOK_SCRIPT}{scripts}
 </body>
 </html>
 '''
@@ -9421,9 +9529,7 @@ def front_page_html(homes: list[HomeSnapshot], title: str, bearings: Bearings, c
         + f'<a href="{SEARCH_PAGE}">Search</a></span></nav>'
         f'<main class="front">{stamp}{needs_block}{changed_block}{topics_block}{ask}{more}</main>'
     )
-    scripts = FRONT_SCRIPT.replace("%(first)d", str(FRONT_FIRST_LOOK_HOURS))
-    if allow_marks:
-        scripts += topic_ask_script()
+    scripts = topic_ask_script() if allow_marks else ""
     if serve_push:
         scripts += push_page_script()
     tab = f"({total}) {title}" if total else title
@@ -9899,6 +10005,51 @@ def calls_script() -> str:
             .replace("%(done)s", CALL_DONE_PREFIX))
 
 
+def recap_items(groups: list[dict[str, object]]) -> list[dict[str, object]]:
+    labels = [str(group["label"]) for group in groups]
+    names = [f'{label} ({group["parent"]})' if labels.count(label) > 1 and group["parent"] else label
+             for label, group in zip(labels, groups)]
+    items = []
+    for index, (name, group) in enumerate(zip(names, groups), 1):
+        label = f"{name} · Home {index}" if names.count(name) > 1 else name
+        items.extend(dict(item, home=label if len(groups) > 1 else "", key=f'{index}:{item["task"]}')
+                     for item in group["items"])
+    return sorted(items, key=lambda item: float(item["time"]), reverse=True)  # type: ignore[arg-type]
+
+
+def recap_html(groups: list[dict[str, object]]) -> str:
+    """The Calls side column's "Finished since you last looked": a row per finished piece of work, with the script
+    hiding what is older than the last look. Shown only when something finished in the last 48 hours."""
+    items = recap_items(groups)
+    if not items:
+        return ""
+    rows = []
+    for item in items:
+        pr = item.get("pr")
+        title = html.escape(plain_title(str(item.get("title") or item.get("task") or "")))
+        link = (f'<a href="{html.escape(str(pr), quote=True)}">{title}</a>'
+                if isinstance(pr, str) and pr.startswith("https://") else title)
+        where = " · ".join(part for part in (str(item["home"]), str(item.get("project") or "")) if part)
+        timestamp = float(item["time"])  # type: ignore[arg-type]
+        when = datetime.fromtimestamp(timestamp, timezone.utc)
+        day = ' data-day="1"' if item["day"] else ""
+        stamp = (f'<time datetime="{when.date()}">{when:%d %b %Y}</time>' if day else topic_stamp(when, "full"))
+        is_merge = item["event"] == "merged"
+        merged_attr = ' data-merged="1"' if is_merge else ""
+        verb = "Merged" if is_merge else "Closed"
+        identity = html.escape(str(item["key"]), quote=True)
+        rows.append(
+            f'<li data-time="{timestamp}"{day} data-task="{identity}"'
+            f'{merged_attr}><span class="sent-line">{link}</span>'
+            f'<span class="call-meta">{verb}{" · " + html.escape(where) if where else ""}'
+            f' · {stamp}</span></li>')
+    return (
+        '<section class="sent recap" id="recap" aria-labelledby="recap-h" hidden><h2 id="recap-h">Finished since you last looked '
+        '<span class="n" id="recap-n" data-n="0">0</span></h2>'
+        f'<ul class="sent-list" id="recap-list">{"".join(rows)}</ul></section>'
+    )
+
+
 def calls_page_html(homes: list[HomeSnapshot], title: str, bearings: Bearings, cards: list[dict[str, object]],
                     allow_marks: bool = False, refresh_seconds: int | None = None, push_enabled: bool = False,
                     pages: dict[str, str] | None = None, calls_href: str = "index.html") -> str:
@@ -9933,7 +10084,7 @@ def calls_page_html(homes: list[HomeSnapshot], title: str, bearings: Bearings, c
     more = (f'<p class="more">The <a href="{PREVIOUS_PAGE}">previous view</a> stays available for this release.</p>')
     body = (
         tabs_html(calls_href, title, calls_href)
-        + f'<main class="calls-page">{stamp}{queue_html}<aside class="calls-side">{sent_html}{ask}</aside>{more}</main>'
+        + f'<main class="calls-page">{stamp}{queue_html}<aside class="calls-side">{recap_html(bearings.completions)}{sent_html}{ask}</aside>{more}</main>'
     )
     scripts = (topic_ask_script() + calls_script()) if allow_marks else calls_script()
     if serve_push:
@@ -9968,9 +10119,7 @@ def topics_page_html(homes: list[HomeSnapshot], title: str, bearings: Bearings, 
         '<p class="empty" id="changed-empty" hidden>Nothing new since <span id="changed-since">your last look</span>.</p></section>'
         + (topic_front_ask_html(active) if allow_marks else "") + "</main>"
     )
-    scripts = FRONT_SCRIPT.replace("%(first)d", str(FRONT_FIRST_LOOK_HOURS))
-    if allow_marks:
-        scripts += topic_ask_script()
+    scripts = topic_ask_script() if allow_marks else ""
     return deck_page(f"Topics · {title}", body, scripts, refresh_seconds if allow_marks else None,
                      head=APP_LINKS if refresh_seconds else "")
 
@@ -10418,7 +10567,7 @@ def adoption_page_html(summary: dict[str, object], main_href: str = "index.html"
 {topic_lines}</section>
 {notes}
 <p class="note notice">Only tags are kept: the topic and whether Quarterdeck had the answer. Chat messages are never stored. Visits are logged on this machine with the time, the page and phone or desktop only.</p>
-</main></body></html>'''
+</main>{LAST_LOOK_SCRIPT}</body></html>'''
 
 
 def default_output_dir() -> Path:
@@ -12280,10 +12429,13 @@ def doc_page(path: Path, label: str, raw_name: str, main_href: str = "index.html
         text = path.read_text(encoding="utf-8")
     except (OSError, UnicodeError):
         return None
-    if path.suffix == ".html":
-        return inject_nav(text, raw_name, main_href), text
     try:
-        return source_page_html(label, f"data/{label}", text, raw_name, main_href), text
+        frame = (
+            f'<iframe src="{html.escape(raw_name, quote=True)}" sandbox="allow-scripts allow-popups" '
+            f'title="{html.escape(label, quote=True)}" style="width:100%;height:80vh;border:1px solid #d8d3c8;'
+            'border-radius:12px;background:#fff"></iframe>'
+        ) if path.suffix == ".html" else None
+        return source_page_html(label, f"data/{label}", text, raw_name, main_href, body_html=frame), text
     except ValueError:
         return None
 
@@ -13224,7 +13376,8 @@ def load_home_snapshot(spec: HomeSpec, discover_secondmates: bool = False) -> Ho
     return snapshot
 
 
-def load_site(args: argparse.Namespace, main_href: str = "index.html") -> tuple[dict[str, object], list[HomeSnapshot], Bearings]:
+def load_site(args: argparse.Namespace, main_href: str = "index.html", *,
+              include_calls: bool = False) -> tuple[dict[str, object], list[HomeSnapshot], Bearings]:
     """Read the configured homes and review marks, then classify them into bearings."""
     if args.config is None:
         default_path = default_config_path()
@@ -13239,6 +13392,8 @@ def load_site(args: argparse.Namespace, main_href: str = "index.html") -> tuple[
     apply_review_marks(homes, load_review_state(state_path))
     use_snapshot = not getattr(args, "no_snapshot", False)
     bearings = build_bearings(homes, use_snapshot=use_snapshot, main_href=main_href)
+    if include_calls:
+        bearings.topic_pages = assign_topic_pages(homes)
     try:
         document = read_preferences(preferences_path(args))
     except ValueError:
@@ -13249,6 +13404,7 @@ def load_site(args: argparse.Namespace, main_href: str = "index.html") -> tuple[
         homes, bearings.generated, all_decisions=True, use_feed=use_snapshot,
         priority_projects=list(document.get("priority_projects", [])),  # type: ignore[call-overload]
         saved_views=effective_views(document), all_views=True, waits=waits,
+        completions_out=bearings.completions if bearings.topic_pages else None,
     )
     if waits_error:
         bearings.attention["waits_error"] = waits_error
@@ -13263,7 +13419,7 @@ def render(args: argparse.Namespace) -> int:
         if args.lavish:
             main_path = Path(main_name)
             main_name = f"{main_path.stem}.lavish{main_path.suffix or '.html'}"
-        config, homes, bearings = load_site(args, main_href=quote(main_name, safe=""))
+        config, homes, bearings = load_site(args, main_href=quote(main_name, safe=""), include_calls=not args.lavish and not args.all)
         configured_output = config.get("output_dir")
         output_dir = Path(configured_output).expanduser() if isinstance(configured_output, str) else default_output_dir()
         output_path = Path(args.output).expanduser() if args.output else output_dir / "index.html"
@@ -13273,7 +13429,7 @@ def render(args: argparse.Namespace) -> int:
         output_path = output_path.resolve()
         validate_output_path(output_path, homes)
         output_path.parent.mkdir(parents=True, exist_ok=True)
-        front = bool(assign_topic_pages(homes)) and not args.lavish and not args.all
+        front = bool(bearings.topic_pages)
         index = build_html(homes, title, lavish=args.lavish, show_all=args.all, bearings=bearings,
                            front_href=output_path.name if front else None)
         activity = site_cards(homes, bearings, False) if front else []

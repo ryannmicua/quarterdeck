@@ -53,13 +53,12 @@ sits inside that data directory; missing files and links that escape it are left
 The card text is not changed. Report references use the [report view](#read-the-report)
 below. Other opened documents carry a small bar with a
 link back to Quarterdeck and **Open file by itself**. The second link opens the
-original file with no bar: markdown as plain text, HTML as its own page. The bar
-stays at the bottom of the viewport on HTML documents, with space reserved at
-the document's end so its final content remains readable. Backlog pages carry
+original file with no bar: Markdown as plain text, HTML as its own page.
+The HTML preview displays the original in a frame below the bar. Backlog pages carry
 the back link only; standalone `reports read` output omits it.
 Links also work in a rendered snapshot with a custom filename or `--lavish`; keep its
 generated document pages beside the main page. Links respect the configured URL
-prefix. For served HTML sandboxing, see
+prefix. For preview and raw-file sandboxing, see
 [Privacy and architecture](../explanation/privacy-and-architecture.md).
 
 ### Read the report
