@@ -12162,6 +12162,23 @@ What is the fallback for older displays?
         self.assertNotIn('data-call="w-parentheses-1"', self.queue(front))
         self.assertIn('You answered <b>Checked (twice)</b>', front)
 
+    def test_hold_card_carries_every_question_of_a_multi_question_ask(self) -> None:
+        ask = ("Three questions on duplicate records:\n1. Keep the newest record when two share an email?\n"
+               "2. Merge the notes of duplicates?\n3. Show duplicates to the owner before merging?")
+        item = {"key": "fictional/dupes", "title": "Duplicate records", "ask": ask, "group": "decision",
+                "at": "2026-03-01T09:00:00Z"}
+        _config, homes, bearings = quarterdeck.load_site(self.args())
+        card = quarterdeck.need_card(item, None, "Fictional", False, None, "needs_you")
+        page = quarterdeck.calls_page_html(homes, "Quarterdeck", bearings, [card], allow_marks=False)
+        hold = self.queue(page).split('id="need-', 1)[1]
+        question = hold.split('<div class="call-question">', 1)[1].split('</div>', 1)[0]
+        for text in ("Keep the newest record", "Merge the notes of duplicates?", "Show duplicates to the owner"):
+            self.assertIn(text, question)
+        short = dict(item, key="fictional/short", ask="Merge it?")
+        card = quarterdeck.need_card(short, None, "Fictional", False, None, "needs_you")
+        page = quarterdeck.calls_page_html(homes, "Quarterdeck", bearings, [card], allow_marks=False)
+        self.assertNotIn('class="call-question"', self.queue(page))
+
     def test_hold_cards_show_briefing_clarifications_and_the_full_saved_source(self) -> None:
         briefing = "The waived check only measures coverage on generated files. " + " ".join(["background"] * 40)
         clarification = "The migration preserves all rows. " + " ".join(["detail"] * 20)
