@@ -9729,6 +9729,7 @@ def hold_call(card: dict[str, object], state: ReviewState | None) -> Call:
     history = state.history.get(("call", key), []) if state is not None else []
     hold = parse_board_time(card.get("hold_set")) or needs_card_time(card)
     links = [(str(label), str(href)) for label, href in card.get("links") or []]  # type: ignore[union-attr]
+    question = ask if ask.strip() and (ask not in (line, context) or re.search(r"[\t\r\n]| {2}", ask)) else ""
     return Call(
         key="h-" + re.sub(r"[^A-Za-z0-9_-]", "-", key), line=line,
         where=str(card.get("project") or "") or "Backlog", asked=needs_card_time(card),
@@ -9737,7 +9738,7 @@ def hold_call(card: dict[str, object], state: ReviewState | None) -> Call:
         recommend=str(card.get("recommend") or ""), links=unique_links(links)[:CALL_LINKS],
         answer=("call", key), ask=("call", key, ""), sent=latest_answer(history, floor=hold),
         tag=push_tag(card), briefing=str(card.get("briefing") or ""),
-        question=ask if ask.strip() and ask not in (line, context) else "",
+        question=question,
     )
 
 
