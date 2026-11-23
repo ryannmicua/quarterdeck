@@ -16,7 +16,9 @@ on its card. Topics and Search are the other two tabs.
   an answer goes only to the source of the card you answered.
 - **A card** shows the ask, a meta row (topic, how long it has waited, the kind of ask), up to about 30 words of
   context and three facts, the options as buttons with the recommended one marked, and its thread, report or brief
-  links. Held items include short briefing and clarification excerpts; **Full briefing** opens the full saved text.
+  links. If the headline and context omit the complete hold ask or collapse its spacing, **The full question**
+  shows the ask as plain text and preserves its line breaks and numbering. Held items include short briefing and
+  clarification excerpts. **Full briefing** opens the full saved text.
   A wait offers **Mark done**; a held item that asks for a merge offers **Merge it** and **Not yet**.
   **Answer in words** sends typed words as the answer; **Ask question** sends them as a question and keeps the card.
 - **After an answer** there are five seconds to undo. Then the card leaves the queue for **Sent**, the next call
