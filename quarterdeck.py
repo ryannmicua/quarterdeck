@@ -8202,7 +8202,7 @@ footer { border-top: 1px solid var(--rule); margin-top: 3rem; padding-top: 1rem;
 .call-context { margin: 0 0 .6rem; max-width: var(--measure); }
 .call-question { margin: 0 0 .8rem; max-width: var(--measure); }
 .call-question h3 { margin: 0 0 .25rem; font: 600 var(--text-sm)/1.4 var(--sans); color: var(--soft); }
-.call-question p, .call-question ul, .call-question ol { margin: .3rem 0; }
+.call-question p { margin: .3rem 0; white-space: pre-wrap; overflow-wrap: anywhere; }
 .call-facts { margin: 0 0 .7rem; padding-left: 1.2rem; }
 .call-facts li { margin: .15rem 0; }
 .call-opts { display: flex; flex-wrap: wrap; gap: .5rem; margin: .9rem 0 .6rem; }
@@ -9601,14 +9601,6 @@ def call_context(markdown: str) -> tuple[str, list[str]]:
     return paragraph, [fact for fact in facts if fact][:CALL_FACTS]
 
 
-def full_question(text: str, shown: str) -> str:
-    """The whole ask, when it says more than the card's one-line ask: several lines or questions, or a long paragraph."""
-    text = (text or "").strip()
-    if not text or " ".join(markdown_text(text).split()) == shown:
-        return ""
-    return text if len([line for line in text.splitlines() if line.strip()]) > 1 or len(text.split()) > CALL_CONTEXT_WORDS else ""
-
-
 def call_line(text: str) -> str:
     return " ".join(markdown_text(text).split())
 
@@ -9744,7 +9736,8 @@ def hold_call(card: dict[str, object], state: ReviewState | None) -> Call:
         else CALL_KIND_LABELS["question"], context=context, facts=facts, options=options,
         recommend=str(card.get("recommend") or ""), links=unique_links(links)[:CALL_LINKS],
         answer=("call", key), ask=("call", key, ""), sent=latest_answer(history, floor=hold),
-        tag=push_tag(card), briefing=str(card.get("briefing") or ""), question=full_question(ask, line),
+        tag=push_tag(card), briefing=str(card.get("briefing") or ""),
+        question=ask if ask.strip() and ask not in (line, context) else "",
     )
 
 
@@ -9789,11 +9782,7 @@ def call_html(call: Call, now: datetime, live: bool, first: bool = False) -> str
     if call.context:
         body.append(f'<p class="call-context">{html.escape(call.context)}</p>')
     if call.question:
-        try:
-            question = render_markdown(call.question)
-        except ValueError:
-            question = f"<p>{html.escape(call.question)}</p>"
-        body.append(f'<div class="call-question"><h3>The full question</h3>{question}</div>')
+        body.append(f'<div class="call-question"><h3>The full question</h3><p>{html.escape(call.question)}</p></div>')
     if call.facts:
         body.append('<ul class="call-facts">' + "".join(f"<li>{html.escape(fact)}</li>" for fact in call.facts) + "</ul>")
     recommended = call.recommend.casefold()
