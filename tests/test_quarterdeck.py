@@ -12162,6 +12162,43 @@ What is the fallback for older displays?
         self.assertNotIn('data-call="w-parentheses-1"', self.queue(front))
         self.assertIn('You answered <b>Checked (twice)</b>', front)
 
+    def test_hold_card_carries_every_question_of_a_multi_question_ask(self) -> None:
+        ask = ("Two questions on duplicate records:\n2. Keep records with age < 30 days?\n"
+               "4. Merge the notes for [these duplicates](https://example.com/duplicates)?")
+        item = {"key": "fictional/dupes", "title": "Duplicate records", "ask": ask, "group": "decision",
+                "at": "2026-03-01T09:00:00Z"}
+        _config, homes, bearings = quarterdeck.load_site(self.args())
+        card = quarterdeck.need_card(item, None, "Fictional", False, None, "needs_you")
+        page = quarterdeck.calls_page_html(homes, "Quarterdeck", bearings, [card], allow_marks=False)
+        hold = self.queue(page).split('id="need-', 1)[1]
+        question = hold.split('<div class="call-question">', 1)[1].split('</div>', 1)[0]
+        self.assertIn(f"<p>{html.escape(ask)}</p>", question)
+        short = dict(item, key="fictional/short", ask="Merge it?")
+        card = quarterdeck.need_card(short, None, "Fictional", False, None, "needs_you")
+        page = quarterdeck.calls_page_html(homes, "Quarterdeck", bearings, [card], allow_marks=False)
+        self.assertNotIn('class="call-question"', self.queue(page))
+
+    def test_hold_card_preserves_spacing_when_context_repeats_the_ask(self) -> None:
+        _config, homes, bearings = quarterdeck.load_site(self.args())
+        title = "Review duplicate records"
+        for use_briefing in (False, True):
+            for spacing in ("\n", "  ", " "):
+                with self.subTest(briefing=use_briefing, spacing=spacing):
+                    ask = f"2. Keep old rows?{spacing}4. Merge duplicates?"
+                    wait = {"summary": title, "briefing": "ready" if use_briefing else "pending", "entries": []}
+                    if use_briefing:
+                        wait["entries"] = [{"type": "briefing", "paragraphs": [{"text": ask}]}]
+                    item = {"key": "fictional/dupes", "title": title, "ask": ask, "group": "decision",
+                            "at": "2026-03-01T09:00:00Z", "wait": wait}
+                    card = quarterdeck.need_card(item, None, "Fictional", False, None, "needs_you")
+                    queue = self.queue(quarterdeck.calls_page_html(homes, "Quarterdeck", bearings, [card]))
+                    self.assertIn(f'<p class="call-context">{ask}</p>', queue)
+                    if spacing == " ":
+                        self.assertNotIn('class="call-question"', queue)
+                    else:
+                        question = queue.split('<div class="call-question">', 1)[1].split('</div>', 1)[0]
+                        self.assertIn(f"<p>{ask}</p>", question)
+
     def test_hold_cards_show_briefing_clarifications_and_the_full_saved_source(self) -> None:
         briefing = "The waived check only measures coverage on generated files. " + " ".join(["background"] * 40)
         clarification = "The migration preserves all rows. " + " ".join(["detail"] * 20)
@@ -12183,6 +12220,8 @@ What is the fallback for older displays?
                 context = hold.split('<p class="call-context">', 1)[1].split('</p>', 1)[0]
                 self.assertIn("The waived check only measures coverage on generated files.", context)
                 self.assertLessEqual(len(context.split()), 30)
+                question = hold.split('<div class="call-question">', 1)[1].split('</div>', 1)[0]
+                self.assertIn("<p>Give the word to merge</p>", question)
                 facts = hold.split('<ul class="call-facts">', 1)[1].split('</ul>', 1)[0]
                 self.assertIn("The migration preserves all rows.", facts)
                 self.assertLessEqual(len(re.sub('<[^>]+>', '', facts).split()), 16)

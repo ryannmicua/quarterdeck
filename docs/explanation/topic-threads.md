@@ -80,12 +80,9 @@ behind search with the filters All, Needs you, Underway, Waiting, Queued and Don
 A fourth step, from the owner's ask to make Quarterdeck forget what does not need him and let him decide there
 alone, made **Calls** the default view. Evidence from a week of use showed why he went back to chat: the list
 repeated asks across sources, kept cards he had already answered in conversation, sent most rows to another page
-to decide, and read as a wall of text, while cards with buttons were answered in seconds. So Calls shows one card
-per source, each with its options as buttons, the recommendation marked, a three-fact meta row and a few words of
-context; an answered card leaves at once, while an unanswered call stays until it is answered or its record closes
-(Quarterdeck never infers settlement from wording, message counts or age); and **Changed since you last looked**
-and the topic list move to the **Topics** tab. The front page below
-stays at `previous.html` for one release.
+to decide, and read as a wall of text, while cards with buttons were answered in seconds. The new layout made each
+call answerable on its own card and moved **Changed since you last looked** and the topic list to the **Topics** tab.
+The front page below stays at `previous.html` for one release. See [Decide on Calls](../how-to/keep-topic-threads.md#decide-on-calls-owner).
 
 **Needs you** kept everything awaiting the owner on that front page; see
 [Keep topic threads](../how-to/keep-topic-threads.md) for its contents and ordering. Old items with no topic are

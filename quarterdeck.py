@@ -8200,6 +8200,9 @@ footer { border-top: 1px solid var(--rule); margin-top: 3rem; padding-top: 1rem;
 .call-meta { font: var(--text-sm)/1.4 var(--sans); color: var(--soft); }
 .call-body { padding: .2rem .2rem 1.2rem 1rem; border-left: 3px solid var(--signal); }
 .call-context { margin: 0 0 .6rem; max-width: var(--measure); }
+.call-question { margin: 0 0 .8rem; max-width: var(--measure); }
+.call-question h3 { margin: 0 0 .25rem; font: 600 var(--text-sm)/1.4 var(--sans); color: var(--soft); }
+.call-question p { margin: .3rem 0; white-space: pre-wrap; overflow-wrap: anywhere; }
 .call-facts { margin: 0 0 .7rem; padding-left: 1.2rem; }
 .call-facts li { margin: .15rem 0; }
 .call-opts { display: flex; flex-wrap: wrap; gap: .5rem; margin: .9rem 0 .6rem; }
@@ -9575,6 +9578,7 @@ class Call:
     sent: dict[str, str] | None = None  # the answer already sent from Quarterdeck, when there is one
     tag: str = ""  # a hold's push tag, so a notification opens it here
     briefing: str = ""
+    question: str = ""
 
 
 def cut_words(text: str, limit: int) -> str:
@@ -9725,6 +9729,8 @@ def hold_call(card: dict[str, object], state: ReviewState | None) -> Call:
     history = state.history.get(("call", key), []) if state is not None else []
     hold = parse_board_time(card.get("hold_set")) or needs_card_time(card)
     links = [(str(label), str(href)) for label, href in card.get("links") or []]  # type: ignore[union-attr]
+    # The headline and context can repeat the ask while collapsing its whitespace.
+    question = ask if ask.strip() and (ask not in (line, context) or re.search(r"[\t\r\n]| {2}", ask)) else ""
     return Call(
         key="h-" + re.sub(r"[^A-Za-z0-9_-]", "-", key), line=line,
         where=str(card.get("project") or "") or "Backlog", asked=needs_card_time(card),
@@ -9733,6 +9739,7 @@ def hold_call(card: dict[str, object], state: ReviewState | None) -> Call:
         recommend=str(card.get("recommend") or ""), links=unique_links(links)[:CALL_LINKS],
         answer=("call", key), ask=("call", key, ""), sent=latest_answer(history, floor=hold),
         tag=push_tag(card), briefing=str(card.get("briefing") or ""),
+        question=question,
     )
 
 
@@ -9776,6 +9783,8 @@ def call_html(call: Call, now: datetime, live: bool, first: bool = False) -> str
     body: list[str] = []
     if call.context:
         body.append(f'<p class="call-context">{html.escape(call.context)}</p>')
+    if call.question:
+        body.append(f'<div class="call-question"><h3>The full question</h3><p>{html.escape(call.question)}</p></div>')
     if call.facts:
         body.append('<ul class="call-facts">' + "".join(f"<li>{html.escape(fact)}</li>" for fact in call.facts) + "</ul>")
     recommended = call.recommend.casefold()
