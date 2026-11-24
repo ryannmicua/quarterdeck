@@ -985,21 +985,21 @@ class WorkersTests(StoreCase):
     def test_lists_only_workers_with_a_live_terminal_and_the_second_mate_roster(self) -> None:
         home = self.make_home([
             snapshot_task("Wren", state="done", exists=False, pr="not a URL"),
-            snapshot_task("Wren", decisions=["map-scale"], pr="https://example.com/pull/7"),
+            {**snapshot_task("Wren", decisions=["map-scale"], pr="https://example.com/pull/7"), "current_state": []},
             snapshot_task("Brackén Scout", state="blocked", title="Testing receipt totals", project="Moss Ledger", alive=[]),
             snapshot_task("Finch", state="done", exists=False),
-            snapshot_task("Heron", state="paused"),
-            snapshot_task("Lark", freshness="stale"),
-            snapshot_task("Skerry", state=[]),
-            snapshot_task("Skerry", kind="secondmate", alive="alive", state="working", age=[]),
-            snapshot_task("Skerry", kind="secondmate", pr="not a URL"),
+            snapshot_task("Heron", state="paused", age=1e30),
+            {**snapshot_task("Lark", freshness="stale", state=[], age=378691200), "backlog": {"repo": []}},
+            snapshot_task("Skerry", state=[], exists=None),
+            snapshot_task("Skerry", kind="secondmate", alive="alive", state=[], freshness=[], decisions=["trail-route"], age=[]),
+            {**snapshot_task("Skerry", kind="secondmate", pr="not a URL"), "endpoint": None},
             snapshot_task("Tern", kind="secondmate", alive="dead"),
-            snapshot_task("Tern", title=[]),
+            {**snapshot_task("Tern", title=[]), "endpoint": None},
             snapshot_task("Cove Mate", kind="secondmate", alive="unknown", exists=None, state="unknown"),
             snapshot_task("Pike", kind="secondmate", exists=False, alive="not_checked"),
             snapshot_task("Snipe", kind="secondmate", exists=False, alive="alive"),
             snapshot_task("Kite", kind="secondmate", exists=False, alive=[], state=[]),
-            snapshot_task("Wren", decisions=[None]),
+            snapshot_task("Wren", decisions=[None], exists=None),
         ])
         port = self.start("/qd", workers_home=home)
         status, data = self.workers(port)
@@ -1012,11 +1012,14 @@ class WorkersTests(StoreCase):
         self.assertEqual(rows["Wren"]["project"], "Copper Orchard")
         self.assertEqual(rows["Wren"]["activity"], "Mapping the harbor trail")
         self.assertEqual(rows["Wren"]["active_at"], "2026-03-02T13:31:00Z")
+        self.assertEqual(rows["Lark"]["project"], "Copper Orchard")
+        self.assertEqual(rows["Lark"]["active_at"], "2014-03-02T13:40:00Z")
+        self.assertIsNone(rows["Heron"]["active_at"])
         self.assertTrue(all("contact_at" not in row for row in rows.values()))
         self.assertEqual(rows["Wren"]["links"], [{"text": "Pull request", "href": "https://example.com/pull/7"}])
         mates = {row["name"]: row for row in data["second_mates"]}
         self.assertEqual({n: m["status"] for n, m in mates.items()},
-                         {"Skerry": "Working", "Tern": "Unreachable", "Cove Mate": "Unknown",
+                         {"Skerry": "Question asked", "Tern": "Unreachable", "Cove Mate": "Unknown",
                           "Pike": "Unreachable", "Snipe": "Unreachable", "Kite": "Unreachable"})
         self.assertEqual(len(data["second_mates"]), 6)
         self.assertEqual(mates["Skerry"]["contact_at"], SNAPSHOT_TIME)
@@ -1057,7 +1060,7 @@ class WorkersTests(StoreCase):
             "surrogate in identity": {"tasks": [snapshot_task("Wr\ud800en")]},
             "kind": {"tasks": [{**valid, "kind": None}]},
             "endpoint": {"tasks": [{**valid, "endpoint": None}]},
-            "unobserved": {"tasks": [valid, snapshot_task("Wren", exists=None)]},
+            "unobserved": {"tasks": [snapshot_task("Wren", exists=False), snapshot_task("Wren", exists=None)]},
             "nonboolean": {"tasks": [snapshot_task("Wren", exists=0)]},
             "state": {"tasks": [snapshot_task("Wren", state={})]},
             "freshness": {"tasks": [snapshot_task("Wren", freshness=[])]},
@@ -1069,7 +1072,7 @@ class WorkersTests(StoreCase):
             "contact": {"tasks": [valid, snapshot_task("Tern", kind="secondmate", alive=[])]},
             "project": {"tasks": [{**valid, "project": []}]},
             "backlog": {"tasks": [{**valid, "backlog": []}]},
-            "repo": {"tasks": [{**valid, "backlog": {"repo": []}}]},
+            "repo": {"tasks": [{**valid, "project": None, "backlog": {"repo": []}}]},
             "title": {"tasks": [snapshot_task("Wren", title=[])]},
             "paths": {"tasks": [{**valid, "paths": []}]},
             "status log": {"tasks": [{**valid, "paths": {"status_log": []}}]},
@@ -1160,11 +1163,11 @@ class WorkersTests(StoreCase):
         chrome = shutil.which("google-chrome")
         if not chrome:
             self.skipTest("google-chrome is required for the workers refresh browser test")
-        home = self.make_home([snapshot_task("Wren")])
+        home = self.make_home([snapshot_task("Wren", decisions=["map-scale"])])
         port = self.start("/qd", workers_home=home)
         next_snapshot = {
             "generated": "2026-03-02T13:39:00Z",
-            "tasks": [snapshot_task("Wren", exists=False), snapshot_task("Bracken")],
+            "tasks": [snapshot_task("Wren", exists=False), snapshot_task("Bracken", state="paused")],
         }
         list_page = quarterdeck.list_page
         run_snapshot = quarterdeck.run_snapshot
@@ -1198,6 +1201,7 @@ const check = (condition, message) => { if (!condition) throw new Error(message)
   await settled();
   check(requestCount() === 1, 'Expected one worker request on entry');
   check(roster.textContent.includes('Wren') && !roster.textContent.includes('Bracken'), 'The initial roster did not appear');
+  check(roster.querySelector('.status.exception')?.textContent === 'Question asked', 'The exception badge was missing');
   check(statusLine.querySelector('time')?.dateTime === '2026-03-02T13:40:00Z', 'The initial observation time was wrong');
   await new Promise(resolve => setTimeout(resolve, 61000));
   check(requestCount() === 1, 'A worker request ran while the page was idle');
@@ -1206,6 +1210,8 @@ const check = (condition, message) => { if (!condition) throw new Error(message)
   await refreshed;
   check(requestCount() === 2, 'The refresh button did not make exactly one worker request');
   check(!roster.textContent.includes('Wren') && roster.textContent.includes('Bracken'), 'The refreshed roster did not replace the old one');
+  check(roster.querySelector('.status')?.textContent === 'Unknown' && !roster.querySelector('.status.exception'),
+        'Unknown did not use the ordinary badge');
   check(statusLine.querySelector('time')?.dateTime === '2026-03-02T13:39:00Z', 'The refresh did not show the corrected observation time');
   result.textContent = 'PASS';
 })().catch(error => { result.textContent = error.message; });

@@ -665,9 +665,6 @@ def snapshot_field(record: dict, name: str, expected: type | tuple[type, ...]):
 
 def worker_status(task: dict) -> str:
     """Map only what the snapshot states outright onto the owner's status words."""
-    current = snapshot_field(task, "current_state", dict) or {}
-    state = snapshot_field(current, "state", str)
-    freshness = snapshot_field(current, "freshness", str)
     hints = snapshot_field(task, "hints", dict) or {}
     decisions = snapshot_field(hints, "open_decisions", list) or []
     if any(not isinstance(decision, dict) or not isinstance(decision.get("key"), str) or not decision["key"].strip()
@@ -675,15 +672,15 @@ def worker_status(task: dict) -> str:
         raise SnapshotError("the fleet snapshot has an invalid open decision")
     if decisions:
         return "Question asked"
-    if freshness not in {None, "fresh"}:
+    current = snapshot_field(task, "current_state", dict) or {}
+    if snapshot_field(current, "freshness", str) not in {None, "fresh"}:
         return "Unknown"
-    return WORKER_STATES.get(state, "Unknown")
+    return WORKER_STATES.get(snapshot_field(current, "state", str), "Unknown")
 
 
 def roster_row(key: str, task: dict, observed: datetime) -> dict[str, object]:
     backlog = snapshot_field(task, "backlog", dict) or {}
     project = snapshot_field(task, "project", str)
-    repo = snapshot_field(backlog, "repo", str)
     title = snapshot_field(backlog, "title", str)
     pr = snapshot_field(task, "pr", dict) or {}
     url = snapshot_field(pr, "url", str)
@@ -695,7 +692,8 @@ def roster_row(key: str, task: dict, observed: datetime) -> dict[str, object]:
             raise SnapshotError("the fleet snapshot has an invalid pull request URL") from exc
     row: dict[str, object] = {
         "name": key,
-        "project": snapshot_text(Path(project).name if project else None, 80) or snapshot_text(repo, 80),
+        "project": (snapshot_text(Path(project).name if project else None, 80)
+                    or snapshot_text(snapshot_field(backlog, "repo", str), 80)),
         "activity": snapshot_text(title) or ACTIVITY_UNAVAILABLE, "links": links,
     }
     if task["kind"] == "secondmate":
@@ -713,10 +711,20 @@ def roster_row(key: str, task: dict, observed: datetime) -> dict[str, object]:
         if age is not None and (isinstance(age, bool) or not 0 <= age < float("inf")):
             raise SnapshotError("the fleet snapshot has an invalid activity age")
         row["active_at"] = None
-        if age is not None and age < 10 * 365 * 86400:
+        if age is not None:
             with contextlib.suppress(OverflowError):
                 row["active_at"] = utc_text(observed - timedelta(seconds=age))
     return row
+
+
+def terminal_exists(task: dict) -> bool | None:
+    kind, endpoint = task.get("kind"), task.get("endpoint")
+    if not isinstance(kind, str) or not kind.strip() or not isinstance(endpoint, dict):
+        raise SnapshotError("the fleet snapshot has an invalid task")
+    exists = endpoint.get("exists")
+    if not isinstance(exists, bool) and (kind != "secondmate" or exists is not None):
+        raise SnapshotError("the fleet snapshot has no reliable terminal state")
+    return exists
 
 
 def workers_snapshot(home: Path) -> dict[str, object]:
@@ -735,24 +743,26 @@ def workers_snapshot(home: Path) -> dict[str, object]:
         observed = datetime.strptime(generated, "%Y-%m-%dT%H:%M:%SZ").replace(tzinfo=timezone.utc)
     except ValueError as exc:
         raise SnapshotError("the fleet snapshot timestamp was invalid") from exc
-    workers, second_mates = {}, {}
+    worker_tasks, second_mates = [], {}
     for task in tasks:
         if not isinstance(task, dict):
             raise SnapshotError("the fleet snapshot has an invalid task")
-        key, kind, endpoint = task.get("id"), task.get("kind"), task.get("endpoint")
-        if (not isinstance(key, str) or not key.strip() or any(unicodedata.category(c) in {"Cc", "Cs"} for c in key)
-                or not isinstance(kind, str) or not kind.strip() or not isinstance(endpoint, dict)):
+        key = task.get("id")
+        if not isinstance(key, str) or not key.strip() or any(unicodedata.category(c) in {"Cc", "Cs"} for c in key):
             raise SnapshotError("the fleet snapshot has an invalid task")
-        exists = endpoint.get("exists")
-        if not isinstance(exists, bool) and (kind != "secondmate" or exists is not None):
-            raise SnapshotError("the fleet snapshot has no reliable terminal state")
-        if kind == "secondmate":
-            second_mates.setdefault(key, task)
-        elif exists:
-            workers.setdefault(key, task)
+        if task.get("kind") == "secondmate":
+            if key not in second_mates:
+                terminal_exists(task)
+                second_mates[key] = task
+        else:
+            worker_tasks.append((key, task))
+    workers = {}
+    for key, task in worker_tasks:
+        if key not in second_mates and key not in workers and terminal_exists(task):
+            workers[key] = task
     return {
         "observed_at": generated,
-        "workers": [roster_row(key, task, observed) for key, task in workers.items() if key not in second_mates],
+        "workers": [roster_row(key, task, observed) for key, task in workers.items()],
         "second_mates": [roster_row(key, task, observed) for key, task in second_mates.items()],
     }
 
@@ -921,7 +931,7 @@ WORKERS_SCRIPT = r"""
     const item = make('li');
     const head = make('div', 'head');
     head.append(make('strong', 'who', worker.name),
-      make('span', worker.status === 'Unknown' || !exceptions.has(worker.status) ? 'status' : 'status exception', worker.status));
+      make('span', exceptions.has(worker.status) ? 'status exception' : 'status', worker.status));
     item.append(head);
     if (worker.project) item.append(make('p', 'project', worker.project));
     item.append(make('p', 'doing', worker.activity));
