@@ -645,11 +645,11 @@ def run_snapshot(home: Path) -> object:
         raise SnapshotError("the fleet snapshot was not readable") from exc
 
 
-def snapshot_text(value: str | None, limit: int = TITLE_LIMIT) -> str | None:
+def snapshot_text(value: str | None) -> str | None:
     if value is None:
         return None
     text = " ".join("".join(c if unicodedata.category(c) not in {"Cc", "Cs"} else " " for c in value).split())
-    return text[:limit].rstrip() or None
+    return text or None
 
 
 def utc_text(moment: datetime) -> str:
@@ -692,8 +692,8 @@ def roster_row(key: str, task: dict, observed: datetime) -> dict[str, object]:
             raise SnapshotError("the fleet snapshot has an invalid pull request URL") from exc
     row: dict[str, object] = {
         "name": key,
-        "project": (snapshot_text(Path(project).name if project else None, 80)
-                    or snapshot_text(snapshot_field(backlog, "repo", str), 80)),
+        "project": (snapshot_text(Path(project).name if project else None)
+                    or snapshot_text(snapshot_field(backlog, "repo", str))),
         "activity": snapshot_text(title) or ACTIVITY_UNAVAILABLE, "links": links,
     }
     if task["kind"] == "secondmate":
@@ -717,16 +717,6 @@ def roster_row(key: str, task: dict, observed: datetime) -> dict[str, object]:
     return row
 
 
-def terminal_exists(task: dict) -> bool | None:
-    kind, endpoint = task.get("kind"), task.get("endpoint")
-    if not isinstance(kind, str) or not kind.strip() or not isinstance(endpoint, dict):
-        raise SnapshotError("the fleet snapshot has an invalid task")
-    exists = endpoint.get("exists")
-    if not isinstance(exists, bool) and (kind != "secondmate" or exists is not None):
-        raise SnapshotError("the fleet snapshot has no reliable terminal state")
-    return exists
-
-
 def workers_snapshot(home: Path) -> dict[str, object]:
     """Every worker with a live terminal screen, plus the second mate roster, as the page shows them."""
     if not snapshot_lock.acquire(blocking=False):
@@ -743,26 +733,33 @@ def workers_snapshot(home: Path) -> dict[str, object]:
         observed = datetime.strptime(generated, "%Y-%m-%dT%H:%M:%SZ").replace(tzinfo=timezone.utc)
     except ValueError as exc:
         raise SnapshotError("the fleet snapshot timestamp was invalid") from exc
-    worker_tasks, second_mates = [], {}
+    workers, second_mates, unresolved = {}, {}, set()
     for task in tasks:
         if not isinstance(task, dict):
             raise SnapshotError("the fleet snapshot has an invalid task")
+        kind, endpoint = task.get("kind"), task.get("endpoint")
+        exists = endpoint.get("exists") if isinstance(endpoint, dict) else None
+        if not isinstance(kind, str) or not kind.strip():
+            exists = None
+        elif kind != "secondmate" and exists is False:
+            continue
         key = task.get("id")
         if not isinstance(key, str) or not key.strip() or any(unicodedata.category(c) in {"Cc", "Cs"} for c in key):
             raise SnapshotError("the fleet snapshot has an invalid task")
-        if task.get("kind") == "secondmate":
+        if kind == "secondmate":
             if key not in second_mates:
-                terminal_exists(task)
+                if not isinstance(endpoint, dict) or (exists is not None and not isinstance(exists, bool)):
+                    raise SnapshotError("the fleet snapshot has no reliable terminal state")
                 second_mates[key] = task
+        elif exists is True:
+            workers.setdefault(key, task)
         else:
-            worker_tasks.append((key, task))
-    workers = {}
-    for key, task in worker_tasks:
-        if key not in second_mates and key not in workers and terminal_exists(task):
-            workers[key] = task
+            unresolved.add(key)
+    if unresolved - workers.keys() - second_mates.keys():
+        raise SnapshotError("the fleet snapshot has no reliable terminal state")
     return {
         "observed_at": generated,
-        "workers": [roster_row(key, task, observed) for key, task in workers.items()],
+        "workers": [roster_row(key, task, observed) for key, task in workers.items() if key not in second_mates],
         "second_mates": [roster_row(key, task, observed) for key, task in second_mates.items()],
     }
 
@@ -909,11 +906,7 @@ WORKERS_SCRIPT = r"""
   const list = section.querySelector('#workers-list');
   const exceptions = new Set(['Question asked', 'Stuck', 'Unreachable']);
   let last = null;
-  const clock = iso => {
-    const moment = new Date(iso);
-    const today = moment.toDateString() === new Date().toDateString();
-    return moment.toLocaleString(undefined, today ? {timeStyle: 'short'} : {dateStyle: 'medium', timeStyle: 'short'});
-  };
+  const clock = iso => new Date(iso).toLocaleString(undefined, {dateStyle: 'medium', timeStyle: 'short'});
   const make = (tag, className, text) => {
     const node = document.createElement(tag);
     if (className) node.className = className;

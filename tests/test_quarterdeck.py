@@ -983,12 +983,17 @@ class WorkersTests(StoreCase):
         return status, json.loads(body)
 
     def test_lists_only_workers_with_a_live_terminal_and_the_second_mate_roster(self) -> None:
+        project_prefix = "Northern harbor survey " * 4
+        activity_prefix = "Charting the shipping lanes and recording the results. " * 8
         home = self.make_home([
             snapshot_task("Wren", state="done", exists=False, pr="not a URL"),
+            snapshot_task("Wren", exists=None, decisions=[None]),
             {**snapshot_task("Wren", decisions=["map-scale"], pr="https://example.com/pull/7"), "current_state": []},
-            snapshot_task("Brackén Scout", state="blocked", title="Testing receipt totals", project="Moss Ledger", alive=[]),
-            snapshot_task("Finch", state="done", exists=False),
-            snapshot_task("Heron", state="paused", age=1e30),
+            snapshot_task("Brackén Scout", state="blocked", title=activity_prefix + "East",
+                          project=project_prefix + "East", alive=[]),
+            snapshot_task(None, state="done", exists=False),
+            {**snapshot_task("Heron", state="paused", age=1e30), "project": None,
+             "backlog": {"repo": project_prefix + "West", "title": activity_prefix + "West"}},
             {**snapshot_task("Lark", freshness="stale", state=[], age=378691200), "backlog": {"repo": []}},
             snapshot_task("Skerry", state=[], exists=None),
             snapshot_task("Skerry", kind="secondmate", alive="alive", state=[], freshness=[], decisions=["trail-route"], age=[]),
@@ -1012,6 +1017,9 @@ class WorkersTests(StoreCase):
         self.assertEqual(rows["Wren"]["project"], "Copper Orchard")
         self.assertEqual(rows["Wren"]["activity"], "Mapping the harbor trail")
         self.assertEqual(rows["Wren"]["active_at"], "2026-03-02T13:31:00Z")
+        for name, direction in (("Brackén Scout", "East"), ("Heron", "West")):
+            self.assertEqual(rows[name]["project"], project_prefix + direction)
+            self.assertEqual(rows[name]["activity"], activity_prefix + direction)
         self.assertEqual(rows["Lark"]["project"], "Copper Orchard")
         self.assertEqual(rows["Lark"]["active_at"], "2014-03-02T13:40:00Z")
         self.assertIsNone(rows["Heron"]["active_at"])

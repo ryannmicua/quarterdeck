@@ -46,6 +46,12 @@ if it confirms contact with the second mate. Otherwise the row shows
 
 A row links to the worker's pull request when the snapshot supplies its URL.
 
+## Known limits
+
+If the snapshot lists the same second mate twice, once with a closed terminal
+and once with a live terminal, the closed entry can win. The row then shows
+**Unreachable** until a refresh lists the second mate once.
+
 ## If a refresh fails
 
 The page keeps the last list in the tab and says **Refresh failed** with the
