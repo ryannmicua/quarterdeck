@@ -733,7 +733,8 @@ def workers_snapshot(home: Path) -> dict[str, object]:
         observed = datetime.strptime(generated, "%Y-%m-%dT%H:%M:%SZ").replace(tzinfo=timezone.utc)
     except ValueError as exc:
         raise SnapshotError("the fleet snapshot timestamp was invalid") from exc
-    workers, second_mates, unresolved = {}, {}, set()
+    workers, second_mates = {}, {}
+    unresolved_workers, unresolved_mates = set(), set()
     for task in tasks:
         if not isinstance(task, dict):
             raise SnapshotError("the fleet snapshot has an invalid task")
@@ -747,15 +748,15 @@ def workers_snapshot(home: Path) -> dict[str, object]:
         if not isinstance(key, str) or not key.strip() or any(unicodedata.category(c) in {"Cc", "Cs"} for c in key):
             raise SnapshotError("the fleet snapshot has an invalid task")
         if kind == "secondmate":
-            if key not in second_mates:
-                if not isinstance(endpoint, dict) or (exists is not None and not isinstance(exists, bool)):
-                    raise SnapshotError("the fleet snapshot has no reliable terminal state")
-                second_mates[key] = task
+            if not isinstance(endpoint, dict) or (exists is not None and not isinstance(exists, bool)):
+                unresolved_mates.add(key)
+            else:
+                second_mates.setdefault(key, task)
         elif exists is True:
             workers.setdefault(key, task)
         else:
-            unresolved.add(key)
-    if unresolved - workers.keys() - second_mates.keys():
+            unresolved_workers.add(key)
+    if unresolved_mates - second_mates.keys() or unresolved_workers - workers.keys() - second_mates.keys():
         raise SnapshotError("the fleet snapshot has no reliable terminal state")
     return {
         "observed_at": generated,

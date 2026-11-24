@@ -1066,6 +1066,20 @@ class WorkersTests(StoreCase):
         port = self.start("/qd", workers_home=self.make_home([]))
         self.assertEqual(self.workers(port)[1], {"observed_at": SNAPSHOT_TIME, "workers": [], "second_mates": []})
 
+    def test_a_valid_second_mate_resolves_an_unreliable_duplicate_in_either_order(self) -> None:
+        valid = snapshot_task("Skerry", kind="secondmate", alive="alive")
+        port = self.start("/qd", workers_home=self.make_home())
+        for endpoint in (None, {"exists": 0}):
+            unreliable = {**valid, "endpoint": endpoint}
+            for tasks in ([unreliable, valid], [valid, unreliable]):
+                with self.subTest(endpoint=endpoint, unreliable_first=tasks[0] is unreliable):
+                    self.make_home(tasks)
+                    status, payload = self.workers(port)
+                    self.assertEqual(status, 200)
+                    self.assertEqual(payload["workers"], [])
+                    self.assertEqual([(row["name"], row["status"], row["contact_at"]) for row in payload["second_mates"]],
+                                     [("Skerry", "Working", SNAPSHOT_TIME)])
+
     def test_failures_report_a_failed_read_and_never_a_partial_list(self) -> None:
         valid = snapshot_task("Wren")
         port = self.start("/qd", workers_home=self.make_home([valid]))
@@ -1083,6 +1097,7 @@ class WorkersTests(StoreCase):
             "surrogate in identity": {"tasks": [snapshot_task("Wr\ud800en")]},
             "kind": {"tasks": [{**valid, "kind": None}]},
             "endpoint": {"tasks": [{**valid, "endpoint": None}]},
+            "unresolved second mate": {"tasks": [valid, {**valid, "kind": "secondmate", "endpoint": None}]},
             "unobserved": {"tasks": [snapshot_task("Wren", exists=False), snapshot_task("Wren", exists=None)]},
             "nonboolean": {"tasks": [snapshot_task("Wren", exists=0)]},
             "state": {"tasks": [snapshot_task("Wren", state={})]},
