@@ -19,7 +19,7 @@ parts of a list or a set of questions are cited as Q7.1, Q7.2, so you can say
 | --- | --- | --- |
 | `resource` | A link you want to get back to, with link text. | A Lavish page, a pull request, a preview. |
 | `list` | An ordered list of entries, numbered Q7.1, Q7.2, ... | A shopping list, the steps left in a launch. |
-| `questions` | Numbered questions, each with its context and the options or a suggestion to decide from. | The open questions Firstmate is waiting on. |
+| `questions` | Numbered questions, each with its context and the options or a suggestion to decide from. | The open questions Firstmate is waiting on, including [questions with a review link](docs/how-to/save-items.md#a-question-that-points-to-a-review-page). |
 
 Every item also has a title, a one-or-two-sentence description of what it is
 and why it was saved, and its saved date. Its content is copied in when it is
@@ -85,7 +85,7 @@ config keys and service flags that are still accepted.
 
 ### Does it cost tokens or contact a service?
 
-Saving and viewing items does not call a model or contact an external service.
+See [when Quarterdeck uses the network](docs/explanation/privacy-and-architecture.md#network).
 
 ## License
 

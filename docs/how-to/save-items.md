@@ -58,8 +58,8 @@ quarterdeck add --kind questions --title "Tide launch decisions" \
 ### A question that points to a review page
 
 When a question is easier to decide with a picture or a mock-up, add `links` to
-that question. Each link has the `text` the reader sees and a `url` that starts
-with `http://` or `https://`:
+that question. Use descriptive link text so the reader knows what they will
+see. For field requirements, see the [item store reference](../reference/item-store.md#format-version-1).
 
 ```json
 [
@@ -70,10 +70,10 @@ with `http://` or `https://`:
 ]
 ```
 
-The link appears directly above the options and opens in a new tab. The card
-on the Saved page shows the first link from the first open question with links,
-prefixed with the question ID, for example `Q6.2 See the mock-ups`.
-`quarterdeck show` prints every link with its address.
+Links appear above the question's options in the browser and open in a new
+tab. The Saved card shows the first link from the first open question with
+links, prefixed with the question ID, as in `Q6.2 See the mock-ups`. The card
+shows a preview only while at least one open question has links.
 
 The questions are numbered on the page, for example Q3.1 and Q3.2.
 See [Answer questions](answer-questions.md) to send decisions.

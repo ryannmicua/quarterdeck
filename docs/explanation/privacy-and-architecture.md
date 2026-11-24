@@ -42,5 +42,6 @@ and serving items make no outbound requests or model calls. The installer
 uses Git to clone or update the checkout.
 
 The [item store reference](../reference/item-store.md#format-version-1)
-describes how pages escape saved text and display links. Pages do not embed
-the server's config or store paths.
+describes how pages escape saved text and display links. Opening a link takes
+the browser to the saved destination. Pages do not embed the server's config
+or store paths.
