@@ -26,22 +26,19 @@ curl -fsSL https://raw.githubusercontent.com/ryannmicua/quarterdeck/main/install
 ```
 
 The installer warns if `~/.local/bin` is not on `PATH`. Once it is available,
-register a home and render the dashboard:
+start the page:
 
 ```sh
-quarterdeck add /path/to/firstmate
-quarterdeck render
+quarterdeck serve
 ```
 
 After installation, run `quarterdeck update` to update the checkout. The
 existing `quarterdeck install` command also reruns the installer; use
 `quarterdeck update --help` or `quarterdeck install --help` for command help.
 
-The generated page defaults to
-`${XDG_STATE_HOME:-~/.local/state}/quarterdeck/index.html`. The config and
-generated page stay outside the checkout. See [CLI and configuration
-reference](../reference/cli-and-config.md) for custom paths and
-[Configure multiple homes](configure-multiple-homes.md) for home management.
+Saved items live in `${XDG_STATE_HOME:-~/.local/state}/quarterdeck/items.json`,
+outside the checkout. See [Save items to Quarterdeck](save-items.md) and the
+[CLI and configuration reference](../reference/cli-and-config.md).
 
 ## Manual installation alternative
 
@@ -54,5 +51,4 @@ mkdir -p ~/.local/bin
 ln -s ~/.local/share/quarterdeck/quarterdeck.py ~/.local/bin/quarterdeck
 ```
 
-Create `~/.config/quarterdeck.json` with `{}` if you want to register homes
-without specifying `--config`. Keep the config outside the repository.
+The config is optional. Keep any config outside the repository.

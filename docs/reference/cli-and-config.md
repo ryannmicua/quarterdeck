@@ -1,419 +1,73 @@
 # CLI and configuration reference
 
-## Command
+## Commands
 
 ```text
-quarterdeck render [--home PATH] [--output PATH] [--config FILE] [--title TEXT] [--all] [--lavish] [--no-snapshot]
-quarterdeck serve [--host ADDRESS ...] [--port N] [--base-path PATH] [--home PATH] [--config FILE] [--title TEXT] [--no-snapshot] [--allow-marks] [--watch-waits] [--tls-cert FILE --tls-key FILE]
-quarterdeck service [--write] [--allow-marks] [--watch-waits] [--tls-cert FILE --tls-key FILE] [--host ADDRESS ...] [--port N] [--base-path PATH] [--home PATH] [--config FILE]
+quarterdeck add --kind resource|list|questions|note --title TEXT --description TEXT
+                [--url URL --link-text TEXT] [--body-file PATH|-]
+quarterdeck list [--all] [--json]
+quarterdeck show ID [--json]
+quarterdeck edit ID [--title TEXT] [--description TEXT] [--url URL] [--link-text TEXT] [--body-file PATH|-]
+quarterdeck remove ID
+quarterdeck done ID
+quarterdeck reopen ID
+quarterdeck render [--output PATH] [--config FILE] [--title TEXT]
+quarterdeck serve [--host ADDRESS ...] [--port N] [--base-path PATH] [--tls-cert FILE --tls-key FILE] [--config FILE] [--title TEXT]
+quarterdeck service [--write] [--host ADDRESS ...] [--port N] [--base-path PATH] [--tls-cert FILE --tls-key FILE] [--config FILE]
 quarterdeck url [--json]
-quarterdeck reactions import FILE|- [--dry-run] [--home PATH] [--config FILE]
-quarterdeck reports list [--home PATH] [--config FILE]
-quarterdeck reports read <report-id> [--home PATH] [--config FILE] [--open]
-quarterdeck reports mark-reviewed <report-id> [--home PATH] [--config FILE]
-quarterdeck reports unmark-reviewed <report-id> [--home PATH] [--config FILE]
-quarterdeck reports discard <report-id> [--home PATH] [--config FILE]
-quarterdeck reports undiscard <report-id> [--home PATH] [--config FILE]
-quarterdeck reports set-relevance <report-id> current|stale [--reason TEXT] [--home PATH] [--config FILE]
-quarterdeck reports relate <report-id> --to <task-id> [--remove] [--home PATH] [--config FILE]
-quarterdeck calls list [--home PATH] [--config FILE]
-quarterdeck calls set-relevance <task-id> current|stale [--reason TEXT] [--home PATH] [--config FILE]
-quarterdeck calls relate <task-id> --to <task-id> [--remove] [--home PATH] [--config FILE]
-quarterdeck attention --json|--check [--all-decisions] [--project NAME] [--more] [--view [NAME]] [--preferences FILE] [--home PATH] [--config FILE]
-quarterdeck priorities show [--json] [--preferences FILE] [--home PATH] [--config FILE]
-quarterdeck priorities set PROJECT [PROJECT ...] [--preferences FILE] [--home PATH] [--config FILE]
-quarterdeck priorities clear [--preferences FILE] [--home PATH] [--config FILE]
-quarterdeck views list [--json] [--preferences FILE]
-quarterdeck views show NAME [--json] [--preferences FILE]
-quarterdeck views save NAME --section SECTION [--section SECTION ...] [--default] [--preferences FILE] [--home PATH] [--config FILE]
-quarterdeck views default NAME [--preferences FILE] [--home PATH] [--config FILE]
-quarterdeck export [--output FILE] [--artifact FILE] [--home PATH] [--config FILE] [--title TEXT] [--bodies all|desk|none] [--no-snapshot]
-quarterdeck import <actions.json|-> [--dry-run] [--home PATH] [--config FILE]
-quarterdeck board upsert <task-id> [--id ID] [--group GROUP] [--title TEXT] [--ask TEXT] [--detail TEXT] [--topic TEXT] [--project TEXT] [--brief-url URL] [--recommendation TEXT] [--link LABEL=URL ...] [--touch] [--touched-at ISO] [--home PATH] [--data-dir PATH]
-quarterdeck board touch <task-id> [--at ISO] [--home PATH] [--data-dir PATH]
-quarterdeck board remove <task-id> [--id ID] [--home PATH] [--data-dir PATH]
-quarterdeck board active [--new-session] [--home PATH] [--data-dir PATH]
-quarterdeck board list [--json] [--home PATH] [--data-dir PATH]
-quarterdeck waits sync [--no-helper] [--home PATH] [--config FILE]
-quarterdeck waits watch [--interval SECONDS] [--home PATH] [--config FILE]
-quarterdeck waits list [--all] [--json] [--home PATH] [--config FILE]
-quarterdeck waits discard <home-label-slug/task-id> [--home PATH] [--config FILE]
-quarterdeck topics check [FILE ...] [--home PATH] [--config FILE]
-quarterdeck add <firstmate-home> [--label LABEL] [--config FILE]
-quarterdeck list [--config FILE]
-quarterdeck remove <label-or-path> [--config FILE]
 quarterdeck install [--uninstall]
 quarterdeck update
 quarterdeck help [COMMAND] [--json]
 ```
 
-Run `quarterdeck --help` or `quarterdeck help` for a command overview.
-`quarterdeck <command> --help` describes that command. `quarterdeck help
---json` prints the command index and each command's documentation paths for
-tools that need to discover the interface. `quarterdeck install` runs the
-user-local installer; add `--uninstall` to remove installer-created files.
-`quarterdeck update` runs that same installer path to update the installed
-checkout. The documentation tree is included in the checkout and its path is
-printed by `quarterdeck help`.
+An `ID` is `Q7`, `q7` or `7`. A command that fails prints `quarterdeck: <reason>`
+and exits with status 2; nothing is saved.
 
-The private default config is
-`${XDG_CONFIG_HOME:-~/.config}/quarterdeck.json`. `render` reads it when it
-exists; `add`, `list`, and `remove` use it by default. `render`, `add`, `list`,
-and `remove` accept `--config FILE` to select another config. `add` creates a
-missing file and parent directory, and `add` and `remove` write atomically with
-mode `0600`. Config writes inside the Quarterdeck checkout are refused.
+### Items
 
-Homes for `render` are selected in this order: `--home`, the `homes` array in
-the selected config, then `FM_HOME`. `--home` renders just that home and
-overrides a configured home list. If there is no configured home list, the
-single-home behavior remains: set `FM_HOME` or pass `--home`. Without a
-selected home, the command prints an error and exits with status 2.
-
-`add` requires a directory containing `data/backlog.md`. It expands `~`,
-normalizes the path to an absolute path from the current working directory, and
-refuses duplicate normalized paths and labels. The default label is the last
-path component; the command prints that choice. `list` prints registered
-labels and paths. `remove` accepts a label (case-insensitive) or normalized
-path and only unregisters the entry; it never changes Firstmate data.
-
-For each configured home, Quarterdeck reads `data/backlog.md` and immediate
-child `*/report.md` files. It also reads the parent's optional
-`data/secondmates.md` registry and renders each registered local secondmate
-under that parent. It may run that home's
-`bin/fm-bearings-snapshot.sh --json` for the bearings view and
-`bin/fm-attention.sh --json` for the "Decisions and recent work" section, unless
-`--no-snapshot` is set, and it reads `state/fleet-ledger.jsonl` for that
-section. For network behavior, see
-[Privacy and architecture](../explanation/privacy-and-architecture.md). It invokes
-no other Firstmate script directly, apart from `bin/fm-inbox.sh note` for reactions and
-for discarding a captain wait. The captain-wait watcher also reads the home's
-saved Claude Code sessions and runs the configured helper command; see
-[Captain waits](#captain-waits). The snapshot wrapper may read registered
-remote secondmate ledgers through Firstmate's routes and cache, and Quarterdeck
-shows the returned rows. A missing or unreadable home in a configured list
-gets a failure section;
-the other homes still render. The page links to readable HTML copies of
-selected reports and backlogs, generated beside the main page, and HTTPS links
-for GitHub pull requests.
-
-`priorities set` replaces the saved priorities with one to three project names
-recorded in selected homes' route registry project entries or waiting items.
-`show` prints them (`--json` includes the limit and file path); `clear` saves an
-empty list. Names resolve as described in the
-[attention JSON reference](attention-json.md#waiting-and-priorities).
-
-`views` keeps saved briefing views beside the priorities. A view has a name
-(up to 40 characters, unique ignoring case) and one or more ordered sections:
-`waiting` (Waiting decisions and needs), `recent` (the last six hours of merged and started
-work), `done` (Done recently, merged work in the last six hours), `priorities` (one section per priority project, in set order),
-`project:NAME` (one named project) and `information` (For your information). A
-section may appear once per view; unknown section types and unregistered
-projects are refused with exit 2. `views save` replaces a view of the same name
-(or adds one, up to eight views) and `--default` also makes it the startup view;
-`views default NAME` only changes the startup view; `views list` and `show`
-print the saved views (`--json` includes the startup view and file path). With
-no views saved, Quarterdeck uses two seeded views and writes nothing until you
-save: Morning (`waiting`, `recent`, `information`, the startup view) and
-Priorities (`priorities`, `waiting`). Saving the first view writes the seeded
-views too. See [Briefing views](attention-json.md#briefing-views) for what each
-section holds.
-
-The preference file is
-`${XDG_CONFIG_HOME:-~/.config}/quarterdeck/preferences.json`.
-`priorities` and `views` subcommands and `attention` accept `--preferences FILE` to override
-it; page commands read the default file. Its JSON object has `version: 1` and
-`priority_projects`, a list of at most three distinct, nonempty strings, plus
-optionally `views` (a list of `{name, sections}`, sections being `{type}` or
-`{type: "project", project}`) and `default_view` (the name of one saved view).
-View names and project-section names are trimmed on read; `default_view`
-matches ignoring case and is returned using the saved view's spelling.
-Unknown top-level members are preserved on writes. A missing file means no
-priorities and the seeded views. An unreadable or invalid file makes the
-priority, view and attention commands exit 2; the page ignores it and uses no
-priorities and the seeded views. Writes are atomic with mode `0600`
-and refuse destinations inside selected local homes or their data directories.
-
-`attention --json` prints the shared waiting and recent-work view;
-`--project NAME` selects a project and `--more` includes held-back waiting items.
-`--all-decisions` also fills the background decision list. `attention --check`
-validates the Firstmate sources and prints one line. See the
-[attention JSON reference](attention-json.md) for field definitions, scoping,
-relevance rules, source errors, compatibility windows, and exit statuses.
-
-`reports list`, `reports read`, `reports mark-reviewed`, and
-`reports unmark-reviewed` use the selected homes in the config, or the single
-home from `--home` or `FM_HOME`. They also accept `--config FILE`. Report IDs
-have the exact form `<home-label-slug>/<task-id>`: the label slug is the
-case-folded label with each run of characters outside `a` through `z` and `0`
-through `9` replaced by `-`, then leading and trailing hyphens removed; the
-task ID is the report's immediate parent directory name unchanged. The slug is
-uncapped. An empty slug becomes `home`. For example, `Maple Harbor` and `amber-18`
-produce `maple-harbor/amber-18`. A collision appears as `ID collision` in the
-list. Read and review commands refuse the ambiguous ID with matching homes and
-paths; use distinct home-label slugs to resolve it. The list reports home,
-secondmate registry, and unreadable report-file errors; report ID commands
-refuse resolution while a selected local home is incomplete.
-
-`reports read` prints Markdown and writes the existing readable HTML format.
-The HTML page is written to the Quarterdeck state directory. Use `--open` to
-open the generated page in a browser. `mark-reviewed` records the current
-report fingerprint; `unmark-reviewed` clears that mark. `discard` takes the
-report off the list without marking it reviewed (`undiscard` reverses it);
-reviewed and discarded replace each other, and a changed report returns to
-needs review. `list` prints `ID`, review state (`needs review`, `reviewed`,
-`discarded` or `ID collision`), title, home and relevance. `set-relevance`
-marks a report `current` or `stale` (default current; stale reports leave the
-review list), and `relate --to TASK` records that the report belongs with a
-task, which surfaces it under "Related to this session" while that task is on
-the desk or in flight. See [Keep the desk relevant](../how-to/keep-the-desk-relevant.md). See [Privacy and architecture](../explanation/privacy-and-architecture.md)
-for review-state storage and [The attention model](../explanation/attention-model.md)
-for how marks affect the dashboard.
-
-| Option | Meaning |
+| Command | What it does |
 | --- | --- |
-| `--home PATH` | Firstmate home; overrides a configured `homes` list and `FM_HOME`. |
-| `--output PATH` | Output HTML path; overrides `output_dir` in config. Keep it outside the repo and selected homes; those locations are refused. |
-| `--config FILE` | JSON config for this command; defaults to the private user config where documented above. It may supply homes, title, and output directory. |
-| `--title TEXT` | Page title; overrides `page_title` in config. |
-| `--all` | Include other backlog records and all reports; [decision relevance](attention-json.md#decisions) still applies. |
-| `--lavish` | Write a separate `*.lavish.html` review page with stable IDs on review cards, then open it with `lavish-axi` when available. Without Lavish, print a command hint and succeed. |
-| `--no-snapshot` | Do not run a home's `bin/fm-bearings-snapshot.sh` or `bin/fm-attention.sh`; use backlog decisions with recorded board and ledger activity, and show recent work from the ledger. |
+| `add` | Saves a new item and prints its ID. A `resource` needs `--url` (http or https) and `--link-text`; the other kinds need `--body-file`, where `-` reads standard input. A `list` body is one entry per line (a leading `-`, `*` or `1.` is removed) or a JSON array of strings. A `questions` body is a JSON array; see [Item store](item-store.md). The body is copied in at save time. |
+| `list` | Prints open items, newest first: ID, kind, saved date and title. `--all` adds done items, marked `(done)`. `--json` prints the stored items. |
+| `show` | Prints one item in full, numbering list entries and questions as `Q7.1`, `Q7.2`. `--json` prints the stored item. |
+| `edit` | Changes the title, description, a resource's URL or link text, or the body. The kind and ID stay. |
+| `remove` | Deletes an item. Its ID is never used again. |
+| `done`, `reopen` | Move an item to Done or back to Saved. |
 
-`serve` builds the page and its readable pages with the refresh behavior in the
-[serving guide](../how-to/serve-the-page.md#run-it). It serves them, and `cards.json` (the
-activity cards, schema `quarterdeck-cards.v1`), with `GET` by default
-on each repeatable `--host` address (default `127.0.0.1` only) and `--port`
-(default 8765; valid ports are 1 through 65535). `--allow-marks` enables the
-report review request, the reaction request, the saved-view request
-(`POST /api/views`, which writes only the preferences file) described in the
-[serving guide](../how-to/serve-the-page.md), and the captain-wait discard
-request (`POST /api/waits/discard`, body `{"key", "hold_set"}`), and the
-[visit log](../how-to/see-your-adoption.md#the-visit-log), and
-[phone notifications](../how-to/serve-the-page.md#get-phone-notifications)
-(`GET /api/push/key`, `GET /sw.js`, `POST /api/push/subscribe` with body
-`{"subscription"}` and `POST /api/push/unsubscribe` with body `{"endpoint"}`,
-which write only Quarterdeck's own state; available when the Python
-`cryptography` package is installed and `--no-snapshot` is omitted). With
-`--no-snapshot`, notifications, their controls and endpoints are off because
-Quarterdeck cannot tell when a needs-you item is answered; the startup message
-explains this limitation. All other writes remain refused. Endpoint paths above
-are relative to the configured base path.
+### Pages
 
-`--base-path PATH` (config `base_path`; default none) is the URL prefix a
-reverse proxy serves Quarterdeck under, such as `/qd`: a plain path with a
-leading slash and no query. Every endpoint, service-worker address and scope a
-page contains carries it. The proxy must pass it through; requests without it
-redirect with status 308 to the same path beneath it, preserving the query and
-method; the bare prefix redirects to `PATH/`. `--base-path /` disables a
-configured prefix. With no prefix, serving remains at the root. See
-[the proxy example](../how-to/serve-the-page.md#serve-it-under-a-path-prefix-behind-a-reverse-proxy).
+| Command | What it does |
+| --- | --- |
+| `render` | Writes `index.html` (Saved), `done.html` and one `q<N>.html` page per item. `--output PATH` names the Saved page; the others go beside it. Without it the pages go to `output_dir`, or `${XDG_STATE_HOME:-~/.local/state}/quarterdeck/`. Pages Quarterdeck wrote earlier that are no longer needed are deleted. A page counts as Quarterdeck's only when it carries Quarterdeck's generated-page marker, so other files stay. The output must be outside the Quarterdeck checkout. |
+| `serve` | Serves the same pages over HTTP, or HTTPS with `--tls-cert` and `--tls-key`. Every request reads the store, so a new item shows on the next load. `/Q7` also opens item Q7. `POST` is refused. `--host` defaults to `127.0.0.1` and may be repeated; `--port` defaults to 8765. A server bound only to loopback refuses requests whose `Host` is not loopback. |
+| `service` | Prints a systemd user unit that runs `serve` with the same options, or writes it to `${XDG_CONFIG_HOME:-~/.config}/systemd/user/quarterdeck.service` with `--write`. |
+| `url` | Prints the address the installed unit serves, or the default address when no unit is installed. |
 
-`--tls-cert FILE` and `--tls-key FILE`, given together, serve `https` with that
-PEM certificate chain and key instead of plain `http`. `--watch-waits` also runs the captain-wait watcher in a
-background thread; see [Captain waits](#captain-waits).
-The served page shows its generated-at time; see the
-[serving guide](../how-to/serve-the-page.md#run-it) for automatic refresh behavior.
-`service` prints a systemd user unit that runs `serve` with the given
-options (certificate and key paths become absolute), or with `--write` writes it to
-`${XDG_CONFIG_HOME:-~/.config}/systemd/user/quarterdeck.service`; it never runs
-`systemctl`. A non-loopback host exposes work data without a login. `url`
-prints the address or addresses configured in the installed user
-service; it does not check whether the service is running. If no unit is
-installed, it labels the default `serve` address shown, which a plain
-`quarterdeck serve` uses. The URL prefix follows `serve` precedence: the unit's
-explicit `--base-path`, then `base_path` from its `--config` file or, without
-that option, the default private config, then no prefix. Without a unit, the
-default private config still supplies the prefix. These are Quarterdeck's own
-addresses, not a reverse proxy's public address. A foreground serve started
-with custom `--host`, `--port` or `--base-path` is not detected and serves
-wherever those flags point. The URLs use
-`https` when the unit has `--tls-cert`. IPv6 URLs use
-brackets, and scoped IPv6 zone separators use `%25` in URLs. Add `--json` for
-an object containing `urls`, raw configured `hosts`, and `source`; when no unit
-is installed, `source` is `default` and `note` explains the fallback. See
-[Serve the always-current bearings page](../how-to/serve-the-page.md).
+`--base-path /qd` (or `base_path` in the config) serves every page under that
+prefix for a reverse proxy. A request for the bare prefix is redirected (308)
+to `/qd/`, and a path outside the prefix to the same path beneath it, such as
+`/q3.html` to `/qd/q3.html`. `--base-path /` turns a configured prefix off.
 
-`board` manages one home's `<data>/captain-board.json` by task id. It uses
-`--data-dir` directly when supplied, without requiring a home. Otherwise it
-requires `--home` or `FM_HOME`, and uses `FM_DATA_OVERRIDE` when set, then
-`<home>/data`. The data directory must already exist. It does not read the
-config's home list. `upsert` adds or updates an item, `touch` records the captain's
-engagement time, `remove` deletes the task's items, `active` records an operator
-message (starting a new session after a gap of more than four hours, or with
-`--new-session`), and `list` prints them.
-Writes are atomic and locked; an unreadable or unsupported board is refused
-rather than overwritten. If both `--touch` and `--touched-at` are supplied,
-the explicit timestamp takes precedence. Exit status is 0 on success, 1 when
-`touch` finds no item, and 2 for invalid input or an unwritable board. See
-[Keep the captain board current](../how-to/keep-the-board-current.md).
+`serve` still accepts `--allow-marks`, `--watch-waits`, `--no-snapshot` and
+`--home`, which older service units pass, and ignores them with a notice.
 
-`calls` sets relevance and relations for past captain calls (board items and
-held backlog tasks) in Quarterdeck's local state, never in the board file. A
-call is named by its task ID, or `<home-label-slug>/<task-id>` when the same ID
-exists in several homes. `calls list` prints each call's ID, relevance and band.
+### Install and help
 
-`export` writes the cloud artifact's data snapshot: JSON to standard output, to
-`--output`, and with `--artifact` an HTML page built from
-`templates/artifact.html.tmpl` with the snapshot embedded. Shared-relevance
-snapshots carry `decision_window_days`; their calls retain the real activity
-time in `touched_at` and identify its classification with `activity_reason`.
-Artifact cards and details label worker-only activity as "worked on" and do
-not claim captain-message recency. Output paths must
-be outside the checkout and selected homes. A failed attention view aborts
-export with status 2 before writing either output. `--bodies` picks which waiting
-reports carry their Markdown: `all` (default), `desk` (only reports linked to
-a desk or this-week call, or related to the session) or `none`. `import` applies the artifact's
-recorded mark and discard actions from a file (or `-` for standard input) to
-the local state; actions for changed reports are skipped and listed. Exit
-status is 0 when the file was read, even if some actions were skipped, and 2
-for an unreadable file or invalid action. See
-[Use the cloud artifact](../how-to/use-the-cloud-artifact.md).
+`install` runs the user-local installer; `install --uninstall` removes what it
+created. `update` updates an installed checkout. `help` prints command help and
+the documentation to read; `help --json` prints a machine-readable index.
 
-<a id="reactions"></a>
+## JSON configuration
 
-`reactions import` delivers the reactions recorded in the cloud artifact
-(collection `qd-inbox`; a JSON list, or `{"version": 1, "reactions": [...]}`,
-of documents with `id`, `kind` of `call` or `report`, `item_id`, `reaction` one
-of `approve`, `hold`, `not-now`, `question` or empty, `text` up to 20,000
-Unicode code points, and `at`). The same text limit applies to served-page and
-cloud-artifact replies. Delivery collapses whitespace into a single line.
-Oldest first, each is sent as a note through the item's
-home's `bin/fm-inbox.sh note --request-id qd-<id>`; delivered ids are kept in
-the local state, so none is sent twice. A reaction for an unknown item, an
-invalid document, or a failed delivery is skipped and listed (a failed one
-stays undelivered and is sent on the next import). `--dry-run` sends nothing.
-Exit status is 0 when the file was read, and 2 for an unreadable or malformed
-file. The served page's Send button and
-[one-tap answers](../how-to/serve-the-page.md#react-to-calls-and-reports-from-the-page)
-post to `POST /api/reactions` (body
-`{"id", "kind", "item_id", "reaction", "text"}`; `kind` is `call`, `report`,
-`topic` for a question about a topic, or `decision` for an answer to a topic
-decision, and the last two take text only) when `serve --allow-marks` is
-on. Each composer retains a failed submission's id while its submitted `kind`,
-`item_id`, `reaction` and trimmed `text` stay unchanged. An unchanged retry
-reuses the same fm-inbox request id and is not delivered twice. A changed
-payload or a successful submission causes the next send to get a new id.
-Draft edits and quick-reaction selections do not change an answer button's
-payload or invalidate its failed submission's id.
-
-`quarterdeck topics check` reads the topic files Firstmate keeps in
-`<data>/topics/<topic-id>.md` (the format is in the
-[topic files reference](topic-files.md)) and prints one line per mistake,
-`<file>:<line>: error|warning: <what is wrong>`, then a count. With no `FILE` it
-checks every configured home's topics, or the one from `--home` or `FM_HOME`.
-Pieces are checked against the backlog when the home is known. Exit status is 0
-with no errors (warnings are allowed), 1 for topic-file errors, and 2 when the
-check is incomplete because configuration, a local home or backlog, topic-directory
-discovery, or local secondmate discovery cannot be read or resolved. An absent
-optional topics directory is valid. Named-file checks do not discover unrelated
-homes. `render`
-and `serve` write one `topic-<id>.html` page per topic; when two homes share a
-topic id, each page name also carries a short hash of its home. When any topic
-exists, the main page (`index.html`, or the `--output` name) is Calls, and
-`topics.html`, `search.html`, the front page before Calls as `previous.html` and
-the page before that as `classic.html` are written beside it. `render --all` and `render --lavish` keep the previous page as the
-main page.
-
-`add`, `list`, and `remove` accept the same `--config FILE` option. `add` also
-accepts `--label LABEL`; `remove` takes one label or path.
-
-`FM_DATA_OVERRIDE` applies to the single home selected by `--home` or
-`FM_HOME`. In a configured home list, use each home's optional `data_dir`
-instead.
-
-Without an output override, the output is
-`${XDG_STATE_HOME:-~/.local/state}/quarterdeck/index.html`.
-
-## JSON configuration schema
-
-Configuration is optional for rendering a single home. Only these top-level
-keys are accepted:
+The config is optional. `render`, `serve` and `service` read `--config FILE`,
+or `${XDG_CONFIG_HOME:-~/.config}/quarterdeck.json` when it exists.
 
 | Key | Type | Default | Meaning |
 | --- | --- | --- | --- |
-| `page_title` | string | `Quarterdeck` | Heading and browser title. |
-| `output_dir` | string path | `${XDG_STATE_HOME:-~/.local/state}/quarterdeck` | Directory for `index.html`; `~` is expanded and relative paths use the current working directory. |
-| `homes` | array of objects | unset | Homes to render together. Each object has `path` (required), `label` (optional), `data_dir` (optional) and `transcripts` (optional). |
-| `captain_waits` | object | unset | Settings for the captain-wait watcher; see [Captain waits](#captain-waits). |
-| `base_path` | string | none | See the `--base-path` contract under [Command](#command). |
+| `page_title` | string | `Quarterdeck` | The heading and browser title. `--title` overrides it. |
+| `output_dir` | string path | `${XDG_STATE_HOME:-~/.local/state}/quarterdeck` | Where `render` writes the pages. |
+| `base_path` | string | none | The URL prefix described above. |
 
-Each home object's `path` is the Firstmate home. `label` is shown above its
-review sections; if omitted, Quarterdeck uses the last path component. An
-optional `data_dir` replaces that home's `<path>/data` for its backlog and
-reports. An optional `transcripts` names the folder of the home's saved Claude
-Code sessions for the captain-wait watcher. Home `path`, `data_dir` and
-`transcripts` values expand `~`; relative values resolve
-from the config file's directory. Relative `output_dir` keeps its original
-behavior and resolves from the current working directory.
-
-Example:
-
-```json
-{
-  "page_title": "Quarterdeck",
-  "homes": [
-    {"label": "Maple Harbor", "path": "~/firstmate-maple"},
-    {"label": "Willow Quay", "path": "~/firstmate-willow"}
-  ]
-}
-```
-
-Local secondmates are discovered from one parser-compatible route per line in
-the parent's `data/secondmates.md`; each route's `home:` field points to a
-separate Firstmate home. Remote routes are listed as unavailable homes, though
-the parent's snapshot may return their aggregated records for the bearings
-sections. See [Configure multiple homes](../how-to/configure-multiple-homes.md)
-for setup steps and [Privacy and architecture](../explanation/privacy-and-architecture.md)
-for the read-only model.
-
-Start from [`quarterdeck.example.json`](../../quarterdeck.example.json). It
-contains invented example values only. Keep a real config file outside the repo
-or name it `.quarterdeck.json`, which is ignored by Git.
-
-## Captain waits
-
-`waits` keeps one card per task held for the captain; see
-[Track what is waiting on you](../how-to/track-captain-waits.md) for the
-lifecycle. `waits sync` runs one watcher pass (`--no-helper` updates the cards
-without running the helper); `waits watch` repeats passes every `--interval`
-seconds, else `poll_seconds`, until Ctrl+C; `serve --watch-waits` does the same
-in the background and refreshes the page after each pass. A failed pass is
-reported on standard error and the next one still runs. `waits list` prints the
-waiting cards as `<key>: <kind>: <summary>`; `--all` adds released and
-discarded cards and `--json` prints `{store, waits}`, each wait shaped like the
-attention view's [`wait` member](attention-json.md#captain-waits).
-`waits discard KEY` runs the home's `bin/fm-inbox.sh note --request-id
-qd-wait-<hash> --json -- <one line>` asking Firstmate to drop the hold, then
-hides the card; it exits 2 when the wait is unknown, already released, or the
-note was not delivered. The keys of `captain_waits` are:
-
-| Key | Type | Default | Meaning |
-| --- | --- | --- | --- |
-| `store_dir` | string path | `${XDG_STATE_HOME:-~/.local/state}/quarterdeck/captain-waits` | Card store directory; must be outside the checkout, every selected home and its data directory. Relative paths resolve from the config file's directory. |
-| `helper_command` | array of strings | headless `claude -p` with tools, MCP servers, slash commands and settings off, model `sonnet` | Command that reads the prompt on standard input and prints the JSON answer. |
-| `helper_timeout_seconds` | positive integer | `180` | Time limit for one helper run; the process group is killed after it. |
-| `poll_seconds` | positive integer | `60` | Time between watcher passes. |
-| `window_before_minutes` | positive integer | `20` | How far before the hold the briefing reads Firstmate's messages. |
-| `window_after_minutes` | positive integer | `10` | How far after the hold it reads; the briefing runs once this has passed. |
-
-A home's transcript folder defaults to
-`${CLAUDE_CONFIG_DIR:-~/.claude}/projects/<home path with every character other
-than a letter or digit replaced by ->`. The store's `waits.json` is written
-atomically under a lock with mode 0600; per-wait lock files live in `locks/`
-and the helper runs in `work/`.
-
-## Data shown
-
-Report recommendations are shown only when the report explicitly labels one.
-Board recommendation chips come from the optional
-[`brief.recommendation` field](captain-board.md). See [The attention
-model](../explanation/attention-model.md) for dashboard inclusion and `--all`
-behavior.
-
-The page is regenerated on demand. `quarterdeck render --lavish` writes a
-separate Lavish-ready file beside the normal output (for example,
-`index.lavish.html`) and opens it with `lavish-axi` when that command is on
-`PATH`. It prints Lavish's session URL. Without Lavish, Quarterdeck prints a
-command hint and still succeeds. See [Request a Lavish page](../how-to/request-lavish-page.md)
-for the workflow and [Privacy and architecture](../explanation/privacy-and-architecture.md)
-for the request data and interaction boundary.
+`homes` and `captain_waits`, which older versions read, are accepted and
+ignored. Any other key is an error. See
+[`quarterdeck.example.json`](../../quarterdeck.example.json).

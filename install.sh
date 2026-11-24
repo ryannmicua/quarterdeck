@@ -70,7 +70,7 @@ uninstall() {
     if [ "$preserve_state" = no ]; then
         rm -f "$STATE_FILE"
     fi
-    printf 'Kept config %s and all Firstmate data. Remove the config separately if you want to discard it.\n' "$CONFIG_FILE"
+    printf 'Kept config %s and your saved items. Remove them separately if you want to discard them.\n' "$CONFIG_FILE"
 }
 
 if [ "${1:-}" = --uninstall ]; then
@@ -136,4 +136,4 @@ case ":${PATH-}:" in
     *":$BIN_DIR:"*) ;;
     *) printf 'Warning: %s is not on PATH. Add it to your shell profile.\n' "$BIN_DIR" ;;
 esac
-printf 'Next steps:\n  quarterdeck --help\n  quarterdeck add /path/to/firstmate\n  quarterdeck render\n'
+printf 'Next steps:\n  quarterdeck help\n  quarterdeck serve\n'

@@ -1,40 +1,36 @@
-# First render
+# Your first Quarterdeck page
 
-This tutorial takes a user-local installation to a local review page.
+This walks through saving three items and opening the page. It uses invented
+examples.
 
-## Before starting
+1. Install Quarterdeck; see [Install Quarterdeck](../how-to/install.md).
 
-Install Quarterdeck using the [install how-to](../how-to/install.md), and know
-the path to the Firstmate home whose work should appear on the page. The
-installer checks for Python 3. Quarterdeck reads that home's
-`data/backlog.md` and any `data/<id>/report.md` files.
+2. Save a link:
 
-## Render and open the page
+   ```sh
+   quarterdeck add --kind resource --title "Harbor preview" \
+     --description "The preview of the harbor map, saved to check the labels later." \
+     --url https://example.com/harbor/preview --link-text "Harbor map preview"
+   ```
 
-Register the home, then render the page:
+   It prints `Q1`.
 
-```sh
-quarterdeck add /path/to/firstmate
-quarterdeck render
-```
+3. Save a list from standard input:
 
-The add command validates the home layout and prints the label it used. The
-render command prints the output path. The default is
-`${XDG_STATE_HOME:-~/.local/state}/quarterdeck/index.html`, outside the repo.
-Open that file in a browser, or pass it to `lavish-axi`:
+   ```sh
+   printf '%s\n' "Buy rope" "Paint the hull" | quarterdeck add --kind list \
+     --title "Harbor chores" --description "Chores for the weekend." --body-file -
+   ```
 
-```sh
-lavish-axi ~/.local/state/quarterdeck/index.html
-```
+   It prints `Q2`.
 
-See [The attention model](../explanation/attention-model.md) for which reports
-and backlog items appear on the page. A recommendation appears only when the
-associated report includes a `Recommendation` heading or field.
+4. Run `quarterdeck list`. You see Q2 above Q1: newest first.
 
-## Refresh
+5. Run `quarterdeck serve` and open `http://127.0.0.1:8765/`. The Saved table
+   shows both items. Open Harbor chores: its entries are numbered Q2.1 and Q2.2.
 
-Run `quarterdeck render` again to replace the page with a fresh snapshot.
-For recurring refreshes, follow the [scheduled refresh how-to](../how-to/schedule-refresh.md).
+6. Run `quarterdeck done Q2` and reload. Harbor chores moves to Done.
 
-To place several independent homes on one page, continue with
-[Configure multiple homes](../how-to/configure-multiple-homes.md).
+Next, read [Save items to Quarterdeck](../how-to/save-items.md) for open
+questions and notes, and [Serve the page](../how-to/serve-the-page.md) to keep
+it running.
