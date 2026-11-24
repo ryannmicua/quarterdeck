@@ -578,9 +578,14 @@
     if (snapshot.session_links && !session) {
       root.appendChild(el("p", { "class": "note", text: "No conversation is recorded for this session." }));
     }
-    if (snapshot.session_links && snapshot.session_links.length) {
-      var links = snapshot.session_links.map(function (link) {
+    if ((snapshot.session_links || []).length || (snapshot.session_documents || []).length) {
+      var links = (snapshot.session_links || []).map(function (link) {
         return safeUrl(link.url) ? el("li", {}, [el("a", { href: link.url, text: link.label })]) : null;
+      });
+      (snapshot.session_documents || []).forEach(function (doc) {
+        var body = doc.html !== undefined ? el("iframe", { sandbox: "", srcdoc: doc.html, title: doc.label }) :
+          doc.text !== undefined ? textBlock(doc.text) : el("p", { text: "The document body is absent from this export." });
+        links.push(el("li", {}, [el("details", {}, [el("summary", { text: doc.label }), body])]));
       });
       root.appendChild(el("section", { "class": "session-links" }, [
         el("h2", { text: "Links from this session" }), el("ul", { "class": "rows" }, links)

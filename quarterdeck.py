@@ -13,6 +13,7 @@ import ipaddress
 import html
 import json
 import os
+import posixpath
 import re
 import shlex
 import shutil
@@ -833,7 +834,8 @@ def legacy_render_pages(output_dir: Path) -> Iterator[Path]:
                     yield path
 
 
-def publish_render(output_path: Path, pages: dict[str, str], session: tuple[str, str] | None) -> None:
+def publish_render(output_path: Path, pages: dict[str, str], session: tuple[str, str] | None,
+                   current_session: Callable[[], tuple[str, str] | None]) -> None:
     output_dir = output_path.parent
     manifest = output_dir / ".quarterdeck-render.json"
     if manifest.name in pages:
@@ -841,6 +843,7 @@ def publish_render(output_path: Path, pages: dict[str, str], session: tuple[str,
     directory = os.open(output_dir, os.O_RDONLY | os.O_DIRECTORY)
     try:
         fcntl.flock(directory, fcntl.LOCK_EX)
+        require_current_session(session, current_session)
         if manifest.is_symlink() or any((output_dir / name).is_symlink() for name in pages):
             raise ValueError("refusing symbolic-link output page or manifest")
         previous = read_private_json(manifest) or {}
@@ -4635,15 +4638,17 @@ def parse_captain_board(source: str, path: Path) -> CaptainBoard:
     version = data.get("version")
     if type(version) is not int or version != BOARD_VERSION:
         board.supported = False
+        board.unreadable = True
         board.warnings.append(f"{name} has unsupported version {version!r}; expected {BOARD_VERSION}; board items were skipped.")
         return board
     board.updated_at = parse_board_time(data.get("updated_at"))
     if board.updated_at is None:
         board.warnings.append(f"{name} has a missing or invalid updated_at (expected ISO 8601), so its age is unknown.")
     operator = data.get("operator")
-    if operator is not None:
+    if "operator" in data:
         last = parse_board_time(operator.get("last_active_at")) if isinstance(operator, dict) else None
         if last is None:
+            board.unreadable = True
             board.warnings.append(
                 f"{name} operator needs an ISO 8601 last_active_at and was ignored; the desk uses the 48-hour rule."
             )
@@ -4651,10 +4656,13 @@ def parse_captain_board(source: str, path: Path) -> CaptainBoard:
             assert isinstance(operator, dict)
             started = parse_board_time(operator.get("session_started_at"))
             if started is None and operator.get("session_started_at") is not None:
+                board.unreadable = True
                 board.warnings.append(f"{name} operator session_started_at must be an ISO 8601 time and was ignored.")
             board.last_active_at = last
             board.session_started_at = min(started, last) if started else last
             board.session_id = _board_text(operator.get("session_id"))
+            if operator.get("session_id") is not None and board.session_id is None:
+                board.unreadable = True
     items = data.get("items")
     if not isinstance(items, list):
         board.warnings.append(f"{name} needs an items list; no board items could be read.")
@@ -6001,9 +6009,11 @@ def port_number(value: str) -> int:
 
 
 class SitePages(dict[str, str]):
-    def __init__(self, pages: dict[str, str], session: tuple[str, str] | None) -> None:
+    def __init__(self, pages: dict[str, str], session: tuple[str, str] | None,
+                 on_accept: Callable[[], None] | None = None) -> None:
         super().__init__(pages)
         self.session = session
+        self.on_accept = on_accept
 
 
 class SiteCache:
@@ -6078,6 +6088,9 @@ class SiteCache:
             pages = self.build()
             if not self.matches_session(pages):
                 raise ValueError("the current conversation changed during the build")
+            if isinstance(pages, SitePages) and pages.on_accept is not None:
+                pages.on_accept()
+                pages.on_accept = None
         except Exception as exc:  # noqa: BLE001 - a failed rebuild must never kill the server
             pages = None
             error = exc
@@ -6098,7 +6111,7 @@ class SiteCache:
 
 
 def site_builder(
-    args: argparse.Namespace, allow_marks: bool = False, push: PushNotifier | None = None,
+    args: argparse.Namespace, allow_marks: bool = False, push: PushNotifier | None = None, *, defer_effects: bool = False,
 ) -> Callable[[], dict[str, str]]:
     def build() -> dict[str, str]:
         config, homes, bearings = load_site(args, include_calls=True, notification_resolution=push is not None)
@@ -6111,26 +6124,32 @@ def site_builder(
             push_enabled=push is not None, front_href="index.html" if calls_front else None,
         )
         activity = site_cards(homes, bearings, allow_marks)
-        if allow_marks:
-            try:
-                record_adoption_arrivals(validate_review_state_location(homes), homes, activity, bearings.generated)
-            except (sqlite3.Error, OSError, ValueError) as exc:
-                print(f"quarterdeck: could not record adoption arrivals: {exc}", file=sys.stderr, flush=True)
         if push is not None:
-            attention = bearings.attention
             for card in activity:
                 topic = card_topic(card, found) if card.get("section") == "needs_you" else None
                 if topic is not None:
                     card["push_url"] = f"./{topic.page}"
-            try:
-                cards_for_push = activity + topic_push_cards(homes)
-                if bearings.notification_resolution is None:
-                    push.observe(cards_for_push, complete=attention is not None and not needs_unread(attention))
-                else:
-                    complete, unresolved = bearings.notification_resolution
-                    push.observe(cards_for_push, complete=complete, unresolved=unresolved)
-            except Exception as exc:  # noqa: BLE001 - a notification problem must never stop the page
-                print(f"quarterdeck: could not check for new needs-you items to notify: {exc}", file=sys.stderr, flush=True)
+
+        def accept() -> None:
+            if bearings.session is not None:
+                require_current_session(bearings.session.identity, lambda: served_session(args))
+            if push is not None:
+                try:
+                    cards_for_push = activity + topic_push_cards(homes)
+                    if bearings.notification_resolution is None:
+                        attention = bearings.attention
+                        push.observe(cards_for_push, complete=attention is not None and not needs_unread(attention))
+                    else:
+                        complete, unresolved = bearings.notification_resolution
+                        push.observe(cards_for_push, complete=complete, unresolved=unresolved)
+                except Exception as exc:  # noqa: BLE001 - a notification problem must never stop the page
+                    print(f"quarterdeck: could not check for new needs-you items to notify: {exc}", file=sys.stderr, flush=True)
+            if allow_marks:
+                try:
+                    record_adoption_arrivals(validate_review_state_location(homes), homes, activity, bearings.generated)
+                except (sqlite3.Error, OSError, ValueError) as exc:
+                    print(f"quarterdeck: could not record adoption arrivals: {exc}", file=sys.stderr, flush=True)
+
         cards = cards_payload(activity, bearings.generated)
         pages = source_pages(homes, show_all=False, bearings=bearings, allow_marks=allow_marks)  # after the cards: they register document pages
         if calls_front:
@@ -6146,7 +6165,11 @@ def site_builder(
         else:
             pages["index.html"] = previous
         pages[CARDS_PAGE] = cards
-        return SitePages(pages, bearings.session.identity if bearings.session else None)
+        effects = accept if allow_marks or push is not None else None
+        if effects is not None and not defer_effects:
+            effects()
+            effects = None
+        return SitePages(pages, bearings.session.identity if bearings.session else None, effects)
     return build
 
 
@@ -7231,7 +7254,7 @@ def serve(args: argparse.Namespace) -> int:
         push = (PushNotifier(default_output_dir())
                 if getattr(args, "allow_marks", False) and not getattr(args, "no_snapshot", False) and push_crypto_available()
                 else None)
-        cache = SiteCache(site_builder(args, getattr(args, "allow_marks", False), push),
+        cache = SiteCache(site_builder(args, getattr(args, "allow_marks", False), push, defer_effects=True),
                           current_session=lambda: served_session(args))
         cache.get()
         visit_log = VisitLog(visits_path()) if getattr(args, "allow_marks", False) else None
@@ -9895,7 +9918,7 @@ def tabs_html(current: str, title: str, calls_href: str = "index.html") -> str:
     tabs = ((calls_href, "Calls"), (TOPICS_PAGE, "Topics"), (SEARCH_PAGE, "Search"))
     links = "".join(f'<a href="{html.escape(href, quote=True)}"{here if href == current else ""}>{label}</a>' for href, label in tabs)
     return (f'<nav class="bar" aria-label="Quarterdeck"><a class="mark" href="{html.escape(calls_href, quote=True)}">{html.escape(title)}</a>'
-            f'<span class="bar-links tabs">{links}<a href="{ADOPTION_PAGE}">Adoption</a></span></nav>')
+            f'<span class="bar-links tabs">{links}</span></nav>')
 
 
 def call_meta(call: Call, now: datetime) -> str:
@@ -10306,6 +10329,12 @@ def search_index(homes: list[HomeSnapshot], bearings: Bearings) -> list[dict[str
             index.append({"k": "Report", "t": report.title, "s": label, "f": key,
                           "u": source_page_filename("report", snapshot.spec.home, report.path),
                           "l": report.recommendation or "", "x": " ".join((report.path.parent.name, report.recommendation or ""))})
+    if bearings.session is not None:
+        known_reports = {report.path for snapshot in all_snapshots(homes) for report in snapshot.reports}
+        for doc in bearings.session.documents:
+            if doc.path not in known_reports:
+                kind = "Report" if doc.path.name in {"report.html", "report.md"} else "Document"
+                index.append({"k": kind, "t": doc.label, "s": "", "f": "", "u": doc.href, "l": "", "x": doc.label})
     return index
 
 
@@ -10325,7 +10354,7 @@ def search_page_html(homes: list[HomeSnapshot], title: str, bearings: Bearings, 
     body = (
         f'<nav class="bar" aria-label="Quarterdeck"><a class="mark" href="{main}">{html.escape(title)}</a></nav>'
         '<main class="finder"><h1>Search</h1>' + session_stamp_html(bearings) +
-        '<label class="field" for="q">Topics, tasks and reports</label>'
+        '<label class="field" for="q">Topics, tasks, reports and documents</label>'
         '<div class="search-box"><input id="q" type="search" autocomplete="off" enterkeyhint="search"></div>'
         f'<div class="filters" role="group" aria-label="Filter">{filters}</div>'
         '<h2>Results <span class="n" id="result-n" data-n="0"></span></h2><ul class="rows" id="results" aria-live="polite"></ul>'
@@ -11582,8 +11611,24 @@ def selected_cards(doc: dict[str, object], snapshots: list[HomeSnapshot]) -> dic
     cards: dict[str, dict[str, object]] = {}
     for snapshot in all_snapshots(snapshots):
         scope = snapshot.session
-        cards.update((key, card) for key, card in stored_cards(doc, snapshot).items()
-                     if scope is None or scope.includes(snapshot, str(card.get("task") or "")))
+        for key, card in stored_cards(doc, snapshot).items():
+            if scope is None:
+                cards[key] = card
+                continue
+            task = str(card.get("task") or "")
+            item = snapshot_items(snapshot).get(task)
+            if (scope.identity is None or item is None or not item.held or not scope.includes(snapshot, task)
+                    or hold_session_id(item) != scope.identity[1] or card.get("hold_set") != hold_stamp(item)):
+                continue
+            identity = scope.identity[1]
+            stamp = card["hold_set"]
+            entries = [entry for entry in card.get("entries") or [] if isinstance(entry, dict)
+                       and entry.get("hold_set") == stamp and entry.get("session_id") == identity]
+            if card.get("session_id") == identity:
+                cards[key] = dict(card, entries=entries)
+            else:
+                cards[key] = dict(card, entries=[], jobs=[], briefed_hold=None, kind=None, summary=None,
+                                  hold_reason=item.hold_reason, title=item.title, discarded=None)
     return cards
 
 
@@ -11653,6 +11698,10 @@ def wait_time(value: datetime) -> str:
     return value.astimezone(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
 
 
+def hold_session_id(item: BacklogItem) -> str | None:
+    return item.attrs.get("hold-session-id") or item.attrs.get("hold_session_id")
+
+
 def hold_stamp(item: BacklogItem) -> str:
     """The lifecycle stamp of a captain hold: `Captain hold set:` in the body, else the hold-set field, else the filed date."""
     match = HOLD_SET_RE.search(item.raw)
@@ -11717,16 +11766,18 @@ def sync_wait_cards(
                     "kind": None, "summary": None, "briefed_hold": None, "entries": [], "sources": [],
                     "jobs": [briefing_job(stamp, now, settings)], "discarded": None,
                 }
-            elif card.get("hold_set") != stamp:
+            elif card.get("hold_set") != stamp or card.get("session_id") != hold_session_id(item):
                 card.update(
                     hold_set=stamp, status="waiting", opened_at=wait_time(now), released_at=None, release_reason=None,
-                    jobs=[briefing_job(stamp, now, settings)], sources=[],
+                    jobs=[briefing_job(stamp, now, settings)], sources=[], briefed_hold=None, kind=None, summary=None,
+                    discarded=None,
                 )
             elif card.get("status") != "waiting":
                 card.update(status="waiting", released_at=None, release_reason=None)
                 if card.get("briefed_hold") != stamp and not card.get("jobs"):
                     card["jobs"] = [briefing_job(stamp, now, settings)]
-            card.update(home=label, task=item.id, title=item.title, hold_reason=item.hold_reason, refs=item_refs(item))
+            card.update(home=label, task=item.id, title=item.title, hold_reason=item.hold_reason,
+                        refs=item_refs(item), session_id=hold_session_id(item))
         for key, card in cards.items():
             if card.get("status") != "waiting" or key in holds:
                 continue
@@ -11881,6 +11932,11 @@ def exchanges(turns: list[Turn], now: datetime) -> list[Exchange]:
     return result
 
 
+def owner_turns(turns: list[Turn], now: datetime) -> list[Turn]:
+    return [turn for exchange in exchanges(turns, now) if exchange.starter.role == "owner"
+            for turn in (exchange.starter, *exchange.replies)]
+
+
 def mentioned_keys(text: str, cards: list[dict[str, object]]) -> list[str]:
     """The waiting cards an owner message names unambiguously: by task id, by a pull request or issue number that only
     one waiting card names, or by the card's full title."""
@@ -11941,6 +11997,8 @@ def scan_clarifications(
             if key not in open_keys or starts[key] > exchange.starter.at:
                 continue
             card = cards[key]
+            if card.get("session_id") and card["session_id"] != exchange.starter.session_id:
+                continue
             sources: list[str] = card.setdefault("sources", [])  # type: ignore[assignment]
             fresh_turns = [turn for turn in exchange.replies if turn.uuid not in sources]
             if not fresh_turns:
@@ -12103,6 +12161,7 @@ def apply_wait_result(card: dict[str, object], job: dict[str, object], result: d
                       paragraphs: list[dict[str, str]]) -> None:
     entries: list[dict[str, object]] = card.setdefault("entries", [])  # type: ignore[assignment]
     stamp = str(job["hold_set"])
+    identity = card.get("session_id")
     picked: list[dict[str, str]] = []
     selected: set[str] = set()
     for number in result["paragraphs"]:  # type: ignore[union-attr]
@@ -12114,22 +12173,25 @@ def apply_wait_result(card: dict[str, object], job: dict[str, object], result: d
     if job["type"] == "briefing":
         reason = first_line(str(card.get("hold_reason") or ""), WAIT_SUMMARY_LIMIT)
         card.update(kind=result["kind"], summary=result["summary"] or reason or card.get("title"), briefed_hold=stamp)
-        entries[:] = [entry for entry in entries if not (entry.get("type") == "briefing" and entry.get("hold_set") == stamp)]
+        entries[:] = [entry for entry in entries if not (entry.get("type") == "briefing" and entry.get("hold_set") == stamp
+                                                    and entry.get("session_id") == identity)]
         for entry in entries:
-            if entry.get("hold_set") == stamp:
+            if entry.get("hold_set") == stamp and entry.get("session_id") == identity:
                 entry["paragraphs"] = [paragraph for paragraph in entry.get("paragraphs") or []  # type: ignore[union-attr]
                                        if " ".join(str(paragraph["text"]).split()) not in selected]
                 if entry["paragraphs"]:
                     entry["at"] = entry["paragraphs"][0]["at"]
-        entries[:] = [entry for entry in entries if entry.get("hold_set") != stamp or entry.get("paragraphs")]
-        entries.append({"type": "briefing", "hold_set": stamp, "at": picked[0]["at"] if picked else stamp,
+        entries[:] = [entry for entry in entries if entry.get("hold_set") != stamp
+                      or entry.get("session_id") != identity or entry.get("paragraphs")]
+        entries.append({"type": "briefing", "hold_set": stamp, "session_id": identity,
+                        "at": picked[0]["at"] if picked else stamp,
                         "paragraphs": picked})
         return
-    known = {" ".join(str(paragraph["text"]).split()) for entry in entries if entry.get("hold_set") == stamp
+    known = {" ".join(str(paragraph["text"]).split()) for entry in entries if entry.get("hold_set") == stamp and entry.get("session_id") == identity
              for paragraph in entry.get("paragraphs") or []}  # type: ignore[union-attr]
     fresh = [paragraph for paragraph in picked if " ".join(paragraph["text"].split()) not in known]
     if fresh:
-        entries.append({"type": "clarification", "hold_set": stamp, "at": fresh[0]["at"],
+        entries.append({"type": "clarification", "hold_set": stamp, "session_id": identity, "at": fresh[0]["at"],
                         "asked": first_line(str(job.get("asked") or ""), 200), "asked_at": job.get("asked_at"),
                         "paragraphs": fresh})
 
@@ -12157,9 +12219,13 @@ def run_wait_jobs(
             if not mine:
                 continue
             card = home_waits(doc, home)["cards"][key]
+            identity = card.get("session_id")
             if job["type"] == "briefing":
                 held = parse_board_time(job["hold_set"])
-                window = [turn for turn in turns_for(home) if held is not None
+                turns = turns_for(home)
+                if identity is not None:
+                    turns = owner_turns([turn for turn in turns if turn.session_id == identity], now)
+                window = [turn for turn in turns if held is not None
                           and held - settings.before <= turn.at <= held + settings.after]
                 material, paragraphs = briefing_material(window, held)
                 prompt = BRIEFING_PROMPT.format(task=card["task"], title=card.get("title") or card["task"],
@@ -12182,7 +12248,8 @@ def run_wait_jobs(
                 card = home_waits(doc, home)["cards"].get(key)
                 jobs = card.setdefault("jobs", []) if isinstance(card, dict) else []
                 current = next((item for item in jobs if item.get("id") == job["id"]), None)
-                if card is None or current is None or card.get("hold_set") != job["hold_set"]:
+                if (card is None or current is None or card.get("hold_set") != job["hold_set"]
+                        or card.get("session_id") != identity):
                     continue
                 if result is not None:
                     apply_wait_result(card, current, result, paragraphs)
@@ -12560,7 +12627,7 @@ DOC_PREFIX = "doc-"
 RAW_PREFIX = "raw-"  # the same file with no Quarterdeck additions: .html as written, markdown as .txt
 
 
-def referenced_docs(text: str, data_dir: Path) -> list[tuple[Path, str]]:
+def referenced_docs(text: str, data_dir: Path, *, explicit_only: bool = False) -> list[tuple[Path, str]]:
     """The existing documents a card's text names, as (file, "<id>/<name>") pairs.
 
     A bare name such as explainer.html resolves next to the one data/<id>/ directory the same text names. Only
@@ -12568,7 +12635,7 @@ def referenced_docs(text: str, data_dir: Path) -> list[tuple[Path, str]]:
     """
     wanted: list[tuple[str, str]] = [(match.group(1), match.group(2)) for match in DOC_PATH_RE.finditer(text)]
     directories = {directory for directory, _name in wanted}
-    if len(directories) == 1:
+    if not explicit_only and len(directories) == 1:
         directory = next(iter(directories))
         spans = [match.span() for match in DOC_PATH_RE.finditer(text)]
         wanted.extend(
@@ -13327,6 +13394,10 @@ def build_snapshot(
         "calls": calls, "reports": reports, "related": related,
         **({"session_links": [{"label": session_link_label(url), "url": url} for url in scope.links]}
            if scope is not None else {}),
+        **({"session_documents": [
+            {"label": doc.label, **({"html" if doc.path.suffix == ".html" else "text": doc.content} if bodies != "none" else {})}
+            for doc in scope.documents
+        ]} if scope is not None and scope.documents else {}),
         **({"decision_window_days": DEFAULT_RECENT_DAYS} if view.shared_relevance else {}),
         "reactions": reactions, "delivered": delivered,
     }
@@ -13353,19 +13424,20 @@ def export_snapshot(args: argparse.Namespace) -> int:
         title = args.title or (configured_title if isinstance(configured_title, str) else None) or DEFAULT_TITLE
         snapshot = build_snapshot(homes, title, bearings.generated, args.bodies, attention=bearings.attention)
         document = json.dumps(snapshot, indent=2, ensure_ascii=False) + "\n"
-        outputs: list[Path] = []
+        outputs: dict[Path, str] = {}
         if args.artifact:
             page_path = Path(args.artifact).expanduser().resolve()
             validate_output_path(page_path, homes)
             page_path.parent.mkdir(parents=True, exist_ok=True)
-            write_generated_page(page_path, artifact_page(snapshot))
-            outputs.append(page_path)
+            outputs[page_path] = artifact_page(snapshot)
         if args.output:
             json_path = Path(args.output).expanduser().resolve()
             validate_output_path(json_path, homes)
             json_path.parent.mkdir(parents=True, exist_ok=True)
-            write_generated_page(json_path, document)
-            outputs.append(json_path)
+            outputs[json_path] = document
+        require_current_session(bearings.session.identity if bearings.session else None, lambda: served_session(args))
+        for path, content in outputs.items():
+            write_generated_page(path, content)
         if not outputs:
             sys.stdout.write(document)
     except (OSError, ValueError) as exc:
@@ -13581,6 +13653,14 @@ SESSION_SECRET_RE = re.compile(
 
 
 @dataclass
+class SessionDocument:
+    path: Path
+    label: str
+    href: str
+    content: str
+
+
+@dataclass
 class SessionScope:
     started: datetime | None = None
     identity: tuple[str, str] | None = None
@@ -13589,6 +13669,7 @@ class SessionScope:
     report_dirs: dict[int, set[str]] = field(default_factory=dict)
     report_ambiguities: set[str] = field(default_factory=set)
     links: list[str] = field(default_factory=list)
+    documents: list[SessionDocument] = field(default_factory=list)
 
     def includes(self, snapshot: HomeSnapshot | None, task: str) -> bool:
         return (id(snapshot), task) in self.tasks
@@ -13619,7 +13700,8 @@ def session_urls(text: str) -> Iterator[str]:
             if authority is None or (authority[1] is not None and int(authority[1]) > 65535):
                 continue
             path = unquote(unquote(parsed.path)).casefold()
-            host = parsed.hostname.casefold()
+            path = posixpath.normpath("/" + path.lstrip("/"))
+            host = parsed.hostname.encode("idna").decode("ascii").casefold().rstrip(".")
             if (host == "hooks.slack.com" and path.startswith("/services/")
                     or re.search(r"/(?:webhooks?|tokens?|secrets?|credentials?|reset-password|magic-link)[/=:][^/]", path)
                     or re.search(r"/bot[0-9]+:[^/]", path)):
@@ -13652,7 +13734,8 @@ def session_identity(source: HomeSnapshot | None) -> tuple[str, str] | None:
     return str(source.board.path.resolve()), source.board.session_id
 
 
-def session_scope(homes: list[HomeSnapshot], now: datetime) -> SessionScope:
+def session_scope(homes: list[HomeSnapshot], now: datetime, *, main_href: str = "index.html",
+                  document_pages: dict[str, str] | None = None) -> SessionScope:
     source = session_source(homes)
     identity = session_identity(source)
     if identity is None:
@@ -13665,7 +13748,7 @@ def session_scope(homes: list[HomeSnapshot], now: datetime) -> SessionScope:
         turns = transcript_turns(transcript_dir(source.spec), session_id=identity[1])
     except OSError:
         turns = []
-    said = "\n".join(turn.text for turn in turns if turn.role in {"owner", "firstmate"} and turn.at <= now)
+    said = "\n".join(turn.text for turn in owner_turns([turn for turn in turns if turn.at <= now], now))
     scope.links = list(dict.fromkeys(session_urls(said)))
     said = SESSION_URL_RE.sub(" ", said)
     tokens = {token.rstrip(".") for token in SESSION_TOKEN_RE.findall(said)}
@@ -13700,8 +13783,7 @@ def session_scope(homes: list[HomeSnapshot], now: datetime) -> SessionScope:
                 add_task(source, str(record["task"]))
     reports_in_chat = set(report_ids_in(said))
     for item in snapshot_items(source).values():
-        hold_session = item.attrs.get("hold-session-id") or item.attrs.get("hold_session_id")
-        held_at = parse_board_time(hold_stamp(item)) if item.held and hold_session == identity[1] else None
+        held_at = parse_board_time(hold_stamp(item)) if item.held and hold_session_id(item) == identity[1] else None
         if held_at is not None and held_at <= now:
             add_task(source, item.id)
     for snapshot in family:
@@ -13746,6 +13828,18 @@ def session_scope(homes: list[HomeSnapshot], now: datetime) -> SessionScope:
             item = report_backlog_item(items, report)
             if scope.includes(snapshot, item.id if item else report.path.parent.name):
                 directories.add(report.path.parent.name)
+    if document_pages is not None and source.data_dir is not None:
+        topic_root = source.data_dir.resolve() / TOPICS_DIR_NAME
+        for path, label in referenced_docs(said, source.data_dir, explicit_only=True):
+            if path.parent == topic_root and (id(source), path.stem) not in scope.topics:
+                continue
+            digest = hashlib.sha256(str(path).encode("utf-8")).hexdigest()[:12]
+            href = f"{DOC_PREFIX}{digest}.html"
+            raw = f"{RAW_PREFIX}{digest}{'.html' if path.suffix == '.html' else '.txt'}"
+            built = doc_page(path, label, raw, main_href)
+            if built is not None:
+                document_pages[href], document_pages[raw] = built
+                scope.documents.append(SessionDocument(path, f"data/{label}", href, built[1]))
     return scope
 
 
@@ -13810,14 +13904,16 @@ def session_stamp_html(bearings: Bearings, updated: str = "", controls: str = ""
 def session_links_html(bearings: Bearings) -> str:
     """The http(s) addresses said in this session, newest last, so a page mentioned in chat is one tap away."""
     scope = bearings.session
-    if scope is None or not scope.links:
+    if scope is None or not (scope.links or scope.documents):
         return ""
+    links = [(url, session_link_label(url)) for url in scope.links]
+    links.extend((doc.href, doc.label) for doc in scope.documents)
     rows = "".join(
-        f'<li><a href="{html.escape(url, quote=True)}">{html.escape(session_link_label(url))}</a></li>'
-        for url in scope.links
+        f'<li><a href="{html.escape(url, quote=True)}">{html.escape(label)}</a></li>'
+        for url, label in links
     )
     return ('<section class="session-links" aria-labelledby="session-links-h">'
-            f'<h2 id="session-links-h">Links from this session {count_badge(len(scope.links), "n")}</h2>'
+            f'<h2 id="session-links-h">Links from this session {count_badge(len(links), "n")}</h2>'
             f'<ul class="rows">{rows}</ul></section>')
 
 
@@ -13840,6 +13936,12 @@ def served_session(args: argparse.Namespace) -> tuple[str, str] | None:
     _config, specs, _legacy_single_home = site_home_specs(args)
     homes = [load_home_snapshot(spec, discover_secondmates=True, board_only=True) for spec in specs]
     return session_identity(session_source(homes))
+
+
+def require_current_session(expected: tuple[str, str] | None,
+                            current_session: Callable[[], tuple[str, str] | None]) -> None:
+    if expected != current_session():
+        raise ValueError("the current conversation changed during the build")
 
 
 def unresolved_push_tags(homes: list[HomeSnapshot], attention: dict[str, object],
@@ -13871,7 +13973,8 @@ def load_site(
     state_path = validate_review_state_location(homes)
     apply_review_marks(homes, load_review_state(state_path))
     now = datetime.now(timezone.utc)
-    scope = session_scope(homes, now)
+    document_pages: dict[str, str] = {}
+    scope = session_scope(homes, now, main_href=main_href, document_pages=document_pages)
     scripts_enabled = not getattr(args, "no_snapshot", False)
     settings = wait_settings(config, args.config.expanduser().resolve() if args.config else None)
     feed_runner = functools.cache(run_attention_feed)
@@ -13889,6 +13992,7 @@ def load_site(
     use_snapshot = scope.started is not None and scripts_enabled
     bearings = build_bearings(homes, now=now, use_snapshot=use_snapshot, main_href=main_href)
     bearings.notification_resolution = resolution
+    bearings.item_pages.update(document_pages)
     bearings.session = scope
     if include_calls:
         bearings.topic_pages = assign_topic_pages(homes)
@@ -13938,7 +14042,7 @@ def render(args: argparse.Namespace) -> int:
             pages[TOPICS_PAGE] = topics_page_html(homes, title, bearings, calls_href=output_path.name)
             index = calls_page_html(homes, title, bearings, activity, pages=pages, calls_href=output_path.name)
         pages[output_path.name] = index
-        publish_render(output_path, pages, bearings.session.identity if bearings.session else None)
+        publish_render(output_path, pages, bearings.session.identity if bearings.session else None, lambda: served_session(args))
     except (OSError, ValueError) as exc:
         print(f"quarterdeck: {exc}", file=sys.stderr)
         return 2

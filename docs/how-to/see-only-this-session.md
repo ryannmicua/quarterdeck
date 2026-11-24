@@ -28,7 +28,8 @@ identify one current conversation.
 - Reports appear when named in the chat or linked to an in-scope task or topic.
   A report file's modification time alone does not make it part of the session.
 - Captain waits, activity cards, finished work and saved views follow the same
-  task membership.
+  task membership. Wait briefings and clarifications must belong to the
+  current hold and conversation.
 
 Conversation evidence stays with its home. Use a registered route and task ID
 together, such as `mate/tide-merge`, to refer to a secondmate's task.
@@ -40,10 +41,12 @@ the page.
 
 ## Links and output
 
-Calls includes HTTP and HTTPS links from the conversation under **Links from
-this session**. Links carrying credentials, tokens or signing parameters are
-omitted. Classic, Lavish and `render --all` include the links, as do JSON exports
-and standalone artifacts.
+**Links from this session** includes HTTP and HTTPS links and explicit in-home
+paths such as `data/launch/preview.html` from the owner's messages and Firstmate's
+replies to them. Links carrying credentials, tokens or signing parameters are
+omitted. Classic, Lavish and `render --all` include these links. JSON exports and
+standalone artifacts carry the local documents unless exported with
+`--bodies none`, which keeps their labels.
 
 Re-rendering in the same directory retires obsolete pages verified by
 `.quarterdeck-render.json` or a legacy Quarterdeck filename and page marker.

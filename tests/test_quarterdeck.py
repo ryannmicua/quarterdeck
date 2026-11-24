@@ -10801,6 +10801,8 @@ class SessionScopeTests(unittest.TestCase):
         hidden = ["https://user:pass@example.com/secret", "https://example.com/signed?X-Amz-Signature=private",
                   "https://example.com/oauth#access_token=private", "https://example.com/a?%74oken=private",
                   "https://hooks.slack.com/%73ervices/demo/team/fictional-key",
+                  "https://hooks.slack.com./services/demo/team/fictional-key",
+                  "https://hooks.slack.com./archive/../services/demo/team/fictional-key",
                   "https://example.com/api/webhooks/demo/fictional-key", "https://[invalid"]
         with (self.transcripts / "session.jsonl").open("a", encoding="utf-8") as stream:
             links = " ".join(f"[Preview]({url})" for url in safe)
@@ -10885,7 +10887,8 @@ class SessionScopeTests(unittest.TestCase):
             {"kind": "status", "topic": "Untagged chart", "qd_had_answer": False},
         )), encoding="utf-8")
         out = self.render()
-        self.assertIn('href="adoption.html"', (out / "index.html").read_text(encoding="utf-8"))
+        self.assertNotIn('href="adoption.html"', (out / "index.html").read_text(encoding="utf-8"))
+        self.assertIn('href="adoption.html"', (out / "classic.html").read_text(encoding="utf-8"))
         adoption = (out / "adoption.html").read_text(encoding="utf-8")
         self.assertIn('href="index.html"', adoption)
         self.assertIn("1 status question", adoption)
@@ -10984,6 +10987,154 @@ class SessionScopeTests(unittest.TestCase):
                              encoding="utf-8")
             build()
             self.assertIn({"type": "withdraw", "tag": tag}, sent)
+
+    def test_only_owner_exchanges_supply_mentions_and_links(self) -> None:
+        with (self.transcripts / "session.jsonl").open("a", encoding="utf-8") as stream:
+            stream.write(wait_record("notice", "auto", self.iso(self.now - timedelta(minutes=2)), sessionId="current"))
+            stream.write(wait_record("assistant", "auto-reply", self.iso(self.now - timedelta(minutes=1)),
+                                     "Old survey, gull-count and https://example.com/automated", sessionId="current"))
+            stream.write(wait_record("owner", "human-question", self.iso(self.now), "How is the chart?", sessionId="current"))
+            stream.write(wait_record("assistant", "human-reply", self.iso(self.now),
+                                     "See https://example.com/owner-reply", sessionId="current"))
+        out = self.render()
+        pages = self.every_page(out)
+        self.assertIn('href="https://example.com/owner-reply"', pages)
+        self.assertNotIn("example.com/automated", pages)
+        self.assertNotIn("Old survey", pages)
+        self.assertNotIn("gull-count findings", pages)
+
+    def test_reheld_wait_only_publishes_current_hold_content(self) -> None:
+        store = self.root / "wait-store"
+        store.mkdir()
+        self.write_config(captain_waits={"store_dir": str(store)})
+        current_stamp = self.iso(self.start + timedelta(minutes=10))
+        old_stamp = self.iso(self.start - timedelta(days=1))
+        private = self.data / "gull-count" / "previous.html"
+        private.write_text("<h1>Previous document body</h1>", encoding="utf-8")
+        doc = quarterdeck.empty_waits()
+        section = quarterdeck.home_waits(doc, str(self.home))
+        card = {
+            "key": "harbor/lamp-test", "task": "lamp-test", "home": "Harbor", "status": "waiting",
+            "hold_set": current_stamp, "session_id": "current", "briefed_hold": current_stamp,
+            "kind": "choice", "summary": "Choose the current lamp", "entries": [
+                {"type": "clarification", "hold_set": old_stamp, "session_id": "previous", "at": old_stamp,
+                 "paragraphs": [{"text": "Previous clarification names data/gull-count/previous.html."}]},
+                {"type": "clarification", "hold_set": current_stamp, "session_id": "previous", "at": current_stamp,
+                 "paragraphs": [{"text": "Previous conversation used this hold stamp too."}]},
+                {"type": "briefing", "hold_set": current_stamp, "session_id": "current", "at": current_stamp,
+                 "paragraphs": [{"text": "Current lamp briefing."}]},
+            ],
+        }
+        section["cards"]["harbor/lamp-test"] = card
+        quarterdeck.write_waits(store, doc)
+        args = quarterdeck.make_parser().parse_args(["serve", "--config", str(self.config), "--no-snapshot"])
+        pages = quarterdeck.site_builder(args)()
+        self.assertIn("Current lamp briefing.", pages[quarterdeck.CARDS_PAGE])
+        for hidden in ("Previous clarification", "Previous conversation used", "Previous document body"):
+            self.assertNotIn(hidden, "\n".join(pages.values()))
+
+        card.update(hold_set=old_stamp, session_id="previous", briefed_hold=old_stamp, summary="Prior hold summary")
+        quarterdeck.write_waits(store, doc)
+        pages = quarterdeck.site_builder(args)()
+        self.assertNotIn("Prior hold summary", "\n".join(pages.values()))
+
+    def test_named_local_pages_open_and_are_exported(self) -> None:
+        launch = self.data / "launch"
+        launch.mkdir()
+        expected = {"data/launch/report.html": "Standalone report body",
+                    "data/launch/preview.html": "Standalone preview body"}
+        for label, body in expected.items():
+            (launch / Path(label).name).write_text(f"<h1>{body}</h1>", encoding="utf-8")
+        outside = self.root / "outside.html"
+        outside.write_text("<h1>Outside document body</h1>", encoding="utf-8")
+        (launch / "outside.html").symlink_to(outside)
+        with (self.transcripts / "session.jsonl").open("a", encoding="utf-8") as stream:
+            stream.write(wait_record("owner", "documents", self.iso(self.now),
+                                     "Open data/launch/report.html, data/launch/preview.html and data/launch/outside.html.",
+                                     sessionId="current"))
+        out = self.render()
+        index = (out / "index.html").read_text(encoding="utf-8")
+        search = (out / "search.html").read_text(encoding="utf-8")
+        rows = json.loads(re.search(r'id="search-index">(.*?)</script>', search, re.S)[1])
+        for label, body in expected.items():
+            wrapper = re.search(r'href="(doc-[a-f0-9]+\.html)">' + re.escape(label), index)[1]
+            raw = re.search(r'<iframe src="([^"]+)"', (out / wrapper).read_text(encoding="utf-8"))[1]
+            self.assertIn(body, (out / raw).read_text(encoding="utf-8"))
+            self.assertTrue(any(row["t"] == label and row["u"] == wrapper for row in rows))
+        self.assertNotIn("Outside document body", self.every_page(out))
+        for bodies in ("all", "none"):
+            args = quarterdeck.make_parser().parse_args(
+                ["export", "--config", str(self.config), "--no-snapshot", "--bodies", bodies])
+            output = io.StringIO()
+            with redirect_stdout(output):
+                self.assertEqual(quarterdeck.export_snapshot(args), 0)
+            docs = json.loads(output.getvalue())["session_documents"]
+            self.assertEqual({doc["label"] for doc in docs}, set(expected))
+            for doc in docs:
+                if bodies == "all":
+                    self.assertIn(expected[doc["label"]], doc["html"])
+                else:
+                    self.assertNotIn("html", doc)
+
+    def test_invalid_operator_does_not_fall_back_to_an_older_home(self) -> None:
+        newer = self.root / "newer"
+        (newer / "data").mkdir(parents=True)
+        (newer / "data" / "backlog.md").write_text("# Backlog\n", encoding="utf-8")
+        self.write_config(homes=[
+            {"label": "Harbor", "path": str(self.home), "transcripts": str(self.transcripts)},
+            {"label": "Newer", "path": str(newer)},
+        ])
+        for version, operator in ((2, {"last_active_at": self.iso(self.now), "session_id": "newer"}),
+                                  (1, {"last_active_at": "bad", "session_id": "newer"}),
+                                  (1, {"last_active_at": self.iso(self.now), "session_started_at": "bad"})):
+            with self.subTest(version=version, operator=operator):
+                (newer / "data" / "captain-board.json").write_text(
+                    json.dumps({"version": version, "items": [], "operator": operator}), encoding="utf-8")
+                out = self.render()
+                self.assertNotIn("Tide launch", self.every_page(out))
+                self.assertIn("No conversation is recorded", (out / "index.html").read_text(encoding="utf-8"))
+
+    def test_slow_render_cannot_replace_newer_conversation(self) -> None:
+        out = self.render()
+        real_build = quarterdeck.source_pages
+
+        def switch(*args, **kwargs):
+            pages = real_build(*args, **kwargs)
+            self.board(operator=False)
+            with patch.object(quarterdeck, "source_pages", real_build):
+                self.render(out=out)
+            return pages
+
+        args = quarterdeck.make_parser().parse_args(
+            ["render", "--config", str(self.config), "--no-snapshot", "--output", str(out / "index.html")])
+        with patch.object(quarterdeck, "source_pages", side_effect=switch), redirect_stderr(io.StringIO()):
+            self.assertEqual(quarterdeck.render(args), 2)
+        self.assertFalse((out / "topic-tide-launch.html").exists())
+        self.assertIn("No conversation is recorded", (out / "index.html").read_text(encoding="utf-8"))
+
+    def test_rejected_served_build_has_no_push_or_adoption_effects(self) -> None:
+        args = quarterdeck.make_parser().parse_args(["serve", "--config", str(self.config), "--no-snapshot"])
+        real_build = quarterdeck.source_pages
+        push = unittest.mock.Mock(spec=quarterdeck.PushNotifier)
+
+        def switch(*args, **kwargs):
+            pages = real_build(*args, **kwargs)
+            self.board(operator=False)
+            return pages
+
+        build = quarterdeck.site_builder(args, True, push, defer_effects=True)
+        cache = quarterdeck.SiteCache(build, current_session=lambda: quarterdeck.served_session(args))
+        with patch.object(quarterdeck, "record_adoption_arrivals") as arrivals, redirect_stderr(io.StringIO()):
+            with patch.object(quarterdeck, "source_pages", side_effect=switch), self.assertRaisesRegex(
+                ValueError, "current conversation changed",
+            ):
+                cache.get()
+            push.observe.assert_not_called()
+            arrivals.assert_not_called()
+            self.assertIn("No conversation is recorded", cache.get()["index.html"])
+            push.observe.assert_called_once()
+            arrivals.assert_called_once()
+
 
 
 class TopicTests(unittest.TestCase):
