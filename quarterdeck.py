@@ -709,27 +709,28 @@ def esc(value: object) -> str:
     return html.escape(str(value), quote=True)
 
 
-URL_PATTERN = re.compile(r'https?://[^\s<>"]+', re.IGNORECASE)
-URL_CLOSERS = {")": "(", "]": "[", "}": "{"}
+URL_PATTERN = re.compile(r"(?<![\w+.-])https?://\S+", re.IGNORECASE)
+URL_DELIMITERS = {'"': '"', "'": "'", "<": ">"}
+URL_PUNCTUATION = ".,;:!?"
 
 
-def enclosed_url(url: str, before: str, after: str) -> str | None:
-    if (before[-1:], after) in {('"', '"'), ("<", ">")}:
-        return url
-    if before.endswith("'"):
-        quote = re.search(r"'(?=[.,;:!?)\]}]*(?:$|'https?://))", url, re.IGNORECASE)
-        if quote:
-            return url[:quote.start()]
+def description_url(candidate: str, opener: str) -> str:
+    if closer := URL_DELIMITERS.get(opener):
+        url, boundary, _ = candidate.partition(closer)
+        if boundary:
+            return url
 
-    openings: dict[str, list[int]] = {opener: [] for opener in URL_CLOSERS.values()}
-    start = len(before)
-    for index, character in enumerate(before + url):
-        if character in openings:
-            openings[character].append(index)
-        elif (opener := URL_CLOSERS.get(character)) and openings[opener]:
-            if openings[opener].pop() < start <= index:
-                return url[:index - start]
-    return None
+    url = candidate.rstrip(URL_PUNCTUATION)
+    depth = 0
+    for index, character in enumerate(url):
+        if character == "(":
+            depth += 1
+        elif character == ")":
+            if depth:
+                depth -= 1
+            elif not url[index:].strip(")" + URL_PUNCTUATION):
+                return url[:index].rstrip(URL_PUNCTUATION)
+    return url
 
 
 def linked_text(value: object) -> str:
@@ -738,22 +739,7 @@ def linked_text(value: object) -> str:
     position = 0
     while match := URL_PATTERN.search(text, position):
         start = match.start()
-        candidate = match.group()
-        url = enclosed_url(candidate, text[:start], text[match.end():match.end() + 1])
-        if url is None:
-            url = candidate
-            while url:
-                tail = url[-1]
-                opener = URL_CLOSERS.get(tail)
-                if opener:
-                    if url.count(tail) <= url.count(opener):
-                        break
-                elif tail in "!?":
-                    if "?" in url[:-1] or "#" in url:
-                        break
-                elif tail not in ".,;:":
-                    break
-                url = url[:-1]
+        url = description_url(match.group(), text[start - 1:start])
         position = start + len(url)
         try:
             url = clean_url(url)

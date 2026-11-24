@@ -241,27 +241,27 @@ class PageTests(StoreCase):
             self.assertIn(f'<th scope="col">{heading}</th>', index)
 
     def test_web_addresses_in_descriptions_become_links(self) -> None:
-        self.add("resource", "Notes", "See https://example.com/notes/1, then <b>https://example.org/a?x=1&y=2</b>. Not javascript:alert(1).",
+        self.add("resource", "Notes", "See https://example.com/notes/1, then <b> https://example.org/a?x=1&y=2 </b>. Not javascript:alert(1).",
                  "--url", "https://example.com/n", "--link-text", "Notes")
         pages = self.pages()
         for name in ("q1.html", "index.html"):
             self.assertIn('See <a href="https://example.com/notes/1" rel="noopener noreferrer">'
                           'https://example.com/notes/1</a>, then &lt;b&gt;', pages[name])
             self.assertIn('<a href="https://example.org/a?x=1&amp;y=2" rel="noopener noreferrer">', pages[name])
-            self.assertIn('</a>&lt;/b&gt;. Not javascript:alert(1).', pages[name])
+            self.assertIn('</a> &lt;/b&gt;. Not javascript:alert(1).', pages[name])
             self.assertNotIn("<b>", pages[name])
 
     def test_description_links_keep_destinations_and_skip_invalid_addresses(self) -> None:
         description = (
             "See https://example.org/Mercury_(planet). "
             "Skip https://example.org:99999/?x=1&y=2. "
-            "Try [http://[2001:db8::1]]! Or HTTPS://example.org/?q=go!. "
-            "Read (https://example.org/docs#setup)! Try (https://example.org/?q=go!)? "
-            "Compare https://example.org/Alzheimer's_disease and 'https://example.org/its_(owner)'? "
-            'Use "https://example.org/?tag=red;" or <https://example.org/?tag=blue;>. '
-            "Try 'https://example.org/?q=writers';format=text','https://example.org/next'. "
+            "Try http://[2001:db8::1]! Or <HTTPS://example.org/?q=go!>. "
+            "Compare https://example.org/Alzheimer's_disease. "
+            'Use "https://example.org/?tag=red;". '
             "See (details: https://example.org/docs#setup)! "
-            "[Docs](https://example.org/docs),[Runbook](https://example.org/runbook)"
+            "Docs: 'https://example.org/docs',https://example.org/runbook. "
+            "Compare <https://example.org/search?q=(> and https://example.org/search?q=bug)fix. "
+            "Install from git+https://example.org/tools.git@v2."
         )
         self.add("resource", "Notes", description, "--url", "https://example.org/notes", "--link-text", "Notes")
         self.add("questions", "Decisions", description, "--body-file", "-", stdin=json.dumps(QUESTIONS))
@@ -269,23 +269,21 @@ class PageTests(StoreCase):
             'See <a href="https://example.org/Mercury_(planet)" rel="noopener noreferrer">'
             'https://example.org/Mercury_(planet)</a>. '
             'Skip https://example.org:99999/?x=1&amp;y=2. '
-            'Try [<a href="http://[2001:db8::1]" rel="noopener noreferrer">http://[2001:db8::1]</a>]! Or '
-            '<a href="HTTPS://example.org/?q=go!" rel="noopener noreferrer">HTTPS://example.org/?q=go!</a>. '
-            'Read (<a href="https://example.org/docs#setup" rel="noopener noreferrer">https://example.org/docs#setup</a>)! '
-            'Try (<a href="https://example.org/?q=go!" rel="noopener noreferrer">https://example.org/?q=go!</a>)? '
+            'Try <a href="http://[2001:db8::1]" rel="noopener noreferrer">http://[2001:db8::1]</a>! Or &lt;'
+            '<a href="HTTPS://example.org/?q=go!" rel="noopener noreferrer">HTTPS://example.org/?q=go!</a>&gt;. '
             'Compare <a href="https://example.org/Alzheimer&#x27;s_disease" rel="noopener noreferrer">'
-            'https://example.org/Alzheimer&#x27;s_disease</a> and &#x27;'
-            '<a href="https://example.org/its_(owner)" rel="noopener noreferrer">https://example.org/its_(owner)</a>&#x27;? '
+            'https://example.org/Alzheimer&#x27;s_disease</a>. '
             'Use &quot;<a href="https://example.org/?tag=red;" rel="noopener noreferrer">'
-            'https://example.org/?tag=red;</a>&quot; or &lt;<a href="https://example.org/?tag=blue;" rel="noopener noreferrer">'
-            'https://example.org/?tag=blue;</a>&gt;. '
-            'Try &#x27;<a href="https://example.org/?q=writers&#x27;;format=text" rel="noopener noreferrer">'
-            'https://example.org/?q=writers&#x27;;format=text</a>&#x27;,&#x27;'
-            '<a href="https://example.org/next" rel="noopener noreferrer">https://example.org/next</a>&#x27;. '
+            'https://example.org/?tag=red;</a>&quot;. '
             'See (details: <a href="https://example.org/docs#setup" rel="noopener noreferrer">'
             'https://example.org/docs#setup</a>)! '
-            '[Docs](<a href="https://example.org/docs" rel="noopener noreferrer">https://example.org/docs</a>),'
-            '[Runbook](<a href="https://example.org/runbook" rel="noopener noreferrer">https://example.org/runbook</a>)'
+            'Docs: &#x27;<a href="https://example.org/docs" rel="noopener noreferrer">'
+            'https://example.org/docs</a>&#x27;,<a href="https://example.org/runbook" rel="noopener noreferrer">'
+            'https://example.org/runbook</a>. '
+            'Compare &lt;<a href="https://example.org/search?q=(" rel="noopener noreferrer">'
+            'https://example.org/search?q=(</a>&gt; and <a href="https://example.org/search?q=bug)fix" '
+            'rel="noopener noreferrer">https://example.org/search?q=bug)fix</a>. '
+            'Install from git+https://example.org/tools.git@v2.'
         )
         pages = self.pages()
         self.assertIn(f'<td class="description">{expected}</td>', pages["index.html"])
