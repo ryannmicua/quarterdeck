@@ -431,7 +431,7 @@ class ServeTests(StoreCase):
         port = self.start("/qd")
         before = self.store()
         for part, answer in (("Q3.3", "Hold"), ("Q4.1", "Hold"), ("Q1.1", "Hold"), ("Q3.1", " "),
-                             ("Q3.1", "a" * 20001)):
+                             ("Q3.1", "a" * 20001), ("Q3.1", "Hold\u0085until morning")):
             self.assertEqual(self.post_answer(port, part, answer)[0], 400)
         for origin in ("", "null", "https://example.org"):
             self.assertEqual(self.post_answer(port, "Q3.1", "Hold", origin=origin)[0], 403)
@@ -593,6 +593,39 @@ check(sent.join(',') === 'Q1.1,Q1.2,Q1.3,Q1.5,Q1.4', 'The next send retried the 
 check(field(2).value === 'Blue', 'A later send discarded the conflicting draft');
 """)
 
+    def test_batch_rejection_preserves_an_editable_draft(self):
+        self.add("questions", "Tide decisions", "Decide the launch plan.", "--body-file", "-",
+                 stdin=json.dumps(QUESTIONS))
+        self.check_answer_page(self.start("/qd"), r"""
+const invalid = 'Hold\u0085until morning';
+typeAnswer(1, invalid);
+card(2).querySelector('[data-choice="Blue"]').click();
+const sent = [];
+window.fetch = async (url, options) => {
+  const {part, answer} = JSON.parse(options.body);
+  sent.push([part, answer]);
+  if (answer === invalid) {
+    return {ok: false, status: 400, text: async () => 'Check the question and answer.'};
+  }
+  return {ok: true, json: async () => ({
+    answer, state: 'answered', revision: 'saved-revision',
+    answered_at: '2026-01-12T15:00:00Z', delivery: 'sent'
+  })};
+};
+await sendBatch();
+const error = document.getElementById(field(1).getAttribute('aria-describedby'));
+check(card(1).contains(error) && !error.hidden && error.textContent === 'Check the question and answer.',
+      'The rejection was missing from its question');
+check(field(1).value === invalid && !field(1).disabled && button('send').disabled,
+      'The rejected draft was lost, locked or left queued');
+check(card(2).querySelector('.record').textContent === 'Blue', 'The valid answer was blocked');
+card(1).querySelector('[data-choice="Hold"]').click();
+check(error.hidden, 'The rejection remained after correcting the draft');
+await sendBatch();
+check(JSON.stringify(sent) === JSON.stringify([['Q1.1', invalid], ['Q1.2', 'Blue'], ['Q1.1', 'Hold']]),
+      'The corrected answer was lost or the saved answer was resent');
+""")
+
     def test_successful_send_preserves_suggestion_text_without_reloading(self):
         question = {**QUESTIONS[0], "suggestion": "\ufeffMerge"}
         self.add("questions", "Tide decisions", "Decide the launch plan.", "--body-file", "-",
@@ -637,6 +670,39 @@ check(!button('send').disabled && button('send').textContent === 'Send 2 answers
             with self.subTest(command=command):
                 code, _, error = self.run_cli(command)
                 self.assertEqual(code, 0, error)
+
+    def test_malformed_inbox_paths_follow_config_binding_rules(self):
+        config = self.root / "quarterdeck.json"
+        for path in ("~quarterdeck-fixture-no-such-user/inbox", str(self.root / "home\0"), "relative/home"):
+            with self.subTest(binding="explicit", path=path):
+                config.write_text(json.dumps({"firstmate_home": path}))
+                with patch.object(quarterdeck, "make_server", side_effect=AssertionError("unexpected server start")):
+                    code, _, error = self.run_cli("serve", "--config", str(config))
+                self.assertEqual(code, 2)
+                self.assertIn("config firstmate_home must be a valid absolute path", error)
+        for path in ("~quarterdeck-fixture-no-such-user/inbox", str(self.root / "home\0")):
+            with self.subTest(binding="legacy", path=path):
+                config.write_text(json.dumps({"homes": [{"path": path}]}))
+                home = quarterdeck.answer_home(quarterdeck.load_config(config), config)
+                self.assertIsNone(home)
+
+    def test_framing_policy_applies_only_to_pages_with_answer_controls(self):
+        self.add_all_kinds()
+        port = self.start("/qd")
+        self.assertEqual(self.run_cli("mark", "Q3.1", "closed")[0], 0)
+        status, _, headers = self.fetch(port, "/qd/q3.html")
+        self.assertEqual(status, 200)
+        self.assertEqual(headers.get("Content-Security-Policy"), "frame-ancestors 'none'")
+        self.assertEqual(self.run_cli("mark", "Q3.2", "closed")[0], 0)
+        for method, path, expected in (
+            ("GET", "/qd/", 200), ("GET", "/qd/q1.html", 200), ("GET", "/qd/q2.html", 200),
+            ("GET", "/qd/q3.html", 200), ("GET", "/qd/icon.svg", 200), ("GET", "/qd/q9.html", 404),
+            ("POST", "/qd/answers", 403),
+        ):
+            with self.subTest(method=method, path=path):
+                status, _, headers = self.fetch(port, path, method=method)
+                self.assertEqual(status, expected)
+                self.assertNotIn("Content-Security-Policy", headers)
 
     def test_pages_follow_the_store_without_a_restart(self) -> None:
         port = self.start()

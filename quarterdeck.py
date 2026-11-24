@@ -86,6 +86,17 @@ def store_path() -> Path:
     return state_dir() / "items.json"
 
 
+def inbox_path(value: object) -> Path:
+    if not isinstance(value, str) or not value.strip() or "\0" in value:
+        raise ValueError("invalid inbox path")
+    try:
+        path = Path(value).expanduser()
+        os.fsencode(path)
+    except (RuntimeError, UnicodeEncodeError) as exc:
+        raise ValueError("invalid inbox path") from exc
+    return path
+
+
 def load_config(path: Path | None) -> dict[str, object]:
     if path is None:
         return {}
@@ -98,9 +109,14 @@ def load_config(path: Path | None) -> dict[str, object]:
     unknown = sorted(set(config) - ALLOWED_CONFIG_KEYS - LEGACY_CONFIG_KEYS)
     if unknown:
         raise ValueError(f"unsupported config key(s): {', '.join(unknown)}")
-    if "firstmate_home" in config and (not isinstance(config["firstmate_home"], str)
-                                      or not Path(config["firstmate_home"]).expanduser().is_absolute()):
-        raise ValueError("config firstmate_home must be an absolute path")
+    if "firstmate_home" in config:
+        try:
+            home = inbox_path(config["firstmate_home"])
+        except ValueError as exc:
+            raise ValueError("config firstmate_home must be a valid absolute path") from exc
+        if not home.is_absolute():
+            raise ValueError("config firstmate_home must be a valid absolute path")
+        config["firstmate_home"] = str(home)
     if "page_title" in config and not isinstance(config["page_title"], str):
         raise ValueError("config page_title must be a string")
     if "base_path" in config:
@@ -730,6 +746,11 @@ def question_card(item, *, served, primary):
             + f'<a{link_class} href="{href}">{action}</a></div></article>')
 
 
+def has_answer_controls(item):
+    return item["kind"] == "questions" and any(
+        part_record(item, n).get("state") != "closed" for n in question_parts(item))
+
+
 def question_form(item, served):
     cards = []
     state, remaining, _ = question_summary(item)
@@ -763,7 +784,8 @@ def question_form(item, served):
                               + (' <small>Suggested</small>' if suggested else '') + '</label>')
             controls = ('<div class="choices">' + ''.join(labels) + '</div>'
                         + f'<label for="answer-{part}">Your answer</label><textarea id="answer-{part}" '
-                        + f'maxlength="{TEXT_LIMIT}" rows="2">{esc(answer)}</textarea>')
+                        + f'maxlength="{TEXT_LIMIT}" rows="2" aria-describedby="error-{part}">{esc(answer)}</textarea>'
+                        + f'<p id="error-{part}" hidden></p>')
         else:
             controls = '<ul>' + ''.join(f'<li>{esc(v)}</li>' for v in question["options"]) + '</ul>'
             if question.get("suggestion"):
@@ -774,7 +796,7 @@ def question_form(item, served):
     total = len(cards)
     progress = f"{remaining} of {total} open" if remaining else state
     toolbar = ""
-    if served and any(part_record(item, n).get("state") != "closed" for n in question_parts(item)):
+    if served and has_answer_controls(item):
         toolbar = ('<div class="toolbar"><div class="actions"><button id="send" class="primary" disabled>Send answers</button>'
                    + ('<button id="suggest">Use all suggestions</button>' if any(
                        q.get("suggestion") and part_record(item, n).get("state") != "closed"
@@ -791,17 +813,17 @@ if (send) {
   const output = document.querySelector('output');
   const suggest = document.querySelector('#suggest');
   const undo = document.querySelector('#undo');
-  const conflicts = new Map();
+  const rejections = new Map();
   let history = [];
   const answerText = value => value.replace(/^[\p{White_Space}\x1c-\x1f]+|[\p{White_Space}\x1c-\x1f]+$/gu, '');
   const changed = f => {
     const {pending} = f.closest('section').dataset;
     const answer = answerText(f.value);
-    return !conflicts.has(f) && answer && (answer !== f.defaultValue || pending === '1');
+    return !rejections.has(f) && answer && (answer !== f.defaultValue || pending === '1');
   };
   const suggestionFor = f => {
     const section = f.closest('section');
-    if (!conflicts.has(f) && section.dataset.state === 'open' && !f.defaultValue && !f.value) {
+    if (!rejections.has(f) && section.dataset.state === 'open' && !f.defaultValue && !f.value) {
       return section.querySelector('[data-suggested]');
     }
   };
@@ -810,12 +832,23 @@ if (send) {
     history = history.filter(step => step.size);
   }
   function refresh() {
+    for (const [field, rejection] of rejections) {
+      if (rejection.draft !== undefined && answerText(field.value) !== rejection.draft) {
+        rejections.delete(field);
+      }
+    }
     const count = fields.filter(changed).length;
     send.disabled = !count;
     send.textContent = count ? 'Send ' + count + (count === 1 ? ' answer' : ' answers') : 'Send answers';
     if (suggest) suggest.disabled = !fields.some(suggestionFor);
     undo.hidden = !history.length;
     for (const f of fields) {
+      const error = document.getElementById(f.getAttribute('aria-describedby'));
+      const rejection = rejections.get(f);
+      error.textContent = rejection ? rejection.message : '';
+      error.hidden = !rejection;
+      if (rejection) f.setAttribute('aria-invalid', 'true');
+      else f.removeAttribute('aria-invalid');
       for (const b of f.closest('section').querySelectorAll('[data-choice]')) {
         b.checked = b.dataset.choice === f.value;
       }
@@ -876,10 +909,11 @@ if (send) {
       for (const [i,f] of pending.entries()) {
         output.textContent = 'Sending ' + (i+1) + ' of ' + pending.length;
         const section = f.closest('section');
+        const answer = answerText(f.value);
         const response = await fetch('answers', {method:'POST', headers:{'Content-Type':'application/json'},
-          body:JSON.stringify({part:section.id, revision:section.dataset.revision, answer:answerText(f.value)})});
-        if (response.status === 409) {
-          conflicts.set(f, section.id + ': ' + await response.text());
+          body:JSON.stringify({part:section.id, revision:section.dataset.revision, answer})});
+        if (response.status === 400 || response.status === 409) {
+          rejections.set(f, {message: await response.text(), draft: response.status === 400 ? answer : undefined});
           continue;
         }
         if (!response.ok) throw new Error(await response.text());
@@ -888,7 +922,8 @@ if (send) {
     } catch (err) {
       interrupted = navigator.onLine ? 'Send interrupted. ' + err.message : 'Offline. Reconnect and send again.';
     }
-    output.textContent = [...conflicts.values(), interrupted].filter(Boolean).join(' ') || 'Answers saved.';
+    const errors = [...rejections].map(([field, rejection]) => field.closest('section').id + ': ' + rejection.message);
+    output.textContent = [...errors, interrupted].filter(Boolean).join(' ') || 'Answers saved.';
     controls.forEach(c => c.disabled = false);
     refresh();
   });
@@ -942,7 +977,7 @@ def item_page(item: dict[str, object], site_title: str, *, served: bool, saved_n
         f'<p class="lead">{esc(item["description"])}</p>{content}'
     )
     return page_shell(f"{item_id} {item['title']} · {site_title}", site_title, body,
-                      served=served, saved_name=saved_name, interactive=served and item["kind"] == "questions")
+                      served=served, saved_name=saved_name, interactive=served and has_answer_controls(item))
 
 
 def site_pages(data: dict[str, object], site_title: str, saved_name: str) -> dict[str, str]:
@@ -1211,7 +1246,7 @@ def make_handler(site_title: str, base_path: str = "", store: Path | None = None
         server_version = "Quarterdeck"
 
         def send_text(self, status: int, body: str | bytes, content_type: str = "text/plain; charset=utf-8",
-                      cache: str = "no-store") -> None:
+                      cache: str = "no-store", *, prevent_framing: bool = False) -> None:
             data = body if isinstance(body, bytes) else body.encode("utf-8")
             packed = (len(data) >= GZIP_MIN_BYTES and accepts_gzip(self.headers.get("Accept-Encoding"))
                       and not content_type.startswith("image/"))
@@ -1226,7 +1261,8 @@ def make_handler(site_title: str, base_path: str = "", store: Path | None = None
             self.send_header("Cache-Control", cache)
             self.send_header("X-Content-Type-Options", "nosniff")
             self.send_header("Referrer-Policy", "no-referrer")
-            self.send_header("Content-Security-Policy", "frame-ancestors 'none'")
+            if prevent_framing:
+                self.send_header("Content-Security-Policy", "frame-ancestors 'none'")
             self.end_headers()
             self.wfile.write(data)
 
@@ -1263,15 +1299,15 @@ def make_handler(site_title: str, base_path: str = "", store: Path | None = None
                 self.send_text(500, "Quarterdeck could not read its item store\n")
                 return
             if name == "index.html":
-                page = list_page(data, site_title, served=True)
-            else:
-                try:
-                    item = find_item(data, name.removesuffix(".html"))
-                except ValueError:
-                    self.send_text(404, "Not found\n")
-                    return
-                page = item_page(item, site_title, served=True)
-            self.send_text(200, page, "text/html; charset=utf-8")
+                self.send_text(200, list_page(data, site_title, served=True), "text/html; charset=utf-8")
+                return
+            try:
+                item = find_item(data, name.removesuffix(".html"))
+            except ValueError:
+                self.send_text(404, "Not found\n")
+                return
+            self.send_text(200, item_page(item, site_title, served=True), "text/html; charset=utf-8",
+                           prevent_framing=has_answer_controls(item))
 
         def do_POST(self) -> None:  # noqa: N802 - http.server naming
             if self.path != base_path + "/answers":
@@ -1314,15 +1350,13 @@ LEGACY_SERVE_FLAGS = ("allow_marks", "watch_waits", "no_snapshot", "home")
 def answer_home(config: dict[str, object], config_path: Path | None) -> Path | None:
     explicit = config.get("firstmate_home")
     if isinstance(explicit, str):
-        return Path(explicit).expanduser()
+        return Path(explicit)
     homes = config.get("homes")
     if config_path is not None and isinstance(homes, list) and len(homes) == 1 and isinstance(homes[0], dict):
-        legacy = homes[0].get("path")
-        if isinstance(legacy, str) and legacy.strip():
-            try:
-                return (config_path.resolve().parent / Path(legacy).expanduser()).resolve()
-            except (OSError, RuntimeError):
-                return None
+        try:
+            return (config_path.resolve().parent / inbox_path(homes[0].get("path"))).resolve()
+        except (OSError, RuntimeError, ValueError):
+            return None
     return None
 
 
