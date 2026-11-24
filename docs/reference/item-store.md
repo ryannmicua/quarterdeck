@@ -52,8 +52,10 @@ Readers validate the records without taking the lock.
 Quarterdeck trims text when saving it and escapes it when building pages.
 On the Saved page and individual item pages, standalone `http://` and
 `https://` addresses in descriptions become links if they pass the same URL
-validation as resource URLs. Bare addresses lose trailing punctuation such
-as periods and exclamation marks. Enclose an address in angle brackets, as in
+validation as resource URLs. Quarterdeck uses the address as the link text.
+Separate multiple addresses with spaces so they are recognized individually.
+Bare addresses lose trailing punctuation such as periods and exclamation
+marks. Enclose an address in angle brackets, as in
 `<https://example.com/?q=go!>`, to keep that punctuation in the destination.
 
 ## Question answers
