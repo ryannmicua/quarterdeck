@@ -39,7 +39,7 @@ Readers validate the records without taking the lock.
 | `id` | Uppercase `Q` followed by a positive integer without leading zeros. Parts are cited as `Q3.1`, `Q3.2` in the order they are stored. |
 | `kind` | `resource`, `list` or `questions`. It does not change. |
 | `title` | Up to 200 characters after whitespace is collapsed to single spaces. |
-| `description` | Up to 600 characters: what the item is and why it was saved. |
+| `description` | Up to 600 characters: what the item is and why it was saved. A web address (`http://` or `https://`) in it shows as a link. |
 | `saved_at` | UTC time when the item was saved. |
 | `body` | Depends on the kind; see below. |
 

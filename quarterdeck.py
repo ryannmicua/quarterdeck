@@ -627,7 +627,7 @@ PAGE_CSS = """
 * { box-sizing: border-box; }
 html { -webkit-text-size-adjust: 100%; }
 body { margin: 0; background: var(--ground); color: var(--ink); font: var(--text-body)/1.55 var(--serif); overflow-wrap: anywhere; }
-a { color: inherit; text-decoration-thickness: 1px; text-underline-offset: .18em; }
+a { color: inherit; text-decoration-thickness: 1px; text-underline-offset: .18em; overflow-wrap: anywhere; }
 a:focus-visible { outline: 3px solid var(--focus); outline-offset: 2px; }
 .bar { display: flex; gap: 1rem; align-items: baseline; justify-content: space-between; padding: .9rem var(--gutter);
   border-bottom: 1px solid var(--rule); font-family: var(--sans); }
@@ -709,6 +709,20 @@ def esc(value: object) -> str:
     return html.escape(str(value), quote=True)
 
 
+URL_PATTERN = re.compile(r"https?://[^\s<>\"']+")
+
+
+def linked_text(value: object) -> str:
+    """Escape text, turning plain web addresses into links; trailing punctuation stays outside the link."""
+    text, parts, last = str(value), [], 0
+    for match in URL_PATTERN.finditer(text):
+        url = match.group().rstrip(".,;:!?)]}")
+        parts.append(esc(text[last:match.start()]))
+        parts.append(f'<a href="{esc(url)}" rel="noopener noreferrer">{esc(url)}</a>')
+        last = match.start() + len(url)
+    return "".join(parts) + esc(text[last:])
+
+
 def item_page_name(item_id: str) -> str:
     return f"{item_id.lower()}.html"
 
@@ -733,7 +747,7 @@ def items_table(items: list[dict[str, object]]) -> str:
     rows = "".join(
         f'<tr><td class="id">{esc(item["id"])}</td><td class="kind">{esc(KIND_LABELS[str(item["kind"])])}</td>'
         f'<td class="title"><a href="{item_page_name(str(item["id"]))}">{esc(item["title"])}</a></td>'
-        f'<td class="description">{esc(item["description"])}</td>'
+        f'<td class="description">{linked_text(item["description"])}</td>'
         f'<td class="when"><time datetime="{esc(item["saved_at"])}">{esc(saved_day(item))}</time></td></tr>'
         for item in items
     )
@@ -760,7 +774,7 @@ def question_card(item, *, served, primary):
     action = "Read questions" if not served else ("Answer questions" if remaining else "Review answers")
     link_class = ' class="work-action"' if primary else ''
     return (f'<article class="work"><div class="eyebrow"><span class="id">{item["id"]}</span> Questions</div>'
-            f'<h3>{esc(item["title"])}</h3><p>{esc(item["description"])}</p>'
+            f'<h3>{esc(item["title"])}</h3><p>{linked_text(item["description"])}</p>'
             f'<div class="actions"><span class="badge">{progress}</span>'
             + ('<span>Not delivered</span>' if pending else '')
             + f'<a{link_class} href="{href}">{action}</a></div></article>')
@@ -999,7 +1013,7 @@ def item_page(item: dict[str, object], site_title: str, *, served: bool, saved_n
         f'<p class="id">{esc(item_id)}</p><h1>{esc(item["title"])}</h1>'
         f'<p class="meta">{esc(KIND_LABELS[str(item["kind"])])} · saved <time datetime="{esc(item["saved_at"])}">'
         f'{esc(saved_day(item))}</time></p>'
-        f'<p class="lead">{esc(item["description"])}</p>{content}'
+        f'<p class="lead">{linked_text(item["description"])}</p>{content}'
     )
     return page_shell(f"{item_id} {item['title']} · {site_title}", site_title, body,
                       served=served, saved_name=saved_name, interactive=served and has_answer_controls(item))

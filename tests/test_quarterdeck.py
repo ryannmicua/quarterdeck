@@ -240,6 +240,17 @@ class PageTests(StoreCase):
         for heading in ("ID", "Kind", "Title", "Description", "Saved"):
             self.assertIn(f'<th scope="col">{heading}</th>', index)
 
+    def test_web_addresses_in_descriptions_become_links(self) -> None:
+        self.add("resource", "Notes", "See https://example.com/notes/1, then <b>https://example.org/a?x=1&y=2</b>. Not javascript:alert(1).",
+                 "--url", "https://example.com/n", "--link-text", "Notes")
+        pages = self.pages()
+        for name in ("q1.html", "index.html"):
+            self.assertIn('See <a href="https://example.com/notes/1" rel="noopener noreferrer">'
+                          'https://example.com/notes/1</a>, then &lt;b&gt;', pages[name])
+            self.assertIn('<a href="https://example.org/a?x=1&amp;y=2" rel="noopener noreferrer">', pages[name])
+            self.assertIn('</a>&lt;/b&gt;. Not javascript:alert(1).', pages[name])
+            self.assertNotIn("<b>", pages[name])
+
     def test_item_pages_show_id_title_and_numbered_parts(self) -> None:
         self.add_all_kinds()
         pages = self.pages()
