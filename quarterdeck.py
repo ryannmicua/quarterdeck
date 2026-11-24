@@ -26,7 +26,7 @@ from contextlib import contextmanager
 from datetime import datetime, timezone
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
-from urllib.parse import unquote, urlparse
+from urllib.parse import quote, unquote, urlparse
 
 
 DEFAULT_TITLE = "Quarterdeck"
@@ -148,9 +148,10 @@ def write_private(path: Path, content: str) -> None:
 # at save time and never read again from anywhere else. An ID is never reused, even after its item is removed.
 
 STORE_VERSION = 1
-KINDS = ("resource", "list", "questions", "note")
-KIND_LABELS = {"resource": "Resource", "list": "List", "questions": "Questions", "note": "Note"}
-ID_RE = re.compile(r"(?i)q?(\d{1,9})")
+KIND_LABELS = {"resource": "Resource", "list": "List", "questions": "Questions"}
+KINDS = tuple(KIND_LABELS)
+ID_RE = re.compile(r"[Qq][1-9][0-9]*")
+ITEM_PAGE_RE = re.compile(r"q[1-9][0-9]*[.]html")
 TITLE_LIMIT = 200
 DESCRIPTION_LIMIT = 600
 TEXT_LIMIT = 20_000
@@ -161,11 +162,9 @@ def empty_store() -> dict[str, object]:
 
 
 def parse_id(value: str) -> str:
-    """The canonical ID ("Q7") for "Q7", "q7" or "7"; raise ValueError otherwise."""
-    match = ID_RE.fullmatch(value.strip())
-    if not match or int(match.group(1)) < 1:
+    if not ID_RE.fullmatch(value):
         raise ValueError(f"not an item ID: {value!r} (IDs look like Q7)")
-    return f"Q{int(match.group(1))}"
+    return value.upper()
 
 
 def clean_text(value: object, name: str, limit: int, *, multiline: bool = False) -> str:
@@ -178,44 +177,42 @@ def clean_text(value: object, name: str, limit: int, *, multiline: bool = False)
         raise ValueError(f"{name} must not be empty")
     if len(text) > limit:
         raise ValueError(f"{name} is longer than {limit} characters")
-    if any(unicodedata.category(character) == "Cc" and character not in "\n\t" for character in text):
-        raise ValueError(f"{name} contains control characters")
+    if any(unicodedata.category(character) in {"Cc", "Cs"} and character not in "\n\t" for character in text):
+        raise ValueError(f"{name} contains invalid characters")
     return text
 
 
 def clean_url(value: object) -> str:
     text = clean_text(value, "url", 2000)
-    parsed = urlparse(text)
-    if parsed.scheme not in {"http", "https"} or not parsed.netloc or any(character.isspace() for character in text):
-        raise ValueError("url must be an http:// or https:// address")
+    message = "url must be an http:// or https:// address with a valid hostname and port"
+    try:
+        parsed = urlparse(text)
+        host = unquote(parsed.hostname or "", errors="strict")
+        port = parsed.port
+        authority = parsed.netloc.rsplit("@", 1)[-1]
+        if authority.startswith("["):
+            address, _, suffix = authority.partition("]")
+            ipaddress.IPv6Address(address[1:])
+            if suffix and not suffix.startswith(":"):
+                raise ValueError(message)
+    except ValueError as exc:
+        raise ValueError(message) from exc
+    if (parsed.scheme not in {"http", "https"} or not host or port == 0 or
+            any(character.isspace() or character == "\\" for character in text) or
+            any(character.isspace() or character in "#%/<>?@[\\]^|"
+                or unicodedata.category(character) in {"Cc", "Cs"} for character in host)):
+        raise ValueError(message)
     return text
 
 
-def list_entries(source: str) -> list[str]:
-    """List entries from a JSON array of strings, or one entry per non-blank line with any bullet or number removed."""
-    text = source.strip()
-    if text.startswith("["):
-        try:
-            raw = json.loads(text)
-        except json.JSONDecodeError as exc:
-            raise ValueError(f"list body is not valid JSON: {exc}") from exc
-        if not isinstance(raw, list):
-            raise ValueError("list body must be a JSON array of strings")
-        entries = raw
-    else:
-        entries = [re.sub(r"^(?:[-*•]|\d+[.)])\s+", "", line.strip()) for line in text.splitlines() if line.strip()]
-    cleaned = [clean_text(entry, f"list entry {number}", TEXT_LIMIT, multiline=True) for number, entry in enumerate(entries, 1)]
-    if not cleaned:
+def list_entries(entries: object) -> list[str]:
+    if not isinstance(entries, list) or not entries:
         raise ValueError("a list needs at least one entry")
-    return cleaned
+    return [clean_text(entry, f"list entry {number}", TEXT_LIMIT, multiline=True)
+            for number, entry in enumerate(entries, 1)]
 
 
-def question_entries(source: str) -> list[dict[str, object]]:
-    """Questions from a JSON array of {question, context, options, suggestion} objects."""
-    try:
-        raw = json.loads(source)
-    except json.JSONDecodeError as exc:
-        raise ValueError(f"questions body is not valid JSON: {exc}") from exc
+def question_entries(raw: object) -> list[dict[str, object]]:
     if not isinstance(raw, list) or not raw:
         raise ValueError("questions body must be a non-empty JSON array")
     questions = []
@@ -242,28 +239,39 @@ def question_entries(source: str) -> list[dict[str, object]]:
     return questions
 
 
+def validated_body(kind: str, body: object) -> dict[str, object]:
+    if not isinstance(body, dict):
+        raise ValueError("body must be an object")
+    if kind == "resource":
+        return {"url": clean_url(body.get("url")), "link_text": clean_text(body.get("link_text"), "link text", TITLE_LIMIT)}
+    if kind == "list":
+        return {"entries": list_entries(body.get("entries"))}
+    return {"questions": question_entries(body.get("questions"))}
+
+
 def make_body(kind: str, *, url: str | None, link_text: str | None, body: str | None) -> dict[str, object]:
-    """Validate the body for an item of this kind."""
     if kind == "resource":
         if url is None or link_text is None:
             raise ValueError("a resource needs --url and --link-text")
         if body is not None:
             raise ValueError("a resource takes --url and --link-text, not a body")
-        return {"url": clean_url(url), "link_text": clean_text(link_text, "link text", TITLE_LIMIT)}
+        return validated_body(kind, {"url": url, "link_text": link_text})
     if url is not None or link_text is not None:
         raise ValueError("--url and --link-text are only for a resource")
     if body is None:
         raise ValueError(f"a {kind} needs a body: --body-file PATH, or --body-file - to read standard input")
     if kind == "list":
-        return {"entries": list_entries(body)}
-    if kind == "questions":
-        return {"questions": question_entries(body)}
-    return {"text": clean_text(body, "note text", TEXT_LIMIT, multiline=True)}
+        return validated_body(kind, {"entries": [line for line in body.splitlines() if line.strip()]})
+    try:
+        questions = json.loads(body)
+    except json.JSONDecodeError as exc:
+        raise ValueError(f"questions body is not valid JSON: {exc}") from exc
+    return validated_body(kind, {"questions": questions})
 
 
 def check_store(data: object) -> dict[str, object]:
     """Validate a store read from disk; raise ValueError when it is not one Quarterdeck wrote."""
-    if not isinstance(data, dict) or data.get("version") != STORE_VERSION:
+    if not isinstance(data, dict) or type(data.get("version")) is not int or data["version"] != STORE_VERSION:
         raise ValueError(f"the item store is not a version {STORE_VERSION} Quarterdeck store")
     items, next_id = data.get("items"), data.get("next_id")
     if not isinstance(items, list) or type(next_id) is not int or next_id < 1:
@@ -272,9 +280,29 @@ def check_store(data: object) -> dict[str, object]:
     for item in items:
         if not isinstance(item, dict) or item.get("kind") not in KINDS or not isinstance(item.get("id"), str):
             raise ValueError("the item store is damaged: an item has no id or an unknown kind")
-        if item["id"] in seen or int(item["id"][1:]) >= next_id:
-            raise ValueError(f"the item store is damaged: {item['id']} is repeated or above next_id")
-        seen.add(item["id"])
+        item_id = item["id"]
+        if parse_id(item_id) != item_id:
+            raise ValueError(f"the item store is damaged: {item_id!r} is not canonical")
+        if item_id in seen or int(item_id[1:]) >= next_id:
+            raise ValueError(f"the item store is damaged: {item_id} is repeated or above next_id")
+        seen.add(item_id)
+        try:
+            title = clean_text(item.get("title"), "title", TITLE_LIMIT)
+            description = clean_text(item.get("description"), "description", DESCRIPTION_LIMIT, multiline=True)
+            saved_at = item.get("saved_at")
+            if not isinstance(saved_at, str):
+                raise ValueError("saved_at must be a UTC timestamp")
+            try:
+                timestamp = datetime.strptime(saved_at, "%Y-%m-%dT%H:%M:%SZ")
+            except ValueError as exc:
+                raise ValueError("saved_at must be a UTC timestamp") from exc
+            if timestamp.isoformat() + "Z" != saved_at:
+                raise ValueError("saved_at must be a UTC timestamp")
+            body = validated_body(item["kind"], item.get("body"))
+            if (title, description, body) != (item["title"], item["description"], item["body"]):
+                raise ValueError("item text or body is not in the saved format")
+        except ValueError as exc:
+            raise ValueError(f"the item store is damaged: {item_id}: {exc}") from exc
     return data
 
 
@@ -283,7 +311,7 @@ def read_store(path: Path) -> dict[str, object]:
         source = path.read_text(encoding="utf-8")
     except FileNotFoundError:
         return empty_store()
-    except OSError as exc:
+    except (OSError, UnicodeDecodeError) as exc:
         raise ValueError(f"could not read the item store {path}: {exc}") from exc
     try:
         return check_store(json.loads(source))
@@ -318,7 +346,7 @@ def now_text() -> str:
 
 def saved_day(item: dict[str, object]) -> str:
     """The saved date as YYYY-MM-DD (UTC)."""
-    return str(item.get("saved_at") or "")[:10]
+    return str(item["saved_at"])[:10]
 
 
 def newest_first(items: list[dict[str, object]]) -> list[dict[str, object]]:
@@ -343,13 +371,13 @@ def read_body(value: str | None) -> str | None:
 def item_text(item: dict[str, object]) -> str:
     """One item as plain text, numbered the way the page numbers it."""
     item_id, body = str(item["id"]), item["body"]
-    lines = [f"{item_id} · {item['title']}", f"{KIND_LABELS[str(item['kind'])]} · saved {saved_day(item)}"
-             + (f" · done {str(item.get('done_at') or '')[:10]}" if item.get("done") else ""), "", str(item["description"]), ""]
+    lines = [f"{item_id} · {item['title']}", f"{KIND_LABELS[str(item['kind'])]} · saved {saved_day(item)}",
+             "", str(item["description"]), ""]
     if item["kind"] == "resource":
         lines.append(f"{body['link_text']}: {body['url']}")  # type: ignore[index]
     elif item["kind"] == "list":
         lines.extend(f"{item_id}.{number}  {entry}" for number, entry in enumerate(body["entries"], 1))  # type: ignore[index]
-    elif item["kind"] == "questions":
+    else:
         for number, question in enumerate(body["questions"], 1):  # type: ignore[index]
             lines.append(f"{item_id}.{number}  {question['question']}")
             lines.append(f"      Context: {question['context']}")
@@ -357,8 +385,6 @@ def item_text(item: dict[str, object]) -> str:
                 lines.append("      Options: " + " | ".join(question["options"]))
             if question.get("suggestion"):
                 lines.append(f"      Suggestion: {question['suggestion']}")
-    else:
-        lines.append(str(body["text"]))  # type: ignore[index]
     return "\n".join(lines).rstrip() + "\n"
 
 
@@ -379,7 +405,7 @@ def add_item(args: argparse.Namespace) -> int:
         item: dict[str, object] = {
             "kind": args.kind, "title": clean_text(args.title, "title", TITLE_LIMIT),
             "description": clean_text(args.description, "description", DESCRIPTION_LIMIT, multiline=True),
-            "saved_at": now_text(), "done": False, "done_at": None, "body": body,
+            "saved_at": now_text(), "body": body,
         }
         with changing_store(store_path()) as data:
             item = {"id": f"Q{data['next_id']}", **item}
@@ -390,18 +416,13 @@ def add_item(args: argparse.Namespace) -> int:
     return run_item_command(action)
 
 
-def list_items(args: argparse.Namespace) -> int:
+def list_items(_args: argparse.Namespace) -> int:
     def action() -> int:
-        items = newest_first([item for item in read_store(store_path())["items"]  # type: ignore[union-attr]
-                              if args.all or not item.get("done")])
-        if args.as_json:
-            print(json.dumps(items, indent=2, ensure_ascii=False))
-            return 0
+        items = newest_first(read_store(store_path())["items"])  # type: ignore[arg-type]
         if not items:
-            print("No saved items." if args.all else "No open items. Use --all to include done items.")
+            print("No saved items.")
         for item in items:
-            done = "  (done)" if item.get("done") else ""
-            print(f"{item['id']:<6} {item['kind']:<10} {saved_day(item)}  {item['title']}{done}")
+            print(f"{item['id']:<6} {item['kind']:<10} {saved_day(item)}  {item['title']}")
         return 0
     return run_item_command(action)
 
@@ -409,37 +430,7 @@ def list_items(args: argparse.Namespace) -> int:
 def show_item(args: argparse.Namespace) -> int:
     def action() -> int:
         item = find_item(read_store(store_path()), args.id)
-        print(json.dumps(item, indent=2, ensure_ascii=False) if args.as_json else item_text(item), end="\n" if args.as_json else "")
-        return 0
-    return run_item_command(action)
-
-
-def edit_item(args: argparse.Namespace) -> int:
-    def action() -> int:
-        body_source = read_body(args.body_file)
-        if all(value is None for value in (args.title, args.description, args.url, args.link_text, body_source)):
-            raise ValueError("nothing to change: give --title, --description, --url, --link-text or --body-file")
-        with changing_store(store_path()) as data:
-            item = find_item(data, args.id)
-            if args.title is not None:
-                item["title"] = clean_text(args.title, "title", TITLE_LIMIT)
-            if args.description is not None:
-                item["description"] = clean_text(args.description, "description", DESCRIPTION_LIMIT, multiline=True)
-            if item["kind"] == "resource":
-                if body_source is not None:
-                    raise ValueError("a resource takes --url and --link-text, not a body")
-                body = dict(item["body"])  # type: ignore[call-overload]
-                if args.url is not None:
-                    body["url"] = clean_url(args.url)
-                if args.link_text is not None:
-                    body["link_text"] = clean_text(args.link_text, "link text", TITLE_LIMIT)
-                item["body"] = body
-            elif args.url is not None or args.link_text is not None:
-                raise ValueError("--url and --link-text are only for a resource")
-            elif body_source is not None:
-                item["body"] = make_body(str(item["kind"]), url=None, link_text=None, body=body_source)
-            item["edited_at"] = now_text()
-        print(f"Updated {item['id']}")
+        print(item_text(item), end="")
         return 0
     return run_item_command(action)
 
@@ -450,18 +441,6 @@ def remove_item(args: argparse.Namespace) -> int:
             item = find_item(data, args.id)
             data["items"] = [other for other in data["items"] if other is not item]  # type: ignore[union-attr]
         print(f"Removed {item['id']}; its ID is not reused")
-        return 0
-    return run_item_command(action)
-
-
-def set_done(args: argparse.Namespace) -> int:
-    done = args.command == "done"
-
-    def action() -> int:
-        with changing_store(store_path()) as data:
-            item = find_item(data, args.id)
-            item["done"], item["done_at"] = done, now_text() if done else None
-        print(f"{item['id']} is {'done; it leaves the main view and stays under Done' if done else 'open again'}")
         return 0
     return run_item_command(action)
 
@@ -519,7 +498,6 @@ table.items td.when { white-space: nowrap; }
 }
 .open-link { display: inline-block; min-height: var(--tap); padding: .7rem 1.1rem; border: 2px solid var(--ink); border-radius: 6px;
   font: 700 var(--text-md)/1.3 var(--sans); text-decoration: none; }
-.url { font: var(--text-sm)/1.5 var(--mono); color: var(--soft); }
 ol.numbered { list-style: none; padding: 0; margin: 0; max-width: var(--measure); }
 ol.numbered > li { display: grid; grid-template-columns: 4.5rem 1fr; gap: .2rem .8rem; padding: .8rem 0; border-bottom: 1px solid var(--rule); }
 ol.numbered > li > .id { padding-top: .2rem; }
@@ -527,8 +505,6 @@ ol.numbered > li > .id { padding-top: .2rem; }
 .question .ask { font-weight: 700; }
 .question .label { font: 600 var(--text-sm)/1.4 var(--sans); color: var(--soft); }
 .question ul { margin: .1rem 0 .5rem; padding-left: 1.2rem; }
-.note { max-width: var(--measure); }
-.note p { margin: 0 0 1rem; white-space: pre-wrap; }
 """
 
 
@@ -540,7 +516,8 @@ def item_page_name(item_id: str) -> str:
     return f"{item_id.lower()}.html"
 
 
-def page_shell(title: str, site_title: str, body: str, *, served: bool) -> str:
+def page_shell(title: str, site_title: str, body: str, *, served: bool, saved_name: str) -> str:
+    saved_href = quote(saved_name, safe="")
     links = (
         '<link rel="manifest" href="manifest.webmanifest">\n  <link rel="icon" href="icon.svg" type="image/svg+xml">\n'
         f'  <link rel="apple-touch-icon" href="icon-180.png">\n  <meta name="theme-color" content="{APP_NAVY}">\n  '
@@ -549,8 +526,8 @@ def page_shell(title: str, site_title: str, body: str, *, served: bool) -> str:
         "<!doctype html>\n<html lang=\"en\">\n<head>\n  <meta charset=\"utf-8\">\n"
         "  <meta name=\"viewport\" content=\"width=device-width, initial-scale=1\">\n"
         f"  {GENERATED_MARKER}\n  <title>{esc(title)}</title>\n  {links}<style>{PAGE_CSS}</style>\n</head>\n<body>\n"
-        f'<header class="bar"><a class="mark" href="index.html">{esc(site_title)}</a>'
-        '<nav><a href="index.html">Saved</a><a href="done.html">Done</a></nav></header>\n'
+        f'<header class="bar"><a class="mark" href="{saved_href}">{esc(site_title)}</a>'
+        f'<nav><a href="{saved_href}">Saved</a></nav></header>\n'
         f"<main>\n{body}\n</main>\n</body>\n</html>\n"
     )
 
@@ -560,77 +537,60 @@ def items_table(items: list[dict[str, object]]) -> str:
         f'<tr><td class="id">{esc(item["id"])}</td><td class="kind">{esc(KIND_LABELS[str(item["kind"])])}</td>'
         f'<td class="title"><a href="{item_page_name(str(item["id"]))}">{esc(item["title"])}</a></td>'
         f'<td class="description">{esc(item["description"])}</td>'
-        f'<td class="when"><time datetime="{esc(item.get("saved_at") or "")}">{esc(saved_day(item))}</time></td></tr>'
+        f'<td class="when"><time datetime="{esc(item["saved_at"])}">{esc(saved_day(item))}</time></td></tr>'
         for item in items
     )
     return ('<table class="items"><thead><tr><th scope="col">ID</th><th scope="col">Kind</th><th scope="col">Title</th>'
             f'<th scope="col">Description</th><th scope="col">Saved</th></tr></thead><tbody>{rows}</tbody></table>')
 
 
-def list_page(data: dict[str, object], site_title: str, *, done: bool, served: bool) -> str:
-    items = newest_first([item for item in data["items"] if bool(item.get("done")) == done])  # type: ignore[union-attr]
-    done_count = sum(bool(item.get("done")) for item in data["items"])  # type: ignore[union-attr]
-    if done:
-        heading = "Done"
-        empty = "Nothing is marked done. Items marked done leave Saved and are kept here."
-    else:
-        heading = "Saved"
-        empty = ("Nothing is saved yet. Ask Firstmate to send something to Quarterdeck: a link, a list, open questions "
-                 "or a note.")
+def list_page(data: dict[str, object], site_title: str, *, served: bool, saved_name: str = "index.html") -> str:
+    items = newest_first(data["items"])  # type: ignore[arg-type]
+    empty = "Nothing is saved yet. Ask Firstmate to send something to Quarterdeck: a link, a list or open questions."
     count = f' <span class="meta">{len(items)}</span>' if len(items) > 1 else ""
-    body = f"<h1>{heading}{count}</h1>" + (items_table(items) if items else f'<p class="empty">{esc(empty)}</p>')
-    if not done and done_count:
-        body += f'<p class="meta"><a href="done.html">{done_count} done item{"s" if done_count != 1 else ""}</a></p>'
-    return page_shell(f"{heading} · {site_title}" if done else site_title, site_title, body, served=served)
+    body = f"<h1>Saved{count}</h1>" + (items_table(items) if items else f'<p class="empty">{esc(empty)}</p>')
+    return page_shell(site_title, site_title, body, served=served, saved_name=saved_name)
 
 
 def item_body_html(item: dict[str, object]) -> str:
     item_id, body, kind = str(item["id"]), item["body"], item["kind"]
     if kind == "resource":
         url = str(body["url"])  # type: ignore[index]
-        return (f'<p><a class="open-link" href="{esc(url)}" rel="noopener noreferrer">{esc(body["link_text"])}</a></p>'  # type: ignore[index]
-                f'<p class="url">{esc(url)}</p>')
+        return f'<p><a class="open-link" href="{esc(url)}" rel="noopener noreferrer">{esc(body["link_text"])}</a></p>'  # type: ignore[index]
     if kind == "list":
         entries = body["entries"]  # type: ignore[index]
         return '<ol class="numbered">' + "".join(
             f'<li id="{esc(item_id)}.{number}"><span class="id">{esc(item_id)}.{number}</span><span>{esc(entry)}</span></li>'
             for number, entry in enumerate(entries, 1)) + "</ol>"
-    if kind == "questions":
-        parts = []
-        for number, question in enumerate(body["questions"], 1):  # type: ignore[index]
-            options = "".join(f"<li>{esc(option)}</li>" for option in question["options"])
-            parts.append(
-                f'<li id="{esc(item_id)}.{number}"><span class="id">{esc(item_id)}.{number}</span><div class="question">'
-                f'<p class="ask">{esc(question["question"])}</p>'
-                f'<p><span class="label">Context</span><br>{esc(question["context"])}</p>'
-                + (f'<p class="label">Options</p><ul>{options}</ul>' if options else "")
-                + (f'<p><span class="label">Suggestion</span><br>{esc(question["suggestion"])}</p>' if question.get("suggestion") else "")
-                + "</div></li>")
-        return '<ol class="numbered">' + "".join(parts) + "</ol>"
-    paragraphs = [part.strip() for part in re.split(r"\n\s*\n", str(body["text"])) if part.strip()]  # type: ignore[index]
-    return '<div class="note">' + "".join(f"<p>{esc(part)}</p>" for part in paragraphs) + "</div>"
+    parts = []
+    for number, question in enumerate(body["questions"], 1):  # type: ignore[index]
+        options = "".join(f"<li>{esc(option)}</li>" for option in question["options"])
+        parts.append(
+            f'<li id="{esc(item_id)}.{number}"><span class="id">{esc(item_id)}.{number}</span><div class="question">'
+            f'<p class="ask">{esc(question["question"])}</p>'
+            f'<p><span class="label">Context</span><br>{esc(question["context"])}</p>'
+            + (f'<p class="label">Options</p><ul>{options}</ul>' if options else "")
+            + (f'<p><span class="label">Suggestion</span><br>{esc(question["suggestion"])}</p>' if question.get("suggestion") else "")
+            + "</div></li>")
+    return '<ol class="numbered">' + "".join(parts) + "</ol>"
 
 
-def item_page(item: dict[str, object], site_title: str, *, served: bool) -> str:
+def item_page(item: dict[str, object], site_title: str, *, served: bool, saved_name: str = "index.html") -> str:
     item_id = str(item["id"])
-    state = (f' · done {esc(str(item.get("done_at") or "")[:10])}' if item.get("done") else "")
     body = (
         f'<p class="id">{esc(item_id)}</p><h1>{esc(item["title"])}</h1>'
-        f'<p class="meta">{esc(KIND_LABELS[str(item["kind"])])} · saved <time datetime="{esc(item.get("saved_at") or "")}">'
-        f'{esc(saved_day(item))}</time>{state}</p>'
+        f'<p class="meta">{esc(KIND_LABELS[str(item["kind"])])} · saved <time datetime="{esc(item["saved_at"])}">'
+        f'{esc(saved_day(item))}</time></p>'
         f'<p class="lead">{esc(item["description"])}</p>{item_body_html(item)}'
     )
-    return page_shell(f"{item_id} {item['title']} · {site_title}", site_title, body, served=served)
+    return page_shell(f"{item_id} {item['title']} · {site_title}", site_title, body,
+                      served=served, saved_name=saved_name)
 
 
-def site_pages(data: dict[str, object], site_title: str, *, served: bool = False) -> dict[str, str]:
-    """Every page by file name: Saved (index.html), Done (done.html) and one page per item."""
-    pages = {
-        "index.html": list_page(data, site_title, done=False, served=served),
-        "done.html": list_page(data, site_title, done=True, served=served),
-    }
+def site_pages(data: dict[str, object], site_title: str, saved_name: str) -> dict[str, str]:
+    pages = {saved_name: list_page(data, site_title, served=False, saved_name=saved_name)}
     for item in data["items"]:  # type: ignore[union-attr]
-        pages[item_page_name(str(item["id"]))] = item_page(item, site_title, served=served)
+        pages[item_page_name(str(item["id"]))] = item_page(item, site_title, served=False, saved_name=saved_name)
     return pages
 
 
@@ -642,35 +602,41 @@ def default_output_dir(config: dict[str, object]) -> Path:
     return Path(configured).expanduser() if isinstance(configured, str) else state_dir()
 
 
-def retire_stale_pages(directory: Path, keep: set[str]) -> list[str]:
-    """Delete HTML pages Quarterdeck generated earlier that the new set no longer has. A page counts as Quarterdeck's
-    only when it carries the generated-page marker; anything else in the directory is left alone."""
-    removed = []
-    for path in sorted(directory.glob("*.html")):
-        if path.name in keep or path.is_symlink() or not path.is_file():
-            continue
-        try:
-            with path.open("r", encoding="utf-8", errors="replace") as stream:
-                head = stream.read(4096)
-        except OSError:
-            continue
-        if GENERATED_MARKER in head:
+def generated_page(path: Path) -> bool:
+    if path.is_symlink() or not path.is_file():
+        return False
+    try:
+        with path.open("r", encoding="utf-8", errors="replace") as stream:
+            return GENERATED_MARKER in stream.read(4096)
+    except OSError:
+        return False
+
+
+def retire_stale_pages(directory: Path, keep: set[str]) -> None:
+    for path in directory.glob("q*.html"):
+        if path.name not in keep and ITEM_PAGE_RE.fullmatch(path.name) and generated_page(path):
             path.unlink()
-            removed.append(path.name)
-    return removed
 
 
 def render(args: argparse.Namespace) -> int:
     try:
         config = selected_config(args)
         output = Path(args.output).expanduser() if args.output else default_output_dir(config) / "index.html"
-        output = output.resolve()
+        output = output.parent.resolve() / output.name
         checkout = Path(__file__).resolve().parent
         if output.parent == checkout or checkout in output.parents:
             raise ValueError("the rendered page must be outside the Quarterdeck checkout")
-        pages = site_pages(read_store(store_path()), page_title(args, config))
-        pages[output.name] = pages.pop("index.html")
-        output.parent.mkdir(parents=True, exist_ok=True)
+        store = store_path()
+        protected = {store.resolve(), store.with_name(store.name + ".lock").resolve()}
+        if ITEM_PAGE_RE.fullmatch(output.name.lower()):
+            raise ValueError("the Saved filename is reserved for item pages")
+        pages = site_pages(read_store(store), page_title(args, config), output.name)
+        for name in pages:
+            destination = output.parent / name
+            if destination in protected:
+                raise ValueError("the rendered page would overwrite the item store or its lock")
+            if (destination.exists() or destination.is_symlink()) and not generated_page(destination):
+                raise ValueError(f"refusing to overwrite an unrelated file: {destination}")
         for name, content in pages.items():
             write_private(output.parent / name, content)
         retire_stale_pages(output.parent, set(pages))
@@ -909,33 +875,44 @@ def make_handler(site_title: str, base_path: str = "", store: Path | None = None
             if is_loopback(str(self.server.server_address[0])) and not request_host_is_loopback(self.headers.get("Host")):
                 self.send_text(403, "Host is not allowed\n")
                 return
-            requested = unquote(urlparse(self.path).path)
+            try:
+                request = urlparse(self.path)
+            except ValueError:
+                self.send_text(400, "Invalid request path\n")
+                return
+            requested = unquote(request.path)
             path = strip_base_path(requested, base_path)
             if path is None:
-                query = urlparse(self.path).query
-                target = base_path + ("/" if requested == base_path else urlparse(self.path).path)
+                query = request.query
+                target = base_path + ("/" if requested == base_path else request.path)
                 self.send_response(308)
                 self.send_header("Location", target + ("?" + query if query else ""))
                 self.send_header("Content-Length", "0")
                 self.send_header("Cache-Control", "no-store")
                 self.end_headers()
                 return
-            name = "index.html" if path in {"/", "/index.html"} else path.lstrip("/")
+            name = "index.html" if path == "/" else path.removeprefix("/")
             if name in APP_ICON_PATHS:
                 self.send_text(200, app_asset(name) or b"", APP_ICON_PATHS[name], cache="public, max-age=86400")
                 return
-            match = ID_RE.fullmatch(name)
-            if match:  # /Q7 opens item Q7
-                name = item_page_name(parse_id(name))
-            try:
-                pages = site_pages(read_store(store or store_path()), site_title, served=True)
-            except ValueError as exc:
-                self.send_text(500, f"Quarterdeck could not read its item store: {exc}\n")
-                return
-            if name not in pages:
+            if name != "index.html" and not ITEM_PAGE_RE.fullmatch(name):
                 self.send_text(404, "Not found\n")
                 return
-            self.send_text(200, pages[name], "text/html; charset=utf-8")
+            try:
+                data = read_store(store or store_path())
+            except ValueError:
+                self.send_text(500, "Quarterdeck could not read its item store\n")
+                return
+            if name == "index.html":
+                page = list_page(data, site_title, served=True)
+            else:
+                try:
+                    item = find_item(data, name.removesuffix(".html"))
+                except ValueError:
+                    self.send_text(404, "Not found\n")
+                    return
+                page = item_page(item, site_title, served=True)
+            self.send_text(200, page, "text/html; charset=utf-8")
 
         def do_POST(self) -> None:  # noqa: N802 - http.server naming
             self.send_text(405, "Quarterdeck is read-only; save items with the quarterdeck command\n")
@@ -997,7 +974,7 @@ def serve(args: argparse.Namespace) -> int:
 
 
 def systemd_quote(value: str, *, literal_dollars: bool = False) -> str:
-    if any(unicodedata.category(character) == "Cc" for character in value):
+    if any(unicodedata.category(character) in {"Cc", "Cs"} for character in value):
         raise ValueError("systemd values cannot contain control characters")
     if literal_dollars:
         value = value.replace("$", "$$")
@@ -1117,10 +1094,7 @@ COMMAND_DOCS = {
     "add": ["how-to/save-items.md", "reference/cli-and-config.md", "reference/item-store.md"],
     "list": ["how-to/save-items.md", "reference/cli-and-config.md"],
     "show": ["how-to/save-items.md", "reference/cli-and-config.md"],
-    "edit": ["how-to/save-items.md", "reference/cli-and-config.md"],
     "remove": ["how-to/save-items.md", "reference/cli-and-config.md"],
-    "done": ["how-to/save-items.md", "reference/cli-and-config.md"],
-    "reopen": ["how-to/save-items.md", "reference/cli-and-config.md"],
     "render": ["how-to/serve-the-page.md", "reference/cli-and-config.md", "explanation/privacy-and-architecture.md"],
     "serve": ["how-to/serve-the-page.md", "reference/cli-and-config.md", "explanation/privacy-and-architecture.md"],
     "service": ["how-to/serve-the-page.md", "reference/cli-and-config.md"],
@@ -1171,8 +1145,8 @@ def show_help(args: argparse.Namespace) -> int:
 
 # --- command line -------------------------------------------------------------------------
 
-KIND_HELP = ("resource (a link: --url and --link-text), list (entries, one per line or a JSON array), "
-             "questions (a JSON array of {question, context, options, suggestion}), note (free text)")
+KIND_HELP = ("resource (a link: --url and --link-text), list (one entry per non-blank line), "
+             "questions (a JSON array of {question, context, options, suggestion})")
 
 
 def add_serve_options(parser: argparse.ArgumentParser) -> None:
@@ -1187,7 +1161,7 @@ def add_serve_options(parser: argparse.ArgumentParser) -> None:
 def make_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="quarterdeck",
-        description="Keep a page of things saved by hand: links, lists, open questions and notes. Each item gets an ID "
+        description="Keep a page of things saved by hand: links, lists and open questions. Each item gets an ID "
                     "(Q1, Q2, ...) that is never reused; its numbered parts are cited as Q7.3.")
     subparsers = parser.add_subparsers(dest="command", required=True)
     command_parsers: dict[str, argparse.ArgumentParser] = {}
@@ -1206,40 +1180,24 @@ def make_parser() -> argparse.ArgumentParser:
     add.add_argument("--description", required=True, help="one or two sentences: what it is and why it was saved")
     add.add_argument("--url", help="a resource's http(s) address")
     add.add_argument("--link-text", help="a resource's link text")
-    add.add_argument("--body-file", metavar="PATH", help="the body of a list, questions or note; - reads standard input")
+    add.add_argument("--body-file", metavar="PATH", help="the body of a list or questions; - reads standard input")
 
-    listing = command("list", "list saved items, newest first", "List open items, newest first.", list_items)
-    listing.add_argument("--all", action="store_true", help="include items marked done")
-    listing.add_argument("--json", dest="as_json", action="store_true", help="print the items as JSON")
+    command("list", "list saved items, newest first", "List saved items, newest first.", list_items)
 
     show = command("show", "show one item in full", "Show one item in full, with its parts numbered (Q7.1, Q7.2, ...).", show_item)
     show.add_argument("id", help="item ID, such as Q7")
-    show.add_argument("--json", dest="as_json", action="store_true", help="print the item as JSON")
-
-    edit = command("edit", "change an item", "Change an item's title, description, link or body. Its kind and ID stay.", edit_item)
-    edit.add_argument("id", help="item ID, such as Q7")
-    edit.add_argument("--title")
-    edit.add_argument("--description")
-    edit.add_argument("--url")
-    edit.add_argument("--link-text")
-    edit.add_argument("--body-file", metavar="PATH", help="replace the body; - reads standard input")
 
     remove = command("remove", "delete an item", "Delete an item. Its ID is never given to another item.", remove_item)
     remove.add_argument("id", help="item ID, such as Q7")
 
-    done = command("done", "mark an item done", "Mark an item done: it leaves Saved and stays findable under Done.", set_done)
-    done.add_argument("id", help="item ID, such as Q7")
-    reopen = command("reopen", "bring a done item back", "Bring a done item back to Saved.", set_done)
-    reopen.add_argument("id", help="item ID, such as Q7")
-
     render_parser = command("render", "write the page to HTML files",
-                            "Write the Saved page, the Done page and one page per item as HTML files.", render)
+                            "Write the Saved page and one page per item as HTML files.", render)
     render_parser.add_argument("--output", help="HTML file path for the Saved page; the other pages go beside it")
     render_parser.add_argument("--config", type=Path, help="optional JSON config file")
     render_parser.add_argument("--title", help="override the page title")
 
     serve_parser = command("serve", "serve the page over HTTP",
-                           "Serve the page; every request reads the item store, so new items show on the next load.", serve)
+                           "Serve the page with items read from the store on each page load.", serve)
     add_serve_options(serve_parser)
     serve_parser.add_argument("--title", help="override the page title")
     for flag in LEGACY_SERVE_FLAGS:  # accepted so an existing service unit keeps starting; they do nothing now

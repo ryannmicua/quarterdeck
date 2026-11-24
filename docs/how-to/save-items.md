@@ -24,8 +24,7 @@ where the link goes.
 
 ### A list
 
-Give the entries one per line; a leading `-`, `*` or `1.` is removed. A JSON
-array of strings also works.
+Give one entry per non-blank line. Prefixes such as `-` and `1.` stay part of the entry.
 
 ```sh
 printf '%s\n' "Buy rope" "Paint the hull" "Check the sails" | quarterdeck add --kind list \
@@ -56,37 +55,19 @@ quarterdeck add --kind questions --title "Tide launch decisions" \
 The questions are numbered on the page: Q3.1, Q3.2. The captain can answer
 "Q3.1 merge, Q3.2 blue".
 
-### A note
+`--body-file -` reads standard input. Quarterdeck copies the body when you
+save it.
+
+## Find, read and remove items
 
 ```sh
-quarterdeck add --kind note --title "Quay notes" \
-  --description "What we agreed about the quay." --body-file notes.txt
+quarterdeck list         # saved items, newest first
+quarterdeck show Q3      # one item in full, numbered as on the page
+quarterdeck remove Q3    # delete Q3 and retire its ID
 ```
 
-`--body-file -` reads standard input. The body is copied in now; editing the
-file later does not change the item.
-
-## Find, read and change items
-
-```sh
-quarterdeck list           # open items, newest first
-quarterdeck list --all     # include done items
-quarterdeck show Q3        # one item in full, numbered as on the page
-quarterdeck edit Q3 --title "Tide launch: two decisions"
-quarterdeck edit Q2 --body-file -    # replace a list, questions or note body
-```
-
-`edit` changes the title, description, a resource's `--url` and `--link-text`,
-or the body. The kind and ID stay. `list --json` and `show --json` print JSON.
-IDs are accepted as `Q3`, `q3` or `3`.
-
-## Finish and remove items
-
-```sh
-quarterdeck done Q3      # leaves Saved, stays under Done
-quarterdeck reopen Q3    # back to Saved
-quarterdeck remove Q3    # deleted; Q3 is never used again
-```
+Use the displayed ID, such as `Q3` or `q3`. To correct a saved item, remove it
+and add it again. The new item gets a new ID.
 
 ## See them
 

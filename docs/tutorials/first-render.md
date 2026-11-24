@@ -29,8 +29,7 @@ examples.
 5. Run `quarterdeck serve` and open `http://127.0.0.1:8765/`. The Saved table
    shows both items. Open Harbor chores: its entries are numbered Q2.1 and Q2.2.
 
-6. Run `quarterdeck done Q2` and reload. Harbor chores moves to Done.
 
 Next, read [Save items to Quarterdeck](../how-to/save-items.md) for open
-questions and notes, and [Serve the page](../how-to/serve-the-page.md) to keep
+questions, and [Serve the page](../how-to/serve-the-page.md) to keep
 it running.

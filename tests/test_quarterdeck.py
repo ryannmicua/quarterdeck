@@ -3,6 +3,8 @@ from __future__ import annotations
 import io
 import json
 import os
+import select
+import socket
 import stat
 import subprocess
 import sys
@@ -11,9 +13,11 @@ import threading
 import unittest
 import urllib.error
 import urllib.request
+from concurrent.futures import ThreadPoolExecutor
 from contextlib import redirect_stderr, redirect_stdout
 from pathlib import Path
 from unittest.mock import patch
+from urllib.parse import urljoin
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
@@ -58,10 +62,9 @@ class StoreCase(unittest.TestCase):
             self.add("resource", "Calls redesign", "The Lavish page with the new Calls layout.",
                      "--url", "https://example.com/lavish/calls", "--link-text", "Calls redesign (Lavish)"),
             self.add("list", "Harbor chores", "Chores for the weekend.", "--body-file", "-",
-                     stdin="Buy rope\n- Paint the hull\n3. Check the sails\n"),
+                     stdin="[Urgent] Buy rope\n\n- Paint the hull\n3. Check the sails\n"),
             self.add("questions", "Tide launch decisions", "Two open questions, saved to decide later.",
                      "--body-file", "-", stdin=json.dumps(QUESTIONS)),
-            self.add("note", "Quay notes", "Thoughts on the quay.", "--body-file", "-", stdin="First part.\n\nSecond part.\n"),
         ]
 
     def store(self) -> dict:
@@ -74,23 +77,22 @@ class ItemCommandTests(StoreCase):
         body.write_text("Buy rope\nPaint the hull\n", encoding="utf-8")
         ids = self.add_all_kinds()
         ids.append(self.add("list", "From a file", "A list read from a file.", "--body-file", str(body)))
-        self.assertEqual(ids, ["Q1", "Q2", "Q3", "Q4", "Q5"])
+        self.assertEqual(ids, ["Q1", "Q2", "Q3", "Q4"])
         body.write_text("Changed later\n", encoding="utf-8")
         items = {item["id"]: item for item in self.store()["items"]}
         self.assertEqual(items["Q1"]["body"], {"url": "https://example.com/lavish/calls", "link_text": "Calls redesign (Lavish)"})
-        self.assertEqual(items["Q2"]["body"]["entries"], ["Buy rope", "Paint the hull", "Check the sails"])
+        self.assertEqual(items["Q2"]["body"]["entries"], ["[Urgent] Buy rope", "- Paint the hull", "3. Check the sails"])
         self.assertEqual(items["Q3"]["body"]["questions"][1]["options"], ["Red", "Blue"])
-        self.assertEqual(items["Q4"]["body"]["text"], "First part.\n\nSecond part.")
-        self.assertEqual(items["Q5"]["body"]["entries"], ["Buy rope", "Paint the hull"], "the body is a copy, not a link")
+        self.assertEqual(items["Q4"]["body"]["entries"], ["Buy rope", "Paint the hull"], "the body is a copy, not a link")
         self.assertTrue(items["Q1"]["saved_at"].endswith("Z"))
 
     def test_removed_ids_are_never_reused(self) -> None:
         self.add_all_kinds()
-        self.assertEqual(self.run_cli("remove", "Q4")[0], 0)
+        self.assertEqual(self.run_cli("remove", "Q2")[0], 0)
         self.assertEqual(self.run_cli("remove", "q3")[0], 0)
-        self.assertEqual(self.add("note", "Later", "A later note.", "--body-file", "-", stdin="text"), "Q5")
-        code, _out, err = self.run_cli("show", "Q4")
-        self.assertEqual((code, err.strip()), (2, "quarterdeck: no item Q4"))
+        self.assertEqual(self.add("list", "Later", "A later list.", "--body-file", "-", stdin="text"), "Q4")
+        code, _out, err = self.run_cli("show", "Q2")
+        self.assertEqual((code, err.strip()), (2, "quarterdeck: no item Q2"))
 
     def test_show_numbers_list_entries_and_questions(self) -> None:
         self.add_all_kinds()
@@ -101,40 +103,15 @@ class ItemCommandTests(StoreCase):
         self.assertIn("      Options: Merge | Hold", out)
         self.assertIn("      Suggestion: Merge", out)
         self.assertIn("Q3.2  Which colour for the quay?", out)
-        self.assertIn("Q2.3  Check the sails", self.run_cli("show", "2")[1])
-        shown = json.loads(self.run_cli("show", "Q1", "--json")[1])
-        self.assertEqual(shown["title"], "Calls redesign")
+        self.assertIn("Q2.3  3. Check the sails", self.run_cli("show", "q2")[1])
+        self.assertIn("Calls redesign (Lavish): https://example.com/lavish/calls", self.run_cli("show", "Q1")[1])
 
-    def test_done_leaves_the_main_list_and_reopen_brings_it_back(self) -> None:
+    def test_list_reports_saved_items_newest_first(self) -> None:
         self.add_all_kinds()
-        self.assertEqual(self.run_cli("done", "Q2")[0], 0)
-        listed = self.run_cli("list")[1]
-        self.assertNotIn("Harbor chores", listed)
-        self.assertEqual(listed.splitlines()[0].split()[0], "Q4", "newest first")
-        self.assertIn("Harbor chores  (done)", self.run_cli("list", "--all")[1])
-        self.assertTrue(json.loads(self.run_cli("list", "--all", "--json")[1])[2]["done"])
-        self.assertEqual(self.run_cli("reopen", "Q2")[0], 0)
-        self.assertIn("Harbor chores", self.run_cli("list")[1])
-        self.assertIsNone(self.store()["items"][1]["done_at"])
-
-    def test_edit_changes_fields_and_keeps_kind_and_id(self) -> None:
-        self.add_all_kinds()
-        self.assertEqual(self.run_cli("edit", "Q1", "--title", "Calls page", "--url", "https://example.com/v2")[0], 0)
-        self.assertEqual(self.run_cli("edit", "Q2", "--body-file", "-", stdin="Only this\n")[0], 0)
-        items = {item["id"]: item for item in self.store()["items"]}
-        self.assertEqual((items["Q1"]["title"], items["Q1"]["body"]["url"]), ("Calls page", "https://example.com/v2"))
-        self.assertEqual(items["Q1"]["body"]["link_text"], "Calls redesign (Lavish)")
-        self.assertEqual(items["Q2"]["body"]["entries"], ["Only this"])
-        self.assertIn("edited_at", items["Q2"])
-        for argv, message in (
-            (("edit", "Q2", "--url", "https://example.com"), "only for a resource"),
-            (("edit", "Q1", "--body-file", "-"), "not a body"),
-            (("edit", "Q1",), "nothing to change"),
-        ):
-            with self.subTest(argv=argv):
-                code, _out, err = self.run_cli(*argv, stdin="x")
-                self.assertEqual(code, 2)
-                self.assertIn(message, err)
+        code, listed, err = self.run_cli("list")
+        self.assertEqual(code, 0, err)
+        self.assertEqual([line.split()[0] for line in listed.splitlines()], ["Q3", "Q2", "Q1"])
+        self.assertIn("Harbor chores", listed)
 
     def test_invalid_items_are_refused_and_nothing_is_saved(self) -> None:
         cases = [
@@ -142,16 +119,20 @@ class ItemCommandTests(StoreCase):
             (("--kind", "resource", "--title", "T", "--description", "D", "--url", "javascript:alert(1)", "--link-text", "L"), "",
              "http:// or https://"),
             (("--kind", "list", "--title", "T", "--description", "D", "--body-file", "-"), "\n\n", "at least one entry"),
-            (("--kind", "note", "--title", "T", "--description", "D"), "", "needs a body"),
-            (("--kind", "note", "--title", " ", "--description", "D", "--body-file", "-"), "text", "title must not be empty"),
+            (("--kind", "list", "--title", "T", "--description", "D"), "", "needs a body"),
+            (("--kind", "list", "--title", " ", "--description", "D", "--body-file", "-"), "text", "title must not be empty"),
             (("--kind", "questions", "--title", "T", "--description", "D", "--body-file", "-"),
              json.dumps([{"question": "Q?", "options": ["A"]}]), "context"),
             (("--kind", "questions", "--title", "T", "--description", "D", "--body-file", "-"),
              json.dumps([{"question": "Q?", "context": "C"}]), "options or a suggestion"),
             (("--kind", "questions", "--title", "T", "--description", "D", "--body-file", "-"), "not json", "not valid JSON"),
-            (("--kind", "note", "--title", "T", "--description", "D", "--url", "https://example.com", "--body-file", "-"), "x",
+            (("--kind", "list", "--title", "T", "--description", "D", "--url", "https://example.com", "--body-file", "-"), "x",
              "only for a resource"),
         ]
+        for url in ("https://example.com:notaport", "https://example.com:65536", "https://:443", "https://ex%20ample.com",
+                    "https://[::1]bad"):
+            cases.append((("--kind", "resource", "--title", "T", "--description", "D",
+                           "--url", url, "--link-text", "L"), "", "valid hostname and port"))
         for argv, stdin, message in cases:
             with self.subTest(message=message):
                 code, _out, err = self.run_cli("add", *argv, stdin=stdin)
@@ -168,55 +149,90 @@ class ItemCommandTests(StoreCase):
         code, _out, err = self.run_cli("list")
         self.assertEqual(code, 2)
         self.assertIn("not valid JSON", err)
-        path.write_text(json.dumps({"version": 1, "next_id": 2, "items": [{"id": "Q5", "kind": "note"}]}), encoding="utf-8")
-        self.assertIn("above next_id", self.run_cli("list")[2])
 
-    def test_ids_parse_in_any_case_with_or_without_the_q(self) -> None:
-        self.assertEqual([quarterdeck.parse_id(value) for value in ("Q7", "q7", "7", " Q07 ")], ["Q7"] * 4)
-        for value in ("Q0", "Q7.1", "seven", ""):
-            with self.subTest(value=value), self.assertRaises(ValueError):
-                quarterdeck.parse_id(value)
+    def test_damaged_record_is_rejected_before_any_command_consumes_it(self) -> None:
+        self.add_all_kinds()
+        path = quarterdeck.store_path()
+        saved = path.read_text()
+        output = self.root / "out" / "index.html"
+        cases = (
+            (0, "id", "q1"), (0, "id", "Q01"), (0, "id", "Q5"), (0, "title", ""),
+            (0, "description", 3), (0, "saved_at", "2026-02-30T12:00:00Z"), (0, "body", None),
+            (0, "body", {"url": "https://example.com:no", "link_text": "Resource"}),
+            (0, "body", {"url": "https://example.com", "link_text": None}),
+            (1, "body", {"entries": []}), (1, "body", {"entries": [1]}),
+            (2, "body", {"questions": [{"question": "Pick?", "options": ["A"]}]}),
+            (2, "body", {"questions": [{"question": "Pick?", "context": "Now", "options": [1]}]}),
+            (2, "body", {"questions": [{"question": "Pick?", "context": "Now", "options": [], "suggestion": 1}]}),
+        )
+        for index, field, value in cases:
+            with self.subTest(index=index, field=field, value=value):
+                damaged = json.loads(saved)
+                damaged["items"][index][field] = value
+                snapshot = json.dumps(damaged)
+                path.write_text(snapshot)
+                for args in (("list",), ("show", "Q1"), ("remove", "Q1"), ("render", "--output", str(output)),
+                             ("add", "--kind", "list", "--title", "Fresh", "--description", "Saved", "--body-file", "-")):
+                    self.assertEqual(self.run_cli(*args, stdin="Buy rope")[0], 2, args)
+                self.assertEqual(path.read_text(), snapshot)
+                self.assertFalse(output.exists())
+
+        for version in (True, 1.0):
+            damaged = json.loads(saved)
+            damaged["version"] = version
+            path.write_text(json.dumps(damaged))
+            self.assertEqual(self.run_cli("list")[0], 2)
+
+    def test_show_and_remove_require_a_canonical_id_in_either_case(self) -> None:
+        self.add_all_kinds()
+        for command in ("show", "remove"):
+            for value in ("1", "Q01", " Q1 ", "Q0", "Q1.1", "Q１"):
+                with self.subTest(command=command, value=value):
+                    self.assertEqual(self.run_cli(command, value)[0], 2)
+        self.assertEqual(self.run_cli("show", "Q1")[0], 0)
+        self.assertEqual(self.run_cli("show", "q1")[0], 0)
+        self.assertEqual(self.run_cli("remove", "q1")[0], 0)
 
     def test_concurrent_adds_get_distinct_ids(self) -> None:
-        results: list[str] = []
+        def add(number: int) -> str:
+            result = subprocess.run(
+                [sys.executable, str(ROOT / "quarterdeck.py"), "add", "--kind", "list", "--title", f"List {number}",
+                 "--description", "A fictional list", "--body-file", "-"],
+                input=f"Entry {number}\n", capture_output=True, text=True, check=True, timeout=10)
+            return result.stdout.strip()
 
-        def add() -> None:
-            with quarterdeck.changing_store(quarterdeck.store_path()) as data:
-                results.append(f"Q{data['next_id']}")
-                data["next_id"] += 1
-
-        threads = [threading.Thread(target=add) for _ in range(8)]
-        for thread in threads:
-            thread.start()
-        for thread in threads:
-            thread.join()
-        self.assertEqual(sorted(results, key=lambda value: int(value[1:])), [f"Q{number}" for number in range(1, 9)])
+        with ThreadPoolExecutor(max_workers=8) as pool:
+            ids = list(pool.map(add, range(8)))
+        expected = [f"Q{number}" for number in range(1, 9)]
+        self.assertCountEqual(ids, expected)
+        self.assertEqual([line.split()[0] for line in self.run_cli("list")[1].splitlines()], expected[::-1])
+        for number, item_id in enumerate(ids):
+            code, shown, err = self.run_cli("show", item_id)
+            self.assertEqual(code, 0, err)
+            self.assertIn(f"{item_id}.1  Entry {number}", shown)
 
 
 class PageTests(StoreCase):
     def pages(self) -> dict[str, str]:
-        return quarterdeck.site_pages(quarterdeck.read_store(quarterdeck.store_path()), "Quarterdeck")
+        return quarterdeck.site_pages(quarterdeck.read_store(quarterdeck.store_path()), "Quarterdeck", "index.html")
 
     def test_empty_quarterdeck_shows_a_plain_empty_state(self) -> None:
         pages = self.pages()
-        self.assertEqual(set(pages), {"index.html", "done.html"})
+        self.assertEqual(set(pages), {"index.html"})
         self.assertIn("Nothing is saved yet.", pages["index.html"])
         self.assertNotIn("<table", pages["index.html"])
 
     def test_saved_page_lists_items_newest_first_with_their_fields(self) -> None:
         self.add_all_kinds()
-        self.run_cli("done", "Q2")
         index = self.pages()["index.html"]
         rows = index.split("<tbody>", 1)[1]
-        self.assertLess(rows.index(">Q4<"), rows.index(">Q3<"))
-        self.assertLess(rows.index(">Q3<"), rows.index(">Q1<"))
-        self.assertNotIn("Harbor chores", index, "done items leave the main view")
+        self.assertLess(rows.index(">Q3<"), rows.index(">Q2<"))
+        self.assertLess(rows.index(">Q2<"), rows.index(">Q1<"))
+        self.assertIn("Harbor chores", index)
         self.assertIn('<a href="q3.html">Tide launch decisions</a>', index)
         self.assertIn("Two open questions, saved to decide later.", index)
-        self.assertIn('<a href="done.html">1 done item</a>', index)
         for heading in ("ID", "Kind", "Title", "Description", "Saved"):
             self.assertIn(f'<th scope="col">{heading}</th>', index)
-        self.assertIn("Harbor chores", self.pages()["done.html"])
 
     def test_item_pages_show_id_title_and_numbered_parts(self) -> None:
         self.add_all_kinds()
@@ -224,17 +240,17 @@ class PageTests(StoreCase):
         self.assertIn('<p class="id">Q1</p><h1>Calls redesign</h1>', pages["q1.html"])
         self.assertIn('<a class="open-link" href="https://example.com/lavish/calls" rel="noopener noreferrer">'
                       "Calls redesign (Lavish)</a>", pages["q1.html"])
-        self.assertIn('<li id="Q2.3"><span class="id">Q2.3</span><span>Check the sails</span></li>', pages["q2.html"])
+        self.assertIn('<li id="Q2.3"><span class="id">Q2.3</span><span>3. Check the sails</span></li>', pages["q2.html"])
         questions = pages["q3.html"]
         self.assertIn('<span class="id">Q3.1</span>', questions)
         self.assertIn("Merge the tide tables now?", questions)
         self.assertIn("Checks are green and the preview looks right.", questions)
         self.assertIn("<li>Hold</li>", questions)
         self.assertIn('<span class="label">Suggestion</span><br>Merge', questions)
-        self.assertIn("<p>First part.</p><p>Second part.</p>", pages["q4.html"])
+        self.assertNotIn(">https://example.com/lavish/calls<", pages["q1.html"])
 
     def test_text_is_escaped_and_no_server_path_appears(self) -> None:
-        self.add("note", "<script>alert(1)</script>", "A & B", "--body-file", "-", stdin="<b>bold</b>")
+        self.add("list", "<script>alert(1)</script>", "A & B", "--body-file", "-", stdin="<b>bold</b>")
         pages = self.pages()
         for page in pages.values():
             self.assertNotIn("<script>alert(1)</script>", page)
@@ -244,21 +260,57 @@ class PageTests(StoreCase):
 
 
 class RenderTests(StoreCase):
-    def test_render_writes_every_page_and_retires_only_its_own_stale_pages(self) -> None:
+    def test_render_replaces_historical_output_and_retires_only_marked_item_pages(self) -> None:
         self.add_all_kinds()
         output = self.root / "site" / "index.html"
         output.parent.mkdir()
-        (output.parent / "classic.html").write_text("<html><head>\n" + quarterdeck.GENERATED_MARKER + "\n</head></html>")
-        (output.parent / "mine.html").write_text("<html>my own page</html>")
+        historical = '<html><head><meta name="quarterdeck-' + 'generated" content="read-only review page"></head></html>'
+        for name in ("index.html", "snapshot.html", "q9.html"):
+            (output.parent / name).write_text(historical)
+        unrelated = output.parent / "q8.html"
+        unrelated.write_text("<html>my own page</html>")
         code, out, err = self.run_cli("render", "--output", str(output))
         self.assertEqual(code, 0, err)
         self.assertEqual(out.strip(), str(output.resolve()))
-        names = {path.name for path in output.parent.iterdir()}
-        self.assertEqual(names, {"index.html", "done.html", "q1.html", "q2.html", "q3.html", "q4.html", "mine.html"})
-        self.run_cli("remove", "Q4")
-        self.run_cli("render", "--output", str(output))
-        self.assertFalse((output.parent / "q4.html").exists(), "a removed item's page is retired")
-        self.assertTrue((output.parent / "mine.html").exists(), "a file Quarterdeck did not write is kept")
+        self.assertIn('<a href="q3.html">Tide launch decisions</a>', output.read_text())
+        self.assertEqual({path.name for path in output.parent.iterdir()},
+                         {"index.html", "q1.html", "q2.html", "q3.html", "q8.html", "snapshot.html"})
+        self.assertEqual((output.parent / "snapshot.html").read_text(), historical)
+        self.assertEqual(unrelated.read_text(), "<html>my own page</html>")
+        self.assertEqual(self.run_cli("remove", "Q3")[0], 0)
+        self.assertEqual(self.run_cli("render", "--output", str(output))[0], 0)
+        self.assertFalse((output.parent / "q3.html").exists())
+
+    def test_custom_saved_filename_is_linked_from_every_page(self) -> None:
+        self.add_all_kinds()
+        output = self.root / "site" / "Shelf #1.html"
+        self.assertEqual(self.run_cli("render", "--output", str(output))[0], 0)
+        for path in output.parent.iterdir():
+            self.assertEqual(path.read_text().count('href="Shelf%20%231.html"'), 2)
+            self.assertEqual(urljoin(path.as_uri(), "Shelf%20%231.html"), output.as_uri())
+        self.assertFalse((output.parent / "index.html").exists())
+
+    def test_render_preflights_destinations_and_protects_store(self) -> None:
+        self.add_all_kinds()
+        directory = self.root / "site"
+        directory.mkdir()
+        output = directory / "index.html"
+        collision = directory / "q2.html"
+        collision.write_text("Mine")
+        config = self.root / "config.json"
+        config.write_text(json.dumps({"output_dir": str(directory)}))
+        for args in (("--output", str(output)), ("--config", str(config)), ("--output", str(collision))):
+            self.assertEqual(self.run_cli("render", *args)[0], 2)
+            self.assertEqual(set(directory.iterdir()), {collision})
+            self.assertEqual(collision.read_text(), "Mine")
+        output.write_text("My index")
+        self.assertEqual(self.run_cli("render", "--output", str(output))[0], 2)
+        self.assertEqual(output.read_text(), "My index")
+        path = quarterdeck.store_path()
+        before = path.read_bytes()
+        self.assertEqual(self.run_cli("render", "--output", str(path))[0], 2)
+        self.assertEqual(path.read_bytes(), before)
+        self.assertEqual({file.name for file in path.parent.iterdir()}, {"items.json", "items.json.lock"})
 
     def test_render_uses_the_configured_output_and_title(self) -> None:
         config = self.root / "config.json"
@@ -307,12 +359,12 @@ class ServeTests(StoreCase):
         self.assertIn("Nothing is saved yet.", body)
         self.add_all_kinds()
         self.assertIn("Tide launch decisions", self.fetch(port, "/")[1])
-        for path in ("/q3.html", "/Q3", "/q3"):
+        status, body, _headers = self.fetch(port, "/q3.html")
+        self.assertEqual(status, 200)
+        self.assertIn("Q3.2", body)
+        for path in ("/q9.html", "/Q3", "/q3", "/Q0", "/q03.html", "/done.html"):
             with self.subTest(path=path):
-                status, body, _headers = self.fetch(port, path)
-                self.assertEqual(status, 200)
-                self.assertIn("Q3.2", body)
-        self.assertEqual(self.fetch(port, "/q9.html")[0], 404)
+                self.assertEqual(self.fetch(port, path)[0], 404)
         self.assertEqual(self.fetch(port, "/classic.html")[0], 404)
         self.assertEqual(self.fetch(port, "/icon.svg")[0], 200)
         self.assertEqual(self.fetch(port, "/", method="POST")[0], 405)
@@ -325,11 +377,49 @@ class ServeTests(StoreCase):
         self.assertEqual(self.fetch(port, "/q3.html")[2].get("Location"), "/qd/q3.html")
         self.assertEqual(self.fetch(port, "/qd/", host="attacker.example")[0], 403)
 
-    def test_serve_accepts_the_flags_an_older_service_unit_passes(self) -> None:
-        args = quarterdeck.make_parser().parse_args(
-            ["serve", "--host", "127.0.0.1", "--port", "8765", "--allow-marks", "--watch-waits", "--no-snapshot", "--home", "/x"])
-        self.assertTrue(args.allow_marks and args.watch_waits)
-        self.assertNotIn("allow-marks", quarterdeck.make_parser()._subparsers._group_actions[0].choices["serve"].format_help())
+    def test_legacy_service_flags_and_config_keep_the_page_read_only(self) -> None:
+        self.add_all_kinds()
+        home = self.root / "firstmate"
+        home.mkdir()
+        (home / "backlog.md").write_text("Legacy work item")
+        config = self.root / "legacy.json"
+        config.write_text(json.dumps({"homes": [{"path": str(home)}], "captain_waits": {}}))
+        with socket.socket() as probe:
+            probe.bind(("127.0.0.1", 0))
+            port = probe.getsockname()[1]
+        with subprocess.Popen(
+            [sys.executable, str(ROOT / "quarterdeck.py"), "serve", "--port", str(port), "--config", str(config),
+             "--allow-marks", "--watch-waits", "--no-snapshot", "--home", str(home)],
+            stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
+        ) as process:
+            try:
+                self.assertTrue(select.select([process.stdout], [], [], 10)[0], "server did not start")
+                self.assertIn("Serving Quarterdeck", process.stdout.readline())
+                status, body, _headers = self.fetch(port, "/")
+                self.assertEqual(status, 200)
+                self.assertIn("Tide launch decisions", body)
+                self.assertNotIn("Legacy work item", body)
+                self.assertNotIn(str(home), body)
+                before = quarterdeck.store_path().read_bytes()
+                self.assertEqual(self.fetch(port, "/", method="POST")[0], 405)
+                self.assertEqual(quarterdeck.store_path().read_bytes(), before)
+            finally:
+                process.terminate()
+                process.communicate(timeout=10)
+
+    def test_damaged_store_returns_an_error_without_server_paths(self) -> None:
+        self.add_all_kinds()
+        path = quarterdeck.store_path()
+        damaged = self.store()
+        del damaged["items"][0]["body"]
+        path.write_text(json.dumps(damaged))
+        port = self.start()
+        for route in ("/", "/q2.html"):
+            status, body, _headers = self.fetch(port, route)
+            self.assertEqual(status, 500)
+            self.assertIn("could not read its item store", body)
+            self.assertNotIn(str(path), body)
+        self.assertEqual(self.fetch(port, "/Q1")[0], 404)
 
 
 class ServiceAndHelpTests(StoreCase):
@@ -353,9 +443,9 @@ class ServiceAndHelpTests(StoreCase):
         self.assertEqual(code, 0)
         index = json.loads(out)
         names = [command["name"] for command in index["commands"]]
-        for name in ("add", "list", "show", "edit", "remove", "done", "reopen", "render", "serve"):
+        for name in ("add", "list", "show", "remove", "render", "serve"):
             self.assertIn(name, names)
-        for old in ("board", "reports", "topics", "waits", "attention", "export"):
+        for old in ("board", "reports", "topics", "waits", "attention", "export", "edit", "done", "reopen"):
             self.assertNotIn(old, names)
         for command in index["commands"]:
             for doc in command["docs"]:
@@ -367,7 +457,7 @@ class ServiceAndHelpTests(StoreCase):
         result = subprocess.run([sys.executable, str(ROOT / "quarterdeck.py"), "list"], capture_output=True, text=True,
                                 env=dict(os.environ), check=False)
         self.assertEqual(result.returncode, 0, result.stderr)
-        self.assertIn("No open items", result.stdout)
+        self.assertIn("No saved items.", result.stdout)
 
 
 class PrivacyGuardTests(unittest.TestCase):
@@ -386,6 +476,19 @@ class PrivacyGuardTests(unittest.TestCase):
             self.initialize_git(root)
             self.stage(root, "quarterdeck-output/index.html")
             self.assertTrue(any("generated output" in item for item in privacy_guard.check_staged(root)))
+
+    def test_item_store_is_ignored_and_force_staging_is_rejected(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            self.initialize_git(root)
+            (root / ".gitignore").write_bytes((ROOT / ".gitignore").read_bytes())
+            for name in ("quarterdeck/items.json", "nested/quarterdeck/items.json", "nested/quarterdeck/items.json.lock"):
+                path = root / name
+                path.parent.mkdir(parents=True, exist_ok=True)
+                path.write_text("Fictional decision context.")
+                subprocess.run(["git", "check-ignore", "--", name], cwd=root, check=True, capture_output=True)
+                subprocess.run(["git", "add", "-f", "--", name], cwd=root, check=True)
+                self.assertIn(f"{name}: local Quarterdeck item store or lock", privacy_guard.check_staged(root))
 
     def test_rejects_generated_page_marker_in_an_unusual_filename(self) -> None:
         marker = b'<meta name="quarterdeck-' + b'generated"'

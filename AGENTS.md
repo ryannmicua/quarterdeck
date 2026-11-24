@@ -6,7 +6,7 @@ This file is the project's committed home for project-intrinsic agent knowledge:
 
 ## Project notes
 
-- Preserve the boundary: Quarterdeck shows only items saved by hand with `quarterdeck add`. It reads and writes only its own item store (`${XDG_STATE_HOME:-~/.local/state}/quarterdeck/items.json`), its optional config, the body file named on `add`/`edit`, and its `render` output and `service --write` unit. It reads nothing from a Firstmate home, runs no Firstmate script, and makes no network calls; `serve` is read-only (POST is refused) and binds loopback by default. See `docs/explanation/privacy-and-architecture.md`.
+- Preserve the boundary: Quarterdeck shows only items saved by hand with `quarterdeck add`. It reads and writes only its own item store (`${XDG_STATE_HOME:-~/.local/state}/quarterdeck/items.json`), its optional config, the body file named on `add`, and its `render` output and `service --write` unit. It reads nothing from a Firstmate home, runs no Firstmate script, and makes no network calls; `serve` is read-only (POST is refused) and binds loopback by default. See `docs/explanation/privacy-and-architecture.md`.
 - Validation commands live in `CONTRIBUTING.md`.
 
 ## Maintaining this file

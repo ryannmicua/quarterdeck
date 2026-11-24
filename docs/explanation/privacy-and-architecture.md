@@ -12,7 +12,7 @@ and nothing else.
 - It reads its optional config, `${XDG_CONFIG_HOME:-~/.config}/quarterdeck.json`.
 - `render` writes the pages to its output directory; `service --write` writes
   the systemd unit.
-- `add` and `edit` read the body file you name, once, and copy its text into
+- `add` reads the body file you name, once, and copy its text into
   the store.
 
 It reads nothing from a Firstmate home: no backlog, board, topic, report,
@@ -22,9 +22,9 @@ Firstmate home.
 ## Why items are stored by value
 
 An item holds its own copy of what was saved: the link, the list, the
-questions with their context, the note. A file that changes or disappears
+questions with their context. A file that changes or disappears
 later does not change the item, so Q7.3 means the same thing tomorrow as
-today. To change an item, run `quarterdeck edit`.
+today. To correct a saved item, remove it and save a new one.
 
 ## IDs
 

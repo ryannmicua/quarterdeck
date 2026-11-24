@@ -21,7 +21,6 @@ parts of a list or a set of questions are cited as Q7.1, Q7.2, so you can say
 | `resource` | A link you want to get back to, with link text. | A Lavish page, a pull request, a preview. |
 | `list` | An ordered list of entries, numbered Q7.1, Q7.2, ... | A shopping list, the steps left in a launch. |
 | `questions` | Numbered questions, each with its context and the options or a suggestion to decide from. | The open questions Firstmate is waiting on. |
-| `note` | Free text. | Something to remember. |
 
 Every item also has a title, a one-or-two-sentence description of what it is
 and why it was saved, and its saved date. Its content is copied in when it is
@@ -33,8 +32,7 @@ saved; Quarterdeck never reads it again from another file.
   description and date. On a phone the rows stack.
 - One page per item, with its ID and title at the top. A resource's link opens
   the saved address; list entries and questions are numbered.
-- Done items leave Saved and stay under Done. `quarterdeck reopen` brings one back.
-- `quarterdeck add`, `list`, `show`, `edit`, `remove`, `done` and `reopen` for
+- `quarterdeck add`, `list`, `show` and `remove` for
   Firstmate to manage items. `add` prints the new ID. See
   [Save items to Quarterdeck](docs/how-to/save-items.md).
 - `quarterdeck serve` serves the page; each request reads the store, so a new

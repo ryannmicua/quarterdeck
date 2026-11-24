@@ -1,8 +1,7 @@
 # Serve the page
 
-`quarterdeck serve` serves the Saved page, the Done page and one page per item.
-Every request reads the item store, so an item Firstmate saves shows on the
-next load; there is nothing to refresh or restart.
+`quarterdeck serve` serves the Saved page and one page per item. Each page
+request reads the store, so an item Firstmate saves shows on the next load.
 
 ## Run it
 
@@ -15,7 +14,7 @@ to pick another port and `--title` to change the heading. To write the pages
 as files instead, run `quarterdeck render`; see the
 [CLI reference](../reference/cli-and-config.md#pages).
 
-Open an item from the table, or go straight to it: `/Q7` opens item Q7.
+Open an item from the table, or use its page URL. For Q7, open `/q7.html`.
 
 ## Reach it from a phone
 
