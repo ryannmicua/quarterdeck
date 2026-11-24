@@ -905,7 +905,7 @@ WORKERS_SCRIPT = r"""
   const status = section.querySelector('#workers-status');
   const list = section.querySelector('#workers-list');
   const exceptions = new Set(['Question asked', 'Stuck', 'Unreachable']);
-  let last = null;
+  let lastObservedAt = null;
   const make = (tag, className, text) => {
     const node = document.createElement(tag);
     if (className) node.className = className;
@@ -962,8 +962,8 @@ WORKERS_SCRIPT = r"""
   };
   const failed = () => {
     status.className = 'meta failed';
-    status.textContent = last
-      ? 'Refresh failed. Showing the list from ' + localTime(last.observed_at) + '.'
+    status.textContent = lastObservedAt
+      ? 'Refresh failed. Showing the list from ' + localTime(lastObservedAt) + '.'
       : 'Workers could not be loaded. Try again.';
   };
   const load = async () => {
@@ -971,13 +971,13 @@ WORKERS_SCRIPT = r"""
     button.setAttribute('aria-disabled', 'true');
     list.setAttribute('aria-busy', 'true');
     status.className = 'meta';
-    status.textContent = last ? 'Refreshing workers' : 'Loading workers';
+    status.textContent = lastObservedAt ? 'Refreshing workers' : 'Loading workers';
     try {
       const response = await fetch('workers.json', {cache: 'no-store', headers: {Accept: 'application/json'}});
       if (!response.ok) throw new Error('refresh failed');
       const data = await response.json();
-      last = data;
       show(data);
+      lastObservedAt = data.observed_at;
     } catch (error) {
       failed();
     } finally {

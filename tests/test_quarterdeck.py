@@ -1234,10 +1234,35 @@ const check = (condition, message) => { if (!condition) throw new Error(message)
         browser_result = result.stdout.partition('<output id="browser-result">')[2].partition("</output>")[0]
         self.assertEqual(browser_result, "PASS", result.stderr)
 
-    def test_a_rendered_page_has_no_workers_section(self) -> None:
+    def test_explicit_home_enables_workers_only_when_serving(self) -> None:
+        home = self.make_home([snapshot_task("Wren")])
+        config = self.root / "quarterdeck.json"
+        config.write_text(json.dumps({"firstmate_home": str(home)}))
         out = self.root / "out" / "index.html"
-        self.assertEqual(0, self.run_cli("render", "--output", str(out))[0])
+        code, _, error = self.run_cli("render", "--config", str(config), "--output", str(out))
+        self.assertEqual(code, 0, error)
         self.assertNotIn("Workers", out.read_text())
+
+        with socket.socket() as probe:
+            probe.bind(("127.0.0.1", 0))
+            port = probe.getsockname()[1]
+        with subprocess.Popen(
+            [sys.executable, str(ROOT / "quarterdeck.py"), "serve", "--config", str(config),
+             "--host", "127.0.0.1", "--port", str(port), "--base-path", "/qd"],
+            stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
+        ) as process:
+            try:
+                self.assertTrue(select.select([process.stdout], [], [], 10)[0], "server did not start")
+                self.assertIn("Serving Quarterdeck", process.stdout.readline())
+                status, page, _ = self.fetch(port, "/qd/")
+                self.assertEqual(status, 200)
+                self.assertIn('id="refresh-workers">Refresh workers</button>', page)
+                status, body, _ = self.fetch(port, "/qd/workers.json")
+                self.assertEqual(status, 200)
+                self.assertEqual([worker["name"] for worker in json.loads(body)["workers"]], ["Wren"])
+            finally:
+                process.terminate()
+                process.communicate(timeout=10)
 
 
 class ServiceAndHelpTests(StoreCase):
