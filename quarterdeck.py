@@ -775,9 +775,10 @@ def source_pages(
     ambiguous_ids = assign_report_ids(homes) if allow_marks else set()
     incomplete = allow_marks and bool(local_report_resolution_errors(homes))
     for snapshot in all_snapshots(homes):
-        if snapshot.spec.home is None:
+        if snapshot.spec.home is None or not home_has_session_content(snapshot):
             continue
-        if snapshot.backlog_path and snapshot.backlog_markdown is not None:
+        if (snapshot.backlog_path and snapshot.backlog_markdown is not None
+                and (snapshot.session is None or snapshot.records or snapshot_items(snapshot))):
             name = source_page_filename("backlog", snapshot.spec.home, snapshot.backlog_path)
             snapshot_path = display_path(snapshot.backlog_path, snapshot.spec.home)
             if snapshot.session is not None:  # one session: the page lists only the tasks it touched
@@ -1002,11 +1003,13 @@ def section_html(title: str, description: str, cards: list[str], empty: str) -> 
 
 def home_panel(
     snapshot: HomeSnapshot, lavish: bool = False, show_all: bool = False,
-    decisions: dict[str, dict[str, object]] | None = None,
+    decisions: dict[str, dict[str, object]] | None = None, *, parent_visible: bool = False,
 ) -> str:
     spec = snapshot.spec
     if spec.parent_label:
-        role = f"Secondmate · registered by {spec.parent_label}"
+        role = "Secondmate"
+        if snapshot.session is None or parent_visible:
+            role += f" · registered by {spec.parent_label}"
     else:
         role = "Firstmate home"
     if spec.route_id:
@@ -1105,9 +1108,11 @@ def home_panel(
             '<div class="warning"><strong>Some report files could not be read</strong>'
             f'<p>{html.escape(warning_text)}</p></div>'
         )
-    if snapshot.children:
+    children = visible_home_panels(snapshot.children)
+    if children:
         body.append('<div class="secondmates"><h3>Registered secondmates</h3>')
-        body.extend(home_panel(child, lavish, show_all, decisions) for child in snapshot.children)
+        body.extend(home_panel(child, lavish, show_all, decisions, parent_visible=child.spec.parent_label == spec.label)
+                    for child in children)
         body.append('</div>')
     return ''.join(heading + body + ['</section>'])
 
@@ -1118,6 +1123,17 @@ def all_snapshots(snapshots: list[HomeSnapshot]) -> list[HomeSnapshot]:
         result.append(snapshot)
         result.extend(all_snapshots(snapshot.children))
     return result
+
+
+def home_has_session_content(snapshot: HomeSnapshot) -> bool:
+    scope = snapshot.session
+    return (scope is None or bool(snapshot.topics or snapshot.reports or snapshot.records or (snapshot.board and snapshot.board.items))
+            or any(owner == id(snapshot) for owner, _ in scope.tasks))
+
+
+def visible_home_panels(homes: list[HomeSnapshot]) -> list[HomeSnapshot]:
+    return [panel for home in homes for panel in
+            ([home] if home_has_session_content(home) else visible_home_panels(home.children))]
 
 
 def report_reference(home_label: str, task_id: str) -> str:
@@ -1673,12 +1689,13 @@ def build_html(
     reviewed_block = (
         reviewed_reports_html(homes, ambiguous_ids, report_resolution_incomplete, reactions) if allow_marks else ""
     ) + set_aside_reports_html(homes, ambiguous_ids, report_resolution_incomplete, allow_marks, reactions)
+    panels = visible_home_panels(homes)
     details_block = (
         '<details class="dashboard-section" id="details" data-refresh-key="details"><summary>'
-        f'<h2>Details by home</h2>{count_badge(len(homes))}</summary>'
+        f'<h2>Details by home</h2>{count_badge(len(panels))}</summary>'
         f'<div class="summary" aria-label="Review counts">{metrics_html}</div>'
-        + "".join(home_panel(home, lavish, show_all, decisions) for home in homes) + "</details>"
-    )
+        + "".join(home_panel(home, lavish, show_all, decisions) for home in panels) + "</details>"
+    ) if panels else ""
     body_markup = cards_block + topics_block + board_block + attention_block + bearings_block + reviewed_block + activity_block + details_block
     waiting_cards = sum(card["section"] == "needs_you" for card in cards)
     tab_prefix = f"({waiting_cards}) " if waiting_cards else ""
@@ -2654,20 +2671,25 @@ class BearingsBuilder:
 
     def build(self) -> Bearings:
         for snapshot in self.homes:
+            if not visible_home_panels([snapshot]):
+                continue
+            show_source = home_has_session_content(snapshot)
             data, reason = (None, "snapshot disabled with --no-snapshot")
             if self.use_snapshot and snapshot.spec.home is not None and not snapshot.spec.remote_host and not snapshot.error:
                 data, reason = self.runner(snapshot.spec.home, snapshot.data_dir)
             elif snapshot.error:
                 reason = "home could not be read"
             if data is not None:
-                self.result.sources.append(HomeSource(snapshot.spec.label, "snapshot"))
-                self.result.omissions.extend(
-                    (snapshot.spec.label, _text(row.get("surface")), _text(row.get("reveal")))
-                    for row in _rows(data, "omitted")
-                )
+                if show_source:
+                    self.result.sources.append(HomeSource(snapshot.spec.label, "snapshot"))
+                    self.result.omissions.extend(
+                        (snapshot.spec.label, _text(row.get("surface")), _text(row.get("reveal")))
+                        for row in _rows(data, "omitted")
+                    )
                 self.from_snapshot(snapshot, data)
             else:
-                self.result.sources.append(HomeSource(snapshot.spec.label, "fallback", reason))
+                if show_source:
+                    self.result.sources.append(HomeSource(snapshot.spec.label, "fallback", reason))
                 for member in [snapshot] + all_snapshots(snapshot.children):
                     self.from_backlog(member)
         state = next((s.review_state for s in all_snapshots(self.homes) if s.review_state is not None), None)
@@ -3042,7 +3064,8 @@ def bearings_html(
             notes.append(f"{html.escape(source.label)}: Firstmate bearings snapshot")
         else:
             notes.append(f"{html.escape(source.label)}: <strong>fallback</strong> — parsed from the backlog ({html.escape(source.reason)})")
-    out.append('<p class="source-note">Sources — ' + "; ".join(notes) + ".</p>")
+    if notes:
+        out.append('<p class="source-note">Sources — ' + "; ".join(notes) + ".</p>")
     if bearings.omissions:
         omitted_notes = "; ".join(
             f"{html.escape(home)}: {html.escape(surface)} ({html.escape(reveal)})"
@@ -3519,7 +3542,7 @@ def home_attention(
             try:
                 local_records = read_fleet_ledger(owner_spec.home / LEDGER_PATH) or []
             except AttentionSourceError as exc:
-                if not owner.error:
+                if not owner.error and home_has_session_content(owner):
                     errors.append(exc.as_dict())
                 local_records = []
         resolved_records = []
@@ -3604,9 +3627,12 @@ def home_attention(
             "source": ATTENTION_FEED_SCHEMA if feed is not None else "backlog", "relevant": relevant,
             "background_count": len(background), "background": background if all_decisions else None,
         }
-        if not use_feed:
+        if not use_feed and home_has_session_content(snapshot):
             view["decisions"]["skipped"] = "the Firstmate scripts were skipped with --no-snapshot"
     view["ok"] = not errors and not view.get("feed_stale")
+    if not home_has_session_content(snapshot):
+        errors.clear()
+        view.pop("feed_stale", None)
     return view
 
 
@@ -3920,18 +3946,19 @@ def attention_view(
     now = now or datetime.now(timezone.utc)
     board_activity = board_engagement(homes)
     projects: dict[str, str] = {}
+    active_homes = [snapshot for snapshot in homes if visible_home_panels([snapshot])]
     completion_sources: list[CompletionSource] | None = [] if completions_out is not None else None
     views = [home_attention(snapshot, now, True, use_feed, feed_runner, board_activity, projects, completion_sources,
                             recap_inputs)
-             for snapshot in homes]
+             for snapshot in active_homes]
     if completions_out is not None and completion_sources is not None:
         completions_out.extend(recap_completions(completion_sources, now))
     shared = {"schema": ATTENTION_SCHEMA, "generated": iso_seconds(now.timestamp()), "homes": views}
     decisions = decision_rows(homes, shared)
     board = board_view(homes, now, fallback=True, decisions=decisions)
     waiting_by_home = [apply_waits(home_waiting(snapshot, view, board, projects), waits or {})
-                       for snapshot, view in zip(homes, views)]
-    known = registered_projects(homes, waiting_by_home) if project or priority_projects else []
+                       for snapshot, view in zip(active_homes, views)]
+    known = registered_projects(active_homes, waiting_by_home) if project or priority_projects else []
     if project:
         project = resolve_project(project, known)
     names = [project] if project else []
@@ -3944,11 +3971,11 @@ def attention_view(
     has_priority = any(project_matches(item["project"], name)
                        for waiting in waiting_by_home for items in waiting.values() for item in items for name in names)
     view_homes: list[dict[str, object]] = []
-    for snapshot, view, waiting in zip(homes, views, waiting_by_home):
+    for snapshot, view, waiting in zip(active_homes, views, waiting_by_home):
         complete = use_feed and bool(view["ok"]) and not any(
             owner.registry_error or (not owner.spec.remote_host and owner.error)
             or (owner.board is not None and (not owner.board.supported or owner.board.warnings))
-            for owner in all_snapshots([snapshot])
+            for owner in all_snapshots([snapshot]) if home_has_session_content(owner)
         )
         view["complete"] = complete
         view["priorities"] = priority_entries(waiting, names, complete)
@@ -3970,7 +3997,9 @@ def attention_view(
             view["decisions"]["background"] = None
     result = {
         "schema": ATTENTION_SCHEMA, "generated": shared["generated"],
-        "ok": all(view["ok"] for view in views), "priority_projects": list(priority_projects or []),
+        "ok": all(view["ok"] for view in views) and not any(
+            home.session is not None and home.session.started is None for home in homes
+        ), "priority_projects": list(priority_projects or []),
         "requested_project": project or None, "homes": views,
     }
     if view_name is not None or all_views:
@@ -4283,6 +4312,13 @@ def recent_item_html(item: dict[str, object], now: datetime, multi_home: bool, h
     return f'<li>{html.escape(owner + event)} · ' + attention_item_html(item, now)[4:]
 
 
+def attention_has_multiple_homes(homes: list[dict[str, object]]) -> bool:
+    labels = {home["label"] for home in homes}
+    labels.update(item["home"] for home in homes for field in ("recent_work_6h", "done_recent")
+                  for item in home.get(field) or [] if item.get("home"))
+    return len(labels) > 1
+
+
 def waiting_item_html(item: dict[str, object]) -> str:
     wait = item.get("wait")
     if isinstance(wait, dict) and wait_ask_line(wait):
@@ -4395,7 +4431,7 @@ def views_html(view: dict[str, object], homes: list[dict[str, object]], now: dat
     """The Views rail, one panel per saved view with the startup view open, and the editor."""
     built = [entry for entry in view["views"] if isinstance(entry, dict)]  # type: ignore[union-attr]
     startup = str(view["default_view"])
-    multi_home = len(homes) > 1
+    multi_home = attention_has_multiple_homes(homes)
     data = {
         "default": startup, "endpoint": base_url(VIEWS_ENDPOINT) if allow_marks else "", "titles": VIEW_SECTION_TITLES,
         "views": [{"name": entry["name"], "sections": entry["layout"]} for entry in built],
@@ -4551,11 +4587,12 @@ def attention_html(view: dict[str, object] | None, allow_marks: bool = False) ->
     recent = [(home, item) for home in homes for item in home.get("recent_work_6h") or []]  # type: ignore[union-attr]
     recent.sort(key=lambda pair: parse_when(str(pair[1]["at"])), reverse=True)
     if recent:
-        shown = "".join(recent_item_html(item, now, len(homes) > 1, home["label"])
+        multi_home = attention_has_multiple_homes(homes)
+        shown = "".join(recent_item_html(item, now, multi_home, home["label"])
                         for home, item in recent[:RECENT_LIST_LIMIT])
         more = recent[RECENT_LIST_LIMIT:]
         extra = (f'<details class="board-more" data-refresh-key="recent-6h"><summary>+{len(more)} more</summary><ul>'
-                 + "".join(recent_item_html(item, now, len(homes) > 1, home["label"]) for home, item in more)
+                 + "".join(recent_item_html(item, now, multi_home, home["label"]) for home, item in more)
                  + "</ul></details>") if more else ""
         out.append(f'<div id="recent-work"><h3>Last {RECENT_HOURS} hours</h3><ul>{shown}</ul>{extra}</div>')
     out.append("</section>")
@@ -5052,13 +5089,15 @@ def board_view(
     now = now or datetime.now(timezone.utc)
     snapshots = all_snapshots(homes)
     boarded = [home for home in snapshots if home.board is not None]
-    if not boarded and not fallback:
+    if not fallback and (not boarded or not visible_home_panels(homes)):
         return None
     view = BoardView({key: [] for key in BOARD_GROUP_KEYS}, [], 0, [], [], shared_relevance=bool(decisions))
     view.session = session = desk_session([home.board for home in boarded if home.board is not None], now)
     state = next((home.review_state for home in snapshots if home.review_state is not None), None) or ReviewState()
     referenced: set[tuple[int, str]] = set()
     for home in boarded:
+        if not home_has_session_content(home):
+            continue
         board = home.board
         assert board is not None
         label = home.spec.label
@@ -13041,7 +13080,7 @@ def activity_cards(
     if attention is None:
         return []
     homes = [home for home in attention["homes"] if isinstance(home, dict)]  # type: ignore[union-attr]
-    multi_home = len(homes) > 1
+    multi_home = attention_has_multiple_homes(homes)
     entries = {entry.key: entry for entry in (
         [*(entry for items in board.bands.values() for entry in items), *board.stale] if board else []
     ) if not entry.deferred}
@@ -14024,14 +14063,13 @@ def session_link_targets(bearings: Bearings, pages: dict[str, str] | None) -> li
     if scope is None:
         return []
     links: list[tuple[str | None, str]] = [(url, session_link_label(url)) for url in scope.links]
-    published = pages if pages is not None else bearings.item_pages
     for doc in scope.documents:
         digest = hashlib.sha256(str(doc.path).encode("utf-8")).hexdigest()[:12]
         candidates = [scope.document_pages.get(doc.path), f"{DOC_PREFIX}{digest}.html"]
         if doc.path.name in {"report.md", "report.html"}:
             report_digest = hashlib.sha256(str(doc.path.parent).encode("utf-8")).hexdigest()[:12]
             candidates.append(f"{REPORT_VIEW_PREFIX}{report_digest}.html")
-        page = next((name for name in candidates if name is not None and name in published), None)
+        page = next((name for name in candidates if name is not None and pages is not None and name in pages), None)
         links.append((page, doc.label))
     return links
 
@@ -14159,7 +14197,7 @@ def load_site(
 def render_projection(homes: list[HomeSnapshot], bearings: Bearings, pages: dict[str, str],
                       recap_inputs: list[object]) -> str:
     scope = bearings.session
-    members = all_snapshots(homes)
+    members = [snapshot for snapshot in all_snapshots(homes) if home_has_session_content(snapshot)]
     sources = [(snapshot.spec, snapshot.topics, snapshot.reports, snapshot_items(snapshot),
                 snapshot.board.items if snapshot.board else []) for snapshot in members]
     membership = [(sorted(task for owner, task in scope.tasks if owner == id(snapshot)),

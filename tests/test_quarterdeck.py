@@ -186,7 +186,7 @@ Use the compact format for the first release.
             self.assertIn('<p class="home-charter">Maintains the Willow Quay field guide.</p>', page)
             self.assertIn("Chart the Willow Quay field guide", page)
             self.assertIn("Secondmate · registered by fictional-firstmate", page)
-            self.assertIn("remote host sample-remote", page)
+            self.assertNotIn("sample-remote", page)
             self.assertIn("Read the report", page)
             self.assertNotIn("Gather the Finch field notes", page)
             self.assertIn("Reports needing review", page)
@@ -738,17 +738,24 @@ Use the compact format for the first release.
             self.assertIn("Lavish page ready; open it later with: lavish-axi", result.stdout)
             self.assertTrue((root / "page.lavish.html").is_file())
 
-    def test_configured_homes_render_together_and_isolate_a_missing_home(self) -> None:
+    def test_configured_homes_without_session_content_stay_out_of_the_page(self) -> None:
         with tempfile.TemporaryDirectory() as temp:
             root = Path(temp)
             home = self.make_home(root)
             record_fixture_conversation(self, root, home, 'Discuss maple-21.')
+            other = root / "unrelated-home"
+            (other / "data").mkdir(parents=True)
+            (other / "data" / "backlog.md").write_text("- [ ] lantern-task - Unrelated lantern work\n", encoding="utf-8")
+            (other / "data" / "captain-board.json").write_text(json.dumps({
+                "version": 1, "updated_at": "2026-01-01T07:31:00Z", "items": [],
+            }), encoding="utf-8")
             config = root / "quarterdeck.json"
             config.write_text(
                 json.dumps({
                     "page_title": "Fleet Example",
                     "homes": [
                         {"label": "Main Harbor", "path": home.name},
+                        {"label": "Other Cove", "path": other.name},
                         {"label": "Unreadable Lantern", "path": "missing-home"},
                     ],
                 }),
@@ -764,9 +771,18 @@ Use the compact format for the first release.
             self.assertEqual(result.returncode, 0, result.stderr)
             page = output.read_text(encoding="utf-8")
             self.assertIn("Main Harbor", page)
-            self.assertIn("Unreadable Lantern", page)
-            self.assertIn("Home could not be read", page)
             self.assertIn("Chart the Maple Harbor catalog", page)
+            args = quarterdeck.make_parser().parse_args(["serve", "--config", str(config), "--no-snapshot"])
+            with patch.dict(os.environ, {"XDG_STATE_HOME": str(root / "state"), "XDG_CONFIG_HOME": str(root / "config")}):
+                served = quarterdeck.site_builder(args)()
+            self.assertIn("Chart the Maple Harbor catalog", served["index.html"])
+            for private in ("Other Cove", "Unreadable Lantern", "Unrelated lantern work", str(other),
+                            "2026-01-01 07:31 UTC", "Maintains remote map notes.", "sample-remote"):
+                self.assertNotIn(private, page)
+                self.assertNotIn(private, "\n".join(served.values()))
+            [backlog] = output.parent.glob("backlog-*.html")
+            self.assertIn("Chart the Maple Harbor catalog", backlog.read_text(encoding="utf-8"))
+            self.assertEqual([name for name in served if name.startswith("backlog-")], [backlog.name])
 
     def test_home_argument_overrides_configured_home_list(self) -> None:
         with tempfile.TemporaryDirectory() as temp:
@@ -5986,6 +6002,10 @@ class AttentionTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temp:
             root = Path(temp)
             home = self.make_home(root)
+            record_fixture_conversation(self, root, home, "Discuss kelp-survey.")
+            (home / quarterdeck.LEDGER_PATH).write_text(json.dumps({
+                "v": 1, "ts": time.time() - 60, "event": "task.dispatched", "task": "kelp-survey",
+            }) + "\n", encoding="utf-8")
             (home / "bin" / "fm-attention.sh").write_text("#!/bin/sh\nexit 9\n", encoding="utf-8")
             output = root / "out" / "index.html"
             result = subprocess.run(
@@ -5996,6 +6016,7 @@ class AttentionTests(unittest.TestCase):
             page = output.read_text(encoding="utf-8")
             self.assertIn('id="attention"', page)
             self.assertIn("Attention feed not read: the Firstmate scripts were skipped with --no-snapshot.", page)
+            self.assertIn("Started · Kelp survey: map the invented reef", page)
             self.assertNotIn('class="warning"', page.split('id="attention"')[1].split("</section>")[0])
 
     def priority_home(self, root: Path) -> Path:
