@@ -4,7 +4,7 @@
 
 ```text
 quarterdeck add --kind resource|list|questions --title TEXT --description TEXT
-                [--url URL --link-text TEXT] [--body-file PATH|-]
+                [--url URL --link-text TEXT] [--body-file PATH|-] [--worker NAME]
 quarterdeck list
 quarterdeck show ID
 quarterdeck mark ID[.PART] answered|closed|open
@@ -25,7 +25,7 @@ Item commands report validation errors on stderr and exit with status 2.
 
 | Command | What it does |
 | --- | --- |
-| `add` | Saves a new item and prints its ID. A `resource` needs `--url` and `--link-text`. A `list` or `questions` item needs `--body-file`. See [the input formats and examples](../how-to/save-items.md#add-an-item). |
+| `add` | Saves a new item and prints its ID. A `resource` needs `--url` and `--link-text`. A `list` or `questions` item needs `--body-file`. See [the input formats and examples](../how-to/save-items.md#add-an-item). `--worker NAME` marks a `questions` item as asked by that worker, so the [workers section](../how-to/read-workers.md#follow-a-link) can link to it. |
 | `list` | Prints saved items, newest first, with ID, kind, saved date and title. |
 | `show` | Prints one item in full, numbering list entries and questions as `Q7.1`, `Q7.2`. |
 | `mark` | Sets the state of one question or every question in a questions item. It preserves any saved answer, timestamp and delivery status. See [Read answers](../how-to/read-answers.md) for examples. |
@@ -39,6 +39,27 @@ Item commands report validation errors on stderr and exit with status 2.
 | `serve` | Serves the same pages over HTTP, or HTTPS with `--tls-cert` and `--tls-key`. Page requests read the store, so a new item shows on the next load. Open item Q7 at `/q7.html`. `--host` may be repeated. `--port` defaults to 8765. See [serving security](../how-to/serve-the-page.md#security-loopback-by-default) for the default bind and browser access rules. |
 | `service` | Prints a systemd user unit with the supplied serving options, or writes it to `${XDG_CONFIG_HOME:-~/.config}/systemd/user/quarterdeck.service` with `--write`. |
 | `url` | Prints the address the installed unit serves, or the default address when no unit is installed. |
+
+A served page also has a **Workers** section when `firstmate_home` is set. The
+page asks `GET workers.json` (under any `base_path`) on entry and on **Refresh
+workers**. Each request runs the home's `bin/fm-fleet-snapshot.sh --local`, a
+read-only command that uses no model, with `FM_HOME` set to that home and a
+60 second limit. It answers 502 if the command fails, times out or prints
+something unexpected, and 404 when `firstmate_home` is not set. Quarterdeck
+writes nothing to the home.
+
+| Field in `workers.json` | Meaning |
+| --- | --- |
+| `observed_at` | UTC time the snapshot was taken. |
+| `workers` | Tasks that have a live terminal, other than second mates. Each has `name`, `project`, `activity`, `status`, `active_at` (UTC) and `links`. |
+| `second_mates` | Every second mate in the home. Each has the same fields, with `contact_at` (UTC) in place of `active_at`. |
+
+`status` is one of Working, Question asked, Stuck, Finished, Unreachable or
+Unknown, mapped only from facts the snapshot states: an open decision gives
+Question asked; the states `working`, `done`, and `blocked` or `failed` give Working,
+Finished and Stuck; a second mate whose terminal is not running is Unreachable;
+anything else, including a stale reading, is Unknown. See
+[Read the workers section](../how-to/read-workers.md#what-the-statuses-mean).
 
 Rendered item pages include any saved answers and their timestamps and
 delivery status. Answer controls are available on served pages.
@@ -70,7 +91,7 @@ or `${XDG_CONFIG_HOME:-~/.config}/quarterdeck.json` when it exists.
 | `page_title` | string | `Quarterdeck` | The site name in the navigation bar and browser title. `--title` overrides it for `render` and `serve`. |
 | `output_dir` | string path | `${XDG_STATE_HOME:-~/.local/state}/quarterdeck` | Where `render` writes the pages. |
 | `base_path` | string | none | The URL prefix described above. |
-| `firstmate_home` | absolute path after expanding `~` | see legacy fallback below | Local destination for answers submitted to `serve`. |
+| `firstmate_home` | absolute path after expanding `~` | see legacy fallback below | Local destination for answers submitted to `serve`, and the home whose workers the page lists. |
 
 When `firstmate_home` is absent, `serve` uses a legacy `homes` list only if it
 contains exactly one object with a valid `path`. Relative legacy paths are

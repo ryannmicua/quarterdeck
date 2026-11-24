@@ -27,9 +27,11 @@ saved; Quarterdeck never reads it again from another file.
 
 ## Features
 
-- **Needs attention** shows question sets with open questions or undelivered
+- **My desk** shows question sets with open questions or undelivered
   answers on questions that are still editable. Other question sets appear
   under **Reviewed questions**. Links and lists appear under **References**.
+- **Workers** lists the workers running in your Firstmate home, with a
+  **Refresh workers** button. See [Read the workers section](docs/how-to/read-workers.md).
 - One page per item, with its ID and title at the top. A resource's link opens
   the saved address; list entries and questions are numbered.
 - `quarterdeck add`, `list`, `show` and `remove` for
