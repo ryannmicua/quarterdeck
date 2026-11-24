@@ -171,6 +171,7 @@ class HomeSnapshot:
     topics_error: str | None = None
     session: SessionScope | None = None  # set when the page shows only the captain's current session
     _items: dict[str, BacklogItem] | None = field(default=None, init=False, repr=False)
+    _dependency_ids: frozenset[str] | None = field(default=None, init=False, repr=False)
 
 
 def markdown_text(value: str) -> str:
@@ -3579,7 +3580,7 @@ def home_attention(
         items = snapshot_items(owner).values()
         missing = [item for item in items if needs_captain(item) and task_key(owner, item.id, snapshots) not in represented]
         for item in missing:
-            touched, deferred = backlog_recency(item, now, {other.id for other in items})
+            touched, deferred = backlog_recency(item, now, backlog_dependency_ids(owner))
             row = {
                 "task": task_key(owner, item.id, snapshots), "home": owner.spec.label, "title": item.title,
                 "kind": "captain_hold", "source": "backlog", "reason": item.hold_reason,
@@ -5092,7 +5093,7 @@ def board_view(
                     ):
                         item = replace(item, links=[*item.links, ("Pull request", pr_url)])
             entry = BoardEntry(item, label, refresh_key=f"{board.path}:{item.id}", key=report_reference(target.spec.label, task_id))
-            rank_entry(entry, backlog_item, now, snapshot_items(target).keys(), session, (decisions or {}).get(entry.key))
+            rank_entry(entry, backlog_item, now, backlog_dependency_ids(target), session, (decisions or {}).get(entry.key))
             if entry.deferred and (decisions or {}).get(entry.key):
                 continue
             entry.refs = frozenset(task_key(target, ref, snapshots) for ref in entry.refs)
@@ -5112,7 +5113,7 @@ def board_view(
                 refresh_key=f"{snapshot.backlog_path}:{backlog_item.id}",
                 key=report_reference(snapshot.spec.label, backlog_item.id),
             )
-            rank_entry(entry, backlog_item, now, snapshot_items(snapshot).keys(), session, (decisions or {}).get(entry.key))
+            rank_entry(entry, backlog_item, now, backlog_dependency_ids(snapshot), session, (decisions or {}).get(entry.key))
             if entry.deferred and (decisions or {}).get(entry.key):
                 continue
             entry.refs = frozenset(task_key(snapshot, ref, snapshots) for ref in entry.refs)
@@ -7928,7 +7929,8 @@ def read_topics(data_dir: Path) -> list[Topic]:
     directory = data_dir / TOPICS_DIR_NAME
     if not directory.is_dir():
         return []
-    paths = sorted(path for path in directory.iterdir() if path.name.endswith(".md") and not path.name.startswith((".", "_")))
+    paths = sorted(path for path in directory.iterdir()
+                   if path.suffix == ".md" and publishable_document(path, data_dir) is not None)
     return [read_topic_file(path) for path in paths]
 
 
@@ -7939,6 +7941,10 @@ def snapshot_items(snapshot: HomeSnapshot) -> dict[str, BacklogItem]:
         if snapshot.backlog_markdown is not None and not snapshot.error:
             snapshot._items = {item.id: item for item in backlog_items(snapshot.backlog_markdown, snapshot)}
     return snapshot._items
+
+
+def backlog_dependency_ids(snapshot: HomeSnapshot) -> Set[str]:
+    return snapshot._dependency_ids if snapshot._dependency_ids is not None else snapshot_items(snapshot).keys()
 
 
 def check_topic_pieces(topic: Topic, snapshot: HomeSnapshot) -> list[TopicProblem]:
@@ -12691,7 +12697,8 @@ def work_cards(items: list[dict[str, object]], home: str, multi_home: bool) -> l
     return cards
 
 
-DOC_PATH_RE = re.compile(r"(?<![\w./-])data/((?:[\w.-]+/)+[\w.-]+\.(?:md|html))" + FILE_REFERENCE_END)
+DOC_PATH_RE = re.compile(r"(?<![\w./-])data/([\w.-]+/[\w.-]+\.(?:md|html))" + FILE_REFERENCE_END)
+SESSION_DOC_PATH_RE = re.compile(r"(?<![\w./-])data/((?:[\w.-]+/)+[\w.-]+\.(?:md|html))" + FILE_REFERENCE_END)
 DOC_BARE_RE = re.compile(r"(?<![\w./-])([\w-][\w.-]*\.(?:md|html))" + FILE_REFERENCE_END)
 PRIVATE_DOCUMENT_RE = re.compile(r"token|credential|secret|password|(?:api|access|private|ssh)[._-]?key|"
                                  r"(?:^|[._-])keys?(?:[._-]|$)", re.I)
@@ -12707,6 +12714,9 @@ def publishable_document(path: Path, data_dir: Path) -> Path | None:
         candidates = (path.absolute().relative_to(data_dir.absolute()), resolved.relative_to(root))
     except (OSError, ValueError, RuntimeError):
         return None
+    if (any(candidate.parent == Path(TOPICS_DIR_NAME) for candidate in candidates)
+            and any(candidate.name.startswith("_") for candidate in candidates)):
+        return None
     for candidate in candidates:
         if (len(candidate.parts) < 2
                 or any(part.startswith(".") or part.casefold() in {"config", "state"} for part in candidate.parts[:-1])
@@ -12721,7 +12731,8 @@ def referenced_docs(text: str, data_dir: Path, *, explicit_only: bool = False) -
     A bare name such as explainer.html resolves next to the one data/<id>/ directory the same text names. Only
     regular files that really sit inside data_dir (symbolic links that escape it are refused) are returned.
     """
-    matches = list(DOC_PATH_RE.finditer(text))
+    pattern = SESSION_DOC_PATH_RE if explicit_only else DOC_PATH_RE
+    matches = list(pattern.finditer(text))
     wanted = [match.group(1) for match in matches if not {".", ".."}.intersection(match.group(1).split("/"))]
     directories = {Path(name).parent for name in wanted}
     if not explicit_only and len(directories) == 1:
@@ -12734,10 +12745,9 @@ def referenced_docs(text: str, data_dir: Path, *, explicit_only: bool = False) -
     for label in wanted:
         try:
             path = publishable_document(data_dir / label, data_dir)
-            if path is None:
+            if path is None or (not explicit_only and path.parent.parent != data_dir.resolve()):
                 continue
-            draft = path.parent == data_dir.resolve() / TOPICS_DIR_NAME and path.name.startswith("_")
-            usable = not draft and path.is_file() and path.stat().st_size <= DOC_PAGE_LIMIT
+            usable = path.is_file() and path.stat().st_size <= DOC_PAGE_LIMIT
         except (OSError, ValueError):
             continue
         if usable and all(path != seen for seen, _label in found):
@@ -13729,6 +13739,7 @@ def load_home_snapshot(spec: HomeSpec, discover_secondmates: bool = False, *, bo
 SESSION_TOKEN_RE = re.compile(r"[\w][\w./-]*")
 SESSION_URL_RE = re.compile(r"https?://[^\s<>`'\"|{}]+", re.I)
 SESSION_TOPIC_PATH_RE = re.compile(r"(?<![\w./-])data/topics/([a-z0-9][a-z0-9-]{0,63})\.md" + FILE_REFERENCE_END)
+LOCAL_FILE_PATH_RE = re.compile(r"(?<![\w./-])(?:[\w.-]+/)+[\w.-]+\.[\w-]+~?" + FILE_REFERENCE_END)
 SESSION_SECRET_RE = re.compile(
     r"token|secret|signature|credential|password|passwd|apikey|accesskey|subscriptionkey|authorization|"
     r"^(?:auth|bearer|jwt|key|sig|code|session|sessionid|policy|keypairid|awsaccesskeyid|googleaccessid|xamz.*|xgoog.*)$", re.I,
@@ -13804,12 +13815,16 @@ def session_source(homes: list[HomeSnapshot]) -> HomeSnapshot | None:
     snapshots = all_snapshots(homes)
     if any(snapshot.board is not None and snapshot.board.unreadable for snapshot in snapshots):
         return None
-    recorded = [snapshot for snapshot in snapshots if snapshot.board is not None
-                and snapshot.board.supported and snapshot.board.last_active_at is not None]
+    recorded: dict[tuple[Path, datetime, datetime | None, str | None], HomeSnapshot] = {}
+    for snapshot in [*homes, *snapshots]:
+        board = snapshot.board
+        if board is not None and board.supported and board.last_active_at is not None:
+            key = (board.path.resolve(), board.last_active_at, board.session_started_at, board.session_id)
+            recorded.setdefault(key, snapshot)
     if not recorded:
         return None
-    latest = max(snapshot.board.last_active_at for snapshot in recorded)  # type: ignore[union-attr,type-var]
-    newest = [snapshot for snapshot in recorded if snapshot.board.last_active_at == latest]  # type: ignore[union-attr]
+    latest = max(key[1] for key in recorded)
+    newest = [snapshot for key, snapshot in recorded.items() if key[1] == latest]
     return newest[0] if len(newest) == 1 else None
 
 
@@ -13840,7 +13855,7 @@ def session_scope(homes: list[HomeSnapshot], now: datetime, *, main_href: str = 
     said = SESSION_URL_RE.sub(" ", said)
     tokens = {token.rstrip(".") for token in SESSION_TOKEN_RE.findall(said)}
     topic_paths = set(SESSION_TOPIC_PATH_RE.findall(said))
-    topic_text = DOC_BARE_RE.sub(" ", re.sub(r"(?<![\w./-])(?:[\w.-]*/)+[\w.-]+", " ", said)).casefold()
+    topic_text = DOC_BARE_RE.sub(" ", LOCAL_FILE_PATH_RE.sub(" ", said)).casefold()
     named_topics: set[tuple[int, str]] = set()
 
     def add_task(snapshot: HomeSnapshot, task: str) -> None:
@@ -13878,8 +13893,6 @@ def session_scope(homes: list[HomeSnapshot], now: datetime, *, main_href: str = 
             add_task(source, item.id)
     for snapshot in snapshots:
         for topic in snapshot.topics:
-            if snapshot.data_dir is None or publishable_document(topic.path, snapshot.data_dir) is None:
-                continue
             names = {topic.title.casefold(), topic.topic_id.casefold()} - {""}
             mentioned = snapshot is source and (
                 topic.topic_id in topic_paths
@@ -13956,6 +13969,7 @@ def scope_homes(homes: list[HomeSnapshot], scope: SessionScope) -> None:
             report.related_to = [task for task in report.related_to
                                  if scope.includes(*task_reference_owner(snapshot, task, snapshots))]
         items = snapshot_items(snapshot)
+        snapshot._dependency_ids = frozenset(items)
         snapshot._items = {task: item for task, item in items.items() if scope.includes(snapshot, task)}
         scoped_reports = {report.path: report for report in snapshot.reports}
         records = []

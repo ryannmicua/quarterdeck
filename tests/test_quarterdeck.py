@@ -11248,6 +11248,90 @@ class SessionScopeTests(unittest.TestCase):
         self.assertNotIn("Merge the tide tables now?", self.every_page(out))
         self.assertFalse((out / "topic-tide-launch.html").exists())
 
+    def test_slash_in_a_literal_topic_title_does_not_hide_the_topic(self) -> None:
+        (self.data / "topics" / "experiment-design.md").write_text(
+            "# A/B Testing\nPieces: gull-count\nLinks: https://example.com/experiment-preview\n", encoding="utf-8",
+        )
+        with (self.transcripts / "session.jsonl").open("a", encoding="utf-8") as stream:
+            stream.write(wait_record("owner", "experiment", self.iso(self.now), "Discuss A/B Testing.",
+                                     sessionId="current"))
+        out = self.render()
+        topic = (out / "topic-experiment-design.html").read_text(encoding="utf-8")
+        self.assertIn("A/B Testing", topic)
+        self.assertIn('href="https://example.com/experiment-preview"', topic)
+        self.assertIn("gull-count", self.search_tasks(out))
+
+    def test_configured_home_wins_over_its_discovered_board_alias(self) -> None:
+        parent = self.root / "parent"
+        (parent / "data").mkdir(parents=True)
+        (parent / "data" / "backlog.md").write_text("# Backlog\n", encoding="utf-8")
+        (parent / "data" / "secondmates.md").write_text(
+            f"- mate - Charts water. (home: {self.home})\n", encoding="utf-8",
+        )
+        self.write_config(homes=[
+            {"label": "Parent", "path": str(parent)},
+            {"label": "Harbor", "path": str(self.home), "transcripts": str(self.transcripts)},
+        ])
+        args = quarterdeck.make_parser().parse_args(["serve", "--config", str(self.config), "--no-snapshot"])
+        cache = quarterdeck.SiteCache(quarterdeck.site_builder(args), current_session=lambda: quarterdeck.served_session(args))
+        self.assertIn("Merge the tide tables now?", cache.get()["index.html"])
+        out = self.render()
+        self.assertIn("Merge the tide tables now?", (out / "index.html").read_text(encoding="utf-8"))
+        (parent / "data" / "captain-board.json").write_bytes((self.data / "captain-board.json").read_bytes())
+        self.assertIn("No conversation is recorded", cache.get()["index.html"])
+
+    def test_undiscussed_dependencies_keep_local_and_routed_holds_deferred(self) -> None:
+        child = self.root / "mate"
+        (child / "data").mkdir(parents=True)
+        (self.data / "secondmates.md").write_text(f"- mate - Charts water. (home: {child})\n", encoding="utf-8")
+        stamp = self.iso(self.start)
+        for data, rows in ((self.data, ("board-choice", "unsorted-choice")), (child / "data", ("routed-choice",))):
+            with (data / "backlog.md").open("a", encoding="utf-8") as stream:
+                stream.write("\n- [ ] chart-build - Private dependency title\n")
+                for row in rows:
+                    stream.write(held_row(row, row, "waits on chart-build", stamp) + "\n")
+        path = self.data / "captain-board.json"
+        board = json.loads(path.read_text(encoding="utf-8"))
+        for task in ("board-choice", "mate/routed-choice"):
+            board["items"].append({"id": task.split("/")[-1], "group": "merge", "title": task,
+                                   "ask": task, "task": task, "session_id": "current", "touched_at": stamp})
+        path.write_text(json.dumps(board), encoding="utf-8")
+        with (self.transcripts / "session.jsonl").open("a", encoding="utf-8") as stream:
+            stream.write(wait_record("owner", "holds", self.iso(self.now),
+                                     "Discuss board-choice, unsorted-choice, and mate/routed-choice.", sessionId="current"))
+        out = self.render()
+        task_ids = {label.split(" · ", 1)[0] for label in self.search_tasks(out)}
+        self.assertTrue({"board-choice", "unsorted-choice", "routed-choice"} <= task_ids)
+        self.assertNotIn("chart-build", task_ids)
+        args = quarterdeck.make_parser().parse_args(["serve", "--config", str(self.config), "--no-snapshot"])
+        pages = quarterdeck.site_builder(args)()
+        needs = [card["id"] for card in json.loads(pages[quarterdeck.CARDS_PAGE])["cards"] if card["section"] == "needs_you"]
+        for task in ("board-choice", "unsorted-choice", "routed-choice"):
+            self.assertFalse(any(key.endswith("/" + task) for key in needs))
+        self.assertNotIn("Private dependency title", "\n".join(pages.values()))
+
+    def test_nested_pages_require_an_exact_chat_reference(self) -> None:
+        release = self.data / "release"
+        nested = release / "reviews"
+        nested.mkdir(parents=True)
+        (nested / "preview.html").write_text("<h1>Explicit nested preview</h1>", encoding="utf-8")
+        (nested / "staff-review.md").write_text("# Neighboring staff notes", encoding="utf-8")
+        (release / "preview-alias.html").symlink_to(nested / "preview.html")
+        topic = self.data / "topics" / "tide-launch.md"
+        topic.write_text(topic.read_text(encoding="utf-8").replace(
+            "Links: [Tide preview](https://example.com/tide/preview)",
+            "Links: data/release/reviews/preview.html, data/release/preview-alias.html",
+        ) + "\nSee data/release/reviews/preview.html and staff-review.md.\n", encoding="utf-8")
+        out = self.render()
+        self.assertNotIn("Explicit nested preview", self.every_page(out))
+        self.assertNotIn("Neighboring staff notes", self.every_page(out))
+        with (self.transcripts / "session.jsonl").open("a", encoding="utf-8") as stream:
+            stream.write(wait_record("owner", "nested-page", self.iso(self.now),
+                                     "Open data/release/reviews/preview.html and staff-review.md.", sessionId="current"))
+        self.render(out=out)
+        self.assertIn("Explicit nested preview", self.every_page(out))
+        self.assertNotIn("Neighboring staff notes", self.every_page(out))
+
     def test_sibling_render_is_retired_when_same_session_loses_a_task(self) -> None:
         raw = self.data / "tide-review" / "report.html"
         raw.write_text("<h1>Scoped report HTML</h1>", encoding="utf-8")
@@ -11823,20 +11907,26 @@ Pick one.
         with tempfile.TemporaryDirectory() as temp:
             root = Path(temp)
             source = """# Drafts
-Links: data/topics/_draft.md, data/topics/shown.md
+Links: data/topics/_draft.md, data/topics/launch.md, data/topics/shown.md
 
 ## 2026-03-02 09:00 | firstmate | chat
 See data/topics/_draft.md and data/topics/.hidden.md.
 """
             home = self.home_with_topics(root, {"drafts.md": source, "shown.md": "# Shown\n"})
             topics = home / "data" / "topics"
-            (topics / "_draft.md").write_text("# Secret draft\nprivate words\n", encoding="utf-8")
+            (topics / "_draft.md").write_text("# Secret draft\n\nprivate words\n", encoding="utf-8")
             (topics / ".hidden.md").write_text("# Hidden\nprivate words\n", encoding="utf-8")
+            (topics / "launch.md").symlink_to(topics / "_draft.md")
+            record_fixture_conversation(
+                self, root, home, "Discuss data/topics/drafts.md, data/topics/shown.md, and data/topics/launch.md.",
+            )
             output = root / "out" / "index.html"
             rendered = self.run_cli(["render", "--home", str(home), "--output", str(output), "--no-snapshot"], root)
             self.assertEqual(rendered.returncode, 0, rendered.stderr)
             published = [path for path in output.parent.iterdir() if path.is_file()]
             self.assertFalse([path.name for path in published if "private words" in path.read_text(errors="replace")])
+            self.assertFalse((output.parent / "topic-launch.html").exists())
+            self.assertNotIn("Secret draft", (output.parent / "search.html").read_text(encoding="utf-8"))
             self.assertTrue(any("Shown" in path.read_text(errors="replace") and path.name.startswith("doc-") for path in published),
                             "a published topic file is still linked as a document")
 
