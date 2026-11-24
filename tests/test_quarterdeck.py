@@ -3,7 +3,6 @@ from __future__ import annotations
 import argparse
 import base64
 import dataclasses
-import hashlib
 import json
 import html
 import io
@@ -67,7 +66,7 @@ def parse_systemd_unit(source: str) -> dict[str, dict[str, list[object]]]:
 
 REVIEW_FIXTURE_MENTIONS = (
     "Discuss amber-18, paper-27, maple-21, blocked-33, captain-36, kestrel/kestrel-work and kestrel/kestrel-hold. "
-    "Read data/queued-31/report.md, data/finished-32/report.md and data/orphan-35/report.md."
+    "Discuss the queued-31, finished-32 and orphan-35 reports."
 )
 
 
@@ -10825,9 +10824,11 @@ class SessionScopeTests(unittest.TestCase):
             {"label": "Harbor!", "path": str(other), "transcripts": str(self.transcripts)},
         ])
         out = self.render()
-        names = {path.name for path in out.glob("topic-*.html")}
-        suffix = hashlib.sha256(str(self.home).encode()).hexdigest()[:6]
-        self.assertEqual(names, {f"topic-tide-launch-{suffix}.html"})
+        [thread] = out.glob("topic-*.html")
+        topics = (out / "topics.html").read_text(encoding="utf-8")
+        href = re.search(r'href="(topic-tide-launch-[a-f0-9]+\.html)"', topics)[1]
+        self.assertEqual(out / href, thread)
+        self.assertIn("Tide tables are ready.", (out / href).read_text(encoding="utf-8"))
         self.assertNotIn("Other home", self.every_page(out))
         args = quarterdeck.make_parser().parse_args(["export", "--config", str(self.config), "--no-snapshot"])
         output = io.StringIO()
@@ -11117,11 +11118,12 @@ class SessionScopeTests(unittest.TestCase):
         pages = quarterdeck.site_builder(args)()
         self.assertNotIn("Prior hold summary", "\n".join(pages.values()))
 
-    def test_named_local_pages_open_and_are_exported(self) -> None:
+    def test_named_local_documents_link_without_publishing_their_bodies(self) -> None:
         launch = self.data / "launch"
         launch.mkdir()
         expected = {"data/launch/report.html": "Standalone report body",
-                    "data/launch/previews/latest/index.html": "Nested preview body"}
+                    "data/launch/previews/latest/index.html": "Nested preview body",
+                    "data/personnel/report.md": "Unpublished report body"}
         for label, body in expected.items():
             path = self.home / label
             path.parent.mkdir(parents=True, exist_ok=True)
@@ -11139,24 +11141,24 @@ class SessionScopeTests(unittest.TestCase):
         (launch / "outside.html").symlink_to(outside)
         with (self.transcripts / "session.jsonl").open("a", encoding="utf-8") as stream:
             stream.write(wait_record("owner", "documents", self.iso(self.now),
-                                     "Open " + ", ".join(expected) + ". Do not share "
+                                     "Keep " + ", ".join(expected) + " private. Review data/tide-review/report.md. Do not share "
                                      + ", ".join([*private, "data/launch/alias.html", "data/launch/outside.html"]) + ".",
                                      sessionId="current"))
         out = self.render()
         index = (out / "index.html").read_text(encoding="utf-8")
-        search = (out / "search.html").read_text(encoding="utf-8")
-        rows = json.loads(re.search(r'id="search-index">(.*?)</script>', search, re.S)[1])
-        for label, body in expected.items():
-            wrapper = re.search(r'href="(doc-[a-f0-9]+\.html)">' + re.escape(label), index)[1]
-            raw = re.search(r'<iframe src="([^"]+)"', (out / wrapper).read_text(encoding="utf-8"))[1]
-            self.assertIn(body, (out / raw).read_text(encoding="utf-8"))
-            self.assertFalse(any(row["u"] == wrapper for row in rows))
+        report_href = re.search(r'href="(report-[a-f0-9]+\.html)">data/tide-review/report\.md', index)[1]
+        self.assertIn("tide-review findings", (out / report_href).read_text(encoding="utf-8"))
         self.assertNotIn("Outside document body", self.every_page(out))
         args = quarterdeck.make_parser().parse_args(["serve", "--config", str(self.config), "--no-snapshot"])
         served = quarterdeck.site_builder(args)()
         for label, body in expected.items():
-            self.assertIn(label, served["index.html"])
-            self.assertIn(body, "\n".join(served.values()))
+            link = f'href="{(self.home / label).as_uri()}">{label}</a>'
+            self.assertIn(link, index)
+            self.assertIn(link, served["index.html"])
+            self.assertNotIn(body, self.every_page(out))
+            self.assertNotIn(body, "\n".join(served.values()))
+        self.assertFalse(list(out.glob("doc-*.html")))
+        self.assertFalse(any(name.startswith("doc-") for name in served))
         for content in (self.every_page(out), "\n".join(served.values())):
             self.assertNotIn("Confidential fixture", content)
             self.assertNotIn("alias.html", content)
@@ -11166,9 +11168,9 @@ class SessionScopeTests(unittest.TestCase):
             output = io.StringIO()
             with redirect_stdout(output), patch.object(quarterdeck, "doc_page", side_effect=AssertionError):
                 self.assertEqual(quarterdeck.export_snapshot(args), 0)
-            docs = json.loads(output.getvalue())["session_documents"]
-            self.assertEqual({doc["label"] for doc in docs}, set(expected))
-            self.assertEqual(docs, [{"label": label} for label in expected])
+            snapshot = json.loads(output.getvalue())
+            self.assertEqual(snapshot["session_documents"], [{"label": label} for label in (*expected, "data/tide-review/report.md")])
+            self.assertNotIn("harbor/personnel", [report["id"] for report in snapshot["reports"]])
             for body in expected.values():
                 self.assertNotIn(body, output.getvalue())
 
@@ -11244,7 +11246,7 @@ class SessionScopeTests(unittest.TestCase):
                                                "--home", str(self.home)]), 0)
         out = self.render()
         self.assertIn("data/release/tide-launch.html", self.every_page(out))
-        self.assertIn("Release preview", self.every_page(out))
+        self.assertNotIn("Release preview", self.every_page(out))
         self.assertNotIn("Merge the tide tables now?", self.every_page(out))
         self.assertFalse((out / "topic-tide-launch.html").exists())
 
@@ -11260,6 +11262,20 @@ class SessionScopeTests(unittest.TestCase):
         self.assertIn("A/B Testing", topic)
         self.assertIn('href="https://example.com/experiment-preview"', topic)
         self.assertIn("gull-count", self.search_tasks(out))
+
+    def test_routed_chat_task_does_not_admit_the_parent_topic(self) -> None:
+        child = self.root / "mate"
+        (child / "data").mkdir(parents=True)
+        (child / "data" / "backlog.md").write_text("- [ ] tide-launch - Secondmate tide task\n", encoding="utf-8")
+        (self.data / "secondmates.md").write_text(f"- mate - Charts water. (home: {child})\n", encoding="utf-8")
+        (self.transcripts / "session.jsonl").write_text(
+            wait_record("owner", "routed", self.iso(self.now), "Discuss mate/tide-launch.", sessionId="current"),
+            encoding="utf-8",
+        )
+        out = self.render()
+        self.assertIn("Secondmate tide task", self.every_page(out))
+        self.assertFalse((out / "topic-tide-launch.html").exists())
+        self.assertNotIn("tide-review findings", self.every_page(out))
 
     def test_configured_home_wins_over_its_discovered_board_alias(self) -> None:
         parent = self.root / "parent"
@@ -11329,7 +11345,8 @@ class SessionScopeTests(unittest.TestCase):
             stream.write(wait_record("owner", "nested-page", self.iso(self.now),
                                      "Open data/release/reviews/preview.html and staff-review.md.", sessionId="current"))
         self.render(out=out)
-        self.assertIn("Explicit nested preview", self.every_page(out))
+        self.assertIn(f'href="{(nested / "preview.html").as_uri()}">data/release/reviews/preview.html', self.every_page(out))
+        self.assertNotIn("Explicit nested preview", self.every_page(out))
         self.assertNotIn("Neighboring staff notes", self.every_page(out))
 
     def test_sibling_render_is_retired_when_same_session_loses_a_task(self) -> None:
@@ -11345,6 +11362,25 @@ class SessionScopeTests(unittest.TestCase):
         self.assertFalse((out / "index.lavish.html").exists())
         self.assertNotIn("tide-merge", self.search_tasks(out))
         self.assertNotIn("Scoped report HTML", self.every_page(out))
+
+    def test_sibling_render_is_retired_when_a_local_link_label_changes(self) -> None:
+        launch = self.data / "launch"
+        launch.mkdir()
+        preview = launch / "preview.html"
+        preview.write_text("<h1>Local preview</h1>", encoding="utf-8")
+        (launch / "first.html").symlink_to(preview)
+        (launch / "second.html").symlink_to(preview)
+        transcript = self.transcripts / "session.jsonl"
+        with transcript.open("a", encoding="utf-8") as stream:
+            stream.write(wait_record("owner", "aliases", self.iso(self.now),
+                                     "See data/launch/first.html and data/launch/second.html.", sessionId="current"))
+        out = self.render()
+        self.render("--lavish", out=out)
+        self.assertIn(">data/launch/first.html</a>", (out / "index.lavish.html").read_text(encoding="utf-8"))
+        (launch / "first.html").unlink()
+        self.render(out=out)
+        self.assertFalse((out / "index.lavish.html").exists())
+        self.assertIn(f'href="{preview.as_uri()}">data/launch/second.html</a>', (out / "index.html").read_text(encoding="utf-8"))
 
     def test_sibling_render_is_retired_when_scoped_ledger_activity_is_removed(self) -> None:
         ledger = self.home / quarterdeck.LEDGER_PATH
@@ -11460,7 +11496,7 @@ class SessionScopeTests(unittest.TestCase):
                                      sessionId="current"))
         pages = self.every_page(self.render())
         self.assertIn("data/tide-review/report.md", pages)
-        self.assertIn("Current preview", pages)
+        self.assertIn('">data/release/current.html</a>', pages)
         for hidden in ("Old survey", "Live preview", "gull-count findings"):
             self.assertNotIn(hidden, pages)
 
@@ -11929,6 +11965,24 @@ See data/topics/_draft.md and data/topics/.hidden.md.
             self.assertNotIn("Secret draft", (output.parent / "search.html").read_text(encoding="utf-8"))
             self.assertTrue(any("Shown" in path.read_text(errors="replace") and path.name.startswith("doc-") for path in published),
                             "a published topic file is still linked as a document")
+
+    def test_structured_topics_accept_credential_related_names(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            home = self.home_with_topics(root, {"credential-rotation.md": "# Credential rotation\n"})
+            topics = home / "data" / "topics"
+            (root / "outside.md").write_text("# Offsite draft\n", encoding="utf-8")
+            (topics / "outside.md").symlink_to(root / "outside.md")
+            record_fixture_conversation(self, root, home,
+                                        "Discuss data/topics/credential-rotation.md and data/topics/outside.md.")
+            output = root / "out" / "index.html"
+            rendered = self.run_cli(["render", "--home", str(home), "--output", str(output), "--no-snapshot"], root)
+            self.assertEqual(rendered.returncode, 0, rendered.stderr)
+            self.assertIn("Credential rotation", (output.parent / "topic-credential-rotation.html").read_text())
+            self.assertFalse((output.parent / "topic-outside.html").exists())
+            checked = self.run_cli(["topics", "check", "--home", str(home)], root)
+            self.assertEqual(checked.returncode, 0, checked.stdout + checked.stderr)
+            self.assertIn("1 topic file checked: no mistakes.", checked.stdout)
 
     def test_unreadable_secondmate_registry_makes_check_incomplete(self) -> None:
         with tempfile.TemporaryDirectory() as temp:

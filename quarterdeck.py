@@ -7929,8 +7929,17 @@ def read_topics(data_dir: Path) -> list[Topic]:
     directory = data_dir / TOPICS_DIR_NAME
     if not directory.is_dir():
         return []
-    paths = sorted(path for path in directory.iterdir()
-                   if path.suffix == ".md" and publishable_document(path, data_dir) is not None)
+    root = data_dir.resolve() / TOPICS_DIR_NAME
+    paths = []
+    for path in sorted(directory.iterdir()):
+        if path.suffix != ".md" or path.name.startswith((".", "_")):
+            continue
+        try:
+            target = path.resolve()
+        except (OSError, RuntimeError):
+            continue
+        if target.is_relative_to(root) and not any(part.startswith((".", "_")) for part in target.relative_to(root).parts):
+            paths.append(path)
     return [read_topic_file(path) for path in paths]
 
 
@@ -13512,7 +13521,7 @@ def artifact_page(snapshot: dict[str, object]) -> str:
 
 def export_snapshot(args: argparse.Namespace) -> int:
     try:
-        config, homes, bearings = load_site(args, include_document_pages=False)
+        config, homes, bearings = load_site(args)
         configured_title = config.get("page_title")
         title = args.title or (configured_title if isinstance(configured_title, str) else None) or DEFAULT_TITLE
         snapshot = build_snapshot(homes, title, bearings.generated, args.bodies, attention=bearings.attention)
@@ -13749,7 +13758,7 @@ SESSION_SECRET_RE = re.compile(
 @dataclass
 class SessionDocument:
     label: str
-    href: str
+    path: Path
 
 
 @dataclass
@@ -13762,6 +13771,7 @@ class SessionScope:
     report_ambiguities: set[str] = field(default_factory=set)
     links: list[str] = field(default_factory=list)
     documents: list[SessionDocument] = field(default_factory=list)
+    document_pages: dict[Path, str] = field(default_factory=dict)
     route_roots: dict[tuple[Path | None, Path | None], HomeSnapshot] = field(default_factory=dict, repr=False)
 
     def includes(self, snapshot: HomeSnapshot | None, task: str) -> bool:
@@ -13834,8 +13844,7 @@ def session_identity(source: HomeSnapshot | None) -> tuple[str, str] | None:
     return str(source.board.path.resolve()), source.board.session_id
 
 
-def session_scope(homes: list[HomeSnapshot], now: datetime, *, main_href: str = "index.html",
-                  document_pages: dict[str, str] | None = None) -> SessionScope:
+def session_scope(homes: list[HomeSnapshot], now: datetime) -> SessionScope:
     source = session_source(homes)
     identity = session_identity(source)
     if identity is None:
@@ -13855,7 +13864,6 @@ def session_scope(homes: list[HomeSnapshot], now: datetime, *, main_href: str = 
     said = SESSION_URL_RE.sub(" ", said)
     tokens = {token.rstrip(".") for token in SESSION_TOKEN_RE.findall(said)}
     topic_paths = set(SESSION_TOPIC_PATH_RE.findall(said))
-    topic_text = DOC_BARE_RE.sub(" ", LOCAL_FILE_PATH_RE.sub(" ", said)).casefold()
     named_topics: set[tuple[int, str]] = set()
 
     def add_task(snapshot: HomeSnapshot, task: str) -> None:
@@ -13864,10 +13872,17 @@ def session_scope(homes: list[HomeSnapshot], now: datetime, *, main_href: str = 
             scope.tasks.add((id(owner), local))
 
     board_tasks = {item.task for item in board.items}
+    routed_tokens = set()
     for token in tokens:
         owner, task = task_owner(source, token, scope)
         if task in snapshot_items(owner) or token in board_tasks:
             scope.tasks.add((id(owner), task))
+            if owner is not source:
+                routed_tokens.add(token)
+    topic_text = SESSION_TOKEN_RE.sub(
+        lambda match: " " if match.group().rstrip(".") in routed_tokens else match.group(),
+        DOC_BARE_RE.sub(" ", LOCAL_FILE_PATH_RE.sub(" ", said)),
+    ).casefold()
     for item in board.items:
         if item.session_id == identity[1] and item.touched_at is not None and item.touched_at <= now:
             add_task(source, item.task)
@@ -13886,7 +13901,6 @@ def session_scope(homes: list[HomeSnapshot], now: datetime, *, main_href: str = 
                 owner, task = task_reference_owner(source, str(record["task"]), family, scope=scope)
                 if task:
                     scope.tasks.add((id(owner), task))
-    reports_in_chat = set(report_ids_in(said))
     for item in snapshot_items(source).values():
         held_at = parse_board_time(hold_stamp(item)) if item.held and hold_session_id(item) == identity[1] else None
         if held_at is not None and held_at <= now:
@@ -13909,7 +13923,6 @@ def session_scope(homes: list[HomeSnapshot], now: datetime, *, main_href: str = 
             continue
         directories = scope.report_dirs.setdefault(id(snapshot), set())
         if snapshot is source:
-            directories.update(reports_in_chat)
             directories.update(report.path.parent.name for report in snapshot.reports if report.path.parent.name in tokens)
         for topic in snapshot.topics:
             if (id(snapshot), topic.topic_id) in scope.topics:
@@ -13936,19 +13949,8 @@ def session_scope(homes: list[HomeSnapshot], now: datetime, *, main_href: str = 
                            for target in report.related_to)):
                 directories.add(report.path.parent.name)
     if source.data_dir is not None:
-        topic_root = source.data_dir.resolve() / TOPICS_DIR_NAME
         for path, label in referenced_docs(said, source.data_dir, explicit_only=True):
-            if path.parent == topic_root and (id(source), path.stem) not in scope.topics:
-                continue
-            digest = hashlib.sha256(str(path).encode("utf-8")).hexdigest()[:12]
-            href = f"{DOC_PREFIX}{digest}.html"
-            if document_pages is not None:
-                raw = f"{RAW_PREFIX}{digest}{'.html' if path.suffix == '.html' else '.txt'}"
-                built = doc_page(path, label, raw, main_href)
-                if built is None:
-                    continue
-                document_pages[href], document_pages[raw] = built
-            scope.documents.append(SessionDocument(f"data/{label}", href))
+            scope.documents.append(SessionDocument(f"data/{label}", path))
     return scope
 
 
@@ -14011,13 +14013,24 @@ def session_stamp_html(bearings: Bearings, updated: str = "", controls: str = ""
     return f'<p class="stamp">{joined}{controls}</p>' if joined or controls else ""
 
 
-def session_links_html(bearings: Bearings) -> str:
-    """The http(s) addresses said in this session, newest last, so a page mentioned in chat is one tap away."""
+def session_link_targets(bearings: Bearings) -> list[tuple[str, str]]:
     scope = bearings.session
-    if scope is None or not (scope.links or scope.documents):
-        return ""
+    if scope is None:
+        return []
     links = [(url, session_link_label(url)) for url in scope.links]
-    links.extend((doc.href, doc.label) for doc in scope.documents)
+    for doc in scope.documents:
+        digest = hashlib.sha256(str(doc.path).encode("utf-8")).hexdigest()[:12]
+        page = f"{DOC_PREFIX}{digest}.html"
+        if page not in bearings.item_pages:
+            page = scope.document_pages.get(doc.path, doc.path.as_uri())
+        links.append((page, doc.label))
+    return links
+
+
+def session_links_html(bearings: Bearings) -> str:
+    links = session_link_targets(bearings)
+    if not links:
+        return ""
     rows = "".join(
         f'<li><a href="{html.escape(url, quote=True)}">{html.escape(label)}</a></li>'
         for url, label in links
@@ -14072,7 +14085,7 @@ def unresolved_push_tags(homes: list[HomeSnapshot], attention: dict[str, object]
 
 def load_site(
     args: argparse.Namespace, main_href: str = "index.html", *,
-    include_calls: bool = False, notification_resolution: bool = False, include_document_pages: bool = True,
+    include_calls: bool = False, notification_resolution: bool = False,
     recap_inputs: list[object] | None = None,
 ) -> tuple[dict[str, object], list[HomeSnapshot], Bearings]:
     """Read the configured homes and review marks, then classify them into bearings."""
@@ -14084,8 +14097,7 @@ def load_site(
     state_path = validate_review_state_location(homes)
     apply_review_marks(homes, load_review_state(state_path))
     now = datetime.now(timezone.utc)
-    document_pages: dict[str, str] | None = {} if include_document_pages else None
-    scope = session_scope(homes, now, main_href=main_href, document_pages=document_pages)
+    scope = session_scope(homes, now)
     scripts_enabled = not getattr(args, "no_snapshot", False)
     settings = wait_settings(config, args.config.expanduser().resolve() if args.config else None)
     feed_runner = functools.cache(run_attention_feed)
@@ -14100,11 +14112,18 @@ def load_site(
         resolution = (not wait_error and not topics_incomplete and not needs_unread(all_attention),
                       unresolved_push_tags(homes, all_attention, all_waits))
     scope_homes(homes, scope)
+    for snapshot in all_snapshots(homes):
+        for topic in snapshot.topics:
+            if topic.page:
+                scope.document_pages[topic.path.resolve()] = topic.page
+        if snapshot.spec.home is not None:
+            for report in snapshot.reports:
+                page = source_page_filename("report", snapshot.spec.home, report.path)
+                scope.document_pages[report.path] = page
+                scope.document_pages[report.path.with_name("report.html")] = page
     use_snapshot = scope.started is not None and scripts_enabled
     bearings = build_bearings(homes, now=now, use_snapshot=use_snapshot, main_href=main_href)
     bearings.notification_resolution = resolution
-    if document_pages is not None:
-        bearings.item_pages.update(document_pages)
     bearings.session = scope
     if include_calls:
         bearings.topic_pages = assign_topic_pages(homes)
@@ -14146,7 +14165,7 @@ def render_projection(homes: list[HomeSnapshot], bearings: Bearings, pages: dict
             answer_keys.update(("decision", f"{topic.ref}/{entry.entry_id}") for entry in topic.open_decisions())
     state = next((snapshot.review_state for snapshot in members if snapshot.review_state is not None), None)
     answers = [(key, state.history[key]) for key in sorted(answer_keys) if state is not None and key in state.history]
-    projection = (sources, membership, scope.links if scope else [], activity, recap_inputs, answers,
+    projection = (sources, membership, session_link_targets(bearings), activity, recap_inputs, answers,
                   sorted((name, value) for name, value in pages.items() if name.startswith(RAW_PREFIX)),
                   bearings.call, bearings.landed, bearings.underway, bearings.charted)
     return hashlib.sha256(repr(projection).encode("utf-8")).hexdigest()
