@@ -14,6 +14,6 @@ Marking changes the state locally and preserves the last saved answer. Open the 
 
 ## Connect the inbox
 
-Set `firstmate_home` to the absolute path of the intended Firstmate home in the Quarterdeck config. Restart the serving process after changing its config. If exactly one home was registered with an older installation, Quarterdeck uses that home's path by default. With several registered homes, choose one explicitly.
+Set `firstmate_home` to the absolute path of the intended Firstmate home in the Quarterdeck config. Restart the serving process after changing its config. If exactly one home was registered with an older installation, Quarterdeck uses that home's path by default. Relative paths in that registration start from the config file's directory. With several registered homes, choose one explicitly.
 
 Delivery runs the home's `bin/fm-inbox.sh note` command. If delivery fails, restore the binding or the inbox command and send the saved answer again from the card.

@@ -8,4 +8,6 @@ Open **Needs attention** on the served page and select **Answer questions**. Eac
 
 **Answered** means Quarterdeck saved the decision. **Sent** means Firstmate received the note. If you see **Not delivered**, your answer remains saved. Once the inbox is available, select Send again. Retry uses the same note ID. To correct a sent answer, edit it and send again. Firstmate receives the correction as a new note.
 
+Edit the answer to submit a new decision on a reopened question. If a question changed while you were drafting, the page keeps its draft and sends the other queued answers. Copy the conflicting draft before reloading to review the latest version.
+
 The page shows times in your local time zone. Downloaded or rendered HTML shows a snapshot. Open the served page to send an answer.

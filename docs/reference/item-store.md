@@ -53,6 +53,6 @@ Quarterdeck trims text when saving it and displays it as escaped plain text.
 
 ## Question answers
 
-Questions items may contain an `answers` object keyed by the one-based part number as a string. Missing entries mean Open. Records carry `state` (open, answered or closed), `updated_at` (UTC) and an opaque `revision` for detecting concurrent edits. Older items need no migration.
+Questions items may contain an `answers` object keyed by the one-based part number as a string. Missing entries mean Open. Records carry `state` (open, answered or closed) and an opaque `revision` for detecting concurrent edits. Older items need no migration.
 
 A browser answer also stores `answer` (plain text, up to 20,000 characters), `answered_at` (UTC), `delivery` (pending or sent) and a stable `request_id` for inbox retries. The answer is saved before delivery. A correction replaces the current record and gets a new request ID. Marking changes the state and revision while preserving the answer fields.

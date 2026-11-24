@@ -233,7 +233,9 @@ class PageTests(StoreCase):
         self.assertLess(rows.index(">Q3<"), rows.index(">Q2<"))
         self.assertLess(rows.index(">Q2<"), rows.index(">Q1<"))
         self.assertIn("Harbor chores", index)
-        self.assertIn('<a href="q3.html">Tide launch decisions</a>', index)
+        self.assertIn("<h3>Tide launch decisions</h3>", index)
+        self.assertRegex(index, r'<a[^>]* href="q3.html">Read questions</a>')
+        self.assertEqual(index.count('href="q3.html"'), 1)
         self.assertIn("Two open questions, saved to decide later.", index)
         for heading in ("ID", "Kind", "Title", "Description", "Saved"):
             self.assertIn(f'<th scope="col">{heading}</th>', index)
@@ -276,7 +278,7 @@ class RenderTests(StoreCase):
         code, out, err = self.run_cli("render", "--output", str(output))
         self.assertEqual(code, 0, err)
         self.assertEqual(out.strip(), str(output.resolve()))
-        self.assertIn('<a href="q3.html">Tide launch decisions</a>', output.read_text())
+        self.assertRegex(output.read_text(), r'<a[^>]* href="q3.html">Read questions</a>')
         self.assertEqual({path.name for path in output.parent.iterdir()},
                          {"index.html", "q1.html", "q2.html", "q3.html", "q8.html", "snapshot.html"})
         self.assertEqual((output.parent / "snapshot.html").read_text(), historical)
@@ -402,10 +404,23 @@ class ServeTests(StoreCase):
         self.assertNotEqual(saved["request_id"], corrected["request_id"])
         self.assertEqual((home / corrected["request_id"]).read_text(), "Q3.1 Changed")
         self.assertIn("Answer: Changed", self.run_cli("show", "Q3")[1])
+        self.assertEqual(0, self.run_cli("mark", "Q3.1", "open")[0])
+        reopened = self.store()["items"][2]["answers"]["1"]
+        self.assertNotIn("updated_at", reopened)
+        self.assertEqual(self.post_answer(port, "Q3.1", "Changed", reopened["revision"])[0], 409)
+        self.assertEqual(self.store()["items"][2]["answers"]["1"], reopened)
         self.assertEqual(0, self.run_cli("mark", "Q3", "closed")[0])
         self.assertEqual(self.post_answer(port, "Q3.1", "New", correction["revision"])[0], 409)
-        self.assertNotIn("Needs attention", self.fetch(port, "/qd/")[1])
+        index = self.fetch(port, "/qd/")[1]
+        self.assertNotIn("Needs attention", index)
+        self.assertRegex(index, r'<a[^>]* href="q3.html">Review answers</a>')
+        self.assertEqual(index.count('href="q3.html"'), 1)
+        closed = self.fetch(port, "/qd/q3.html")[1]
+        self.assertIn("<li>Hold</li>", closed)
+        self.assertIn('<strong>Suggested answer</strong><br>Merge', closed)
+        self.assertNotIn("<textarea", closed)
         self.assertEqual(0, self.run_cli("mark", "Q3.2", "open")[0])
+        self.assertEqual(set(self.store()["items"][2]["answers"]["2"]), {"state", "revision"})
         self.assertIn("Needs attention", self.fetch(port, "/qd/")[1])
 
     def test_invalid_answers_leave_the_store_untouched(self):
@@ -503,43 +518,68 @@ check(field(2).value === 'Use the next tide' && field(4).value === 'Consult the 
 check(button('undo').hidden, 'Undo history was not empty');
 """)
 
-    def test_partial_batch_displays_saved_answer_and_keeps_unsent_drafts(self):
+    def test_batch_conflict_keeps_its_draft_and_sends_independent_answers(self):
         self.add("questions", "Tide decisions", "Decide the launch plan.", "--body-file", "-",
-                 stdin=json.dumps(QUESTIONS))
-        self.check_answer_page(self.start("/qd"), """
+                 stdin=json.dumps(QUESTIONS * 2))
+        port = self.start("/qd")
+        self.assertEqual(self.post_answer(port, "Q1.4", "Red")[0], 200)
+        self.assertEqual(self.run_cli("mark", "Q1.4", "open")[0], 0)
+        self.check_answer_page(port, """
+check(button('send').disabled, 'An unchanged reopened answer was queued at page load');
 typeAnswer(1, 'Hold <for the pilot>');
 typeAnswer(2, 'Blue');
+typeAnswer(3, 'Merge');
+check(button('send').textContent === 'Send 3 answers', 'An unchanged reopened answer was added to the batch');
 const sent = [];
 window.fetch = async (url, options) => {
-  sent.push(JSON.parse(options.body));
-  if (sent.length === 1) {
-    return {ok: true, json: async () => ({
-      answer: 'Hold <for the pilot>', revision: 'saved-revision',
-      answered_at: '2026-01-12T15:00:00Z', delivery: 'sent'
-    })};
+  const {part, answer} = JSON.parse(options.body);
+  sent.push(part);
+  if (part === 'Q1.2') {
+    return {ok: false, status: 409, text: async () => 'Question changed. Reload before sending.'};
   }
-  return {ok: false, text: async () => 'Question changed. Reload before sending.'};
+  return {ok: true, json: async () => ({
+    answer, revision: 'saved-revision', answered_at: '2026-01-12T15:00:00Z', delivery: 'sent'
+  })};
 };
-button('send').click();
-await new Promise(resolve => setTimeout(resolve, 0));
-check(sent.map(answer => answer.part).join(',') === 'Q1.1,Q1.2', 'The batch did not send both parts');
+const status = document.querySelector('[role="status"]');
+const sendBatch = () => new Promise(resolve => {
+  const observer = new MutationObserver(() => {
+    if (!status.textContent.startsWith('Sending')) {
+      observer.disconnect();
+      resolve();
+    }
+  });
+  observer.observe(status, {childList: true});
+  button('send').click();
+});
+await sendBatch();
+check(sent.join(',') === 'Q1.1,Q1.2,Q1.3', 'The conflict blocked another draft');
 check(card(1).querySelector('.badge').textContent === 'Answered', 'The saved badge was stale');
 const saved = card(1).querySelector('.saved-answer');
 check(!saved.hidden && saved.querySelector('.record').textContent === 'Hold <for the pilot>',
       'The saved answer was missing or interpreted as HTML');
 check(saved.querySelector('.delivery').textContent === 'Sent', 'The delivery label was stale');
 check(saved.querySelector('time').dateTime === '2026-01-12T15:00:00Z', 'The saved timestamp was stale');
-check(document.querySelector('.progress').textContent === '1 of 2 open', 'Progress was stale');
-check(field(2).value === 'Blue', 'The unsent draft was lost');
-check(button('send').textContent === 'Send 1 answer', 'The saved part was still queued');
-check(document.querySelector('[role="status"]').textContent.includes('Question changed.'), 'The conflict was hidden');
+check(document.querySelector('.progress').textContent === '2 of 4 open', 'Progress was stale');
+check(field(2).value === 'Blue', 'The conflicting draft was lost');
+check(button('send').disabled, 'A saved, conflicting or unchanged reopened answer was still queued');
+check(status.textContent.includes('Q1.2: Question changed.'), 'The conflict was hidden');
+typeAnswer(4, 'Blue');
+await sendBatch();
+check(sent.join(',') === 'Q1.1,Q1.2,Q1.3,Q1.4', 'The next send retried the conflicted draft');
+check(field(2).value === 'Blue', 'A later send discarded the conflicting draft');
 """)
 
     def test_binding_uses_only_an_explicit_or_single_home(self):
-        homes = [{"path": "/orchard"}, {"path": "/garden"}]
-        self.assertIsNone(quarterdeck.answer_home({"homes": homes}))
-        self.assertEqual(Path("/orchard"), quarterdeck.answer_home({"homes": homes[:1]}))
-        self.assertEqual(Path("/grove"), quarterdeck.answer_home({"homes": homes, "firstmate_home": "/grove"}))
+        path = self.root / "legacy.json"
+        homes = [{"path": str(self.root / "orchard")}, {"path": "garden"}]
+        path.write_text(json.dumps({"homes": homes}))
+        self.assertNotIn("firstmate_home", quarterdeck.load_config(path))
+        path.write_text(json.dumps({"homes": homes[:1]}))
+        self.assertEqual(str(self.root / "orchard"), quarterdeck.load_config(path)["firstmate_home"])
+        explicit = str(self.root / "grove")
+        path.write_text(json.dumps({"homes": homes[:1], "firstmate_home": explicit}))
+        self.assertEqual(explicit, quarterdeck.load_config(path)["firstmate_home"])
 
     def test_pages_follow_the_store_without_a_restart(self) -> None:
         port = self.start()
@@ -566,25 +606,29 @@ check(document.querySelector('[role="status"]').textContent.includes('Question c
         self.assertEqual(self.fetch(port, "/q3.html")[2].get("Location"), "/qd/q3.html")
         self.assertEqual(self.fetch(port, "/qd/", host="attacker.example")[0], 403)
 
-    def test_legacy_service_flags_and_config_keep_the_page_read_only(self) -> None:
+    def test_legacy_config_delivers_to_a_relative_home_without_ingesting_it(self) -> None:
         self.add_all_kinds()
         home = self.root / "firstmate"
-        home.mkdir()
+        (home / "bin").mkdir(parents=True)
         (home / "backlog.md").write_text("Legacy work item")
-        config = self.root / "legacy.json"
-        config.write_text(json.dumps({"homes": [{"path": str(home)}], "captain_waits": {}}))
+        script = home / "bin" / "fm-inbox.sh"
+        script.write_text('#!/bin/sh\nprintf "%s" "$6" > received-note\n')
+        script.chmod(0o700)
+        config = self.root / "config" / "legacy.json"
+        config.parent.mkdir()
+        config.write_text(json.dumps({"homes": [{"path": "../firstmate"}], "captain_waits": {}}))
         with socket.socket() as probe:
             probe.bind(("127.0.0.1", 0))
             port = probe.getsockname()[1]
         with subprocess.Popen(
-            [sys.executable, str(ROOT / "quarterdeck.py"), "serve", "--port", str(port), "--config", str(config),
+            [sys.executable, str(ROOT / "quarterdeck.py"), "serve", "--port", str(port), "--config", str(config), "--base-path", "/qd",
              "--allow-marks", "--watch-waits", "--no-snapshot", "--home", str(home)],
             stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
         ) as process:
             try:
                 self.assertTrue(select.select([process.stdout], [], [], 10)[0], "server did not start")
                 self.assertIn("Serving Quarterdeck", process.stdout.readline())
-                status, body, _headers = self.fetch(port, "/")
+                status, body, _headers = self.fetch(port, "/qd/")
                 self.assertEqual(status, 200)
                 self.assertIn("Tide launch decisions", body)
                 self.assertNotIn("Legacy work item", body)
@@ -592,6 +636,9 @@ check(document.querySelector('[role="status"]').textContent.includes('Question c
                 before = quarterdeck.store_path().read_bytes()
                 self.assertEqual(self.fetch(port, "/", method="POST")[0], 405)
                 self.assertEqual(quarterdeck.store_path().read_bytes(), before)
+                status, record = self.post_answer(port, "Q3.1", "Hold")
+                self.assertEqual((status, record["delivery"]), (200, "sent"))
+                self.assertEqual((home / "received-note").read_text(), "Q3.1 Hold")
             finally:
                 process.terminate()
                 process.communicate(timeout=10)

@@ -101,6 +101,12 @@ def load_config(path: Path | None) -> dict[str, object]:
     if "firstmate_home" in config and (not isinstance(config["firstmate_home"], str)
                                       or not Path(config["firstmate_home"]).expanduser().is_absolute()):
         raise ValueError("config firstmate_home must be an absolute path")
+    if "firstmate_home" not in config:
+        homes = config.get("homes")
+        if isinstance(homes, list) and len(homes) == 1 and isinstance(homes[0], dict):
+            legacy_home = homes[0].get("path")
+            if isinstance(legacy_home, str) and legacy_home.strip():
+                config["firstmate_home"] = str((path.resolve().parent / Path(legacy_home).expanduser()).resolve())
     if "page_title" in config and not isinstance(config["page_title"], str):
         raise ValueError("config page_title must be a string")
     if "base_path" in config:
@@ -373,17 +379,6 @@ def read_body(value: str | None) -> str | None:
         raise ValueError(f"could not read the body file {value}: {exc}") from exc
 
 
-def answer_home(config):
-    path = config.get("firstmate_home")
-    if path is None:
-        homes = config.get("homes")
-        if isinstance(homes, list) and len(homes) == 1 and isinstance(homes[0], dict):
-            path = homes[0].get("path")
-    if isinstance(path, str) and Path(path).expanduser().is_absolute():
-        return Path(path).expanduser()
-    return None
-
-
 def question_parts(item):
     if item["kind"] != "questions":
         raise ValueError("Choose a questions item.")
@@ -405,19 +400,16 @@ def validate_records(item):
         if record.get("state") not in ("open", "answered", "closed") or not re.fullmatch(
                 r"[0-9a-f]{32}", str(record.get("revision"))):
             raise ValueError("invalid question state")
-        timestamps = ["updated_at"]
         if any(k in record for k in ("answer", "answered_at", "delivery", "request_id")):
             if (clean_text(record.get("answer"), "answer", TEXT_LIMIT, multiline=True) != record["answer"]
                     or record.get("delivery") not in ("pending", "sent")
                     or not re.fullmatch(r"quarterdeck-[0-9a-f]{32}", str(record.get("request_id")))):
                 raise ValueError("invalid saved answer")
-            timestamps.append("answered_at")
-        for key in timestamps:
-            datetime.strptime(str(record.get(key)), "%Y-%m-%dT%H:%M:%SZ")
+            datetime.strptime(str(record.get("answered_at")), "%Y-%m-%dT%H:%M:%SZ")
 
 
 def put_record(item, part, state, **fields):
-    record = {**fields, "state": state, "updated_at": now_text(), "revision": uuid.uuid4().hex}
+    record = {**fields, "state": state, "revision": uuid.uuid4().hex}
     item.setdefault("answers", {})[str(part)] = record
     return record
 
@@ -434,8 +426,8 @@ def mark_item(args):
                 parts = [int(part)]
             for number in parts:
                 previous = part_record(item, number)
-                put_record(item, number, args.state, **{k: v for k, v in previous.items()
-                           if k not in {"state", "revision", "updated_at"}})
+                put_record(item, number, args.state, **{k: previous[k] for k in
+                           ("answer", "answered_at", "delivery", "request_id") if k in previous})
         print(f"{args.id.upper()} {args.state.capitalize()}")
         return 0
     return run_item_command(action)
@@ -465,6 +457,8 @@ def send_answer(store, home, payload):
         same = old.get("state") == "answered" and old.get("answer") == answer
         if not same and payload["revision"] != old.get("revision", ""):
             raise AnswerConflict("Question changed. Reload before sending.")
+        if old.get("state") == "open" and old.get("answer") == answer:
+            raise AnswerConflict("Enter a new answer for the reopened question.")
         if same:
             record = old
         else:
@@ -729,7 +723,7 @@ def question_card(item, *, served, primary):
     action = "Read questions" if not served else ("Answer questions" if remaining else "Review answers")
     link_class = ' class="work-action"' if primary else ''
     return (f'<article class="work"><div class="eyebrow"><span class="id">{item["id"]}</span> Questions</div>'
-            f'<h3><a href="{href}">{esc(item["title"])}</a></h3><p>{esc(item["description"])}</p>'
+            f'<h3>{esc(item["title"])}</h3><p>{esc(item["description"])}</p>'
             f'<div class="actions"><span class="badge">{progress}</span>'
             + ('<span>Not delivered</span>' if pending else '')
             + f'<a{link_class} href="{href}">{action}</a></div></article>')
@@ -766,7 +760,7 @@ def question_form(item, served):
             controls = ('<div class="choices">' + ''.join(labels) + '</div>'
                         + f'<label for="answer-{part}">Your answer</label><textarea id="answer-{part}" '
                         + f'maxlength="{TEXT_LIMIT}" rows="2">{esc(answer)}</textarea>')
-        elif not served:
+        else:
             controls = '<ul>' + ''.join(f'<li>{esc(v)}</li>' for v in question["options"]) + '</ul>'
             if question.get("suggestion"):
                 controls += f'<p><strong>Suggested answer</strong><br>{esc(question["suggestion"])}</p>'
@@ -794,14 +788,15 @@ if (send) {
   const output = document.querySelector('output');
   const suggest = document.querySelector('#suggest');
   const undo = document.querySelector('#undo');
+  const conflicts = new Map();
   let history = [];
   const changed = f => {
-    const {state, pending} = f.closest('section').dataset;
-    return f.value.trim() && (f.value.trim() !== f.defaultValue || pending === '1' || state === 'open');
+    const {pending} = f.closest('section').dataset;
+    return !conflicts.has(f) && f.value.trim() && (f.value.trim() !== f.defaultValue || pending === '1');
   };
   const suggestionFor = f => {
     const section = f.closest('section');
-    if (section.dataset.state === 'open' && !f.defaultValue && !f.value) {
+    if (!conflicts.has(f) && section.dataset.state === 'open' && !f.defaultValue && !f.value) {
       return section.querySelector('[data-suggested]');
     }
   };
@@ -871,20 +866,29 @@ if (send) {
     undo.hidden = true;
     const controls = document.querySelectorAll('button,input,textarea');
     controls.forEach(c => c.disabled = true);
+    let interrupted = '';
     try {
       for (const [i,f] of pending.entries()) {
         output.textContent = 'Sending ' + (i+1) + ' of ' + pending.length;
         const section = f.closest('section');
         const response = await fetch('answers', {method:'POST', headers:{'Content-Type':'application/json'},
           body:JSON.stringify({part:section.id, revision:section.dataset.revision, answer:f.value.trim()})});
+        if (response.status === 409) {
+          conflicts.set(f, section.id + ': ' + await response.text());
+          continue;
+        }
         if (!response.ok) throw new Error(await response.text());
         showAnswer(section, f, await response.json());
       }
-      location.reload();
     } catch (err) {
-      output.textContent = navigator.onLine ? 'Send interrupted. ' + err.message : 'Offline. Reconnect and send again.';
+      interrupted = navigator.onLine ? 'Send interrupted. ' + err.message : 'Offline. Reconnect and send again.';
+    }
+    if (conflicts.size || interrupted) {
+      output.textContent = [...conflicts.values(), interrupted].filter(Boolean).join(' ');
       controls.forEach(c => c.disabled = false);
       refresh();
+    } else {
+      location.reload();
     }
   });
   refresh();
@@ -1312,7 +1316,9 @@ def serve(args: argparse.Namespace) -> int:
         config = selected_config(args)
         tls = tls_context(args)
         base_path = effective_base_path(args)
-        handler = make_handler(page_title(args, config), base_path, home=answer_home(config))
+        home = config.get("firstmate_home")
+        handler = make_handler(page_title(args, config), base_path,
+                               home=Path(home).expanduser() if isinstance(home, str) else None)
         port = args.port
         for host in bind_hosts(args):
             server = make_server(host, port, handler, tls)
