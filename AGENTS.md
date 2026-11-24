@@ -6,7 +6,7 @@ This file is the project's committed home for project-intrinsic agent knowledge:
 
 ## Project notes
 
-- Preserve the boundary: Quarterdeck shows only items saved by hand with `quarterdeck add`. It never ingests data from a Firstmate home or runs a Firstmate script. See `docs/explanation/privacy-and-architecture.md` for the file access and read-only serving boundaries.
+- Preserve the boundary: Quarterdeck shows only items saved by hand with `quarterdeck add`. It never ingests data from a Firstmate home and invokes only the configured inbox note command on answer submission. See `docs/explanation/privacy-and-architecture.md` for the file access and serving boundaries.
 - Validation commands live in `CONTRIBUTING.md`.
 
 ## Maintaining this file

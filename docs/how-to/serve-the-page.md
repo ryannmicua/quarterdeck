@@ -11,7 +11,7 @@ to pick another port and `--title` to change the site name. To write the pages
 as files instead, run `quarterdeck render`; see the
 [CLI reference](../reference/cli-and-config.md#pages).
 
-Select an item's title in the Saved table to open it.
+Open a question under Needs attention or select a title under References.
 
 ## Reach it from a phone
 
@@ -73,4 +73,4 @@ dashboard.example.org {
 The default bind is `127.0.0.1`. A loopback listener refuses requests whose
 `Host` is outside loopback. Binding a non-loopback address exposes your saved
 items without a login to everyone who can reach the port, and Quarterdeck
-prints a warning when you do. The page is read-only and refuses `POST`.
+prints a warning when you do. Anyone who can reach the service can read items and send answers as the owner. Keep the listener and proxy on the trusted network, or protect both with an owner access gate. Browser submissions require a matching Origin and Host. The proxy must preserve the external Host and scheme.

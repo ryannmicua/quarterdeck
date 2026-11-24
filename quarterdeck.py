@@ -20,6 +20,7 @@ import sys
 import tempfile
 import threading
 import unicodedata
+import uuid
 import zlib
 from collections.abc import Iterator
 from contextlib import contextmanager
@@ -32,10 +33,9 @@ from urllib.parse import quote, unquote, urlparse
 DEFAULT_TITLE = "Quarterdeck"
 DEFAULT_HOST = "127.0.0.1"
 DEFAULT_PORT = 8765
-ALLOWED_CONFIG_KEYS = {"page_title", "output_dir", "base_path"}
-# Keys an older Quarterdeck read to find Firstmate homes. They are accepted so an existing config keeps working, and
-# ignored: nothing is read from a Firstmate home any more.
-IGNORED_CONFIG_KEYS = {"homes", "captain_waits"}
+ALLOWED_CONFIG_KEYS = {"page_title", "output_dir", "base_path", "firstmate_home"}
+# Legacy configuration. Only a sole registered home can supply the note destination.
+LEGACY_CONFIG_KEYS = {"homes", "captain_waits"}
 # Split so the privacy guard, which rejects committed generated pages by this marker, does not flag the source.
 GENERATED_MARKER = '<meta name="quarterdeck-' + 'generated" content="read-only review page">'
 
@@ -95,9 +95,12 @@ def load_config(path: Path | None) -> dict[str, object]:
         raise ValueError(f"could not read config {path}: {exc}") from exc
     if not isinstance(config, dict):
         raise ValueError("config must be a JSON object")
-    unknown = sorted(set(config) - ALLOWED_CONFIG_KEYS - IGNORED_CONFIG_KEYS)
+    unknown = sorted(set(config) - ALLOWED_CONFIG_KEYS - LEGACY_CONFIG_KEYS)
     if unknown:
         raise ValueError(f"unsupported config key(s): {', '.join(unknown)}")
+    if "firstmate_home" in config and (not isinstance(config["firstmate_home"], str)
+                                      or not Path(config["firstmate_home"]).expanduser().is_absolute()):
+        raise ValueError("config firstmate_home must be an absolute path")
     if "page_title" in config and not isinstance(config["page_title"], str):
         raise ValueError("config page_title must be a string")
     if "base_path" in config:
@@ -301,6 +304,8 @@ def check_store(data: object) -> dict[str, object]:
             body = validated_body(item["kind"], item.get("body"))
             if (title, description, body) != (item["title"], item["description"], item["body"]):
                 raise ValueError("item text or body is not in the saved format")
+            if "answers" in item:
+                validate_records(item)
         except ValueError as exc:
             raise ValueError(f"the item store is damaged: {item_id}: {exc}") from exc
     return data
@@ -368,6 +373,121 @@ def read_body(value: str | None) -> str | None:
         raise ValueError(f"could not read the body file {value}: {exc}") from exc
 
 
+def answer_home(config):
+    path = config.get("firstmate_home")
+    if path is None:
+        homes = config.get("homes")
+        if isinstance(homes, list) and len(homes) == 1 and isinstance(homes[0], dict):
+            path = homes[0].get("path")
+    if isinstance(path, str) and Path(path).expanduser().is_absolute():
+        return Path(path).expanduser()
+    return None
+
+
+def question_parts(item):
+    if item["kind"] != "questions":
+        raise ValueError("Choose a questions item.")
+    return range(1, len(item["body"]["questions"]) + 1)
+
+
+def part_record(item, part):
+    return item.get("answers", {}).get(str(part), {})
+
+
+def validate_records(item):
+    parts = question_parts(item)
+    answers = item["answers"]
+    if not isinstance(answers, dict):
+        raise ValueError("invalid answers")
+    for part, record in answers.items():
+        if not re.fullmatch(r"[1-9][0-9]*", part) or int(part) not in parts or not isinstance(record, dict):
+            raise ValueError("invalid question record")
+        if record.get("state") not in ("open", "answered", "closed") or not re.fullmatch(
+                r"[0-9a-f]{32}", str(record.get("revision"))):
+            raise ValueError("invalid question state")
+        timestamps = ["updated_at"]
+        if any(k in record for k in ("answer", "answered_at", "delivery", "request_id")):
+            if (clean_text(record.get("answer"), "answer", TEXT_LIMIT, multiline=True) != record["answer"]
+                    or record.get("delivery") not in ("pending", "sent")
+                    or not re.fullmatch(r"quarterdeck-[0-9a-f]{32}", str(record.get("request_id")))):
+                raise ValueError("invalid saved answer")
+            timestamps.append("answered_at")
+        for key in timestamps:
+            datetime.strptime(str(record.get(key)), "%Y-%m-%dT%H:%M:%SZ")
+
+
+def put_record(item, part, state, **fields):
+    record = {**fields, "state": state, "updated_at": now_text(), "revision": uuid.uuid4().hex}
+    item.setdefault("answers", {})[str(part)] = record
+    return record
+
+
+def mark_item(args):
+    def action():
+        item_id, dot, part = args.id.partition(".")
+        with changing_store(store_path()) as data:
+            item = find_item(data, item_id)
+            parts = question_parts(item)
+            if dot:
+                if not re.fullmatch(r"[1-9][0-9]*", part) or int(part) not in parts:
+                    raise ValueError("Unknown question.")
+                parts = [int(part)]
+            for number in parts:
+                previous = part_record(item, number)
+                put_record(item, number, args.state, **{k: v for k, v in previous.items()
+                           if k not in {"state", "revision", "updated_at"}})
+        print(f"{args.id.upper()} {args.state.capitalize()}")
+        return 0
+    return run_item_command(action)
+
+
+class AnswerConflict(ValueError):
+    pass
+
+
+def send_answer(store, home, payload):
+    if not isinstance(payload, dict) or set(payload) != {"part", "answer", "revision"}:
+        raise ValueError("Invalid answer fields.")
+    if not isinstance(payload["revision"], str) or not re.fullmatch(r"(?:[0-9a-f]{32})?", payload["revision"]):
+        raise ValueError("Invalid question revision.")
+    match = re.fullmatch(r"(Q[1-9][0-9]*)[.]([1-9][0-9]*)", str(payload["part"]))
+    if not match:
+        raise ValueError("Unknown question.")
+    item_id, part = match[1], int(match[2])
+    answer = clean_text(payload["answer"], "Answer", TEXT_LIMIT, multiline=True)
+    with changing_store(store) as data:
+        item = find_item(data, item_id)
+        if part not in question_parts(item):
+            raise ValueError("Unknown question.")
+        old = part_record(item, part)
+        if old.get("state") == "closed":
+            raise AnswerConflict("Question closed. Reopen it before sending.")
+        same = old.get("state") == "answered" and old.get("answer") == answer
+        if not same and payload["revision"] != old.get("revision", ""):
+            raise AnswerConflict("Question changed. Reload before sending.")
+        if same:
+            record = old
+        else:
+            record = put_record(item, part, "answered", answer=answer, answered_at=now_text(),
+                                delivery="pending", request_id="quarterdeck-" + uuid.uuid4().hex)
+    # The first transaction commits before the external call. Serialize delivery against edits and reuse its note ID on retries.
+    with changing_store(store) as data:
+        record_now = part_record(find_item(data, item_id), part)
+        if record_now["revision"] != record["revision"]:
+            raise AnswerConflict("Question changed. Reload before sending.")
+        if home and record_now["delivery"] == "pending":
+            try:
+                env = {k: v for k, v in os.environ.items() if not k.startswith("FM_")}
+                result = subprocess.run([home / "bin/fm-inbox.sh", "note", "--request-id", record_now["request_id"], "-"],
+                                        input=f"{item_id}.{part} {answer}", text=True, timeout=10,
+                                        stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, env={**env, "FM_HOME": str(home)})
+                if result.returncode == 0:
+                    record_now["delivery"] = "sent"
+            except (OSError, subprocess.TimeoutExpired):
+                pass
+        return {k: record_now[k] for k in ("revision", "answer", "answered_at", "delivery")}
+
+
 def item_text(item: dict[str, object]) -> str:
     """One item as plain text, numbered the way the page numbers it."""
     item_id, body = str(item["id"]), item["body"]
@@ -378,6 +498,8 @@ def item_text(item: dict[str, object]) -> str:
     elif item["kind"] == "list":
         lines.extend(f"{item_id}.{number}  {entry}" for number, entry in enumerate(body["entries"], 1))  # type: ignore[index]
     else:
+        state, remaining, _ = question_summary(item)
+        lines.extend([f"{state} ({remaining} of {len(question_parts(item))} open)" if remaining else state, ""])
         for number, question in enumerate(body["questions"], 1):  # type: ignore[index]
             lines.append(f"{item_id}.{number}  {question['question']}")
             lines.append(f"      Context: {question['context']}")
@@ -385,6 +507,10 @@ def item_text(item: dict[str, object]) -> str:
                 lines.append("      Options: " + " | ".join(question["options"]))
             if question.get("suggestion"):
                 lines.append(f"      Suggestion: {question['suggestion']}")
+            record = part_record(item, number)
+            lines.append("      " + record.get("state", "open").capitalize())
+            if "answer" in record:
+                lines.append(f"      Answer: {record['answer']} ({record['answered_at']}, {delivery_label(record)})")
     return "\n".join(lines).rstrip() + "\n"
 
 
@@ -505,8 +631,46 @@ ol.numbered > li > .id { padding-top: .2rem; }
 .question .ask { font-weight: 700; }
 .question .label { font: 600 var(--text-sm)/1.4 var(--sans); color: var(--soft); }
 .question ul { margin: .1rem 0 .5rem; padding-left: 1.2rem; }
+main { max-width: 68rem; }
+h3 { margin: .3rem 0; font-size: 1.55rem; line-height: 1.25; }
+.eyebrow,.actions,.toolbar,label,button,output,.progress { font-family: var(--sans); }
+.eyebrow,.actions { display:flex; flex-wrap:wrap; gap:.6rem 1rem; align-items:center; }
+.eyebrow { color:var(--soft); }
+.work,.decision { background:var(--raised); padding:clamp(1rem,3vw,2rem); border:1px solid var(--rule);
+  border-radius:8px; margin:1rem 0; max-width:52rem; }
+.work { border-left:5px solid var(--signal); }
+.work-action { background:var(--ink); color:var(--raised); padding:.55rem 1rem; border-radius:5px; text-decoration:none; }
+.decision h2 { font:700 1.45rem/1.25 var(--serif); margin:.75rem 0 .3rem; }
+.decision p,.work p { margin:.5rem 0 1rem; }
+.badge,.progress { font:600 1rem/1.5 var(--sans); color:var(--signal); }
+.progress { margin-bottom:.4rem; }
+button { cursor:pointer; background:var(--raised); color:var(--ink); border:1px solid var(--soft);
+  border-radius:5px; padding:.5rem .85rem; min-height:44px; font-size:1rem; max-width:100%; overflow-wrap:anywhere; }
+button[hidden] { display:none; }
+button.primary { color:var(--raised); background:var(--ink); }
+button:disabled { opacity:.55; cursor:default; }
+:focus-visible { outline:3px solid var(--focus); outline-offset:2px; }
+.toolbar { position:sticky; top:0; z-index:1; background:var(--ground); padding:.6rem 0; border-bottom:1px solid var(--rule); }
+.decision,button,textarea { scroll-margin-top:10rem; }
+output { display:block; margin:.4rem 0; }
+.choices { display:flex; flex-wrap:wrap; gap:.5rem; margin-bottom:.8rem; }
+.choice { display:inline-flex; gap:.4em; align-items:baseline; flex-wrap:wrap; padding:.5rem .75rem; min-height:44px; border:1px solid var(--soft); border-radius:5px; cursor:pointer; font:1rem/1.5 var(--sans); }
+.choice input { accent-color:var(--signal); }
+.choice small { font-size:.9rem; color:var(--signal); }
+.choice:has(:checked) { outline:2px solid var(--signal); background:var(--signal-ground); }
+label { display:block; font-weight:600; }
+textarea { display:block; width:100%; resize:vertical; background:var(--ground); color:var(--ink);
+ border:1px solid var(--soft); border-radius:4px; padding:.55rem; font:inherit; }
+.record { white-space:pre-wrap; }
+table.items td.when { white-space:normal; }
 """
 
+
+TIME_SCRIPT = """
+for (const time of document.querySelectorAll('time[datetime]')) {
+  time.textContent = new Date(time.dateTime).toLocaleString(undefined, {dateStyle:'medium', timeStyle:'short'});
+}
+"""
 
 def esc(value: object) -> str:
     return html.escape(str(value), quote=True)
@@ -516,7 +680,7 @@ def item_page_name(item_id: str) -> str:
     return f"{item_id.lower()}.html"
 
 
-def page_shell(title: str, site_title: str, body: str, *, served: bool, saved_name: str) -> str:
+def page_shell(title: str, site_title: str, body: str, *, served: bool, saved_name: str, interactive: bool = False) -> str:
     saved_href = quote(saved_name, safe="")
     links = (
         '<link rel="manifest" href="manifest.webmanifest">\n  <link rel="icon" href="icon.svg" type="image/svg+xml">\n'
@@ -528,7 +692,7 @@ def page_shell(title: str, site_title: str, body: str, *, served: bool, saved_na
         f"  {GENERATED_MARKER}\n  <title>{esc(title)}</title>\n  {links}<style>{PAGE_CSS}</style>\n</head>\n<body>\n"
         f'<header class="bar"><a class="mark" href="{saved_href}">{esc(site_title)}</a>'
         f'<nav><a href="{saved_href}">Saved</a></nav></header>\n'
-        f"<main>\n{body}\n</main>\n</body>\n</html>\n"
+        f"<main>\n{body}\n</main><script>{TIME_SCRIPT}{ANSWER_SCRIPT if interactive else ''}</script>\n</body>\n</html>\n"
     )
 
 
@@ -544,11 +708,170 @@ def items_table(items: list[dict[str, object]]) -> str:
             f'<th scope="col">Description</th><th scope="col">Saved</th></tr></thead><tbody>{rows}</tbody></table>')
 
 
+def delivery_label(record):
+    return "Sent" if record["delivery"] == "sent" else "Not delivered"
+
+
+def question_summary(item):
+    states = [part_record(item, n).get("state", "open") for n in question_parts(item)]
+    remaining = states.count("open")
+    state = "Open" if remaining else ("Closed" if all(s == "closed" for s in states) else "Answered")
+    pending = any(r.get("delivery") == "pending" and r["state"] == "answered" for r in item.get("answers", {}).values())
+    return state, remaining, pending
+
+
+def question_card(item, *, served, primary):
+    state, remaining, pending = question_summary(item)
+    href = item_page_name(item["id"])
+    progress = f'{remaining} of {len(question_parts(item))} open' if remaining else state
+    action = "Read questions" if not served else ("Answer questions" if remaining else "Review answers")
+    link_class = ' class="work-action"' if primary else ''
+    return (f'<article class="work"><div class="eyebrow"><span class="id">{item["id"]}</span> Questions</div>'
+            f'<h3><a href="{href}">{esc(item["title"])}</a></h3><p>{esc(item["description"])}</p>'
+            f'<div class="actions"><span class="badge">{progress}</span>'
+            + ('<span>Not delivered</span>' if pending else '')
+            + f'<a{link_class} href="{href}">{action}</a></div></article>')
+
+
+def question_form(item, served):
+    cards = []
+    state, remaining, _ = question_summary(item)
+    for number, question in enumerate(item["body"]["questions"], 1):
+        part = f'{item["id"]}.{number}'
+        record = part_record(item, number)
+        status = record.get("state", "open")
+        answer = record.get("answer", "")
+        saved = ""
+        if answer:
+            at = esc(record["answered_at"])
+            saved = (f'<p class="record">{esc(answer)}</p><p class="meta">{delivery_label(record)}'
+                     f' <time datetime="{at}">{at}</time></p>')
+        controls = ""
+        if served and status != "closed":
+            suggestions = question.get("suggestion")
+            choices = list(question["options"])
+            if suggestions and suggestions not in choices:
+                choices.append(suggestions)
+            labels = []
+            for choice in choices:
+                suggested = choice == suggestions
+                labels.append(f'<label class="choice"><input type="radio" name="choice-{part}" data-choice="{esc(choice)}"'
+                              + (' data-suggested' if suggested else '') + f'> {esc(choice)}'
+                              + (' <small>Suggested</small>' if suggested else '') + '</label>')
+            controls = ('<div class="choices">' + ''.join(labels) + '</div>'
+                        + f'<label for="answer-{part}">Your answer</label><textarea id="answer-{part}" '
+                        + f'maxlength="{TEXT_LIMIT}" rows="2">{esc(answer)}</textarea>')
+        elif not served:
+            controls = '<ul>' + ''.join(f'<li>{esc(v)}</li>' for v in question["options"]) + '</ul>'
+            if question.get("suggestion"):
+                controls += f'<p><strong>Suggested answer</strong><br>{esc(question["suggestion"])}</p>'
+        cards.append(f'<section class="decision" id="{part}" aria-labelledby="title-{part}" data-revision="{esc(record.get("revision", ""))}" '
+                     f'data-reopened="{int(bool(answer) and status == "open")}" data-pending="{int(record.get("delivery") == "pending" and status == "answered")}">'
+                     f'<div class="eyebrow"><span class="id">{part}</span><span class="badge">{status.capitalize()}</span></div>'
+                     f'<h2 id="title-{part}">{esc(question["question"])}</h2><p>{esc(question["context"])}</p>{saved}{controls}</section>')
+    total = len(cards)
+    progress = f"{remaining} of {total} open" if remaining else state
+    toolbar = ""
+    if served and any(part_record(item, n).get("state") != "closed" for n in question_parts(item)):
+        toolbar = ('<div class="toolbar"><div class="actions"><button id="send" class="primary" disabled>Send answers</button>'
+                   + ('<button id="suggest">Use all suggestions</button>' if any(
+                       q.get("suggestion") and part_record(item, n).get("state") != "closed"
+                       for n, q in enumerate(item["body"]["questions"], 1)) else '')
+                   + '<button id="undo" hidden>Undo changes</button></div><output role="status"></output></div>')
+    return f'<p class="progress">{progress}</p>' + toolbar + ''.join(cards)
+
+
+ANSWER_SCRIPT = """
+const send = document.querySelector('#send');
+if (send) {
+  const fields = [...document.querySelectorAll('textarea')];
+  const output = document.querySelector('output');
+  const undo = document.querySelector('#undo');
+  let previous;
+  const changed = f => f.value.trim() && (f.value.trim() !== f.defaultValue || f.closest('section').dataset.pending === '1' || f.closest('section').dataset.reopened === '1');
+  function refresh() {
+    const count = fields.filter(changed).length;
+    send.disabled = !count;
+    send.textContent = count ? 'Send ' + count + (count === 1 ? ' answer' : ' answers') : 'Send answers';
+    for (const f of fields) {
+      for (const b of f.closest('section').querySelectorAll('[data-choice]')) {
+        b.checked = b.dataset.choice === f.value;
+      }
+    }
+  }
+  document.addEventListener('input', e => { if (e.target.matches('textarea')) refresh(); });
+  document.addEventListener('click', e => {
+    const choice = e.target.closest('[data-choice]');
+    if (choice || e.target.id === 'suggest') {
+      previous = fields.map(f => f.value);
+      for (const f of fields) {
+        const section = f.closest('section');
+        const b = choice ? (section.contains(choice) && choice) : section.querySelector('[data-suggested]');
+        if (b) f.value = b.dataset.choice;
+      }
+      undo.hidden = false;
+      refresh();
+    }
+    if (e.target === undo) {
+      fields.forEach((f,i) => f.value = previous[i]);
+      undo.hidden = true;
+      refresh();
+      send.disabled ? fields[0].focus() : send.focus();
+    }
+  });
+  send.addEventListener('click', async () => {
+    const pending = fields.filter(changed);
+    undo.hidden = true;
+    const controls = document.querySelectorAll('button,input,textarea');
+    controls.forEach(c => c.disabled = true);
+    try {
+      for (const [i,f] of pending.entries()) {
+        output.textContent = 'Sending ' + (i+1) + ' of ' + pending.length;
+        const section = f.closest('section');
+        const response = await fetch('answers', {method:'POST', headers:{'Content-Type':'application/json'},
+          body:JSON.stringify({part:section.id, revision:section.dataset.revision, answer:f.value.trim()})});
+        if (!response.ok) throw new Error(await response.text());
+        const record = await response.json();
+        section.dataset.reopened = '0';
+        section.dataset.revision = record.revision;
+        section.dataset.pending = record.delivery === 'pending' ? '1' : '0';
+        f.defaultValue = record.answer;
+        section.querySelector('.badge').textContent = 'Answered';
+      }
+      location.reload();
+    } catch (err) {
+      output.textContent = navigator.onLine ? 'Send interrupted. ' + err.message : 'Offline. Reconnect and send again.';
+      controls.forEach(c => c.disabled = false);
+      refresh();
+    }
+  });
+  refresh();
+}
+"""
+
+
 def list_page(data: dict[str, object], site_title: str, *, served: bool, saved_name: str = "index.html") -> str:
     items = newest_first(data["items"])  # type: ignore[arg-type]
     empty = "Nothing is saved yet. Ask Firstmate to send something to Quarterdeck: a link, a list or open questions."
-    count = f' <span class="meta">{len(items)}</span>' if len(items) > 1 else ""
-    body = f"<h1>Saved{count}</h1>" + (items_table(items) if items else f'<p class="empty">{esc(empty)}</p>')
+    attention, reviewed, references = [], [], []
+    for item in items:
+        if item["kind"] != "questions":
+            references.append(item)
+            continue
+        _, remaining, pending = question_summary(item)
+        (attention if remaining or pending else reviewed).append(item)
+    body = ""
+    for heading, group in (("Needs attention", attention), ("Reviewed questions", reviewed)):
+        if group:
+            level = 2 if body else 1
+            body += f'<h{level}>{heading}</h{level}>'
+            for index, item in enumerate(group):
+                body += question_card(item, served=served, primary=level == 1 and index == 0)
+    if references:
+        level = 2 if body else 1
+        body += f"<h{level}>References</h{level}>" + items_table(references)
+    if not items:
+        body = f'<h1>Saved</h1><p class="empty">{esc(empty)}</p>'
     return page_shell(site_title, site_title, body, served=served, saved_name=saved_name)
 
 
@@ -562,29 +885,17 @@ def item_body_html(item: dict[str, object]) -> str:
         return '<ol class="numbered">' + "".join(
             f'<li id="{esc(item_id)}.{number}"><span class="id">{esc(item_id)}.{number}</span><span>{esc(entry)}</span></li>'
             for number, entry in enumerate(entries, 1)) + "</ol>"
-    parts = []
-    for number, question in enumerate(body["questions"], 1):  # type: ignore[index]
-        options = "".join(f"<li>{esc(option)}</li>" for option in question["options"])
-        parts.append(
-            f'<li id="{esc(item_id)}.{number}"><span class="id">{esc(item_id)}.{number}</span><div class="question">'
-            f'<p class="ask">{esc(question["question"])}</p>'
-            f'<p><span class="label">Context</span><br>{esc(question["context"])}</p>'
-            + (f'<p class="label">Options</p><ul>{options}</ul>' if options else "")
-            + (f'<p><span class="label">Suggestion</span><br>{esc(question["suggestion"])}</p>' if question.get("suggestion") else "")
-            + "</div></li>")
-    return '<ol class="numbered">' + "".join(parts) + "</ol>"
-
-
 def item_page(item: dict[str, object], site_title: str, *, served: bool, saved_name: str = "index.html") -> str:
     item_id = str(item["id"])
+    content = question_form(item, served) if item["kind"] == "questions" else item_body_html(item)
     body = (
         f'<p class="id">{esc(item_id)}</p><h1>{esc(item["title"])}</h1>'
         f'<p class="meta">{esc(KIND_LABELS[str(item["kind"])])} · saved <time datetime="{esc(item["saved_at"])}">'
         f'{esc(saved_day(item))}</time></p>'
-        f'<p class="lead">{esc(item["description"])}</p>{item_body_html(item)}'
+        f'<p class="lead">{esc(item["description"])}</p>{content}'
     )
     return page_shell(f"{item_id} {item['title']} · {site_title}", site_title, body,
-                      served=served, saved_name=saved_name)
+                      served=served, saved_name=saved_name, interactive=served and item["kind"] == "questions")
 
 
 def site_pages(data: dict[str, object], site_title: str, saved_name: str) -> dict[str, str]:
@@ -847,8 +1158,8 @@ def make_server(host: str, port: int, handler: type[BaseHTTPRequestHandler],
     return Server((host, port), handler)
 
 
-def make_handler(site_title: str, base_path: str = "", store: Path | None = None) -> type[BaseHTTPRequestHandler]:
-    """A read-only handler: every page is built from the item store when it is requested."""
+def make_handler(site_title: str, base_path: str = "", store: Path | None = None, home: Path | None = None) -> type[BaseHTTPRequestHandler]:
+    """Every page is built from the item store when it is requested."""
     class Handler(BaseHTTPRequestHandler):
         server_version = "Quarterdeck"
 
@@ -868,6 +1179,7 @@ def make_handler(site_title: str, base_path: str = "", store: Path | None = None
             self.send_header("Cache-Control", cache)
             self.send_header("X-Content-Type-Options", "nosniff")
             self.send_header("Referrer-Policy", "no-referrer")
+            self.send_header("Content-Security-Policy", "frame-ancestors 'none'")
             self.end_headers()
             self.wfile.write(data)
 
@@ -915,7 +1227,32 @@ def make_handler(site_title: str, base_path: str = "", store: Path | None = None
             self.send_text(200, page, "text/html; charset=utf-8")
 
         def do_POST(self) -> None:  # noqa: N802 - http.server naming
-            self.send_text(405, "Quarterdeck is read-only; save items with the quarterdeck command\n")
+            if self.path != base_path + "/answers":
+                self.send_text(405, "Use the question page to send answers.")
+                return
+            host = self.headers.get("Host", "")
+            scheme = "https" if isinstance(self.connection, ssl.SSLSocket) else "http"
+            if (self.headers.get("Origin") != f"{scheme}://{host}"
+                    or (is_loopback(str(self.server.server_address[0])) and not request_host_is_loopback(host))):
+                self.send_text(403, "Open the question on Quarterdeck to send an answer.")
+                return
+            if self.headers.get_content_type() != "application/json":
+                self.send_text(415, "Expected an answer in JSON.")
+                return
+            try:
+                length = int(self.headers.get("Content-Length", "0"))
+                if not 0 < length <= 256000 or "Transfer-Encoding" in self.headers:
+                    raise ValueError("Invalid answer size.")
+                payload = json.loads(self.rfile.read(length))
+                record = send_answer(store or store_path(), home, payload)
+            except AnswerConflict as exc:
+                self.send_text(409, str(exc))
+            except (ValueError, RecursionError):
+                self.send_text(400, "Check the question and answer.")
+            except OSError:
+                self.send_text(500, "Could not save the answer.")
+            else:
+                self.send_text(200, json.dumps(record), "application/json")
 
         def log_message(self, format: str, *args: object) -> None:  # noqa: A002 - http.server signature
             sys.stderr.write("quarterdeck: %s - %s\n" % (self.address_string(), format % args))
@@ -932,7 +1269,7 @@ def serve(args: argparse.Namespace) -> int:
         config = selected_config(args)
         tls = tls_context(args)
         base_path = effective_base_path(args)
-        handler = make_handler(page_title(args, config), base_path)
+        handler = make_handler(page_title(args, config), base_path, home=answer_home(config))
         port = args.port
         for host in bind_hosts(args):
             server = make_server(host, port, handler, tls)
@@ -950,12 +1287,12 @@ def serve(args: argparse.Namespace) -> int:
     for server in servers:
         host = str(server.server_address[0])
         shown = f"[{host}]" if ":" in host else host
-        print(f"Serving Quarterdeck at {'https' if tls else 'http'}://{shown}:{port}{base_path}/ (read-only; Ctrl+C to stop)",
+        print(f"Serving Quarterdeck at {'https' if tls else 'http'}://{shown}:{port}{base_path}/ (Ctrl+C to stop)",
               flush=True)
     exposed = [host for host in bind_hosts(args) if not is_loopback(host)]
     if exposed:
         print(f"quarterdeck: warning: {', '.join(exposed)} is not a loopback address; anyone who can reach this port can "
-              "read your saved items, and there is no login.", file=sys.stderr, flush=True)
+              "read your saved items and send answers as the owner.", file=sys.stderr, flush=True)
     for server in servers[1:]:
         threading.Thread(target=server.serve_forever, daemon=True).start()
     try:
@@ -1003,7 +1340,7 @@ def service_unit(args: argparse.Namespace) -> str:
         state_home = Path(os.environ["XDG_STATE_HOME"]).expanduser().resolve()
         environment = "Environment=" + systemd_quote("XDG_STATE_HOME=" + str(state_home)) + "\n"
     return (
-        "[Unit]\nDescription=Quarterdeck read-only page of saved items\nAfter=network.target\n\n"
+        "[Unit]\nDescription=Quarterdeck page of saved items\nAfter=network.target\n\n"
         f"[Service]\n{environment}ExecStart={exec_start}\nRestart=on-failure\nRestartSec=5\n\n"
         "[Install]\nWantedBy=default.target\n"
     )
@@ -1032,7 +1369,7 @@ def service(args: argparse.Namespace) -> int:
     exposed = [host for host in bind_hosts(args) if not is_loopback(host)]
     if exposed:
         print(f"quarterdeck: warning: {', '.join(exposed)} is not a loopback address; anyone who can reach the port can "
-              "read your saved items, and there is no login.", file=sys.stderr)
+              "read your saved items and send answers as the owner.", file=sys.stderr)
     return 0
 
 
@@ -1091,12 +1428,13 @@ def url(args: argparse.Namespace) -> int:
 # --- install, update and help -------------------------------------------------------------
 
 COMMAND_DOCS = {
+    "mark": ["how-to/read-answers.md", "reference/item-store.md"],
     "add": ["how-to/save-items.md", "reference/cli-and-config.md", "reference/item-store.md"],
     "list": ["how-to/save-items.md", "reference/cli-and-config.md"],
-    "show": ["how-to/save-items.md", "reference/cli-and-config.md"],
+    "show": ["how-to/read-answers.md", "how-to/save-items.md", "reference/cli-and-config.md"],
     "remove": ["how-to/save-items.md", "reference/cli-and-config.md"],
     "render": ["how-to/serve-the-page.md", "reference/cli-and-config.md", "explanation/privacy-and-architecture.md"],
-    "serve": ["how-to/serve-the-page.md", "reference/cli-and-config.md", "explanation/privacy-and-architecture.md"],
+    "serve": ["how-to/answer-questions.md", "how-to/serve-the-page.md", "reference/cli-and-config.md", "explanation/privacy-and-architecture.md"],
     "service": ["how-to/serve-the-page.md", "reference/cli-and-config.md"],
     "url": ["how-to/serve-the-page.md", "reference/cli-and-config.md"],
     "install": ["how-to/install.md", "how-to/update.md", "how-to/uninstall.md"],
@@ -1150,7 +1488,7 @@ KIND_HELP = ("resource (a link: --url and --link-text), list (one entry per non-
 
 
 def add_serve_options(parser: argparse.ArgumentParser) -> None:
-    parser.add_argument("--host", action="append", metavar="ADDRESS", help=f"address to bind; repeat to listen on several, all on the same port (default {DEFAULT_HOST} only; a non-loopback address exposes your saved items without a login)")
+    parser.add_argument("--host", action="append", metavar="ADDRESS", help=f"address to bind; repeat to listen on several, all on the same port (default {DEFAULT_HOST} only; a non-loopback address allows readers to send answers as the owner)")
     parser.add_argument("--port", type=port_number, default=DEFAULT_PORT, help=f"port to listen on (default {DEFAULT_PORT})")
     parser.add_argument("--base-path", type=base_path_option, metavar="PATH", help="URL path prefix when a reverse proxy serves Quarterdeck under one, such as /qd; overrides base_path in config")
     parser.add_argument("--tls-cert", metavar="FILE", help="serve https with this PEM certificate chain (with --tls-key)")
@@ -1187,6 +1525,11 @@ def make_parser() -> argparse.ArgumentParser:
     show = command("show", "show one item in full", "Show one item in full, with its parts numbered (Q7.1, Q7.2, ...).", show_item)
     show.add_argument("id", help="item ID, such as Q7")
 
+    mark = command("mark", "mark questions answered, closed or open",
+                   "Set the state of a question (Q7.3) or every question in an item (Q7).", mark_item)
+    mark.add_argument("id", help="question or item ID")
+    mark.add_argument("state", choices=("answered", "closed", "open"))
+
     remove = command("remove", "delete an item", "Delete an item. Its ID is never given to another item.", remove_item)
     remove.add_argument("id", help="item ID, such as Q7")
 
@@ -1197,7 +1540,7 @@ def make_parser() -> argparse.ArgumentParser:
     render_parser.add_argument("--title", help="override the page title")
 
     serve_parser = command("serve", "serve the page over HTTP",
-                           "Serve the page with items read from the store on each page load.", serve)
+                           "Serve saved items and accept same-origin answers. Anyone who can reach the service can answer as the owner.", serve)
     add_serve_options(serve_parser)
     serve_parser.add_argument("--title", help="override the page title")
     for flag in LEGACY_SERVE_FLAGS:  # accepted so an existing service unit keeps starting; they do nothing now

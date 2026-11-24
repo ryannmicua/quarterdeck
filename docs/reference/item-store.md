@@ -6,7 +6,7 @@ Quarterdeck keeps every saved item in one JSON file it owns:
 ${XDG_STATE_HOME:-~/.local/state}/quarterdeck/items.json
 ```
 
-Change the store only with the `quarterdeck` commands. They set the store
+Item commands and submitted answers update the store. Both set the store
 directory to mode 0700, take an exclusive lock on `items.json.lock`, validate
 the existing records, and atomically replace `items.json` with mode 0600.
 Readers validate the records without taking the lock.
@@ -50,3 +50,9 @@ Readers validate the records without taking the lock.
 | `questions` | A nonempty `questions` array of objects. `question` and `context` are required text fields. `options` is an array of text and can be empty when the object has a `suggestion`. |
 
 Quarterdeck trims text when saving it and displays it as escaped plain text.
+
+## Question answers
+
+Questions items may contain an `answers` object keyed by the one-based part number as a string. Missing entries mean Open. Records carry `state` (open, answered or closed), `updated_at` (UTC) and an opaque `revision` for detecting concurrent edits. Older items need no migration.
+
+A browser answer also stores `answer` (plain text, up to 20,000 characters), `answered_at` (UTC), `delivery` (pending or sent) and a stable `request_id` for inbox retries. The answer is saved before delivery. A correction replaces the current record and gets a new request ID. Marking changes the state and revision while preserving the answer fields.

@@ -7,6 +7,7 @@ quarterdeck add --kind resource|list|questions --title TEXT --description TEXT
                 [--url URL --link-text TEXT] [--body-file PATH|-]
 quarterdeck list
 quarterdeck show ID
+quarterdeck mark ID[.PART] answered|closed|open
 quarterdeck remove ID
 quarterdeck render [--output PATH] [--config FILE] [--title TEXT]
 quarterdeck serve [--host ADDRESS ...] [--port N] [--base-path PATH] [--tls-cert FILE --tls-key FILE] [--config FILE] [--title TEXT]
@@ -27,6 +28,7 @@ Item commands report validation errors on stderr and exit with status 2.
 | `add` | Saves a new item and prints its ID. A `resource` needs `--url` and `--link-text`. A `list` or `questions` item needs `--body-file`. See [the input formats and examples](../how-to/save-items.md#add-an-item). |
 | `list` | Prints saved items, newest first, with ID, kind, saved date and title. |
 | `show` | Prints one item in full, numbering list entries and questions as `Q7.1`, `Q7.2`. |
+| `mark` | Changes one question or all questions in an item. Keeps the latest answer text, timestamp and delivery status. |
 | `remove` | Deletes an item. Its ID is never used again. |
 
 ### Pages
@@ -65,7 +67,7 @@ or `${XDG_CONFIG_HOME:-~/.config}/quarterdeck.json` when it exists.
 | `page_title` | string | `Quarterdeck` | The site name in the navigation bar and browser title. `--title` overrides it for `render` and `serve`. |
 | `output_dir` | string path | `${XDG_STATE_HOME:-~/.local/state}/quarterdeck` | Where `render` writes the pages. |
 | `base_path` | string | none | The URL prefix described above. |
+| `firstmate_home` | absolute path | sole legacy registered home | Local destination for submitted answers. |
 
-`homes` and `captain_waits`, which older versions read, are accepted and
-ignored. Any other key is an error. See
+Legacy `homes` supplies a destination only when it contains exactly one path entry. `captain_waits` is ignored. Any other key is an error. See
 [`quarterdeck.example.json`](../../quarterdeck.example.json).

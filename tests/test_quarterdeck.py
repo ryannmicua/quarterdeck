@@ -225,7 +225,8 @@ class PageTests(StoreCase):
     def test_saved_page_lists_items_newest_first_with_their_fields(self) -> None:
         self.add_all_kinds()
         index = self.pages()["index.html"]
-        rows = index.split("<tbody>", 1)[1]
+        rows = index
+        self.assertLess(rows.index("Needs attention"), rows.index("References"))
         self.assertLess(rows.index(">Q3<"), rows.index(">Q2<"))
         self.assertLess(rows.index(">Q2<"), rows.index(">Q1<"))
         self.assertIn("Harbor chores", index)
@@ -246,7 +247,7 @@ class PageTests(StoreCase):
         self.assertIn("Merge the tide tables now?", questions)
         self.assertIn("Checks are green and the preview looks right.", questions)
         self.assertIn("<li>Hold</li>", questions)
-        self.assertIn('<span class="label">Suggestion</span><br>Merge', questions)
+        self.assertIn('<strong>Suggested answer</strong><br>Merge', questions)
         self.assertNotIn(">https://example.com/lavish/calls<", pages["q1.html"])
 
     def test_text_is_escaped_and_no_server_path_appears(self) -> None:
@@ -352,6 +353,66 @@ class ServeTests(StoreCase):
         except urllib.error.HTTPError as error:
             return error.code, error.read().decode("utf-8"), dict(error.headers)
 
+    def post_answer(self, port, part, answer, revision="", origin=None):
+        base = f"http://127.0.0.1:{port}"
+        request = urllib.request.Request(base + "/qd/answers", method="POST",
+            headers={"Content-Type": "application/json", "Origin": base if origin is None else origin},
+            data=json.dumps({"part": part, "answer": answer, "revision": revision}).encode())
+        try:
+            with urllib.request.urlopen(request, timeout=5) as response:
+                return response.status, json.load(response)
+        except urllib.error.HTTPError as error:
+            return error.code, error.read()
+
+    def test_answer_delivery_retry_and_corrections(self):
+        self.add_all_kinds()
+        home = self.root / "home"
+        handler = quarterdeck.make_handler("Quarterdeck", "/qd", home=home)
+        server = quarterdeck.make_server("127.0.0.1", 0, handler)
+        threading.Thread(target=server.serve_forever, daemon=True).start()
+        self.addCleanup(server.server_close)
+        self.addCleanup(server.shutdown)
+        port = server.server_address[1]
+        status, record = self.post_answer(port, "Q3.1", "Green & blue")
+        self.assertEqual((200, "pending"), (status, record["delivery"]))
+        self.assertIn("Not delivered", self.fetch(port, "/qd/q3.html")[1])
+        saved = self.store()["items"][2]["answers"]["1"]
+        script = home / "bin" / "fm-inbox.sh"
+        script.parent.mkdir(parents=True)
+        script.write_text('#!/bin/sh\nset -eu\ntest "$1" = note && test "$2" = --request-id && test "$4" = - || exit 2\n'
+                          'cat >> "$FM_HOME/$3"\n')
+        script.chmod(0o700)
+        for _ in range(2):
+            status, retry = self.post_answer(port, "Q3.1", "Green & blue")
+            self.assertEqual((status, retry["delivery"]), (200, "sent"))
+        self.assertEqual((home / saved["request_id"]).read_text(), "Q3.1 Green & blue")
+        self.assertEqual(self.post_answer(port, "Q3.1", "Changed")[0], 409)
+        status, correction = self.post_answer(port, "Q3.1", "Changed", record["revision"])
+        self.assertEqual((status, correction["delivery"]), (200, "sent"))
+        self.assertIn("Answer: Changed", self.run_cli("show", "Q3")[1])
+        self.assertEqual(0, self.run_cli("mark", "Q3", "closed")[0])
+        self.assertEqual(self.post_answer(port, "Q3.1", "New", correction["revision"])[0], 409)
+        self.assertNotIn("Needs attention", self.fetch(port, "/qd/")[1])
+        self.assertEqual(0, self.run_cli("mark", "Q3.2", "open")[0])
+        self.assertIn("Needs attention", self.fetch(port, "/qd/")[1])
+
+    def test_invalid_answers_leave_the_store_untouched(self):
+        self.add_all_kinds()
+        port = self.start("/qd")
+        before = self.store()
+        for part, answer in (("Q3.3", "Hold"), ("Q4.1", "Hold"), ("Q1.1", "Hold"), ("Q3.1", " "),
+                             ("Q3.1", "a" * 20001)):
+            self.assertEqual(self.post_answer(port, part, answer)[0], 400)
+        for origin in ("", "null", "https://example.org"):
+            self.assertEqual(self.post_answer(port, "Q3.1", "Hold", origin=origin)[0], 403)
+        self.assertEqual(self.store(), before)
+
+    def test_binding_uses_only_an_explicit_or_single_home(self):
+        homes = [{"path": "/orchard"}, {"path": "/garden"}]
+        self.assertIsNone(quarterdeck.answer_home({"homes": homes}))
+        self.assertEqual(Path("/orchard"), quarterdeck.answer_home({"homes": homes[:1]}))
+        self.assertEqual(Path("/grove"), quarterdeck.answer_home({"homes": homes, "firstmate_home": "/grove"}))
+
     def test_pages_follow_the_store_without_a_restart(self) -> None:
         port = self.start()
         status, body, _headers = self.fetch(port, "/")
@@ -428,7 +489,7 @@ class ServiceAndHelpTests(StoreCase):
         unit = quarterdeck.service_unit(args)
         self.assertIn('"serve" "--host" "127.0.0.1" "--port" "9000" "--base-path" "/qd"', unit)
         self.assertNotIn("allow-marks", unit)
-        self.assertIn("Description=Quarterdeck read-only page of saved items", unit)
+        self.assertIn("Description=Quarterdeck page of saved items", unit)
 
     def test_url_reads_the_installed_unit(self) -> None:
         self.assertIn("http://127.0.0.1:8765/", self.run_cli("url")[1])

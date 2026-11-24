@@ -28,8 +28,7 @@ saved; Quarterdeck never reads it again from another file.
 
 ## Features
 
-- A Saved page: a table of items, newest first, with ID, kind, title,
-  description and date. On a phone the rows stack.
+- Open questions come first. Completed questions and references have their own sections.
 - One page per item, with its ID and title at the top. A resource's link opens
   the saved address; list entries and questions are numbered.
 - `quarterdeck add`, `list`, `show` and `remove` for
@@ -39,7 +38,7 @@ saved; Quarterdeck never reads it again from another file.
   item shows on the next load. HTTPS, a reverse-proxy path prefix and a systemd
   user service are supported. See [Serve the page](docs/how-to/serve-the-page.md).
 - `quarterdeck render` writes the pages as HTML files instead.
-- Read-only in the browser: no accounts and no editing on the page.
+- [Answer questions](docs/how-to/answer-questions.md) in the browser and send decisions to Firstmate.
 - Python 3 standard library only.
 
 ## Quick start
@@ -64,7 +63,7 @@ and the [CLI reference](docs/reference/cli-and-config.md).
 
 Firstmate runs the crew. Quarterdeck is a separate shelf: Firstmate puts
 things on it only when you ask, with the `quarterdeck` command. Quarterdeck
-never reads a Firstmate home and never writes to one.
+sends submitted answers to the configured Firstmate inbox.
 
 ## Privacy model
 

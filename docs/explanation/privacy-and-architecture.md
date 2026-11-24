@@ -18,8 +18,7 @@ and nothing else.
 - `install` and `update` invoke the [user-local installer](../how-to/install.md).
 
 It reads nothing from a Firstmate home: no backlog, board, topic, report,
-ledger or saved session. It runs no Firstmate script and writes nothing into a
-Firstmate home.
+ledger or saved session. On an explicit answer submission it runs only the configured home's inbox note command, passing the part ID and plain answer text.
 
 ## Why items are stored by value
 
@@ -31,7 +30,7 @@ today. To correct a saved item, remove it and save a new one.
 ## Network
 
 See [serving security](../how-to/serve-the-page.md#security-loopback-by-default)
-for the read-only browser interface and who can reach it. Saving, rendering
+for the browser interface and who can reach it. Saving, rendering
 and serving items make no outbound requests or model calls. The installer
 uses Git to clone or update the checkout. Pages escape saved text and use
 the URLs supplied with resources. They do not embed the server's config or
