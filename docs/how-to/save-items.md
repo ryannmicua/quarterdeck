@@ -70,8 +70,9 @@ with `http://` or `https://`:
 ]
 ```
 
-The link opens in a new tab, directly above the options. The card for the item
-on the Saved page shows the first link of the first open question.
+The link appears directly above the options and opens in a new tab. The card
+on the Saved page shows the first link from the first open question with links,
+prefixed with the question ID, for example `Q6.2 See the mock-ups`.
 `quarterdeck show` prints every link with its address.
 
 The questions are numbered on the page, for example Q3.1 and Q3.2.

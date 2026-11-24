@@ -374,14 +374,22 @@ class QuestionLinkTests(StoreCase):
                 'rel="noopener noreferrer">See the mock-ups</a>')
         self.assertIn(link, pages["q1.html"])
         self.assertLess(pages["q1.html"].index(link), pages["q1.html"].index("<li>Centered</li>"))
-        self.assertEqual(pages["index.html"].count(link), 1, "the card shows only the first link")
+        card_link = link.replace(">See the mock-ups", ">Q1.1 See the mock-ups")
+        self.assertEqual(pages["index.html"].count(card_link), 1)
         self.assertNotIn("Second view", pages["index.html"])
 
-    def test_card_skips_closed_questions(self) -> None:
-        self.save(LINKED)
-        self.assertEqual(self.run_cli("mark", "Q1.1", "closed")[0], 0)
-        pages = quarterdeck.site_pages(quarterdeck.read_store(quarterdeck.store_path()), "Quarterdeck", "index.html")
-        self.assertNotIn("See the mock-ups", pages["index.html"])
+    def test_card_preview_uses_first_open_question_with_links(self) -> None:
+        self.assertEqual(self.save([{**LINKED[1], "links": []}, LINKED[0]])[0], 0)
+        self.assertNotIn("links", self.store()["items"][0]["body"]["questions"][0])
+        for state in ("open", "answered", "closed", "open"):
+            with self.subTest(state=state):
+                self.assertEqual(self.run_cli("mark", "Q1.2", state)[0], 0)
+                data = quarterdeck.read_store(quarterdeck.store_path())
+                page = quarterdeck.site_pages(data, "Quarterdeck", "index.html")["index.html"]
+                if state == "open":
+                    self.assertIn(">Q1.2 See the mock-ups</a>", page)
+                else:
+                    self.assertNotIn("See the mock-ups", page)
 
     def test_bad_links_are_refused(self) -> None:
         base = {"question": "Q?", "context": "C", "options": ["A"]}
@@ -392,6 +400,7 @@ class QuestionLinkTests(StoreCase):
             ([{"url": "https://example.org"}], "link 1 must be an object with text and url"),
             ([{"text": " ", "url": "https://example.org"}], "link 1 text must not be empty"),
             ("https://example.org", "links must be a list"),
+            *((value, "links must be a list") for value in ({}, False, 0, None, "")),
         ]
         for links, message in cases:
             code, _out, err = self.save([{**base, "links": links}])

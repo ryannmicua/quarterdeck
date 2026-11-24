@@ -274,8 +274,9 @@ def question_entries(raw: object) -> list[dict[str, object]]:
         }
         if entry.get("suggestion") not in (None, ""):
             cleaned["suggestion"] = clean_text(entry["suggestion"], f"{where} suggestion", TEXT_LIMIT, multiline=True)
-        if entry.get("links"):
-            cleaned["links"] = question_links(entry["links"], where)
+        links = question_links(entry.get("links", []), where)
+        if links:
+            cleaned["links"] = links
         if not cleaned["options"] and "suggestion" not in cleaned:
             raise ValueError(f"{where} needs options or a suggestion to decide from")
         questions.append(cleaned)
@@ -1118,8 +1119,9 @@ def question_card(item, summary, *, served, primary):
     link_class = ' class="work-action"' if primary else ' class="button-link"'
     questions = item["body"]["questions"]
     prompts = "".join(f'<li>{esc(questions[n - 1]["question"])}</li>' for n in open_parts)
-    first = next((questions[n - 1]["links"][0] for n in open_parts if questions[n - 1].get("links")), None)
-    visual = f'<p class="visual">{link_html(first)}</p>' if first else ''
+    first_link = next((link_html(questions[n - 1]["links"][0], prefix=f'{item["id"]}.{n} ')
+                       for n in open_parts if questions[n - 1].get("links")), '')
+    visual = f'<p class="visual">{first_link}</p>' if first_link else ''
     return (f'<article class="work{' next' if primary else ''}"><div class="eyebrow"><span class="id">{item["id"]}</span> Questions</div>'
             f'<h3>{esc(item["title"])}</h3><p>{linked_text(item["description"])}</p>'
             + (f'<ul>{prompts}</ul>' if prompts else '')
@@ -1129,8 +1131,9 @@ def question_card(item, summary, *, served, primary):
             + f'<a{link_class} href="{href}">{action}</a></div></article>')
 
 
-def link_html(link):
-    return f'<a class="ref-link" href="{esc(link["url"])}" target="_blank" rel="noopener noreferrer">{esc(link["text"])}</a>'
+def link_html(link, *, prefix=""):
+    return (f'<a class="ref-link" href="{esc(link["url"])}" target="_blank" rel="noopener noreferrer">'
+            f'{esc(prefix + link["text"])}</a>')
 
 
 def links_html(question):
