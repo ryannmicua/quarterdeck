@@ -627,7 +627,7 @@ PAGE_CSS = """
 * { box-sizing: border-box; }
 html { -webkit-text-size-adjust: 100%; }
 body { margin: 0; background: var(--ground); color: var(--ink); font: var(--text-body)/1.55 var(--serif); overflow-wrap: anywhere; }
-a { color: inherit; text-decoration-thickness: 1px; text-underline-offset: .18em; overflow-wrap: anywhere; }
+a { color: inherit; text-decoration-thickness: 1px; text-underline-offset: .18em; }
 a:focus-visible { outline: 3px solid var(--focus); outline-offset: 2px; }
 .bar { display: flex; gap: 1rem; align-items: baseline; justify-content: space-between; padding: .9rem var(--gutter);
   border-bottom: 1px solid var(--rule); font-family: var(--sans); }
@@ -709,14 +709,31 @@ def esc(value: object) -> str:
     return html.escape(str(value), quote=True)
 
 
-URL_PATTERN = re.compile(r"https?://[^\s<>\"']+")
+URL_PATTERN = re.compile(r"https?://[^\s<>\"']+", re.IGNORECASE)
+URL_CLOSERS = {")": "(", "]": "[", "}": "{"}
 
 
 def linked_text(value: object) -> str:
-    """Escape text, turning plain web addresses into links; trailing punctuation stays outside the link."""
+    """Escape text and link valid web addresses, excluding surrounding prose punctuation."""
     text, parts, last = str(value), [], 0
     for match in URL_PATTERN.finditer(text):
-        url = match.group().rstrip(".,;:!?)]}")
+        url = match.group()
+        while url:
+            tail = url[-1]
+            opener = URL_CLOSERS.get(tail)
+            if opener:
+                if url.count(tail) <= url.count(opener):
+                    break
+            elif tail in "!?":
+                if "?" in url[:-1] or "#" in url:
+                    break
+            elif tail not in ".,;:":
+                break
+            url = url[:-1]
+        try:
+            url = clean_url(url)
+        except ValueError:
+            continue
         parts.append(esc(text[last:match.start()]))
         parts.append(f'<a href="{esc(url)}" rel="noopener noreferrer">{esc(url)}</a>')
         last = match.start() + len(url)

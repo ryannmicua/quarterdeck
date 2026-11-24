@@ -251,6 +251,27 @@ class PageTests(StoreCase):
             self.assertIn('</a>&lt;/b&gt;. Not javascript:alert(1).', pages[name])
             self.assertNotIn("<b>", pages[name])
 
+    def test_description_links_keep_destinations_and_skip_invalid_addresses(self) -> None:
+        description = (
+            "See https://example.org/Mercury_(planet). "
+            "Skip https://example.org:99999/?x=1&y=2. "
+            "Try [http://[2001:db8::1]]! Or HTTPS://example.org/?q=go!."
+        )
+        self.add("resource", "Notes", description, "--url", "https://example.org/notes", "--link-text", "Notes")
+        self.add("questions", "Decisions", description, "--body-file", "-", stdin=json.dumps(QUESTIONS))
+        expected = (
+            'See <a href="https://example.org/Mercury_(planet)" rel="noopener noreferrer">'
+            'https://example.org/Mercury_(planet)</a>. '
+            'Skip https://example.org:99999/?x=1&amp;y=2. '
+            'Try [<a href="http://[2001:db8::1]" rel="noopener noreferrer">http://[2001:db8::1]</a>]! Or '
+            '<a href="HTTPS://example.org/?q=go!" rel="noopener noreferrer">HTTPS://example.org/?q=go!</a>.'
+        )
+        pages = self.pages()
+        self.assertIn(f'<td class="description">{expected}</td>', pages["index.html"])
+        self.assertIn(f'<h3>Decisions</h3><p>{expected}</p>', pages["index.html"])
+        for name in ("q1.html", "q2.html"):
+            self.assertIn(f'<p class="lead">{expected}</p>', pages[name])
+
     def test_item_pages_show_id_title_and_numbered_parts(self) -> None:
         self.add_all_kinds()
         pages = self.pages()
