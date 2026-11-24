@@ -984,20 +984,22 @@ class WorkersTests(StoreCase):
 
     def test_lists_only_workers_with_a_live_terminal_and_the_second_mate_roster(self) -> None:
         home = self.make_home([
-            snapshot_task("Wren", state="done", exists=False),
+            snapshot_task("Wren", state="done", exists=False, pr="not a URL"),
             snapshot_task("Wren", decisions=["map-scale"], pr="https://example.com/pull/7"),
-            snapshot_task("Brackén Scout", state="blocked", title="Testing receipt totals", project="Moss Ledger"),
+            snapshot_task("Brackén Scout", state="blocked", title="Testing receipt totals", project="Moss Ledger", alive=[]),
             snapshot_task("Finch", state="done", exists=False),
             snapshot_task("Heron", state="paused"),
             snapshot_task("Lark", freshness="stale"),
-            snapshot_task("Skerry", state="blocked"),
-            snapshot_task("Skerry", kind="secondmate", alive="alive", state="working"),
+            snapshot_task("Skerry", state=[]),
+            snapshot_task("Skerry", kind="secondmate", alive="alive", state="working", age=[]),
+            snapshot_task("Skerry", kind="secondmate", pr="not a URL"),
             snapshot_task("Tern", kind="secondmate", alive="dead"),
-            snapshot_task("Tern"),
+            snapshot_task("Tern", title=[]),
             snapshot_task("Cove Mate", kind="secondmate", alive="unknown", exists=None, state="unknown"),
-            snapshot_task("Pike", kind="secondmate", exists=False),
+            snapshot_task("Pike", kind="secondmate", exists=False, alive="not_checked"),
             snapshot_task("Snipe", kind="secondmate", exists=False, alive="alive"),
-            snapshot_task("Wren"),
+            snapshot_task("Kite", kind="secondmate", exists=False, alive=[], state=[]),
+            snapshot_task("Wren", decisions=[None]),
         ])
         port = self.start("/qd", workers_home=home)
         status, data = self.workers(port)
@@ -1015,10 +1017,11 @@ class WorkersTests(StoreCase):
         mates = {row["name"]: row for row in data["second_mates"]}
         self.assertEqual({n: m["status"] for n, m in mates.items()},
                          {"Skerry": "Working", "Tern": "Unreachable", "Cove Mate": "Unknown",
-                          "Pike": "Unreachable", "Snipe": "Unreachable"})
+                          "Pike": "Unreachable", "Snipe": "Unreachable", "Kite": "Unreachable"})
+        self.assertEqual(len(data["second_mates"]), 6)
         self.assertEqual(mates["Skerry"]["contact_at"], SNAPSHOT_TIME)
         self.assertTrue(all("active_at" not in row for row in mates.values()))
-        for name in ("Tern", "Cove Mate", "Pike", "Snipe"):
+        for name in ("Tern", "Cove Mate", "Pike", "Snipe", "Kite"):
             self.assertIsNone(mates[name]["contact_at"])
 
     def test_missing_facts_say_activity_unavailable_and_invent_nothing(self) -> None:
@@ -1054,7 +1057,7 @@ class WorkersTests(StoreCase):
             "surrogate in identity": {"tasks": [snapshot_task("Wr\ud800en")]},
             "kind": {"tasks": [{**valid, "kind": None}]},
             "endpoint": {"tasks": [{**valid, "endpoint": None}]},
-            "unobserved": {"tasks": [snapshot_task("Wren", exists=None)]},
+            "unobserved": {"tasks": [valid, snapshot_task("Wren", exists=None)]},
             "nonboolean": {"tasks": [snapshot_task("Wren", exists=0)]},
             "state": {"tasks": [snapshot_task("Wren", state={})]},
             "freshness": {"tasks": [snapshot_task("Wren", freshness=[])]},

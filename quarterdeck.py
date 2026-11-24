@@ -685,13 +685,6 @@ def roster_row(key: str, task: dict, observed: datetime) -> dict[str, object]:
     project = snapshot_field(task, "project", str)
     repo = snapshot_field(backlog, "repo", str)
     title = snapshot_field(backlog, "title", str)
-    paths = snapshot_field(task, "paths", dict) or {}
-    status_log = snapshot_field(paths, "status_log", dict) or {}
-    last = snapshot_field(status_log, "last_event", dict) or {}
-    age = snapshot_field(last, "age_seconds", (int, float))
-    if age is not None and (isinstance(age, bool) or not 0 <= age < float("inf")):
-        raise SnapshotError("the fleet snapshot has an invalid activity age")
-    alive = snapshot_field(task["endpoint"], "agent_alive", str)
     pr = snapshot_field(task, "pr", dict) or {}
     url = snapshot_field(pr, "url", str)
     links = []
@@ -701,16 +694,24 @@ def roster_row(key: str, task: dict, observed: datetime) -> dict[str, object]:
         except ValueError as exc:
             raise SnapshotError("the fleet snapshot has an invalid pull request URL") from exc
     row: dict[str, object] = {
-        "name": key, "status": worker_status(task),
+        "name": key,
         "project": snapshot_text(Path(project).name if project else None, 80) or snapshot_text(repo, 80),
         "activity": snapshot_text(title) or ACTIVITY_UNAVAILABLE, "links": links,
     }
     if task["kind"] == "secondmate":
-        unreachable = task["endpoint"].get("exists") is False or alive == "dead"
-        if unreachable:
-            row["status"] = "Unreachable"
-        row["contact_at"] = utc_text(observed) if not unreachable and alive == "alive" else None
+        endpoint = task["endpoint"]
+        closed = endpoint.get("exists") is False
+        alive = None if closed else snapshot_field(endpoint, "agent_alive", str)
+        row["status"] = "Unreachable" if closed or alive == "dead" else worker_status(task)
+        row["contact_at"] = utc_text(observed) if alive == "alive" else None
     else:
+        row["status"] = worker_status(task)
+        paths = snapshot_field(task, "paths", dict) or {}
+        status_log = snapshot_field(paths, "status_log", dict) or {}
+        last = snapshot_field(status_log, "last_event", dict) or {}
+        age = snapshot_field(last, "age_seconds", (int, float))
+        if age is not None and (isinstance(age, bool) or not 0 <= age < float("inf")):
+            raise SnapshotError("the fleet snapshot has an invalid activity age")
         row["active_at"] = None
         if age is not None and age < 10 * 365 * 86400:
             with contextlib.suppress(OverflowError):
@@ -745,15 +746,14 @@ def workers_snapshot(home: Path) -> dict[str, object]:
         exists = endpoint.get("exists")
         if not isinstance(exists, bool) and (kind != "secondmate" or exists is not None):
             raise SnapshotError("the fleet snapshot has no reliable terminal state")
-        row = roster_row(key, task, observed)
         if kind == "secondmate":
-            second_mates.setdefault(key, row)
+            second_mates.setdefault(key, task)
         elif exists:
-            workers.setdefault(key, row)
+            workers.setdefault(key, task)
     return {
         "observed_at": generated,
-        "workers": [row for key, row in workers.items() if key not in second_mates],
-        "second_mates": list(second_mates.values()),
+        "workers": [roster_row(key, task, observed) for key, task in workers.items() if key not in second_mates],
+        "second_mates": [roster_row(key, task, observed) for key, task in second_mates.items()],
     }
 
 
