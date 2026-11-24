@@ -583,9 +583,7 @@
         return safeUrl(link.url) ? el("li", {}, [el("a", { href: link.url, text: link.label })]) : null;
       });
       (snapshot.session_documents || []).forEach(function (doc) {
-        var body = doc.html !== undefined ? el("iframe", { sandbox: "", srcdoc: doc.html, title: doc.label }) :
-          doc.text !== undefined ? textBlock(doc.text) : el("p", { text: "The document body is absent from this export." });
-        links.push(el("li", {}, [el("details", {}, [el("summary", { text: doc.label }), body])]));
+        links.push(el("li", { text: doc.label + " (open in local Quarterdeck)" }));
       });
       root.appendChild(el("section", { "class": "session-links" }, [
         el("h2", { text: "Links from this session" }), el("ul", { "class": "rows" }, links)

@@ -3784,14 +3784,25 @@ class DeskRelevanceTests(unittest.TestCase):
         self.assertEqual(len(board["items"]), 3)  # the home's board is untouched by relevance and discards
 
     def test_export_writes_the_snapshot_and_nothing_else(self) -> None:
-        self.cli("reports", "set-relevance", "invented-home/lone-report", "stale", "--reason", "one-off")
-        self.cli("calls", "set-relevance", "far-hold", "stale")
-        snapshot = json.loads(self.cli("export", "--no-snapshot").stdout)
+        now = datetime.now(timezone.utc) - timedelta(seconds=1)
+        with patch.dict(os.environ, {"CLAUDE_CONFIG_DIR": str(self.root / "claude")}):
+            self.cli("board", "active", "--session-id", "export-contract")
+            transcripts = quarterdeck.default_transcript_dir(self.home)
+            transcripts.mkdir(parents=True)
+            (transcripts / "export-contract.jsonl").write_text(wait_record(
+                "owner", "contract", quarterdeck.board_time_text(now),
+                "Discuss harbor-hold, tide-hold and far-hold. Read lone-report and tide-note.",
+                sessionId="export-contract",
+            ), encoding="utf-8")
+            self.cli("reports", "set-relevance", "invented-home/lone-report", "stale", "--reason", "one-off")
+            self.cli("calls", "set-relevance", "far-hold", "stale")
+            snapshot = json.loads(self.cli("export", "--no-snapshot").stdout)
+        self.assertEqual(snapshot["session_links"], [])
         self.assertEqual(snapshot["version"], 1)
         self.assertEqual(
             set(snapshot),
             {"version", "title", "generated_at", "session", "calls", "reports", "related", "decision_window_days",
-             "reactions", "delivered"},
+             "reactions", "delivered", "session_links"},
         )
         bands = {call["id"]: call["band"] for call in snapshot["calls"]}
         self.assertEqual(bands["invented-home/harbor-hold"], "desk")
@@ -8571,8 +8582,10 @@ class CaptainWaitTests(unittest.TestCase):
             connection.close()
             return response.status, text
 
-        good = {"key": "harbor/tide-merge", "hold_set": "2026-07-02T10:00:00Z"}
-        self.assertEqual(post(good), (200, json.dumps({**good, "discarded": True}) + "\n"))
+        good = {"key": "harbor/tide-merge", "hold_set": "2026-07-02T10:00:00Z", "hold_instance": "a" * 24}
+        expected = {key: good[key] for key in ("key", "hold_set")}
+        self.assertEqual(post(good), (200, json.dumps({**expected, "discarded": True}) + "\n"))
+        self.assertEqual(post(expected)[0], 400)
         for body in ({"key": "harbor/tide-merge"}, {**good, "extra": "x"}, {**good, "key": ""}, {**good, "hold_set": 5}):
             self.assertEqual(post(body)[0], 400, body)
         self.assertEqual(post(good, {"Origin": "http://evil.example"})[0], 403)
@@ -8970,10 +8983,10 @@ quarterdeckReload();
         bearings.attention = quarterdeck.attention_view(self.homes, bearings.generated, use_feed=False)
         args = argparse.Namespace(title=None)
         with patch.object(quarterdeck, "load_site", return_value=({}, self.homes, bearings)):
-            quarterdeck.site_builder(args, False)()
+            quarterdeck.SiteCache(quarterdeck.site_builder(args, False)).get()
             state = quarterdeck.validate_review_state_location(self.homes)
             self.assertFalse(quarterdeck.state_db_path(state).exists())
-            quarterdeck.site_builder(args, True)()
+            quarterdeck.SiteCache(quarterdeck.site_builder(args, True)).get()
         self.assertTrue(quarterdeck.state_db_path(state).exists())
         summary = quarterdeck.adoption_summary(self.homes, bearings.generated, self.root / "visits.jsonl")
         self.assertEqual(summary["counts"]["arrived"][0], 0)
@@ -8997,7 +9010,7 @@ quarterdeckReload();
         with patch.object(quarterdeck, "load_site", return_value=({}, self.homes, bearings)), \
              patch.object(quarterdeck, "record_adoption_arrivals", side_effect=sqlite3.OperationalError("locked")), \
              redirect_stderr(io.StringIO()) as stderr:
-            pages = quarterdeck.site_builder(argparse.Namespace(title=None), True)()
+            pages = quarterdeck.SiteCache(quarterdeck.site_builder(argparse.Namespace(title=None), True)).get()
         self.assertIn("index.html", pages)
         self.assertIn("locked", stderr.getvalue())
 
@@ -9764,7 +9777,7 @@ const click = button => Promise.all(handlers.map(handler => handler({target: but
       row = null;
       writes.length = 0;
       quarterdeckReload(); await settle();
-      const button = new Button(action === 'wait' ? {waitKey: 'fictional', waitHold: 'hold'} :
+      const button = new Button(action === 'wait' ? {waitKey: 'fictional', waitHold: 'hold', waitInstance: 'a'.repeat(24)} :
         {markReport: 'fictional/report', markFingerprint: 'f', markAction: action, ...(undoing ? {undo: ''} : {})});
       const status = {textContent: '', after(other) { row.buttons.push(other); }};
       row = {buttons: [button], querySelector: () => status, querySelectorAll() { return this.buttons; }, lastChild: status};
@@ -10195,10 +10208,13 @@ class PushNotificationTests(unittest.TestCase):
         bearings.attention["homes"][0].setdefault("waiting", {})["decisions"] = [
             {"key": "invented/choice", "title": "Choose a map", "ask": "Which map?", "group": "decide", "at": "2026-07-02T10:00:00Z"}]
         observed: list[tuple[list, bool]] = []
-        push = type("Push", (), {"observe": lambda _self, cards, complete: observed.append((cards, complete)) or []})()
+        bearings.notification_resolution = (True, set())
+        push = type("Push", (), {
+            "observe": lambda _self, cards, complete, unresolved: observed.append((cards, complete)) or [],
+        })()
         with patch.object(quarterdeck, "load_site", return_value=({}, homes, bearings)), \
              patch.dict(os.environ, {"XDG_STATE_HOME": str(self.root)}):
-            pages = quarterdeck.site_builder(argparse.Namespace(title=None), True, push)()
+            pages = quarterdeck.SiteCache(quarterdeck.site_builder(argparse.Namespace(title=None), True, push)).get()
             read_only = quarterdeck.site_builder(argparse.Namespace(title=None), False)()
         self.assertEqual(len(observed), 1)
         needs = [card for card in observed[0][0] if card["section"] == "needs_you"]
@@ -10293,10 +10309,11 @@ setImmediate(() => {
         home = BearingsTests().make_home(self.root.parent / "home")
         homes = BearingsTests().snapshots(home)
         bearings = quarterdeck.build_bearings(homes, use_snapshot=False)
+        bearings.notification_resolution = (True, set())
         push = type("Push", (), {"observe": lambda *_args, **_kwargs: (_ for _ in ()).throw(OSError("disk full"))})()
         with patch.object(quarterdeck, "load_site", return_value=({}, homes, bearings)), \
              patch.dict(os.environ, {"XDG_STATE_HOME": str(self.root)}), redirect_stderr(io.StringIO()) as stderr:
-            pages = quarterdeck.site_builder(argparse.Namespace(title=None), True, push)()
+            pages = quarterdeck.SiteCache(quarterdeck.site_builder(argparse.Namespace(title=None), True, push)).get()
         self.assertIn("index.html", pages)
         self.assertIn("disk full", stderr.getvalue())
 
@@ -10615,7 +10632,7 @@ class SessionScopeTests(unittest.TestCase):
             os.utime(report, (when.timestamp(), when.timestamp()))
         (self.home / "state" / "fleet-ledger.jsonl").write_text("".join(json.dumps(record) + "\n" for record in (
             {"v": 1, "ts": (start + timedelta(minutes=2)).timestamp(), "event": "task.dispatched",
-             "task": "reef-scan", "session_id": "current"},
+             "task": "harbor/reef-scan", "session_id": "current"},
             {"v": 1, "ts": (start + timedelta(minutes=3)).timestamp(), "event": "task.dispatched", "task": "gull-count"},
         )), encoding="utf-8")
         (self.transcripts / "session.jsonl").write_text("".join(json.dumps(record) + "\n" for record in (
@@ -10976,16 +10993,17 @@ class SessionScopeTests(unittest.TestCase):
             quarterdeck, "run_attention_feed", return_value={"open_decisions": []}
         ):
             notifier.observe([], complete=True)
-            build = quarterdeck.site_builder(args, push=notifier)
-            build()
+            cache = quarterdeck.SiteCache(quarterdeck.site_builder(args, push=notifier),
+                                          current_session=lambda: quarterdeck.served_session(args))
+            cache.get()
             tag = next(message["tag"] for message in sent if message.get("body") == "Merge the tide tables now?")
             self.board(operator=False)
-            build()
+            cache.invalidate(wait=True)
             self.assertNotIn({"type": "withdraw", "tag": tag}, sent)
             topic = self.data / "topics" / "tide-launch.md"
             topic.write_text(topic.read_text(encoding="utf-8").replace("Now:", "Status: done\nNow:", 1),
                              encoding="utf-8")
-            build()
+            cache.invalidate(wait=True)
             self.assertIn({"type": "withdraw", "tag": tag}, sent)
 
     def test_only_owner_exchanges_supply_mentions_and_links(self) -> None:
@@ -11060,9 +11078,9 @@ class SessionScopeTests(unittest.TestCase):
             wrapper = re.search(r'href="(doc-[a-f0-9]+\.html)">' + re.escape(label), index)[1]
             raw = re.search(r'<iframe src="([^"]+)"', (out / wrapper).read_text(encoding="utf-8"))[1]
             self.assertIn(body, (out / raw).read_text(encoding="utf-8"))
-            self.assertTrue(any(row["t"] == label and row["u"] == wrapper for row in rows))
+            self.assertFalse(any(row["u"] == wrapper for row in rows))
         self.assertNotIn("Outside document body", self.every_page(out))
-        for bodies in ("all", "none"):
+        for bodies in ("all", "desk", "none"):
             args = quarterdeck.make_parser().parse_args(
                 ["export", "--config", str(self.config), "--no-snapshot", "--bodies", bodies])
             output = io.StringIO()
@@ -11070,11 +11088,9 @@ class SessionScopeTests(unittest.TestCase):
                 self.assertEqual(quarterdeck.export_snapshot(args), 0)
             docs = json.loads(output.getvalue())["session_documents"]
             self.assertEqual({doc["label"] for doc in docs}, set(expected))
-            for doc in docs:
-                if bodies == "all":
-                    self.assertIn(expected[doc["label"]], doc["html"])
-                else:
-                    self.assertNotIn("html", doc)
+            self.assertEqual(docs, [{"label": label} for label in expected])
+            for body in expected.values():
+                self.assertNotIn(body, output.getvalue())
 
     def test_invalid_operator_does_not_fall_back_to_an_older_home(self) -> None:
         newer = self.root / "newer"
@@ -11122,7 +11138,7 @@ class SessionScopeTests(unittest.TestCase):
             self.board(operator=False)
             return pages
 
-        build = quarterdeck.site_builder(args, True, push, defer_effects=True)
+        build = quarterdeck.site_builder(args, True, push)
         cache = quarterdeck.SiteCache(build, current_session=lambda: quarterdeck.served_session(args))
         with patch.object(quarterdeck, "record_adoption_arrivals") as arrivals, redirect_stderr(io.StringIO()):
             with patch.object(quarterdeck, "source_pages", side_effect=switch), self.assertRaisesRegex(
@@ -11134,6 +11150,97 @@ class SessionScopeTests(unittest.TestCase):
             self.assertIn("No conversation is recorded", cache.get()["index.html"])
             push.observe.assert_called_once()
             arrivals.assert_called_once()
+
+
+    def test_local_filename_does_not_select_a_topic_with_the_same_id(self) -> None:
+        release = self.data / "release"
+        release.mkdir()
+        (release / "tide-launch.html").write_text("<h1>Release preview</h1>", encoding="utf-8")
+        (self.transcripts / "filename.jsonl").write_text(
+            wait_record("owner", "filename", self.iso(self.now), "Open data/release/tide-launch.html.",
+                        sessionId="filename"), encoding="utf-8")
+        with redirect_stdout(io.StringIO()):
+            self.assertEqual(quarterdeck.main(["board", "active", "--session-id", "filename",
+                                               "--home", str(self.home)]), 0)
+        out = self.render()
+        self.assertIn("data/release/tide-launch.html", self.every_page(out))
+        self.assertIn("Release preview", self.every_page(out))
+        self.assertNotIn("Merge the tide tables now?", self.every_page(out))
+        self.assertFalse((out / "topic-tide-launch.html").exists())
+
+    def test_sibling_render_is_retired_when_same_session_loses_a_task(self) -> None:
+        raw = self.data / "tide-review" / "report.html"
+        raw.write_text("<h1>Scoped report HTML</h1>", encoding="utf-8")
+        out = self.render()
+        self.render("--lavish", out=out)
+        self.assertTrue((out / "index.html").exists())
+        self.assertIn("Scoped report HTML", self.every_page(out))
+        topic = self.data / "topics" / "tide-launch.md"
+        topic.write_text(topic.read_text(encoding="utf-8").replace("Pieces: tide-merge\n", ""), encoding="utf-8")
+        self.render(out=out)
+        self.assertFalse((out / "index.lavish.html").exists())
+        self.assertNotIn("tide-merge", self.search_tasks(out))
+        self.assertNotIn("Scoped report HTML", self.every_page(out))
+
+    def test_reviewed_report_named_by_path_exports_label_without_body(self) -> None:
+        report = self.data / "tide-review" / "report.md"
+        report.write_text("# Tide findings\n\nFictional reviewed report body.\n", encoding="utf-8")
+        with (self.transcripts / "session.jsonl").open("a", encoding="utf-8") as stream:
+            stream.write(wait_record("owner", "report-path", self.iso(self.now), "Read data/tide-review/report.md.",
+                                     sessionId="current"))
+        with redirect_stdout(io.StringIO()):
+            result = quarterdeck.main(["reports", "mark-reviewed", "harbor/tide-review", "--config", str(self.config)])
+        self.assertEqual(result, 0)
+        output = io.StringIO()
+        args = quarterdeck.make_parser().parse_args(
+            ["export", "--config", str(self.config), "--no-snapshot", "--bodies", "desk"])
+        with redirect_stdout(output):
+            self.assertEqual(quarterdeck.export_snapshot(args), 0)
+        snapshot = json.loads(output.getvalue())
+        self.assertEqual(snapshot["session_documents"], [{"label": "data/tide-review/report.md"}])
+        indexed = next(entry for entry in snapshot["reports"] if entry["id"] == "harbor/tide-review")
+        self.assertEqual(indexed["state"], "reviewed")
+        self.assertEqual(indexed["markdown"], "")
+        self.assertNotIn("Fictional reviewed report body", output.getvalue())
+
+    def test_discard_identity_does_not_target_a_same_stamp_rehold(self) -> None:
+        store = self.root / "wait-store"
+        store.mkdir()
+        self.write_config(captain_waits={"store_dir": str(store)})
+        stamp = self.iso(self.start)
+        key = "harbor/lamp-test"
+        doc = quarterdeck.empty_waits()
+        section = quarterdeck.home_waits(doc, str(self.home))
+        card = {"key": key, "home": "Harbor", "task": "lamp-test", "status": "waiting",
+                "hold_set": stamp, "session_id": "first"}
+        section["cards"][key] = card
+        first = quarterdeck.wait_view(card)["hold_instance"]
+        card["session_id"] = "second"
+        second = quarterdeck.wait_view(card)["hold_instance"]
+        quarterdeck.write_waits(store, doc)
+        self.assertNotEqual(first, second)
+        args = argparse.Namespace(home=None, config=self.config)
+        deliveries = []
+
+        def deliver(_home, request, note):
+            deliveries.append((request, note))
+            if card["session_id"] == "second":
+                card["session_id"] = "third"
+                quarterdeck.write_waits(store, doc)
+
+        with self.assertRaisesRegex(ValueError, "held again"):
+            quarterdeck.discard_wait(args, key, stamp, deliver, hold_instance=first)
+        self.assertEqual(deliveries, [])
+        with self.assertRaisesRegex(ValueError, "changed during delivery"):
+            quarterdeck.discard_wait(args, key, stamp, deliver, hold_instance=second)
+        self.assertIn("conversation second", deliveries[0][1])
+        current = quarterdeck.read_waits(store)["homes"][str(self.home)]["cards"][key]
+        self.assertFalse(current.get("discarded"))
+        third = quarterdeck.wait_view(card)["hold_instance"]
+        quarterdeck.discard_wait(args, key, stamp, deliver, hold_instance=third)
+        current = quarterdeck.read_waits(store)["homes"][str(self.home)]["cards"][key]
+        self.assertEqual(current["discarded"]["session_id"], "third")
+        self.assertNotEqual(deliveries[0][0], deliveries[1][0])
 
 
 
@@ -12152,7 +12259,7 @@ Decision: Decision newer
             with patch.dict(os.environ, {"XDG_CONFIG_HOME": str(root / "config"), "XDG_STATE_HOME": str(root / "state")}), \
                     patch.object(quarterdeck, "site_cards", lambda *a, **k: [dict(loose), dict(piece), dict(elsewhere)]), \
                     patch.object(quarterdeck, "build_html", lambda *a, **k: builds.append(k) or real_build_html(*a, **k)):
-                pages = quarterdeck.site_builder(args, True, push=Spy())()  # type: ignore[arg-type]
+                pages = quarterdeck.SiteCache(quarterdeck.site_builder(args, True, push=Spy())).get()  # type: ignore[arg-type]
         self.assertEqual(len(builds), 1, "the previous page is built once per rebuild")
         by_id = {str(item["id"]): item for item in seen}
         self.assertNotIn("push_url", by_id[loose["id"]], "a card in no topic opens on the front page, at ./#need-<tag>")

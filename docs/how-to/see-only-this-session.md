@@ -44,12 +44,13 @@ the page.
 **Links from this session** includes HTTP and HTTPS links and explicit in-home
 paths such as `data/launch/preview.html` from the owner's messages and Firstmate's
 replies to them. Links carrying credentials, tokens or signing parameters are
-omitted. Classic, Lavish and `render --all` include these links. JSON exports and
-standalone artifacts carry the local documents unless exported with
-`--bodies none`, which keeps their labels.
+omitted. Classic, Lavish and `render --all` include these links. JSON exports
+and standalone artifacts list the local document names. Exported report text follows the existing
+`--bodies` setting.
 
 Re-rendering in the same directory retires obsolete pages verified by
 `.quarterdeck-render.json` or a legacy Quarterdeck filename and page marker.
-Normal and Lavish renders can coexist for the same conversation. User files
+Normal and Lavish renders can coexist while they reflect the same scoped
+content. User files
 and unverifiable files, including untracked legacy raw documents, are
 preserved.

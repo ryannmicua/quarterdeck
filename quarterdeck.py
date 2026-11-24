@@ -835,7 +835,7 @@ def legacy_render_pages(output_dir: Path) -> Iterator[Path]:
 
 
 def publish_render(output_path: Path, pages: dict[str, str], session: tuple[str, str] | None,
-                   current_session: Callable[[], tuple[str, str] | None]) -> None:
+                   current_session: Callable[[], tuple[str, str] | None], projection: str) -> None:
     output_dir = output_path.parent
     manifest = output_dir / ".quarterdeck-render.json"
     if manifest.name in pages:
@@ -851,7 +851,8 @@ def publish_render(output_path: Path, pages: dict[str, str], session: tuple[str,
         previous_outputs = {key: value for key, value in groups.items() if isinstance(value, dict)} if isinstance(groups, dict) else {}
         identity = hashlib.sha256(json.dumps(session).encode()).hexdigest()
         outputs = {key: files for key, files in previous_outputs.items()
-                   if key != output_path.name and previous.get("session") == identity}
+                   if key != output_path.name and previous.get("session") == identity
+                   and previous.get("projection") == projection}
         current = {name: hashlib.sha256(content.encode("utf-8")).hexdigest() for name, content in pages.items()}
         previous_files = {name: digest for files in previous_outputs.values() for name, digest in files.items()}
         if not isinstance(groups, dict):
@@ -871,7 +872,7 @@ def publish_render(output_path: Path, pages: dict[str, str], session: tuple[str,
                 path.unlink()
         for name, content in pages.items():
             write_generated_page(output_dir / name, content)
-        write_generated_page(manifest, json.dumps({"session": identity, "outputs": outputs}) + "\n")
+        write_generated_page(manifest, json.dumps({"session": identity, "projection": projection, "outputs": outputs}) + "\n")
     finally:
         os.close(directory)
 
@@ -4970,13 +4971,14 @@ def task_owner(snapshot: HomeSnapshot, task: str) -> tuple[HomeSnapshot, str]:
     return task_owner(child, rest) if child is not None else (snapshot, task)
 
 
-def task_reference_owner(snapshot: HomeSnapshot, task: str, snapshots: list[HomeSnapshot]) -> tuple[HomeSnapshot, str]:
+def task_reference_owner(snapshot: HomeSnapshot, task: str, snapshots: list[HomeSnapshot], *,
+                         scoped: bool = False) -> tuple[HomeSnapshot, str]:
     task = task.strip()
     _prefix, separator, rest = task.partition("/")
     if not separator:
         return snapshot, task
     matches = [member for member in snapshots if report_reference(member.spec.label, rest) == task]
-    if snapshot.session is not None:
+    if scoped or snapshot.session is not None:
         owner, local = task_owner(snapshot, task)
         if owner is not snapshot:
             return owner, local
@@ -6111,7 +6113,7 @@ class SiteCache:
 
 
 def site_builder(
-    args: argparse.Namespace, allow_marks: bool = False, push: PushNotifier | None = None, *, defer_effects: bool = False,
+    args: argparse.Namespace, allow_marks: bool = False, push: PushNotifier | None = None,
 ) -> Callable[[], dict[str, str]]:
     def build() -> dict[str, str]:
         config, homes, bearings = load_site(args, include_calls=True, notification_resolution=push is not None)
@@ -6136,12 +6138,9 @@ def site_builder(
             if push is not None:
                 try:
                     cards_for_push = activity + topic_push_cards(homes)
-                    if bearings.notification_resolution is None:
-                        attention = bearings.attention
-                        push.observe(cards_for_push, complete=attention is not None and not needs_unread(attention))
-                    else:
-                        complete, unresolved = bearings.notification_resolution
-                        push.observe(cards_for_push, complete=complete, unresolved=unresolved)
+                    assert bearings.notification_resolution is not None
+                    complete, unresolved = bearings.notification_resolution
+                    push.observe(cards_for_push, complete=complete, unresolved=unresolved)
                 except Exception as exc:  # noqa: BLE001 - a notification problem must never stop the page
                     print(f"quarterdeck: could not check for new needs-you items to notify: {exc}", file=sys.stderr, flush=True)
             if allow_marks:
@@ -6166,9 +6165,6 @@ def site_builder(
             pages["index.html"] = previous
         pages[CARDS_PAGE] = cards
         effects = accept if allow_marks or push is not None else None
-        if effects is not None and not defer_effects:
-            effects()
-            effects = None
         return SitePages(pages, bearings.session.identity if bearings.session else None, effects)
     return build
 
@@ -7016,11 +7012,12 @@ def make_handler(
                 if not 0 < length <= MARK_BODY_LIMIT:
                     raise ValueError
                 body = json.loads(self.rfile.read(length).decode("utf-8"))
-                if (not isinstance(body, dict) or set(body) != {"key", "hold_set"}
-                        or not all(isinstance(value, str) and 0 < len(value) <= 300 for value in body.values())):
+                if (not isinstance(body, dict) or set(body) != {"key", "hold_set", "hold_instance"}
+                        or not all(isinstance(value, str) and 0 < len(value) <= 300 for value in body.values())
+                        or not re.fullmatch(r"[a-f0-9]{24}", body["hold_instance"])):
                     raise ValueError
             except (ValueError, UnicodeDecodeError):
-                self.send_text(400, "Expected JSON {\"key\": ..., \"hold_set\": ...}\n")
+                self.send_text(400, "Expected JSON {\"key\": ..., \"hold_set\": ..., \"hold_instance\": ...}\n")
                 return
             try:
                 result = discard(body)
@@ -7247,14 +7244,16 @@ def serve(args: argparse.Namespace) -> int:
         discard_wait_to: Callable[[dict[str, object]], dict[str, object]] | None = None
         if getattr(args, "allow_marks", False):
             save_view_to = lambda raw: save_view_request(args, raw)  # noqa: E731
-            discard_wait_to = lambda raw: discard_wait(args, str(raw["key"]), str(raw["hold_set"]))  # noqa: E731
+            discard_wait_to = lambda raw: discard_wait(  # noqa: E731
+                args, str(raw["key"]), str(raw["hold_set"]), hold_instance=str(raw["hold_instance"]),
+            )
         tls = tls_context(args)
         configured_base = effective_base_path(args)
         set_base_path(configured_base)
         push = (PushNotifier(default_output_dir())
                 if getattr(args, "allow_marks", False) and not getattr(args, "no_snapshot", False) and push_crypto_available()
                 else None)
-        cache = SiteCache(site_builder(args, getattr(args, "allow_marks", False), push, defer_effects=True),
+        cache = SiteCache(site_builder(args, getattr(args, "allow_marks", False), push),
                           current_session=lambda: served_session(args))
         cache.get()
         visit_log = VisitLog(visits_path()) if getattr(args, "allow_marks", False) else None
@@ -10329,12 +10328,6 @@ def search_index(homes: list[HomeSnapshot], bearings: Bearings) -> list[dict[str
             index.append({"k": "Report", "t": report.title, "s": label, "f": key,
                           "u": source_page_filename("report", snapshot.spec.home, report.path),
                           "l": report.recommendation or "", "x": " ".join((report.path.parent.name, report.recommendation or ""))})
-    if bearings.session is not None:
-        known_reports = {report.path for snapshot in all_snapshots(homes) for report in snapshot.reports}
-        for doc in bearings.session.documents:
-            if doc.path not in known_reports:
-                kind = "Report" if doc.path.name in {"report.html", "report.md"} else "Document"
-                index.append({"k": kind, "t": doc.label, "s": "", "f": "", "u": doc.href, "l": "", "x": doc.label})
     return index
 
 
@@ -10354,7 +10347,7 @@ def search_page_html(homes: list[HomeSnapshot], title: str, bearings: Bearings, 
     body = (
         f'<nav class="bar" aria-label="Quarterdeck"><a class="mark" href="{main}">{html.escape(title)}</a></nav>'
         '<main class="finder"><h1>Search</h1>' + session_stamp_html(bearings) +
-        '<label class="field" for="q">Topics, tasks, reports and documents</label>'
+        '<label class="field" for="q">Topics, tasks and reports</label>'
         '<div class="search-box"><input id="q" type="search" autocomplete="off" enterkeyhint="search"></div>'
         f'<div class="filters" role="group" aria-label="Filter">{filters}</div>'
         '<h2>Results <span class="n" id="result-n" data-n="0"></span></h2><ul class="rows" id="results" aria-live="polite"></ul>'
@@ -11741,7 +11734,8 @@ def briefing_job(stamp: str, now: datetime, settings: WaitSettings) -> dict[str,
 
 def wait_is_hidden(card: dict[str, object]) -> bool:
     discarded = card.get("discarded")
-    return isinstance(discarded, dict) and discarded.get("hold_set") == card.get("hold_set")
+    return (isinstance(discarded, dict) and discarded.get("hold_set") == card.get("hold_set")
+            and discarded.get("session_id") == card.get("session_id"))
 
 
 def sync_wait_cards(
@@ -12314,13 +12308,20 @@ def wait_pass(
 
 # -- discard --
 
+def wait_instance(card: dict[str, object]) -> str:
+    hold = (card.get("home"), card.get("key"), card.get("hold_set"), card.get("session_id"))
+    return hashlib.sha256(json.dumps(hold).encode("utf-8")).hexdigest()[:24]
+
+
 def wait_discard_note(card: dict[str, object]) -> str:
+    identity = f", conversation {card['session_id']}" if card.get("session_id") else ""
     return (f"Quarterdeck: the captain discarded the wait on task {card['task']} (home {card['home']}, captain hold "
-            f"set {card['hold_set']}). Please drop this captain hold; Quarterdeck releases the card when the hold is gone.")
+            f"set {card['hold_set']}{identity}). Please drop this captain hold; Quarterdeck releases the card when the hold is gone.")
 
 
 def discard_wait(args: argparse.Namespace, key: str, hold_set: str | None = None,
-                 deliver: Callable[[HomeSpec, str, str], None] | None = None) -> dict[str, object]:
+                 deliver: Callable[[HomeSpec, str, str], None] | None = None, *,
+                 hold_instance: str | None = None) -> dict[str, object]:
     """Hide a waiting card and ask its home's Firstmate, through bin/fm-inbox.sh note, to drop the hold.
 
     The note is delivered first; the card is hidden only once Firstmate has it, so a failed delivery leaves it visible.
@@ -12331,26 +12332,33 @@ def discard_wait(args: argparse.Namespace, key: str, hold_set: str | None = None
     store = validate_wait_store(settings.store, homes)
     with waits_lock(store):
         doc = read_waits(store)
-    owner = next((member for member in all_snapshots(homes) if key in stored_cards(doc, member)), None)
-    card = stored_cards(doc, owner)[key] if owner is not None else None
-    if owner is None or not isinstance(card, dict):
+    matches = [(member, card) for member in all_snapshots(homes)
+               if isinstance(card := stored_cards(doc, member).get(key), dict)]
+    if not matches:
         raise ValueError(f"no captain wait matches: {key}")
+    if len(matches) != 1:
+        raise ValueError(f"captain wait is ambiguous: {key}")
+    owner, card = matches[0]
     if card.get("status") != "waiting":
         raise ValueError(f"the wait on {card['task']} is already released")
-    if hold_set is not None and hold_set != card.get("hold_set"):
+    instance = wait_instance(card)
+    if (hold_set is not None and hold_set != card.get("hold_set")
+            or hold_instance is not None and hold_instance != instance):
         raise ValueError(f"the wait on {card['task']} was held again since this page loaded; reload and try again")
     if wait_is_hidden(card):
         return {"key": key, "hold_set": card["hold_set"], "discarded": True}
     top = next(s for s in homes if any(member is owner for member in all_snapshots([s])))
-    request = "qd-wait-" + hashlib.sha256(f"{key}\n{card['hold_set']}".encode("utf-8")).hexdigest()[:24]
-    deliver(top.spec, request, wait_discard_note(card))
+    deliver(top.spec, "qd-wait-" + instance, wait_discard_note(card))
     with waits_lock(store):
         doc = read_waits(store)
         current = stored_cards(doc, owner).get(key)
-        if isinstance(current, dict) and current.get("hold_set") == card["hold_set"]:
-            current["discarded"] = {"hold_set": card["hold_set"], "at": wait_time(datetime.now(timezone.utc))}
-            current["jobs"] = []
-            write_waits(store, doc)
+        if (not isinstance(current, dict) or current.get("status") != "waiting"
+                or wait_instance(current) != instance):
+            raise ValueError(f"the wait on {card['task']} changed during delivery; reload and try again")
+        current["discarded"] = {"hold_set": card["hold_set"], "session_id": card.get("session_id"),
+                                "at": wait_time(datetime.now(timezone.utc))}
+        current["jobs"] = []
+        write_waits(store, doc)
     return {"key": key, "hold_set": card["hold_set"], "discarded": True}
 
 
@@ -12375,7 +12383,8 @@ def wait_view(card: dict[str, object], now: datetime | None = None) -> dict[str,
     briefed = card.get("briefed_hold") == stamp
     kind = card.get("kind") if briefed else None
     view: dict[str, object] = {
-        "key": card["key"], "task": card["task"], "home": card["home"], "hold_set": stamp, "status": card.get("status"),
+        "key": card["key"], "task": card["task"], "home": card["home"], "hold_set": stamp,
+        "hold_instance": wait_instance(card), "status": card.get("status"),
         "kind": kind, "kind_label": WAIT_KINDS.get(str(kind)) if kind else None,
         "summary": (card.get("summary") if briefed else None)
         or first_line(str(card.get("hold_reason") or ""), WAIT_SUMMARY_LIMIT) or card.get("title") or None,
@@ -12449,7 +12458,8 @@ def wait_html(wait: dict[str, object], can_discard: bool) -> str:
         parts.append(
             f'<p class="request-row"><button class="request-lavish wait-discard" type="button" '
             f'data-wait-key="{html.escape(str(wait["key"]), quote=True)}" '
-            f'data-wait-hold="{html.escape(str(wait["hold_set"]), quote=True)}">Discard this wait</button>'
+            f'data-wait-hold="{html.escape(str(wait["hold_set"]), quote=True)}" '
+            f'data-wait-instance="{html.escape(str(wait["hold_instance"]), quote=True)}">Discard this wait</button>'
             '<span class="request-status wait-status" aria-live="polite"></span></p>'
             '<p class="path">Discard hides this card and asks Firstmate to drop the hold.</p>'
         )
@@ -13079,7 +13089,8 @@ WAIT_SCRIPT = """
         const response = await fetch("__ENDPOINT__", {
           method: "POST",
           headers: {"Content-Type": "application/json"},
-          body: JSON.stringify({key: button.dataset.waitKey, hold_set: button.dataset.waitHold}),
+          body: JSON.stringify({key: button.dataset.waitKey, hold_set: button.dataset.waitHold,
+                                hold_instance: button.dataset.waitInstance}),
         });
         if (!response.ok) throw new Error((await response.text()).trim() || response.statusText);
         delete button.dataset.mutationPending;
@@ -13394,10 +13405,8 @@ def build_snapshot(
         "calls": calls, "reports": reports, "related": related,
         **({"session_links": [{"label": session_link_label(url), "url": url} for url in scope.links]}
            if scope is not None else {}),
-        **({"session_documents": [
-            {"label": doc.label, **({"html" if doc.path.suffix == ".html" else "text": doc.content} if bodies != "none" else {})}
-            for doc in scope.documents
-        ]} if scope is not None and scope.documents else {}),
+        **({"session_documents": [{"label": doc.label} for doc in scope.documents]}
+           if scope is not None and scope.documents else {}),
         **({"decision_window_days": DEFAULT_RECENT_DAYS} if view.shared_relevance else {}),
         "reactions": reactions, "delivered": delivered,
     }
@@ -13654,10 +13663,8 @@ SESSION_SECRET_RE = re.compile(
 
 @dataclass
 class SessionDocument:
-    path: Path
     label: str
     href: str
-    content: str
 
 
 @dataclass
@@ -13753,6 +13760,7 @@ def session_scope(homes: list[HomeSnapshot], now: datetime, *, main_href: str = 
     said = SESSION_URL_RE.sub(" ", said)
     tokens = {token.rstrip(".") for token in SESSION_TOKEN_RE.findall(said)}
     topic_paths = set(SESSION_TOPIC_PATH_RE.findall(said))
+    topic_text = DOC_BARE_RE.sub(" ", re.sub(r"(?<![\w./-])(?:[\w.-]*/)+[\w.-]+", " ", said)).casefold()
     named_topics: set[tuple[int, str]] = set()
 
     def add_task(snapshot: HomeSnapshot, task: str) -> None:
@@ -13780,7 +13788,9 @@ def session_scope(homes: list[HomeSnapshot], now: datetime, *, main_href: str = 
             if (record.get("session_id") == identity[1]
                     and (record["event"] == "task.dispatched" or str(record["event"]).startswith("captain."))
                     and float(record["ts"]) <= now.timestamp()):
-                add_task(source, str(record["task"]))
+                owner, task = task_reference_owner(source, str(record["task"]), family, scoped=True)
+                if task:
+                    scope.tasks.add((id(owner), task))
     reports_in_chat = set(report_ids_in(said))
     for item in snapshot_items(source).values():
         held_at = parse_board_time(hold_stamp(item)) if item.held and hold_session_id(item) == identity[1] else None
@@ -13791,7 +13801,7 @@ def session_scope(homes: list[HomeSnapshot], now: datetime, *, main_href: str = 
             names = {topic.title.casefold(), topic.topic_id.casefold()} - {""}
             mentioned = snapshot is source and (
                 topic.topic_id in topic_paths
-                or any(re.search(r"(?<![\w-])" + re.escape(name) + r"(?![\w-])", said.casefold()) for name in names)
+                or any(re.search(r"(?<![\w-])" + re.escape(name) + r"(?![\w-])", topic_text) for name in names)
             )
             if mentioned or any((id(snapshot), name) in named_topics for name in names):
                 scope.topics.add((id(snapshot), topic.topic_id))
@@ -13839,7 +13849,7 @@ def session_scope(homes: list[HomeSnapshot], now: datetime, *, main_href: str = 
             built = doc_page(path, label, raw, main_href)
             if built is not None:
                 document_pages[href], document_pages[raw] = built
-                scope.documents.append(SessionDocument(path, f"data/{label}", href, built[1]))
+                scope.documents.append(SessionDocument(f"data/{label}", href))
     return scope
 
 
@@ -14014,6 +14024,21 @@ def load_site(
     return config, homes, bearings
 
 
+def render_projection(homes: list[HomeSnapshot], bearings: Bearings, pages: dict[str, str]) -> str:
+    scope = bearings.session
+    members = all_snapshots(homes)
+    sources = [(snapshot.spec, snapshot.topics, snapshot.reports, snapshot_items(snapshot),
+                snapshot.board.items if snapshot.board else []) for snapshot in members]
+    membership = [(sorted(task for owner, task in scope.tasks if owner == id(snapshot)),
+                   sorted(scope.report_dirs.get(id(snapshot), ()))) for snapshot in members] if scope else []
+    attention = (bearings.attention or {}).get("homes", [])
+    waiting = [(home.get("waiting"), home.get("waiting_more"), home.get("decisions")) for home in attention]
+    projection = (sources, membership, scope.links if scope else [], waiting,
+                  sorted((name, value) for name, value in pages.items() if name.startswith(RAW_PREFIX)),
+                  bearings.call, bearings.landed, bearings.underway, bearings.charted, bearings.completions)
+    return hashlib.sha256(repr(projection).encode("utf-8")).hexdigest()
+
+
 def render(args: argparse.Namespace) -> int:
     try:
         main_name = Path(args.output).expanduser().name if args.output else "index.html"
@@ -14035,6 +14060,7 @@ def render(args: argparse.Namespace) -> int:
                            front_href=output_path.name if front else None)
         activity = site_cards(homes, bearings, False) if front else []
         pages = source_pages(homes, show_all=args.all, bearings=bearings)
+        projection = render_projection(homes, bearings, pages)
         if front:
             pages[CLASSIC_PAGE] = index
             pages[SEARCH_PAGE] = search_page_html(homes, title, bearings)
@@ -14042,7 +14068,8 @@ def render(args: argparse.Namespace) -> int:
             pages[TOPICS_PAGE] = topics_page_html(homes, title, bearings, calls_href=output_path.name)
             index = calls_page_html(homes, title, bearings, activity, pages=pages, calls_href=output_path.name)
         pages[output_path.name] = index
-        publish_render(output_path, pages, bearings.session.identity if bearings.session else None, lambda: served_session(args))
+        publish_render(output_path, pages, bearings.session.identity if bearings.session else None,
+                       lambda: served_session(args), projection)
     except (OSError, ValueError) as exc:
         print(f"quarterdeck: {exc}", file=sys.stderr)
         return 2
