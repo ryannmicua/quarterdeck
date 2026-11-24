@@ -14,6 +14,11 @@ Run one group while changing it, then the whole suite before a pull request
 
 Tests use private `XDG_STATE_HOME` and `XDG_CONFIG_HOME` directories and
 invented items, and start local HTTP servers that shut themselves down.
+The serve group uses headless `google-chrome` when available to verify bulk
+suggestions, undo, and that conflicts and validation errors preserve drafts while the other
+answers in the batch are sent. The browser checks also cover retrying a reopened
+answer, exact answer times in a fixed locale and time zone, and sending suggestions
+in place while preserving their text.
 
 For a screen change, also save one item of each kind, run `quarterdeck serve`,
 and check the Saved page and each item page at phone width (about 390 px) and
