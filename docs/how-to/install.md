@@ -36,8 +36,7 @@ After installation, run `quarterdeck update` to update the checkout. The
 existing `quarterdeck install` command also reruns the installer; use
 `quarterdeck update --help` or `quarterdeck install --help` for command help.
 
-Saved items live in `${XDG_STATE_HOME:-~/.local/state}/quarterdeck/items.json`,
-outside the checkout. See [Save items to Quarterdeck](save-items.md) and the
+See [Save items to Quarterdeck](save-items.md) and the
 [CLI and configuration reference](../reference/cli-and-config.md).
 
 ## Manual installation alternative

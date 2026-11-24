@@ -1,8 +1,5 @@
 # Serve the page
 
-`quarterdeck serve` serves the Saved page and one page per item. Each page
-request reads the store, so an item Firstmate saves shows on the next load.
-
 ## Run it
 
 ```sh
@@ -10,11 +7,11 @@ quarterdeck serve
 ```
 
 Open the address it prints, `http://127.0.0.1:8765/` by default. Use `--port`
-to pick another port and `--title` to change the heading. To write the pages
+to pick another port and `--title` to change the site name. To write the pages
 as files instead, run `quarterdeck render`; see the
 [CLI reference](../reference/cli-and-config.md#pages).
 
-Open an item from the table, or use its page URL. For Q7, open `/q7.html`.
+Select an item's title in the Saved table to open it.
 
 ## Reach it from a phone
 
@@ -73,8 +70,7 @@ dashboard.example.org {
 
 ## Security: loopback by default
 
-The page shows everything you saved, and there is no login. The default
-address is 127.0.0.1. Binding a non-loopback address exposes your saved items
-to everyone who can reach the port, and Quarterdeck prints a warning when you
-do. The page is read-only: it has no forms and refuses `POST`, so the browser
-cannot change anything.
+The default bind is `127.0.0.1`. A loopback listener refuses requests whose
+`Host` is outside loopback. Binding a non-loopback address exposes your saved
+items without a login to everyone who can reach the port, and Quarterdeck
+prints a warning when you do. The page is read-only and refuses `POST`.

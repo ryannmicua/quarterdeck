@@ -2,8 +2,8 @@
 
 Firstmate saves an item when the captain asks, such as "send this to
 Quarterdeck" or "save this Lavish page to Quarterdeck". Nothing is saved
-automatically. Every command below changes only Quarterdeck's own
-[item store](../reference/item-store.md).
+automatically. `add` and `remove` change Quarterdeck's own
+[item store](../reference/item-store.md). `list` and `show` read it.
 
 ## Add an item
 

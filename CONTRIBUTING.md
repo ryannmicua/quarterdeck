@@ -13,5 +13,7 @@ python3 -m unittest discover -s tests -v
 python3 scripts/privacy_guard.py --staged
 ```
 
-The privacy guard checks staged paths and staged file contents. Keep generated
+The privacy guard checks staged paths and contents. It rejects the item store
+and its lock even if force-staged, as well as generated pages, host-specific
+paths, private IPs, pull request links and ticket-shaped keys. Keep generated
 pages and local configuration outside the repository.

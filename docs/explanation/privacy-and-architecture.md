@@ -6,14 +6,16 @@ and nothing else.
 
 ## What Quarterdeck reads and writes
 
-- It reads and writes one file it owns, the item store at
-  `${XDG_STATE_HOME:-~/.local/state}/quarterdeck/items.json` (mode 0600, in a
-  0700 directory). See [Item store](../reference/item-store.md).
-- It reads its optional config, `${XDG_CONFIG_HOME:-~/.config}/quarterdeck.json`.
-- `render` writes the pages to its output directory; `service --write` writes
-  the systemd unit.
-- `add` reads the body file you name, once, and copy its text into
-  the store.
+- Item commands use the [item store and its lock](../reference/item-store.md).
+  `add` copies body text from the named file or standard input into the store.
+- `render`, `serve`, `service` and `url` can read the
+  [optional config](../reference/cli-and-config.md#json-configuration).
+- `render` reads the item store and inspects existing output files before
+  replacing or retiring them. See the [render reference](../reference/cli-and-config.md#pages).
+- `serve` reads the item store to build pages. It reads the TLS certificate
+  and key if you supply them.
+- `service --write` writes the systemd unit. `url` reads it if it exists.
+- `install` and `update` invoke the [user-local installer](../how-to/install.md).
 
 It reads nothing from a Firstmate home: no backlog, board, topic, report,
 ledger or saved session. It runs no Firstmate script and writes nothing into a
@@ -26,16 +28,11 @@ questions with their context. A file that changes or disappears
 later does not change the item, so Q7.3 means the same thing tomorrow as
 today. To correct a saved item, remove it and save a new one.
 
-## IDs
-
-Each item gets the next number from `next_id`, which only grows. Removing Q7
-never frees Q7 for another item, so an old reference cannot point to new
-content.
-
 ## Network
 
-`serve` binds 127.0.0.1 by default and has no login. A server bound only to
-loopback refuses requests whose `Host` is not loopback. The page is read-only:
-`POST` is refused. Quarterdeck makes no outbound network calls and does not
-call a model. Pages escape all saved text, link only the `http` and `https`
-addresses saved as resources, and name no server path.
+See [serving security](../how-to/serve-the-page.md#security-loopback-by-default)
+for the read-only browser interface and who can reach it. Saving, rendering
+and serving items make no outbound requests or model calls. The installer
+uses Git to clone or update the checkout. Pages escape saved text and use
+the URLs supplied with resources. They do not embed the server's config or
+store paths.

@@ -68,30 +68,22 @@ never reads a Firstmate home and never writes to one.
 
 ## Privacy model
 
-Saved items live in one file Quarterdeck owns,
-`${XDG_STATE_HOME:-~/.local/state}/quarterdeck/items.json` (mode 0600). The
-pages contain the items you saved and nothing else; they name no server path.
-`serve` binds 127.0.0.1 by default; a non-loopback address exposes your saved
-items to that network with no login. See
-[privacy and architecture](docs/explanation/privacy-and-architecture.md).
-
-The repo ignores common output folders and local config files. Run
-`python3 scripts/privacy_guard.py --staged` before committing; it rejects
-generated pages, host-specific paths, private IPs and pull-request links or
-ticket-shaped keys in staged content. Examples and tests use invented data.
+See [privacy and architecture](docs/explanation/privacy-and-architecture.md)
+for where saved items live and who can see a served page. See
+[Contributing](CONTRIBUTING.md) for the repository's privacy checks.
 
 ## FAQ
 
 ### What happened to the old page?
 
 Earlier versions built the page from Firstmate's backlogs, boards, topics and
-reports. That content no longer shows: there is no migration, and the code
-that read it is gone. An existing config that lists `homes` still loads; the
-key is ignored.
+reports. There is no migration to the Saved page. See the
+[CLI and configuration reference](docs/reference/cli-and-config.md) for older
+config keys and service flags that are still accepted.
 
 ### Does it cost tokens or contact a service?
 
-No. Quarterdeck does not call a model and makes no network calls of its own.
+Saving and viewing items does not call a model or contact an external service.
 
 ## License
 

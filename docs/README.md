@@ -2,7 +2,7 @@
 
 Guides are grouped by purpose, following Diataxis:
 
-- The [tutorial](tutorials/first-render.md) saves three items and opens the page.
+- The [tutorial](tutorials/first-render.md) saves a link and a list and opens the page.
 - [How-to guides](how-to/) cover installing, updating and removing Quarterdeck,
   [saving items](how-to/save-items.md) and [serving the page](how-to/serve-the-page.md).
 - The [CLI and configuration reference](reference/cli-and-config.md) lists every
