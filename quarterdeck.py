@@ -768,7 +768,7 @@ def workers_snapshot(home: Path) -> dict[str, object]:
 
 
 # --- Pages ------------------------------------------------------------------------------
-# Every page is built from the item store alone. No page names a server path.
+# The workers roster is fetched separately from the HTML. No page names a server path.
 
 PAGE_CSS = """
 /* Tokens: the only colours, type sizes and widths any Quarterdeck page uses. */

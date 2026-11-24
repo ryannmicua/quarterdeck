@@ -36,30 +36,9 @@ Item commands report validation errors on stderr and exit with status 2.
 | Command | What it does |
 | --- | --- |
 | `render` | Writes `index.html` (Saved) and one `q<N>.html` page per item. `--output PATH` names the Saved page and puts the item pages beside it. Otherwise the pages go to `output_dir`. Item filenames `q<N>.html` are reserved. Existing destination files must carry Quarterdeck's generated-page marker. Render retires only marked item pages that are no longer needed. Separately named Saved pages are kept and share the item pages in that directory. The output must be outside the Quarterdeck checkout. |
-| `serve` | Serves the same pages over HTTP, or HTTPS with `--tls-cert` and `--tls-key`. Page requests read the store, so a new item shows on the next load. Open item Q7 at `/q7.html`. `--host` may be repeated. `--port` defaults to 8765. See [serving security](../how-to/serve-the-page.md#security-loopback-by-default) for the default bind and browser access rules. |
+| `serve` | Serves the Saved page and item pages over HTTP, or HTTPS with `--tls-cert` and `--tls-key`. Page requests read the store, so a new item shows on the next load. Open item Q7 at `/q7.html`. `--host` may be repeated. `--port` defaults to 8765. See [serving security](../how-to/serve-the-page.md#security-loopback-by-default) for the default bind and browser access rules. |
 | `service` | Prints a systemd user unit with the supplied serving options, or writes it to `${XDG_CONFIG_HOME:-~/.config}/systemd/user/quarterdeck.service` with `--write`. |
 | `url` | Prints the address the installed unit serves, or the default address when no unit is installed. |
-
-A served page also has a **Workers** section when `firstmate_home` is set. The
-page asks `GET workers.json` (under any `base_path`) on entry and on **Refresh
-workers**. The endpoint runs the home's `bin/fm-fleet-snapshot.sh --local`,
-a read-only command that uses no model, with `FM_HOME` set to that home and a
-60 second limit. It answers 502 if a read is already running or the command
-fails, times out or prints something unexpected. It answers 404 when
-`firstmate_home` is absent. Quarterdeck writes nothing to the home.
-
-| Field in `workers.json` | Meaning |
-| --- | --- |
-| `observed_at` | UTC time the snapshot was taken. |
-| `workers` | Tasks that have a live terminal, other than second mates. Each has `name`, `project`, `activity`, `status`, `active_at` (UTC) and `links`. |
-| `second_mates` | Every second mate in the home. Each has the same fields, with `contact_at` (UTC) in place of `active_at`. |
-
-`status` is one of Working, Question asked, Stuck, Finished, Unreachable or
-Unknown, mapped only from facts the snapshot states: an open decision gives
-Question asked; the states `working`, `done`, and `blocked` or `failed` give Working,
-Finished and Stuck; a second mate whose terminal is not running is Unreachable;
-anything else, including a stale reading, is Unknown. See
-[Read the workers section](../how-to/read-workers.md#what-the-statuses-mean).
 
 Rendered item pages include any saved answers and their timestamps and
 delivery status. Answer controls are available on served pages.
@@ -74,6 +53,28 @@ to `/qd/`, and a path outside the prefix to the same path beneath it, such as
 
 `serve` still accepts `--allow-marks`, `--watch-waits`, `--no-snapshot` and
 `--home`, which older service units pass, and ignores them with a notice.
+
+### Workers endpoint
+
+`GET /workers.json` (under any `base_path`) returns a fresh fleet reading. The
+[snapshot command](../explanation/privacy-and-architecture.md#what-quarterdeck-reads-and-writes)
+runs with `FM_HOME` set to the configured home. Other inherited `FM_` variables
+are removed. The endpoint returns 404 when `firstmate_home` is absent. It
+returns 502 immediately if the command is already running. It also returns 502
+if the command fails, exceeds 60 seconds, or returns invalid snapshot data.
+
+| Field in `workers.json` | Meaning |
+| --- | --- |
+| `observed_at` | UTC time the snapshot was taken. |
+| `workers` | Ordinary tasks whose terminals are open, one row per ID. Each row has `name`, `project`, `activity`, `status`, `active_at` and `links`. |
+| `second_mates` | Second mates reported in the snapshot, one row per ID. Each row has the same fields, with `contact_at` in place of `active_at`. |
+
+`project` uses the project directory's basename or the backlog repository.
+`activity` uses the backlog title. `active_at` is calculated from the most
+recent reported event's age. `contact_at` uses `observed_at` when the snapshot
+confirms contact. Row timestamps are in UTC. The project and row timestamps
+can be `null`. `links` is an array of `{text, href}` objects. See the
+[status meanings](../how-to/read-workers.md#what-the-statuses-mean).
 
 ### Install and help
 
@@ -91,7 +92,7 @@ or `${XDG_CONFIG_HOME:-~/.config}/quarterdeck.json` when it exists.
 | `page_title` | string | `Quarterdeck` | The site name in the navigation bar and browser title. `--title` overrides it for `render` and `serve`. |
 | `output_dir` | string path | `${XDG_STATE_HOME:-~/.local/state}/quarterdeck` | Where `render` writes the pages. |
 | `base_path` | string | none | The URL prefix described above. |
-| `firstmate_home` | absolute path after expanding `~` | see legacy fallback below | Local destination for answers submitted to `serve`, and the home whose workers the page lists. |
+| `firstmate_home` | absolute path after expanding `~` | unset | Local destination for answers submitted to `serve`, and the home whose workers the page lists. |
 
 When `firstmate_home` is absent, `serve` uses a legacy `homes` list only for
 answer delivery and only if it contains exactly one object with a valid
