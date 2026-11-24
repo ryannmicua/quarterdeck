@@ -906,7 +906,6 @@ WORKERS_SCRIPT = r"""
   const list = section.querySelector('#workers-list');
   const exceptions = new Set(['Question asked', 'Stuck', 'Unreachable']);
   let last = null;
-  const clock = iso => new Date(iso).toLocaleString(undefined, {dateStyle: 'medium', timeStyle: 'short'});
   const make = (tag, className, text) => {
     const node = document.createElement(tag);
     if (className) node.className = className;
@@ -915,7 +914,7 @@ WORKERS_SCRIPT = r"""
   };
   const stamped = (label, iso) => {
     const line = make('p', 'when', label + ' ');
-    const time = make('time', '', clock(iso));
+    const time = make('time', '', localTime(iso));
     time.dateTime = iso;
     line.append(time);
     return line;
@@ -957,14 +956,14 @@ WORKERS_SCRIPT = r"""
     if (data.second_mates.length) list.append(group('Second mates', data.second_mates, true));
     status.className = 'meta';
     status.textContent = 'Last refreshed ';
-    const time = make('time', '', clock(data.observed_at));
+    const time = make('time', '', localTime(data.observed_at));
     time.dateTime = data.observed_at;
     status.append(time);
   };
   const failed = () => {
     status.className = 'meta failed';
     status.textContent = last
-      ? 'Refresh failed. Showing the list from ' + clock(last.observed_at) + '.'
+      ? 'Refresh failed. Showing the list from ' + localTime(last.observed_at) + '.'
       : 'Workers could not be loaded. Try again.';
   };
   const load = async () => {
