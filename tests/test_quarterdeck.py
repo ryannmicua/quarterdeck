@@ -7308,7 +7308,7 @@ class ActivityCardTests(unittest.TestCase):
             pages = {}
             links = quarterdeck.doc_links_html("data/briefing/notes.md and data/briefing/explainer.html", data, pages)
             targets = {label: name for name, label in re.findall(r'<li><a href="([^"]+)">([^<]+)</a>', links)}
-        cache = type("Cache", (), {"get": lambda self: pages})()
+        cache = quarterdeck.SiteCache(lambda: pages)
         server = quarterdeck.ThreadingHTTPServer(("127.0.0.1", 0), quarterdeck.make_handler(cache))
         threading.Thread(target=server.serve_forever, daemon=True).start()
         self.addCleanup(server.server_close)
@@ -7397,7 +7397,7 @@ class ActivityCardTests(unittest.TestCase):
 
     def test_served_raw_documents_are_plain_and_sandboxed(self) -> None:
         pages = {"raw-aaaaaaaaaaaa.txt": "# T\n", "raw-bbbbbbbbbbbb.html": "<p>x</p>", "index.html": "<p>i</p>"}
-        cache = type("Cache", (), {"get": lambda self: pages})()
+        cache = quarterdeck.SiteCache(lambda: pages)
         server = quarterdeck.ThreadingHTTPServer(("127.0.0.1", 0), quarterdeck.make_handler(cache))
         threading.Thread(target=server.serve_forever, daemon=True).start()
         self.addCleanup(server.server_close)
@@ -9460,7 +9460,7 @@ class PhoneFixTests(unittest.TestCase):
 
     def serve(self, pages: dict[str, str] | None = None):
         pages = pages or {"index.html": "<p>" + "page " * 600 + "</p>"}
-        cache = type("Cache", (), {"get": lambda self: pages})()
+        cache = quarterdeck.SiteCache(lambda: pages)
         server = quarterdeck.make_server("127.0.0.1", 0, quarterdeck.make_handler(cache))
         threading.Thread(target=server.serve_forever, daemon=True).start()
         self.addCleanup(lambda: (server.shutdown(), server.server_close()))
@@ -10373,7 +10373,7 @@ setImmediate(() => {
         self.assertIn("disk full", stderr.getvalue())
 
     def serve(self, push: quarterdeck.PushNotifier | None, tls=None):
-        cache = type("Cache", (), {"get": lambda self: {"index.html": "ok"}, "invalidate": lambda self, wait=False: None})()
+        cache = quarterdeck.SiteCache(lambda: {"index.html": "ok"})
         server = quarterdeck.make_server("127.0.0.1", 0, quarterdeck.make_handler(cache, push=push), tls)
         threading.Thread(target=server.serve_forever, daemon=True).start()
         self.addCleanup(lambda: (server.shutdown(), server.server_close()))
@@ -11121,15 +11121,26 @@ class SessionScopeTests(unittest.TestCase):
         launch = self.data / "launch"
         launch.mkdir()
         expected = {"data/launch/report.html": "Standalone report body",
-                    "data/launch/preview.html": "Standalone preview body"}
+                    "data/launch/previews/latest/index.html": "Nested preview body"}
         for label, body in expected.items():
-            (launch / Path(label).name).write_text(f"<h1>{body}</h1>", encoding="utf-8")
+            path = self.home / label
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text(f"<h1>{body}</h1>", encoding="utf-8")
+        private = ["data/.private/report.md", "data/config/report.md", "data/launch/state/report.md",
+                   "data/launch/.env.md", "data/launch/api_key.html", "data/launch/credentials.html",
+                   "data/launch/access-token.html", "data/launch/client-secret.html"]
+        for number, label in enumerate(private):
+            path = self.home / label
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text(f"# Confidential fixture {number}", encoding="utf-8")
+        (launch / "alias.html").symlink_to(self.home / private[2])
         outside = self.root / "outside.html"
         outside.write_text("<h1>Outside document body</h1>", encoding="utf-8")
         (launch / "outside.html").symlink_to(outside)
         with (self.transcripts / "session.jsonl").open("a", encoding="utf-8") as stream:
             stream.write(wait_record("owner", "documents", self.iso(self.now),
-                                     "Open data/launch/report.html, data/launch/preview.html and data/launch/outside.html.",
+                                     "Open " + ", ".join(expected) + ". Do not share "
+                                     + ", ".join([*private, "data/launch/alias.html", "data/launch/outside.html"]) + ".",
                                      sessionId="current"))
         out = self.render()
         index = (out / "index.html").read_text(encoding="utf-8")
@@ -11141,6 +11152,14 @@ class SessionScopeTests(unittest.TestCase):
             self.assertIn(body, (out / raw).read_text(encoding="utf-8"))
             self.assertFalse(any(row["u"] == wrapper for row in rows))
         self.assertNotIn("Outside document body", self.every_page(out))
+        args = quarterdeck.make_parser().parse_args(["serve", "--config", str(self.config), "--no-snapshot"])
+        served = quarterdeck.site_builder(args)()
+        for label, body in expected.items():
+            self.assertIn(label, served["index.html"])
+            self.assertIn(body, "\n".join(served.values()))
+        for content in (self.every_page(out), "\n".join(served.values())):
+            self.assertNotIn("Confidential fixture", content)
+            self.assertNotIn("alias.html", content)
         for bodies in ("all", "desk", "none"):
             args = quarterdeck.make_parser().parse_args(
                 ["export", "--config", str(self.config), "--no-snapshot", "--bodies", bodies])
@@ -11262,6 +11281,19 @@ class SessionScopeTests(unittest.TestCase):
                 self.assertFalse((out / first_page).exists())
                 self.assertNotIn("https://example.com/pr/17", (out / second_page).read_text(encoding="utf-8"))
                 self.assertIn("reef-scan", self.every_page(out))
+
+    def test_sibling_render_survives_unrelated_feed_title_changes(self) -> None:
+        out = self.root / "out" / "feed"
+        feed = {"open_decisions": [], "in_flight": [{"task": "gull-count", "title": "First unrelated title"}]}
+        with patch.object(quarterdeck, "run_attention_feed", return_value=feed), \
+             patch.object(quarterdeck.shutil, "which", return_value=None), redirect_stdout(io.StringIO()):
+            args = ["render", "--config", str(self.config), "--output", str(out / "index.html")]
+            self.assertEqual(quarterdeck.main(args), 0)
+            feed["in_flight"][0]["title"] = "Second unrelated title"
+            self.assertEqual(quarterdeck.main([*args, "--lavish"]), 0)
+        self.assertTrue((out / "index.html").is_file())
+        self.assertTrue((out / "index.lavish.html").is_file())
+        self.assertNotIn("unrelated title", self.every_page(out))
 
     def test_reviewed_report_named_by_path_exports_label_without_body(self) -> None:
         report = self.data / "tide-review" / "report.md"
@@ -12664,6 +12696,23 @@ class CallsPageTests(unittest.TestCase):
             handle.write("\n## 2026-03-05 08:00 | you | quarterdeck\nRe: merge-42\nMerge\n")
         self.assertNotIn("Merge PR 42 now?", self.fresh_page("index.html"), "recorded in the file: gone for good")
 
+    def test_answering_a_topic_decision_retires_the_stale_static_calls_page(self) -> None:
+        output = self.root / "out" / "index.html"
+        args = ["render", "--home", str(self.home), "--output", str(output), "--no-snapshot"]
+        with redirect_stdout(io.StringIO()):
+            self.assertEqual(quarterdeck.main(args), 0)
+        self.assertIn("Merge PR 42 now?", self.queue(output.read_text(encoding="utf-8")))
+        status, body = self.send(self.serve(), "decision", "maple-harbor-catalog/merge-42", "Merge")
+        self.assertEqual(status, 200, body)
+        with patch.object(quarterdeck.shutil, "which", return_value=None), redirect_stdout(io.StringIO()):
+            self.assertEqual(quarterdeck.main([*args, "--lavish"]), 0)
+            self.assertFalse(output.exists())
+            self.assertTrue(output.with_name("index.lavish.html").is_file())
+            self.assertEqual(quarterdeck.main(args), 0)
+        page = output.read_text(encoding="utf-8")
+        self.assertNotIn("Merge PR 42 now?", self.queue(page))
+        self.assertIn("You answered <b>Merge</b>", page)
+
     def test_similar_asks_keep_separate_cards_and_answer_targets(self) -> None:
         self.write_topic("vendor-images.md", """# Vendor images
 Waiting on: you - choose the storage plan for the vendor product images
@@ -13262,10 +13311,13 @@ What is the fallback for older displays?
             "v": 1, "ts": stamp - 600, "event": "task.dispatched",
             "task": "mate/design/publish", "session_id": "fixture-chat",
         }) + "\n")
-        page = quarterdeck.site_builder(args)()["index.html"]
+        pages = quarterdeck.site_builder(args)()
+        page = pages["index.html"]
         recap = page.split('id="recap-list">', 1)[1].split("</ul>", 1)[0]
         self.assertEqual(recap.count("<li "), 1)
-        self.assertIn('href="https://example.invalid/pr/9"', recap)
+        self.assertIn('<a href="https://example.invalid/pr/9">Publish the design</a></span>'
+                      '<span class="call-meta">Merged', recap)
+        self.assertIn("Publish the design", pages[quarterdeck.SEARCH_PAGE])
         homes, _state_path = quarterdeck.load_report_snapshots(args)
         completions = []
         quarterdeck.attention_view(homes, use_feed=False, completions_out=completions)

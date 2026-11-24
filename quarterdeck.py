@@ -235,6 +235,8 @@ def read_reports(data_dir: Path, warnings: list[str] | None = None) -> list[Repo
         return reports
     for report_path in sorted(data_dir.glob("*/report.md")):
         try:
+            if publishable_document(report_path, data_dir) is None:
+                continue
             raw_source = report_path.read_bytes()
             source = raw_source.decode("utf-8", errors="replace")
         except OSError as exc:
@@ -339,10 +341,8 @@ def backlog_report_target(data_dir: Path, value: str) -> Path | None:
     if match is None or match.group(1) in {".", ".."}:
         return None
     try:
-        root = data_dir.resolve()
-        target = (root / match.group(1) / match.group(2)).resolve()
-        target.relative_to(root)
-        return target if target.is_file() else None
+        target = publishable_document(data_dir / match.group(1) / match.group(2), data_dir)
+        return target if target is not None and target.is_file() else None
     except (OSError, ValueError):
         return None
 
@@ -3491,18 +3491,19 @@ def home_attention(
             else:
                 errors.append(exc.as_dict())
     feed_rows = [row for row in (feed or {}).get("open_decisions", []) if isinstance(row, dict)]  # type: ignore[union-attr]
+    snapshots = all_snapshots([snapshot])
     if scope is not None:
         feed_rows = [row for row in feed_rows if scope.includes(*decision_owner(snapshot, row))]
     feed_titles = {str(row["task"]): str(row["title"]) for row in feed_rows}
     for row in (feed or {}).get("in_flight", []) or []:  # type: ignore[union-attr]
-        if isinstance(row, dict) and isinstance(row.get("task"), str) and isinstance(row.get("title"), str):
+        if (isinstance(row, dict) and isinstance(row.get("task"), str) and isinstance(row.get("title"), str)
+                and (scope is None or scope.includes(*task_reference_owner(snapshot, row["task"], snapshots)))):
             feed_titles.setdefault(row["task"], row["title"])
     if ledger_ok:
         view["ledger"] = {
             "path": str(LEDGER_PATH), "present": records is not None, "version": LEDGER_VERSION,
             "records": len(records or []),
         }
-    snapshots = all_snapshots([snapshot])
     normalized: list[dict[str, object]] = []
     for owner in snapshots:
         owner_spec = owner.spec
@@ -3538,9 +3539,11 @@ def home_attention(
         if recap_inputs is not None:
             end = now.timestamp()
             start = end - RECAP_HOURS * 3600
-            recap_records = [record for record in admitted
-                             if float(record["ts"]) <= end and (record["event"] == "task.dispatched"
-                                 or record["event"] == "task.merged" and float(record["ts"]) >= start)]
+            recap_records = [(record["task"], record["ts"], record["event"],
+                              record.get("project") if record["event"] == "task.dispatched" else record.get("pr"))
+                             for record in admitted if float(record["ts"]) <= end
+                             and (record["event"] == "task.dispatched" and isinstance(record.get("project"), str)
+                                  or record["event"] == "task.merged" and float(record["ts"]) >= start)]
             if recap_records or titles:
                 recap_inputs.append((owner_spec, recap_records, titles))
         if owner is snapshot and ledger_ok:
@@ -5004,21 +5007,27 @@ def settle_relevance(entry: BoardEntry, state: ReviewState, view: BoardView) -> 
     return False
 
 
-def task_owner(snapshot: HomeSnapshot, task: str) -> tuple[HomeSnapshot, str]:
+def task_owner(snapshot: HomeSnapshot, task: str, scope: SessionScope | None = None) -> tuple[HomeSnapshot, str]:
     route, separator, rest = task.partition("/")
-    child = next((c for c in snapshot.children if separator and c.spec.route_id == route), None)
-    return task_owner(child, rest) if child is not None else (snapshot, task)
+    if not separator:
+        return snapshot, task
+    scope = scope or snapshot.session
+    registered = scope.route_roots.get((snapshot.spec.home, snapshot.data_dir)) if scope is not None else None
+    child = next((c for c in snapshot.children if c.spec.route_id == route), None)
+    if child is None and registered is not None:
+        child = next((c for c in registered.children if c.spec.route_id == route), None)
+    return task_owner(child, rest, scope) if child is not None else (snapshot, task)
 
 
 def task_reference_owner(snapshot: HomeSnapshot, task: str, snapshots: list[HomeSnapshot], *,
-                         scoped: bool = False) -> tuple[HomeSnapshot, str]:
+                         scope: SessionScope | None = None) -> tuple[HomeSnapshot, str]:
     task = task.strip()
     _prefix, separator, rest = task.partition("/")
     if not separator:
         return snapshot, task
     matches = [member for member in snapshots if report_reference(member.spec.label, rest) == task]
-    if scoped or snapshot.session is not None:
-        owner, local = task_owner(snapshot, task)
+    if scope is not None or snapshot.session is not None:
+        owner, local = task_owner(snapshot, task, scope)
         if owner is not snapshot:
             return owner, local
         if any(member is snapshot for member in matches):
@@ -12682,11 +12691,28 @@ def work_cards(items: list[dict[str, object]], home: str, multi_home: bool) -> l
     return cards
 
 
-DOC_PATH_RE = re.compile(r"(?<![\w./-])data/([\w.-]+)/([\w.-]+\.(?:md|html))" + FILE_REFERENCE_END)
+DOC_PATH_RE = re.compile(r"(?<![\w./-])data/((?:[\w.-]+/)+[\w.-]+\.(?:md|html))" + FILE_REFERENCE_END)
 DOC_BARE_RE = re.compile(r"(?<![\w./-])([\w-][\w.-]*\.(?:md|html))" + FILE_REFERENCE_END)
+PRIVATE_DOCUMENT_RE = re.compile(r"token|credential|secret|password|(?:api|access|private|ssh)[._-]?key|"
+                                 r"(?:^|[._-])keys?(?:[._-]|$)", re.I)
 DOC_PAGE_LIMIT = 2_000_000
 DOC_PREFIX = "doc-"
 RAW_PREFIX = "raw-"  # the same file with no Quarterdeck additions: .html as written, markdown as .txt
+
+
+def publishable_document(path: Path, data_dir: Path) -> Path | None:
+    try:
+        root = data_dir.resolve()
+        resolved = path.resolve()
+        candidates = (path.absolute().relative_to(data_dir.absolute()), resolved.relative_to(root))
+    except (OSError, ValueError, RuntimeError):
+        return None
+    for candidate in candidates:
+        if (len(candidate.parts) < 2
+                or any(part.startswith(".") or part.casefold() in {"config", "state"} for part in candidate.parts[:-1])
+                or candidate.name.startswith(".") or PRIVATE_DOCUMENT_RE.search(candidate.name)):
+            return None
+    return resolved
 
 
 def referenced_docs(text: str, data_dir: Path, *, explicit_only: bool = False) -> list[tuple[Path, str]]:
@@ -12695,32 +12721,27 @@ def referenced_docs(text: str, data_dir: Path, *, explicit_only: bool = False) -
     A bare name such as explainer.html resolves next to the one data/<id>/ directory the same text names. Only
     regular files that really sit inside data_dir (symbolic links that escape it are refused) are returned.
     """
-    wanted: list[tuple[str, str]] = [(match.group(1), match.group(2)) for match in DOC_PATH_RE.finditer(text)]
-    directories = {directory for directory, _name in wanted}
+    matches = list(DOC_PATH_RE.finditer(text))
+    wanted = [match.group(1) for match in matches if not {".", ".."}.intersection(match.group(1).split("/"))]
+    directories = {Path(name).parent for name in wanted}
     if not explicit_only and len(directories) == 1:
         directory = next(iter(directories))
-        spans = [match.span() for match in DOC_PATH_RE.finditer(text)]
         wanted.extend(
-            (directory, match.group(1)) for match in DOC_BARE_RE.finditer(text)
-            if not any(start <= match.start() < end for start, end in spans)
+            str(directory / match.group(1)) for match in DOC_BARE_RE.finditer(text)
+            if not any(path.start() <= match.start() < path.end() for path in matches)
         )
-    try:
-        root = data_dir.resolve()
-    except OSError:
-        return []
     found: list[tuple[Path, str]] = []
-    for directory, name in wanted:
-        if directory in {".", ".."} or name.startswith("."):
-            continue
+    for label in wanted:
         try:
-            path = (root / directory / name).resolve()
-            path.relative_to(root)
-            draft = path.parent == root / TOPICS_DIR_NAME and path.name.startswith(("_", "."))
+            path = publishable_document(data_dir / label, data_dir)
+            if path is None:
+                continue
+            draft = path.parent == data_dir.resolve() / TOPICS_DIR_NAME and path.name.startswith("_")
             usable = not draft and path.is_file() and path.stat().st_size <= DOC_PAGE_LIMIT
         except (OSError, ValueError):
             continue
         if usable and all(path != seen for seen, _label in found):
-            found.append((path, f"{directory}/{name}"))
+            found.append((path, label))
     return found
 
 
@@ -12754,23 +12775,24 @@ def report_directory(data_dir: Path | None, report_id: str) -> Path | None:
         return None
     try:
         root = data_dir.resolve()
-        directory = (root / report_id).resolve()
+        named = root / report_id
+        directory = named.resolve()
         if directory.parent != root or not directory.is_dir():
             return None
-    except OSError:
+    except (OSError, RuntimeError):
         return None
-    return directory if read_report_file(directory, "report.md") is not None or read_report_file(directory, "report.html") is not None else None
+    return directory if read_report_file(named, "report.md") is not None or read_report_file(named, "report.html") is not None else None
 
 
 def read_report_file(directory: Path, name: str) -> str | None:
     """The text of directory/<name> (report.md or report.html), or None when missing, unreadable, too large, or a
     link leading out of the directory."""
     try:
-        path = (directory / name).resolve()
-        if path.parent != directory.resolve() or not path.is_file() or path.stat().st_size > DOC_PAGE_LIMIT:
+        path = publishable_document(directory / name, directory.parent)
+        if path is None or path.parent != directory.resolve() or not path.is_file() or path.stat().st_size > DOC_PAGE_LIMIT:
             return None
         return path.read_text(encoding="utf-8")
-    except (OSError, UnicodeError):
+    except (OSError, ValueError):
         return None
 
 
@@ -13729,6 +13751,7 @@ class SessionScope:
     report_ambiguities: set[str] = field(default_factory=set)
     links: list[str] = field(default_factory=list)
     documents: list[SessionDocument] = field(default_factory=list)
+    route_roots: dict[tuple[Path | None, Path | None], HomeSnapshot] = field(default_factory=dict, repr=False)
 
     def includes(self, snapshot: HomeSnapshot | None, task: str) -> bool:
         return (id(snapshot), task) in self.tasks
@@ -13805,6 +13828,8 @@ def session_scope(homes: list[HomeSnapshot], now: datetime, *, main_href: str = 
     assert source is not None and source.board is not None and source.board.session_started_at is not None
     board = source.board
     scope = SessionScope(min(board.session_started_at, now), identity)
+    scope.route_roots = {(home.spec.home, home.data_dir): home for home in homes if home.children}
+    snapshots = all_snapshots(homes)
     family = all_snapshots([source])
     try:
         turns = transcript_turns(transcript_dir(source.spec), session_id=identity[1])
@@ -13819,20 +13844,20 @@ def session_scope(homes: list[HomeSnapshot], now: datetime, *, main_href: str = 
     named_topics: set[tuple[int, str]] = set()
 
     def add_task(snapshot: HomeSnapshot, task: str) -> None:
-        owner, local = task_owner(snapshot, task.strip())
+        owner, local = task_owner(snapshot, task.strip(), scope)
         if local:
             scope.tasks.add((id(owner), local))
 
     board_tasks = {item.task for item in board.items}
     for token in tokens:
-        owner, task = task_owner(source, token)
+        owner, task = task_owner(source, token, scope)
         if task in snapshot_items(owner) or token in board_tasks:
             scope.tasks.add((id(owner), task))
     for item in board.items:
         if item.session_id == identity[1] and item.touched_at is not None and item.touched_at <= now:
             add_task(source, item.task)
             if item.topic:
-                owner, _task = task_owner(source, item.task)
+                owner, _task = task_owner(source, item.task, scope)
                 named_topics.add((id(owner), item.topic.casefold()))
     if source.spec.home is not None and not source.spec.remote_host:
         try:
@@ -13843,7 +13868,7 @@ def session_scope(homes: list[HomeSnapshot], now: datetime, *, main_href: str = 
             if (record.get("session_id") == identity[1]
                     and (record["event"] == "task.dispatched" or str(record["event"]).startswith("captain."))
                     and float(record["ts"]) <= now.timestamp()):
-                owner, task = task_reference_owner(source, str(record["task"]), family, scoped=True)
+                owner, task = task_reference_owner(source, str(record["task"]), family, scope=scope)
                 if task:
                     scope.tasks.add((id(owner), task))
     reports_in_chat = set(report_ids_in(said))
@@ -13851,8 +13876,10 @@ def session_scope(homes: list[HomeSnapshot], now: datetime, *, main_href: str = 
         held_at = parse_board_time(hold_stamp(item)) if item.held and hold_session_id(item) == identity[1] else None
         if held_at is not None and held_at <= now:
             add_task(source, item.id)
-    for snapshot in family:
+    for snapshot in snapshots:
         for topic in snapshot.topics:
+            if snapshot.data_dir is None or publishable_document(topic.path, snapshot.data_dir) is None:
+                continue
             names = {topic.title.casefold(), topic.topic_id.casefold()} - {""}
             mentioned = snapshot is source and (
                 topic.topic_id in topic_paths
@@ -13862,7 +13889,6 @@ def session_scope(homes: list[HomeSnapshot], now: datetime, *, main_href: str = 
                 scope.topics.add((id(snapshot), topic.topic_id))
                 for piece in topic.pieces:
                     add_task(snapshot, piece)
-    snapshots = all_snapshots(homes)
     for snapshot in snapshots:
         items = list(snapshot_items(snapshot).values())
         data_dir = snapshot.data_dir or snapshot.spec.data_dir
@@ -13879,21 +13905,21 @@ def session_scope(homes: list[HomeSnapshot], now: datetime, *, main_href: str = 
             if not scope.includes(snapshot, item.id):
                 continue
             directories.update(report_ids_in(item.raw))
-            origin_owner, origin_task = task_owner(snapshot, hold_origin_id(item.body))
+            origin_owner, origin_task = task_owner(snapshot, hold_origin_id(item.body), scope)
             origin = snapshot_items(origin_owner).get(origin_task)
             if origin is not None:
                 scope.report_dirs.setdefault(id(origin_owner), set()).add(origin.report_dir or origin_task)
             directories.add(item.report_dir or item.id)
         if snapshot.board is not None:
             for item in snapshot.board.items:
-                owner, task = task_owner(snapshot, item.task)
+                owner, task = task_owner(snapshot, item.task, scope)
                 if scope.includes(owner, task):
                     owner_dirs = scope.report_dirs.setdefault(id(owner), set())
                     owner_dirs.update(report_ids_in("\n".join((item.title, item.ask, item.detail))))
         for report in snapshot.reports:
             item = report_backlog_item(items, report)
             if (scope.includes(snapshot, item.id if item else report.path.parent.name)
-                    or any(scope.includes(*task_reference_owner(snapshot, target, snapshots, scoped=True))
+                    or any(scope.includes(*task_reference_owner(snapshot, target, snapshots, scope=scope))
                            for target in report.related_to)):
                 directories.add(report.path.parent.name)
     if source.data_dir is not None:
@@ -14098,7 +14124,15 @@ def render_projection(homes: list[HomeSnapshot], bearings: Bearings, pages: dict
     attention = (bearings.attention or {}).get("homes", [])
     activity = [(home.get("waiting"), home.get("waiting_more"), home.get("decisions"),
                  home.get("recent_work_6h"), home.get("done_recent")) for home in attention]
-    projection = (sources, membership, scope.links if scope else [], activity, recap_inputs,
+    answer_keys = {("call", report_reference(snapshot.spec.label, task))
+                   for snapshot, (tasks, _) in zip(members, membership) for task in tasks}
+    for snapshot in members:
+        for topic in snapshot.topics:
+            answer_keys.add(("topic", topic.ref))
+            answer_keys.update(("decision", f"{topic.ref}/{entry.entry_id}") for entry in topic.open_decisions())
+    state = next((snapshot.review_state for snapshot in members if snapshot.review_state is not None), None)
+    answers = [(key, state.history[key]) for key in sorted(answer_keys) if state is not None and key in state.history]
+    projection = (sources, membership, scope.links if scope else [], activity, recap_inputs, answers,
                   sorted((name, value) for name, value in pages.items() if name.startswith(RAW_PREFIX)),
                   bearings.call, bearings.landed, bearings.underway, bearings.charted)
     return hashlib.sha256(repr(projection).encode("utf-8")).hexdigest()

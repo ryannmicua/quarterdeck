@@ -42,9 +42,11 @@ the page.
 ## Links and output
 
 **Links from this session** includes HTTP and HTTPS links and explicit in-home
-paths such as `data/launch/preview.html` from the owner's messages and Firstmate's
-replies to them. Links carrying credentials, tokens or signing parameters are
-omitted. Classic, Lavish and `render --all` include these links. JSON exports
+paths such as `data/launch/preview/index.html` from the owner's messages and Firstmate's
+replies to them. Quarterdeck opens eligible reports and pages under `data/<id>/`.
+It excludes hidden paths, `config/` and `state/` directories, and filenames
+that suggest credentials or secrets. It also omits web links carrying credentials,
+tokens or signing parameters. Classic, Lavish and `render --all` include eligible links. JSON exports
 and standalone artifacts list the local document names. Exported report text follows the existing
 `--bodies` setting.
 
