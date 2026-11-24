@@ -34,6 +34,8 @@ today. To correct a saved item, remove it and save a new one.
 See [serving security](../how-to/serve-the-page.md#security-loopback-by-default)
 for the browser interface and who can reach it. Saving, rendering
 and serving items make no outbound requests or model calls. The installer
-uses Git to clone or update the checkout. Pages escape saved text and use
-the URLs supplied with resources. They do not embed the server's config or
-store paths.
+uses Git to clone or update the checkout.
+
+The [item store reference](../reference/item-store.md#format-version-1)
+describes how pages escape saved text and display links. Pages do not embed
+the server's config or store paths.
