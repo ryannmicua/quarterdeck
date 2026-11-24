@@ -255,7 +255,9 @@ class PageTests(StoreCase):
         description = (
             "See https://example.org/Mercury_(planet). "
             "Skip https://example.org:99999/?x=1&y=2. "
-            "Try [http://[2001:db8::1]]! Or HTTPS://example.org/?q=go!."
+            "Try [http://[2001:db8::1]]! Or HTTPS://example.org/?q=go!. "
+            "Read (https://example.org/docs#setup)! Try (https://example.org/?q=go!)? "
+            "Compare https://example.org/Alzheimer's_disease and 'https://example.org/its_(owner)'?"
         )
         self.add("resource", "Notes", description, "--url", "https://example.org/notes", "--link-text", "Notes")
         self.add("questions", "Decisions", description, "--body-file", "-", stdin=json.dumps(QUESTIONS))
@@ -264,7 +266,12 @@ class PageTests(StoreCase):
             'https://example.org/Mercury_(planet)</a>. '
             'Skip https://example.org:99999/?x=1&amp;y=2. '
             'Try [<a href="http://[2001:db8::1]" rel="noopener noreferrer">http://[2001:db8::1]</a>]! Or '
-            '<a href="HTTPS://example.org/?q=go!" rel="noopener noreferrer">HTTPS://example.org/?q=go!</a>.'
+            '<a href="HTTPS://example.org/?q=go!" rel="noopener noreferrer">HTTPS://example.org/?q=go!</a>. '
+            'Read (<a href="https://example.org/docs#setup" rel="noopener noreferrer">https://example.org/docs#setup</a>)! '
+            'Try (<a href="https://example.org/?q=go!" rel="noopener noreferrer">https://example.org/?q=go!</a>)? '
+            'Compare <a href="https://example.org/Alzheimer&#x27;s_disease" rel="noopener noreferrer">'
+            'https://example.org/Alzheimer&#x27;s_disease</a> and &#x27;'
+            '<a href="https://example.org/its_(owner)" rel="noopener noreferrer">https://example.org/its_(owner)</a>&#x27;?'
         )
         pages = self.pages()
         self.assertIn(f'<td class="description">{expected}</td>', pages["index.html"])

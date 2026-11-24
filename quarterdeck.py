@@ -709,34 +709,55 @@ def esc(value: object) -> str:
     return html.escape(str(value), quote=True)
 
 
-URL_PATTERN = re.compile(r"https?://[^\s<>\"']+", re.IGNORECASE)
+URL_PATTERN = re.compile(r'https?://[^\s<>"]+', re.IGNORECASE)
 URL_CLOSERS = {")": "(", "]": "[", "}": "{"}
+
+
+def enclosed_url(url: str, opener: str) -> str | None:
+    if opener == "'":
+        quoted = url.rstrip(".,;:!?)]}")
+        return quoted[:-1] if quoted.endswith("'") else None
+    if opener not in URL_CLOSERS.values():
+        return None
+    depth = 1
+    for index, character in enumerate(url):
+        if character == opener:
+            depth += 1
+        elif URL_CLOSERS.get(character) == opener:
+            depth -= 1
+            if depth == 0:
+                return url[:index]
+    return None
 
 
 def linked_text(value: object) -> str:
     """Escape text and link valid web addresses, excluding surrounding prose punctuation."""
     text, parts, last = str(value), [], 0
     for match in URL_PATTERN.finditer(text):
-        url = match.group()
-        while url:
-            tail = url[-1]
-            opener = URL_CLOSERS.get(tail)
-            if opener:
-                if url.count(tail) <= url.count(opener):
+        start = match.start()
+        candidate = match.group()
+        url = enclosed_url(candidate, text[start - 1:start])
+        if url is None:
+            url = candidate
+            while url:
+                tail = url[-1]
+                opener = URL_CLOSERS.get(tail)
+                if opener:
+                    if url.count(tail) <= url.count(opener):
+                        break
+                elif tail in "!?":
+                    if "?" in url[:-1] or "#" in url:
+                        break
+                elif tail not in ".,;:":
                     break
-            elif tail in "!?":
-                if "?" in url[:-1] or "#" in url:
-                    break
-            elif tail not in ".,;:":
-                break
-            url = url[:-1]
+                url = url[:-1]
         try:
             url = clean_url(url)
         except ValueError:
             continue
-        parts.append(esc(text[last:match.start()]))
+        parts.append(esc(text[last:start]))
         parts.append(f'<a href="{esc(url)}" rel="noopener noreferrer">{esc(url)}</a>')
-        last = match.start() + len(url)
+        last = start + len(url)
     return "".join(parts) + esc(text[last:])
 
 
