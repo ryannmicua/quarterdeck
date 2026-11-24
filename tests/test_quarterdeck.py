@@ -4,6 +4,8 @@ import io
 import json
 import os
 import select
+import shlex
+import shutil
 import socket
 import stat
 import subprocess
@@ -14,6 +16,7 @@ import unittest
 import urllib.error
 import urllib.request
 from concurrent.futures import ThreadPoolExecutor
+from configparser import ConfigParser
 from contextlib import redirect_stderr, redirect_stdout
 from pathlib import Path
 from unittest.mock import patch
@@ -353,11 +356,13 @@ class ServeTests(StoreCase):
         except urllib.error.HTTPError as error:
             return error.code, error.read().decode("utf-8"), dict(error.headers)
 
-    def post_answer(self, port, part, answer, revision="", origin=None):
+    def post_answer(self, port, part, answer, revision="", origin=None, forwarded_proto=None):
         base = f"http://127.0.0.1:{port}"
         request = urllib.request.Request(base + "/qd/answers", method="POST",
             headers={"Content-Type": "application/json", "Origin": base if origin is None else origin},
             data=json.dumps({"part": part, "answer": answer, "revision": revision}).encode())
+        if forwarded_proto is not None:
+            request.add_header("X-Forwarded-Proto", forwarded_proto)
         try:
             with urllib.request.urlopen(request, timeout=5) as response:
                 return response.status, json.load(response)
@@ -373,22 +378,29 @@ class ServeTests(StoreCase):
         self.addCleanup(server.server_close)
         self.addCleanup(server.shutdown)
         port = server.server_address[1]
-        status, record = self.post_answer(port, "Q3.1", "Green & blue")
+        answer = "Green & blue\nNo varnish."
+        status, record = self.post_answer(port, "Q3.1", answer)
         self.assertEqual((200, "pending"), (status, record["delivery"]))
         self.assertIn("Not delivered", self.fetch(port, "/qd/q3.html")[1])
         saved = self.store()["items"][2]["answers"]["1"]
         script = home / "bin" / "fm-inbox.sh"
         script.parent.mkdir(parents=True)
-        script.write_text('#!/bin/sh\nset -eu\ntest "$1" = note && test "$2" = --request-id && test "$4" = - || exit 2\n'
-                          'cat >> "$FM_HOME/$3"\n')
+        script.write_text('#!/bin/sh\nset -eu\n'
+                          'test "$#" = 6 && test "$1" = note && test "$2" = --request-id && '
+                          'test "$4" = --json && test "$5" = -- || exit 2\n'
+                          'test "$PWD" = "$FM_HOME"\n'
+                          'printf "%s" "$6" >> "$3"\n')
         script.chmod(0o700)
         for _ in range(2):
-            status, retry = self.post_answer(port, "Q3.1", "Green & blue")
+            status, retry = self.post_answer(port, "Q3.1", answer)
             self.assertEqual((status, retry["delivery"]), (200, "sent"))
-        self.assertEqual((home / saved["request_id"]).read_text(), "Q3.1 Green & blue")
+        self.assertEqual((home / saved["request_id"]).read_text(), "Q3.1 Green & blue\nNo varnish.")
         self.assertEqual(self.post_answer(port, "Q3.1", "Changed")[0], 409)
         status, correction = self.post_answer(port, "Q3.1", "Changed", record["revision"])
         self.assertEqual((status, correction["delivery"]), (200, "sent"))
+        corrected = self.store()["items"][2]["answers"]["1"]
+        self.assertNotEqual(saved["request_id"], corrected["request_id"])
+        self.assertEqual((home / corrected["request_id"]).read_text(), "Q3.1 Changed")
         self.assertIn("Answer: Changed", self.run_cli("show", "Q3")[1])
         self.assertEqual(0, self.run_cli("mark", "Q3", "closed")[0])
         self.assertEqual(self.post_answer(port, "Q3.1", "New", correction["revision"])[0], 409)
@@ -406,6 +418,122 @@ class ServeTests(StoreCase):
         for origin in ("", "null", "https://example.org"):
             self.assertEqual(self.post_answer(port, "Q3.1", "Hold", origin=origin)[0], 403)
         self.assertEqual(self.store(), before)
+
+    def test_answer_origin_through_tls_terminating_proxy(self):
+        self.add_all_kinds()
+        port = self.start("/qd")
+        public_origin = f"https://127.0.0.1:{port}"
+        before = self.store()
+        for origin, forwarded in ((public_origin, None), ("https://example.org", "https"),
+                                  (f"http://127.0.0.1:{port}", "https")):
+            self.assertEqual(self.post_answer(port, "Q3.1", "Hold", origin=origin, forwarded_proto=forwarded)[0], 403)
+        self.assertEqual(self.store(), before)
+        status, record = self.post_answer(port, "Q3.1", "Hold", origin=public_origin, forwarded_proto="https")
+        self.assertEqual((status, record["answer"]), (200, "Hold"))
+
+    def check_answer_page(self, port, script):
+        chrome = shutil.which("google-chrome")
+        if not chrome:
+            self.skipTest("google-chrome is required for the answer-card browser tests")
+        status, page, _ = self.fetch(port, "/qd/q1.html")
+        self.assertEqual(status, 200)
+        fixture = self.root / "question.html"
+        fixture.write_text(page.replace("</body>", """
+<output id="browser-result">Incomplete</output>
+<script>
+const check = (condition, message) => { if (!condition) throw new Error(message); };
+const field = n => document.getElementById('answer-Q1.' + n);
+const card = n => document.getElementById('Q1.' + n);
+const button = id => document.getElementById(id);
+const typeAnswer = (n, text) => {
+  field(n).value = text;
+  field(n).dispatchEvent(new Event('input', {bubbles: true}));
+};
+(async () => {
+""" + script + """
+  button('browser-result').textContent = 'PASS';
+})().catch(error => { button('browser-result').textContent = error.message; });
+</script>
+</body>"""), encoding="utf-8")
+        result = subprocess.run([chrome, "--headless", "--disable-background-networking", "--no-first-run",
+                                 f"--user-data-dir={self.root / 'browser'}", "--dump-dom", fixture.as_uri()],
+                                capture_output=True, text=True, timeout=30, check=True)
+        browser_result = result.stdout.partition('<output id="browser-result">')[2].partition("</output>")[0]
+        self.assertEqual(browser_result, "PASS", result.stderr)
+
+    def test_bulk_suggestions_skip_saved_answers_and_drafts(self):
+        self.add("questions", "Tide decisions", "Decide the launch plan.", "--body-file", "-",
+                 stdin=json.dumps([QUESTIONS[0]] * 7))
+        port = self.start("/qd")
+        self.assertEqual(self.post_answer(port, "Q1.1", "Wait for low tide")[0], 200)
+        self.assertEqual(self.post_answer(port, "Q1.6", "Ask the harbourmaster")[0], 200)
+        for part, state in (("Q1.5", "answered"), ("Q1.6", "open"), ("Q1.7", "closed")):
+            self.assertEqual(self.run_cli("mark", part, state)[0], 0)
+        self.check_answer_page(port, """
+typeAnswer(2, 'Wait for the pilot');
+card(3).querySelector('input[data-choice="Hold"]').click();
+button('suggest').click();
+check(field(1).value === 'Wait for low tide', 'Bulk suggestions overwrote a saved answer');
+check(field(2).value === 'Wait for the pilot', 'Bulk suggestions overwrote a typed draft');
+check(field(3).value === 'Hold', 'Bulk suggestions overwrote a chosen option');
+check(field(4).value === 'Merge', 'Bulk suggestions skipped an untouched open question');
+check(field(5).value === '', 'Bulk suggestions filled a manually answered question');
+check(field(6).value === 'Ask the harbourmaster', 'Bulk suggestions overwrote a reopened answer');
+check(field(7) === null, 'A closed question had an editable field');
+check(button('suggest').disabled, 'Bulk suggestions remained available with nothing to fill');
+""")
+
+    def test_undo_reverses_one_option_action_and_preserves_later_drafts(self):
+        self.add("questions", "Tide decisions", "Decide the launch plan.", "--body-file", "-",
+                 stdin=json.dumps([QUESTIONS[0]] * 4))
+        self.check_answer_page(self.start("/qd"), """
+card(1).querySelector('input[data-choice="Hold"]').click();
+button('suggest').click();
+typeAnswer(2, 'Use the next tide');
+typeAnswer(4, 'Consult the pilot');
+button('undo').click();
+check(field(1).value === 'Hold', 'Undo also reversed an earlier option');
+check(field(2).value === 'Use the next tide', 'Undo removed a later draft on a suggested question');
+check(field(3).value === '', 'Undo left an untouched suggestion in place');
+check(field(4).value === 'Consult the pilot', 'Undo removed another later draft');
+button('undo').click();
+check(field(1).value === '', 'Second undo did not reverse the earlier option');
+check(field(2).value === 'Use the next tide' && field(4).value === 'Consult the pilot',
+      'Second undo removed later drafts');
+check(button('undo').hidden, 'Undo history was not empty');
+""")
+
+    def test_partial_batch_displays_saved_answer_and_keeps_unsent_drafts(self):
+        self.add("questions", "Tide decisions", "Decide the launch plan.", "--body-file", "-",
+                 stdin=json.dumps(QUESTIONS))
+        self.check_answer_page(self.start("/qd"), """
+typeAnswer(1, 'Hold <for the pilot>');
+typeAnswer(2, 'Blue');
+const sent = [];
+window.fetch = async (url, options) => {
+  sent.push(JSON.parse(options.body));
+  if (sent.length === 1) {
+    return {ok: true, json: async () => ({
+      answer: 'Hold <for the pilot>', revision: 'saved-revision',
+      answered_at: '2026-01-12T15:00:00Z', delivery: 'sent'
+    })};
+  }
+  return {ok: false, text: async () => 'Question changed. Reload before sending.'};
+};
+button('send').click();
+await new Promise(resolve => setTimeout(resolve, 0));
+check(sent.map(answer => answer.part).join(',') === 'Q1.1,Q1.2', 'The batch did not send both parts');
+check(card(1).querySelector('.badge').textContent === 'Answered', 'The saved badge was stale');
+const saved = card(1).querySelector('.saved-answer');
+check(!saved.hidden && saved.querySelector('.record').textContent === 'Hold <for the pilot>',
+      'The saved answer was missing or interpreted as HTML');
+check(saved.querySelector('.delivery').textContent === 'Sent', 'The delivery label was stale');
+check(saved.querySelector('time').dateTime === '2026-01-12T15:00:00Z', 'The saved timestamp was stale');
+check(document.querySelector('.progress').textContent === '1 of 2 open', 'Progress was stale');
+check(field(2).value === 'Blue', 'The unsent draft was lost');
+check(button('send').textContent === 'Send 1 answer', 'The saved part was still queued');
+check(document.querySelector('[role="status"]').textContent.includes('Question changed.'), 'The conflict was hidden');
+""")
 
     def test_binding_uses_only_an_explicit_or_single_home(self):
         homes = [{"path": "/orchard"}, {"path": "/garden"}]
@@ -486,10 +614,18 @@ class ServeTests(StoreCase):
 class ServiceAndHelpTests(StoreCase):
     def test_service_unit_runs_serve_without_old_flags(self) -> None:
         args = quarterdeck.make_parser().parse_args(["service", "--host", "127.0.0.1", "--port", "9000", "--base-path", "/qd"])
-        unit = quarterdeck.service_unit(args)
-        self.assertIn('"serve" "--host" "127.0.0.1" "--port" "9000" "--base-path" "/qd"', unit)
-        self.assertNotIn("allow-marks", unit)
-        self.assertIn("Description=Quarterdeck page of saved items", unit)
+        unit = ConfigParser(interpolation=None)
+        unit.read_string(quarterdeck.service_unit(args))
+        self.assertEqual(unit["Unit"]["Description"], "Quarterdeck page of saved items")
+        self.assertEqual(unit["Unit"]["After"], "network.target")
+        service = unit["Service"]
+        self.assertEqual(shlex.split(service["ExecStart"]),
+                         [sys.executable, str(ROOT / "quarterdeck.py"), "serve",
+                          "--host", "127.0.0.1", "--port", "9000", "--base-path", "/qd"])
+        self.assertEqual(service["Restart"], "on-failure")
+        self.assertEqual(service.getint("RestartSec"), 5)
+        self.assertEqual(shlex.split(service["Environment"]), [f"XDG_STATE_HOME={self.root / 'state'}"])
+        self.assertEqual(unit["Install"]["WantedBy"], "default.target")
 
     def test_url_reads_the_installed_unit(self) -> None:
         self.assertIn("http://127.0.0.1:8765/", self.run_cli("url")[1])

@@ -478,8 +478,9 @@ def send_answer(store, home, payload):
         if home and record_now["delivery"] == "pending":
             try:
                 env = {k: v for k, v in os.environ.items() if not k.startswith("FM_")}
-                result = subprocess.run([home / "bin/fm-inbox.sh", "note", "--request-id", record_now["request_id"], "-"],
-                                        input=f"{item_id}.{part} {answer}", text=True, timeout=10,
+                result = subprocess.run([home / "bin/fm-inbox.sh", "note", "--request-id", record_now["request_id"],
+                                         "--json", "--", f"{item_id}.{part} {record_now['answer']}"],
+                                        cwd=home, stdin=subprocess.DEVNULL, timeout=10,
                                         stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, env={**env, "FM_HOME": str(home)})
                 if result.returncode == 0:
                     record_now["delivery"] = "sent"
@@ -667,8 +668,9 @@ table.items td.when { white-space:normal; }
 
 
 TIME_SCRIPT = """
-for (const time of document.querySelectorAll('time[datetime]')) {
-  time.textContent = new Date(time.dateTime).toLocaleString(undefined, {dateStyle:'medium', timeStyle:'short'});
+const localTime = dateTime => new Date(dateTime).toLocaleString(undefined, {dateStyle:'medium', timeStyle:'short'});
+for (const time of document.querySelectorAll('time[datetime]:not([datetime=""])')) {
+  time.textContent = localTime(time.dateTime);
 }
 """
 
@@ -742,10 +744,13 @@ def question_form(item, served):
         status = record.get("state", "open")
         answer = record.get("answer", "")
         saved = ""
-        if answer:
-            at = esc(record["answered_at"])
-            saved = (f'<p class="record">{esc(answer)}</p><p class="meta">{delivery_label(record)}'
-                     f' <time datetime="{at}">{at}</time></p>')
+        if answer or (served and status != "closed"):
+            at = esc(record.get("answered_at", ""))
+            delivery = delivery_label(record) if answer else ""
+            hidden = "" if answer else " hidden"
+            saved = (f'<div class="saved-answer"{hidden}><p class="record">{esc(answer)}</p>'
+                     f'<p class="meta"><span class="delivery">{delivery}</span> '
+                     f'<time datetime="{at}">{at}</time></p></div>')
         controls = ""
         if served and status != "closed":
             suggestions = question.get("suggestion")
@@ -766,7 +771,7 @@ def question_form(item, served):
             if question.get("suggestion"):
                 controls += f'<p><strong>Suggested answer</strong><br>{esc(question["suggestion"])}</p>'
         cards.append(f'<section class="decision" id="{part}" aria-labelledby="title-{part}" data-revision="{esc(record.get("revision", ""))}" '
-                     f'data-reopened="{int(bool(answer) and status == "open")}" data-pending="{int(record.get("delivery") == "pending" and status == "answered")}">'
+                     f'data-state="{status}" data-pending="{int(record.get("delivery") == "pending" and status == "answered")}">'
                      f'<div class="eyebrow"><span class="id">{part}</span><span class="badge">{status.capitalize()}</span></div>'
                      f'<h2 id="title-{part}">{esc(question["question"])}</h2><p>{esc(question["context"])}</p>{saved}{controls}</section>')
     total = len(cards)
@@ -785,40 +790,82 @@ ANSWER_SCRIPT = """
 const send = document.querySelector('#send');
 if (send) {
   const fields = [...document.querySelectorAll('textarea')];
+  const sections = [...document.querySelectorAll('.decision')];
   const output = document.querySelector('output');
+  const suggest = document.querySelector('#suggest');
   const undo = document.querySelector('#undo');
-  let previous;
-  const changed = f => f.value.trim() && (f.value.trim() !== f.defaultValue || f.closest('section').dataset.pending === '1' || f.closest('section').dataset.reopened === '1');
+  let history = [];
+  const changed = f => {
+    const {state, pending} = f.closest('section').dataset;
+    return f.value.trim() && (f.value.trim() !== f.defaultValue || pending === '1' || state === 'open');
+  };
+  const suggestionFor = f => {
+    const section = f.closest('section');
+    if (section.dataset.state === 'open' && !f.defaultValue && !f.value) {
+      return section.querySelector('[data-suggested]');
+    }
+  };
+  function forget(field) {
+    for (const step of history) step.delete(field);
+    history = history.filter(step => step.size);
+  }
   function refresh() {
     const count = fields.filter(changed).length;
     send.disabled = !count;
     send.textContent = count ? 'Send ' + count + (count === 1 ? ' answer' : ' answers') : 'Send answers';
+    if (suggest) suggest.disabled = !fields.some(suggestionFor);
+    undo.hidden = !history.length;
     for (const f of fields) {
       for (const b of f.closest('section').querySelectorAll('[data-choice]')) {
         b.checked = b.dataset.choice === f.value;
       }
     }
   }
-  document.addEventListener('input', e => { if (e.target.matches('textarea')) refresh(); });
+  document.addEventListener('input', e => {
+    if (!e.target.matches('textarea')) return;
+    forget(e.target);
+    refresh();
+  });
   document.addEventListener('click', e => {
     const choice = e.target.closest('[data-choice]');
-    if (choice || e.target.id === 'suggest') {
-      previous = fields.map(f => f.value);
+    if (choice || e.target === suggest) {
+      const step = new Map();
       for (const f of fields) {
         const section = f.closest('section');
-        const b = choice ? (section.contains(choice) && choice) : section.querySelector('[data-suggested]');
-        if (b) f.value = b.dataset.choice;
+        const option = choice ? (section.contains(choice) && choice) : suggestionFor(f);
+        if (option && option.dataset.choice !== f.value) {
+          step.set(f, f.value);
+          f.value = option.dataset.choice;
+        }
       }
-      undo.hidden = false;
+      if (step.size) history.push(step);
       refresh();
     }
-    if (e.target === undo) {
-      fields.forEach((f,i) => f.value = previous[i]);
-      undo.hidden = true;
+    if (e.target === undo && history.length) {
+      for (const [f, value] of history.pop()) f.value = value;
       refresh();
-      send.disabled ? fields[0].focus() : send.focus();
+      (history.length ? undo : send.disabled ? fields[0] : send).focus();
     }
   });
+  function showAnswer(section, field, record) {
+    section.dataset.state = 'answered';
+    section.dataset.revision = record.revision;
+    section.dataset.pending = record.delivery === 'pending' ? '1' : '0';
+    section.querySelector('.badge').textContent = 'Answered';
+    field.defaultValue = field.value = record.answer;
+    forget(field);
+
+    const saved = section.querySelector('.saved-answer');
+    saved.querySelector('.record').textContent = record.answer;
+    saved.querySelector('.delivery').textContent = record.delivery === 'sent' ? 'Sent' : 'Not delivered';
+    const time = saved.querySelector('time');
+    time.dateTime = record.answered_at;
+    time.textContent = localTime(record.answered_at);
+    saved.hidden = false;
+
+    const remaining = sections.filter(s => s.dataset.state === 'open').length;
+    document.querySelector('.progress').textContent = remaining ? remaining + ' of ' + sections.length + ' open' : 'Answered';
+  }
   send.addEventListener('click', async () => {
     const pending = fields.filter(changed);
     undo.hidden = true;
@@ -831,12 +878,7 @@ if (send) {
         const response = await fetch('answers', {method:'POST', headers:{'Content-Type':'application/json'},
           body:JSON.stringify({part:section.id, revision:section.dataset.revision, answer:f.value.trim()})});
         if (!response.ok) throw new Error(await response.text());
-        const record = await response.json();
-        section.dataset.reopened = '0';
-        section.dataset.revision = record.revision;
-        section.dataset.pending = record.delivery === 'pending' ? '1' : '0';
-        f.defaultValue = record.answer;
-        section.querySelector('.badge').textContent = 'Answered';
+        showAnswer(section, f, await response.json());
       }
       location.reload();
     } catch (err) {
@@ -1231,8 +1273,9 @@ def make_handler(site_title: str, base_path: str = "", store: Path | None = None
                 self.send_text(405, "Use the question page to send answers.")
                 return
             host = self.headers.get("Host", "")
-            scheme = "https" if isinstance(self.connection, ssl.SSLSocket) else "http"
-            if (self.headers.get("Origin") != f"{scheme}://{host}"
+            https = isinstance(self.connection, ssl.SSLSocket) or self.headers.get_all("X-Forwarded-Proto") == ["https"]
+            scheme = "https" if https else "http"
+            if (not host or self.headers.get("Origin") != f"{scheme}://{host}"
                     or (is_loopback(str(self.server.server_address[0])) and not request_host_is_loopback(host))):
                 self.send_text(403, "Open the question on Quarterdeck to send an answer.")
                 return

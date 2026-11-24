@@ -68,9 +68,14 @@ dashboard.example.org {
 
 `quarterdeck service --base-path /qd` writes the option into the unit.
 
+To terminate TLS at the proxy and use HTTP to reach Quarterdeck, omit
+`--tls-cert` and `--tls-key`, use an HTTP upstream, and have the proxy
+overwrite `X-Forwarded-Proto` with the incoming request's scheme. Preserve
+the browser-facing `Host` and the `/qd/` prefix.
+
 ## Security: loopback by default
 
 The default bind is `127.0.0.1`. A loopback listener refuses requests whose
 `Host` is outside loopback. Binding a non-loopback address exposes your saved
 items without a login to everyone who can reach the port, and Quarterdeck
-prints a warning when you do. Anyone who can reach the service can read items and send answers as the owner. Keep the listener and proxy on the trusted network, or protect both with an owner access gate. Browser submissions require a matching Origin and Host. The proxy must preserve the external Host and scheme.
+prints a warning when you do. Anyone who can reach the service can read items and send answers as the owner. Keep the listener and proxy on the trusted network, or protect both with an owner access gate. Browser submissions require an Origin that matches the public host and scheme.

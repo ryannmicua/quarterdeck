@@ -14,6 +14,8 @@ Run one group while changing it, then the whole suite before a pull request
 
 Tests use private `XDG_STATE_HOME` and `XDG_CONFIG_HOME` directories and
 invented items, and start local HTTP servers that shut themselves down.
+The serve group uses headless `google-chrome` when available to verify bulk
+suggestions, undo, and the card's display after a partial send.
 
 For a screen change, also save one item of each kind, run `quarterdeck serve`,
 and check the Saved page and each item page at phone width (about 390 px) and
