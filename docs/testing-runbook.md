@@ -16,7 +16,8 @@ Tests use private `XDG_STATE_HOME` and `XDG_CONFIG_HOME` directories and
 invented items, and start local HTTP servers that shut themselves down.
 The serve group uses headless `google-chrome` when available to verify bulk
 suggestions, undo, and that a conflict preserves its draft while the other
-answers in the batch are sent.
+answers in the batch are sent. The batch check also covers retrying a reopened
+answer and formatting its timestamp.
 
 For a screen change, also save one item of each kind, run `quarterdeck serve`,
 and check the Saved page and each item page at phone width (about 390 px) and

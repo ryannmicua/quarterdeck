@@ -10,4 +10,4 @@ Open **Needs attention** on the served page and select **Answer questions**. Eac
 
 Edit the answer to submit a new decision on a reopened question. If a question changed while you were drafting, the page keeps its draft and sends the other queued answers. Copy the conflicting draft before reloading to review the latest version.
 
-The page shows times in your local time zone. Downloaded or rendered HTML shows a snapshot. Open the served page to send an answer.
+The page shows answer times in your local time zone. Downloaded or rendered HTML shows a snapshot. Open the served page to send an answer.

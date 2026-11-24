@@ -334,8 +334,8 @@ class RenderTests(StoreCase):
 
 
 class ServeTests(StoreCase):
-    def start(self, base_path: str = "") -> int:
-        server = quarterdeck.make_server("127.0.0.1", 0, quarterdeck.make_handler("Quarterdeck", base_path))
+    def start(self, base_path: str = "", *, home: Path | None = None) -> int:
+        server = quarterdeck.make_server("127.0.0.1", 0, quarterdeck.make_handler("Quarterdeck", base_path, home=home))
         thread = threading.Thread(target=server.serve_forever, daemon=True)
         thread.start()
         self.addCleanup(server.server_close)
@@ -374,17 +374,15 @@ class ServeTests(StoreCase):
     def test_answer_delivery_retry_and_corrections(self):
         self.add_all_kinds()
         home = self.root / "home"
-        handler = quarterdeck.make_handler("Quarterdeck", "/qd", home=home)
-        server = quarterdeck.make_server("127.0.0.1", 0, handler)
-        threading.Thread(target=server.serve_forever, daemon=True).start()
-        self.addCleanup(server.server_close)
-        self.addCleanup(server.shutdown)
-        port = server.server_address[1]
+        port = self.start("/qd", home=home)
         answer = "Green & blue\nNo varnish."
         status, record = self.post_answer(port, "Q3.1", answer)
         self.assertEqual((200, "pending"), (status, record["delivery"]))
         self.assertIn("Not delivered", self.fetch(port, "/qd/q3.html")[1])
         saved = self.store()["items"][2]["answers"]["1"]
+        self.assertEqual(0, self.run_cli("mark", "Q3.1", "open")[0])
+        before_retry = self.store()["items"][2]["answers"]["1"]
+        self.assertIn("Not delivered", self.fetch(port, "/qd/")[1])
         script = home / "bin" / "fm-inbox.sh"
         script.parent.mkdir(parents=True)
         script.write_text('#!/bin/sh\nset -eu\n'
@@ -393,13 +391,15 @@ class ServeTests(StoreCase):
                           'test "$PWD" = "$FM_HOME"\n'
                           'printf "%s" "$6" >> "$3"\n')
         script.chmod(0o700)
-        for _ in range(2):
-            status, retry = self.post_answer(port, "Q3.1", answer)
-            self.assertEqual((status, retry["delivery"]), (200, "sent"))
+        self.assertEqual(self.post_answer(port, "Q3.1", answer, record["revision"])[0], 409)
+        status, retry = self.post_answer(port, "Q3.1", answer, before_retry["revision"])
+        self.assertEqual((status, retry["state"], retry["delivery"]), (200, "open", "sent"))
+        self.assertEqual(self.store()["items"][2]["answers"]["1"], {**before_retry, "delivery": "sent"})
         self.assertEqual((home / saved["request_id"]).read_text(), "Q3.1 Green & blue\nNo varnish.")
         self.assertEqual(self.post_answer(port, "Q3.1", "Changed")[0], 409)
-        status, correction = self.post_answer(port, "Q3.1", "Changed", record["revision"])
+        status, correction = self.post_answer(port, "Q3.1", "Changed", retry["revision"])
         self.assertEqual((status, correction["delivery"]), (200, "sent"))
+        self.assertEqual(self.post_answer(port, "Q3.1", "Changed", retry["revision"]), (200, correction))
         corrected = self.store()["items"][2]["answers"]["1"]
         self.assertNotEqual(saved["request_id"], corrected["request_id"])
         self.assertEqual((home / corrected["request_id"]).read_text(), "Q3.1 Changed")
@@ -520,16 +520,27 @@ check(button('undo').hidden, 'Undo history was not empty');
 
     def test_batch_conflict_keeps_its_draft_and_sends_independent_answers(self):
         self.add("questions", "Tide decisions", "Decide the launch plan.", "--body-file", "-",
-                 stdin=json.dumps(QUESTIONS * 2))
-        port = self.start("/qd")
-        self.assertEqual(self.post_answer(port, "Q1.4", "Red")[0], 200)
+                 stdin=json.dumps(QUESTIONS * 2 + QUESTIONS[:1]))
+        home = self.root / "home"
+        port = self.start("/qd", home=home)
+        self.assertEqual(self.post_answer(port, "Q1.5", "Merge")[1]["delivery"], "pending")
+        self.assertEqual(self.run_cli("mark", "Q1.5", "open")[0], 0)
+        script = home / "bin" / "fm-inbox.sh"
+        script.parent.mkdir(parents=True)
+        script.write_text("#!/bin/sh\nexit 0\n")
+        script.chmod(0o700)
+        self.assertEqual(self.post_answer(port, "Q1.4", "Red")[1]["delivery"], "sent")
         self.assertEqual(self.run_cli("mark", "Q1.4", "open")[0], 0)
         self.check_answer_page(port, """
-check(button('send').disabled, 'An unchanged reopened answer was queued at page load');
+const savedDay = document.querySelector('main > .meta time');
+check(savedDay.textContent === savedDay.dateTime.slice(0, 10), 'The saved date gained a time');
+const originalAnswerTime = card(4).querySelector('.saved-answer time');
+check(originalAnswerTime.textContent !== originalAnswerTime.dateTime, 'The initial answer time was not localized');
+check(button('send').textContent === 'Send 1 answer', 'Only the reopened pending answer should be queued at page load');
 typeAnswer(1, 'Hold <for the pilot>');
 typeAnswer(2, 'Blue');
 typeAnswer(3, 'Merge');
-check(button('send').textContent === 'Send 3 answers', 'An unchanged reopened answer was added to the batch');
+check(button('send').textContent === 'Send 4 answers', 'The batch should include three drafts and one pending retry');
 const sent = [];
 window.fetch = async (url, options) => {
   const {part, answer} = JSON.parse(options.body);
@@ -538,7 +549,8 @@ window.fetch = async (url, options) => {
     return {ok: false, status: 409, text: async () => 'Question changed. Reload before sending.'};
   }
   return {ok: true, json: async () => ({
-    answer, revision: 'saved-revision', answered_at: '2026-01-12T15:00:00Z', delivery: 'sent'
+    answer, state: part === 'Q1.5' ? 'open' : 'answered', revision: 'saved-revision',
+    answered_at: '2026-01-12T15:00:00Z', delivery: 'sent'
   })};
 };
 const status = document.querySelector('[role="status"]');
@@ -553,20 +565,23 @@ const sendBatch = () => new Promise(resolve => {
   button('send').click();
 });
 await sendBatch();
-check(sent.join(',') === 'Q1.1,Q1.2,Q1.3', 'The conflict blocked another draft');
+check(sent.join(',') === 'Q1.1,Q1.2,Q1.3,Q1.5', 'The conflict blocked another draft or the retry');
 check(card(1).querySelector('.badge').textContent === 'Answered', 'The saved badge was stale');
 const saved = card(1).querySelector('.saved-answer');
 check(!saved.hidden && saved.querySelector('.record').textContent === 'Hold <for the pilot>',
       'The saved answer was missing or interpreted as HTML');
 check(saved.querySelector('.delivery').textContent === 'Sent', 'The delivery label was stale');
 check(saved.querySelector('time').dateTime === '2026-01-12T15:00:00Z', 'The saved timestamp was stale');
-check(document.querySelector('.progress').textContent === '2 of 4 open', 'Progress was stale');
+check(saved.querySelector('time').textContent !== saved.querySelector('time').dateTime, 'The updated time was not localized');
+check(card(5).querySelector('.badge').textContent === 'Open' &&
+      card(5).querySelector('.delivery').textContent === 'Sent', 'The retry did not preserve the reopened state');
+check(document.querySelector('.progress').textContent === '3 of 5 open', 'Progress was stale');
 check(field(2).value === 'Blue', 'The conflicting draft was lost');
 check(button('send').disabled, 'A saved, conflicting or unchanged reopened answer was still queued');
 check(status.textContent.includes('Q1.2: Question changed.'), 'The conflict was hidden');
 typeAnswer(4, 'Blue');
 await sendBatch();
-check(sent.join(',') === 'Q1.1,Q1.2,Q1.3,Q1.4', 'The next send retried the conflicted draft');
+check(sent.join(',') === 'Q1.1,Q1.2,Q1.3,Q1.5,Q1.4', 'The next send retried the conflicted draft');
 check(field(2).value === 'Blue', 'A later send discarded the conflicting draft');
 """)
 
@@ -574,12 +589,21 @@ check(field(2).value === 'Blue', 'A later send discarded the conflicting draft')
         path = self.root / "legacy.json"
         homes = [{"path": str(self.root / "orchard")}, {"path": "garden"}]
         path.write_text(json.dumps({"homes": homes}))
-        self.assertNotIn("firstmate_home", quarterdeck.load_config(path))
+        self.assertIsNone(quarterdeck.answer_home(quarterdeck.load_config(path), path))
         path.write_text(json.dumps({"homes": homes[:1]}))
-        self.assertEqual(str(self.root / "orchard"), quarterdeck.load_config(path)["firstmate_home"])
+        self.assertEqual(self.root / "orchard", quarterdeck.answer_home(quarterdeck.load_config(path), path))
         explicit = str(self.root / "grove")
         path.write_text(json.dumps({"homes": homes[:1], "firstmate_home": explicit}))
-        self.assertEqual(explicit, quarterdeck.load_config(path)["firstmate_home"])
+        self.assertEqual(Path(explicit), quarterdeck.answer_home(quarterdeck.load_config(path), path))
+
+    def test_render_and_service_unit_ignore_unresolvable_legacy_inbox(self):
+        config = self.root / "config" / "quarterdeck.json"
+        config.parent.mkdir()
+        config.write_text(json.dumps({"homes": [{"path": "~quarterdeck-fixture-no-such-user/inbox"}]}))
+        for command in ("render", "service", "url"):
+            with self.subTest(command=command):
+                code, _, error = self.run_cli(command)
+                self.assertEqual(code, 0, error)
 
     def test_pages_follow_the_store_without_a_restart(self) -> None:
         port = self.start()

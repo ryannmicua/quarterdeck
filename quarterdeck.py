@@ -101,12 +101,6 @@ def load_config(path: Path | None) -> dict[str, object]:
     if "firstmate_home" in config and (not isinstance(config["firstmate_home"], str)
                                       or not Path(config["firstmate_home"]).expanduser().is_absolute()):
         raise ValueError("config firstmate_home must be an absolute path")
-    if "firstmate_home" not in config:
-        homes = config.get("homes")
-        if isinstance(homes, list) and len(homes) == 1 and isinstance(homes[0], dict):
-            legacy_home = homes[0].get("path")
-            if isinstance(legacy_home, str) and legacy_home.strip():
-                config["firstmate_home"] = str((path.resolve().parent / Path(legacy_home).expanduser()).resolve())
     if "page_title" in config and not isinstance(config["page_title"], str):
         raise ValueError("config page_title must be a string")
     if "base_path" in config:
@@ -119,13 +113,17 @@ def load_config(path: Path | None) -> dict[str, object]:
     return config
 
 
-def selected_config(args: argparse.Namespace) -> dict[str, object]:
+def selected_config_path(args: argparse.Namespace) -> Path | None:
     """The --config file, else the default config when it exists, else no config."""
     path = getattr(args, "config", None)
     if path is None:
         default_path = default_config_path()
         path = default_path if default_path.is_file() else None
-    return load_config(path.expanduser() if path else None)
+    return path.expanduser() if path else None
+
+
+def selected_config(args: argparse.Namespace) -> dict[str, object]:
+    return load_config(selected_config_path(args))
 
 
 def page_title(args: argparse.Namespace, config: dict[str, object]) -> str:
@@ -389,6 +387,10 @@ def part_record(item, part):
     return item.get("answers", {}).get(str(part), {})
 
 
+def delivery_pending(record):
+    return record.get("delivery") == "pending" and record.get("state") != "closed"
+
+
 def validate_records(item):
     parts = question_parts(item)
     answers = item["answers"]
@@ -452,12 +454,13 @@ def send_answer(store, home, payload):
         if part not in question_parts(item):
             raise ValueError("Unknown question.")
         old = part_record(item, part)
-        if old.get("state") == "closed":
+        state = old.get("state")
+        if state == "closed":
             raise AnswerConflict("Question closed. Reopen it before sending.")
-        same = old.get("state") == "answered" and old.get("answer") == answer
-        if not same and payload["revision"] != old.get("revision", ""):
+        same = old.get("answer") == answer
+        if not (same and state == "answered") and payload["revision"] != old.get("revision", ""):
             raise AnswerConflict("Question changed. Reload before sending.")
-        if old.get("state") == "open" and old.get("answer") == answer:
+        if same and state == "open" and not delivery_pending(old):
             raise AnswerConflict("Enter a new answer for the reopened question.")
         if same:
             record = old
@@ -469,7 +472,7 @@ def send_answer(store, home, payload):
         record_now = part_record(find_item(data, item_id), part)
         if record_now["revision"] != record["revision"]:
             raise AnswerConflict("Question changed. Reload before sending.")
-        if home and record_now["delivery"] == "pending":
+        if home and delivery_pending(record_now):
             try:
                 env = {k: v for k, v in os.environ.items() if not k.startswith("FM_")}
                 result = subprocess.run([home / "bin/fm-inbox.sh", "note", "--request-id", record_now["request_id"],
@@ -480,7 +483,7 @@ def send_answer(store, home, payload):
                     record_now["delivery"] = "sent"
             except (OSError, subprocess.TimeoutExpired):
                 pass
-        return {k: record_now[k] for k in ("revision", "answer", "answered_at", "delivery")}
+        return {k: record_now[k] for k in ("state", "revision", "answer", "answered_at", "delivery")}
 
 
 def item_text(item: dict[str, object]) -> str:
@@ -663,7 +666,7 @@ table.items td.when { white-space:normal; }
 
 TIME_SCRIPT = """
 const localTime = dateTime => new Date(dateTime).toLocaleString(undefined, {dateStyle:'medium', timeStyle:'short'});
-for (const time of document.querySelectorAll('time[datetime]:not([datetime=""])')) {
+for (const time of document.querySelectorAll('.saved-answer time[datetime]:not([datetime=""])')) {
   time.textContent = localTime(time.dateTime);
 }
 """
@@ -712,7 +715,7 @@ def question_summary(item):
     states = [part_record(item, n).get("state", "open") for n in question_parts(item)]
     remaining = states.count("open")
     state = "Open" if remaining else ("Closed" if all(s == "closed" for s in states) else "Answered")
-    pending = any(r.get("delivery") == "pending" and r["state"] == "answered" for r in item.get("answers", {}).values())
+    pending = any(delivery_pending(r) for r in item.get("answers", {}).values())
     return state, remaining, pending
 
 
@@ -765,7 +768,7 @@ def question_form(item, served):
             if question.get("suggestion"):
                 controls += f'<p><strong>Suggested answer</strong><br>{esc(question["suggestion"])}</p>'
         cards.append(f'<section class="decision" id="{part}" aria-labelledby="title-{part}" data-revision="{esc(record.get("revision", ""))}" '
-                     f'data-state="{status}" data-pending="{int(record.get("delivery") == "pending" and status == "answered")}">'
+                     f'data-state="{status}" data-pending="{int(delivery_pending(record))}">'
                      f'<div class="eyebrow"><span class="id">{part}</span><span class="badge">{status.capitalize()}</span></div>'
                      f'<h2 id="title-{part}">{esc(question["question"])}</h2><p>{esc(question["context"])}</p>{saved}{controls}</section>')
     total = len(cards)
@@ -843,10 +846,10 @@ if (send) {
     }
   });
   function showAnswer(section, field, record) {
-    section.dataset.state = 'answered';
+    section.dataset.state = record.state;
     section.dataset.revision = record.revision;
     section.dataset.pending = record.delivery === 'pending' ? '1' : '0';
-    section.querySelector('.badge').textContent = 'Answered';
+    section.querySelector('.badge').textContent = record.state === 'open' ? 'Open' : 'Answered';
     field.defaultValue = field.value = record.answer;
     forget(field);
 
@@ -1310,15 +1313,29 @@ def make_handler(site_title: str, base_path: str = "", store: Path | None = None
 LEGACY_SERVE_FLAGS = ("allow_marks", "watch_waits", "no_snapshot", "home")
 
 
+def answer_home(config: dict[str, object], config_path: Path | None) -> Path | None:
+    explicit = config.get("firstmate_home")
+    if isinstance(explicit, str):
+        return Path(explicit).expanduser()
+    homes = config.get("homes")
+    if config_path is not None and isinstance(homes, list) and len(homes) == 1 and isinstance(homes[0], dict):
+        legacy = homes[0].get("path")
+        if isinstance(legacy, str) and legacy.strip():
+            try:
+                return (config_path.resolve().parent / Path(legacy).expanduser()).resolve()
+            except (OSError, RuntimeError):
+                return None
+    return None
+
+
 def serve(args: argparse.Namespace) -> int:
     servers: list[ThreadingHTTPServer] = []
     try:
-        config = selected_config(args)
+        config_path = selected_config_path(args)
+        config = load_config(config_path)
         tls = tls_context(args)
         base_path = effective_base_path(args)
-        home = config.get("firstmate_home")
-        handler = make_handler(page_title(args, config), base_path,
-                               home=Path(home).expanduser() if isinstance(home, str) else None)
+        handler = make_handler(page_title(args, config), base_path, home=answer_home(config, config_path))
         port = args.port
         for host in bind_hosts(args):
             server = make_server(host, port, handler, tls)
