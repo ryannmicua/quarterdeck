@@ -11606,7 +11606,7 @@ class SessionScopeTests(unittest.TestCase):
 
     def test_qualified_ledger_events_use_backlog_details_and_one_completion(self) -> None:
         backlog = self.data / "backlog.md"
-        pr = "https://github.com/fictional/maps/pull/7"
+        pr = PIER_PR
         text = backlog.read_text(encoding="utf-8").replace(
             "Reef sonar scan (repo: harbor-app)", f"Reef sonar scan (repo: harbor-app) (pr: {pr}) "
             f"(state: in_flight)")
