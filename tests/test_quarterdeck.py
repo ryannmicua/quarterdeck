@@ -65,6 +65,12 @@ def parse_systemd_unit(source: str) -> dict[str, dict[str, list[object]]]:
     return unit
 
 
+REVIEW_FIXTURE_MENTIONS = (
+    "Discuss amber-18, paper-27, maple-21, blocked-33, captain-36, kestrel/kestrel-work and kestrel/kestrel-hold. "
+    "Read data/queued-31/report.md, data/finished-32/report.md and data/orphan-35/report.md."
+)
+
+
 class QuarterdeckTests(unittest.TestCase):
     def make_home(self, root: Path, captain_active: bool = False) -> Path:
         home = root / "fictional-firstmate"
@@ -167,6 +173,7 @@ Use the compact format for the first release.
         with tempfile.TemporaryDirectory() as temp:
             root = Path(temp)
             home = self.make_home(root, captain_active=True)
+            record_fixture_conversation(self, root, home, REVIEW_FIXTURE_MENTIONS)
             output = root / "outside-output" / "index.html"
             result = self.run_cli(["render", "--home", str(home), "--output", str(output)], root, root / "config")
             self.assertEqual(result.returncode, 0, result.stderr)
@@ -214,12 +221,14 @@ Use the compact format for the first release.
             self.assertTrue(all(path.is_file() for path in report_pages))
             backlog_pages = list(output.parent.glob("backlog-*.html"))
             self.assertEqual(len(backlog_pages), 2)
-            self.assertTrue(any("<h1>Work queue</h1>" in path.read_text(encoding="utf-8") for path in backlog_pages))
+            self.assertTrue(any("<h1>fictional-firstmate backlog, this session</h1>" in path.read_text(encoding="utf-8")
+                                for path in backlog_pages))
 
     def test_lavish_render_creates_annotatable_page_and_opens_cli(self) -> None:
         with tempfile.TemporaryDirectory() as temp:
             root = Path(temp)
             home = self.make_home(root)
+            record_fixture_conversation(self, root, home, REVIEW_FIXTURE_MENTIONS)
             output = root / "output" / "index.html"
             bin_dir = root / "bin"
             bin_dir.mkdir()
@@ -245,10 +254,9 @@ Use the compact format for the first release.
             self.assertIn("Request a Lavish page", page)
             self.assertRegex(page, r'<article class="card" id="review-report-[0-9a-f]{12}">')
             self.assertIn("Reports needing review", page)
-            homes = [quarterdeck.load_home_snapshot(quarterdeck.HomeSpec(home.name, home), discover_secondmates=True)]
-            bearings = quarterdeck.build_bearings(homes)
-            bearings.attention = quarterdeck.attention_view(
-                homes, bearings.generated, all_decisions=True, saved_views=quarterdeck.effective_views({}), all_views=True)
+            args = quarterdeck.make_parser().parse_args(["render", "--lavish", "--home", str(home)])
+            with patch.dict(os.environ, {"XDG_CONFIG_HOME": str(root / "config"), "XDG_STATE_HOME": str(root / "state")}):
+                _, homes, bearings = quarterdeck.load_site(args, main_href="index.lavish.html")
             expected = quarterdeck.build_html(homes, "Quarterdeck", lavish=True, bearings=bearings)
             stamp = re.compile(r"[Gg]enerated(?: at)? \d{4}-\d\d-\d\d \d\d:\d\d:\d\d UTC")
             self.assertEqual(stamp.sub("", page), stamp.sub("", expected))
@@ -257,6 +265,10 @@ Use the compact format for the first release.
         with tempfile.TemporaryDirectory() as temp:
             root = Path(temp)
             home = self.make_home(root)
+            record_fixture_conversation(
+                self, root, home, REVIEW_FIXTURE_MENTIONS
+                + " Discuss queued-31, finished-32, internal-34, kestrel/kestrel-queued and kestrel/kestrel-done.",
+            )
             output = root / "outside-output" / "index.html"
             result = self.run_cli(["render", "--all", "--home", str(home), "--output", str(output)], root, root / "config")
             self.assertEqual(result.returncode, 0, result.stderr)
@@ -276,6 +288,7 @@ Use the compact format for the first release.
         with tempfile.TemporaryDirectory() as temp:
             root = Path(temp)
             home = self.make_home(root)
+            record_fixture_conversation(self, root, home, 'Read the amber-18 and orphan-35 reports.')
             config_home = root / "config"
             report_id = "fictional-firstmate/amber-18"
 
@@ -321,6 +334,7 @@ Use the compact format for the first release.
         with tempfile.TemporaryDirectory() as temp:
             root = Path(temp)
             home = self.make_home(root)
+            record_fixture_conversation(self, root, home, REVIEW_FIXTURE_MENTIONS)
             plain = root / "plain.html"
             plain_result = self.run_cli(["render", "--home", str(home), "--output", str(plain)], root, root / "config")
             self.assertEqual(plain_result.returncode, 0, plain_result.stderr)
@@ -664,6 +678,7 @@ Use the compact format for the first release.
         with tempfile.TemporaryDirectory() as temp:
             root = Path(temp)
             home = self.make_home(root)
+            record_fixture_conversation(self, root, home, 'Read amber-18.')
             report = home / "data" / "amber-18" / "report.md"
             report.write_text(
                 """# Safe sample report
@@ -720,6 +735,7 @@ Use the compact format for the first release.
         with tempfile.TemporaryDirectory() as temp:
             root = Path(temp)
             home = self.make_home(root)
+            record_fixture_conversation(self, root, home, 'Discuss maple-21.')
             config = root / "quarterdeck.json"
             config.write_text(
                 json.dumps({
@@ -749,6 +765,7 @@ Use the compact format for the first release.
         with tempfile.TemporaryDirectory() as temp:
             root = Path(temp)
             home = self.make_home(root)
+            record_fixture_conversation(self, root, home, 'Discuss maple-21.')
             config = root / "quarterdeck.json"
             config.write_text(
                 json.dumps({"homes": [{"label": "Configured Other", "path": "missing-home"}]}),
@@ -770,8 +787,11 @@ Use the compact format for the first release.
         with tempfile.TemporaryDirectory() as temp:
             root = Path(temp)
             home = self.make_home(root)
+            record_fixture_conversation(self, root, home, 'Discuss maple-21.')
             output = root / "outside-output" / "index.html"
-            with patch.dict(os.environ, {"FM_HOME": str(home), "XDG_CONFIG_HOME": str(root / "config")}, clear=True):
+            with patch.dict(os.environ, {"FM_HOME": str(home), "XDG_CONFIG_HOME": str(root / "config"),
+                                         "CLAUDE_CONFIG_DIR": os.environ["CLAUDE_CONFIG_DIR"],
+                                         "XDG_STATE_HOME": str(root / "state")}, clear=True):
                 result = quarterdeck.main(["render", "--output", str(output)])
             self.assertEqual(result, 0)
             self.assertIn("Chart the Maple Harbor catalog", output.read_text(encoding="utf-8"))
@@ -835,6 +855,7 @@ Use the compact format for the first release.
             cli_home = root / "user"
             config_home = cli_home / ".config"
             firstmate_home = self.make_home(root)
+            record_fixture_conversation(self, root, firstmate_home, 'Discuss maple-21.')
 
             added = self.run_cli(["add", str(firstmate_home)], cli_home, config_home)
             self.assertEqual(added.returncode, 0, added.stderr)
@@ -3059,6 +3080,7 @@ class ServeTests(unittest.TestCase):
     def test_server_renders_per_request_and_serves_linked_pages_read_only(self) -> None:
         with tempfile.TemporaryDirectory() as temp, patch.dict(os.environ, {"XDG_STATE_HOME": str(Path(temp) / "state")}):
             home = BearingsTests().make_home(Path(temp))
+            record_fixture_conversation(self, Path(temp), home, 'Discuss harbor-chart, later-work and kelp-survey.')
             clock = [0.0]
             cache = quarterdeck.SiteCache(
                 quarterdeck.site_builder(self.make_args(home)), 30, lambda: clock[0])
@@ -5483,6 +5505,7 @@ class AttentionTests(unittest.TestCase):
             with self.subTest(options=options), tempfile.TemporaryDirectory() as temp:
                 root = Path(temp)
                 home = self.make_home(root, **options)
+                record_fixture_conversation(self, root, home, 'Discuss kelp-survey.')
                 view = self.view(home, all_decisions=True)
                 homes = [quarterdeck.load_home_snapshot(quarterdeck.HomeSpec("invented", home))]
                 with self.assertRaisesRegex(ValueError, "quarterdeck attention check: FAILED"):
@@ -5510,6 +5533,7 @@ class AttentionTests(unittest.TestCase):
             for name in ("good", "bad"):
                 (root / name).mkdir()
             good = self.make_home(root / "good")
+            record_fixture_conversation(self, root, good, 'Discuss kelp-survey.')
             bad = self.make_home(root / "bad", ledger='{"v":2,"ts":1782990400,"event":"task.status","task":"kelp-survey"}\n')
             config = root / "config.json"
             config.write_text(json.dumps({"homes": [{"label": "good", "path": str(good)}, {"label": "bad", "path": str(bad)}]}))
@@ -7315,6 +7339,7 @@ class ActivityCardTests(unittest.TestCase):
                      "ask": "Read data/kelp-survey/report.md and explainer.html", "touched_at": "2099-01-01T00:00:00Z"},
                 ]}
                 (data / "captain-board.json").write_text(json.dumps(board))
+                record_fixture_conversation(self, root, home, 'Discuss kelp-survey.')
                 output = root / "out" / output_name
                 command = ["render", "--home", str(home), "--output", str(output)]
                 if lavish:
@@ -8615,8 +8640,11 @@ class CaptainWaitTests(unittest.TestCase):
         connection.close()
 
     def test_the_page_hides_a_discarded_wait_everywhere_it_lists_waits(self) -> None:
-        self.backlog(held_row("tide-merge", "Tide table merge", "Merge word", "2026-07-02T10:00:00Z"),
-                     held_row("kelp-call", "Kelp survey scope", "Pick a scope", "2026-07-02T10:00:00Z"))
+        record_fixture_conversation(self, self.root, self.home, "Discuss tide-merge and kelp-call.")
+        self.backlog(*(held_row(task, title, reason, "2026-07-02T10:00:00Z").replace(
+            "(hold:", "(hold-session-id: fixture-chat) (hold:", 1,
+        ) for task, title, reason in (("tide-merge", "Tide table merge", "Merge word"),
+                                      ("kelp-call", "Kelp survey scope", "Pick a scope"))))
         self.run_pass(helpers=False)
         self.inbox()
         self.discard("harbor/tide-merge")
@@ -10826,13 +10854,15 @@ class SessionScopeTests(unittest.TestCase):
     def test_safe_chat_links_survive_each_output_and_have_no_cap(self) -> None:
         safe = ["https://example.com/releases/build_", "http://[::1]:4387/session/example",
                 "https://example.com/wiki/Ship_(boat)", "https://example.com/view?tab=latest",
-                "https://example.com/services/shipping"]
+                "https://example.com/services/shipping", "https://example.com/preview;view=compact"]
         safe.extend(f"https://example.com/preview/{number}" for number in range(45))
         hidden = ["https://user:pass@example.com/secret", "https://example.com/signed?X-Amz-Signature=private",
                   "https://example.com/oauth#access_token=private", "https://example.com/a?%74oken=private",
                   "https://hooks.slack.com/%73ervices/demo/team/fictional-key",
                   "https://hooks.slack.com./services/demo/team/fictional-key",
                   "https://hooks.slack.com./archive/../services/demo/team/fictional-key",
+                  "https://example.com/preview;token=fictional-secret",
+                  "https://example.com/preview;%74oken=fictional-secret/trailer",
                   "https://example.com/api/webhooks/demo/fictional-key", "https://[invalid"]
         with (self.transcripts / "session.jsonl").open("a", encoding="utf-8") as stream:
             links = " ".join(f"[Preview]({url})" for url in safe)
@@ -11266,13 +11296,17 @@ class SessionScopeTests(unittest.TestCase):
     def test_backup_paths_do_not_select_live_topics_reports_or_documents(self) -> None:
         (self.data / "release").mkdir()
         (self.data / "release" / "preview.html").write_text("<h1>Live preview</h1>", encoding="utf-8")
+        (self.data / "release" / "current.html").write_text("<h1>Current preview</h1>", encoding="utf-8")
         with (self.transcripts / "session.jsonl").open("a", encoding="utf-8") as stream:
             stream.write(wait_record("owner", "backup-paths", self.iso(self.now),
                                      "Open data/topics/old-survey.md.bak, data/release/preview.html.bak "
-                                     "and data/gull-count/report.md.bak. Read data/tide-review/report.md.",
+                                     "and data/gull-count/report.md.bak. Open data/topics/old-survey.md~, "
+                                     "data/release/preview.html~ and data/gull-count/report.md~. "
+                                     "Read data/release/current.html and preview.html~. Read data/tide-review/report.md.",
                                      sessionId="current"))
         pages = self.every_page(self.render())
         self.assertIn("data/tide-review/report.md", pages)
+        self.assertIn("Current preview", pages)
         for hidden in ("Old survey", "Live preview", "gull-count findings"):
             self.assertNotIn(hidden, pages)
 
@@ -11312,6 +11346,54 @@ class SessionScopeTests(unittest.TestCase):
         self.assertEqual((row["task"], row["title"], row["pr"]), ("reef-scan", "Reef sonar scan", pr))
         self.assertTrue(next(item for item in bearings.underway if item.item_id == "reef-scan").started)
         self.assertEqual([(row["task"], row["event"]) for row in view["done_recent"]], [("finished-chart", "merged")])
+
+    def test_routed_recent_work_keeps_the_owner_in_each_public_surface(self) -> None:
+        child = self.root / "mate"
+        other = self.root / "other"
+        for home in (child, other):
+            (home / "data").mkdir(parents=True)
+        (child / "data" / "backlog.md").write_text(
+            "# Backlog\n\n- [ ] child-choice - Child chart dispatch (state: in_flight)\n", encoding="utf-8")
+        (other / "data" / "backlog.md").write_text("# Backlog\n", encoding="utf-8")
+        (self.data / "secondmates.md").write_text(f"- mate - Charts water. (home: {child})\n", encoding="utf-8")
+        with (self.home / "state" / "fleet-ledger.jsonl").open("a", encoding="utf-8") as stream:
+            stream.write(json.dumps({"v": 1, "ts": self.now.timestamp(), "event": "task.dispatched",
+                                     "task": "mate/child-choice", "session_id": "current"}) + "\n")
+        self.write_config(homes=[
+            {"label": "Harbor", "path": str(self.home), "transcripts": str(self.transcripts)},
+            {"label": "Other", "path": str(other)},
+        ])
+        args = quarterdeck.make_parser().parse_args(["serve", "--config", str(self.config), "--no-snapshot"])
+        _, _, bearings = quarterdeck.load_site(args)
+        view = bearings.attention
+        row = next(row for row in view["homes"][0]["recent_work_6h"] if row["title"] == "Child chart dispatch")
+        self.assertEqual(row["home"], "mate — Charts water.")
+        morning = next(saved for saved in view["views"] if saved["name"] == "Morning")
+        recent = next(section for section in morning["sections"] if section["type"] == "recent")
+        item = next(item for item in recent["information"] if item["title"] == "Child chart dispatch")
+        self.assertEqual(item["home"], row["home"])
+        self.assertIn("mate — Charts water.: Started · Child chart dispatch", quarterdeck.attention_html(view))
+        pages = quarterdeck.site_builder(args)()
+        cards = json.loads(pages[quarterdeck.CARDS_PAGE])["cards"]
+        card = next(card for card in cards if "Child chart dispatch" in card["html"])
+        self.assertTrue(card["id"].startswith("work:mate — Charts water.:started:"), card["id"])
+
+    def test_recap_only_runs_when_the_site_builds_calls(self) -> None:
+        call_args = quarterdeck.make_parser().parse_args(["serve", "--config", str(self.config), "--no-snapshot"])
+        render_args = quarterdeck.make_parser().parse_args(["render", "--config", str(self.config), "--no-snapshot"])
+        with (self.home / "state" / "fleet-ledger.jsonl").open("a", encoding="utf-8") as stream:
+            stream.write(json.dumps({"v": 1, "ts": self.now.timestamp(), "event": "task.merged",
+                                     "task": "tide-merge"}) + "\n")
+        _, _, bearings = quarterdeck.load_site(render_args)
+        self.assertEqual(bearings.completions, [])
+        pages = quarterdeck.site_builder(call_args)()
+        self.assertIn("Finished since you last looked", pages["index.html"])
+        self.assertIn("Tide table merge", pages["index.html"])
+        self.board(operator=False)
+        _, _, bearings = quarterdeck.load_site(call_args, include_calls=True)
+        self.assertEqual(bearings.completions, [])
+
+
 
 
 

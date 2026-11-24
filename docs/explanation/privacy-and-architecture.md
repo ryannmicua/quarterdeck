@@ -208,19 +208,18 @@ the state directory is outside the repository checkout, all selected homes, and
 their configured data directories. The database contains IDs, fingerprints and
 short reasons, not a copy of the report or Firstmate data.
 
-The Adoption page reads each home's `data/qd-adoption/tags.jsonl` (topic tags,
-never chat content) and, with `serve --allow-marks`, Quarterdeck appends page
-visits (time, page, phone or desktop; no address; automatic refreshes excluded) to
-`${XDG_STATE_HOME:-~/.local/state}/quarterdeck/visits.jsonl`. With that same
-flag, page builds append first-observed report and Needs-you arrivals to the
-`adoption_events` table in the existing private review-state database. Report
-triage actions from the CLI, served page and artifact imports append events in
-their state transaction, including clears as `unmarked`. Events contain only
-kind, item identifier and time, with no historical backfill or message/card
-content. Summary rendering only reads this history. Later edits and state
-changes preserve historical weekly totals. The first-seen estimate joins
-Needs-you observation times with subsequent visits. See
+The Adoption page reads status tags from `data/qd-adoption/tags.jsonl` in the
+active home whose `session_id` matches the recorded conversation. It displays
+the tagged topics and whether Quarterdeck already had the answer. See
 [see how much you use Quarterdeck](../how-to/see-your-adoption.md).
+
+With `serve --allow-marks`, Quarterdeck appends page visits to
+`${XDG_STATE_HOME:-~/.local/state}/quarterdeck/visits.jsonl`. Visits contain the
+time, page and device category. Automatic refreshes are excluded. With the
+same flag, accepted page builds record first-observed report and Needs-you
+arrivals in the private review-state database. Triage actions from the CLI,
+served page and artifact imports also record events. These events contain
+kind, item ID and time. The session Adoption page uses the chat tags.
 
 For notification prerequisites, setup and phone-specific withdrawal behavior, see
 [Get phone notifications](../how-to/serve-the-page.md#get-phone-notifications).

@@ -1,33 +1,25 @@
 # See how much you use Quarterdeck
 
-The **Adoption** link in the previous page's header opens `adoption.html`, a
-small page that compares this week (Monday to today, in the
-machine's time zone) with last week. The goal is fewer status questions in the
-Firstmate chat, because Quarterdeck already shows the answer.
+Open **Adoption** from the classic page header. It shows the status questions
+asked in the current recorded conversation and how many Quarterdeck already
+answered. Each topic is marked “answer was here,” “had to ask,” or “not checked.”
 
-| Row | Where it comes from |
-| --- | --- |
-| Status questions asked in chat, and how many Quarterdeck already had the answer for | `data/qd-adoption/tags.jsonl` in each home's data directory. Firstmate appends one tag per captain chat message: `{"ts", "kind": "status" \| "instruction" \| "decision" \| "discussion", "topic", "qd_had_answer": true \| false \| null}`. Quarterdeck only reads it. Optional `source: "page" | "artifact"` marks Quarterdeck-origin tags, which are excluded from chat totals. |
-| What you had to ask about | The `topic` of this and last week's status tags, marked "answer was here", "had to ask" or "not checked". |
-| Answers sent from Quarterdeck | Reactions recorded with source `page` or `artifact` in the review state. |
-| Share of answers from Quarterdeck (approximate) | Page/artifact reactions and replies divided by those answers plus `kind: "decision"` chat tags. No answers means no observations. |
-| Median first-seen wait (approximate) | Each Needs-you card's first observed appearance to the first logged main-page load at or after it. Grouped by arrival week; cards without a later visit are excluded. |
-| Reports arrived, reviewed, discarded | Append-only `adoption_events` in the review-state database. Arrivals are first observed by `serve --allow-marks`; triage events are recorded by CLI, page and artifact-import actions. Later report edits, discards or unmarks never change previous weeks. |
-| Days visited, share of visits from a phone | `visits.jsonl`, below. |
+Firstmate appends tags to `data/qd-adoption/tags.jsonl` in the conversation’s
+home. For a status question, use a line like this:
 
-A source that does not exist yet counts as zero and is named at the foot of the
-page. Damaged lines are skipped. Only tags are kept: never the chat messages.
-Triage and Needs-you history starts when collection begins, with no backfill:
-reports and Needs-you cards already present at the first served build are
-recorded without a time and never count as arrivals or first-seen waits.
-The page says arrivals are "counted from <date>" for the first seven days. Appearance means
-first observed by the server and a load is not proof that a particular card
-was read, so first-seen waits are estimates. Stable card IDs
-and captain-hold identities identify appearances; activity timestamp updates do
-not create new arrivals. The event log stores only kind, item ID
-and observation/action time, never card text. Imported triage uses valid recorded
-action times; actions before collection began still apply to report state but
-are excluded from adoption history.
+```json
+{"ts":"2026-11-24T08:30:00Z","session_id":"fictional-chat","kind":"status","topic":"Harbor chart","qd_had_answer":true}
+```
+
+Use the same Claude Code conversation ID passed to
+`quarterdeck board active --session-id ID`. Set `qd_had_answer` to `false` if
+the page did not have the answer, or `null` if you did not check. The page
+counts status tags from that home and conversation and skips damaged lines
+and tags from the page or artifact. It reads tags without storing the
+messages. See [See only this session](see-only-this-session.md).
+
+Quarterdeck still records local arrival and triage events when configured to
+do so. The session Adoption page displays the attributed chat tags.
 
 ## The visit log
 
@@ -39,7 +31,5 @@ says Mobile, iPhone or iPod; Android requires Mobile. iPads, Android tablets
 without Mobile, and unknown browsers count as desktop.
 Automatic refresh requests carry a marker and are never logged, even after
 midnight or a server restart. The page removes that marker from its visible URL
-so later manual navigation can count again. Every manual load is logged; the
-page counts repeat visits to the same page from the same kind of device within
-30 minutes as one visit, while first-seen waits use every main-page load. When the file passes
-128 KiB, lines older than 120 days are dropped. A read-only `serve` logs nothing.
+so later manual navigation can count again. When the file passes 128 KiB, lines
+older than 120 days are dropped. A read-only `serve` logs nothing.

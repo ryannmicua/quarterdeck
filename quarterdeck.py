@@ -36,7 +36,7 @@ from dataclasses import dataclass, field, replace
 from datetime import date, datetime, timedelta, timezone
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
-from urllib.parse import parse_qs, quote, unquote, urlparse
+from urllib.parse import parse_qs, quote, unquote, urlparse, urlsplit
 
 
 DEFAULT_TITLE = "Quarterdeck"
@@ -326,7 +326,7 @@ def _record_from_line(line: str, section: str, headers: list[str] | None) -> Rec
     )
 
 
-FILE_REFERENCE_END = r"(?![\w/-]|\.+[\w/-])"
+FILE_REFERENCE_END = r"(?![\w/~-]|\.+[\w/~-])"
 BACKLOG_PATH_RE = re.compile(r"(?<![\w./-])data/([\w.-]{1,128})/([\w.-]{1,128}\.md)" + FILE_REFERENCE_END)
 BACKLOG_PATH_TEXT_LIMIT = 2_000
 
@@ -3253,6 +3253,7 @@ def recent_work(records: list[tuple[HomeSnapshot, dict[str, object]]], snapshot:
         return {
             "at": iso_seconds(record["ts"]),  # type: ignore[arg-type]
             "task": task if owner is snapshot else qualified,
+            "home": owner.spec.label,
             "title": plain_title((item.title if item else "") or feed_titles.get(qualified)
                                  or (feed_titles.get(task) if owner is snapshot else "") or "") or task,
             "project": projects.get(key) or (item.project if item else "") or None,
@@ -3783,7 +3784,7 @@ def build_view(
             (info if kind == "informational" else needs).extend(
                 view_item(item, str(home["label"]), rank) for item in home["waiting"][kind])  # type: ignore[index]
         info.extend(view_item(item, str(home["label"]), rank) for item in home["open_work"])  # type: ignore[union-attr]
-        recent.extend(dict(item, home=home["label"]) for item in home["recent_work_6h"])  # type: ignore[union-attr]
+        recent.extend(dict(item, home=item.get("home") or home["label"]) for item in home["recent_work_6h"])  # type: ignore[union-attr]
     complete = all(home["complete"] for home in homes)
     for pool in (needs, info):
         pool.sort(key=lambda item: item["_order"])  # type: ignore[arg-type, return-value]
@@ -4261,6 +4262,12 @@ def attention_item_html(item: dict[str, object], now: datetime) -> str:
             f'{elapsed_text(at, now) + " ago" if at else ""}</span>{link}</li>')
 
 
+def recent_item_html(item: dict[str, object], now: datetime, multi_home: bool, home: object = "") -> str:
+    owner = f'{item.get("home") or home}: ' if multi_home and (item.get("home") or home) else ""
+    event = str(item["event"]).capitalize()
+    return f'<li>{html.escape(owner + event)} · ' + attention_item_html(item, now)[4:]
+
+
 def waiting_item_html(item: dict[str, object]) -> str:
     wait = item.get("wait")
     if isinstance(wait, dict) and wait_ask_line(wait):
@@ -4334,8 +4341,7 @@ def view_section_html(section: dict[str, object], now: datetime, multi_home: boo
            f'<h3>{html.escape(str(section["title"]))}</h3>']
     if section["type"] in {"recent", "done"}:
         items = section["information"]
-        lines = [f'<li>{html.escape(str(item["event"]).capitalize())} · ' + attention_item_html(item, now)[4:]
-                 for item in items]  # type: ignore[union-attr]
+        lines = [recent_item_html(item, now, multi_home) for item in items]  # type: ignore[union-attr]
         out.append(f'<p class="source-note">{html.escape(str(section["say"]))}</p><ul>{"".join(lines[:RECENT_LIST_LIMIT])}</ul>')
         if lines[RECENT_LIST_LIMIT:]:
             out.append(f'<details class="board-more"><summary>+{len(lines) - RECENT_LIST_LIMIT} more</summary><ul>'
@@ -4530,14 +4536,12 @@ def attention_html(view: dict[str, object] | None, allow_marks: bool = False) ->
     recent = [(home, item) for home in homes for item in home.get("recent_work_6h") or []]  # type: ignore[union-attr]
     recent.sort(key=lambda pair: parse_when(str(pair[1]["at"])), reverse=True)
     if recent:
-        shown = "".join(
-            f'<li>{html.escape(str(home["label"]) + ": " if len(homes) > 1 else "")}{html.escape(str(item["event"]).capitalize())} · '
-            + attention_item_html(item, now)[4:] for home, item in recent[:RECENT_LIST_LIMIT]
-        )
+        shown = "".join(recent_item_html(item, now, len(homes) > 1, home["label"])
+                        for home, item in recent[:RECENT_LIST_LIMIT])
         more = recent[RECENT_LIST_LIMIT:]
         extra = (f'<details class="board-more" data-refresh-key="recent-6h"><summary>+{len(more)} more</summary><ul>'
-                 + "".join(f'<li>{html.escape(str(item["event"]).capitalize())} · ' + attention_item_html(item, now)[4:]
-                           for _home, item in more) + "</ul></details>") if more else ""
+                 + "".join(recent_item_html(item, now, len(homes) > 1, home["label"]) for home, item in more)
+                 + "</ul></details>") if more else ""
         out.append(f'<div id="recent-work"><h3>Last {RECENT_HOURS} hours</h3><ul>{shown}</ul>{extra}</div>')
     out.append("</section>")
     return "".join(out)
@@ -13738,21 +13742,24 @@ def session_urls(text: str) -> Iterator[str]:
             while url.endswith(")") and url.count(")") > url.count("("):
                 url = url[:-1].rstrip(".,;:!?")
         try:
-            parsed = urlparse(url)
+            parsed = urlsplit(url)
             if (not parsed.hostname or parsed.username is not None or parsed.password is not None
                     or "\\" in url or any(ord(char) < 32 or ord(char) == 127 for char in url)):
                 continue
             authority = re.fullmatch(r"(?:\[[^\]]+\]|[^:%\[\]()]+)(?::([0-9]+))?", parsed.netloc)
             if authority is None or (authority[1] is not None and int(authority[1]) > 65535):
                 continue
-            path = unquote(unquote(parsed.path)).casefold()
-            path = posixpath.normpath("/" + path.lstrip("/"))
+            path = unquote(unquote(parsed.path))
+            segments = [segment.split(";") for segment in path.split("/")]
+            route = "/".join(segment[0] for segment in segments).casefold()
+            route = posixpath.normpath("/" + route.lstrip("/"))
             host = parsed.hostname.encode("idna").decode("ascii").casefold().rstrip(".")
-            if (host == "hooks.slack.com" and path.startswith("/services/")
-                    or re.search(r"/(?:webhooks?|tokens?|secrets?|credentials?|reset-password|magic-link)[/=:][^/]", path)
-                    or re.search(r"/bot[0-9]+:[^/]", path)):
+            if (host == "hooks.slack.com" and route.startswith("/services/")
+                    or re.search(r"/(?:webhooks?|tokens?|secrets?|credentials?|reset-password|magic-link)[/=:][^/]", route)
+                    or re.search(r"/bot[0-9]+:[^/]", route)):
                 continue
-            fields = re.split(r"[?&#;]", unquote(f"{parsed.query}&{parsed.fragment}"))
+            fields = [field for segment in segments for field in segment[1:]]
+            fields.extend(re.split(r"[?&#;]", unquote(f"{parsed.query}&{parsed.fragment}")))
             if any(SESSION_SECRET_RE.search(re.sub(r"[^a-z0-9]", "", unquote(field.partition("=")[0]).casefold()))
                    for field in fields):
                 continue
@@ -14057,7 +14064,7 @@ def load_site(
         homes, bearings.generated, all_decisions=True, use_feed=use_snapshot, feed_runner=feed_runner,
         priority_projects=list(document.get("priority_projects", [])),  # type: ignore[call-overload]
         saved_views=effective_views(document), all_views=True, waits=waits,
-        completions_out=bearings.completions,
+        completions_out=bearings.completions if bearings.topic_pages else None,
     )
     if waits_error:
         bearings.attention["waits_error"] = waits_error
@@ -14077,7 +14084,7 @@ def render_projection(homes: list[HomeSnapshot], bearings: Bearings, pages: dict
     waiting = [(home.get("waiting"), home.get("waiting_more"), home.get("decisions")) for home in attention]
     projection = (sources, membership, scope.links if scope else [], waiting,
                   sorted((name, value) for name, value in pages.items() if name.startswith(RAW_PREFIX)),
-                  bearings.call, bearings.landed, bearings.underway, bearings.charted, bearings.completions)
+                  bearings.call, bearings.landed, bearings.underway, bearings.charted)
     return hashlib.sha256(repr(projection).encode("utf-8")).hexdigest()
 
 

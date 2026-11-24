@@ -98,7 +98,7 @@ members without changing the schema name.
 | `ledger` | `{path, present, version, records}`, or `null` when the ledger could not be read. `records` counts distinct records. |
 | `recent_work` | See below, or `null` when the ledger could not be read. |
 | `decision_relevance` | `{recent_days, since}`: the relevance window. |
-| `recent_work_6h` | Merged and started items of the last six hours, newest first; each is a recent-work item plus `event` (`merged` or `started`). `[]` when none or the ledger could not be read. |
+| `recent_work_6h` | Merged and started items of the last six hours, newest first; each is a recent-work item plus `event` (`merged` or `started`) and `home` (the resolved owner’s label). `[]` when none or the ledger could not be read. |
 | `done_recent` | Completions for the activity cards, including registered local secondmates; see [Recent completions](#recent-completions). |
 | `show_recent` | `true` only when `recent_work_6h` is not empty. Readers skip recent work otherwise. |
 | `complete` | `true` when the feed was read and every source the waiting lists depend on (home, registry, local secondmate backlogs, captain board) was readable and understood. When `false`, an empty waiting list does not mean nothing is waiting. |
