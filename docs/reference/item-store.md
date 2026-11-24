@@ -45,13 +45,15 @@ Readers validate the records without taking the lock.
 
 | Kind | `body` |
 | --- | --- |
-| `resource` | A `url` and `link_text`. The URL must use `http` or `https`, include a hostname, and pass port validation. |
+| `resource` | A `url` and `link_text`. |
 | `list` | `{"entries": ["...", "..."]}`, at least one. |
 | `questions` | A nonempty `questions` array of objects. `question` and `context` are required text fields. `options` is an array of text and can be empty when the object has a `suggestion`. Each question may include `links`, an array of objects with exactly two fields, `text` and `url`. |
 
+Resource and question link URLs must use `http` or `https`, include a hostname,
+pass port validation, and have at most 2,000 characters after trimming.
 Question link `text` must be nonempty and is limited to 200 characters after
-whitespace is collapsed to single spaces. Its `url` follows the same validation
-as a resource URL. Quarterdeck omits an empty `links` array when saving.
+whitespace is collapsed to single spaces. Quarterdeck omits an empty `links`
+array when saving.
 
 Quarterdeck trims text when saving it and escapes it when building pages.
 On the Saved page and individual item pages, standalone `http://` and

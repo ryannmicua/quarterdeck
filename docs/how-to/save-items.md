@@ -55,7 +55,8 @@ quarterdeck add --kind questions --title "Tide launch decisions" \
   --description "The two questions holding the tide launch." --body-file questions.json
 ```
 
-The questions are numbered on the page, for example Q3.1 and Q3.2.
+`--body-file -` reads standard input. Quarterdeck copies the body when you
+save it. The questions are numbered on the page, for example Q3.1 and Q3.2.
 See [Answer questions](answer-questions.md) to send decisions.
 
 ### A question that points to a review page
@@ -76,11 +77,9 @@ see. For field requirements, see the
 
 The question page shows the links above the options and suggested answer.
 If any open question has links, the Saved card shows the first link from
-the first such question, prefixed with its ID, as in `Q6.2 See the mock-ups`.
+the first such question, prefixed with that question's ID, as in
+`Q6.2 See the mock-ups`.
 On both surfaces, the links open in a new tab.
-
-`--body-file -` reads standard input. Quarterdeck copies the body when you
-save it.
 
 ## Find, read and remove items
 
