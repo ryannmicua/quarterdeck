@@ -331,17 +331,25 @@ def check_store(data: object) -> dict[str, object]:
     return data
 
 
+class StoreReadError(ValueError):
+    pass
+
+
 def read_store(path: Path) -> dict[str, object]:
     try:
         source = path.read_text(encoding="utf-8")
     except FileNotFoundError:
         return empty_store()
     except (OSError, UnicodeDecodeError) as exc:
-        raise ValueError(f"could not read the item store {path}: {exc}") from exc
+        raise StoreReadError(f"could not read the item store {path}: {exc}") from exc
     try:
-        return check_store(json.loads(source))
-    except json.JSONDecodeError as exc:
-        raise ValueError(f"the item store {path} is not valid JSON: {exc}") from exc
+        data = json.loads(source)
+    except (ValueError, RecursionError) as exc:
+        raise StoreReadError(f"the item store {path} is not valid JSON: {exc}") from exc
+    try:
+        return check_store(data)
+    except (ValueError, RecursionError) as exc:
+        raise StoreReadError(str(exc)) from exc
 
 
 @contextmanager
@@ -922,8 +930,9 @@ if (send) {
     } catch (err) {
       interrupted = navigator.onLine ? 'Send interrupted. ' + err.message : 'Offline. Reconnect and send again.';
     }
-    const errors = [...rejections].map(([field, rejection]) => field.closest('section').id + ': ' + rejection.message);
-    output.textContent = [...errors, interrupted].filter(Boolean).join(' ') || 'Answers saved.';
+    const rejected = rejections.size;
+    const summary = rejected ? rejected + (rejected === 1 ? ' answer rejected.' : ' answers rejected.') : '';
+    output.textContent = [summary, interrupted].filter(Boolean).join(' ') || 'Answers saved.';
     controls.forEach(c => c.disabled = false);
     refresh();
   });
@@ -1331,10 +1340,10 @@ def make_handler(site_title: str, base_path: str = "", store: Path | None = None
                 record = send_answer(store or store_path(), home, payload)
             except AnswerConflict as exc:
                 self.send_text(409, str(exc))
+            except (OSError, StoreReadError):
+                self.send_text(500, "Could not save the answer.")
             except (ValueError, RecursionError):
                 self.send_text(400, "Check the question and answer.")
-            except OSError:
-                self.send_text(500, "Could not save the answer.")
             else:
                 self.send_text(200, json.dumps(record), "application/json")
 

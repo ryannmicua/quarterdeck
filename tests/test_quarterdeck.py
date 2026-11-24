@@ -437,6 +437,36 @@ class ServeTests(StoreCase):
             self.assertEqual(self.post_answer(port, "Q3.1", "Hold", origin=origin)[0], 403)
         self.assertEqual(self.store(), before)
 
+    def test_answer_retries_after_either_store_read_fails(self):
+        self.add_all_kinds()
+        port = self.start("/qd")
+        path = quarterdeck.store_path()
+        read_text = type(path).read_text
+        for failed_read, part, answer in ((1, "Q3.1", "Hold"), (2, "Q3.2", "Blue")):
+            with self.subTest(failed_read=failed_read):
+                reads = 0
+
+                def read_with_failure(file, *args, **kwargs):
+                    nonlocal reads
+                    if file == path:
+                        reads += 1
+                        if reads == failed_read:
+                            raise PermissionError(f"could not read {file}")
+                    return read_text(file, *args, **kwargs)
+
+                with patch.object(type(path), "read_text", read_with_failure):
+                    status, body = self.post_answer(port, part, answer)
+                self.assertEqual((status, body), (500, b"Could not save the answer."))
+                first_save = self.store()["items"][2].get("answers", {}).get(part[-1])
+                if failed_read == 1:
+                    self.assertIsNone(first_save)
+                else:
+                    self.assertEqual(first_save["answer"], answer)
+                status, record = self.post_answer(port, part, answer)
+                self.assertEqual((status, record["answer"]), (200, answer))
+                if first_save:
+                    self.assertEqual(record["revision"], first_save["revision"])
+
     def test_answer_origin_through_tls_terminating_proxy(self):
         self.add_all_kinds()
         port = self.start("/qd")
@@ -586,7 +616,8 @@ check(card(5).querySelector('.badge').textContent === 'Open' &&
 check(document.querySelector('.progress').textContent === '3 of 5 open', 'Progress was stale');
 check(field(2).value === 'Blue', 'The conflicting draft was lost');
 check(button('send').disabled, 'A saved, conflicting or unchanged reopened answer was still queued');
-check(document.querySelector('[role="status"]').textContent.includes('Q1.2: Question changed.'), 'The conflict was hidden');
+check(card(2).textContent.includes('Question changed. Reload before sending.'), 'The conflict was hidden');
+check(document.querySelector('[role="status"]').textContent === '1 answer rejected.', 'The toolbar repeated the conflict');
 typeAnswer(4, 'Blue');
 await sendBatch();
 check(sent.join(',') === 'Q1.1,Q1.2,Q1.3,Q1.5,Q1.4', 'The next send retried the conflicted draft');
@@ -616,6 +647,7 @@ await sendBatch();
 const error = document.getElementById(field(1).getAttribute('aria-describedby'));
 check(card(1).contains(error) && !error.hidden && error.textContent === 'Check the question and answer.',
       'The rejection was missing from its question');
+check(document.querySelector('[role="status"]').textContent === '1 answer rejected.', 'The toolbar repeated the draft error');
 check(field(1).value === invalid && !field(1).disabled && button('send').disabled,
       'The rejected draft was lost, locked or left queued');
 check(card(2).querySelector('.record').textContent === 'Blue', 'The valid answer was blocked');
@@ -772,13 +804,14 @@ check(!button('send').disabled && button('send').textContent === 'Send 2 answers
         damaged = self.store()
         del damaged["items"][0]["body"]
         path.write_text(json.dumps(damaged))
-        port = self.start()
-        for route in ("/", "/q2.html"):
+        port = self.start("/qd")
+        for route in ("/qd/", "/qd/q2.html"):
             status, body, _headers = self.fetch(port, route)
             self.assertEqual(status, 500)
             self.assertIn("could not read its item store", body)
             self.assertNotIn(str(path), body)
-        self.assertEqual(self.fetch(port, "/Q1")[0], 404)
+        self.assertEqual(self.fetch(port, "/qd/Q1")[0], 404)
+        self.assertEqual(self.post_answer(port, "Q3.1", "Hold"), (500, b"Could not save the answer."))
 
 
 class ServiceAndHelpTests(StoreCase):
