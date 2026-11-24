@@ -6,6 +6,7 @@ import os
 import select
 import shlex
 import shutil
+import signal
 import socket
 import stat
 import subprocess
@@ -17,7 +18,7 @@ import urllib.error
 import urllib.request
 from concurrent.futures import ThreadPoolExecutor
 from configparser import ConfigParser
-from contextlib import contextmanager, redirect_stderr, redirect_stdout
+from contextlib import contextmanager, redirect_stderr, redirect_stdout, suppress
 from pathlib import Path
 from unittest.mock import patch
 from urllib.parse import urljoin
@@ -481,8 +482,12 @@ class ServeTests(StoreCase):
         desk = self.fetch(port, "/qd/")[1].split("<h1>My desk</h1>", 1)[1].split('<section id="workers">', 1)[0]
         self.assertIn("<li>Which colour for the quay?</li>", desk)
         self.assertNotIn("Merge the tide tables now?", desk)
+        self.assertIn('<span class="badge">1 of 2 open</span>', desk)
         self.assertIn('<a class="work-action" href="q3.html#Q3.2">Answer questions</a>', desk)
-        self.assertIn('<section class="decision" id="Q3.2"', self.fetch(port, "/qd/q3.html")[1])
+        question_page = self.fetch(port, "/qd/q3.html")[1]
+        self.assertIn('<section class="decision" id="Q3.2"', question_page)
+        self.assertIn('<p class="progress">1 of 2 open</p>', question_page)
+        self.assertIn("Open (1 of 2 open)", self.run_cli("show", "Q3")[1])
 
     def test_pending_delivery_does_not_take_the_primary_desk_action(self):
         self.add("questions", "Open decisions", "Two choices.", "--body-file", "-", stdin=json.dumps(QUESTIONS))
@@ -1018,10 +1023,15 @@ class WorkersTests(StoreCase):
 
     def test_missing_facts_say_activity_unavailable_and_invent_nothing(self) -> None:
         task = {"id": "Plover", "kind": "scout", "endpoint": {"exists": True}}
-        port = self.start("/qd", workers_home=self.make_home([task]))
-        row = self.workers(port)[1]["workers"][0]
-        self.assertEqual((row["status"], row["activity"], row["project"], row["active_at"], row["links"]),
-                         ("Unknown", "Activity unavailable", None, None, []))
+        null_facts = {**task, "id": "Merlin", "project": None, "backlog": {"title": None, "repo": None},
+                      "paths": {"status_log": {"last_event": None}}, "pr": {"url": None}}
+        port = self.start("/qd", workers_home=self.make_home([task, null_facts]))
+        status, payload = self.workers(port)
+        self.assertEqual(status, 200)
+        self.assertEqual([row["name"] for row in payload["workers"]], ["Plover", "Merlin"])
+        for row in payload["workers"]:
+            self.assertEqual((row["status"], row["activity"], row["project"], row["active_at"], row["links"]),
+                             ("Unknown", "Activity unavailable", None, None, []))
 
     def test_an_empty_snapshot_is_an_empty_list(self) -> None:
         port = self.start("/qd", workers_home=self.make_home([]))
@@ -1040,6 +1050,8 @@ class WorkersTests(StoreCase):
             "task": {"tasks": [valid, None]},
             "identity": {"tasks": [{**valid, "id": None}]},
             "blank identity": {"tasks": [{**valid, "id": "  "}]},
+            "control in identity": {"tasks": [snapshot_task("Wr\x00en")]},
+            "surrogate in identity": {"tasks": [snapshot_task("Wr\ud800en")]},
             "kind": {"tasks": [{**valid, "kind": None}]},
             "endpoint": {"tasks": [{**valid, "endpoint": None}]},
             "unobserved": {"tasks": [snapshot_task("Wren", exists=None)]},
@@ -1051,6 +1063,21 @@ class WorkersTests(StoreCase):
             "missing decision key": {"tasks": [{**valid, "kind": "secondmate", "hints": {"open_decisions": [{}]}}]},
             "invalid decision key": {"tasks": [snapshot_task("Wren", decisions=[7])]},
             "blank decision key": {"tasks": [snapshot_task("Wren", decisions=[" "])]},
+            "contact": {"tasks": [valid, snapshot_task("Tern", kind="secondmate", alive=[])]},
+            "project": {"tasks": [{**valid, "project": []}]},
+            "backlog": {"tasks": [{**valid, "backlog": []}]},
+            "repo": {"tasks": [{**valid, "backlog": {"repo": []}}]},
+            "title": {"tasks": [snapshot_task("Wren", title=[])]},
+            "paths": {"tasks": [{**valid, "paths": []}]},
+            "status log": {"tasks": [{**valid, "paths": {"status_log": []}}]},
+            "activity event": {"tasks": [{**valid, "paths": {"status_log": {"last_event": []}}}]},
+            "activity age type": {"tasks": [snapshot_task("Wren", age="540")]},
+            "activity age boolean": {"tasks": [snapshot_task("Wren", age=True)]},
+            "activity age range": {"tasks": [snapshot_task("Wren", age=-1)]},
+            "activity age infinity": {"tasks": [snapshot_task("Wren", age=float("inf"))]},
+            "pull request": {"tasks": [{**valid, "pr": []}]},
+            "pull request URL type": {"tasks": [snapshot_task("Wren", pr=[])]},
+            "pull request URL format": {"tasks": [snapshot_task("Wren", pr="not a URL")]},
         }
         for name, fixture in cases.items():
             with self.subTest(name):
@@ -1062,10 +1089,26 @@ class WorkersTests(StoreCase):
 
     def test_a_slow_snapshot_is_stopped(self) -> None:
         home = self.make_home([])
-        (home / "bin" / "fm-fleet-snapshot.sh").write_text("#!/bin/sh\nsleep 30\n")
+        lifetime = home / "lifetime"
+        os.mkfifo(lifetime)
+        (home / "bin" / "fm-fleet-snapshot.sh").write_text(
+            '#!/bin/sh\nset -eu\nexec 3>lifetime >/dev/null\n'
+            'sleep 30 &\nchild=$!\nprintf "%s %s\\n" "$$" "$child" > started\nwait "$child"\n')
         port = self.start("/qd", workers_home=home)
-        with patch.object(quarterdeck, "SNAPSHOT_SECONDS", 0.5):
-            self.assertEqual(self.workers(port)[0], 502)
+        reader = os.open(lifetime, os.O_RDONLY | os.O_NONBLOCK)
+        try:
+            with patch.object(quarterdeck, "SNAPSHOT_SECONDS", 0.5):
+                self.assertEqual(self.workers(port)[0], 502)
+            self.assertEqual(len((home / "started").read_text().split()), 2)
+            self.assertTrue(select.select([reader], [], [], 1)[0], "snapshot shell or child still holds the pipe open")
+            self.assertEqual(os.read(reader, 1), b"")
+        finally:
+            if (home / "started").exists() and not select.select([reader], [], [], 0)[0]:
+                shell, child = map(int, (home / "started").read_text().split())
+                for pid in (shell, child):
+                    with suppress(ProcessLookupError):
+                        os.kill(pid, signal.SIGKILL)
+            os.close(reader)
 
     def test_a_busy_snapshot_rejects_the_next_request(self) -> None:
         port = self.start("/qd", workers_home=self.make_home([]))
@@ -1117,7 +1160,7 @@ class WorkersTests(StoreCase):
         home = self.make_home([snapshot_task("Wren")])
         port = self.start("/qd", workers_home=home)
         next_snapshot = {
-            "generated": "2026-03-02T13:41:00Z",
+            "generated": "2026-03-02T13:39:00Z",
             "tasks": [snapshot_task("Wren", exists=False), snapshot_task("Bracken")],
         }
         list_page = quarterdeck.list_page
@@ -1160,7 +1203,7 @@ const check = (condition, message) => { if (!condition) throw new Error(message)
   await refreshed;
   check(requestCount() === 2, 'The refresh button did not make exactly one worker request');
   check(!roster.textContent.includes('Wren') && roster.textContent.includes('Bracken'), 'The refreshed roster did not replace the old one');
-  check(statusLine.querySelector('time')?.dateTime === '2026-03-02T13:41:00Z', 'The refresh did not show the new observation time');
+  check(statusLine.querySelector('time')?.dateTime === '2026-03-02T13:39:00Z', 'The refresh did not show the corrected observation time');
   result.textContent = 'PASS';
 })().catch(error => { result.textContent = error.message; });
 </script>

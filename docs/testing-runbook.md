@@ -24,7 +24,9 @@ in place while preserving their text.
 The workers browser test uses headless `google-chrome` to count actual snapshot
 requests on entry, during a virtual minute of idle time, and after a refresh click.
 It also verifies that the click replaces the closed worker's row with the new live
-worker and displays the newer observation time.
+worker and displays the new observation time after the source clock moves backward.
+The timeout test checks that the snapshot shell and its child both release a
+shared pipe when the endpoint returns 502.
 
 For a screen change, also save one item of each kind, run `quarterdeck serve`,
 and check the Saved page and each item page at phone width (about 390 px) and

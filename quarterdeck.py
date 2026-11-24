@@ -531,7 +531,8 @@ def item_text(item: dict[str, object]) -> str:
     elif item["kind"] == "list":
         lines.extend(f"{item_id}.{number}  {entry}" for number, entry in enumerate(body["entries"], 1))  # type: ignore[index]
     else:
-        state, remaining, _ = question_summary(item)
+        state, open_parts, _ = question_summary(item)
+        remaining = len(open_parts)
         lines.extend([f"{state} ({remaining} of {len(question_parts(item))} open)" if remaining else state, ""])
         for number, question in enumerate(body["questions"], 1):  # type: ignore[index]
             lines.append(f"{item_id}.{number}  {question['question']}")
@@ -644,8 +645,8 @@ def run_snapshot(home: Path) -> object:
         raise SnapshotError("the fleet snapshot was not readable") from exc
 
 
-def snapshot_text(value: object, limit: int = TITLE_LIMIT) -> str | None:
-    if not isinstance(value, str):
+def snapshot_text(value: str | None, limit: int = TITLE_LIMIT) -> str | None:
+    if value is None:
         return None
     text = " ".join("".join(c if unicodedata.category(c) not in {"Cc", "Cs"} else " " for c in value).split())
     return text[:limit].rstrip() or None
@@ -655,46 +656,65 @@ def utc_text(moment: datetime) -> str:
     return moment.astimezone(timezone.utc).isoformat(timespec="seconds").removesuffix("+00:00") + "Z"
 
 
-def worker_status(task: dict[str, object]) -> str:
+def snapshot_field(record: dict, name: str, expected: type | tuple[type, ...]):
+    value = record.get(name)
+    if value is not None and not isinstance(value, expected):
+        raise SnapshotError(f"the fleet snapshot has an invalid {name}")
+    return value
+
+
+def worker_status(task: dict) -> str:
     """Map only what the snapshot states outright onto the owner's status words."""
-    hints, current = task.get("hints"), task.get("current_state")
-    if isinstance(hints, dict) and hints.get("open_decisions"):
+    current = snapshot_field(task, "current_state", dict) or {}
+    state = snapshot_field(current, "state", str)
+    freshness = snapshot_field(current, "freshness", str)
+    hints = snapshot_field(task, "hints", dict) or {}
+    decisions = snapshot_field(hints, "open_decisions", list) or []
+    if any(not isinstance(decision, dict) or not isinstance(decision.get("key"), str) or not decision["key"].strip()
+           for decision in decisions):
+        raise SnapshotError("the fleet snapshot has an invalid open decision")
+    if decisions:
         return "Question asked"
-    if not isinstance(current, dict) or current.get("freshness") not in {None, "fresh"}:
+    if freshness not in {None, "fresh"}:
         return "Unknown"
-    return WORKER_STATES.get(current.get("state"), "Unknown")
+    return WORKER_STATES.get(state, "Unknown")
 
 
 def roster_row(key: str, task: dict, observed: datetime) -> dict[str, object]:
-    backlog = task.get("backlog") if isinstance(task.get("backlog"), dict) else {}
-    project = None
-    if isinstance(task.get("project"), str) and task["project"]:  # type: ignore[index]
-        project = snapshot_text(Path(str(task["project"])).name, 80)
+    backlog = snapshot_field(task, "backlog", dict) or {}
+    project = snapshot_field(task, "project", str)
+    repo = snapshot_field(backlog, "repo", str)
+    title = snapshot_field(backlog, "title", str)
+    paths = snapshot_field(task, "paths", dict) or {}
+    status_log = snapshot_field(paths, "status_log", dict) or {}
+    last = snapshot_field(status_log, "last_event", dict) or {}
+    age = snapshot_field(last, "age_seconds", (int, float))
+    if age is not None and (isinstance(age, bool) or not 0 <= age < float("inf")):
+        raise SnapshotError("the fleet snapshot has an invalid activity age")
+    alive = snapshot_field(task["endpoint"], "agent_alive", str)
+    pr = snapshot_field(task, "pr", dict) or {}
+    url = snapshot_field(pr, "url", str)
+    links = []
+    if url is not None:
+        try:
+            links.append({"text": "Pull request", "href": clean_url(url)})
+        except ValueError as exc:
+            raise SnapshotError("the fleet snapshot has an invalid pull request URL") from exc
     row: dict[str, object] = {
-        "name": key, "status": worker_status(task), "project": project or snapshot_text(backlog.get("repo"), 80),  # type: ignore[union-attr]
-        "activity": snapshot_text(backlog.get("title")) or ACTIVITY_UNAVAILABLE, "links": [],
+        "name": key, "status": worker_status(task),
+        "project": snapshot_text(Path(project).name if project else None, 80) or snapshot_text(repo, 80),
+        "activity": snapshot_text(title) or ACTIVITY_UNAVAILABLE, "links": links,
     }
     if task["kind"] == "secondmate":
-        endpoint = task["endpoint"]
-        alive = endpoint.get("agent_alive")
-        unreachable = endpoint.get("exists") is False or alive == "dead"
+        unreachable = task["endpoint"].get("exists") is False or alive == "dead"
         if unreachable:
             row["status"] = "Unreachable"
         row["contact_at"] = utc_text(observed) if not unreachable and alive == "alive" else None
     else:
         row["active_at"] = None
-        paths = task.get("paths")
-        last = paths.get("status_log", {}).get("last_event") if isinstance(paths, dict) and isinstance(paths.get("status_log"), dict) else None
-        age = last.get("age_seconds") if isinstance(last, dict) else None
-        if isinstance(age, (int, float)) and not isinstance(age, bool) and 0 <= age < 10 * 365 * 86400:
+        if age is not None and age < 10 * 365 * 86400:
             with contextlib.suppress(OverflowError):
                 row["active_at"] = utc_text(observed - timedelta(seconds=age))
-    pr = task.get("pr")
-    if isinstance(pr, dict) and isinstance(pr.get("url"), str):
-        try:
-            row["links"].append({"text": "Pull request", "href": clean_url(pr["url"])})  # type: ignore[union-attr]
-        except ValueError:
-            pass
     return row
 
 
@@ -719,32 +739,21 @@ def workers_snapshot(home: Path) -> dict[str, object]:
         if not isinstance(task, dict):
             raise SnapshotError("the fleet snapshot has an invalid task")
         key, kind, endpoint = task.get("id"), task.get("kind"), task.get("endpoint")
-        if (not isinstance(key, str) or not key.strip()
+        if (not isinstance(key, str) or not key.strip() or any(unicodedata.category(c) in {"Cc", "Cs"} for c in key)
                 or not isinstance(kind, str) or not kind.strip() or not isinstance(endpoint, dict)):
             raise SnapshotError("the fleet snapshot has an invalid task")
         exists = endpoint.get("exists")
         if not isinstance(exists, bool) and (kind != "secondmate" or exists is not None):
             raise SnapshotError("the fleet snapshot has no reliable terminal state")
-        current = task.get("current_state")
-        if current is not None and (not isinstance(current, dict) or any(
-                not isinstance(current.get(field), (str, type(None))) for field in ("state", "freshness"))):
-            raise SnapshotError("the fleet snapshot has an invalid task status")
-        hints = task.get("hints")
-        if hints is not None and not isinstance(hints, dict):
-            raise SnapshotError("the fleet snapshot has an invalid task status")
-        decisions = hints.get("open_decisions") if hints else None
-        if decisions is not None and (not isinstance(decisions, list) or any(
-                not isinstance(decision, dict) or not isinstance(decision.get("key"), str) or not decision["key"].strip()
-                for decision in decisions)):
-            raise SnapshotError("the fleet snapshot has an invalid task status")
+        row = roster_row(key, task, observed)
         if kind == "secondmate":
-            second_mates.setdefault(key, task)
+            second_mates.setdefault(key, row)
         elif exists:
-            workers.setdefault(key, task)
+            workers.setdefault(key, row)
     return {
         "observed_at": generated,
-        "workers": [roster_row(key, task, observed) for key, task in workers.items() if key not in second_mates],
-        "second_mates": [roster_row(key, task, observed) for key, task in second_mates.items()],
+        "workers": [row for key, row in workers.items() if key not in second_mates],
+        "second_mates": list(second_mates.values()),
     }
 
 
@@ -965,7 +974,6 @@ WORKERS_SCRIPT = r"""
       const response = await fetch('workers.json', {cache: 'no-store', headers: {Accept: 'application/json'}});
       if (!response.ok) throw new Error('refresh failed');
       const data = await response.json();
-      if (last && data.observed_at < last.observed_at) throw new Error('older answer');
       last = data;
       show(data);
     } catch (error) {
@@ -1064,17 +1072,17 @@ def delivery_label(record):
     return "Sent" if record["delivery"] == "sent" else "Not delivered"
 
 
-def question_summary(item):
+def question_summary(item) -> tuple[str, list[int], bool]:
     states = [part_record(item, n).get("state", "open") for n in question_parts(item)]
-    remaining = states.count("open")
-    state = "Open" if remaining else ("Closed" if all(s == "closed" for s in states) else "Answered")
+    open_parts = [n for n, state in enumerate(states, 1) if state == "open"]
+    state = "Open" if open_parts else ("Closed" if all(s == "closed" for s in states) else "Answered")
     pending = any(delivery_pending(r) for r in item.get("answers", {}).values())
-    return state, remaining, pending
+    return state, open_parts, pending
 
 
-def question_card(item, *, served, primary):
-    state, remaining, pending = question_summary(item)
-    open_parts = [n for n in question_parts(item) if part_record(item, n).get("state", "open") == "open"]
+def question_card(item, summary, *, served, primary):
+    state, open_parts, pending = summary
+    remaining = len(open_parts)
     href = item_page_name(item["id"])
     if primary:
         href += f'#{item["id"]}.{open_parts[0]}'
@@ -1098,7 +1106,8 @@ def has_answer_controls(item):
 
 def question_form(item, served):
     cards = []
-    state, remaining, _ = question_summary(item)
+    state, open_parts, _ = question_summary(item)
+    remaining = len(open_parts)
     for number, question in enumerate(item["body"]["questions"], 1):
         part = f'{item["id"]}.{number}'
         record = part_record(item, number)
@@ -1299,14 +1308,15 @@ def list_page(data: dict[str, object], site_title: str, *, served: bool, saved_n
         if item["kind"] != "questions":
             references.append(item)
             continue
-        _, remaining, pending = question_summary(item)
-        (attention if remaining or pending else reviewed).append(item)
-        if remaining and primary is None:
+        summary = question_summary(item)
+        _, open_parts, pending = summary
+        (attention if open_parts or pending else reviewed).append((item, summary))
+        if open_parts and primary is None:
             primary = item
     body = ""
 
-    def desk(group: list[dict[str, object]]) -> str:
-        cards = "".join(question_card(item, served=served, primary=item is primary) for item in group)
+    def desk(group) -> str:
+        cards = "".join(question_card(item, summary, served=served, primary=item is primary) for item, summary in group)
         return f'<div class="desk">{cards}</div>'
 
     if attention:
