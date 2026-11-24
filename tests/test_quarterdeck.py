@@ -17,7 +17,7 @@ import urllib.error
 import urllib.request
 from concurrent.futures import ThreadPoolExecutor
 from configparser import ConfigParser
-from contextlib import redirect_stderr, redirect_stdout
+from contextlib import contextmanager, redirect_stderr, redirect_stdout
 from pathlib import Path
 from unittest.mock import patch
 from urllib.parse import urljoin
@@ -439,7 +439,7 @@ class ServeTests(StoreCase):
 
     def test_answer_retries_after_either_store_read_fails(self):
         self.add_all_kinds()
-        port = self.start("/qd")
+        port = self.start("/qd", home=self.root / "home")
         path = quarterdeck.store_path()
         read_text = type(path).read_text
         for failed_read, part, answer in ((1, "Q3.1", "Hold"), (2, "Q3.2", "Blue")):
@@ -466,6 +466,59 @@ class ServeTests(StoreCase):
                 self.assertEqual((status, record["answer"]), (200, answer))
                 if first_save:
                     self.assertEqual(record["revision"], first_save["revision"])
+
+    def test_answer_without_delivery_work_survives_a_failing_second_read(self):
+        self.add_all_kinds()
+        path = quarterdeck.store_path()
+        read_text = type(path).read_text
+        home = self.root / "home"
+        script = home / "bin" / "fm-inbox.sh"
+        script.parent.mkdir(parents=True)
+        script.write_text("#!/bin/sh\nexit 0\n")
+        script.chmod(0o700)
+        bound = self.start("/qd", home=home)
+        unbound = self.start("/qd")
+        status, sent = self.post_answer(bound, "Q3.2", "Blue")
+        self.assertEqual((status, sent["delivery"]), (200, "sent"))
+        for port, part, answer, delivery in ((unbound, "Q3.1", "Hold", "pending"), (bound, "Q3.2", "Blue", "sent")):
+            with self.subTest(delivery=delivery):
+                reads = 0
+
+                def read_once(file, *args, **kwargs):
+                    nonlocal reads
+                    if file == path:
+                        reads += 1
+                        if reads > 1:
+                            raise PermissionError("store read failed")
+                    return read_text(file, *args, **kwargs)
+
+                with patch.object(type(path), "read_text", read_once):
+                    status, record = self.post_answer(port, part, answer)
+                self.assertEqual(status, 200)
+                self.assertEqual((record["answer"], record["delivery"]), (answer, delivery))
+
+    def test_removed_item_conflicts_before_save_and_before_delivery(self):
+        self.add_all_kinds()
+        home = self.root / "home"
+        port = self.start("/qd", home=home)
+        self.assertEqual(self.fetch(port, "/qd/q3.html")[0], 200)
+        changing_store = quarterdeck.changing_store
+        removed = []
+
+        @contextmanager
+        def remove_after_save(path):
+            with changing_store(path) as data:
+                yield data
+            if not removed:
+                with patch.object(quarterdeck, "changing_store", changing_store):
+                    removed.append(self.run_cli("remove", "Q3")[0])
+
+        with patch.object(quarterdeck, "changing_store", remove_after_save):
+            self.assertEqual(self.post_answer(port, "Q3.1", "Hold"),
+                             (409, b"Item removed. Reload before sending."))
+        self.assertEqual(removed, [0])
+        self.assertEqual(self.post_answer(port, "Q3.2", "Blue"), (409, b"Item removed. Reload before sending."))
+        self.assertEqual(self.fetch(port, "/qd/q3.html")[0], 404)
 
     def test_answer_origin_through_tls_terminating_proxy(self):
         self.add_all_kinds()
@@ -622,6 +675,8 @@ typeAnswer(4, 'Blue');
 await sendBatch();
 check(sent.join(',') === 'Q1.1,Q1.2,Q1.3,Q1.5,Q1.4', 'The next send retried the conflicted draft');
 check(field(2).value === 'Blue', 'A later send discarded the conflicting draft');
+check(card(2).textContent.includes('Question changed. Reload before sending.'), 'A later send cleared the inline conflict');
+check(document.querySelector('[role="status"]').textContent === 'Answers saved.', 'The toolbar counted an earlier conflict');
 """)
 
     def test_batch_rejection_preserves_an_editable_draft(self):
@@ -653,6 +708,7 @@ check(field(1).value === invalid && !field(1).disabled && button('send').disable
 check(card(2).querySelector('.record').textContent === 'Blue', 'The valid answer was blocked');
 card(1).querySelector('[data-choice="Hold"]').click();
 check(error.hidden, 'The rejection remained after correcting the draft');
+check(document.querySelector('[role="status"]').textContent === '', 'The toolbar retained the corrected rejection');
 await sendBatch();
 check(JSON.stringify(sent) === JSON.stringify([['Q1.1', invalid], ['Q1.2', 'Blue'], ['Q1.1', 'Hold']]),
       'The corrected answer was lost or the saved answer was resent');

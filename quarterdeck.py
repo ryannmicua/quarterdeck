@@ -463,6 +463,15 @@ class AnswerConflict(ValueError):
     pass
 
 
+def find_answer_item(data, item_id):
+    try:
+        return find_item(data, item_id)
+    except ValueError as exc:
+        if int(item_id[1:]) < data["next_id"]:
+            raise AnswerConflict("Item removed. Reload before sending.") from exc
+        raise
+
+
 def send_answer(store, home, payload):
     if not isinstance(payload, dict) or set(payload) != {"part", "answer", "revision"}:
         raise ValueError("Invalid answer fields.")
@@ -474,7 +483,7 @@ def send_answer(store, home, payload):
     item_id, part = match[1], int(match[2])
     answer = clean_text(payload["answer"], "Answer", TEXT_LIMIT, multiline=True)
     with changing_store(store) as data:
-        item = find_item(data, item_id)
+        item = find_answer_item(data, item_id)
         if part not in question_parts(item):
             raise ValueError("Unknown question.")
         old = part_record(item, part)
@@ -490,22 +499,24 @@ def send_answer(store, home, payload):
             record = put_record(item, part, "answered", answer=answer, answered_at=now_text(),
                                 delivery="pending", request_id="quarterdeck-" + uuid.uuid4().hex)
     # The first transaction commits before the external call. Serialize delivery against edits and reuse its note ID on retries.
-    with changing_store(store) as data:
-        record_now = part_record(find_item(data, item_id), part)
-        if record_now["revision"] != record["revision"]:
-            raise AnswerConflict("Question changed. Reload before sending.")
-        if home and delivery_pending(record_now):
-            try:
-                env = {k: v for k, v in os.environ.items() if not k.startswith("FM_")}
-                result = subprocess.run([home / "bin/fm-inbox.sh", "note", "--request-id", record_now["request_id"],
-                                         "--json", "--", f"{item_id}.{part} {record_now['answer']}"],
-                                        cwd=home, stdin=subprocess.DEVNULL, timeout=10,
-                                        stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, env={**env, "FM_HOME": str(home)})
-                if result.returncode == 0:
-                    record_now["delivery"] = "sent"
-            except (OSError, subprocess.TimeoutExpired):
-                pass
-        return {k: record_now[k] for k in ("state", "revision", "answer", "answered_at", "delivery")}
+    if home and delivery_pending(record):
+        with changing_store(store) as data:
+            record_now = part_record(find_answer_item(data, item_id), part)
+            if record_now["revision"] != record["revision"]:
+                raise AnswerConflict("Question changed. Reload before sending.")
+            record = record_now
+            if delivery_pending(record):
+                try:
+                    env = {k: v for k, v in os.environ.items() if not k.startswith("FM_")}
+                    result = subprocess.run([home / "bin/fm-inbox.sh", "note", "--request-id", record["request_id"],
+                                             "--json", "--", f"{item_id}.{part} {record['answer']}"],
+                                            cwd=home, stdin=subprocess.DEVNULL, timeout=10,
+                                            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, env={**env, "FM_HOME": str(home)})
+                    if result.returncode == 0:
+                        record["delivery"] = "sent"
+                except (OSError, subprocess.TimeoutExpired):
+                    pass
+    return {k: record[k] for k in ("state", "revision", "answer", "answered_at", "delivery")}
 
 
 def item_text(item: dict[str, object]) -> str:
@@ -843,6 +854,7 @@ if (send) {
     for (const [field, rejection] of rejections) {
       if (rejection.draft !== undefined && answerText(field.value) !== rejection.draft) {
         rejections.delete(field);
+        output.textContent = '';
       }
     }
     const count = fields.filter(changed).length;
@@ -913,6 +925,7 @@ if (send) {
     const controls = document.querySelectorAll('button,input,textarea');
     controls.forEach(c => c.disabled = true);
     let interrupted = '';
+    let rejected = 0;
     try {
       for (const [i,f] of pending.entries()) {
         output.textContent = 'Sending ' + (i+1) + ' of ' + pending.length;
@@ -922,6 +935,7 @@ if (send) {
           body:JSON.stringify({part:section.id, revision:section.dataset.revision, answer})});
         if (response.status === 400 || response.status === 409) {
           rejections.set(f, {message: await response.text(), draft: response.status === 400 ? answer : undefined});
+          rejected += 1;
           continue;
         }
         if (!response.ok) throw new Error(await response.text());
@@ -930,7 +944,6 @@ if (send) {
     } catch (err) {
       interrupted = navigator.onLine ? 'Send interrupted. ' + err.message : 'Offline. Reconnect and send again.';
     }
-    const rejected = rejections.size;
     const summary = rejected ? rejected + (rejected === 1 ? ' answer rejected.' : ' answers rejected.') : '';
     output.textContent = [summary, interrupted].filter(Boolean).join(' ') || 'Answers saved.';
     controls.forEach(c => c.disabled = false);
