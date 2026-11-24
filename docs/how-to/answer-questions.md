@@ -6,6 +6,9 @@ question. Select **Review answers** if the set has no open questions or if
 you're returning to it under **Reviewed questions**. Each question has an ID
 you can cite later.
 
+If the question has [review links](save-items.md#a-question-that-points-to-a-review-page),
+open them for context before choosing an answer.
+
 1. Pick an option or type in **Your answer**. Select **Use all suggestions** to fill open questions that have a suggestion and have neither a saved answer nor a draft.
 2. Review the answers. **Undo changes** reverses one option choice or bulk suggestion action at a time and keeps any drafts you typed afterward.
 3. Select **Send answers**. The button counts the answers ready to send. You can send a few now and return for the rest.

@@ -50,7 +50,8 @@ Readers validate the records without taking the lock.
 | `questions` | A nonempty `questions` array of objects. `question` and `context` are required text fields. `options` is an array of text and can be empty when the object has a `suggestion`. Each question may include `links`, an array of objects with exactly two fields, `text` and `url`. |
 
 Resource and question link URLs must use `http` or `https`, include a hostname,
-pass port validation, and have at most 2,000 characters after trimming.
+and pass port validation. After trimming, a URL may contain at most 2,000
+characters and cannot contain whitespace or backslashes.
 Question link `text` must be nonempty and is limited to 200 characters after
 whitespace is collapsed to single spaces. Quarterdeck omits an empty `links`
 array when saving.
