@@ -39,7 +39,7 @@ Readers validate the records without taking the lock.
 | `id` | Uppercase `Q` followed by a positive integer without leading zeros. Parts are cited as `Q3.1`, `Q3.2` in the order they are stored. |
 | `kind` | `resource`, `list` or `questions`. It does not change. |
 | `title` | Up to 200 characters after whitespace is collapsed to single spaces. |
-| `description` | Up to 600 characters: what the item is and why it was saved. |
+| `description` | Up to 600 characters describing what the item is and why it was saved. |
 | `saved_at` | UTC time when the item was saved. |
 | `body` | Depends on the kind; see below. |
 
@@ -49,7 +49,14 @@ Readers validate the records without taking the lock.
 | `list` | `{"entries": ["...", "..."]}`, at least one. |
 | `questions` | A nonempty `questions` array of objects. `question` and `context` are required text fields. `options` is an array of text and can be empty when the object has a `suggestion`. |
 
-Quarterdeck trims text when saving it and displays it as escaped plain text.
+Quarterdeck trims text when saving it and escapes it when building pages.
+On the Saved page and individual item pages, standalone `http://` and
+`https://` addresses in descriptions become links if they pass the same URL
+validation as resource URLs. Quarterdeck uses the address as the link text.
+Separate multiple addresses with spaces so they are recognized individually.
+Bare addresses lose trailing punctuation such as periods and exclamation
+marks. Enclose an address in angle brackets, as in
+`<https://example.com/?q=go!>`, to keep that punctuation in the destination.
 
 ## Question answers
 

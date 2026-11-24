@@ -11,6 +11,9 @@ Every item needs a kind, a title that says what it is about, and a one-or-two
 sentence description: what it is and why it was saved, so the captain
 recognises it later. `add` prints the new ID.
 
+See [description links](../reference/item-store.md#format-version-1) for ways
+to include web addresses in a description.
+
 ### A resource (a link)
 
 ```sh
