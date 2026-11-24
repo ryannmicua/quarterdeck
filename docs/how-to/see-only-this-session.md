@@ -43,9 +43,9 @@ the page.
 
 **Links from this session** includes HTTP and HTTPS links and explicit in-home
 paths such as `data/launch/preview/index.html` from the owner's messages and Firstmate's
-replies to them. A reference links to a Quarterdeck page if one is available,
-or to the local file. Browsers may block local file links on the served site.
-The reference alone does not publish a copy of the file.
+replies to them. A reference links to a Quarterdeck page if one is available.
+Other references show the home-relative path as text. A reference alone does
+not publish a copy of the file.
 It excludes hidden paths, `config/` and `state/` directories, and filenames
 that suggest credentials or secrets. It also omits web links carrying credentials,
 tokens or signing parameters. Classic, Lavish and `render --all` include eligible links. JSON exports

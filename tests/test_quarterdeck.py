@@ -2271,6 +2271,20 @@ class BoardWriterTests(unittest.TestCase):
         self.assertGreaterEqual(recorded, before)
         self.assertEqual(self.data()["items"], [])
 
+    def test_older_activity_cannot_replace_a_newer_conversation(self) -> None:
+        second = datetime(2026, 10, 8, 9, tzinfo=timezone.utc)
+        with patch("quarterdeck.datetime", wraps=datetime) as clock:
+            clock.now.return_value = second.replace(microsecond=900)
+            self.assertEqual(self.cli("active", "--session-id", "newer")[0], 0)
+            original = self.board.read_bytes()
+            clock.now.return_value = second.replace(microsecond=100)
+            self.assertEqual(self.cli("active", "--new-session", "--session-id", "older")[0], 0)
+        self.assertEqual(self.board.read_bytes(), original)
+        self.assertEqual(self.data()["operator"], {
+            "last_active_at": "2026-10-08T09:00:00.000900Z",
+            "session_started_at": "2026-10-08T09:00:00.000900Z", "session_id": "newer",
+        })
+
     def test_active_rejects_historical_message_replay_without_writing(self) -> None:
         original = json.dumps({
             "version": 1, "items": [board_item(touched_at="2026-10-08T09:30:00Z")],
@@ -11152,9 +11166,10 @@ class SessionScopeTests(unittest.TestCase):
         args = quarterdeck.make_parser().parse_args(["serve", "--config", str(self.config), "--no-snapshot"])
         served = quarterdeck.site_builder(args)()
         for label, body in expected.items():
-            link = f'href="{(self.home / label).as_uri()}">{label}</a>'
-            self.assertIn(link, index)
-            self.assertIn(link, served["index.html"])
+            self.assertIn(f"<li>{label}</li>", index)
+            self.assertIn(f"<li>{label}</li>", served["index.html"])
+            self.assertNotIn((self.home / label).as_uri(), self.every_page(out))
+            self.assertNotIn((self.home / label).as_uri(), "\n".join(served.values()))
             self.assertNotIn(body, self.every_page(out))
             self.assertNotIn(body, "\n".join(served.values()))
         self.assertFalse(list(out.glob("doc-*.html")))
@@ -11345,7 +11360,7 @@ class SessionScopeTests(unittest.TestCase):
             stream.write(wait_record("owner", "nested-page", self.iso(self.now),
                                      "Open data/release/reviews/preview.html and staff-review.md.", sessionId="current"))
         self.render(out=out)
-        self.assertIn(f'href="{(nested / "preview.html").as_uri()}">data/release/reviews/preview.html', self.every_page(out))
+        self.assertIn("<li>data/release/reviews/preview.html</li>", self.every_page(out))
         self.assertNotIn("Explicit nested preview", self.every_page(out))
         self.assertNotIn("Neighboring staff notes", self.every_page(out))
 
@@ -11376,11 +11391,11 @@ class SessionScopeTests(unittest.TestCase):
                                      "See data/launch/first.html and data/launch/second.html.", sessionId="current"))
         out = self.render()
         self.render("--lavish", out=out)
-        self.assertIn(">data/launch/first.html</a>", (out / "index.lavish.html").read_text(encoding="utf-8"))
+        self.assertIn("<li>data/launch/first.html</li>", (out / "index.lavish.html").read_text(encoding="utf-8"))
         (launch / "first.html").unlink()
         self.render(out=out)
         self.assertFalse((out / "index.lavish.html").exists())
-        self.assertIn(f'href="{preview.as_uri()}">data/launch/second.html</a>', (out / "index.html").read_text(encoding="utf-8"))
+        self.assertIn("<li>data/launch/second.html</li>", (out / "index.html").read_text(encoding="utf-8"))
 
     def test_sibling_render_is_retired_when_scoped_ledger_activity_is_removed(self) -> None:
         ledger = self.home / quarterdeck.LEDGER_PATH
@@ -11496,7 +11511,7 @@ class SessionScopeTests(unittest.TestCase):
                                      sessionId="current"))
         pages = self.every_page(self.render())
         self.assertIn("data/tide-review/report.md", pages)
-        self.assertIn('">data/release/current.html</a>', pages)
+        self.assertIn("<li>data/release/current.html</li>", pages)
         for hidden in ("Old survey", "Live preview", "gull-count findings"):
             self.assertNotIn(hidden, pages)
 
@@ -11973,13 +11988,28 @@ See data/topics/_draft.md and data/topics/.hidden.md.
             topics = home / "data" / "topics"
             (root / "outside.md").write_text("# Offsite draft\n", encoding="utf-8")
             (topics / "outside.md").symlink_to(root / "outside.md")
+            (topics / "state").mkdir()
+            (topics / "state" / "staff-notes.md").write_text("# Private staff notes\n", encoding="utf-8")
+            (topics / "staff.md").symlink_to(topics / "state" / "staff-notes.md")
+            (home / "data" / "launch").mkdir()
+            (home / "data" / "launch" / "preview.html").write_text("<h1>Topic preview body</h1>", encoding="utf-8")
+            (topics / "credential-rotation.md").write_text(
+                "# Credential rotation\nLinks: data/launch/preview.html\n", encoding="utf-8",
+            )
             record_fixture_conversation(self, root, home,
-                                        "Discuss data/topics/credential-rotation.md and data/topics/outside.md.")
+                                        "Discuss data/topics/credential-rotation.md, data/topics/outside.md, "
+                                        "data/topics/staff.md and data/launch/preview.html.")
             output = root / "out" / "index.html"
             rendered = self.run_cli(["render", "--home", str(home), "--output", str(output), "--no-snapshot"], root)
             self.assertEqual(rendered.returncode, 0, rendered.stderr)
             self.assertIn("Credential rotation", (output.parent / "topic-credential-rotation.html").read_text())
             self.assertFalse((output.parent / "topic-outside.html").exists())
+            self.assertFalse((output.parent / "topic-staff.html").exists())
+            for name in ("index.html", "classic.html"):
+                page = (output.parent / name).read_text(encoding="utf-8")
+                self.assertIn('href="topic-credential-rotation.html">data/topics/credential-rotation.md</a>', page)
+                wrapper = re.search(r'href="(doc-[a-f0-9]+\.html)">data/launch/preview\.html</a>', page)[1]
+                self.assertTrue((output.parent / wrapper).is_file())
             checked = self.run_cli(["topics", "check", "--home", str(home)], root)
             self.assertEqual(checked.returncode, 0, checked.stdout + checked.stderr)
             self.assertIn("1 topic file checked: no mistakes.", checked.stdout)

@@ -1620,6 +1620,7 @@ def build_html(
     homes: list[HomeSnapshot], title: str, lavish: bool = False, show_all: bool = False,
     bearings: Bearings | None = None, refresh_seconds: int | None = None, allow_marks: bool = False,
     push_enabled: bool = True, front_href: str | None = None,
+    cards: list[dict[str, object]] | None = None, pages: dict[str, str] | None = None,
 ) -> str:
     snapshots = all_snapshots(homes)
     ambiguous_ids = assign_report_ids(homes)
@@ -1649,11 +1650,12 @@ def build_html(
         counts=section_counts,
     ) if bearings else ""
     attention_block = attention_html(bearings.attention, allow_marks) if bearings else ""
-    cards = activity_cards(
-        bearings.attention, board, reactions, home_data_dirs(homes), bearings.item_pages, bearings.main_href,
-        {snapshot.spec.label: snapshot_items(snapshot) for snapshot in snapshots},
-        {snapshot.spec.label: snapshot for snapshot in snapshots},
-    ) if bearings else []
+    if cards is None:
+        cards = activity_cards(
+            bearings.attention, board, reactions, home_data_dirs(homes), bearings.item_pages, bearings.main_href,
+            {snapshot.spec.label: snapshot_items(snapshot) for snapshot in snapshots},
+            {snapshot.spec.label: snapshot for snapshot in snapshots},
+        ) if bearings else []
     cards_block = cards_html(cards, bearings.attention, generated, bool(refresh_seconds)) if bearings else ""
     topics_block = topics_section_html(homes, generated, allow_marks)
     activity_block = activity_html(cards, bearings.attention, generated) if bearings else ""
@@ -1688,7 +1690,7 @@ def build_html(
     jump_block = jump_nav_html(body_markup, section_counts)
     scoped = bearings is not None and bearings.session is not None
     session_note = session_note_html(bearings) if scoped else ""
-    session_links = session_links_html(bearings) if scoped else ""
+    session_links = session_links_html(bearings, pages) if scoped else ""
     reload_script = """
   <script>
     if (location.protocol === "http:" || location.protocol === "https:") {
@@ -5793,23 +5795,24 @@ def board_active(args: argparse.Namespace) -> int:
             operator = data.get("operator") if isinstance(data.get("operator"), dict) else {}
             assert isinstance(operator, dict)
             previous = parse_board_time(operator.get("last_active_at"))
-            started = parse_board_time(operator.get("session_started_at"))
-            session_id = getattr(args, "session_id", None)
-            new_session = (args.new_session or previous is None or started is None or now - previous > SESSION_IDLE
-                           or bool(session_id and session_id != operator.get("session_id")))
             if previous is None or now > previous:
-                operator["last_active_at"] = board_time_text(now)
-            if new_session:
-                operator["session_started_at"] = board_time_text(now)
-                operator.pop("session_id", None)
-            if session_id:
-                operator["session_id"] = session_id
-            data["operator"] = operator
-            write_board_document(path, data, now)
+                started = parse_board_time(operator.get("session_started_at"))
+                session_id = getattr(args, "session_id", None)
+                new_session = (args.new_session or previous is None or started is None or now - previous > SESSION_IDLE
+                               or bool(session_id and session_id != operator.get("session_id")))
+                stamp = now.isoformat().replace("+00:00", "Z")
+                operator["last_active_at"] = stamp
+                if new_session:
+                    operator["session_started_at"] = stamp
+                    operator.pop("session_id", None)
+                if session_id:
+                    operator["session_id"] = session_id
+                data["operator"] = operator
+                write_board_document(path, data, now)
     except (OSError, ValueError) as exc:
         print(f"quarterdeck: {exc}", file=sys.stderr)
         return 2
-    print(f"operator active at {operator['last_active_at']}; session started {operator['session_started_at']}")
+    print(f"operator active at {operator['last_active_at']}; session started {operator.get('session_started_at', '-')}")
     return 0
 
 
@@ -6173,11 +6176,12 @@ def site_builder(
         title = args.title or (configured_title if isinstance(configured_title, str) else None) or DEFAULT_TITLE
         found = bearings.topic_pages
         calls_front = bool(found)
+        activity = site_cards(homes, bearings, allow_marks)
+        pages = source_pages(homes, show_all=False, bearings=bearings, allow_marks=allow_marks)
         previous = build_html(
             homes, title, bearings=bearings, refresh_seconds=DEFAULT_REFRESH_SECONDS, allow_marks=allow_marks,
-            push_enabled=push is not None, front_href="index.html" if calls_front else None,
+            push_enabled=push is not None, front_href="index.html" if calls_front else None, cards=activity, pages=pages,
         )
-        activity = site_cards(homes, bearings, allow_marks)
         if push is not None:
             for card in activity:
                 topic = card_topic(card, found) if card.get("section") == "needs_you" else None
@@ -6202,7 +6206,6 @@ def site_builder(
                     print(f"quarterdeck: could not record adoption arrivals: {exc}", file=sys.stderr, flush=True)
 
         cards = cards_payload(activity, bearings.generated)
-        pages = source_pages(homes, show_all=False, bearings=bearings, allow_marks=allow_marks)  # after the cards: they register document pages
         if calls_front:
             # With topics the default view is Calls; Topics and Search sit beside it. The front page before Calls stays at
             # previous.html, and the page before that at classic.html, for this release.
@@ -7938,7 +7941,7 @@ def read_topics(data_dir: Path) -> list[Topic]:
             target = path.resolve()
         except (OSError, RuntimeError):
             continue
-        if target.is_relative_to(root) and not any(part.startswith((".", "_")) for part in target.relative_to(root).parts):
+        if target.parent == root and target.suffix == ".md" and not target.name.startswith((".", "_")):
             paths.append(path)
     return [read_topic_file(path) for path in paths]
 
@@ -10313,7 +10316,7 @@ def calls_page_html(homes: list[HomeSnapshot], title: str, bearings: Bearings, c
     more = (f'<p class="more">The <a href="{PREVIOUS_PAGE}">previous view</a> stays available for this release.</p>')
     body = (
         tabs_html(calls_href, title, calls_href)
-        + f'<main class="calls-page">{stamp}{queue_html}<aside class="calls-side">{recap_html(bearings.completions)}{sent_html}{session_links_html(bearings)}{ask}</aside>{more}</main>'
+        + f'<main class="calls-page">{stamp}{queue_html}<aside class="calls-side">{recap_html(bearings.completions)}{sent_html}{session_links_html(bearings, pages)}{ask}</aside>{more}</main>'
     )
     scripts = (topic_ask_script() + calls_script()) if allow_marks else calls_script()
     if serve_push:
@@ -12734,7 +12737,8 @@ def publishable_document(path: Path, data_dir: Path) -> Path | None:
     return resolved
 
 
-def referenced_docs(text: str, data_dir: Path, *, explicit_only: bool = False) -> list[tuple[Path, str]]:
+def referenced_docs(text: str, data_dir: Path, *, explicit_only: bool = False,
+                    structured_topics: dict[str, Path] | None = None) -> list[tuple[Path, str]]:
     """The existing documents a card's text names, as (file, "<id>/<name>") pairs.
 
     A bare name such as explainer.html resolves next to the one data/<id>/ directory the same text names. Only
@@ -12753,7 +12757,7 @@ def referenced_docs(text: str, data_dir: Path, *, explicit_only: bool = False) -
     found: list[tuple[Path, str]] = []
     for label in wanted:
         try:
-            path = publishable_document(data_dir / label, data_dir)
+            path = (structured_topics or {}).get(label) or publishable_document(data_dir / label, data_dir)
             if path is None or (not explicit_only and path.parent.parent != data_dir.resolve()):
                 continue
             usable = path.is_file() and path.stat().st_size <= DOC_PAGE_LIMIT
@@ -13949,7 +13953,9 @@ def session_scope(homes: list[HomeSnapshot], now: datetime) -> SessionScope:
                            for target in report.related_to)):
                 directories.add(report.path.parent.name)
     if source.data_dir is not None:
-        for path, label in referenced_docs(said, source.data_dir, explicit_only=True):
+        structured_topics = {f"{TOPICS_DIR_NAME}/{topic.path.name}": topic.path.resolve() for topic in source.topics
+                             if (id(source), topic.topic_id) in scope.topics and TOPIC_ID_RE.fullmatch(topic.topic_id)}
+        for path, label in referenced_docs(said, source.data_dir, explicit_only=True, structured_topics=structured_topics):
             scope.documents.append(SessionDocument(f"data/{label}", path))
     return scope
 
@@ -14013,26 +14019,30 @@ def session_stamp_html(bearings: Bearings, updated: str = "", controls: str = ""
     return f'<p class="stamp">{joined}{controls}</p>' if joined or controls else ""
 
 
-def session_link_targets(bearings: Bearings) -> list[tuple[str, str]]:
+def session_link_targets(bearings: Bearings, pages: dict[str, str] | None) -> list[tuple[str | None, str]]:
     scope = bearings.session
     if scope is None:
         return []
-    links = [(url, session_link_label(url)) for url in scope.links]
+    links: list[tuple[str | None, str]] = [(url, session_link_label(url)) for url in scope.links]
+    published = pages if pages is not None else bearings.item_pages
     for doc in scope.documents:
         digest = hashlib.sha256(str(doc.path).encode("utf-8")).hexdigest()[:12]
-        page = f"{DOC_PREFIX}{digest}.html"
-        if page not in bearings.item_pages:
-            page = scope.document_pages.get(doc.path, doc.path.as_uri())
+        candidates = [scope.document_pages.get(doc.path), f"{DOC_PREFIX}{digest}.html"]
+        if doc.path.name in {"report.md", "report.html"}:
+            report_digest = hashlib.sha256(str(doc.path.parent).encode("utf-8")).hexdigest()[:12]
+            candidates.append(f"{REPORT_VIEW_PREFIX}{report_digest}.html")
+        page = next((name for name in candidates if name is not None and name in published), None)
         links.append((page, doc.label))
     return links
 
 
-def session_links_html(bearings: Bearings) -> str:
-    links = session_link_targets(bearings)
+def session_links_html(bearings: Bearings, pages: dict[str, str] | None) -> str:
+    links = session_link_targets(bearings, pages)
     if not links:
         return ""
     rows = "".join(
-        f'<li><a href="{html.escape(url, quote=True)}">{html.escape(label)}</a></li>'
+        (f'<li><a href="{html.escape(url, quote=True)}">{html.escape(label)}</a></li>'
+         if url is not None else f'<li>{html.escape(label)}</li>')
         for url, label in links
     )
     return ('<section class="session-links" aria-labelledby="session-links-h">'
@@ -14165,7 +14175,7 @@ def render_projection(homes: list[HomeSnapshot], bearings: Bearings, pages: dict
             answer_keys.update(("decision", f"{topic.ref}/{entry.entry_id}") for entry in topic.open_decisions())
     state = next((snapshot.review_state for snapshot in members if snapshot.review_state is not None), None)
     answers = [(key, state.history[key]) for key in sorted(answer_keys) if state is not None and key in state.history]
-    projection = (sources, membership, session_link_targets(bearings), activity, recap_inputs, answers,
+    projection = (sources, membership, session_link_targets(bearings, pages), activity, recap_inputs, answers,
                   sorted((name, value) for name, value in pages.items() if name.startswith(RAW_PREFIX)),
                   bearings.call, bearings.landed, bearings.underway, bearings.charted)
     return hashlib.sha256(repr(projection).encode("utf-8")).hexdigest()
@@ -14190,10 +14200,10 @@ def render(args: argparse.Namespace) -> int:
         validate_output_path(output_path, homes)
         output_path.parent.mkdir(parents=True, exist_ok=True)
         front = bool(bearings.topic_pages)
-        index = build_html(homes, title, lavish=args.lavish, show_all=args.all, bearings=bearings,
-                           front_href=output_path.name if front else None)
-        activity = site_cards(homes, bearings, False) if front else []
+        activity = site_cards(homes, bearings, False)
         pages = source_pages(homes, show_all=args.all, bearings=bearings)
+        index = build_html(homes, title, lavish=args.lavish, show_all=args.all, bearings=bearings,
+                           front_href=output_path.name if front else None, cards=activity, pages=pages)
         projection = render_projection(homes, bearings, pages, recap_inputs)
         if front:
             pages[CLASSIC_PAGE] = index
