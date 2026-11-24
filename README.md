@@ -6,9 +6,8 @@
 
 Quarterdeck shows only what was saved to it by hand. When you tell Firstmate
 "send this to Quarterdeck" or "save this Lavish page to Quarterdeck", Firstmate
-runs `quarterdeck add`, and the item appears on the page. Nothing else shows:
-Quarterdeck reads no backlog, board, topic, report or session, and an empty
-Quarterdeck says so.
+runs `quarterdeck add`, and the item appears on the page. If nothing has been
+saved, the page says so.
 
 Each item gets an ID that is never reused: Q1, Q2, Q3 and so on. The numbered
 parts of a list or a set of questions are cited as Q7.1, Q7.2, so you can say
@@ -28,7 +27,9 @@ saved; Quarterdeck never reads it again from another file.
 
 ## Features
 
-- Open questions come first. Completed questions and references have their own sections.
+- **Needs attention** shows question sets with open questions or undelivered
+  answers on questions that are still editable. Other question sets appear
+  under **Reviewed questions**. Links and lists appear under **References**.
 - One page per item, with its ID and title at the top. A resource's link opens
   the saved address; list entries and questions are numbered.
 - `quarterdeck add`, `list`, `show` and `remove` for
@@ -38,7 +39,7 @@ saved; Quarterdeck never reads it again from another file.
   item shows on the next load. HTTPS, a reverse-proxy path prefix and a systemd
   user service are supported. See [Serve the page](docs/how-to/serve-the-page.md).
 - `quarterdeck render` writes the pages as HTML files instead.
-- [Answer questions](docs/how-to/answer-questions.md) in the browser and send decisions to Firstmate.
+- [Answer questions](docs/how-to/answer-questions.md) in the browser.
 - Python 3 standard library only.
 
 ## Quick start

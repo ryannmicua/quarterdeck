@@ -704,6 +704,7 @@ for (const time of document.querySelectorAll('.saved-answer time[datetime]:not([
 }
 """
 
+
 def esc(value: object) -> str:
     return html.escape(str(value), quote=True)
 
@@ -989,6 +990,8 @@ def item_body_html(item: dict[str, object]) -> str:
         return '<ol class="numbered">' + "".join(
             f'<li id="{esc(item_id)}.{number}"><span class="id">{esc(item_id)}.{number}</span><span>{esc(entry)}</span></li>'
             for number, entry in enumerate(entries, 1)) + "</ol>"
+
+
 def item_page(item: dict[str, object], site_title: str, *, served: bool, saved_name: str = "index.html") -> str:
     item_id = str(item["id"])
     content = question_form(item, served) if item["kind"] == "questions" else item_body_html(item)

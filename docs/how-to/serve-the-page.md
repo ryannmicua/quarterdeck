@@ -11,7 +11,7 @@ to pick another port and `--title` to change the site name. To write the pages
 as files instead, run `quarterdeck render`; see the
 [CLI reference](../reference/cli-and-config.md#pages).
 
-Open a question under Needs attention or select a title under References.
+To submit a decision, see [Answer questions](answer-questions.md).
 
 ## Reach it from a phone
 
@@ -76,6 +76,9 @@ the browser-facing `Host` and the `/qd/` prefix.
 ## Security: loopback by default
 
 The default bind is `127.0.0.1`. A loopback listener refuses requests whose
-`Host` is outside loopback. Binding a non-loopback address exposes your saved
-items without a login to everyone who can reach the port, and Quarterdeck
-prints a warning when you do. Anyone who can reach the service can read items and send answers as the owner. Keep the listener and proxy on the trusted network, or protect both with an owner access gate. Browser submissions require an Origin that matches the public host and scheme.
+`Host` is outside loopback. Quarterdeck has no login. Anyone who can reach the
+service can read saved items and answers and send answers as the owner.
+Quarterdeck prints a warning when you bind a non-loopback address. Keep the
+listener and proxy on the trusted network, or protect both with an owner access
+gate. Browser submissions require an `Origin` that matches the public host and
+scheme. Question pages with answer controls cannot be embedded in frames.

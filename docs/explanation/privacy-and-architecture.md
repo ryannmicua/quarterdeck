@@ -12,13 +12,15 @@ and nothing else.
   [optional config](../reference/cli-and-config.md#json-configuration).
 - `render` reads the item store and inspects existing output files before
   replacing or retiring them. See the [render reference](../reference/cli-and-config.md#pages).
-- `serve` reads the item store to build pages. It reads the TLS certificate
-  and key if you supply them.
+- `serve` reads the item store to build pages and writes to it when users
+  submit answers. It reads the TLS certificate and key if you supply them.
 - `service --write` writes the systemd unit. `url` reads it if it exists.
 - `install` and `update` invoke the [user-local installer](../how-to/install.md).
 
-It reads nothing from a Firstmate home: no backlog, board, topic, report,
-ledger or saved session. On an explicit answer submission it runs only the configured home's inbox note command, passing the part ID and plain answer text.
+Quarterdeck reads no backlog, board, topic, report, ledger or saved session
+from a Firstmate home. On explicit answer submission it can invoke the
+configured home's `bin/fm-inbox.sh note` command, passing the plain answer text
+prefixed with the part ID.
 
 ## Why items are stored by value
 

@@ -28,7 +28,7 @@ Item commands report validation errors on stderr and exit with status 2.
 | `add` | Saves a new item and prints its ID. A `resource` needs `--url` and `--link-text`. A `list` or `questions` item needs `--body-file`. See [the input formats and examples](../how-to/save-items.md#add-an-item). |
 | `list` | Prints saved items, newest first, with ID, kind, saved date and title. |
 | `show` | Prints one item in full, numbering list entries and questions as `Q7.1`, `Q7.2`. |
-| `mark` | Changes one question or all questions in an item. Keeps the latest answer text, timestamp and delivery status. |
+| `mark` | Sets the state of one question or every question in a questions item. It preserves any saved answer, timestamp and delivery status. See [Read answers](../how-to/read-answers.md) for examples. |
 | `remove` | Deletes an item. Its ID is never used again. |
 
 ### Pages
@@ -39,6 +39,9 @@ Item commands report validation errors on stderr and exit with status 2.
 | `serve` | Serves the same pages over HTTP, or HTTPS with `--tls-cert` and `--tls-key`. Page requests read the store, so a new item shows on the next load. Open item Q7 at `/q7.html`. `--host` may be repeated. `--port` defaults to 8765. See [serving security](../how-to/serve-the-page.md#security-loopback-by-default) for the default bind and browser access rules. |
 | `service` | Prints a systemd user unit with the supplied serving options, or writes it to `${XDG_CONFIG_HOME:-~/.config}/systemd/user/quarterdeck.service` with `--write`. |
 | `url` | Prints the address the installed unit serves, or the default address when no unit is installed. |
+
+Rendered item pages include any saved answers and their timestamps and
+delivery status. Answer controls are available on served pages.
 
 If `XDG_STATE_HOME` is set when you run `service`, the generated unit includes
 that setting so it reads the same [item store](item-store.md).
@@ -67,7 +70,11 @@ or `${XDG_CONFIG_HOME:-~/.config}/quarterdeck.json` when it exists.
 | `page_title` | string | `Quarterdeck` | The site name in the navigation bar and browser title. `--title` overrides it for `render` and `serve`. |
 | `output_dir` | string path | `${XDG_STATE_HOME:-~/.local/state}/quarterdeck` | Where `render` writes the pages. |
 | `base_path` | string | none | The URL prefix described above. |
-| `firstmate_home` | absolute path | sole legacy registered home | Local destination for submitted answers. |
+| `firstmate_home` | absolute path after expanding `~` | see legacy fallback below | Local destination for answers submitted to `serve`. |
 
-Legacy `homes` supplies a destination only when it contains exactly one path entry. `captain_waits` is ignored. Any other key is an error. See
+When `firstmate_home` is absent, `serve` uses a legacy `homes` list only if it
+contains exactly one object with a valid `path`. Relative legacy paths are
+resolved from the config file's directory. Without a destination,
+Quarterdeck saves answers with delivery pending. `captain_waits` is ignored.
+Any other key is an error. See
 [`quarterdeck.example.json`](../../quarterdeck.example.json).

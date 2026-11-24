@@ -52,8 +52,8 @@ quarterdeck add --kind questions --title "Tide launch decisions" \
   --description "The two questions holding the tide launch." --body-file questions.json
 ```
 
-The questions are numbered on the page: Q3.1, Q3.2. The captain can answer
-"Q3.1 merge, Q3.2 blue".
+The questions are numbered on the page, for example Q3.1 and Q3.2.
+See [Answer questions](answer-questions.md) to send decisions.
 
 `--body-file -` reads standard input. Quarterdeck copies the body when you
 save it.
