@@ -326,7 +326,8 @@ def _record_from_line(line: str, section: str, headers: list[str] | None) -> Rec
     )
 
 
-BACKLOG_PATH_RE = re.compile(r"(?<![\w./-])data/([\w.-]{1,128})/([\w.-]{1,128}\.md)(?![\w-])")
+FILE_REFERENCE_END = r"(?![\w/-]|\.+[\w/-])"
+BACKLOG_PATH_RE = re.compile(r"(?<![\w./-])data/([\w.-]{1,128})/([\w.-]{1,128}\.md)" + FILE_REFERENCE_END)
 BACKLOG_PATH_TEXT_LIMIT = 2_000
 
 
@@ -2015,7 +2016,7 @@ BLOCKER_FIELD_RE = re.compile(
     r"\b(?P<key>blocked[-_]by|waiting[-_](?:on|for)):\s*(?P<value>\S+)", re.I
 )
 BULLET_ITEM_RE = re.compile(r"^-\s+\[(?P<mark>[ xX])\]\s+(?P<id>[A-Za-z0-9][\w.-]*)\s+-\s+(?P<rest>.*)$")
-REPORT_PATH_RE = re.compile(r"(?<![\w./-])data/([\w][\w.-]{0,127})/report\.(?:md|html)(?![\w-])")
+REPORT_PATH_RE = re.compile(r"(?<![\w./-])data/([\w][\w.-]{0,127})/report\.(?:md|html)" + FILE_REFERENCE_END)
 DATE_RE = re.compile(r"\d{4}-\d{2}-\d{2}(?:[T ]\d{2}:\d{2}(?::\d{2})?(?:Z|[+-]\d{2}:?\d{2})?)?")
 OPTIONS_RE = re.compile(r"(?is)\boptions?\s*(?:\([^)]*\))?\s*:\s*(.+?)(?=\n\s*\n|\brecommend(?:ation|ed)?\s*:|\Z)")
 RECOMMENDATION_RE = re.compile(r"(?is)\brecommend(?:ation|ed)?\s*:\s*(.+?)(?=\n\s*\n|\boptions?\s*:|\Z)")
@@ -2466,6 +2467,7 @@ class BearingsBuilder:
                  runner: Callable[[Path, Path | None], tuple[dict[str, object] | None, str]] = run_bearings_snapshot,
                  main_href: str = "index.html") -> None:
         self.homes = homes
+        self.starts: dict[tuple[int, str], str] | None = None
         self.now = now
         self.use_snapshot = use_snapshot
         self.runner = runner
@@ -2486,19 +2488,25 @@ class BearingsBuilder:
 
     def started(self, snapshot: HomeSnapshot, task: str) -> str:
         """When the home's fleet ledger last recorded the task as dispatched, or "" when it has no such record."""
-        starts = getattr(snapshot, "_starts", None)
-        if starts is None:
-            starts = {}
-            if snapshot.spec.home is not None and not snapshot.spec.remote_host and not snapshot.error:
-                try:
-                    records = read_fleet_ledger(snapshot.spec.home / LEDGER_PATH) or []
-                except AttentionSourceError:
-                    records = []
-                for record in sorted(records, key=lambda r: r["ts"]):  # type: ignore[arg-type, return-value]
-                    if record["event"] == "task.dispatched":
-                        starts[str(record["task"])] = iso_seconds(record["ts"])  # type: ignore[arg-type]
-            setattr(snapshot, "_starts", starts)
-        return starts.get(task, "")
+        if self.starts is None:
+            self.starts = {}
+            for root in self.homes:
+                family = all_snapshots([root])
+                for source in family:
+                    if source.spec.home is None or source.spec.remote_host or source.error:
+                        continue
+                    try:
+                        records = read_fleet_ledger(source.spec.home / LEDGER_PATH) or []
+                    except AttentionSourceError:
+                        continue
+                    for record in records:
+                        if record["event"] != "task.dispatched":
+                            continue
+                        owner, local = task_reference_owner(source, str(record["task"]), family)
+                        key = (id(owner), local)
+                        stamp = iso_seconds(record["ts"])  # type: ignore[arg-type]
+                        self.starts[key] = max(self.starts.get(key, ""), stamp)
+        return self.starts.get((id(snapshot), task), "")
 
     def home_label(self, snapshot: HomeSnapshot, owner: str) -> str:
         if not owner or owner == "(main)":
@@ -3223,74 +3231,76 @@ def plain_title(value: str) -> str:
     return re.sub(r"\s+", " ", re.sub(r"https?://\S+", " ", value)).strip(" -·")
 
 
-def recent_work(records: list[dict[str, object]] | None, snapshot: HomeSnapshot, feed_titles: dict[str, str],
-                now: datetime) -> dict[str, object]:
-    records = records or []
+def recent_work(records: list[tuple[HomeSnapshot, dict[str, object]]], snapshot: HomeSnapshot,
+                feed_titles: dict[str, str], now: datetime) -> dict[str, object]:
     items = snapshot_items(snapshot)
-    ordered = sorted(records, key=lambda record: record["ts"])  # type: ignore[arg-type, return-value]
-    projects: dict[str, str] = {}
-    prs: dict[str, str] = {}
-    for record in ordered:
-        task = str(record["task"])
+    ordered = sorted(records, key=lambda entry: entry[1]["ts"])  # type: ignore[arg-type, return-value]
+    projects: dict[tuple[int, str], str] = {}
+    prs: dict[tuple[int, str], str] = {}
+    for owner, record in ordered:
+        key = (id(owner), str(record["task"]))
         if record["event"] == "task.dispatched" and isinstance(record.get("project"), str):
-            projects[task] = str(record["project"])
+            projects[key] = str(record["project"])
         if record["event"] in {"task.pr_ready", "task.merged"} and isinstance(record.get("pr"), str):
-            prs[task] = str(record["pr"])
+            prs[key] = str(record["pr"])
 
-    def describe(record: dict[str, object]) -> dict[str, object]:
+    def describe(owner: HomeSnapshot, record: dict[str, object]) -> dict[str, object]:
         task = str(record["task"])
-        item = items.get(task)
-        pr = record.get("pr") if isinstance(record.get("pr"), str) else prs.get(task) or (item.pr_url if item else "")
+        key = (id(owner), task)
+        qualified = report_reference(owner.spec.label, task)
+        item = snapshot_items(owner).get(task)
+        pr = record.get("pr") if isinstance(record.get("pr"), str) else prs.get(key) or (item.pr_url if item else "")
         return {
             "at": iso_seconds(record["ts"]),  # type: ignore[arg-type]
-            "task": task,
-            "title": plain_title((item.title if item else "") or feed_titles.get(task) or "") or task,
-            "project": projects.get(task) or (item.project if item else "") or None,
+            "task": task if owner is snapshot else qualified,
+            "title": plain_title((item.title if item else "") or feed_titles.get(qualified)
+                                 or (feed_titles.get(task) if owner is snapshot else "") or "") or task,
+            "project": projects.get(key) or (item.project if item else "") or None,
             "pr": pr or None,
         }
 
-    starts = min((float(record["ts"]) for record in records), default=None)  # type: ignore[arg-type]
+    starts = min((float(record["ts"]) for _, record in records), default=None)  # type: ignore[arg-type]
     end = now.timestamp()
     windows = []
     for name, near, far in RECENT_WINDOWS:
         start, stop = end - far * 3600, end - near * 3600
-        inside = [r for r in reversed(ordered) if float(r["ts"]) >= start and (near == 0 or float(r["ts"]) < stop)]  # type: ignore[arg-type]
-        merged = [describe(r) | {"via": r.get("via") if isinstance(r.get("via"), str) else None}
-                  for r in inside if r["event"] == "task.merged"]
-        started = [describe(r) | {"kind": r.get("kind") if isinstance(r.get("kind"), str) else None}
-                   for r in inside if r["event"] == "task.dispatched"]
-        answered = sum(1 for r in inside if r["event"] == "captain.answered" and r.get("mode") in {"done", "release"})
+        inside = [(owner, r) for owner, r in reversed(ordered) if float(r["ts"]) >= start and (near == 0 or float(r["ts"]) < stop)]  # type: ignore[arg-type]
+        merged = [describe(owner, r) | {"via": r.get("via") if isinstance(r.get("via"), str) else None}
+                  for owner, r in inside if r["event"] == "task.merged"]
+        started = [describe(owner, r) | {"kind": r.get("kind") if isinstance(r.get("kind"), str) else None}
+                   for owner, r in inside if r["event"] == "task.dispatched"]
+        answered = sum(1 for _, r in inside if r["event"] == "captain.answered" and r.get("mode") in {"done", "release"})
         coverage = "none" if starts is None or starts >= stop else "partial" if starts > start else "full"
         windows.append({
             "window": name, "from": iso_seconds(start), "to": iso_seconds(stop), "coverage": coverage,
             "merged_count": len(merged), "started_count": len(started), "answered_count": answered,
             "merged": merged, "started": started,
         })
-    latest = [r for r in reversed(ordered) if end - RECENT_HOURS * 3600 <= float(r["ts"]) <= end]  # type: ignore[arg-type]
+    latest = [(owner, r) for owner, r in reversed(ordered) if end - RECENT_HOURS * 3600 <= float(r["ts"]) <= end]  # type: ignore[arg-type]
     last_6h = [
-        describe(r) | ({"event": "merged", "via": r.get("via") if isinstance(r.get("via"), str) else None}
+        describe(owner, r) | ({"event": "merged", "via": r.get("via") if isinstance(r.get("via"), str) else None}
                        if r["event"] == "task.merged" else
                        {"event": "started", "kind": r.get("kind") if isinstance(r.get("kind"), str) else None})
-        for r in latest if r["event"] in {"task.merged", "task.dispatched"}
+        for owner, r in latest if r["event"] in {"task.merged", "task.dispatched"}
     ]
     done = {}
-    for record in latest:
+    for owner, record in latest:
         event = record["event"]
         mode = record.get("mode")
         if event != "task.merged" and not (event == "captain.answered" and mode in {"done", "release", "reconciled"}):
             continue
         task = str(record["task"])
-        done.setdefault(task, describe(record) | {
+        done.setdefault((id(owner), task), describe(owner, record) | {
             "event": "merged" if event == "task.merged" else "closed" if mode == "reconciled" else "answered",
-            "via": record.get("via"), "home": snapshot.spec.label,
+            "task": task, "via": record.get("via"), "home": owner.spec.label,
         })
     for task, item in items.items():
-        if not item.done or task in done:
+        if not item.done or (id(snapshot), task) in done:
             continue
         when = next((parsed for name in ("merged", "done", "closed")
                      if (parsed := parse_when(item.attrs.get(name, ""))) is not None), None)
         if when is not None and end - RECENT_HOURS * 3600 <= when.timestamp() <= end:
-            done[task] = {
+            done[(id(snapshot), task)] = {
                 "task": task, "title": plain_title(item.title), "project": item.project, "pr": item.pr_url,
                 "at": iso_seconds(when.timestamp()), "event": "finished", "home": snapshot.spec.label,
             }
@@ -3507,14 +3517,25 @@ def home_attention(
                 if not owner.error:
                     errors.append(exc.as_dict())
                 local_records = []
-        if scope is not None:
-            local_records = [record for record in local_records
-                             if scope.includes(*task_reference_owner(owner, str(record["task"]), snapshots))]
+        resolved_records = []
+        seen_records = set()
+        admitted = []
+        for record in local_records:
+            target, task = task_reference_owner(owner, str(record["task"]), snapshots)
+            if scope is not None and not scope.includes(target, task):
+                continue
+            local = dict(record, task=task)
+            key = (id(target), json.dumps(local, sort_keys=True))
+            if key in seen_records:
+                continue
+            seen_records.add(key)
+            resolved_records.append((target, local))
+            admitted.append(record)
         titles = feed_titles if owner is snapshot else {}
         if completion_sources is not None:
-            completion_sources.append((owner, local_records, titles))
+            completion_sources.append((owner, admitted, titles))
         if owner is snapshot and ledger_ok:
-            work = recent_work(local_records, owner, titles, now)
+            work = recent_work(resolved_records, owner, titles, now)
             view["recent_work_6h"] = work.pop("last_6h")
             view["done_recent"] = work.pop("done_recent")
             view["show_recent"] = bool(view["recent_work_6h"])
@@ -3522,8 +3543,13 @@ def home_attention(
         if owner.error:
             continue
         if owner is not snapshot:
-            view["done_recent"].extend(recent_work(local_records, owner, titles, now)["done_recent"])
-        normalized.extend(dict(record, task=task_key(owner, str(record["task"]), snapshots)) for record in local_records)
+            view["done_recent"].extend(recent_work(resolved_records, owner, titles, now)["done_recent"])
+        normalized.extend(dict(record, task=report_reference(target.spec.label, str(record["task"])))
+                          for target, record in resolved_records)
+    finished = {}
+    for item in sorted(view["done_recent"], key=lambda row: (row["event"] != "finished", row["at"]), reverse=True):
+        finished.setdefault((item["home"], item["task"]), item)
+    view["done_recent"] = list(finished.values())
     if projects_out is not None:
         for owner in snapshots:
             if not owner.error and owner.backlog_markdown is not None:
@@ -5610,6 +5636,10 @@ def touched_value(args: argparse.Namespace, now: datetime) -> str | None:
 
 
 def apply_board_upsert(raw: dict[str, object], args: argparse.Namespace, now: datetime) -> None:
+    touched = touched_value(args, now)
+    session_id = getattr(args, "session_id", None)
+    if session_id is not None and touched is None:
+        raise ValueError("--session-id requires --touch or --touched-at")
     raw["task"] = args.task.strip()
     for key in ("group", "title", "ask", "detail", "topic", "project"):
         value = getattr(args, key)
@@ -5653,9 +5683,8 @@ def apply_board_upsert(raw: dict[str, object], args: argparse.Namespace, now: da
             raw["brief"] = brief
         else:
             raw.pop("brief", None)
-    touched = touched_value(args, now)
     if touched:
-        set_board_touch(raw, touched, getattr(args, "session_id", None))
+        set_board_touch(raw, touched, session_id)
 
 
 def board_upsert(args: argparse.Namespace) -> int:
@@ -11610,18 +11639,14 @@ def selected_cards(doc: dict[str, object], snapshots: list[HomeSnapshot]) -> dic
                 continue
             task = str(card.get("task") or "")
             item = snapshot_items(snapshot).get(task)
-            if (scope.identity is None or item is None or not item.held or not scope.includes(snapshot, task)
-                    or hold_session_id(item) != scope.identity[1] or card.get("hold_set") != hold_stamp(item)):
+            if (scope.identity is None or item is None or not is_captain_hold(item) or not scope.includes(snapshot, task)
+                    or hold_session_id(item) != scope.identity[1] or not current_wait_matches(card, item)):
                 continue
             identity = scope.identity[1]
             stamp = card["hold_set"]
             entries = [entry for entry in card.get("entries") or [] if isinstance(entry, dict)
                        and entry.get("hold_set") == stamp and entry.get("session_id") == identity]
-            if card.get("session_id") == identity:
-                cards[key] = dict(card, entries=entries)
-            else:
-                cards[key] = dict(card, entries=[], jobs=[], briefed_hold=None, kind=None, summary=None,
-                                  hold_reason=item.hold_reason, title=item.title, discarded=None)
+            cards[key] = dict(card, entries=entries)
     return cards
 
 
@@ -11717,10 +11742,19 @@ def item_refs(item: BacklogItem) -> list[str]:
     return sorted(text_refs(f"{item.title}\n{item.hold_reason}\n{item.pr_url}"))
 
 
+def is_captain_hold(item: BacklogItem) -> bool:
+    return not item.done and not is_cancelled_state(item.state) and item.held and item.hold_kind == "captain"
+
+
+def current_wait_matches(card: dict[str, object], item: BacklogItem | None) -> bool:
+    return (item is not None and is_captain_hold(item) and card.get("hold_set") == hold_stamp(item)
+            and card.get("session_id") == hold_session_id(item))
+
+
 def captain_holds(owner: HomeSnapshot, snapshots: list[HomeSnapshot]) -> dict[str, tuple[BacklogItem, str]]:
     holds: dict[str, tuple[BacklogItem, str]] = {}
     for item in backlog_items(owner.backlog_markdown or "", owner):
-        if item.done or is_cancelled_state(item.state) or not (item.held and item.hold_kind == "captain"):
+        if not is_captain_hold(item):
             continue
         holds[task_key(owner, item.id, snapshots)] = (item, hold_stamp(item))
     return holds
@@ -12342,8 +12376,13 @@ def discard_wait(args: argparse.Namespace, key: str, hold_set: str | None = None
     if card.get("status") != "waiting":
         raise ValueError(f"the wait on {card['task']} is already released")
     instance = wait_instance(card)
+
+    def live_hold_matches() -> bool:
+        latest = load_home_snapshot(owner.spec)
+        return current_wait_matches(card, snapshot_items(latest).get(str(card["task"])))
+
     if (hold_set is not None and hold_set != card.get("hold_set")
-            or hold_instance is not None and hold_instance != instance):
+            or hold_instance is not None and hold_instance != instance or not live_hold_matches()):
         raise ValueError(f"the wait on {card['task']} was held again since this page loaded; reload and try again")
     if wait_is_hidden(card):
         return {"key": key, "hold_set": card["hold_set"], "discarded": True}
@@ -12353,7 +12392,7 @@ def discard_wait(args: argparse.Namespace, key: str, hold_set: str | None = None
         doc = read_waits(store)
         current = stored_cards(doc, owner).get(key)
         if (not isinstance(current, dict) or current.get("status") != "waiting"
-                or wait_instance(current) != instance):
+                or wait_instance(current) != instance or not live_hold_matches()):
             raise ValueError(f"the wait on {card['task']} changed during delivery; reload and try again")
         current["discarded"] = {"hold_set": card["hold_set"], "session_id": card.get("session_id"),
                                 "at": wait_time(datetime.now(timezone.utc))}
@@ -12630,8 +12669,8 @@ def work_cards(items: list[dict[str, object]], home: str, multi_home: bool) -> l
     return cards
 
 
-DOC_PATH_RE = re.compile(r"(?<![\w./-])data/([\w.-]+)/([\w.-]+\.(?:md|html))(?![\w-])")
-DOC_BARE_RE = re.compile(r"(?<![\w./-])([\w-][\w.-]*\.(?:md|html))(?![\w-])")
+DOC_PATH_RE = re.compile(r"(?<![\w./-])data/([\w.-]+)/([\w.-]+\.(?:md|html))" + FILE_REFERENCE_END)
+DOC_BARE_RE = re.compile(r"(?<![\w./-])([\w-][\w.-]*\.(?:md|html))" + FILE_REFERENCE_END)
 DOC_PAGE_LIMIT = 2_000_000
 DOC_PREFIX = "doc-"
 RAW_PREFIX = "raw-"  # the same file with no Quarterdeck additions: .html as written, markdown as .txt
@@ -13654,7 +13693,7 @@ def load_home_snapshot(spec: HomeSpec, discover_secondmates: bool = False, *, bo
 
 SESSION_TOKEN_RE = re.compile(r"[\w][\w./-]*")
 SESSION_URL_RE = re.compile(r"https?://[^\s<>`'\"|{}]+", re.I)
-SESSION_TOPIC_PATH_RE = re.compile(r"(?<![\w./-])data/topics/([a-z0-9][a-z0-9-]{0,63})\.md(?![\w/-])")
+SESSION_TOPIC_PATH_RE = re.compile(r"(?<![\w./-])data/topics/([a-z0-9][a-z0-9-]{0,63})\.md" + FILE_REFERENCE_END)
 SESSION_SECRET_RE = re.compile(
     r"token|secret|signature|credential|password|passwd|apikey|accesskey|subscriptionkey|authorization|"
     r"^(?:auth|bearer|jwt|key|sig|code|session|sessionid|policy|keypairid|awsaccesskeyid|googleaccessid|xamz.*|xgoog.*)$", re.I,
@@ -13807,7 +13846,8 @@ def session_scope(homes: list[HomeSnapshot], now: datetime, *, main_href: str = 
                 scope.topics.add((id(snapshot), topic.topic_id))
                 for piece in topic.pieces:
                     add_task(snapshot, piece)
-    for snapshot in all_snapshots(homes):
+    snapshots = all_snapshots(homes)
+    for snapshot in snapshots:
         items = list(snapshot_items(snapshot).values())
         data_dir = snapshot.data_dir or snapshot.spec.data_dir
         if data_dir is None:
@@ -13836,7 +13876,9 @@ def session_scope(homes: list[HomeSnapshot], now: datetime, *, main_href: str = 
                     owner_dirs.update(report_ids_in("\n".join((item.title, item.ask, item.detail))))
         for report in snapshot.reports:
             item = report_backlog_item(items, report)
-            if scope.includes(snapshot, item.id if item else report.path.parent.name):
+            if (scope.includes(snapshot, item.id if item else report.path.parent.name)
+                    or any(scope.includes(*task_reference_owner(snapshot, target, snapshots, scoped=True))
+                           for target in report.related_to)):
                 directories.add(report.path.parent.name)
     if document_pages is not None and source.data_dir is not None:
         topic_root = source.data_dir.resolve() / TOPICS_DIR_NAME

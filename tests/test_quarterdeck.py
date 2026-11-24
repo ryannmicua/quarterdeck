@@ -2195,6 +2195,7 @@ class BoardWriterTests(unittest.TestCase):
             ("upsert", "new-task", "--group", "read", "--title", "t", "--ask", "a", "--brief-url", "javascript:alert(1)"),
             ("upsert", "new-task", "--group", "read", "--title", "t", "--ask", "a", "--link", "nolabel"),
             ("upsert", "new-task", "--group", "read", "--title", "t", "--ask", "a", "--touched-at", "soon"),
+            ("upsert", "new-task", "--group", "read", "--title", "t", "--ask", "a", "--session-id", "unused"),
         ]
         for args in cases:
             code, _, err = self.cli(*args)
@@ -3579,6 +3580,25 @@ echo '{"outcome":"created"}'
 """
 
 
+def record_fixture_conversation(case: unittest.TestCase, root: Path, home: Path, message: str) -> None:
+    environment = patch.dict(os.environ, {"CLAUDE_CONFIG_DIR": str(root / "claude")})
+    environment.start()
+    case.addCleanup(environment.stop)
+    stamp = quarterdeck.board_time_text(datetime.now(timezone.utc))
+    board = home / "data" / "captain-board.json"
+    document = json.loads(board.read_text(encoding="utf-8")) if board.exists() else {
+        "version": 1, "updated_at": stamp, "items": [],
+    }
+    document["operator"] = {"session_id": "fixture-chat", "last_active_at": stamp, "session_started_at": stamp}
+    board.write_text(json.dumps(document), encoding="utf-8")
+    transcripts = quarterdeck.default_transcript_dir(home)
+    transcripts.mkdir(parents=True, exist_ok=True)
+    (transcripts / "fixture-chat.jsonl").write_text(
+        wait_record("owner", "fixture-message", stamp, message, sessionId="fixture-chat"), encoding="utf-8",
+    )
+
+
+
 class DeskRelevanceTests(unittest.TestCase):
     """Discard, relevance, relations, the related section, and the artifact round trip."""
 
@@ -3588,6 +3608,8 @@ class DeskRelevanceTests(unittest.TestCase):
         self.root = Path(self.temp.name)
         self.state = self.root / "state"
         self.home = self.make_home()
+        record_fixture_conversation(self, self.root, self.home,
+                                    "Discuss harbor-build, harbor-hold, tide-hold, far-hold, tide-note and lone-report.")
         script = self.home / "bin" / "fm-inbox.sh"
         script.parent.mkdir()
         script.write_text(FAKE_INBOX, encoding="utf-8")
@@ -3784,19 +3806,9 @@ class DeskRelevanceTests(unittest.TestCase):
         self.assertEqual(len(board["items"]), 3)  # the home's board is untouched by relevance and discards
 
     def test_export_writes_the_snapshot_and_nothing_else(self) -> None:
-        now = datetime.now(timezone.utc) - timedelta(seconds=1)
-        with patch.dict(os.environ, {"CLAUDE_CONFIG_DIR": str(self.root / "claude")}):
-            self.cli("board", "active", "--session-id", "export-contract")
-            transcripts = quarterdeck.default_transcript_dir(self.home)
-            transcripts.mkdir(parents=True)
-            (transcripts / "export-contract.jsonl").write_text(wait_record(
-                "owner", "contract", quarterdeck.board_time_text(now),
-                "Discuss harbor-hold, tide-hold and far-hold. Read lone-report and tide-note.",
-                sessionId="export-contract",
-            ), encoding="utf-8")
-            self.cli("reports", "set-relevance", "invented-home/lone-report", "stale", "--reason", "one-off")
-            self.cli("calls", "set-relevance", "far-hold", "stale")
-            snapshot = json.loads(self.cli("export", "--no-snapshot").stdout)
+        self.cli("reports", "set-relevance", "invented-home/lone-report", "stale", "--reason", "one-off")
+        self.cli("calls", "set-relevance", "far-hold", "stale")
+        snapshot = json.loads(self.cli("export", "--no-snapshot").stdout)
         self.assertEqual(snapshot["session_links"], [])
         self.assertEqual(snapshot["version"], 1)
         self.assertEqual(
@@ -3903,6 +3915,7 @@ class DeskRelevanceTests(unittest.TestCase):
     def test_no_board_calls_remain_available_to_listing_related_and_export(self) -> None:
         (self.home / "data" / "captain-board.json").unlink()
         self.assertIn("invented-home/tide-hold", self.cli("calls", "list").stdout)
+        self.cli("board", "active", "--session-id", "fixture-chat")
         snapshot = json.loads(self.cli("export", "--no-snapshot").stdout)
         self.assertEqual({call["id"] for call in snapshot["calls"]}, {
             "invented-home/harbor-hold", "invented-home/tide-hold", "invented-home/far-hold",
@@ -11214,33 +11227,92 @@ class SessionScopeTests(unittest.TestCase):
         card = {"key": key, "home": "Harbor", "task": "lamp-test", "status": "waiting",
                 "hold_set": stamp, "session_id": "first"}
         section["cards"][key] = card
+        def hold_in(identity):
+            (self.data / "backlog.md").write_text(held_row(
+                "lamp-test", "Lamp test hold", "Choose the test", stamp,
+            ).replace("(hold:", f"(hold-session-id: {identity}) (hold:", 1) + "\n", encoding="utf-8")
+
         first = quarterdeck.wait_view(card)["hold_instance"]
-        card["session_id"] = "second"
-        second = quarterdeck.wait_view(card)["hold_instance"]
+        hold_in("second")
         quarterdeck.write_waits(store, doc)
-        self.assertNotEqual(first, second)
         args = argparse.Namespace(home=None, config=self.config)
         deliveries = []
 
         def deliver(_home, request, note):
             deliveries.append((request, note))
             if card["session_id"] == "second":
-                card["session_id"] = "third"
-                quarterdeck.write_waits(store, doc)
+                hold_in("third")
 
         with self.assertRaisesRegex(ValueError, "held again"):
             quarterdeck.discard_wait(args, key, stamp, deliver, hold_instance=first)
         self.assertEqual(deliveries, [])
+        card["session_id"] = "second"
+        second = quarterdeck.wait_view(card)["hold_instance"]
+        self.assertNotEqual(first, second)
+        quarterdeck.write_waits(store, doc)
         with self.assertRaisesRegex(ValueError, "changed during delivery"):
             quarterdeck.discard_wait(args, key, stamp, deliver, hold_instance=second)
         self.assertIn("conversation second", deliveries[0][1])
         current = quarterdeck.read_waits(store)["homes"][str(self.home)]["cards"][key]
         self.assertFalse(current.get("discarded"))
+        card["session_id"] = "third"
+        quarterdeck.write_waits(store, doc)
         third = quarterdeck.wait_view(card)["hold_instance"]
         quarterdeck.discard_wait(args, key, stamp, deliver, hold_instance=third)
         current = quarterdeck.read_waits(store)["homes"][str(self.home)]["cards"][key]
         self.assertEqual(current["discarded"]["session_id"], "third")
         self.assertNotEqual(deliveries[0][0], deliveries[1][0])
+
+    def test_backup_paths_do_not_select_live_topics_reports_or_documents(self) -> None:
+        (self.data / "release").mkdir()
+        (self.data / "release" / "preview.html").write_text("<h1>Live preview</h1>", encoding="utf-8")
+        with (self.transcripts / "session.jsonl").open("a", encoding="utf-8") as stream:
+            stream.write(wait_record("owner", "backup-paths", self.iso(self.now),
+                                     "Open data/topics/old-survey.md.bak, data/release/preview.html.bak "
+                                     "and data/gull-count/report.md.bak. Read data/tide-review/report.md.",
+                                     sessionId="current"))
+        pages = self.every_page(self.render())
+        self.assertIn("data/tide-review/report.md", pages)
+        for hidden in ("Old survey", "Live preview", "gull-count findings"):
+            self.assertNotIn(hidden, pages)
+
+    def test_saved_report_relation_admits_a_report_without_a_chat_mention(self) -> None:
+        with redirect_stdout(io.StringIO()):
+            self.assertEqual(quarterdeck.main(["reports", "relate", "harbor/gull-count", "--to", "buoy-refit",
+                                               "--config", str(self.config)]), 0)
+        args = quarterdeck.make_parser().parse_args(["export", "--config", str(self.config), "--no-snapshot"])
+        output = io.StringIO()
+        with redirect_stdout(output):
+            self.assertEqual(quarterdeck.export_snapshot(args), 0)
+        report = next(row for row in json.loads(output.getvalue())["reports"] if row["id"] == "harbor/gull-count")
+        self.assertEqual(report["related_to"], ["buoy-refit"])
+        self.assertIn("gull-count findings", self.every_page(self.render()))
+        self.assertNotIn("gull-count", self.search_tasks(self.render()))
+
+    def test_qualified_ledger_events_use_backlog_details_and_one_completion(self) -> None:
+        backlog = self.data / "backlog.md"
+        pr = "https://github.com/fictional/maps/pull/7"
+        text = backlog.read_text(encoding="utf-8").replace(
+            "Reef sonar scan (repo: harbor-app)", f"Reef sonar scan (repo: harbor-app) (pr: {pr}) "
+            f"(state: in_flight)")
+        text += f"\n- [x] finished-chart - Finished chart (merged: {self.iso(self.now)})\n"
+        backlog.write_text(text, encoding="utf-8")
+        ledger = self.home / "state" / "fleet-ledger.jsonl"
+        with ledger.open("a", encoding="utf-8") as stream:
+            for task in ("finished-chart", "harbor/finished-chart"):
+                stream.write(json.dumps({"v": 1, "ts": self.now.timestamp(), "event": "task.merged",
+                                         "task": task}) + "\n")
+        with (self.transcripts / "session.jsonl").open("a", encoding="utf-8") as stream:
+            stream.write(wait_record("owner", "finished", self.iso(self.now), "Discuss finished-chart",
+                                     sessionId="current"))
+        args = quarterdeck.make_parser().parse_args(["render", "--config", str(self.config), "--no-snapshot"])
+        _, _, bearings = quarterdeck.load_site(args)
+        view = bearings.attention["homes"][0]
+        row = next(row for row in view["recent_work_6h"] if row["event"] == "started")
+        self.assertEqual((row["task"], row["title"], row["pr"]), ("reef-scan", "Reef sonar scan", pr))
+        self.assertTrue(next(item for item in bearings.underway if item.item_id == "reef-scan").started)
+        self.assertEqual([(row["task"], row["event"]) for row in view["done_recent"]], [("finished-chart", "merged")])
+
 
 
 
@@ -11251,8 +11323,10 @@ class TopicTests(unittest.TestCase):
         home = QuarterdeckTests.make_home(self, root)  # type: ignore[arg-type]
         topics = home / "data" / "topics"
         topics.mkdir()
-        for name, text in (files if files is not None else {"maple-harbor-catalog.md": EXAMPLE_TOPIC.read_text(encoding="utf-8")}).items():
+        files = files if files is not None else {"maple-harbor-catalog.md": EXAMPLE_TOPIC.read_text(encoding="utf-8")}
+        for name, text in files.items():
             (topics / name).write_text(text, encoding="utf-8")
+        record_fixture_conversation(self, root, home, "Discuss " + ", ".join(f"data/topics/{name}" for name in files))
         return home
 
     def run_cli(self, args: list[str], root: Path) -> subprocess.CompletedProcess[str]:

@@ -47,6 +47,9 @@ quarterdeck update
 quarterdeck help [COMMAND] [--json]
 ```
 
+For `board upsert`, use `--session-id ID` with `--touch` or `--touched-at ISO`.
+
+
 Run `quarterdeck --help` or `quarterdeck help` for a command overview.
 `quarterdeck <command> --help` describes that command. `quarterdeck help
 --json` prints the command index and each command's documentation paths for
