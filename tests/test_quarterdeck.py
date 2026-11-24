@@ -10557,6 +10557,191 @@ async function run(secure, subscribed, pushManager = true) {
 EXAMPLE_TOPIC = ROOT / "docs" / "reference" / "examples" / "maple-harbor-catalog.md"
 
 
+class SessionScopeTests(unittest.TestCase):
+    """By default every page shows only what the captain's current session raised, touched or discussed."""
+
+    def setUp(self) -> None:
+        self.temp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.temp.cleanup)
+        self.root = Path(self.temp.name)
+        quarterdeck._TRANSCRIPT_CACHE.clear()
+        self.home = self.root / "harbor"
+        self.data = self.home / "data"
+        (self.data / "topics").mkdir(parents=True)
+        (self.home / "state").mkdir()
+        self.transcripts = self.root / "transcripts"
+        self.transcripts.mkdir()
+        self.now = datetime.now(timezone.utc).replace(microsecond=0)
+        self.start = self.now - timedelta(hours=1)
+        start, iso = self.start, self.iso
+        stamp = lambda when: when.strftime("%Y-%m-%d %H:%M")  # noqa: E731
+        (self.data / "backlog.md").write_text(
+            "# Backlog\n\n## Held\n\n"
+            + held_row("tide-merge", "Tide table merge", "Merge word for PR 7", iso(start + timedelta(minutes=10))) + "\n"
+            + held_row("kelp-call", "Kelp survey scope", "Pick a scope", iso(start - timedelta(days=2))) + "\n"
+            + held_row("buoy-refit", "Buoy light refit", "Pick a lamp", iso(start - timedelta(days=3))) + "\n"
+            + "\n## Queued\n\n- [ ] reef-scan - Reef sonar scan (repo: harbor-app)\n"
+            + "- [ ] gull-count - Gull count tally (repo: harbor-app)\n",
+            encoding="utf-8",
+        )
+        self.board(operator=True)
+        (self.data / "topics" / "tide-launch.md").write_text(
+            "# Tide launch\n\nNow: Tide tables are ready.\nPieces: tide-merge\n"
+            "Links: [Tide preview](https://example.com/tide/preview)\n\n"
+            f"## {stamp(start - timedelta(days=1))} | you | chat\nStart the tide launch.\n\n"
+            f"## {stamp(start + timedelta(minutes=20))} | firstmate | chat\nId: tide-go\n"
+            "Decision: Merge the tide tables now?\nOptions: Merge | Hold\nRecommend: Merge\n\nThe checks are green.\n",
+            encoding="utf-8",
+        )
+        (self.data / "topics" / "old-survey.md").write_text(
+            "# Old survey\n\nNow: Parked.\nWaiting on: you - say whether to keep it\nPieces: kelp-call\n\n"
+            f"## {stamp(start - timedelta(days=2))} | firstmate | chat\nId: survey-keep\n"
+            "Decision: Keep the old survey?\nOptions: Keep | Drop\n",
+            encoding="utf-8",
+        )
+        for task, when in (("tide-merge", self.now), ("gull-count", start - timedelta(days=4))):
+            (self.data / task).mkdir()
+            report = self.data / task / "report.md"
+            report.write_text(f"# {task} findings\n\nRecommendation: merge\n", encoding="utf-8")
+            os.utime(report, (when.timestamp(), when.timestamp()))
+        (self.home / "state" / "fleet-ledger.jsonl").write_text("".join(json.dumps(record) + "\n" for record in (
+            {"v": 1, "ts": (start + timedelta(minutes=2)).timestamp(), "event": "task.dispatched", "task": "reef-scan"},
+            {"v": 1, "ts": (start - timedelta(days=1)).timestamp(), "event": "task.dispatched", "task": "gull-count"},
+        )), encoding="utf-8")
+        (self.transcripts / "session.jsonl").write_text("".join(json.dumps(record) + "\n" for record in (
+            json.loads(wait_record("owner", "m0", iso(start - timedelta(days=1)),
+                                   "Earlier: gull-count and https://example.com/old/page")),
+            json.loads(wait_record("owner", "m1", iso(start + timedelta(minutes=5)),
+                                   "What about buoy-refit? See https://example.com/buoy/preview.")),
+        )), encoding="utf-8")
+        self.config = self.root / "config.json"
+        self.write_config()
+
+    @staticmethod
+    def iso(when: datetime) -> str:
+        return when.strftime("%Y-%m-%dT%H:%M:%SZ")
+
+    def board(self, operator: bool) -> None:
+        document: dict[str, object] = {"version": 1, "updated_at": self.iso(self.now), "items": [
+            {"id": "kelp-call", "group": "decide", "title": "Kelp survey scope", "ask": "Pick a scope",
+             "task": "kelp-call", "touched_at": self.iso(self.start - timedelta(days=2))},
+        ]}
+        if operator:
+            document["operator"] = {"last_active_at": self.iso(self.start + timedelta(minutes=30)),
+                                    "session_started_at": self.iso(self.start)}
+        (self.data / "captain-board.json").write_text(json.dumps(document), encoding="utf-8")
+
+    def write_config(self, **extra: object) -> None:
+        self.config.write_text(json.dumps({
+            "homes": [{"label": "Harbor", "path": str(self.home), "transcripts": str(self.transcripts)}], **extra,
+        }), encoding="utf-8")
+
+    def render(self, *flags: str) -> Path:
+        out = self.root / "out" / "-".join(flags or ("default",))
+        args = quarterdeck.make_parser().parse_args(
+            ["render", "--config", str(self.config), "--no-snapshot", "--output", str(out / "index.html"), *flags])
+        with redirect_stdout(io.StringIO()), redirect_stderr(io.StringIO()):
+            self.assertEqual(quarterdeck.render(args), 0)
+        return out
+
+    def every_page(self, out: Path) -> str:
+        return "\n".join(path.read_text(encoding="utf-8") for path in sorted(out.iterdir()))
+
+    def search_tasks(self, out: Path) -> list[str]:
+        page = (out / "search.html").read_text(encoding="utf-8")
+        index = json.loads(re.search(r'id="search-index">(.*?)</script>', page, re.S).group(1))  # type: ignore[union-attr]
+        return sorted(row["l"] for row in index if row["k"] == "Task")
+
+    def test_scope_collects_the_session_from_board_topics_holds_ledger_transcript_and_reports(self) -> None:
+        homes = [quarterdeck.load_home_snapshot(quarterdeck.HomeSpec("Harbor", self.home, transcripts=self.transcripts))]
+        scope = quarterdeck.session_scope(homes, self.now)
+        assert scope is not None
+        self.assertEqual(scope.started, self.start)
+        self.assertEqual(sorted(scope.keys), ["harbor/buoy-refit", "harbor/reef-scan", "harbor/tide-merge"],
+                         "a hold set, a mention, a dispatch and a topic piece count; older work does not")
+        self.assertEqual(scope.topics, {("Harbor", "tide-launch")})
+        self.assertEqual({path.parent.name for path in scope.reports}, {"tide-merge"})
+        self.assertEqual(scope.links, ["https://example.com/buoy/preview"], "only links said since the session began")
+
+    def test_pages_show_only_the_session_and_hide_everything_else(self) -> None:
+        out = self.render()
+        calls = (out / "index.html").read_text(encoding="utf-8")
+        self.assertIn("Merge the tide tables now?", calls)
+        self.assertIn("Only this session, since", calls)
+        self.assertIn('href="https://example.com/buoy/preview"', calls)
+        self.assertIn("Links from this session", calls)
+        topics = (out / "topics.html").read_text(encoding="utf-8")
+        self.assertIn("Tide launch", topics)
+        self.assertEqual(self.search_tasks(out), ["buoy-refit", "reef-scan", "tide-merge"])
+        self.assertTrue((out / "topic-tide-launch.html").is_file())
+        self.assertFalse((out / "topic-old-survey.html").exists(), "a topic from an earlier session gets no page")
+        pages = self.every_page(out)
+        for hidden in ("Kelp survey scope", "kelp-call", "Old survey", "Keep the old survey?", "gull-count",
+                       "example.com/old/page"):
+            self.assertNotIn(hidden, pages, f"{hidden} belongs to an earlier session and must not show anywhere")
+
+    def test_all_sessions_flag_and_config_restore_the_full_view(self) -> None:
+        for out in (self.render("--all-sessions"), (self.write_config(session_only=False), self.render())[1]):
+            self.assertTrue((out / "topic-old-survey.html").is_file())
+            self.assertIn("kelp-call", self.search_tasks(out))
+            calls = (out / "index.html").read_text(encoding="utf-8")
+            self.assertIn("Keep the old survey?", calls)
+            self.assertNotIn("Only this session", calls)
+            self.assertNotIn("Links from this session", calls)
+        self.write_config(session_only="no")
+        with self.assertRaisesRegex(ValueError, "session_only must be true or false"):
+            quarterdeck.load_config(self.config)
+
+    def test_without_a_recorded_session_the_page_shows_everything_and_says_why(self) -> None:
+        self.board(operator=False)
+        out = self.render()
+        calls = (out / "index.html").read_text(encoding="utf-8")
+        self.assertIn("No session is recorded yet, so this shows everything.", calls)
+        self.assertIn("Keep the old survey?", calls)
+        self.assertIn("kelp-call", self.search_tasks(out))
+
+    def test_a_session_with_no_topic_still_opens_on_calls(self) -> None:
+        for name in ("tide-launch.md", "old-survey.md"):
+            (self.data / "topics" / name).unlink()
+        (self.data / "topics").rmdir()
+        out = self.render()
+        self.assertIn("Your calls", (out / "index.html").read_text(encoding="utf-8"))
+        self.assertIn("No topic has come up in this session yet.", (out / "topics.html").read_text(encoding="utf-8"))
+        self.assertNotIn("kelp-call", self.every_page(out))
+
+    def test_scope_attention_drops_other_tasks_and_recounts(self) -> None:
+        child = quarterdeck.HomeSnapshot(quarterdeck.HomeSpec("Cove", self.home, route_id="cove"))
+        parent = quarterdeck.HomeSnapshot(quarterdeck.HomeSpec("Harbor", self.home), children=[child])
+        attention: dict[str, object] = {"homes": [{
+            "label": "Harbor", "more_count": 2,
+            "waiting": {"decisions": [{"key": "harbor/tide-merge"}, {"key": "harbor/kelp-call"}]},
+            "waiting_more": {"decisions": [{"key": "harbor/kelp-call"}, {"key": "cove/reef-scan"}]},
+            "decisions": {"relevant": [{"task": "tide-merge", "home": "main"}, {"task": "reef-scan", "home": "cove"},
+                                       {"task": "kelp-call", "home": "main"}], "background": [{"task": "gull-count"}],
+                          "background_count": 1},
+            "recent_work": {"windows": [{"started": [{"task": "tide-merge"}, {"task": "gull-count"}], "started_count": 2}]},
+            "recent_work_6h": [{"task": "gull-count", "event": "started"}],
+        }], "views": [{"sections": [{"needs_you": [{"key": "harbor/kelp-call", "home": "Harbor"}],
+                                     "background": {"items": [{"key": "harbor/tide-merge"}], "count": 4}}]}]}
+        quarterdeck.scope_attention(attention, [parent], {"harbor/tide-merge", "cove/reef-scan"})
+        home = attention["homes"][0]  # type: ignore[index]
+        self.assertEqual(home["waiting"]["decisions"], [{"key": "harbor/tide-merge"}])
+        self.assertEqual((home["waiting_more"]["decisions"], home["more_count"]), ([{"key": "cove/reef-scan"}], 1))
+        self.assertEqual([row["task"] for row in home["decisions"]["relevant"]], ["tide-merge", "reef-scan"],
+                         "a feed row's home names the owner: main is the home itself, a route its secondmate")
+        self.assertEqual((home["decisions"]["background"], home["decisions"]["background_count"]), ([], 0))
+        self.assertEqual(home["recent_work"]["windows"][0], {"started": [{"task": "tide-merge"}], "started_count": 1})
+        self.assertEqual(home["recent_work_6h"], [])
+        section = attention["views"][0]["sections"][0]  # type: ignore[index]
+        self.assertEqual((section["needs_you"], section["background"]["count"]), ([], 1))
+
+    def test_service_unit_keeps_all_sessions(self) -> None:
+        args = quarterdeck.make_parser().parse_args(["service", "--all-sessions", "--config", str(self.config)])
+        self.assertIn("--all-sessions", quarterdeck.service_unit(args))
+        args = quarterdeck.make_parser().parse_args(["service", "--config", str(self.config)])
+        self.assertNotIn("--all-sessions", quarterdeck.service_unit(args))
+
+
 class TopicTests(unittest.TestCase):
     """Topic files: Firstmate writes them, Quarterdeck reads, checks and shows them as thread pages."""
 

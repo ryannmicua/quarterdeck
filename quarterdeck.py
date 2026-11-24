@@ -39,7 +39,7 @@ from urllib.parse import parse_qs, quote, unquote, urlparse
 
 
 DEFAULT_TITLE = "Quarterdeck"
-ALLOWED_CONFIG_KEYS = {"page_title", "output_dir", "homes", "captain_waits", "base_path"}
+ALLOWED_CONFIG_KEYS = {"page_title", "output_dir", "homes", "captain_waits", "base_path", "session_only"}
 
 # The URL path prefix a reverse proxy serves Quarterdeck under ("" when it is served at the root). `serve` sets it
 # once at startup; every absolute path Quarterdeck writes into a page goes through base_url().
@@ -168,6 +168,7 @@ class HomeSnapshot:
     review_state: ReviewState | None = None
     topics: list[Topic] = field(default_factory=list)
     topics_error: str | None = None
+    session: SessionScope | None = None  # set when the page shows only the captain's current session
 
 
 def markdown_text(value: str) -> str:
@@ -772,7 +773,12 @@ def source_pages(
         if snapshot.backlog_path and snapshot.backlog_markdown is not None:
             name = source_page_filename("backlog", snapshot.spec.home, snapshot.backlog_path)
             snapshot_path = display_path(snapshot.backlog_path, snapshot.spec.home)
-            pages[name] = source_page_html(f"{snapshot.spec.label} backlog", snapshot_path, snapshot.backlog_markdown, main_href=main_href)
+            if snapshot.session is not None:  # one session: the page lists only the tasks it touched
+                pages[name] = source_page_html(f"{snapshot.spec.label} backlog, this session", snapshot_path,
+                                               session_backlog_markdown(snapshot), main_href=main_href)
+            else:
+                pages[name] = source_page_html(f"{snapshot.spec.label} backlog", snapshot_path, snapshot.backlog_markdown,
+                                               main_href=main_href)
         if show_all:
             linked_reports = {report.path for report in snapshot.reports}
         else:
@@ -2031,6 +2037,8 @@ class Bearings:
     main_href: str = "index.html"
     completions: list[dict[str, object]] = field(default_factory=list)
     topic_pages: list[tuple[HomeSnapshot, Topic]] = field(default_factory=list)
+    session: SessionScope | None = None
+    session_note: str = ""  # why the page shows everything although it would show one session
 
 
 HOLD_REASON_PREFIX = "fm-hold-v1:"
@@ -4951,10 +4959,13 @@ def board_view(
             if settle_relevance(entry, state, view):
                 continue
             view.groups[item.group].append(entry)
+    scope = next((snapshot.session for snapshot in snapshots if snapshot.session is not None), None)
     for snapshot in snapshots:
         for backlog_item in items_of(snapshot).values():
             if (id(snapshot), backlog_item.id) in referenced or not needs_captain(backlog_item):
                 continue
+            if scope is not None and report_reference(snapshot.spec.label, backlog_item.id) not in scope.keys:
+                continue  # the page shows one session; a held task it never raised stays off
             links = [("Pull request", backlog_item.pr_url)] if PR_URL_RE.fullmatch(backlog_item.pr_url or "") else []
             entry = BoardEntry(
                 BoardItem(
@@ -5716,6 +5727,8 @@ def load_config(path: Path | None) -> dict[str, object]:
             raise ValueError(f"config {exc}") from exc
     if "output_dir" in config and not isinstance(config["output_dir"], str):
         raise ValueError("config output_dir must be a path string")
+    if "session_only" in config and not isinstance(config["session_only"], bool):
+        raise ValueError("config session_only must be true or false")
     if "homes" in config:
         homes = config["homes"]
         if not isinstance(homes, list) or not homes:
@@ -5993,9 +6006,10 @@ def site_builder(
         configured_title = config.get("page_title")
         title = args.title or (configured_title if isinstance(configured_title, str) else None) or DEFAULT_TITLE
         found = bearings.topic_pages
+        calls_front = bool(found) or bearings.session is not None  # one session opens on Calls even with no topic in it
         previous = build_html(
             homes, title, bearings=bearings, refresh_seconds=DEFAULT_REFRESH_SECONDS, allow_marks=allow_marks,
-            push_enabled=push is not None, front_href="index.html" if found else None,
+            push_enabled=push is not None, front_href="index.html" if calls_front else None,
         )
         activity = site_cards(homes, bearings, allow_marks)
         if allow_marks:
@@ -6015,7 +6029,7 @@ def site_builder(
                 print(f"quarterdeck: could not check for new needs-you items to notify: {exc}", file=sys.stderr, flush=True)
         cards = cards_payload(activity, bearings.generated)
         pages = source_pages(homes, show_all=False, bearings=bearings, allow_marks=allow_marks)  # after the cards: they register document pages
-        if found:
+        if calls_front:
             # With topics the default view is Calls; Topics and Search sit beside it. The front page before Calls stays at
             # previous.html, and the page before that at classic.html, for this release.
             pages[CLASSIC_PAGE] = previous
@@ -7177,6 +7191,8 @@ def service_unit(args: argparse.Namespace) -> str:
         command.append("--allow-marks")
     if getattr(args, "watch_waits", False):
         command.append("--watch-waits")
+    if getattr(args, "all_sessions", False):
+        command.append("--all-sessions")
     tls_cert, tls_key = getattr(args, "tls_cert", None), getattr(args, "tls_key", None)
     if bool(tls_cert) != bool(tls_key):
         raise ValueError("--tls-cert and --tls-key go together")
@@ -10089,11 +10105,12 @@ def calls_page_html(homes: list[HomeSnapshot], title: str, bearings: Bearings, c
               if topic.status != "done"]
     ask = topic_front_ask_html(active) if allow_marks else ""
     serve_push = bool(push_enabled and allow_marks and refresh_seconds)
-    stamp = f'<p class="stamp">Updated {topic_stamp(bearings.generated, "full")}{PUSH_CONTROL_HTML if serve_push else ""}</p>'
+    stamp = session_stamp_html(bearings, f'Updated {topic_stamp(bearings.generated, "full")}',
+                               PUSH_CONTROL_HTML if serve_push else "")
     more = (f'<p class="more">The <a href="{PREVIOUS_PAGE}">previous view</a> stays available for this release.</p>')
     body = (
         tabs_html(calls_href, title, calls_href)
-        + f'<main class="calls-page">{stamp}{queue_html}<aside class="calls-side">{recap_html(bearings.completions)}{sent_html}{ask}</aside>{more}</main>'
+        + f'<main class="calls-page">{stamp}{queue_html}<aside class="calls-side">{recap_html(bearings.completions)}{sent_html}{session_links_html(bearings)}{ask}</aside>{more}</main>'
     )
     scripts = (topic_ask_script() + calls_script()) if allow_marks else calls_script()
     if serve_push:
@@ -10115,13 +10132,15 @@ def topics_page_html(homes: list[HomeSnapshot], title: str, bearings: Bearings, 
               if topic.status != "done"]
     topics_block = (
         f'<section aria-labelledby="topics-h" id="topics"><h2 id="topics-h">Topics {count_badge(rows.count("<li>"), "n")}</h2>'
-        + (f'<ul class="rows">{rows}</ul>' if rows else '<p class="empty">Every topic is closed. New topics appear here.</p>')
+        + (f'<ul class="rows">{rows}</ul>' if rows else
+           '<p class="empty">No topic has come up in this session yet. Topics appear here once discussed.</p>'
+           if bearings.session is not None else '<p class="empty">Every topic is closed. New topics appear here.</p>')
         + (f'<p class="row-meta"><a href="{SEARCH_PAGE}?filter=done">{closed} closed topic{"s" if closed != 1 else ""} in Search</a></p>'
            if closed else "") + "</section>"
     )
     body = (
         tabs_html(TOPICS_PAGE, title, calls_href) + '<main class="topics-page">'
-        f'<p class="stamp">Updated {topic_stamp(bearings.generated, "full")}</p>'
+        + session_stamp_html(bearings, f'Updated {topic_stamp(bearings.generated, "full")}')
         + topics_block + '<section aria-labelledby="changed-h" id="changed"><h2 id="changed-h">Changed since you last looked '
         '<span class="n" id="changed-n" data-n="0"></span></h2>'
         f'<ul class="rows" id="changed-list">{changed}</ul>'
@@ -10156,6 +10175,8 @@ def search_index(homes: list[HomeSnapshot], bearings: Bearings) -> list[dict[str
         backlog_page = (source_page_filename("backlog", snapshot.spec.home, snapshot.backlog_path)
                         if snapshot.backlog_path else "")
         for item in snapshot_items(snapshot).values():
+            if snapshot.session is not None and report_reference(snapshot.spec.label, item.id) not in snapshot.session.keys:
+                continue
             label = piece_state(item)
             page = item_page_filename(snapshot.spec.home, snapshot.spec.label, item.id)
             url = page if page in bearings.item_pages else backlog_page
@@ -10190,7 +10211,7 @@ def search_page_html(homes: list[HomeSnapshot], title: str, bearings: Bearings, 
     ask = (f' <a href="{main}#topic-ask">Ask Firstmate</a> instead.' if allow_marks else "")
     body = (
         f'<nav class="bar" aria-label="Quarterdeck"><a class="mark" href="{main}">{html.escape(title)}</a></nav>'
-        '<main class="finder"><h1>Search</h1>'
+        '<main class="finder"><h1>Search</h1>' + session_stamp_html(bearings) +
         '<label class="field" for="q">Topics, tasks and reports</label>'
         '<div class="search-box"><input id="q" type="search" autocomplete="off" enterkeyhint="search"></div>'
         f'<div class="filters" role="group" aria-label="Filter">{filters}</div>'
@@ -13385,6 +13406,220 @@ def load_home_snapshot(spec: HomeSpec, discover_secondmates: bool = False) -> Ho
     return snapshot
 
 
+# -- this session only --
+# The page shows what the captain's current session with Firstmate raised, touched or discussed, and hides the rest.
+# The session is the one `quarterdeck board active` records; what it holds comes from files Quarterdeck already reads.
+
+SESSION_TOKEN_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9_.-]*")
+SESSION_URL_RE = re.compile(r"https?://[^\s<>()\[\]{}`'\"|]+")
+SESSION_TOPIC_PATH_RE = re.compile(r"data/topics/([a-z0-9][a-z0-9-]{0,63})\.md")
+SESSION_LINK_LIMIT = 40
+
+
+@dataclass
+class SessionScope:
+    """What belongs to the captain's current session: task keys, topics, reports and the links said in it."""
+    started: datetime
+    keys: set[str] = field(default_factory=set)  # report_reference(home label, task id)
+    topics: set[tuple[str, str]] = field(default_factory=set)  # (home label, topic id)
+    reports: set[Path] = field(default_factory=set)
+    links: list[str] = field(default_factory=list)  # http(s) addresses said in the session, first mention first
+
+
+def session_said(homes: list[HomeSnapshot], since: datetime) -> str:
+    """Everything the captain and Firstmate wrote to each other since the session began, from the saved sessions."""
+    parts: list[str] = []
+    for snapshot in homes:  # the captain talks to the top-level homes; secondmates have their own crews
+        try:
+            turns = transcript_turns(transcript_dir(snapshot.spec), since=since)
+        except OSError:
+            continue
+        parts.extend(turn.text for turn in turns if turn.role in {"owner", "firstmate"} and turn.text)
+    return "\n".join(parts)
+
+
+def session_scope(homes: list[HomeSnapshot], now: datetime) -> SessionScope | None:
+    """The current session's items, or None when no home records the operator's session."""
+    snapshots = all_snapshots(homes)
+    session = desk_session([snapshot.board for snapshot in snapshots if snapshot.board is not None], now)
+    if session is None:
+        return None
+    start = session.started
+    scope = SessionScope(start)
+    said = session_said(homes, start)
+    tokens = {token.rstrip("._-") for token in SESSION_TOKEN_RE.findall(said)}
+    for match in SESSION_URL_RE.finditer(said):
+        url = match.group(0).rstrip(".,;:!?*_")
+        if url not in scope.links and len(scope.links) < SESSION_LINK_LIMIT:
+            scope.links.append(url)
+    topic_paths = set(SESSION_TOPIC_PATH_RE.findall(said))
+    board_topics: set[str] = set()
+    for snapshot in snapshots:
+        items = snapshot_items(snapshot)
+        if snapshot.board is not None and snapshot.board.supported:
+            for board_item in snapshot.board.items:
+                if board_item.touched_at is not None and board_item.touched_at >= start:
+                    scope.keys.add(task_key(snapshot, board_item.task, snapshots))
+                    if board_item.topic:
+                        board_topics.add(board_item.topic.casefold())
+        for item in items.values():
+            held = parse_board_time(hold_stamp(item)) if item.held else None
+            if item.id in tokens or (held is not None and held >= start):
+                scope.keys.add(task_key(snapshot, item.id, snapshots))
+        if snapshot.spec.home is not None and not snapshot.spec.remote_host:
+            try:
+                records = read_fleet_ledger(snapshot.spec.home / LEDGER_PATH) or []
+            except AttentionSourceError:
+                records = []
+            for record in records:  # a task dispatched in this session was created in it
+                if record.get("event") == "task.dispatched" and float(record["ts"]) >= start.timestamp():  # type: ignore[arg-type]
+                    scope.keys.add(task_key(snapshot, str(record["task"]).strip(), snapshots))
+    report_dirs: set[tuple[int, str]] = set()
+    for snapshot in snapshots:
+        for topic in snapshot.topics:
+            if (any(entry.at is not None and entry.at >= start for entry in topic.entries)
+                    or topic.topic_id in topic_paths
+                    or {topic.topic_id.casefold(), topic.title.casefold()} & board_topics):
+                scope.topics.add((snapshot.spec.label, topic.topic_id))
+                scope.keys.update(task_key(snapshot, piece, snapshots) for piece in topic.pieces)
+                report_dirs.update((id(snapshot), name) for name in REPORT_PATH_RE.findall(" ".join(topic.links)))
+    for snapshot in snapshots:
+        for report in snapshot.reports:
+            directory = report.path.parent.name
+            if (task_key(snapshot, directory, snapshots) in scope.keys or directory in tokens
+                    or (id(snapshot), directory) in report_dirs
+                    or (report.modified is not None and report.modified >= start)):
+                scope.reports.add(report.path)
+    return scope
+
+
+def scope_homes(homes: list[HomeSnapshot], scope: SessionScope) -> None:
+    """Keep only the session's topics, board items and reports in the loaded homes."""
+    snapshots = all_snapshots(homes)
+    for snapshot in snapshots:
+        snapshot.session = scope
+        label = snapshot.spec.label
+        snapshot.topics = [topic for topic in snapshot.topics if (label, topic.topic_id) in scope.topics]
+        if snapshot.board is not None:
+            snapshot.board.items = [item for item in snapshot.board.items
+                                    if task_key(snapshot, item.task, snapshots) in scope.keys]
+        snapshot.reports = [report for report in snapshot.reports if report.path in scope.reports]
+
+
+def scope_attention(attention: dict[str, object], homes: list[HomeSnapshot], keys: set[str]) -> None:
+    """Drop every task the session did not touch from the shared attention view, and recount what was dropped."""
+    snapshots = all_snapshots(homes)
+
+    def owner_label(home: object, label: str) -> str:
+        if not isinstance(home, str) or home in {"", "main", "(main)"}:
+            return label
+        child = next((snapshot for snapshot in snapshots if snapshot.spec.route_id == home), None)
+        return child.spec.label if child else home
+
+    def kept(item: dict[str, object], label: str) -> bool:
+        key = item.get("key")
+        if isinstance(key, str) and key:
+            return key in keys
+        task = item.get("task")
+        if isinstance(task, str) and task:
+            return report_reference(owner_label(item.get("home"), label), task) in keys
+        return True
+
+    def prune(value: object, label: str) -> None:
+        if isinstance(value, dict):
+            for name, inner in list(value.items()):
+                if isinstance(inner, list) and any(isinstance(item, dict) and ("key" in item or "task" in item)
+                                                   for item in inner):
+                    value[name] = inner = [item for item in inner if not isinstance(item, dict) or kept(item, label)]
+                prune(inner, label)
+            for name, inner in list(value.items()):
+                if name.endswith("_count") and isinstance(value.get(name[:-6]), list):
+                    value[name] = len(value[name[:-6]])  # type: ignore[arg-type]
+                elif name == "count" and isinstance(value.get("items"), list):
+                    value[name] = len(value["items"])  # type: ignore[arg-type]
+            if isinstance(value.get("waiting_more"), dict) and "more_count" in value:
+                value["more_count"] = sum(len(items) for items in value["waiting_more"].values()  # type: ignore[union-attr]
+                                          if isinstance(items, list))
+        elif isinstance(value, list):
+            for item in value:
+                prune(item, label)
+
+    for home in attention.get("homes") or []:  # type: ignore[union-attr]
+        if isinstance(home, dict):
+            prune(home, str(home.get("label") or ""))
+    for name, value in attention.items():
+        if name != "homes":
+            prune(value, homes[0].spec.label if homes else "")
+
+
+def scope_bearings(bearings: Bearings, homes: list[HomeSnapshot], scope: SessionScope) -> None:
+    """Keep only the session's tasks in the bearings sections, the finished-work recap and the attention view."""
+    for name in ("call", "landed", "underway", "charted"):
+        setattr(bearings, name, [item for item in getattr(bearings, name)
+                                 if report_reference(item.owner, item.item_id) in scope.keys])
+    recap = []
+    for group in bearings.completions:
+        rows = [row for row in group.get("items") or []  # type: ignore[union-attr]
+                if report_reference(str(group.get("label") or ""), str(row.get("task") or "")) in scope.keys]
+        if rows:
+            recap.append(dict(group, items=rows))
+    bearings.completions[:] = recap
+    if bearings.attention is not None:
+        scope_attention(bearings.attention, homes, scope.keys)
+
+
+def session_backlog_markdown(snapshot: HomeSnapshot) -> str:
+    """The home's backlog items that belong to the session, as written, for the backlog page."""
+    scope = snapshot.session
+    items = [item for item in snapshot_items(snapshot).values()
+             if scope is not None and report_reference(snapshot.spec.label, item.id) in scope.keys]
+    if not items:
+        return "Nothing in this backlog came up in this session.\n"
+    return "\n".join(item.raw.rstrip() for item in items) + "\n"
+
+
+def session_only(args: argparse.Namespace, config: dict[str, object]) -> bool:
+    """Show one session unless --all-sessions or `"session_only": false` asks for everything."""
+    return not getattr(args, "all_sessions", False) and config.get("session_only", True) is not False
+
+
+def session_note_html(bearings: Bearings) -> str:
+    """A quiet sentence saying the page shows only this session, or why it shows everything; empty otherwise."""
+    if bearings.session is not None:
+        return (f'<span data-session>Only this session, since '
+                f'{topic_stamp(bearings.session.started, "full")}.</span>')
+    if bearings.session_note:
+        return f'<span data-session>{html.escape(bearings.session_note)}</span>'
+    return ""
+
+
+def session_stamp_html(bearings: Bearings, updated: str = "", controls: str = "") -> str:
+    """The page's stamp line: when it was updated, then the session sentence, then any controls."""
+    note = session_note_html(bearings)
+    joined = f"{updated} · {note}" if updated and note else updated or note
+    return f'<p class="stamp">{joined}{controls}</p>' if joined or controls else ""
+
+
+def session_links_html(bearings: Bearings) -> str:
+    """The http(s) addresses said in this session, newest last, so a page mentioned in chat is one tap away."""
+    scope = bearings.session
+    if scope is None or not scope.links:
+        return ""
+    rows = "".join(
+        f'<li><a href="{html.escape(url, quote=True)}">{html.escape(session_link_label(url))}</a></li>'
+        for url in scope.links
+    )
+    return ('<section class="session-links" aria-labelledby="session-links-h">'
+            f'<h2 id="session-links-h">Links from this session {count_badge(len(scope.links), "n")}</h2>'
+            f'<ul class="rows">{rows}</ul></section>')
+
+
+def session_link_label(url: str) -> str:
+    parsed = urlparse(url)
+    path = parsed.path.rstrip("/")
+    return f"{parsed.netloc}{path}" if len(parsed.netloc + path) <= 72 else f"{parsed.netloc}{path[:72 - len(parsed.netloc)]}…"
+
+
 def load_site(args: argparse.Namespace, main_href: str = "index.html", *,
               include_calls: bool = False) -> tuple[dict[str, object], list[HomeSnapshot], Bearings]:
     """Read the configured homes and review marks, then classify them into bearings."""
@@ -13399,8 +13634,14 @@ def load_site(args: argparse.Namespace, main_href: str = "index.html", *,
         raise ValueError(load_error)
     state_path = validate_review_state_location(homes)
     apply_review_marks(homes, load_review_state(state_path))
+    scope = session_scope(homes, datetime.now(timezone.utc)) if session_only(args, config) else None
+    if scope is not None:
+        scope_homes(homes, scope)
     use_snapshot = not getattr(args, "no_snapshot", False)
     bearings = build_bearings(homes, use_snapshot=use_snapshot, main_href=main_href)
+    bearings.session = scope
+    if scope is None and session_only(args, config):
+        bearings.session_note = "No session is recorded yet, so this shows everything."
     if include_calls:
         bearings.topic_pages = assign_topic_pages(homes)
     try:
@@ -13413,12 +13654,14 @@ def load_site(args: argparse.Namespace, main_href: str = "index.html", *,
         homes, bearings.generated, all_decisions=True, use_feed=use_snapshot,
         priority_projects=list(document.get("priority_projects", [])),  # type: ignore[call-overload]
         saved_views=effective_views(document), all_views=True, waits=waits,
-        completions_out=bearings.completions if bearings.topic_pages else None,
+        completions_out=bearings.completions if bearings.topic_pages or scope is not None else None,
     )
     if waits_error:
         bearings.attention["waits_error"] = waits_error
     discarded = {key for key, card in waits.items() if card.get("status") == "waiting" and wait_is_hidden(card)}
     bearings.call = [item for item in bearings.call if report_reference(item.owner, item.item_id) not in discarded]
+    if scope is not None:
+        scope_bearings(bearings, homes, scope)
     return config, homes, bearings
 
 
@@ -13438,7 +13681,7 @@ def render(args: argparse.Namespace) -> int:
         output_path = output_path.resolve()
         validate_output_path(output_path, homes)
         output_path.parent.mkdir(parents=True, exist_ok=True)
-        front = bool(bearings.topic_pages)
+        front = bool(bearings.topic_pages) or (bearings.session is not None and not args.lavish and not args.all)
         index = build_html(homes, title, lavish=args.lavish, show_all=args.all, bearings=bearings,
                            front_href=output_path.name if front else None)
         activity = site_cards(homes, bearings, False) if front else []
@@ -13487,6 +13730,7 @@ def add_serve_options(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--host", action="append", metavar="ADDRESS", help=f"address to bind; repeat to listen on several, all on the same port (default {DEFAULT_HOST} only; a non-loopback address exposes your work data without a login)")
     parser.add_argument("--port", type=port_number, default=DEFAULT_PORT, help=f"port to listen on (default {DEFAULT_PORT})")
     parser.add_argument("--allow-marks", action="store_true", help="enable report marks, reactions to Firstmate, saved-view edits and discarding captain waits (default: read-only; no key, anyone who can open the page can mark, react, edit views or discard)")
+    parser.add_argument("--all-sessions", action="store_true", help="show every session's items, not only the current session's (default: only what the session recorded by 'quarterdeck board active' raised, touched or discussed; config session_only false does the same)")
     parser.add_argument("--watch-waits", action="store_true", help="also run the captain-wait watcher in the background (see 'quarterdeck waits watch')")
     parser.add_argument("--base-path", type=base_path_option, metavar="PATH", help="URL path prefix when a reverse proxy serves Quarterdeck under one, such as /qd; overrides base_path in config (default: none). Requests without the prefix redirect beneath it, the bare prefix redirects to PATH/, and every link and endpoint Quarterdeck writes carries it")
     parser.add_argument("--tls-cert", metavar="FILE", help="serve https with this PEM certificate chain (with --tls-key); phone notifications need https")
@@ -13511,6 +13755,7 @@ def make_parser() -> argparse.ArgumentParser:
     render_parser.add_argument("--all", action="store_true", help="show every backlog item and scout report, including queued and finished work")
     render_parser.add_argument("--lavish", action="store_true", help="write a separate Lavish-ready page and open it when lavish-axi is available")
     render_parser.add_argument("--no-snapshot", action="store_true", help="skip the Firstmate bearings snapshot script and parse backlogs directly")
+    render_parser.add_argument("--all-sessions", action="store_true", help="show every session's items, not only the current session's (default: only what the session recorded by 'quarterdeck board active' raised, touched or discussed; config session_only false does the same)")
     render_parser.set_defaults(handler=render)
 
     serve_parser = subparsers.add_parser(
@@ -13758,6 +14003,7 @@ def make_parser() -> argparse.ArgumentParser:
     export_parser.add_argument("--config", type=Path, help="optional JSON config file")
     export_parser.add_argument("--title", help="override the page title")
     export_parser.add_argument("--no-snapshot", action="store_true", help="skip the Firstmate bearings snapshot script")
+    export_parser.add_argument("--all-sessions", action="store_true", help="show every session's items, not only the current session's (default: only what the session recorded by 'quarterdeck board active' raised, touched or discussed; config session_only false does the same)")
     export_parser.set_defaults(handler=export_snapshot)
 
     import_parser = subparsers.add_parser(

@@ -29,6 +29,12 @@ for server requirements, phone setup and withdrawal behavior.
 
 ## Features
 
+- This session only: by default every page shows only what your current
+  session with Firstmate raised, touched or discussed (its board items, waits,
+  topics, tasks and reports) and the links said in the chat, under **Links
+  from this session**. Everything else stays off the page. The session is the one
+  `quarterdeck board active` records. `--all-sessions` or `"session_only": false`
+  shows every session. See [See only this session](docs/how-to/see-only-this-session.md).
 - One look on every screen: generated pages and the cloud artifact share one
   stylesheet; the standalone decision brief uses the same visual style.
   Phones get one column; wider screens get columns (from 1024px, Calls beside Sent and the

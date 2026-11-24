@@ -3,8 +3,8 @@
 ## Command
 
 ```text
-quarterdeck render [--home PATH] [--output PATH] [--config FILE] [--title TEXT] [--all] [--lavish] [--no-snapshot]
-quarterdeck serve [--host ADDRESS ...] [--port N] [--base-path PATH] [--home PATH] [--config FILE] [--title TEXT] [--no-snapshot] [--allow-marks] [--watch-waits] [--tls-cert FILE --tls-key FILE]
+quarterdeck render [--home PATH] [--output PATH] [--config FILE] [--title TEXT] [--all] [--lavish] [--no-snapshot] [--all-sessions]
+quarterdeck serve [--host ADDRESS ...] [--port N] [--base-path PATH] [--home PATH] [--config FILE] [--title TEXT] [--no-snapshot] [--all-sessions] [--allow-marks] [--watch-waits] [--tls-cert FILE --tls-key FILE]
 quarterdeck service [--write] [--allow-marks] [--watch-waits] [--tls-cert FILE --tls-key FILE] [--host ADDRESS ...] [--port N] [--base-path PATH] [--home PATH] [--config FILE]
 quarterdeck url [--json]
 quarterdeck reactions import FILE|- [--dry-run] [--home PATH] [--config FILE]
@@ -27,7 +27,7 @@ quarterdeck views list [--json] [--preferences FILE]
 quarterdeck views show NAME [--json] [--preferences FILE]
 quarterdeck views save NAME --section SECTION [--section SECTION ...] [--default] [--preferences FILE] [--home PATH] [--config FILE]
 quarterdeck views default NAME [--preferences FILE] [--home PATH] [--config FILE]
-quarterdeck export [--output FILE] [--artifact FILE] [--home PATH] [--config FILE] [--title TEXT] [--bodies all|desk|none] [--no-snapshot]
+quarterdeck export [--output FILE] [--artifact FILE] [--home PATH] [--config FILE] [--title TEXT] [--bodies all|desk|none] [--no-snapshot] [--all-sessions]
 quarterdeck import <actions.json|-> [--dry-run] [--home PATH] [--config FILE]
 quarterdeck board upsert <task-id> [--id ID] [--group GROUP] [--title TEXT] [--ask TEXT] [--detail TEXT] [--topic TEXT] [--project TEXT] [--brief-url URL] [--recommendation TEXT] [--link LABEL=URL ...] [--touch] [--touched-at ISO] [--home PATH] [--data-dir PATH]
 quarterdeck board touch <task-id> [--at ISO] [--home PATH] [--data-dir PATH]
@@ -178,6 +178,7 @@ for how marks affect the dashboard.
 | `--all` | Include other backlog records and all reports; [decision relevance](attention-json.md#decisions) still applies. |
 | `--lavish` | Write a separate `*.lavish.html` review page with stable IDs on review cards, then open it with `lavish-axi` when available. Without Lavish, print a command hint and succeed. |
 | `--no-snapshot` | Do not run a home's `bin/fm-bearings-snapshot.sh` or `bin/fm-attention.sh`; use backlog decisions with recorded board and ledger activity, and show recent work from the ledger. |
+| `--all-sessions` | Show every session's items. Without it (and without `"session_only": false` in config), `render`, `serve` and `export` show only what the current session raised, touched or discussed, as [See only this session](../how-to/see-only-this-session.md) defines. |
 
 `serve` builds the page and its readable pages with the refresh behavior in the
 [serving guide](../how-to/serve-the-page.md#run-it). It serves them, and `cards.json` (the
@@ -336,12 +337,13 @@ keys are accepted:
 | `homes` | array of objects | unset | Homes to render together. Each object has `path` (required), `label` (optional), `data_dir` (optional) and `transcripts` (optional). |
 | `captain_waits` | object | unset | Settings for the captain-wait watcher; see [Captain waits](#captain-waits). |
 | `base_path` | string | none | See the `--base-path` contract under [Command](#command). |
+| `session_only` | boolean | `true` | Show only the current session's items; `false` does what `--all-sessions` does. See [See only this session](../how-to/see-only-this-session.md). |
 
 Each home object's `path` is the Firstmate home. `label` is shown above its
 review sections; if omitted, Quarterdeck uses the last path component. An
 optional `data_dir` replaces that home's `<path>/data` for its backlog and
 reports. An optional `transcripts` names the folder of the home's saved Claude
-Code sessions for the captain-wait watcher. Home `path`, `data_dir` and
+Code sessions, read by the captain-wait watcher and to find what the current session discussed. Home `path`, `data_dir` and
 `transcripts` values expand `~`; relative values resolve
 from the config file's directory. Relative `output_dir` keeps its original
 behavior and resolves from the current working directory.

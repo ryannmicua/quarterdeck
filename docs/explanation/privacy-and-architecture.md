@@ -123,6 +123,14 @@ file already shows answered or that was already answered from Quarterdeck, is re
 Each configured home is loaded independently. A missing or unreadable home
 shows its own error while other sections still render.
 
+By default the pages show only the current session (see
+[See only this session](../how-to/see-only-this-session.md)). To find what the
+session discussed, `render`, `serve` and `export` read each configured home's
+saved Claude Code sessions since the session began, keeping only the captain's
+typed messages and Firstmate's text replies, and the home's
+`state/fleet-ledger.jsonl`. They use these to choose what to show and keep no
+copy; the addresses said in the session appear on the Calls page.
+
 The captain-wait watcher (`quarterdeck waits sync|watch`, or `serve
 --watch-waits`) is opt-in. Besides the backlog it reads the home's saved Claude
 Code sessions, by default `~/.claude/projects/<encoded home path>/*.jsonl`,

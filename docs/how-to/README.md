@@ -6,6 +6,7 @@
 - [Configure multiple homes](configure-multiple-homes.md)
 - [Refresh on a schedule](schedule-refresh.md)
 - [Serve the always-current bearings page](serve-the-page.md)
+- [See only this session](see-only-this-session.md)
 - [Watch Firstmate's activity as cards](watch-activity-cards.md)
 - [Track what is waiting on you](track-captain-waits.md)
 - [Keep topic threads](keep-topic-threads.md)
