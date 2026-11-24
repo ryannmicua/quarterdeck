@@ -1,11 +1,13 @@
 from __future__ import annotations
 
+import errno
 import io
 import json
 import os
 import select
 import shlex
 import shutil
+import signal
 import socket
 import stat
 import subprocess
@@ -17,7 +19,7 @@ import urllib.error
 import urllib.request
 from concurrent.futures import ThreadPoolExecutor
 from configparser import ConfigParser
-from contextlib import contextmanager, redirect_stderr, redirect_stdout
+from contextlib import contextmanager, redirect_stderr, redirect_stdout, suppress
 from pathlib import Path
 from unittest.mock import patch
 from urllib.parse import urljoin
@@ -54,6 +56,32 @@ class StoreCase(unittest.TestCase):
         with redirect_stdout(out), redirect_stderr(err), patch.object(sys, "stdin", io.StringIO(stdin)):
             code = quarterdeck.main(list(argv))
         return code, out.getvalue(), err.getvalue()
+
+    @contextmanager
+    def serve_cli(self, *args: str):
+        for _ in range(3):
+            with socket.socket() as probe:
+                probe.bind(("127.0.0.1", 0))
+                port = probe.getsockname()[1]
+            with subprocess.Popen(
+                [sys.executable, str(ROOT / "quarterdeck.py"), "serve", "--host", "127.0.0.1",
+                 "--port", str(port), *args],
+                stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
+            ) as process:
+                try:
+                    self.assertTrue(select.select([process.stdout], [], [], 10)[0], "server did not start")
+                    ready = process.stdout.readline()
+                    if ready.startswith("Serving Quarterdeck"):
+                        yield port
+                        return
+                    output, error = process.communicate(timeout=10)
+                    if f"[Errno {errno.EADDRINUSE}]" not in error:
+                        self.fail(f"server did not start: {ready}{output}{error}")
+                finally:
+                    if process.poll() is None:
+                        process.terminate()
+                        process.communicate(timeout=10)
+        self.fail(f"server could not bind after three attempts: {error}")
 
     def add(self, kind: str, title: str, description: str = "Saved to come back to.", *extra: str, stdin: str = "") -> str:
         code, out, err = self.run_cli("add", "--kind", kind, "--title", title, "--description", description, *extra, stdin=stdin)
@@ -229,14 +257,15 @@ class PageTests(StoreCase):
         self.add_all_kinds()
         index = self.pages()["index.html"]
         rows = index
-        self.assertLess(rows.index("Needs attention"), rows.index("References"))
+        self.assertLess(rows.index("My desk"), rows.index("References"))
         self.assertLess(rows.index(">Q3<"), rows.index(">Q2<"))
         self.assertLess(rows.index(">Q2<"), rows.index(">Q1<"))
         self.assertIn("Harbor chores", index)
         self.assertIn("<h3>Tide launch decisions</h3>", index)
-        self.assertRegex(index, r'<a[^>]* href="q3.html">Read questions</a>')
-        self.assertEqual(index.count('href="q3.html"'), 1)
+        self.assertIn('<a class="work-action" href="q3.html#Q3.1">Read questions</a>', index)
+        self.assertEqual(index.count('href="q3.html#Q3.1"'), 1)
         self.assertIn("Two open questions, saved to decide later.", index)
+        self.assertIn("<li>Merge the tide tables now?</li><li>Which colour for the quay?</li>", index)
         for heading in ("ID", "Kind", "Title", "Description", "Saved"):
             self.assertIn(f'<th scope="col">{heading}</th>', index)
 
@@ -331,7 +360,8 @@ class RenderTests(StoreCase):
         code, out, err = self.run_cli("render", "--output", str(output))
         self.assertEqual(code, 0, err)
         self.assertEqual(out.strip(), str(output.resolve()))
-        self.assertRegex(output.read_text(), r'<a[^>]* href="q3.html">Read questions</a>')
+        self.assertIn('<a class="work-action" href="q3.html#Q3.1">Read questions</a>', output.read_text())
+        self.assertIn('<section class="decision" id="Q3.1"', (output.parent / "q3.html").read_text())
         self.assertEqual({path.name for path in output.parent.iterdir()},
                          {"index.html", "q1.html", "q2.html", "q3.html", "q8.html", "snapshot.html"})
         self.assertEqual((output.parent / "snapshot.html").read_text(), historical)
@@ -387,8 +417,9 @@ class RenderTests(StoreCase):
 
 
 class ServeTests(StoreCase):
-    def start(self, base_path: str = "", *, home: Path | None = None) -> int:
-        server = quarterdeck.make_server("127.0.0.1", 0, quarterdeck.make_handler("Quarterdeck", base_path, home=home))
+    def start(self, base_path: str = "", *, home: Path | None = None, workers_home: Path | None = None) -> int:
+        handler = quarterdeck.make_handler("Quarterdeck", base_path, home=home, workers_home=workers_home)
+        server = quarterdeck.make_server("127.0.0.1", 0, handler)
         thread = threading.Thread(target=server.serve_forever, daemon=True)
         thread.start()
         self.addCleanup(server.server_close)
@@ -466,7 +497,7 @@ class ServeTests(StoreCase):
         self.assertEqual(0, self.run_cli("mark", "Q3", "closed")[0])
         self.assertEqual(self.post_answer(port, "Q3.1", "New", correction["revision"])[0], 409)
         index = self.fetch(port, "/qd/")[1]
-        self.assertNotIn("Needs attention", index)
+        self.assertIn("Nothing is waiting for you", index)
         self.assertRegex(index, r'<a[^>]* href="q3.html">Review answers</a>')
         self.assertEqual(index.count('href="q3.html"'), 1)
         closed = self.fetch(port, "/qd/q3.html")[1]
@@ -475,7 +506,27 @@ class ServeTests(StoreCase):
         self.assertNotIn("<textarea", closed)
         self.assertEqual(0, self.run_cli("mark", "Q3.2", "open")[0])
         self.assertEqual(set(self.store()["items"][2]["answers"]["2"]), {"state", "revision"})
-        self.assertIn("Needs attention", self.fetch(port, "/qd/")[1])
+        desk = self.fetch(port, "/qd/")[1].split("<h1>My desk</h1>", 1)[1].split('<section id="workers">', 1)[0]
+        self.assertIn("<li>Which colour for the quay?</li>", desk)
+        self.assertNotIn("Merge the tide tables now?", desk)
+        self.assertIn('<span class="badge">1 of 2 open</span>', desk)
+        self.assertIn('<a class="work-action" href="q3.html#Q3.2">Answer questions</a>', desk)
+        question_page = self.fetch(port, "/qd/q3.html")[1]
+        self.assertIn('<section class="decision" id="Q3.2"', question_page)
+        self.assertIn('<p class="progress">1 of 2 open</p>', question_page)
+        self.assertIn("Open (1 of 2 open)", self.run_cli("show", "Q3")[1])
+
+    def test_pending_delivery_does_not_take_the_primary_desk_action(self):
+        self.add("questions", "Open decisions", "Two choices.", "--body-file", "-", stdin=json.dumps(QUESTIONS))
+        delivery = [{"question": "Deliver the harbour chart?", "context": "The chart is ready.", "options": ["Yes"]}]
+        self.add("questions", "Delivery to retry", "A choice already made.", "--body-file", "-", stdin=json.dumps(delivery))
+        port = self.start("/qd")
+        self.assertEqual(self.post_answer(port, "Q2.1", "Yes")[0], 200)
+        desk = self.fetch(port, "/qd/")[1].split("<h1>My desk</h1>", 1)[1].split('<section id="workers">', 1)[0]
+        self.assertIn('<a class="button-link" href="q2.html">Review answers</a>', desk)
+        self.assertIn('<a class="work-action" href="q1.html#Q1.1">Answer questions</a>', desk)
+        self.assertIn("<li>Merge the tide tables now?</li><li>Which colour for the quay?</li>", desk)
+        self.assertNotIn("Deliver the harbour chart?", desk)
 
     def test_invalid_answers_leave_the_store_untouched(self):
         self.add_all_kinds()
@@ -879,31 +930,21 @@ check(!button('send').disabled && button('send').textContent === 'Send 2 answers
         config = self.root / "config" / "legacy.json"
         config.parent.mkdir()
         config.write_text(json.dumps({"homes": [{"path": "../firstmate"}], "captain_waits": {}}))
-        with socket.socket() as probe:
-            probe.bind(("127.0.0.1", 0))
-            port = probe.getsockname()[1]
-        with subprocess.Popen(
-            [sys.executable, str(ROOT / "quarterdeck.py"), "serve", "--port", str(port), "--config", str(config), "--base-path", "/qd",
-             "--allow-marks", "--watch-waits", "--no-snapshot", "--home", str(home)],
-            stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
-        ) as process:
-            try:
-                self.assertTrue(select.select([process.stdout], [], [], 10)[0], "server did not start")
-                self.assertIn("Serving Quarterdeck", process.stdout.readline())
-                status, body, _headers = self.fetch(port, "/qd/")
-                self.assertEqual(status, 200)
-                self.assertIn("Tide launch decisions", body)
-                self.assertNotIn("Legacy work item", body)
-                self.assertNotIn(str(home), body)
-                before = quarterdeck.store_path().read_bytes()
-                self.assertEqual(self.fetch(port, "/", method="POST")[0], 405)
-                self.assertEqual(quarterdeck.store_path().read_bytes(), before)
-                status, record = self.post_answer(port, "Q3.1", "Hold")
-                self.assertEqual((status, record["delivery"]), (200, "sent"))
-                self.assertEqual((home / "received-note").read_text(), "Q3.1 Hold")
-            finally:
-                process.terminate()
-                process.communicate(timeout=10)
+        with self.serve_cli("--config", str(config), "--base-path", "/qd",
+                            "--allow-marks", "--watch-waits", "--no-snapshot", "--home", str(home)) as port:
+            status, body, _headers = self.fetch(port, "/qd/")
+            self.assertEqual(status, 200)
+            self.assertIn("Tide launch decisions", body)
+            self.assertNotIn("Legacy work item", body)
+            self.assertNotIn(str(home), body)
+            self.assertNotIn('id="refresh-workers"', body)
+            self.assertEqual(self.fetch(port, "/qd/workers.json")[0], 404)
+            before = quarterdeck.store_path().read_bytes()
+            self.assertEqual(self.fetch(port, "/", method="POST")[0], 405)
+            self.assertEqual(quarterdeck.store_path().read_bytes(), before)
+            status, record = self.post_answer(port, "Q3.1", "Hold")
+            self.assertEqual((status, record["delivery"]), (200, "sent"))
+            self.assertEqual((home / "received-note").read_text(), "Q3.1 Hold")
 
     def test_damaged_store_returns_an_error_without_server_paths(self) -> None:
         self.add_all_kinds()
@@ -919,6 +960,326 @@ check(!button('send').disabled && button('send').textContent === 'Send 2 answers
             self.assertNotIn(str(path), body)
         self.assertEqual(self.fetch(port, "/qd/Q1")[0], 404)
         self.assertEqual(self.post_answer(port, "Q3.1", "Hold"), (500, b"Could not save the answer."))
+
+
+def snapshot_task(key, *, kind="ship", state="working", exists=True, title="Mapping the harbor trail", project="Copper Orchard",
+                  age=540, decisions=(), pr=None, alive="not_checked", freshness="fresh"):
+    return {"id": key, "kind": kind, "project": f"/projects/{project}",
+            "current_state": {"state": state, "freshness": freshness},
+            "endpoint": {"exists": exists, "agent_alive": alive},
+            "hints": {"open_decisions": [{"key": d} for d in decisions]},
+            "paths": {"status_log": {"last_event": {"age_seconds": age}}},
+            "pr": {"url": pr}, "backlog": {"title": title, "repo": project}}
+
+
+SNAPSHOT_TIME = "2026-03-02T13:40:00Z"
+
+
+class WorkersTests(StoreCase):
+    """The workers section reads a fictional home's snapshot and nothing else."""
+
+    start = ServeTests.start
+    fetch = ServeTests.fetch
+
+    def make_home(self, tasks=None, *, body=None, code=0) -> Path:
+        home = self.root / "home"
+        script = home / "bin" / "fm-fleet-snapshot.sh"
+        script.parent.mkdir(parents=True, exist_ok=True)
+        fixture = home / "snapshot.json"
+        fixture.write_text(body if body is not None else json.dumps({"generated": SNAPSHOT_TIME, "tasks": tasks or []}))
+        script.write_text('#!/bin/sh\nset -eu\ntest "$#" = 1 && test "$1" = --local || exit 2\n'
+                          'test "$PWD" = "$FM_HOME" && test -z "${FM_OTHER:-}" || exit 3\n'
+                          f'cat "$FM_HOME/snapshot.json"\nexit {code}\n')
+        script.chmod(0o700)
+        return home
+
+    def workers(self, port, path="/qd/workers.json"):
+        status, body, _ = self.fetch(port, path)
+        return status, json.loads(body)
+
+    def test_lists_only_workers_with_a_live_terminal_and_the_second_mate_roster(self) -> None:
+        project_prefix = "Northern harbor survey " * 4
+        activity_prefix = "Charting the shipping lanes and recording the results. " * 8
+        home = self.make_home([
+            snapshot_task("Wren", state="done", exists=False, pr="not a URL"),
+            snapshot_task("Wren", exists=None, decisions=[None]),
+            {**snapshot_task("Wren", decisions=["map-scale"], pr="https://example.com/pull/7"), "current_state": []},
+            snapshot_task("Brackén Scout", state="blocked", title=activity_prefix + "East",
+                          project=project_prefix + "East", alive=[]),
+            snapshot_task(None, state="done", exists=False),
+            {**snapshot_task("Heron", state="paused", age=1e30), "project": None,
+             "backlog": {"repo": project_prefix + "West", "title": activity_prefix + "West"}},
+            {**snapshot_task("Lark", freshness="stale", state=[], age=378691200), "backlog": {"repo": []}},
+            snapshot_task("Skerry", state=[], exists=None),
+            snapshot_task("Skerry", kind="secondmate", alive="alive", state=[], freshness=[], decisions=["trail-route"], age=[]),
+            {**snapshot_task("Skerry", kind="secondmate", pr="not a URL"), "endpoint": None},
+            snapshot_task("Tern", kind="secondmate", alive="dead"),
+            {**snapshot_task("Tern", title=[]), "endpoint": None},
+            snapshot_task("Cove Mate", kind="secondmate", alive="unknown", exists=None, state="unknown"),
+            snapshot_task("Pike", kind="secondmate", exists=False, alive="not_checked"),
+            snapshot_task("Snipe", kind="secondmate", exists=False, alive="alive"),
+            snapshot_task("Kite", kind="secondmate", exists=False, alive=[], state=[]),
+            snapshot_task("Wren", decisions=[None], exists=None),
+        ])
+        port = self.start("/qd", workers_home=home)
+        status, data = self.workers(port)
+        self.assertEqual(status, 200)
+        self.assertEqual(data["observed_at"], SNAPSHOT_TIME)
+        rows = {row["name"]: row for row in data["workers"]}
+        self.assertEqual(len(data["workers"]), 4)
+        self.assertEqual(list(rows), ["Wren", "Brackén Scout", "Heron", "Lark"])
+        self.assertEqual([rows[n]["status"] for n in rows], ["Question asked", "Stuck", "Unknown", "Unknown"])
+        self.assertEqual(rows["Wren"]["project"], "Copper Orchard")
+        self.assertEqual(rows["Wren"]["activity"], "Mapping the harbor trail")
+        self.assertEqual(rows["Wren"]["active_at"], "2026-03-02T13:31:00Z")
+        for name, direction in (("Brackén Scout", "East"), ("Heron", "West")):
+            self.assertEqual(rows[name]["project"], project_prefix + direction)
+            self.assertEqual(rows[name]["activity"], activity_prefix + direction)
+        self.assertEqual(rows["Lark"]["project"], "Copper Orchard")
+        self.assertEqual(rows["Lark"]["active_at"], "2014-03-02T13:40:00Z")
+        self.assertIsNone(rows["Heron"]["active_at"])
+        self.assertTrue(all("contact_at" not in row for row in rows.values()))
+        self.assertEqual(rows["Wren"]["links"], [{"text": "Pull request", "href": "https://example.com/pull/7"}])
+        mates = {row["name"]: row for row in data["second_mates"]}
+        self.assertEqual({n: m["status"] for n, m in mates.items()},
+                         {"Skerry": "Question asked", "Tern": "Unreachable", "Cove Mate": "Unknown",
+                          "Pike": "Unreachable", "Snipe": "Unreachable", "Kite": "Unreachable"})
+        self.assertEqual(len(data["second_mates"]), 6)
+        self.assertEqual(mates["Skerry"]["contact_at"], SNAPSHOT_TIME)
+        self.assertTrue(all("active_at" not in row for row in mates.values()))
+        for name in ("Tern", "Cove Mate", "Pike", "Snipe", "Kite"):
+            self.assertIsNone(mates[name]["contact_at"])
+
+    def test_missing_facts_say_activity_unavailable_and_invent_nothing(self) -> None:
+        task = {"id": "Plover", "kind": "scout", "endpoint": {"exists": True}}
+        null_facts = {**task, "id": "Merlin", "project": None, "backlog": {"title": None, "repo": None},
+                      "paths": {"status_log": {"last_event": None}}, "pr": {"url": None}}
+        port = self.start("/qd", workers_home=self.make_home([task, null_facts]))
+        status, payload = self.workers(port)
+        self.assertEqual(status, 200)
+        self.assertEqual([row["name"] for row in payload["workers"]], ["Plover", "Merlin"])
+        for row in payload["workers"]:
+            self.assertEqual((row["status"], row["activity"], row["project"], row["active_at"], row["links"]),
+                             ("Unknown", "Activity unavailable", None, None, []))
+
+    def test_an_empty_snapshot_is_an_empty_list(self) -> None:
+        port = self.start("/qd", workers_home=self.make_home([]))
+        self.assertEqual(self.workers(port)[1], {"observed_at": SNAPSHOT_TIME, "workers": [], "second_mates": []})
+
+    def test_a_valid_second_mate_resolves_an_unreliable_duplicate_in_either_order(self) -> None:
+        valid = snapshot_task("Skerry", kind="secondmate", alive="alive")
+        port = self.start("/qd", workers_home=self.make_home())
+        for endpoint in (None, {"exists": 0}):
+            unreliable = {**valid, "endpoint": endpoint}
+            for tasks in ([unreliable, valid], [valid, unreliable]):
+                with self.subTest(endpoint=endpoint, unreliable_first=tasks[0] is unreliable):
+                    self.make_home(tasks)
+                    status, payload = self.workers(port)
+                    self.assertEqual(status, 200)
+                    self.assertEqual(payload["workers"], [])
+                    self.assertEqual([(row["name"], row["status"], row["contact_at"]) for row in payload["second_mates"]],
+                                     [("Skerry", "Working", SNAPSHOT_TIME)])
+
+    def test_failures_report_a_failed_read_and_never_a_partial_list(self) -> None:
+        valid = snapshot_task("Wren")
+        port = self.start("/qd", workers_home=self.make_home([valid]))
+        self.assertEqual(self.workers(port)[0], 200)
+        cases = {
+            "exit": {"tasks": [valid], "code": 1},
+            "text": {"body": "not json"},
+            "shape": {"body": json.dumps({"tasks": "x", "generated": SNAPSHOT_TIME})},
+            "time": {"body": json.dumps({"tasks": [], "generated": "yesterday"})},
+            "calendar": {"body": json.dumps({"tasks": [], "generated": "2026-02-30T13:40:00Z"})},
+            "task": {"tasks": [valid, None]},
+            "identity": {"tasks": [{**valid, "id": None}]},
+            "blank identity": {"tasks": [{**valid, "id": "  "}]},
+            "control in identity": {"tasks": [snapshot_task("Wr\x00en")]},
+            "surrogate in identity": {"tasks": [snapshot_task("Wr\ud800en")]},
+            "kind": {"tasks": [{**valid, "kind": None}]},
+            "endpoint": {"tasks": [{**valid, "endpoint": None}]},
+            "unresolved second mate": {"tasks": [valid, {**valid, "kind": "secondmate", "endpoint": None}]},
+            "unobserved": {"tasks": [snapshot_task("Wren", exists=False), snapshot_task("Wren", exists=None)]},
+            "nonboolean": {"tasks": [snapshot_task("Wren", exists=0)]},
+            "state": {"tasks": [snapshot_task("Wren", state={})]},
+            "freshness": {"tasks": [snapshot_task("Wren", freshness=[])]},
+            "decisions": {"tasks": [{**valid, "hints": {"open_decisions": "map-scale"}}]},
+            "null decision": {"tasks": [{**valid, "hints": {"open_decisions": [None]}}]},
+            "missing decision key": {"tasks": [{**valid, "kind": "secondmate", "hints": {"open_decisions": [{}]}}]},
+            "invalid decision key": {"tasks": [snapshot_task("Wren", decisions=[7])]},
+            "blank decision key": {"tasks": [snapshot_task("Wren", decisions=[" "])]},
+            "contact": {"tasks": [valid, snapshot_task("Tern", kind="secondmate", alive=[])]},
+            "project": {"tasks": [{**valid, "project": []}]},
+            "backlog": {"tasks": [{**valid, "backlog": []}]},
+            "repo": {"tasks": [{**valid, "project": None, "backlog": {"repo": []}}]},
+            "title": {"tasks": [snapshot_task("Wren", title=[])]},
+            "paths": {"tasks": [{**valid, "paths": []}]},
+            "status log": {"tasks": [{**valid, "paths": {"status_log": []}}]},
+            "activity event": {"tasks": [{**valid, "paths": {"status_log": {"last_event": []}}}]},
+            "activity age type": {"tasks": [snapshot_task("Wren", age="540")]},
+            "activity age boolean": {"tasks": [snapshot_task("Wren", age=True)]},
+            "activity age range": {"tasks": [snapshot_task("Wren", age=-1)]},
+            "activity age infinity": {"tasks": [snapshot_task("Wren", age=float("inf"))]},
+            "pull request": {"tasks": [{**valid, "pr": []}]},
+            "pull request URL type": {"tasks": [snapshot_task("Wren", pr=[])]},
+            "pull request URL format": {"tasks": [snapshot_task("Wren", pr="not a URL")]},
+        }
+        for name, fixture in cases.items():
+            with self.subTest(name):
+                self.make_home(**fixture)
+                status, body = self.workers(port)
+                self.assertEqual((status, list(body)), (502, ["error"]))
+        self.make_home([snapshot_task("Wren", exists=False)])
+        self.assertEqual(self.workers(port), (200, {"observed_at": SNAPSHOT_TIME, "workers": [], "second_mates": []}))
+
+    def test_a_slow_snapshot_is_stopped(self) -> None:
+        home = self.make_home([])
+        lifetime = home / "lifetime"
+        os.mkfifo(lifetime)
+        (home / "bin" / "fm-fleet-snapshot.sh").write_text(
+            '#!/bin/sh\nset -eu\nexec 3>lifetime >/dev/null\n'
+            'sleep 30 &\nchild=$!\nprintf "%s %s\\n" "$$" "$child" > started\nwait "$child"\n')
+        port = self.start("/qd", workers_home=home)
+        reader = os.open(lifetime, os.O_RDONLY | os.O_NONBLOCK)
+        try:
+            with patch.object(quarterdeck, "SNAPSHOT_SECONDS", 0.5):
+                self.assertEqual(self.workers(port)[0], 502)
+            self.assertEqual(len((home / "started").read_text().split()), 2)
+            self.assertTrue(select.select([reader], [], [], 1)[0], "snapshot shell or child still holds the pipe open")
+            self.assertEqual(os.read(reader, 1), b"")
+        finally:
+            if (home / "started").exists() and not select.select([reader], [], [], 0)[0]:
+                shell, child = map(int, (home / "started").read_text().split())
+                for pid in (shell, child):
+                    with suppress(ProcessLookupError):
+                        os.kill(pid, signal.SIGKILL)
+            os.close(reader)
+
+    def test_a_busy_snapshot_rejects_the_next_request(self) -> None:
+        port = self.start("/qd", workers_home=self.make_home([]))
+        entered, release = threading.Event(), threading.Event()
+        run_snapshot = quarterdeck.run_snapshot
+
+        def waiting_snapshot(home):
+            entered.set()
+            release.wait(timeout=10)
+            return run_snapshot(home)
+
+        with patch.object(quarterdeck, "run_snapshot", waiting_snapshot), ThreadPoolExecutor(max_workers=1) as pool:
+            first = pool.submit(self.workers, port)
+            try:
+                self.assertTrue(entered.wait(timeout=5))
+                self.assertEqual(self.workers(port)[0], 502)
+            finally:
+                release.set()
+            self.assertEqual(first.result()[0], 200)
+        self.assertEqual(self.workers(port)[0], 200)
+
+    def test_the_home_is_left_untouched_and_fm_variables_are_not_passed_on(self) -> None:
+        home = self.make_home([snapshot_task("Wren")])
+        before = sorted((str(p), p.stat().st_mtime_ns) for p in home.rglob("*"))
+        port = self.start("/qd", workers_home=home)
+        with patch.dict(os.environ, {"FM_OTHER": "elsewhere"}):
+            self.assertEqual(self.workers(port)[0], 200)
+        self.assertEqual(before, sorted((str(p), p.stat().st_mtime_ns) for p in home.rglob("*")))
+
+    def test_without_a_home_there_is_no_endpoint_and_the_page_says_so(self) -> None:
+        port = self.start("/qd")
+        self.assertEqual(self.fetch(port, "/qd/workers.json")[0], 404)
+        page = self.fetch(port, "/qd/")[1]
+        self.assertIn("Workers show here once firstmate_home names a Firstmate home.", page)
+        self.assertNotIn("refresh-workers", page)
+
+    def test_the_workers_section_follows_the_desk_and_obeys_host_checks(self) -> None:
+        port = self.start("/qd", workers_home=self.make_home([]))
+        page = self.fetch(port, "/qd/")[1]
+        self.assertEqual(page.count("<h1>"), 1)
+        self.assertLess(page.index("My desk"), page.index("Workers"))
+        self.assertIn('id="refresh-workers">Refresh workers</button>', page)
+        self.assertEqual(self.fetch(port, "/qd/workers.json", host="intruder.example")[0], 403)
+
+    def test_the_page_refreshes_on_entry_and_on_the_button_only(self) -> None:
+        chrome = shutil.which("google-chrome")
+        if not chrome:
+            self.skipTest("google-chrome is required for the workers refresh browser test")
+        home = self.make_home([snapshot_task("Wren", decisions=["map-scale"])])
+        port = self.start("/qd", workers_home=home)
+        next_snapshot = {
+            "generated": "2026-03-02T13:39:00Z",
+            "tasks": [snapshot_task("Wren", exists=False), snapshot_task("Bracken", state="paused")],
+        }
+        list_page = quarterdeck.list_page
+        run_snapshot = quarterdeck.run_snapshot
+
+        def advance_fixture(home):
+            snapshot = run_snapshot(home)
+            if snapshot["generated"] == SNAPSHOT_TIME:
+                (home / "snapshot.json").write_text(json.dumps(next_snapshot))
+            return snapshot
+
+        def instrumented_page(*args, **kwargs):
+            return list_page(*args, **kwargs).replace("</body>", """
+<output id="browser-result">Incomplete</output>
+<script>
+const result = document.getElementById('browser-result');
+const statusLine = document.getElementById('workers-status');
+const roster = document.getElementById('workers-list');
+const button = document.getElementById('refresh-workers');
+const settled = () => new Promise(resolve => {
+  const watcher = new MutationObserver(() => {
+    if (!button.hasAttribute('aria-disabled')) {
+      watcher.disconnect();
+      resolve();
+    }
+  });
+  watcher.observe(button, {attributes: true});
+});
+const requestCount = () => performance.getEntriesByName(new URL('workers.json', location.href).href).length;
+const check = (condition, message) => { if (!condition) throw new Error(message); };
+(async () => {
+  await settled();
+  check(requestCount() === 1, 'Expected one worker request on entry');
+  check(roster.textContent.includes('Wren') && !roster.textContent.includes('Bracken'), 'The initial roster did not appear');
+  check(roster.querySelector('.status.exception')?.textContent === 'Question asked', 'The exception badge was missing');
+  check(statusLine.querySelector('time')?.dateTime === '2026-03-02T13:40:00Z', 'The initial observation time was wrong');
+  await new Promise(resolve => setTimeout(resolve, 61000));
+  check(requestCount() === 1, 'A worker request ran while the page was idle');
+  const refreshed = settled();
+  button.click();
+  await refreshed;
+  check(requestCount() === 2, 'The refresh button did not make exactly one worker request');
+  check(!roster.textContent.includes('Wren') && roster.textContent.includes('Bracken'), 'The refreshed roster did not replace the old one');
+  check(roster.querySelector('.status')?.textContent === 'Unknown' && !roster.querySelector('.status.exception'),
+        'Unknown did not use the ordinary badge');
+  check(statusLine.querySelector('time')?.dateTime === '2026-03-02T13:39:00Z', 'The refresh did not show the corrected observation time');
+  result.textContent = 'PASS';
+})().catch(error => { result.textContent = error.message; });
+</script>
+</body>""")
+
+        with patch.object(quarterdeck, "list_page", instrumented_page), patch.object(quarterdeck, "run_snapshot", advance_fixture):
+            result = subprocess.run([chrome, "--headless", "--disable-background-networking", "--no-first-run",
+                                     f"--user-data-dir={self.root / 'browser'}", "--dump-dom", "--virtual-time-budget=65000",
+                                     f"http://127.0.0.1:{port}/qd/"],
+                                    capture_output=True, text=True, timeout=30, check=True)
+        browser_result = result.stdout.partition('<output id="browser-result">')[2].partition("</output>")[0]
+        self.assertEqual(browser_result, "PASS", result.stderr)
+
+    def test_explicit_home_enables_workers_only_when_serving(self) -> None:
+        home = self.make_home([snapshot_task("Wren")])
+        config = self.root / "quarterdeck.json"
+        config.write_text(json.dumps({"firstmate_home": str(home)}))
+        out = self.root / "out" / "index.html"
+        code, _, error = self.run_cli("render", "--config", str(config), "--output", str(out))
+        self.assertEqual(code, 0, error)
+        self.assertNotIn("Workers", out.read_text())
+
+        with self.serve_cli("--config", str(config), "--base-path", "/qd") as port:
+            status, page, _ = self.fetch(port, "/qd/")
+            self.assertEqual(status, 200)
+            self.assertIn('id="refresh-workers">Refresh workers</button>', page)
+            status, body, _ = self.fetch(port, "/qd/workers.json")
+            self.assertEqual(status, 200)
+            self.assertEqual([worker["name"] for worker in json.loads(body)["workers"]], ["Wren"])
 
 
 class ServiceAndHelpTests(StoreCase):

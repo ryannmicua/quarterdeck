@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import argparse
+import contextlib
 import fcntl
 import functools
 import gzip
@@ -13,6 +14,7 @@ import json
 import os
 import re
 import shlex
+import signal
 import socket
 import ssl
 import subprocess
@@ -24,7 +26,7 @@ import uuid
 import zlib
 from collections.abc import Iterator
 from contextlib import contextmanager
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import quote, unquote, urlparse
@@ -529,7 +531,8 @@ def item_text(item: dict[str, object]) -> str:
     elif item["kind"] == "list":
         lines.extend(f"{item_id}.{number}  {entry}" for number, entry in enumerate(body["entries"], 1))  # type: ignore[index]
     else:
-        state, remaining, _ = question_summary(item)
+        state, open_parts, _ = question_summary(item)
+        remaining = len(open_parts)
         lines.extend([f"{state} ({remaining} of {len(question_parts(item))} open)" if remaining else state, ""])
         for number, question in enumerate(body["questions"], 1):  # type: ignore[index]
             lines.append(f"{item_id}.{number}  {question['question']}")
@@ -602,8 +605,168 @@ def remove_item(args: argparse.Namespace) -> int:
     return run_item_command(action)
 
 
+# --- Workers ------------------------------------------------------------------------------
+# The one deliberate read of a Firstmate home: its own read-only fleet snapshot, run without a model.
+# Quarterdeck keeps nothing from it, shows only what the snapshot states outright, and never writes to the home.
+
+SNAPSHOT_COMMAND = ("bin/fm-fleet-snapshot.sh", "--local")
+SNAPSHOT_SECONDS = 60
+UTC_RE = re.compile(r"[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z")
+WORKER_STATES = {"working": "Working", "done": "Finished", "blocked": "Stuck", "failed": "Stuck"}
+ACTIVITY_UNAVAILABLE = "Activity unavailable"
+snapshot_lock = threading.Lock()
+
+
+class SnapshotError(Exception):
+    pass
+
+
+def run_snapshot(home: Path) -> object:
+    """Run the home's read-only fleet snapshot and return its parsed output."""
+    env = {k: v for k, v in os.environ.items() if not k.startswith("FM_")}
+    command = [str(home / SNAPSHOT_COMMAND[0]), *SNAPSHOT_COMMAND[1:]]
+    try:
+        process = subprocess.Popen(command, cwd=home, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
+                                   stderr=subprocess.DEVNULL, env={**env, "FM_HOME": str(home)}, start_new_session=True)
+    except OSError as exc:
+        raise SnapshotError("the fleet snapshot could not start") from exc
+    try:
+        output, _ = process.communicate(timeout=SNAPSHOT_SECONDS)
+    except subprocess.TimeoutExpired as exc:
+        with contextlib.suppress(OSError):
+            os.killpg(process.pid, signal.SIGKILL)
+        process.communicate()
+        raise SnapshotError("the fleet snapshot took too long") from exc
+    if process.returncode != 0:
+        raise SnapshotError("the fleet snapshot failed")
+    try:
+        return json.loads(output)
+    except (ValueError, RecursionError) as exc:
+        raise SnapshotError("the fleet snapshot was not readable") from exc
+
+
+def snapshot_text(value: str | None) -> str | None:
+    if value is None:
+        return None
+    text = " ".join("".join(c if unicodedata.category(c) not in {"Cc", "Cs"} else " " for c in value).split())
+    return text or None
+
+
+def utc_text(moment: datetime) -> str:
+    return moment.astimezone(timezone.utc).isoformat(timespec="seconds").removesuffix("+00:00") + "Z"
+
+
+def snapshot_field(record: dict, name: str, expected: type | tuple[type, ...]):
+    value = record.get(name)
+    if value is not None and not isinstance(value, expected):
+        raise SnapshotError(f"the fleet snapshot has an invalid {name}")
+    return value
+
+
+def worker_status(task: dict) -> str:
+    """Map only what the snapshot states outright onto the owner's status words."""
+    hints = snapshot_field(task, "hints", dict) or {}
+    decisions = snapshot_field(hints, "open_decisions", list) or []
+    if any(not isinstance(decision, dict) or not isinstance(decision.get("key"), str) or not decision["key"].strip()
+           for decision in decisions):
+        raise SnapshotError("the fleet snapshot has an invalid open decision")
+    if decisions:
+        return "Question asked"
+    current = snapshot_field(task, "current_state", dict) or {}
+    if snapshot_field(current, "freshness", str) not in {None, "fresh"}:
+        return "Unknown"
+    return WORKER_STATES.get(snapshot_field(current, "state", str), "Unknown")
+
+
+def roster_row(key: str, task: dict, observed: datetime) -> dict[str, object]:
+    backlog = snapshot_field(task, "backlog", dict) or {}
+    project = snapshot_field(task, "project", str)
+    title = snapshot_field(backlog, "title", str)
+    pr = snapshot_field(task, "pr", dict) or {}
+    url = snapshot_field(pr, "url", str)
+    links = []
+    if url is not None:
+        try:
+            links.append({"text": "Pull request", "href": clean_url(url)})
+        except ValueError as exc:
+            raise SnapshotError("the fleet snapshot has an invalid pull request URL") from exc
+    row: dict[str, object] = {
+        "name": key,
+        "project": (snapshot_text(Path(project).name if project else None)
+                    or snapshot_text(snapshot_field(backlog, "repo", str))),
+        "activity": snapshot_text(title) or ACTIVITY_UNAVAILABLE, "links": links,
+    }
+    if task["kind"] == "secondmate":
+        endpoint = task["endpoint"]
+        closed = endpoint.get("exists") is False
+        alive = None if closed else snapshot_field(endpoint, "agent_alive", str)
+        row["status"] = "Unreachable" if closed or alive == "dead" else worker_status(task)
+        row["contact_at"] = utc_text(observed) if alive == "alive" else None
+    else:
+        row["status"] = worker_status(task)
+        paths = snapshot_field(task, "paths", dict) or {}
+        status_log = snapshot_field(paths, "status_log", dict) or {}
+        last = snapshot_field(status_log, "last_event", dict) or {}
+        age = snapshot_field(last, "age_seconds", (int, float))
+        if age is not None and (isinstance(age, bool) or not 0 <= age < float("inf")):
+            raise SnapshotError("the fleet snapshot has an invalid activity age")
+        row["active_at"] = None
+        if age is not None:
+            with contextlib.suppress(OverflowError):
+                row["active_at"] = utc_text(observed - timedelta(seconds=age))
+    return row
+
+
+def workers_snapshot(home: Path) -> dict[str, object]:
+    """Every worker with a live terminal screen, plus the second mate roster, as the page shows them."""
+    if not snapshot_lock.acquire(blocking=False):
+        raise SnapshotError("the fleet snapshot is already running")
+    try:
+        data = run_snapshot(home)
+    finally:
+        snapshot_lock.release()
+    tasks = data.get("tasks") if isinstance(data, dict) else None
+    generated = data.get("generated") if isinstance(data, dict) else None
+    if not isinstance(tasks, list) or not isinstance(generated, str) or not UTC_RE.fullmatch(generated):
+        raise SnapshotError("the fleet snapshot was not in the expected shape")
+    try:
+        observed = datetime.strptime(generated, "%Y-%m-%dT%H:%M:%SZ").replace(tzinfo=timezone.utc)
+    except ValueError as exc:
+        raise SnapshotError("the fleet snapshot timestamp was invalid") from exc
+    workers, second_mates = {}, {}
+    unresolved_workers, unresolved_mates = set(), set()
+    for task in tasks:
+        if not isinstance(task, dict):
+            raise SnapshotError("the fleet snapshot has an invalid task")
+        kind, endpoint = task.get("kind"), task.get("endpoint")
+        exists = endpoint.get("exists") if isinstance(endpoint, dict) else None
+        if not isinstance(kind, str) or not kind.strip():
+            exists = None
+        elif kind != "secondmate" and exists is False:
+            continue
+        key = task.get("id")
+        if not isinstance(key, str) or not key.strip() or any(unicodedata.category(c) in {"Cc", "Cs"} for c in key):
+            raise SnapshotError("the fleet snapshot has an invalid task")
+        if kind == "secondmate":
+            if not isinstance(endpoint, dict) or (exists is not None and not isinstance(exists, bool)):
+                unresolved_mates.add(key)
+            else:
+                second_mates.setdefault(key, task)
+        elif exists is True:
+            workers.setdefault(key, task)
+        else:
+            unresolved_workers.add(key)
+    if unresolved_mates - second_mates.keys() or unresolved_workers - workers.keys() - second_mates.keys():
+        raise SnapshotError("the fleet snapshot has no reliable terminal state")
+    return {
+        "observed_at": generated,
+        "workers": [roster_row(key, task, observed) for key, task in workers.items() if key not in second_mates],
+        "second_mates": [roster_row(key, task, observed) for key, task in second_mates.items()],
+    }
+
+
 # --- Pages ------------------------------------------------------------------------------
-# Every page is built from the item store alone. No page names a server path.
+# The workers roster is fetched separately from the HTML. No page names a server path.
 
 PAGE_CSS = """
 /* Tokens: the only colours, type sizes and widths any Quarterdeck page uses. */
@@ -679,7 +842,7 @@ button { cursor:pointer; background:var(--raised); color:var(--ink); border:1px 
   border-radius:5px; padding:.5rem .85rem; min-height:44px; font-size:1rem; max-width:100%; overflow-wrap:anywhere; }
 button[hidden] { display:none; }
 button.primary { color:var(--raised); background:var(--ink); }
-button:disabled { opacity:.55; cursor:default; }
+button:disabled, button[aria-disabled="true"] { opacity:.55; cursor:default; }
 :focus-visible { outline:3px solid var(--focus); outline-offset:2px; }
 .toolbar { position:sticky; top:0; z-index:1; background:var(--ground); padding:.6rem 0; border-bottom:1px solid var(--rule); }
 .decision,button,textarea { scroll-margin-top:10rem; }
@@ -694,6 +857,35 @@ textarea { display:block; width:100%; resize:vertical; background:var(--ground);
  border:1px solid var(--soft); border-radius:4px; padding:.55rem; font:inherit; }
 .record { white-space:pre-wrap; }
 table.items td.when { white-space:normal; }
+.desk { margin:0 0 1rem; }
+.desk .work { max-width:none; margin:0; padding:1rem; border-width:0 0 1px; border-left:5px solid var(--rule); border-radius:0; background:transparent;
+  display:grid; grid-template-columns:minmax(0,1fr) auto; gap:0 1.5rem; align-items:center; }
+.desk .work.next { border-left-color:var(--signal); background:var(--signal-ground); }
+.desk .work > .eyebrow, .desk .work > h3, .desk .work > p, .desk .work > ul { grid-column:1; }
+.desk .work > p { margin:.2rem 0 0; }
+.desk .work > ul { margin:.4rem 0 0; padding-inline-start:1.25rem; }
+.desk .work > .actions { grid-column:2; grid-row:1 / span 4; justify-content:flex-end; }
+.button-link, .work-action { display:inline-flex; align-items:center; min-height:44px; padding:.5rem .85rem; border-radius:5px; font:600 var(--text-md)/1.3 var(--sans);
+  text-decoration:none; border:1px solid var(--soft); background:var(--raised); color:var(--ink); }
+.work-action { background:var(--ink); color:var(--raised); border-color:var(--ink); }
+.section-head { display:flex; flex-wrap:wrap; gap:.5rem 1rem; align-items:center; justify-content:space-between; margin-top:2rem; }
+.section-head h2 { margin:0; }
+.roster { list-style:none; margin:.5rem 0 0; padding:0; border-top:1px solid var(--rule); font-family:var(--sans); }
+.roster > li { padding:.9rem 0; border-bottom:1px solid var(--rule); }
+.roster p { margin:.15rem 0 0; }
+.roster .head { display:flex; flex-wrap:wrap; gap:.3rem 1rem; align-items:baseline; justify-content:space-between; }
+.roster .who { font:700 var(--text-lead)/1.3 var(--sans); }
+.roster .project, .roster .when { color:var(--soft); font-size:var(--text-md); }
+.roster .doing { font-size:var(--text-md); }
+.roster .links { display:flex; flex-wrap:wrap; gap:.3rem 1rem; }
+.status { font:600 var(--text-md)/1.3 var(--sans); padding:.15rem .6rem; border:1px solid var(--rule); border-radius:5px; white-space:nowrap; }
+.status.exception { color:var(--signal); background:var(--signal-ground); border-color:var(--signal); }
+.failed { color:var(--signal); }
+#workers h3 { font:700 var(--text-md)/1.3 var(--sans); margin:1.4rem 0 0; }
+@media (max-width: 40rem) {
+  .desk .work { grid-template-columns:minmax(0,1fr); }
+  .desk .work > .actions { grid-column:1; grid-row:auto; justify-content:flex-start; margin-top:.6rem; }
+}
 """
 
 
@@ -702,6 +894,101 @@ const localTime = dateTime => new Date(dateTime).toLocaleString(undefined, {date
 for (const time of document.querySelectorAll('.saved-answer time[datetime]:not([datetime=""])')) {
   time.textContent = localTime(time.dateTime);
 }
+"""
+
+
+WORKERS_SCRIPT = r"""
+(() => {
+  const section = document.querySelector('#workers');
+  const button = section && section.querySelector('#refresh-workers');
+  if (!button) return;
+  const heading = section.querySelector('h2');
+  const status = section.querySelector('#workers-status');
+  const list = section.querySelector('#workers-list');
+  const exceptions = new Set(['Question asked', 'Stuck', 'Unreachable']);
+  let lastObservedAt = null;
+  const make = (tag, className, text) => {
+    const node = document.createElement(tag);
+    if (className) node.className = className;
+    if (text !== undefined) node.textContent = text;
+    return node;
+  };
+  const stamped = (label, iso) => {
+    const line = make('p', 'when', label + ' ');
+    const time = make('time', '', localTime(iso));
+    time.dateTime = iso;
+    line.append(time);
+    return line;
+  };
+  const row = (worker, mate) => {
+    const item = make('li');
+    const head = make('div', 'head');
+    head.append(make('strong', 'who', worker.name),
+      make('span', exceptions.has(worker.status) ? 'status exception' : 'status', worker.status));
+    item.append(head);
+    if (worker.project) item.append(make('p', 'project', worker.project));
+    item.append(make('p', 'doing', worker.activity));
+    if (mate) item.append(worker.contact_at ? stamped('Reached', worker.contact_at) : make('p', 'when', 'Contact unavailable'));
+    else if (worker.active_at) item.append(stamped('Active', worker.active_at));
+    if (worker.links.length) {
+      const links = make('p', 'links');
+      for (const link of worker.links) {
+        const anchor = make('a', '', link.text);
+        anchor.href = link.href;
+        links.append(anchor);
+      }
+      item.append(links);
+    }
+    return item;
+  };
+  const group = (title, rows, mate) => {
+    const box = make('div');
+    if (title) box.append(make('h3', '', rows.length > 1 ? title + ' (' + rows.length + ')' : title));
+    const roster = make('ul', 'roster');
+    for (const worker of rows) roster.append(row(worker, mate));
+    box.append(roster);
+    return box;
+  };
+  const show = data => {
+    heading.textContent = data.workers.length > 1 ? 'Workers (' + data.workers.length + ')' : 'Workers';
+    list.replaceChildren();
+    if (data.workers.length) list.append(group('', data.workers, false));
+    else list.append(make('p', 'empty', 'No workers are running. A worker with a terminal shows here.'));
+    if (data.second_mates.length) list.append(group('Second mates', data.second_mates, true));
+    status.className = 'meta';
+    status.textContent = 'Last refreshed ';
+    const time = make('time', '', localTime(data.observed_at));
+    time.dateTime = data.observed_at;
+    status.append(time);
+  };
+  const failed = () => {
+    status.className = 'meta failed';
+    status.textContent = lastObservedAt
+      ? 'Refresh failed. Showing the list from ' + localTime(lastObservedAt) + '.'
+      : 'Workers could not be loaded. Try again.';
+  };
+  const load = async () => {
+    if (button.getAttribute('aria-disabled') === 'true') return;
+    button.setAttribute('aria-disabled', 'true');
+    list.setAttribute('aria-busy', 'true');
+    status.className = 'meta';
+    status.textContent = lastObservedAt ? 'Refreshing workers' : 'Loading workers';
+    try {
+      const response = await fetch('workers.json', {cache: 'no-store', headers: {Accept: 'application/json'}});
+      if (!response.ok) throw new Error('refresh failed');
+      const data = await response.json();
+      show(data);
+      lastObservedAt = data.observed_at;
+    } catch (error) {
+      failed();
+    } finally {
+      button.removeAttribute('aria-disabled');
+      list.removeAttribute('aria-busy');
+    }
+  };
+  button.addEventListener('click', load);
+  load();
+})();
 """
 
 
@@ -755,7 +1042,8 @@ def item_page_name(item_id: str) -> str:
     return f"{item_id.lower()}.html"
 
 
-def page_shell(title: str, site_title: str, body: str, *, served: bool, saved_name: str, interactive: bool = False) -> str:
+def page_shell(title: str, site_title: str, body: str, *, served: bool, saved_name: str, interactive: bool = False,
+               workers: bool = False) -> str:
     saved_href = quote(saved_name, safe="")
     links = (
         '<link rel="manifest" href="manifest.webmanifest">\n  <link rel="icon" href="icon.svg" type="image/svg+xml">\n'
@@ -767,7 +1055,7 @@ def page_shell(title: str, site_title: str, body: str, *, served: bool, saved_na
         f"  {GENERATED_MARKER}\n  <title>{esc(title)}</title>\n  {links}<style>{PAGE_CSS}</style>\n</head>\n<body>\n"
         f'<header class="bar"><a class="mark" href="{saved_href}">{esc(site_title)}</a>'
         f'<nav><a href="{saved_href}">Saved</a></nav></header>\n'
-        f"<main>\n{body}\n</main><script>{TIME_SCRIPT}{ANSWER_SCRIPT if interactive else ''}</script>\n</body>\n</html>\n"
+        f"<main>\n{body}\n</main><script>{TIME_SCRIPT}{ANSWER_SCRIPT if interactive else ''}{WORKERS_SCRIPT if workers else ''}</script>\n</body>\n</html>\n"
     )
 
 
@@ -787,23 +1075,29 @@ def delivery_label(record):
     return "Sent" if record["delivery"] == "sent" else "Not delivered"
 
 
-def question_summary(item):
+def question_summary(item) -> tuple[str, list[int], bool]:
     states = [part_record(item, n).get("state", "open") for n in question_parts(item)]
-    remaining = states.count("open")
-    state = "Open" if remaining else ("Closed" if all(s == "closed" for s in states) else "Answered")
+    open_parts = [n for n, state in enumerate(states, 1) if state == "open"]
+    state = "Open" if open_parts else ("Closed" if all(s == "closed" for s in states) else "Answered")
     pending = any(delivery_pending(r) for r in item.get("answers", {}).values())
-    return state, remaining, pending
+    return state, open_parts, pending
 
 
-def question_card(item, *, served, primary):
-    state, remaining, pending = question_summary(item)
+def question_card(item, summary, *, served, primary):
+    state, open_parts, pending = summary
+    remaining = len(open_parts)
     href = item_page_name(item["id"])
+    if primary:
+        href += f'#{item["id"]}.{open_parts[0]}'
     progress = f'{remaining} of {len(question_parts(item))} open' if remaining else state
     action = "Read questions" if not served else ("Answer questions" if remaining else "Review answers")
-    link_class = ' class="work-action"' if primary else ''
-    return (f'<article class="work"><div class="eyebrow"><span class="id">{item["id"]}</span> Questions</div>'
+    link_class = ' class="work-action"' if primary else ' class="button-link"'
+    questions = item["body"]["questions"]
+    prompts = "".join(f'<li>{esc(questions[n - 1]["question"])}</li>' for n in open_parts)
+    return (f'<article class="work{' next' if primary else ''}"><div class="eyebrow"><span class="id">{item["id"]}</span> Questions</div>'
             f'<h3>{esc(item["title"])}</h3><p>{linked_text(item["description"])}</p>'
-            f'<div class="actions"><span class="badge">{progress}</span>'
+            + (f'<ul>{prompts}</ul>' if prompts else '')
+            + f'<div class="actions"><span class="badge">{progress}</span>'
             + ('<span>Not delivered</span>' if pending else '')
             + f'<a{link_class} href="{href}">{action}</a></div></article>')
 
@@ -815,7 +1109,8 @@ def has_answer_controls(item):
 
 def question_form(item, served):
     cards = []
-    state, remaining, _ = question_summary(item)
+    state, open_parts, _ = question_summary(item)
+    remaining = len(open_parts)
     for number, question in enumerate(item["body"]["questions"], 1):
         part = f'{item["id"]}.{number}'
         record = part_record(item, number)
@@ -997,29 +1292,52 @@ if (send) {
 """
 
 
-def list_page(data: dict[str, object], site_title: str, *, served: bool, saved_name: str = "index.html") -> str:
+def workers_section(ready: bool) -> str:
+    if not ready:
+        return ('<section id="workers"><h2>Workers</h2><p class="empty">Workers show here once firstmate_home '
+                'names a Firstmate home.</p></section>')
+    return ('<section id="workers"><div class="section-head"><h2>Workers</h2>'
+            '<button type="button" id="refresh-workers">Refresh workers</button></div>'
+            '<p class="meta" id="workers-status" role="status">Loading workers</p><div id="workers-list"></div></section>')
+
+
+def list_page(data: dict[str, object], site_title: str, *, served: bool, saved_name: str = "index.html",
+              workers: bool = False) -> str:
     items = newest_first(data["items"])  # type: ignore[arg-type]
     empty = "Nothing is saved yet. Ask Firstmate to send something to Quarterdeck: a link, a list or open questions."
     attention, reviewed, references = [], [], []
+    primary = None
     for item in items:
         if item["kind"] != "questions":
             references.append(item)
             continue
-        _, remaining, pending = question_summary(item)
-        (attention if remaining or pending else reviewed).append(item)
+        summary = question_summary(item)
+        _, open_parts, pending = summary
+        (attention if open_parts or pending else reviewed).append((item, summary))
+        if open_parts and primary is None:
+            primary = item
     body = ""
-    for heading, group in (("Needs attention", attention), ("Reviewed questions", reviewed)):
-        if group:
-            level = 2 if body else 1
-            body += f'<h{level}>{heading}</h{level}>'
-            for index, item in enumerate(group):
-                body += question_card(item, served=served, primary=level == 1 and index == 0)
+
+    def desk(group) -> str:
+        cards = "".join(question_card(item, summary, served=served, primary=item is primary) for item, summary in group)
+        return f'<div class="desk">{cards}</div>'
+
+    if attention:
+        body += "<h1>My desk</h1>" + desk(attention)
+    elif served:
+        nothing = empty if not items else "Nothing is waiting for you. Saved questions that need an answer show here."
+        body += f'<h1>My desk</h1><p class="empty">{esc(nothing)}</p>'
+    if served:
+        body += workers_section(workers)
+    if reviewed:
+        level = 2 if body else 1
+        body += f"<h{level}>Reviewed questions</h{level}>" + desk(reviewed)
     if references:
         level = 2 if body else 1
         body += f"<h{level}>References</h{level}>" + items_table(references)
-    if not items:
+    if not items and not served:
         body = f'<h1>Saved</h1><p class="empty">{esc(empty)}</p>'
-    return page_shell(site_title, site_title, body, served=served, saved_name=saved_name)
+    return page_shell(site_title, site_title, body, served=served, saved_name=saved_name, workers=served and workers)
 
 
 def item_body_html(item: dict[str, object]) -> str:
@@ -1307,7 +1625,8 @@ def make_server(host: str, port: int, handler: type[BaseHTTPRequestHandler],
     return Server((host, port), handler)
 
 
-def make_handler(site_title: str, base_path: str = "", store: Path | None = None, home: Path | None = None) -> type[BaseHTTPRequestHandler]:
+def make_handler(site_title: str, base_path: str = "", store: Path | None = None, home: Path | None = None,
+                 *, workers_home: Path | None = None) -> type[BaseHTTPRequestHandler]:
     """Every page is built from the item store when it is requested."""
     class Handler(BaseHTTPRequestHandler):
         server_version = "Quarterdeck"
@@ -1357,6 +1676,14 @@ def make_handler(site_title: str, base_path: str = "", store: Path | None = None
             if name in APP_ICON_PATHS:
                 self.send_text(200, app_asset(name) or b"", APP_ICON_PATHS[name], cache="public, max-age=86400")
                 return
+            if name == "workers.json" and workers_home is not None:
+                try:
+                    snapshot = workers_snapshot(workers_home)
+                except SnapshotError:
+                    self.send_text(502, json.dumps({"error": "The workers could not be read."}), "application/json")
+                else:
+                    self.send_text(200, json.dumps(snapshot), "application/json")
+                return
             if name != "index.html" and not ITEM_PAGE_RE.fullmatch(name):
                 self.send_text(404, "Not found\n")
                 return
@@ -1366,7 +1693,8 @@ def make_handler(site_title: str, base_path: str = "", store: Path | None = None
                 self.send_text(500, "Quarterdeck could not read its item store\n")
                 return
             if name == "index.html":
-                self.send_text(200, list_page(data, site_title, served=True), "text/html; charset=utf-8")
+                self.send_text(200, list_page(data, site_title, served=True, workers=workers_home is not None),
+                               "text/html; charset=utf-8")
                 return
             try:
                 item = find_item(data, name.removesuffix(".html"))
@@ -1434,7 +1762,9 @@ def serve(args: argparse.Namespace) -> int:
         config = load_config(config_path)
         tls = tls_context(args)
         base_path = effective_base_path(args)
-        handler = make_handler(page_title(args, config), base_path, home=answer_home(config, config_path))
+        explicit_home = config.get("firstmate_home")
+        handler = make_handler(page_title(args, config), base_path, home=answer_home(config, config_path),
+                               workers_home=Path(explicit_home) if isinstance(explicit_home, str) else None)
         port = args.port
         for host in bind_hosts(args):
             server = make_server(host, port, handler, tls)
@@ -1448,7 +1778,7 @@ def serve(args: argparse.Namespace) -> int:
     ignored = [flag for flag in LEGACY_SERVE_FLAGS if getattr(args, flag, None)]
     if ignored:
         print("quarterdeck: ignoring " + ", ".join("--" + flag.replace("_", "-") for flag in ignored)
-              + "; Quarterdeck now shows only items saved by hand", file=sys.stderr, flush=True)
+              + "; Quarterdeck shows items saved by hand and, when firstmate_home is set, the workers in that home", file=sys.stderr, flush=True)
     for server in servers:
         host = str(server.server_address[0])
         shown = f"[{host}]" if ":" in host else host
@@ -1599,7 +1929,7 @@ COMMAND_DOCS = {
     "show": ["how-to/read-answers.md", "how-to/save-items.md", "reference/cli-and-config.md"],
     "remove": ["how-to/save-items.md", "reference/cli-and-config.md"],
     "render": ["how-to/serve-the-page.md", "reference/cli-and-config.md", "explanation/privacy-and-architecture.md"],
-    "serve": ["how-to/answer-questions.md", "how-to/serve-the-page.md", "reference/cli-and-config.md", "explanation/privacy-and-architecture.md"],
+    "serve": ["how-to/answer-questions.md", "how-to/read-workers.md", "how-to/serve-the-page.md", "reference/cli-and-config.md", "explanation/privacy-and-architecture.md"],
     "service": ["how-to/serve-the-page.md", "reference/cli-and-config.md"],
     "url": ["how-to/serve-the-page.md", "reference/cli-and-config.md"],
     "install": ["how-to/install.md", "how-to/update.md", "how-to/uninstall.md"],
@@ -1705,7 +2035,7 @@ def make_parser() -> argparse.ArgumentParser:
     render_parser.add_argument("--title", help="override the page title")
 
     serve_parser = command("serve", "serve the page over HTTP",
-                           "Serve saved items and accept same-origin answers. Anyone who can reach the service can answer as the owner.", serve)
+                           "Serve saved items and accept same-origin answers. With firstmate_home set, the page also lists that home's running workers, read on entry and on Refresh workers. Anyone who can reach the service can answer as the owner.", serve)
     add_serve_options(serve_parser)
     serve_parser.add_argument("--title", help="override the page title")
     for flag in LEGACY_SERVE_FLAGS:  # accepted so an existing service unit keeps starting; they do nothing now

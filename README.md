@@ -4,10 +4,10 @@
 
 ## What it is
 
-Quarterdeck shows only what was saved to it by hand. When you tell Firstmate
-"send this to Quarterdeck" or "save this Lavish page to Quarterdeck", Firstmate
-runs `quarterdeck add`, and the item appears on the page. If nothing has been
-saved, the page says so.
+Quarterdeck shows items saved by hand and, when enabled, the live Firstmate
+workers roster. When you tell Firstmate "send this to Quarterdeck" or "save
+this Lavish page to Quarterdeck", Firstmate runs `quarterdeck add`, and the
+item appears on the page. If nothing has been saved, the page says so.
 
 Each item gets an ID that is never reused: Q1, Q2, Q3 and so on. The numbered
 parts of a list or a set of questions are cited as Q7.1, Q7.2, so you can say
@@ -27,9 +27,11 @@ saved; Quarterdeck never reads it again from another file.
 
 ## Features
 
-- **Needs attention** shows question sets with open questions or undelivered
-  answers on questions that are still editable. Other question sets appear
-  under **Reviewed questions**. Links and lists appear under **References**.
+- **My desk** shows open question prompts grouped by set. It also keeps sets
+  with undelivered answers on editable questions in view. Other question sets
+  appear under **Reviewed questions**. Links and lists appear under **References**.
+- **Workers** follows **My desk** on the served page. See
+  [how to enable and refresh the roster](docs/how-to/read-workers.md).
 - One page per item, with its ID and title at the top. A resource's link opens
   the saved address; list entries and questions are numbered.
 - `quarterdeck add`, `list`, `show` and `remove` for

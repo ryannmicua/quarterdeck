@@ -1,8 +1,8 @@
 # Privacy and architecture
 
 Quarterdeck is a shelf the captain fills by hand. Firstmate saves an item only
-when the captain asks, with `quarterdeck add`, and the page shows those items
-and nothing else.
+when the captain asks, with `quarterdeck add`. The page shows those items and,
+when enabled, the live Firstmate workers roster.
 
 ## What Quarterdeck reads and writes
 
@@ -14,13 +14,18 @@ and nothing else.
   replacing or retiring them. See the [render reference](../reference/cli-and-config.md#pages).
 - `serve` reads the item store to build pages and writes to it when users
   submit answers. It reads the TLS certificate and key if you supply them.
+- The [workers endpoint](../reference/cli-and-config.md#workers-endpoint) runs
+  the configured home's read-only `bin/fm-fleet-snapshot.sh --local`. This
+  command uses no model.
 - `service --write` writes the systemd unit. `url` reads it if it exists.
 - `install` and `update` invoke the [user-local installer](../how-to/install.md).
 
-Quarterdeck reads no backlog, board, topic, report, ledger or saved session
-from a Firstmate home. On explicit answer submission it can invoke the
-configured home's `bin/fm-inbox.sh note` command, passing the plain answer text
-prefixed with the part ID.
+Apart from that snapshot, Quarterdeck reads no backlog, board, topic, report,
+ledger or saved session from a Firstmate home, and it does not read terminal
+text. Quarterdeck stores no snapshot data or contact history on the server.
+Quarterdeck writes nothing to the home except through the configured home's
+`bin/fm-inbox.sh note` command on explicit answer submission. It passes the
+plain answer text prefixed with the part ID.
 
 ## Why items are stored by value
 

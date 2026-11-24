@@ -13,6 +13,8 @@ as files instead, run `quarterdeck render`; see the
 
 To submit a decision, see [Answer questions](answer-questions.md).
 
+To enable the roster, see [Read the workers section](read-workers.md).
+
 ## Reach it from a phone
 
 Serve HTTPS on an address the phone can reach:
@@ -77,7 +79,8 @@ the browser-facing `Host` and the `/qd/` prefix.
 
 The default bind is `127.0.0.1`. A loopback listener refuses requests whose
 `Host` is outside loopback. Quarterdeck has no login. Anyone who can reach the
-service can read saved items and answers and send answers as the owner.
+service can read saved items, answers, and the enabled workers roster.
+They can also send answers as the owner.
 Quarterdeck prints a warning when you bind a non-loopback address. Keep the
 listener and proxy on the trusted network, or protect both with an owner access
 gate. Browser submissions require an `Origin` that matches the public host and
