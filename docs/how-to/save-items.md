@@ -68,16 +68,16 @@ see. For field requirements, see the
 ```json
 [
   {"question": "How should the pop-up show up?",
-   "context": "Three layouts are drawn on the review page.",
+   "context": "The review page shows the centered and docked layouts.",
    "options": ["Centered", "Docked"], "suggestion": "Docked",
    "links": [{"text": "See the mock-ups", "url": "https://example.org/review/popup"}]}
 ]
 ```
 
-The question page shows the links above the options. If any open question has
-links, the Saved card shows the first link from the first such question,
-prefixed with its ID, as in `Q6.2 See the mock-ups`. On both surfaces, the
-links open in a new tab.
+The question page shows the links above the options and suggested answer.
+If any open question has links, the Saved card shows the first link from
+the first such question, prefixed with its ID, as in `Q6.2 See the mock-ups`.
+On both surfaces, the links open in a new tab.
 
 `--body-file -` reads standard input. Quarterdeck copies the body when you
 save it.
