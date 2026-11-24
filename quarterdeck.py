@@ -3450,7 +3450,7 @@ def home_attention(
     snapshot: HomeSnapshot, now: datetime, all_decisions: bool = False,
     use_feed: bool = True, feed_runner: Callable[[Path, Path | None], dict[str, object]] = run_attention_feed,
     board_activity: dict[str, float] | None = None, projects_out: dict[str, str] | None = None,
-    completion_sources: list[CompletionSource] | None = None,
+    completion_sources: list[CompletionSource] | None = None, recap_inputs: list[object] | None = None,
 ) -> dict[str, object]:
     spec = snapshot.spec
     since = now.timestamp() - DEFAULT_RECENT_DAYS * 86400
@@ -3535,6 +3535,14 @@ def home_attention(
         titles = feed_titles if owner is snapshot else {}
         if completion_sources is not None:
             completion_sources.append((owner, admitted, titles))
+        if recap_inputs is not None:
+            end = now.timestamp()
+            start = end - RECAP_HOURS * 3600
+            recap_records = [record for record in admitted
+                             if float(record["ts"]) <= end and (record["event"] == "task.dispatched"
+                                 or record["event"] == "task.merged" and float(record["ts"]) >= start)]
+            if recap_records or titles:
+                recap_inputs.append((owner_spec, recap_records, titles))
         if owner is snapshot and ledger_ok:
             work = recent_work(resolved_records, owner, titles, now)
             view["recent_work_6h"] = work.pop("last_6h")
@@ -3901,13 +3909,14 @@ def attention_view(
     priority_projects: list[str] | None = None, project: str | None = None, show_more: bool = False,
     saved_views: tuple[list[dict[str, object]], str] | None = None, view_name: str | None = None, all_views: bool = False,
     waits: dict[str, dict[str, object]] | None = None,
-    completions_out: list[dict[str, object]] | None = None,
+    completions_out: list[dict[str, object]] | None = None, recap_inputs: list[object] | None = None,
 ) -> dict[str, object]:
     now = now or datetime.now(timezone.utc)
     board_activity = board_engagement(homes)
     projects: dict[str, str] = {}
     completion_sources: list[CompletionSource] | None = [] if completions_out is not None else None
-    views = [home_attention(snapshot, now, True, use_feed, feed_runner, board_activity, projects, completion_sources)
+    views = [home_attention(snapshot, now, True, use_feed, feed_runner, board_activity, projects, completion_sources,
+                            recap_inputs)
              for snapshot in homes]
     if completions_out is not None and completion_sources is not None:
         completions_out.extend(recap_completions(completion_sources, now))
@@ -13471,7 +13480,7 @@ def artifact_page(snapshot: dict[str, object]) -> str:
 
 def export_snapshot(args: argparse.Namespace) -> int:
     try:
-        config, homes, bearings = load_site(args)
+        config, homes, bearings = load_site(args, include_document_pages=False)
         configured_title = config.get("page_title")
         title = args.title or (configured_title if isinstance(configured_title, str) else None) or DEFAULT_TITLE
         snapshot = build_snapshot(homes, title, bearings.generated, args.bodies, attention=bearings.attention)
@@ -13754,7 +13763,7 @@ def session_urls(text: str) -> Iterator[str]:
             route = "/".join(segment[0] for segment in segments).casefold()
             route = posixpath.normpath("/" + route.lstrip("/"))
             host = parsed.hostname.encode("idna").decode("ascii").casefold().rstrip(".")
-            if (host == "hooks.slack.com" and route.startswith("/services/")
+            if (host == "hooks.slack.com" and route.startswith(("/services/", "/triggers/"))
                     or re.search(r"/(?:webhooks?|tokens?|secrets?|credentials?|reset-password|magic-link)[/=:][^/]", route)
                     or re.search(r"/bot[0-9]+:[^/]", route)):
                 continue
@@ -13887,18 +13896,20 @@ def session_scope(homes: list[HomeSnapshot], now: datetime, *, main_href: str = 
                     or any(scope.includes(*task_reference_owner(snapshot, target, snapshots, scoped=True))
                            for target in report.related_to)):
                 directories.add(report.path.parent.name)
-    if document_pages is not None and source.data_dir is not None:
+    if source.data_dir is not None:
         topic_root = source.data_dir.resolve() / TOPICS_DIR_NAME
         for path, label in referenced_docs(said, source.data_dir, explicit_only=True):
             if path.parent == topic_root and (id(source), path.stem) not in scope.topics:
                 continue
             digest = hashlib.sha256(str(path).encode("utf-8")).hexdigest()[:12]
             href = f"{DOC_PREFIX}{digest}.html"
-            raw = f"{RAW_PREFIX}{digest}{'.html' if path.suffix == '.html' else '.txt'}"
-            built = doc_page(path, label, raw, main_href)
-            if built is not None:
+            if document_pages is not None:
+                raw = f"{RAW_PREFIX}{digest}{'.html' if path.suffix == '.html' else '.txt'}"
+                built = doc_page(path, label, raw, main_href)
+                if built is None:
+                    continue
                 document_pages[href], document_pages[raw] = built
-                scope.documents.append(SessionDocument(f"data/{label}", href))
+            scope.documents.append(SessionDocument(f"data/{label}", href))
     return scope
 
 
@@ -14021,7 +14032,8 @@ def unresolved_push_tags(homes: list[HomeSnapshot], attention: dict[str, object]
 
 def load_site(
     args: argparse.Namespace, main_href: str = "index.html", *,
-    include_calls: bool = False, notification_resolution: bool = False,
+    include_calls: bool = False, notification_resolution: bool = False, include_document_pages: bool = True,
+    recap_inputs: list[object] | None = None,
 ) -> tuple[dict[str, object], list[HomeSnapshot], Bearings]:
     """Read the configured homes and review marks, then classify them into bearings."""
     config, specs, legacy_single_home = site_home_specs(args)
@@ -14032,7 +14044,7 @@ def load_site(
     state_path = validate_review_state_location(homes)
     apply_review_marks(homes, load_review_state(state_path))
     now = datetime.now(timezone.utc)
-    document_pages: dict[str, str] = {}
+    document_pages: dict[str, str] | None = {} if include_document_pages else None
     scope = session_scope(homes, now, main_href=main_href, document_pages=document_pages)
     scripts_enabled = not getattr(args, "no_snapshot", False)
     settings = wait_settings(config, args.config.expanduser().resolve() if args.config else None)
@@ -14051,7 +14063,8 @@ def load_site(
     use_snapshot = scope.started is not None and scripts_enabled
     bearings = build_bearings(homes, now=now, use_snapshot=use_snapshot, main_href=main_href)
     bearings.notification_resolution = resolution
-    bearings.item_pages.update(document_pages)
+    if document_pages is not None:
+        bearings.item_pages.update(document_pages)
     bearings.session = scope
     if include_calls:
         bearings.topic_pages = assign_topic_pages(homes)
@@ -14065,6 +14078,7 @@ def load_site(
         priority_projects=list(document.get("priority_projects", [])),  # type: ignore[call-overload]
         saved_views=effective_views(document), all_views=True, waits=waits,
         completions_out=bearings.completions if bearings.topic_pages else None,
+        recap_inputs=recap_inputs,
     )
     if waits_error:
         bearings.attention["waits_error"] = waits_error
@@ -14073,7 +14087,8 @@ def load_site(
     return config, homes, bearings
 
 
-def render_projection(homes: list[HomeSnapshot], bearings: Bearings, pages: dict[str, str]) -> str:
+def render_projection(homes: list[HomeSnapshot], bearings: Bearings, pages: dict[str, str],
+                      recap_inputs: list[object]) -> str:
     scope = bearings.session
     members = all_snapshots(homes)
     sources = [(snapshot.spec, snapshot.topics, snapshot.reports, snapshot_items(snapshot),
@@ -14081,8 +14096,9 @@ def render_projection(homes: list[HomeSnapshot], bearings: Bearings, pages: dict
     membership = [(sorted(task for owner, task in scope.tasks if owner == id(snapshot)),
                    sorted(scope.report_dirs.get(id(snapshot), ()))) for snapshot in members] if scope else []
     attention = (bearings.attention or {}).get("homes", [])
-    waiting = [(home.get("waiting"), home.get("waiting_more"), home.get("decisions")) for home in attention]
-    projection = (sources, membership, scope.links if scope else [], waiting,
+    activity = [(home.get("waiting"), home.get("waiting_more"), home.get("decisions"),
+                 home.get("recent_work_6h"), home.get("done_recent")) for home in attention]
+    projection = (sources, membership, scope.links if scope else [], activity, recap_inputs,
                   sorted((name, value) for name, value in pages.items() if name.startswith(RAW_PREFIX)),
                   bearings.call, bearings.landed, bearings.underway, bearings.charted)
     return hashlib.sha256(repr(projection).encode("utf-8")).hexdigest()
@@ -14094,7 +14110,9 @@ def render(args: argparse.Namespace) -> int:
         if args.lavish:
             main_path = Path(main_name)
             main_name = f"{main_path.stem}.lavish{main_path.suffix or '.html'}"
-        config, homes, bearings = load_site(args, main_href=quote(main_name, safe=""), include_calls=not args.lavish and not args.all)
+        recap_inputs: list[object] = []
+        config, homes, bearings = load_site(args, main_href=quote(main_name, safe=""),
+                                            include_calls=not args.lavish and not args.all, recap_inputs=recap_inputs)
         configured_output = config.get("output_dir")
         output_dir = Path(configured_output).expanduser() if isinstance(configured_output, str) else default_output_dir()
         output_path = Path(args.output).expanduser() if args.output else output_dir / "index.html"
@@ -14109,7 +14127,7 @@ def render(args: argparse.Namespace) -> int:
                            front_href=output_path.name if front else None)
         activity = site_cards(homes, bearings, False) if front else []
         pages = source_pages(homes, show_all=args.all, bearings=bearings)
-        projection = render_projection(homes, bearings, pages)
+        projection = render_projection(homes, bearings, pages, recap_inputs)
         if front:
             pages[CLASSIC_PAGE] = index
             pages[SEARCH_PAGE] = search_page_html(homes, title, bearings)

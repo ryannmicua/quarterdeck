@@ -231,6 +231,15 @@ Use the compact format for the first release.
             record_fixture_conversation(self, root, home, REVIEW_FIXTURE_MENTIONS)
             output = root / "output" / "index.html"
             bin_dir = root / "bin"
+            old_report = home / "data" / "old-brief" / "report.md"
+            old_report.parent.mkdir()
+            old_report.write_text("# Previous conversation briefing\n", encoding="utf-8")
+            transcripts = quarterdeck.default_transcript_dir(home)
+            yesterday = quarterdeck.board_time_text(datetime.now(timezone.utc) - timedelta(days=1))
+            (transcripts / "previous-chat.jsonl").write_text(
+                wait_record("owner", "previous-message", yesterday, "Read data/old-brief/report.md.",
+                            sessionId="previous-chat"), encoding="utf-8",
+            )
             bin_dir.mkdir()
             stub = bin_dir / "lavish-axi"
             stub.write_text("#!/bin/sh\nprintf '%s\\n' 'Session: https://review.example.invalid/session/fictional'\n", encoding="utf-8")
@@ -254,12 +263,9 @@ Use the compact format for the first release.
             self.assertIn("Request a Lavish page", page)
             self.assertRegex(page, r'<article class="card" id="review-report-[0-9a-f]{12}">')
             self.assertIn("Reports needing review", page)
-            args = quarterdeck.make_parser().parse_args(["render", "--lavish", "--home", str(home)])
-            with patch.dict(os.environ, {"XDG_CONFIG_HOME": str(root / "config"), "XDG_STATE_HOME": str(root / "state")}):
-                _, homes, bearings = quarterdeck.load_site(args, main_href="index.lavish.html")
-            expected = quarterdeck.build_html(homes, "Quarterdeck", lavish=True, bearings=bearings)
-            stamp = re.compile(r"[Gg]enerated(?: at)? \d{4}-\d\d-\d\d \d\d:\d\d:\d\d UTC")
-            self.assertEqual(stamp.sub("", page), stamp.sub("", expected))
+            self.assertIn("Amber Kite import review", page)
+            self.assertNotIn("Previous conversation briefing", page)
+            self.assertNotIn("old-brief", page)
 
     def test_all_mode_restores_queued_finished_and_unlinked_reports(self) -> None:
         with tempfile.TemporaryDirectory() as temp:
@@ -444,6 +450,7 @@ Use the compact format for the first release.
             root = Path(temp)
             first_home = self.make_home(root / "first")
             second_home = self.make_home(root / "second")
+            record_fixture_conversation(self, root, first_home, "Discuss amber-18.")
             config_home = root / "config"
             config_home.mkdir()
             config = config_home / "quarterdeck.json"
@@ -469,7 +476,8 @@ Use the compact format for the first release.
             self.assertEqual(rendered.returncode, 0, rendered.stderr)
             dashboard = output.read_text(encoding="utf-8")
             report_card = f'<p class="eyebrow">Scout report · Needs review · <code>{report_id}</code></p>'
-            self.assertEqual(dashboard.count(report_card), 2)
+            self.assertEqual(dashboard.count(report_card), 1)
+            self.assertIn("ID is shared by multiple homes", dashboard)
 
             read = self.run_cli(["reports", "read", report_id, "--config", str(config)], root, config_home)
             self.assertEqual(read.returncode, 2)
@@ -820,6 +828,7 @@ Use the compact format for the first release.
                     "task": "kestrel-hold",
                 }],
             }), encoding="utf-8")
+            record_fixture_conversation(self, root, secondmate, "Discuss kestrel-hold.")
             output = root / "outside-output" / "index.html"
             result = self.run_cli(
                 ["render", "--home", str(home), "--no-snapshot", "--output", str(output)],
@@ -3161,6 +3170,7 @@ class ServeTests(unittest.TestCase):
 
     def start_marking(self, temp: str, **extra: object):
         home = BearingsTests().make_home(Path(temp))
+        record_fixture_conversation(self, Path(temp), home, "Discuss kelp-survey.")
         args = self.make_args(home, allow_marks=True, **extra)
         cache = quarterdeck.SiteCache(quarterdeck.site_builder(args, True), 30)
         handler = quarterdeck.make_handler(
@@ -3271,6 +3281,7 @@ class ServeTests(unittest.TestCase):
     def test_marks_are_refused_and_hidden_unless_enabled(self) -> None:
         with tempfile.TemporaryDirectory() as temp, patch.dict(os.environ, {"XDG_STATE_HOME": str(Path(temp) / "state")}):
             home = BearingsTests().make_home(Path(temp))
+            record_fixture_conversation(self, Path(temp), home, "Discuss kelp-survey.")
             args = self.make_args(home)
             port = self.start(quarterdeck.SiteCache(quarterdeck.site_builder(args), 30))
             page = self.fetch(port, "/")[2]
@@ -3302,6 +3313,7 @@ class ServeTests(unittest.TestCase):
             home = CaptainBoardTests().make_home(
                 Path(temp), [board_item(id="unverified", title="Unverified board item")]
             )
+            record_fixture_conversation(self, Path(temp), home, "Discuss pier-pr.")
             (home / "data" / "backlog.md").unlink()
             args = quarterdeck.make_parser().parse_args(
                 ["serve", "--home", str(home), "--no-snapshot", "--allow-marks"]
@@ -8740,7 +8752,9 @@ class CaptainWaitTests(unittest.TestCase):
         self.settings.store.mkdir()
         (self.settings.store / "waits.json").write_text("{not json", encoding="utf-8")
         config = self.root / "config.json"
-        config.write_text(json.dumps({"homes": [{"label": "Harbor", "path": str(self.home), "transcripts": str(self.transcripts)}],
+        record_fixture_conversation(self, self.root, self.home, "Discuss tide-merge.")
+        transcripts = quarterdeck.default_transcript_dir(self.home)
+        config.write_text(json.dumps({"homes": [{"label": "Harbor", "path": str(self.home), "transcripts": str(transcripts)}],
                                       "captain_waits": {"store_dir": str(self.settings.store)}}), encoding="utf-8")
         args = argparse.Namespace(home=None, config=config, no_snapshot=True, title=None)
         with patch.dict(os.environ, {"XDG_STATE_HOME": str(self.root / "state"), "XDG_CONFIG_HOME": str(self.root / "xdg")}):
@@ -10861,6 +10875,8 @@ class SessionScopeTests(unittest.TestCase):
                   "https://hooks.slack.com/%73ervices/demo/team/fictional-key",
                   "https://hooks.slack.com./services/demo/team/fictional-key",
                   "https://hooks.slack.com./archive/../services/demo/team/fictional-key",
+                  "https://hooks.slack.com/triggers/demo/workflow/fictional-key",
+                  "https://hooks.slack.com./%74riggers/demo/workflow/fictional-key",
                   "https://example.com/preview;token=fictional-secret",
                   "https://example.com/preview;%74oken=fictional-secret/trailer",
                   "https://example.com/api/webhooks/demo/fictional-key", "https://[invalid"]
@@ -10877,6 +10893,8 @@ class SessionScopeTests(unittest.TestCase):
         serve = quarterdeck.make_parser().parse_args(["serve", "--config", str(self.config), "--no-snapshot"])
         pages = quarterdeck.site_builder(serve)()
         self.assertIn(f'href="{safe[-1]}"', pages["index.html"])
+        for url in hidden:
+            self.assertNotIn(url, pages["index.html"])
         self.assertIn("adoption.html", pages)
         artifact = self.root / "artifact.html"
         args = quarterdeck.make_parser().parse_args(
@@ -11127,7 +11145,7 @@ class SessionScopeTests(unittest.TestCase):
             args = quarterdeck.make_parser().parse_args(
                 ["export", "--config", str(self.config), "--no-snapshot", "--bodies", bodies])
             output = io.StringIO()
-            with redirect_stdout(output):
+            with redirect_stdout(output), patch.object(quarterdeck, "doc_page", side_effect=AssertionError):
                 self.assertEqual(quarterdeck.export_snapshot(args), 0)
             docs = json.loads(output.getvalue())["session_documents"]
             self.assertEqual({doc["label"] for doc in docs}, set(expected))
@@ -11224,6 +11242,26 @@ class SessionScopeTests(unittest.TestCase):
         self.assertFalse((out / "index.lavish.html").exists())
         self.assertNotIn("tide-merge", self.search_tasks(out))
         self.assertNotIn("Scoped report HTML", self.every_page(out))
+
+    def test_sibling_render_is_retired_when_scoped_ledger_activity_is_removed(self) -> None:
+        ledger = self.home / quarterdeck.LEDGER_PATH
+        original = ledger.read_text(encoding="utf-8")
+        for hours, first_flags, second_flags, first_page, second_page in (
+            (24, (), ("--lavish",), "index.html", "index.lavish.html"),
+            (1, ("--lavish",), (), "index.lavish.html", "index.html"),
+        ):
+            with self.subTest(hours=hours):
+                ledger.write_text(original + json.dumps({
+                    "v": 1, "ts": (self.now - timedelta(hours=hours)).timestamp(),
+                    "event": "task.merged", "task": "reef-scan", "pr": "https://example.com/pr/17",
+                }) + "\n", encoding="utf-8")
+                out = self.render(*first_flags, out=self.root / f"activity-{hours}")
+                self.assertIn("https://example.com/pr/17", (out / first_page).read_text(encoding="utf-8"))
+                ledger.write_text(original, encoding="utf-8")
+                self.render(*second_flags, out=out)
+                self.assertFalse((out / first_page).exists())
+                self.assertNotIn("https://example.com/pr/17", (out / second_page).read_text(encoding="utf-8"))
+                self.assertIn("reef-scan", self.every_page(out))
 
     def test_reviewed_report_named_by_path_exports_label_without_body(self) -> None:
         report = self.data / "tide-review" / "report.md"
@@ -12266,6 +12304,9 @@ class FrontPageTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temp:
             root = Path(temp)
             home = TopicTests.home_with_topics(self, root)  # type: ignore[arg-type]
+            record_fixture_conversation(
+                self, root, home, "Discuss data/topics/maple-harbor-catalog.md, amber-18, queued-31 and finished-32.",
+            )
             old = time.time() - 20 * 86400
             os.utime(home / "data" / "paper-27" / "report.md", (old, old))  # a report over two weeks old
             output = self.render(root, home)
@@ -12566,6 +12607,10 @@ class CallsPageTests(unittest.TestCase):
 
     def write_topic(self, name: str, text: str) -> None:
         (self.home / "data" / "topics" / name).write_text(text, encoding="utf-8")
+        transcript = quarterdeck.default_transcript_dir(self.home) / "fixture-chat.jsonl"
+        with transcript.open("a", encoding="utf-8") as stream:
+            stream.write(wait_record("owner", f"discuss-{name}", quarterdeck.board_time_text(datetime.now(timezone.utc)),
+                                     f"Discuss data/topics/{name}.", sessionId="fixture-chat"))
 
     @staticmethod
     def queue(page: str) -> str:
@@ -12724,8 +12769,10 @@ Recommend: Shared bucket
         config = self.root / "quarterdeck.json"
         config.write_text(json.dumps({"homes": configured_homes}), encoding="utf-8")
         args = argparse.Namespace(home=None, config=config, title=None, no_snapshot=False)
+        record_fixture_conversation(
+            self, self.root, self.home, "Discuss data/topics/maple-harbor-catalog.md and older-merge.",
+        )
         build_bearings = quarterdeck.build_bearings
-        attention_view = quarterdeck.attention_view
 
         def feed(home, _data):
             return {"open_decisions": [], "in_flight": [
@@ -12733,11 +12780,20 @@ Recommend: Shared bucket
             ] if home == self.home else []}
 
         with patch.object(quarterdeck, "build_bearings",
-                          side_effect=lambda homes, **kwargs: build_bearings(homes, now, **(kwargs | {"use_snapshot": False}))), \
-             patch.object(quarterdeck, "attention_view", side_effect=lambda *a, **kw: attention_view(*a, **kw, feed_runner=feed)):
+                          side_effect=lambda homes, **kwargs: build_bearings(
+                              homes, **(kwargs | {"now": now, "use_snapshot": False}))), \
+             patch.object(quarterdeck, "run_attention_feed", side_effect=feed):
             pages = quarterdeck.site_builder(args, True)()
         calls = pages["index.html"]
-        recap = calls.split('id="recap-list">', 1)[1].split("</ul>", 1)[0]
+        self.assertIn('id="recap-list">', calls)
+        self.assertIn("older-merge", calls)
+        self.assertNotIn("Overnight closure", calls)
+        self.assertNotIn("Table merge", calls)
+        homes, _state_path = quarterdeck.load_report_snapshots(args)
+        completions = []
+        quarterdeck.attention_view(homes, now, feed_runner=feed, completions_out=completions)
+        fleet_recap = quarterdeck.recap_html(completions)
+        recap = fleet_recap.split('id="recap-list">', 1)[1].split("</ul>", 1)[0]
         self.assertEqual(recap.count("<li "), 22)
         ordered = ("Overnight closure", "Child work 0", "Child work 1", "Closure with malformed ledger",
                    "Table merge", "older-merge", "boundary-merge")
@@ -12916,7 +12972,8 @@ assert.equal(stale.rows.find(row => row.html.includes('Overnight closure')).hidd
 })().catch(error => { console.error(error); process.exitCode = 1; });
 """
         result = subprocess.run(["node", "-e", harness], capture_output=True, text=True, input=json.dumps({
-            "calls": calls, "thread": thread, "classic": pages[quarterdeck.CLASSIC_PAGE], "source": source,
+            "calls": re.sub(r'<section class="sent recap".*?</section>', lambda _match: fleet_recap, calls, flags=re.S),
+            "thread": thread, "classic": pages[quarterdeck.CLASSIC_PAGE], "source": source,
             "adoption": pages[quarterdeck.ADOPTION_PAGE],
             "builtAt": int(now.timestamp() * 1000),
         }))
@@ -13103,7 +13160,11 @@ What is the fallback for older displays?
         output = self.root / "out" / "deck.html"
         ledger = self.home / quarterdeck.LEDGER_PATH
         ledger.parent.mkdir(exist_ok=True)
-        ledger.write_text(json.dumps({"v": 1, "ts": time.time() - 3600, "event": "task.merged", "task": "recent-merge"}) + "\n")
+        stamp = time.time() - 3600
+        ledger.write_text("".join(json.dumps({"v": 1, "task": "recent-merge", **record}) + "\n" for record in (
+            {"ts": stamp - 60, "event": "task.dispatched", "session_id": "fixture-chat"},
+            {"ts": stamp, "event": "task.merged"},
+        )))
         result = TopicTests.run_cli(self, ["render", "--home", str(self.home), "--output", str(output), "--no-snapshot"], self.root)  # type: ignore[arg-type]
         self.assertEqual(result.returncode, 0, result.stderr)
         front = output.read_text(encoding="utf-8")
@@ -13125,6 +13186,12 @@ What is the fallback for older displays?
         ledger.write_text(json.dumps({"v": 1, "ts": time.time() - 3600, "event": "task.merged", "task": "child-merge"}) + "\n")
         (child / "data" / "backlog.md").unlink()
         (self.home / "data" / "secondmates.md").write_text(f"- mate - Fictional notes. (home: {child})\n")
+        parent_ledger = self.home / quarterdeck.LEDGER_PATH
+        parent_ledger.parent.mkdir(exist_ok=True)
+        parent_ledger.write_text(json.dumps({
+            "v": 1, "ts": time.time() - 3660, "event": "task.dispatched",
+            "task": "mate/child-merge", "session_id": "fixture-chat",
+        }) + "\n")
         with patch.object(quarterdeck, "read_fleet_ledger", wraps=quarterdeck.read_fleet_ledger) as read:
             page = quarterdeck.site_builder(self.args())()["index.html"]
             self.assertIn(call(ledger), read.call_args_list)
@@ -13163,8 +13230,10 @@ What is the fallback for older displays?
             {"label": "South", "path": str(self.home), "data_dir": str(alternate)},
         ]}))
         args = argparse.Namespace(home=None, config=config, title=None, no_snapshot=True)
-        page = quarterdeck.site_builder(args)()["index.html"]
-        recap = page.split('id="recap-list">', 1)[1].split("</ul>", 1)[0]
+        homes, _state_path = quarterdeck.load_report_snapshots(args)
+        completions = []
+        quarterdeck.attention_view(homes, now, use_feed=False, completions_out=completions)
+        recap = quarterdeck.recap_html(completions)
         self.assertIn('<a href="https://example.invalid/pr/6">North publication</a></span>'
                       '<span class="call-meta">Merged · North · Briefing', recap)
         self.assertIn('South publication</span><span class="call-meta">Closed · South', recap)
@@ -13187,8 +13256,20 @@ What is the fallback for older displays?
             {"label": "North", "path": str(self.home)}, {"label": "Mate", "path": str(mate)},
         ]}))
         args = argparse.Namespace(home=None, config=config, title=None, no_snapshot=True)
+        parent_ledger = self.home / quarterdeck.LEDGER_PATH
+        parent_ledger.parent.mkdir(exist_ok=True)
+        parent_ledger.write_text(json.dumps({
+            "v": 1, "ts": stamp - 600, "event": "task.dispatched",
+            "task": "mate/design/publish", "session_id": "fixture-chat",
+        }) + "\n")
         page = quarterdeck.site_builder(args)()["index.html"]
         recap = page.split('id="recap-list">', 1)[1].split("</ul>", 1)[0]
+        self.assertEqual(recap.count("<li "), 1)
+        self.assertIn('href="https://example.invalid/pr/9"', recap)
+        homes, _state_path = quarterdeck.load_report_snapshots(args)
+        completions = []
+        quarterdeck.attention_view(homes, use_feed=False, completions_out=completions)
+        recap = quarterdeck.recap_html(completions)
         self.assertEqual(recap.count("<li "), 1)
         self.assertIn('<a href="https://example.invalid/pr/9">Publish the design</a></span>'
                       '<span class="call-meta">Merged · Sketch', recap)
