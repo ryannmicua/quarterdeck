@@ -22,6 +22,11 @@ quarterdeck add --kind resource --title "Calls redesign" \
 Only `http://` and `https://` addresses are accepted. Use link text that says
 where the link goes.
 
+A web address written in any item's description also shows as a link. Two known
+limits: two Markdown-style links separated only by a comma are joined into one
+link, and an address that ends in meaningful punctuation such as `!` loses that
+character. Proper links with their own text are coming for questions.
+
 ### A list
 
 Give one entry per non-blank line. Prefixes such as `-` and `1.` stay part of the entry.
