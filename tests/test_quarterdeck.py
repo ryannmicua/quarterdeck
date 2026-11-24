@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import errno
 import io
 import json
 import os
@@ -55,6 +56,32 @@ class StoreCase(unittest.TestCase):
         with redirect_stdout(out), redirect_stderr(err), patch.object(sys, "stdin", io.StringIO(stdin)):
             code = quarterdeck.main(list(argv))
         return code, out.getvalue(), err.getvalue()
+
+    @contextmanager
+    def serve_cli(self, *args: str):
+        for _ in range(3):
+            with socket.socket() as probe:
+                probe.bind(("127.0.0.1", 0))
+                port = probe.getsockname()[1]
+            with subprocess.Popen(
+                [sys.executable, str(ROOT / "quarterdeck.py"), "serve", "--host", "127.0.0.1",
+                 "--port", str(port), *args],
+                stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
+            ) as process:
+                try:
+                    self.assertTrue(select.select([process.stdout], [], [], 10)[0], "server did not start")
+                    ready = process.stdout.readline()
+                    if ready.startswith("Serving Quarterdeck"):
+                        yield port
+                        return
+                    output, error = process.communicate(timeout=10)
+                    if f"[Errno {errno.EADDRINUSE}]" not in error:
+                        self.fail(f"server did not start: {ready}{output}{error}")
+                finally:
+                    if process.poll() is None:
+                        process.terminate()
+                        process.communicate(timeout=10)
+        self.fail(f"server could not bind after three attempts: {error}")
 
     def add(self, kind: str, title: str, description: str = "Saved to come back to.", *extra: str, stdin: str = "") -> str:
         code, out, err = self.run_cli("add", "--kind", kind, "--title", title, "--description", description, *extra, stdin=stdin)
@@ -903,33 +930,21 @@ check(!button('send').disabled && button('send').textContent === 'Send 2 answers
         config = self.root / "config" / "legacy.json"
         config.parent.mkdir()
         config.write_text(json.dumps({"homes": [{"path": "../firstmate"}], "captain_waits": {}}))
-        with socket.socket() as probe:
-            probe.bind(("127.0.0.1", 0))
-            port = probe.getsockname()[1]
-        with subprocess.Popen(
-            [sys.executable, str(ROOT / "quarterdeck.py"), "serve", "--port", str(port), "--config", str(config), "--base-path", "/qd",
-             "--allow-marks", "--watch-waits", "--no-snapshot", "--home", str(home)],
-            stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
-        ) as process:
-            try:
-                self.assertTrue(select.select([process.stdout], [], [], 10)[0], "server did not start")
-                self.assertIn("Serving Quarterdeck", process.stdout.readline())
-                status, body, _headers = self.fetch(port, "/qd/")
-                self.assertEqual(status, 200)
-                self.assertIn("Tide launch decisions", body)
-                self.assertNotIn("Legacy work item", body)
-                self.assertNotIn(str(home), body)
-                self.assertNotIn('id="refresh-workers"', body)
-                self.assertEqual(self.fetch(port, "/qd/workers.json")[0], 404)
-                before = quarterdeck.store_path().read_bytes()
-                self.assertEqual(self.fetch(port, "/", method="POST")[0], 405)
-                self.assertEqual(quarterdeck.store_path().read_bytes(), before)
-                status, record = self.post_answer(port, "Q3.1", "Hold")
-                self.assertEqual((status, record["delivery"]), (200, "sent"))
-                self.assertEqual((home / "received-note").read_text(), "Q3.1 Hold")
-            finally:
-                process.terminate()
-                process.communicate(timeout=10)
+        with self.serve_cli("--config", str(config), "--base-path", "/qd",
+                            "--allow-marks", "--watch-waits", "--no-snapshot", "--home", str(home)) as port:
+            status, body, _headers = self.fetch(port, "/qd/")
+            self.assertEqual(status, 200)
+            self.assertIn("Tide launch decisions", body)
+            self.assertNotIn("Legacy work item", body)
+            self.assertNotIn(str(home), body)
+            self.assertNotIn('id="refresh-workers"', body)
+            self.assertEqual(self.fetch(port, "/qd/workers.json")[0], 404)
+            before = quarterdeck.store_path().read_bytes()
+            self.assertEqual(self.fetch(port, "/", method="POST")[0], 405)
+            self.assertEqual(quarterdeck.store_path().read_bytes(), before)
+            status, record = self.post_answer(port, "Q3.1", "Hold")
+            self.assertEqual((status, record["delivery"]), (200, "sent"))
+            self.assertEqual((home / "received-note").read_text(), "Q3.1 Hold")
 
     def test_damaged_store_returns_an_error_without_server_paths(self) -> None:
         self.add_all_kinds()
@@ -1243,26 +1258,13 @@ const check = (condition, message) => { if (!condition) throw new Error(message)
         self.assertEqual(code, 0, error)
         self.assertNotIn("Workers", out.read_text())
 
-        with socket.socket() as probe:
-            probe.bind(("127.0.0.1", 0))
-            port = probe.getsockname()[1]
-        with subprocess.Popen(
-            [sys.executable, str(ROOT / "quarterdeck.py"), "serve", "--config", str(config),
-             "--host", "127.0.0.1", "--port", str(port), "--base-path", "/qd"],
-            stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
-        ) as process:
-            try:
-                self.assertTrue(select.select([process.stdout], [], [], 10)[0], "server did not start")
-                self.assertIn("Serving Quarterdeck", process.stdout.readline())
-                status, page, _ = self.fetch(port, "/qd/")
-                self.assertEqual(status, 200)
-                self.assertIn('id="refresh-workers">Refresh workers</button>', page)
-                status, body, _ = self.fetch(port, "/qd/workers.json")
-                self.assertEqual(status, 200)
-                self.assertEqual([worker["name"] for worker in json.loads(body)["workers"]], ["Wren"])
-            finally:
-                process.terminate()
-                process.communicate(timeout=10)
+        with self.serve_cli("--config", str(config), "--base-path", "/qd") as port:
+            status, page, _ = self.fetch(port, "/qd/")
+            self.assertEqual(status, 200)
+            self.assertIn('id="refresh-workers">Refresh workers</button>', page)
+            status, body, _ = self.fetch(port, "/qd/workers.json")
+            self.assertEqual(status, 200)
+            self.assertEqual([worker["name"] for worker in json.loads(body)["workers"]], ["Wren"])
 
 
 class ServiceAndHelpTests(StoreCase):
