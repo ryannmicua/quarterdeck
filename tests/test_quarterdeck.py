@@ -234,8 +234,8 @@ class PageTests(StoreCase):
         self.assertLess(rows.index(">Q2<"), rows.index(">Q1<"))
         self.assertIn("Harbor chores", index)
         self.assertIn("<h3>Tide launch decisions</h3>", index)
-        self.assertRegex(index, r'<a[^>]* href="q3.html">Read questions</a>')
-        self.assertEqual(index.count('href="q3.html"'), 1)
+        self.assertIn('<a class="work-action" href="q3.html#Q3.1">Read questions</a>', index)
+        self.assertEqual(index.count('href="q3.html#Q3.1"'), 1)
         self.assertIn("Two open questions, saved to decide later.", index)
         self.assertIn("<li>Merge the tide tables now?</li><li>Which colour for the quay?</li>", index)
         for heading in ("ID", "Kind", "Title", "Description", "Saved"):
@@ -332,7 +332,8 @@ class RenderTests(StoreCase):
         code, out, err = self.run_cli("render", "--output", str(output))
         self.assertEqual(code, 0, err)
         self.assertEqual(out.strip(), str(output.resolve()))
-        self.assertRegex(output.read_text(), r'<a[^>]* href="q3.html">Read questions</a>')
+        self.assertIn('<a class="work-action" href="q3.html#Q3.1">Read questions</a>', output.read_text())
+        self.assertIn('<section class="decision" id="Q3.1"', (output.parent / "q3.html").read_text())
         self.assertEqual({path.name for path in output.parent.iterdir()},
                          {"index.html", "q1.html", "q2.html", "q3.html", "q8.html", "snapshot.html"})
         self.assertEqual((output.parent / "snapshot.html").read_text(), historical)
@@ -480,7 +481,8 @@ class ServeTests(StoreCase):
         desk = self.fetch(port, "/qd/")[1].split("<h1>My desk</h1>", 1)[1].split('<section id="workers">', 1)[0]
         self.assertIn("<li>Which colour for the quay?</li>", desk)
         self.assertNotIn("Merge the tide tables now?", desk)
-        self.assertIn('href="q3.html">Answer questions</a>', desk)
+        self.assertIn('<a class="work-action" href="q3.html#Q3.2">Answer questions</a>', desk)
+        self.assertIn('<section class="decision" id="Q3.2"', self.fetch(port, "/qd/q3.html")[1])
 
     def test_pending_delivery_does_not_take_the_primary_desk_action(self):
         self.add("questions", "Open decisions", "Two choices.", "--body-file", "-", stdin=json.dumps(QUESTIONS))
@@ -490,7 +492,7 @@ class ServeTests(StoreCase):
         self.assertEqual(self.post_answer(port, "Q2.1", "Yes")[0], 200)
         desk = self.fetch(port, "/qd/")[1].split("<h1>My desk</h1>", 1)[1].split('<section id="workers">', 1)[0]
         self.assertIn('<a class="button-link" href="q2.html">Review answers</a>', desk)
-        self.assertIn('<a class="work-action" href="q1.html">Answer questions</a>', desk)
+        self.assertIn('<a class="work-action" href="q1.html#Q1.1">Answer questions</a>', desk)
         self.assertIn("<li>Merge the tide tables now?</li><li>Which colour for the quay?</li>", desk)
         self.assertNotIn("Deliver the harbour chart?", desk)
 
@@ -979,15 +981,17 @@ class WorkersTests(StoreCase):
         home = self.make_home([
             snapshot_task("Wren", state="done", exists=False),
             snapshot_task("Wren", decisions=["map-scale"], pr="https://example.com/pull/7"),
-            snapshot_task("Bracken", state="blocked", title="Testing receipt totals", project="Moss Ledger"),
+            snapshot_task("Brackén Scout", state="blocked", title="Testing receipt totals", project="Moss Ledger"),
             snapshot_task("Finch", state="done", exists=False),
             snapshot_task("Heron", state="paused"),
             snapshot_task("Lark", freshness="stale"),
             snapshot_task("Skerry", state="blocked"),
             snapshot_task("Skerry", kind="secondmate", alive="alive", state="working"),
-            snapshot_task("Tern", kind="secondmate", alive="dead", exists=False),
+            snapshot_task("Tern", kind="secondmate", alive="dead"),
             snapshot_task("Tern"),
-            snapshot_task("Cove", kind="secondmate", alive="unknown", exists=None, state="unknown"),
+            snapshot_task("Cove Mate", kind="secondmate", alive="unknown", exists=None, state="unknown"),
+            snapshot_task("Pike", kind="secondmate", exists=False),
+            snapshot_task("Snipe", kind="secondmate", exists=False, alive="alive"),
             snapshot_task("Wren"),
         ])
         port = self.start("/qd", workers_home=home)
@@ -996,16 +1000,21 @@ class WorkersTests(StoreCase):
         self.assertEqual(data["observed_at"], SNAPSHOT_TIME)
         rows = {row["name"]: row for row in data["workers"]}
         self.assertEqual(len(data["workers"]), 4)
-        self.assertEqual(list(rows), ["Wren", "Bracken", "Heron", "Lark"])
+        self.assertEqual(list(rows), ["Wren", "Brackén Scout", "Heron", "Lark"])
         self.assertEqual([rows[n]["status"] for n in rows], ["Question asked", "Stuck", "Unknown", "Unknown"])
         self.assertEqual(rows["Wren"]["project"], "Copper Orchard")
         self.assertEqual(rows["Wren"]["activity"], "Mapping the harbor trail")
         self.assertEqual(rows["Wren"]["active_at"], "2026-03-02T13:31:00Z")
+        self.assertTrue(all("contact_at" not in row for row in rows.values()))
         self.assertEqual(rows["Wren"]["links"], [{"text": "Pull request", "href": "https://example.com/pull/7"}])
         mates = {row["name"]: row for row in data["second_mates"]}
-        self.assertEqual({n: m["status"] for n, m in mates.items()}, {"Skerry": "Working", "Tern": "Unreachable", "Cove": "Unknown"})
+        self.assertEqual({n: m["status"] for n, m in mates.items()},
+                         {"Skerry": "Working", "Tern": "Unreachable", "Cove Mate": "Unknown",
+                          "Pike": "Unreachable", "Snipe": "Unreachable"})
         self.assertEqual(mates["Skerry"]["contact_at"], SNAPSHOT_TIME)
-        self.assertIsNone(mates["Tern"]["contact_at"])
+        self.assertTrue(all("active_at" not in row for row in mates.values()))
+        for name in ("Tern", "Cove Mate", "Pike", "Snipe"):
+            self.assertIsNone(mates[name]["contact_at"])
 
     def test_missing_facts_say_activity_unavailable_and_invent_nothing(self) -> None:
         task = {"id": "Plover", "kind": "scout", "endpoint": {"exists": True}}
@@ -1030,6 +1039,7 @@ class WorkersTests(StoreCase):
             "calendar": {"body": json.dumps({"tasks": [], "generated": "2026-02-30T13:40:00Z"})},
             "task": {"tasks": [valid, None]},
             "identity": {"tasks": [{**valid, "id": None}]},
+            "blank identity": {"tasks": [{**valid, "id": "  "}]},
             "kind": {"tasks": [{**valid, "kind": None}]},
             "endpoint": {"tasks": [{**valid, "endpoint": None}]},
             "unobserved": {"tasks": [snapshot_task("Wren", exists=None)]},
@@ -1037,6 +1047,10 @@ class WorkersTests(StoreCase):
             "state": {"tasks": [snapshot_task("Wren", state={})]},
             "freshness": {"tasks": [snapshot_task("Wren", freshness=[])]},
             "decisions": {"tasks": [{**valid, "hints": {"open_decisions": "map-scale"}}]},
+            "null decision": {"tasks": [{**valid, "hints": {"open_decisions": [None]}}]},
+            "missing decision key": {"tasks": [{**valid, "kind": "secondmate", "hints": {"open_decisions": [{}]}}]},
+            "invalid decision key": {"tasks": [snapshot_task("Wren", decisions=[7])]},
+            "blank decision key": {"tasks": [snapshot_task("Wren", decisions=[" "])]},
         }
         for name, fixture in cases.items():
             with self.subTest(name):
@@ -1100,8 +1114,20 @@ class WorkersTests(StoreCase):
         chrome = shutil.which("google-chrome")
         if not chrome:
             self.skipTest("google-chrome is required for the workers refresh browser test")
-        port = self.start("/qd", workers_home=self.make_home([snapshot_task("Wren")]))
+        home = self.make_home([snapshot_task("Wren")])
+        port = self.start("/qd", workers_home=home)
+        next_snapshot = {
+            "generated": "2026-03-02T13:41:00Z",
+            "tasks": [snapshot_task("Wren", exists=False), snapshot_task("Bracken")],
+        }
         list_page = quarterdeck.list_page
+        run_snapshot = quarterdeck.run_snapshot
+
+        def advance_fixture(home):
+            snapshot = run_snapshot(home)
+            if snapshot["generated"] == SNAPSHOT_TIME:
+                (home / "snapshot.json").write_text(json.dumps(next_snapshot))
+            return snapshot
 
         def instrumented_page(*args, **kwargs):
             return list_page(*args, **kwargs).replace("</body>", """
@@ -1109,6 +1135,7 @@ class WorkersTests(StoreCase):
 <script>
 const result = document.getElementById('browser-result');
 const statusLine = document.getElementById('workers-status');
+const roster = document.getElementById('workers-list');
 const button = document.getElementById('refresh-workers');
 const settled = () => new Promise(resolve => {
   const watcher = new MutationObserver(() => {
@@ -1124,20 +1151,22 @@ const check = (condition, message) => { if (!condition) throw new Error(message)
 (async () => {
   await settled();
   check(requestCount() === 1, 'Expected one worker request on entry');
-  check(document.getElementById('workers-list').textContent.includes('Wren'), 'The initial roster did not appear');
+  check(roster.textContent.includes('Wren') && !roster.textContent.includes('Bracken'), 'The initial roster did not appear');
+  check(statusLine.querySelector('time')?.dateTime === '2026-03-02T13:40:00Z', 'The initial observation time was wrong');
   await new Promise(resolve => setTimeout(resolve, 61000));
   check(requestCount() === 1, 'A worker request ran while the page was idle');
   const refreshed = settled();
   button.click();
   await refreshed;
   check(requestCount() === 2, 'The refresh button did not make exactly one worker request');
-  check(statusLine.querySelector('time') !== null, 'The refresh did not show its observation time');
+  check(!roster.textContent.includes('Wren') && roster.textContent.includes('Bracken'), 'The refreshed roster did not replace the old one');
+  check(statusLine.querySelector('time')?.dateTime === '2026-03-02T13:41:00Z', 'The refresh did not show the new observation time');
   result.textContent = 'PASS';
 })().catch(error => { result.textContent = error.message; });
 </script>
 </body>""")
 
-        with patch.object(quarterdeck, "list_page", instrumented_page):
+        with patch.object(quarterdeck, "list_page", instrumented_page), patch.object(quarterdeck, "run_snapshot", advance_fixture):
             result = subprocess.run([chrome, "--headless", "--disable-background-networking", "--no-first-run",
                                      f"--user-data-dir={self.root / 'browser'}", "--dump-dom", "--virtual-time-budget=65000",
                                      f"http://127.0.0.1:{port}/qd/"],

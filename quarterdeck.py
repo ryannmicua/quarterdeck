@@ -180,7 +180,6 @@ ITEM_PAGE_RE = re.compile(r"q[1-9][0-9]*[.]html")
 TITLE_LIMIT = 200
 DESCRIPTION_LIMIT = 600
 TEXT_LIMIT = 20_000
-WORKER_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,63}")
 
 
 def empty_store() -> dict[str, object]:
@@ -666,36 +665,36 @@ def worker_status(task: dict[str, object]) -> str:
     return WORKER_STATES.get(current.get("state"), "Unknown")
 
 
-def worker_row(key: str, task: dict[str, object], observed: datetime) -> dict[str, object]:
+def roster_row(key: str, task: dict, observed: datetime) -> dict[str, object]:
     backlog = task.get("backlog") if isinstance(task.get("backlog"), dict) else {}
     project = None
     if isinstance(task.get("project"), str) and task["project"]:  # type: ignore[index]
         project = snapshot_text(Path(str(task["project"])).name, 80)
     row: dict[str, object] = {
         "name": key, "status": worker_status(task), "project": project or snapshot_text(backlog.get("repo"), 80),  # type: ignore[union-attr]
-        "activity": snapshot_text(backlog.get("title")) or ACTIVITY_UNAVAILABLE, "active_at": None, "links": [],  # type: ignore[union-attr]
+        "activity": snapshot_text(backlog.get("title")) or ACTIVITY_UNAVAILABLE, "links": [],
     }
-    paths = task.get("paths")
-    last = paths.get("status_log", {}).get("last_event") if isinstance(paths, dict) and isinstance(paths.get("status_log"), dict) else None
-    age = last.get("age_seconds") if isinstance(last, dict) else None
-    if isinstance(age, (int, float)) and not isinstance(age, bool) and 0 <= age < 10 * 365 * 86400:
-        with contextlib.suppress(OverflowError):
-            row["active_at"] = utc_text(observed - timedelta(seconds=age))
+    if task["kind"] == "secondmate":
+        endpoint = task["endpoint"]
+        alive = endpoint.get("agent_alive")
+        unreachable = endpoint.get("exists") is False or alive == "dead"
+        if unreachable:
+            row["status"] = "Unreachable"
+        row["contact_at"] = utc_text(observed) if not unreachable and alive == "alive" else None
+    else:
+        row["active_at"] = None
+        paths = task.get("paths")
+        last = paths.get("status_log", {}).get("last_event") if isinstance(paths, dict) and isinstance(paths.get("status_log"), dict) else None
+        age = last.get("age_seconds") if isinstance(last, dict) else None
+        if isinstance(age, (int, float)) and not isinstance(age, bool) and 0 <= age < 10 * 365 * 86400:
+            with contextlib.suppress(OverflowError):
+                row["active_at"] = utc_text(observed - timedelta(seconds=age))
     pr = task.get("pr")
     if isinstance(pr, dict) and isinstance(pr.get("url"), str):
         try:
             row["links"].append({"text": "Pull request", "href": clean_url(pr["url"])})  # type: ignore[union-attr]
         except ValueError:
             pass
-    return row
-
-
-def second_mate_row(task: dict[str, object], row: dict[str, object], observed: datetime) -> dict[str, object]:
-    endpoint = task.get("endpoint") if isinstance(task.get("endpoint"), dict) else {}
-    alive = endpoint.get("agent_alive")  # type: ignore[union-attr]
-    if alive == "dead":
-        row["status"] = "Unreachable"
-    row["contact_at"] = utc_text(observed) if alive == "alive" else None
     return row
 
 
@@ -720,7 +719,7 @@ def workers_snapshot(home: Path) -> dict[str, object]:
         if not isinstance(task, dict):
             raise SnapshotError("the fleet snapshot has an invalid task")
         key, kind, endpoint = task.get("id"), task.get("kind"), task.get("endpoint")
-        if (not isinstance(key, str) or not WORKER_RE.fullmatch(key)
+        if (not isinstance(key, str) or not key.strip()
                 or not isinstance(kind, str) or not kind.strip() or not isinstance(endpoint, dict)):
             raise SnapshotError("the fleet snapshot has an invalid task")
         exists = endpoint.get("exists")
@@ -731,8 +730,12 @@ def workers_snapshot(home: Path) -> dict[str, object]:
                 not isinstance(current.get(field), (str, type(None))) for field in ("state", "freshness"))):
             raise SnapshotError("the fleet snapshot has an invalid task status")
         hints = task.get("hints")
-        if hints is not None and (not isinstance(hints, dict)
-                                  or not isinstance(hints.get("open_decisions"), (list, type(None)))):
+        if hints is not None and not isinstance(hints, dict):
+            raise SnapshotError("the fleet snapshot has an invalid task status")
+        decisions = hints.get("open_decisions") if hints else None
+        if decisions is not None and (not isinstance(decisions, list) or any(
+                not isinstance(decision, dict) or not isinstance(decision.get("key"), str) or not decision["key"].strip()
+                for decision in decisions)):
             raise SnapshotError("the fleet snapshot has an invalid task status")
         if kind == "secondmate":
             second_mates.setdefault(key, task)
@@ -740,9 +743,8 @@ def workers_snapshot(home: Path) -> dict[str, object]:
             workers.setdefault(key, task)
     return {
         "observed_at": generated,
-        "workers": [worker_row(key, task, observed) for key, task in workers.items() if key not in second_mates],
-        "second_mates": [second_mate_row(task, worker_row(key, task, observed), observed)
-                         for key, task in second_mates.items()],
+        "workers": [roster_row(key, task, observed) for key, task in workers.items() if key not in second_mates],
+        "second_mates": [roster_row(key, task, observed) for key, task in second_mates.items()],
     }
 
 
@@ -1072,13 +1074,15 @@ def question_summary(item):
 
 def question_card(item, *, served, primary):
     state, remaining, pending = question_summary(item)
+    open_parts = [n for n in question_parts(item) if part_record(item, n).get("state", "open") == "open"]
     href = item_page_name(item["id"])
+    if primary:
+        href += f'#{item["id"]}.{open_parts[0]}'
     progress = f'{remaining} of {len(question_parts(item))} open' if remaining else state
     action = "Read questions" if not served else ("Answer questions" if remaining else "Review answers")
     link_class = ' class="work-action"' if primary else ' class="button-link"'
-    prompts = "".join(f'<li>{esc(question["question"])}</li>'
-                      for number, question in enumerate(item["body"]["questions"], 1)
-                      if part_record(item, number).get("state", "open") == "open")
+    questions = item["body"]["questions"]
+    prompts = "".join(f'<li>{esc(questions[n - 1]["question"])}</li>' for n in open_parts)
     return (f'<article class="work{' next' if primary else ''}"><div class="eyebrow"><span class="id">{item["id"]}</span> Questions</div>'
             f'<h3>{esc(item["title"])}</h3><p>{linked_text(item["description"])}</p>'
             + (f'<ul>{prompts}</ul>' if prompts else '')
