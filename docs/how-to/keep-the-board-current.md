@@ -12,17 +12,18 @@ Run this first, before any `touch` or `upsert` for that turn, each time the
 captain sends Firstmate a message or comments on a watched brief:
 
 ```sh
-quarterdeck board active
+quarterdeck board active --session-id "$session_id"
 ```
 
-It records the current message time as `operator.last_active_at`. Pass
-`--new-session` when a new Firstmate chat starts. This records session context;
-item engagement is recorded separately with `touch` or `upsert --touch`. See
+Use the Claude Code hook’s `session_id` for this command and the item
+commands below. The board records the message time as
+`operator.last_active_at`. A new conversation ID switches the page to that
+conversation. See
 the [board file reference](../reference/captain-board.md#what-the-page-does-with-it)
 for shared relevance and the fallback session rules.
 
 So that the desk shows every question Firstmate asks in a session, put each
-ask on the board in the same turn with `upsert ... --touch`, and `touch` items
+ask on the board in the same turn with `upsert ... --touch --session-id "$session_id"`, and `touch` items
 the captain picks from `/bearings` so they return to the desk.
 
 ## When something starts waiting on the captain
@@ -30,7 +31,8 @@ the captain picks from `/bearings` so they return to the desk.
 ```sh
 quarterdeck board upsert dock-fix --group merge --title "Dock merge" \
   --ask "Merge the dock patch? Checks are green." --project dock-demo \
-  --brief-url https://example.com/brief/dock --recommendation "Merge"
+  --brief-url https://example.com/brief/dock --recommendation "Merge" \
+  --touch --session-id "$session_id"
 ```
 
 A new item needs `--group`, `--title` and `--ask`. Its id defaults to the task
@@ -50,11 +52,11 @@ An empty value (`--topic ""`) clears `--detail`, `--topic`, `--project`,
 the item's links.
 
 `upsert` leaves `touched_at` alone unless you pass `--touch` (now) or
-`--touched-at ISO`. An untouched ask can still qualify through recorded feed
-or task activity under the shared relevance rules. See the
-[board file reference](../reference/captain-board.md#what-the-page-does-with-it).
-Pass `--touch` when Firstmate raises the ask in its conversation with the
-captain, so that engagement is recorded for relevance.
+`--touched-at ISO`. An untouched ask can still appear when its task is
+discussed or otherwise attributed in the conversation. See
+[See only this session](see-only-this-session.md).
+Pass `--touch --session-id "$session_id"` when Firstmate raises the ask in
+its conversation with the captain.
 
 ## When the captain engages with it
 
@@ -62,13 +64,13 @@ Run this whenever the captain discusses, answers, comments on, or asks about
 the item or its project:
 
 ```sh
-quarterdeck board touch dock-fix
+quarterdeck board touch dock-fix --session-id "$session_id"
 ```
 
 It sets `touched_at` to now on every item that names the task (or `--at ISO`
 for an earlier engagement; a newer recorded time is kept). It exits 1 when no
-item names the task, so a missing board entry is noticed instead of silently
-skipped; add it with `upsert`.
+item names the task. Add a missing entry with `upsert`. An invocation without
+a conversation ID leaves any prior attribution in place.
 
 Touching is the signal that matters most. Only Firstmate, in the
 conversation, can tell which item the captain means when they name work in

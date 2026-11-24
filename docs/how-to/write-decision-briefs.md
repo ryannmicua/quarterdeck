@@ -74,7 +74,8 @@ in section 5 or the footer.
    instant reply. Every reply Firstmate writes itself starts with `FM: ` so
    the two can be told apart. When the comment thread reaches a Claude worker,
    that worker relays decisions to Firstmate; Firstmate then runs
-   `quarterdeck board touch <task-id>` so the item stays on the desk.
+   `quarterdeck board touch <task-id> --session-id ID` with the current Claude
+   Code conversation ID so the item stays on the desk.
 
 **Fallback:** when the Artifact tool is unavailable, open the same file with
 Lavish (`lavish-axi brief.html`) and use the Lavish session URL as the

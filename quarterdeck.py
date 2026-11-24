@@ -812,12 +812,29 @@ def source_pages(
     if bearings is not None:
         pages.update(bearings.item_pages)
     pages.update(topic_pages(homes, bearings, pages, allow_marks))
-    if not any(snapshot.session is not None for snapshot in homes):
-        pages[ADOPTION_PAGE] = adoption_page_html(adoption_summary(homes, bearings.generated if bearings else datetime.now(timezone.utc)), main_href)
+    generated = bearings.generated if bearings else datetime.now(timezone.utc)
+    scope = next((snapshot.session for snapshot in homes if snapshot.session is not None), None)
+    pages[ADOPTION_PAGE] = (session_adoption_page(scope, main_href) if scope is not None
+                            else adoption_page_html(adoption_summary(homes, generated), main_href))
     return pages
 
 
-def publish_render(output_dir: Path, pages: dict[str, str]) -> None:
+def legacy_render_pages(output_dir: Path) -> Iterator[Path]:
+    fixed = {"index.html", "index.lavish.html", CLASSIC_PAGE, PREVIOUS_PAGE, TOPICS_PAGE, SEARCH_PAGE, ADOPTION_PAGE}
+    marker = re.compile(rb'<meta name="quarterdeck-generated" content="read-only (?:source page|review page|topic page|adoption summary)">')
+    for path in output_dir.iterdir():
+        if path.name not in fixed and not re.fullmatch(
+            r"(?:topic-[a-z0-9][a-z0-9-]*|(?:backlog|report|item|doc|rv|rm)-[a-f0-9]{12})\.html", path.name
+        ):
+            continue
+        if not path.is_symlink() and path.is_file():
+            with path.open("rb") as stream:
+                if marker.search(stream.read(4096)):
+                    yield path
+
+
+def publish_render(output_path: Path, pages: dict[str, str], session: tuple[str, str] | None) -> None:
+    output_dir = output_path.parent
     manifest = output_dir / ".quarterdeck-render.json"
     if manifest.name in pages:
         raise ValueError(f"output page uses the reserved name {manifest.name}")
@@ -827,16 +844,31 @@ def publish_render(output_dir: Path, pages: dict[str, str]) -> None:
         if manifest.is_symlink() or any((output_dir / name).is_symlink() for name in pages):
             raise ValueError("refusing symbolic-link output page or manifest")
         previous = read_private_json(manifest) or {}
-        for name, digest in previous.items():
-            if name in pages or Path(name).name != name or name == manifest.name:
+        groups = previous.get("outputs")
+        previous_outputs = {key: value for key, value in groups.items() if isinstance(value, dict)} if isinstance(groups, dict) else {}
+        identity = hashlib.sha256(json.dumps(session).encode()).hexdigest()
+        outputs = {key: files for key, files in previous_outputs.items()
+                   if key != output_path.name and previous.get("session") == identity}
+        current = {name: hashlib.sha256(content.encode("utf-8")).hexdigest() for name, content in pages.items()}
+        previous_files = {name: digest for files in previous_outputs.values() for name, digest in files.items()}
+        if not isinstance(groups, dict):
+            previous_files = dict(previous)
+            for path in legacy_render_pages(output_dir):
+                if path.name not in pages and path.name not in previous_files:
+                    path.unlink()
+        for files in outputs.values():
+            files.update({name: current[name] for name in files.keys() & current.keys()})
+        outputs[output_path.name] = current
+        retained = {name for files in outputs.values() for name in files}
+        for name, digest in previous_files.items():
+            if name in retained or Path(name).name != name or name == manifest.name:
                 continue
             path = output_dir / name
             if not path.is_symlink() and path.is_file() and hashlib.sha256(path.read_bytes()).hexdigest() == digest:
                 path.unlink()
         for name, content in pages.items():
             write_generated_page(output_dir / name, content)
-        current = {name: hashlib.sha256(content.encode("utf-8")).hexdigest() for name, content in pages.items()}
-        write_generated_page(manifest, json.dumps(current) + "\n")
+        write_generated_page(manifest, json.dumps({"session": identity, "outputs": outputs}) + "\n")
     finally:
         os.close(directory)
 
@@ -1649,7 +1681,6 @@ def build_html(
     )
     jump_block = jump_nav_html(body_markup, section_counts)
     scoped = bearings is not None and bearings.session is not None
-    adoption_link = "" if scoped else f'<a href="{ADOPTION_PAGE}">Adoption</a>'
     session_note = session_note_html(bearings) if scoped else ""
     session_links = session_links_html(bearings) if scoped else ""
     reload_script = """
@@ -1937,7 +1968,7 @@ def build_html(
 <body>
   <span id="top"></span>
   <header>
-    <nav class="bar" aria-label="Quarterdeck"><h1 class="mark">{html.escape(title)}</h1><span class="bar-links">{f'<a href="{html.escape(front_href, quote=True)}">Front page</a>' if front_href else ""}{adoption_link}</span></nav>
+    <nav class="bar" aria-label="Quarterdeck"><h1 class="mark">{html.escape(title)}</h1><span class="bar-links">{f'<a href="{html.escape(front_href, quote=True)}">Front page</a>' if front_href else ""}<a href="{ADOPTION_PAGE}">Adoption</a></span></nav>
     <div class="masthead">
     <p class="stamp"><span class="stamp-long">Generated at {timestamp}{refresh_note}</span><time class="stamp-short" id="updated" datetime="{iso_seconds(generated.timestamp())}">Updated {generated.strftime("%H:%M")} UTC</time>{push_control}</p>
     {f'<p class="stamp">{session_note}</p>' if session_note else ""}
@@ -2069,6 +2100,7 @@ class Bearings:
     completions: list[dict[str, object]] = field(default_factory=list)
     topic_pages: list[tuple[HomeSnapshot, Topic]] = field(default_factory=list)
     session: SessionScope | None = None
+    notification_resolution: tuple[bool, set[str]] | None = None
 
 
 HOLD_REASON_PREFIX = "fm-hold-v1:"
@@ -4513,6 +4545,7 @@ class CaptainBoard:
     items: list[BoardItem] = field(default_factory=list)
     warnings: list[str] = field(default_factory=list)
     supported: bool = True
+    unreadable: bool = False
     last_active_at: datetime | None = None
     session_started_at: datetime | None = None
     session_id: str | None = None
@@ -4592,9 +4625,11 @@ def parse_captain_board(source: str, path: Path) -> CaptainBoard:
     try:
         data = json.loads(source)
     except ValueError as exc:
+        board.unreadable = True
         board.warnings.append(f"{name} is not valid JSON ({exc}); no board items could be read.")
         return board
     if not isinstance(data, dict):
+        board.unreadable = True
         board.warnings.append(f"{name} must contain a JSON object; no board items could be read.")
         return board
     version = data.get("version")
@@ -4715,7 +4750,7 @@ def read_captain_board(data_dir: Path) -> CaptainBoard | None:
     except FileNotFoundError:
         return None
     except (OSError, UnicodeDecodeError) as exc:
-        board = CaptainBoard(path)
+        board = CaptainBoard(path, unreadable=True)
         board.warnings.append(f"{BOARD_FILENAME} could not be read ({exc.__class__.__name__}); no board items could be shown.")
         return board
     return parse_captain_board(source, path)
@@ -5656,8 +5691,6 @@ def set_board_touch(raw: dict[str, object], stamp: str, session_id: str | None) 
     raw["touched_at"] = stamp
     if session_id:
         raw["session_id"] = session_id
-    else:
-        raw.pop("session_id", None)
 
 
 def board_touch(args: argparse.Namespace) -> int:
@@ -5967,17 +6000,24 @@ def port_number(value: str) -> int:
     return port
 
 
+class SitePages(dict[str, str]):
+    def __init__(self, pages: dict[str, str], session: tuple[str, str] | None) -> None:
+        super().__init__(pages)
+        self.session = session
+
+
 class SiteCache:
     """Serve the last built site and rebuild it in one background thread when it goes stale.
 
-    Only a request that arrives before any build has succeeded waits for a build. After that, `get`
-    always returns the previous pages at once, a stale or invalidated cache starts at most one
-    background rebuild, and a failed rebuild keeps the previous pages and logs the error.
+    Requests wait when the current conversation has no cached pages. Stale pages for the
+    same conversation remain available during a background rebuild.
     """
 
     def __init__(self, build: Callable[[], dict[str, str]], ttl: float = DEFAULT_CACHE_SECONDS,
-                 clock: Callable[[], float] = time.monotonic) -> None:
+                 clock: Callable[[], float] = time.monotonic, *,
+                 current_session: Callable[[], tuple[str, str] | None] | None = None) -> None:
         self.build = build
+        self.current_session = current_session
         self.ttl = ttl
         self.clock = clock
         self.cond = threading.Condition()
@@ -6003,20 +6043,23 @@ class SiteCache:
                         raise self.last_error
                     self._start_build()
 
+    def matches_session(self, pages: dict[str, str] | None) -> bool:
+        return pages is not None and (self.current_session is None
+                                      or isinstance(pages, SitePages) and pages.session == self.current_session())
+
     def get(self) -> dict[str, str]:
         with self.cond:
-            if self.pages is None:
-                # No build has succeeded yet: wait for the first one.
+            if not self.matches_session(self.pages):
                 self._start_build()
-                while self.pages is None:
+                while self.building:
                     self.cond.wait()
-                    if self.pages is None and not self.building:
-                        if self.last_error is not None:
-                            raise self.last_error
-                        self._start_build()
-                return self.pages
+                if not self.matches_session(self.pages):
+                    if self.last_error is not None:
+                        raise self.last_error
+                    raise ValueError("the current conversation changed during the build")
             if self.attempted_seq < self.stale_seq or self.built_at is None or self.clock() - self.built_at >= self.ttl:
                 self._start_build()
+            assert self.pages is not None
             return self.pages
 
     def _start_build(self) -> None:
@@ -6033,7 +6076,10 @@ class SiteCache:
         error: Exception | None = None
         try:
             pages = self.build()
+            if not self.matches_session(pages):
+                raise ValueError("the current conversation changed during the build")
         except Exception as exc:  # noqa: BLE001 - a failed rebuild must never kill the server
+            pages = None
             error = exc
         with self.cond:
             self.building = False
@@ -6044,7 +6090,7 @@ class SiteCache:
                 self.built_seq = seq
             else:
                 self.last_error = error
-                print(f"quarterdeck: site rebuild failed, keeping the previous pages: {error}",
+                print(f"quarterdeck: site rebuild failed: {error}",
                       file=sys.stderr, flush=True)
             # A failure also restarts the ttl so a broken home is retried at the ttl pace, not per request.
             self.built_at = self.clock()
@@ -6055,11 +6101,11 @@ def site_builder(
     args: argparse.Namespace, allow_marks: bool = False, push: PushNotifier | None = None,
 ) -> Callable[[], dict[str, str]]:
     def build() -> dict[str, str]:
-        config, homes, bearings = load_site(args, include_calls=True)
+        config, homes, bearings = load_site(args, include_calls=True, notification_resolution=push is not None)
         configured_title = config.get("page_title")
         title = args.title or (configured_title if isinstance(configured_title, str) else None) or DEFAULT_TITLE
         found = bearings.topic_pages
-        calls_front = bool(found) or bearings.session is not None  # one session opens on Calls even with no topic in it
+        calls_front = bool(found)
         previous = build_html(
             homes, title, bearings=bearings, refresh_seconds=DEFAULT_REFRESH_SECONDS, allow_marks=allow_marks,
             push_enabled=push is not None, front_href="index.html" if calls_front else None,
@@ -6077,7 +6123,12 @@ def site_builder(
                 if topic is not None:
                     card["push_url"] = f"./{topic.page}"
             try:
-                push.observe(activity + topic_push_cards(homes), complete=attention is not None and not needs_unread(attention))
+                cards_for_push = activity + topic_push_cards(homes)
+                if bearings.notification_resolution is None:
+                    push.observe(cards_for_push, complete=attention is not None and not needs_unread(attention))
+                else:
+                    complete, unresolved = bearings.notification_resolution
+                    push.observe(cards_for_push, complete=complete, unresolved=unresolved)
             except Exception as exc:  # noqa: BLE001 - a notification problem must never stop the page
                 print(f"quarterdeck: could not check for new needs-you items to notify: {exc}", file=sys.stderr, flush=True)
         cards = cards_payload(activity, bearings.generated)
@@ -6095,7 +6146,7 @@ def site_builder(
         else:
             pages["index.html"] = previous
         pages[CARDS_PAGE] = cards
-        return pages
+        return SitePages(pages, bearings.session.identity if bearings.session else None)
     return build
 
 
@@ -6450,7 +6501,8 @@ class PushNotifier:
                 self.save_subscriptions(kept)
         return {"subscribed": False}
 
-    def observe(self, cards: list[dict[str, object]], complete: bool) -> list[dict[str, object]]:
+    def observe(self, cards: list[dict[str, object]], complete: bool, *,
+                unresolved: Set[str] = frozenset()) -> list[dict[str, object]]:
         """Record the needs-you items on show and return the messages this change calls for (and send them).
 
         A card in the `answered` section (a question Firstmate answered) is announced once and never withdrawn."""
@@ -6485,7 +6537,7 @@ class PushNotifier:
                         messages.append(push_message(tag, by_tag[tag]))
             if complete:
                 for tag, record in items.items():
-                    if tag in current or record.get("answer"):
+                    if tag in current or tag in unresolved or record.get("answer"):
                         continue
                     if record.get("active"):
                         record.update(active=False, gone_at=now)
@@ -6798,6 +6850,13 @@ def make_handler(
                     visit_log.record(VISIT_PAGES[name], self.headers.get("User-Agent"))
                 except (OSError, ValueError) as exc:  # a visit that cannot be logged must never stop the page
                     print(f"quarterdeck: could not log the visit: {exc}", file=sys.stderr, flush=True)
+            try:
+                current = cache.matches_session(pages)
+            except (OSError, ValueError):
+                current = False
+            if not current:
+                self.send_text(503, "The current conversation changed during the request.\n")
+                return
             kind = "json" if name.endswith(".json") else "plain" if name.endswith(".txt") else "html"
             self.send_text(200, pages[name], f"{'application' if kind == 'json' else 'text'}/{kind}; charset=utf-8",
                            sandbox=name.startswith(RAW_PREFIX))
@@ -7172,7 +7231,8 @@ def serve(args: argparse.Namespace) -> int:
         push = (PushNotifier(default_output_dir())
                 if getattr(args, "allow_marks", False) and not getattr(args, "no_snapshot", False) and push_crypto_available()
                 else None)
-        cache = SiteCache(site_builder(args, getattr(args, "allow_marks", False), push))
+        cache = SiteCache(site_builder(args, getattr(args, "allow_marks", False), push),
+                          current_session=lambda: served_session(args))
         cache.get()
         visit_log = VisitLog(visits_path()) if getattr(args, "allow_marks", False) else None
         handler = make_handler(cache, set_mark, send_reaction_to, save_view_to, discard_wait_to, visit_log, push, configured_base)
@@ -9145,7 +9205,7 @@ def topic_push_cards(homes: list[HomeSnapshot]) -> list[dict[str, object]]:
     for snapshot, topic in assign_topic_pages(homes):
         state = snapshot.review_state
         home = str(snapshot.spec.home)
-        for entry in topic_awaiting(topic, state):
+        for entry in topic_awaiting(topic, state) if topic.status != "done" else ():
             cards.append({"id": f"topic-decision:{home}/{topic.ref}/{entry.entry_id}", "section": "needs_you",
                           "title": entry.decision, "push_url": f"./{topic.page}#decision-{entry.entry_id}"})
         responses = topic.responses()
@@ -9835,7 +9895,7 @@ def tabs_html(current: str, title: str, calls_href: str = "index.html") -> str:
     tabs = ((calls_href, "Calls"), (TOPICS_PAGE, "Topics"), (SEARCH_PAGE, "Search"))
     links = "".join(f'<a href="{html.escape(href, quote=True)}"{here if href == current else ""}>{label}</a>' for href, label in tabs)
     return (f'<nav class="bar" aria-label="Quarterdeck"><a class="mark" href="{html.escape(calls_href, quote=True)}">{html.escape(title)}</a>'
-            f'<span class="bar-links tabs">{links}</span></nav>')
+            f'<span class="bar-links tabs">{links}<a href="{ADOPTION_PAGE}">Adoption</a></span></nav>')
 
 
 def call_meta(call: Call, now: datetime) -> str:
@@ -10570,6 +10630,29 @@ def adoption_summary(homes: list[HomeSnapshot], now: datetime, visits: Path | No
     return {"weeks": weeks, "counts": counts, "topics": topics, "missing": missing,
             "answer_share": shares, "first_seen_minutes": [statistics.median(values) if values else None for values in waits],
             "counting_from": started.astimezone().date().isoformat() if started and now - started < timedelta(days=7) else None}
+
+
+def session_adoption_page(scope: SessionScope, main_href: str) -> str:
+    tags: list[dict[str, object]] = []
+    if scope.identity is not None:
+        path, identity = scope.identity
+        tags = [record for record in read_jsonl(Path(path).parent / TAGS_RELATIVE)
+                if record.get("session_id") == identity and record.get("kind") == "status"
+                and record.get("source") not in ("page", "artifact")]
+    items = "".join(
+        f'<li>{html.escape(str(record["topic"])[:120])} <span class="tag">'
+        f'{"answer was here" if record.get("qd_had_answer") is True else "had to ask" if record.get("qd_had_answer") is False else "not checked"}'
+        '</span></li>'
+        for record in tags if isinstance(record.get("topic"), str) and record["topic"].strip()
+    )
+    summary = (f'{plural(len(tags), "status question", "status questions")} in this conversation. '
+               f'Quarterdeck already had the answer to {sum(record.get("qd_had_answer") is True for record in tags)}.'
+               if tags else "No status questions are attributed to this conversation.")
+    if scope.identity is None:
+        summary = "No conversation is recorded for this session."
+    nav = f'<nav class="bar" aria-label="Quarterdeck"><a class="mark" href="{html.escape(main_href, quote=True)}">Quarterdeck</a></nav>'
+    body = f'{nav}<main class="adoption"><h1>Adoption</h1><p>{html.escape(summary)}</p>'
+    return deck_page("Adoption · Quarterdeck", body + (f"<ul>{items}</ul>" if items else "") + "</main>")
 
 
 def adoption_page_html(summary: dict[str, object], main_href: str = "index.html") -> str:
@@ -13431,7 +13514,7 @@ def parse_secondmates(source: str, parent_label: str) -> tuple[list[HomeSpec], l
     return specs, errors
 
 
-def load_home_snapshot(spec: HomeSpec, discover_secondmates: bool = False) -> HomeSnapshot:
+def load_home_snapshot(spec: HomeSpec, discover_secondmates: bool = False, *, board_only: bool = False) -> HomeSnapshot:
     snapshot = HomeSnapshot(spec)
     if spec.unavailable_reason:
         snapshot.error = spec.unavailable_reason
@@ -13445,19 +13528,21 @@ def load_home_snapshot(spec: HomeSpec, discover_secondmates: bool = False) -> Ho
                 raise FileNotFoundError(f"Firstmate home is not a directory: {spec.home}")
             data_dir = spec.data_dir or (spec.home / "data")
             snapshot.data_dir = data_dir
-            backlog_path = data_dir / "backlog.md"
-            if not backlog_path.is_file():
-                raise FileNotFoundError(f"backlog not found: {backlog_path}")
-            source = backlog_path.read_text(encoding="utf-8", errors="replace")
-            snapshot.backlog_path = backlog_path.resolve()
-            snapshot.backlog_changed = datetime.fromtimestamp(backlog_path.stat().st_mtime, timezone.utc)
-            snapshot.backlog_markdown = source
-            snapshot.reports = read_reports(data_dir, snapshot.warnings)
-            snapshot.records = parse_backlog(source, data_dir, snapshot.reports)
+            if not board_only:
+                backlog_path = data_dir / "backlog.md"
+                if not backlog_path.is_file():
+                    raise FileNotFoundError(f"backlog not found: {backlog_path}")
+                source = backlog_path.read_text(encoding="utf-8", errors="replace")
+                snapshot.backlog_path = backlog_path.resolve()
+                snapshot.backlog_changed = datetime.fromtimestamp(backlog_path.stat().st_mtime, timezone.utc)
+                snapshot.backlog_markdown = source
+                snapshot.reports = read_reports(data_dir, snapshot.warnings)
+                snapshot.records = parse_backlog(source, data_dir, snapshot.reports)
         except (OSError, ValueError) as exc:
             snapshot.error = str(exc)
         if snapshot.data_dir is not None:
             snapshot.board = read_captain_board(snapshot.data_dir)
+        if snapshot.data_dir is not None and not board_only:
             try:
                 snapshot.topics = read_topics(snapshot.data_dir)
             except OSError as exc:
@@ -13476,7 +13561,7 @@ def load_home_snapshot(spec: HomeSpec, discover_secondmates: bool = False) -> Ho
             registry = ""
         if registry:
             children, parse_errors = parse_secondmates(registry, spec.label)
-            snapshot.children = [load_home_snapshot(child) for child in children]
+            snapshot.children = [load_home_snapshot(child, board_only=board_only) for child in children]
             if parse_errors:
                 snapshot.registry_error = "; ".join(parse_errors)
     return snapshot
@@ -13498,6 +13583,7 @@ SESSION_SECRET_RE = re.compile(
 @dataclass
 class SessionScope:
     started: datetime | None = None
+    identity: tuple[str, str] | None = None
     tasks: set[tuple[int, str]] = field(default_factory=set)
     topics: set[tuple[int, str]] = field(default_factory=set)
     report_dirs: dict[int, set[str]] = field(default_factory=dict)
@@ -13532,6 +13618,12 @@ def session_urls(text: str) -> Iterator[str]:
             authority = re.fullmatch(r"(?:\[[^\]]+\]|[^:%\[\]()]+)(?::([0-9]+))?", parsed.netloc)
             if authority is None or (authority[1] is not None and int(authority[1]) > 65535):
                 continue
+            path = unquote(unquote(parsed.path)).casefold()
+            host = parsed.hostname.casefold()
+            if (host == "hooks.slack.com" and path.startswith("/services/")
+                    or re.search(r"/(?:webhooks?|tokens?|secrets?|credentials?|reset-password|magic-link)[/=:][^/]", path)
+                    or re.search(r"/bot[0-9]+:[^/]", path)):
+                continue
             fields = re.split(r"[?&#;]", unquote(f"{parsed.query}&{parsed.fragment}"))
             if any(SESSION_SECRET_RE.search(re.sub(r"[^a-z0-9]", "", unquote(field.partition("=")[0]).casefold()))
                    for field in fields):
@@ -13541,31 +13633,41 @@ def session_urls(text: str) -> Iterator[str]:
         yield url
 
 
-def session_scope(homes: list[HomeSnapshot], now: datetime) -> SessionScope:
+def session_source(homes: list[HomeSnapshot]) -> HomeSnapshot | None:
     snapshots = all_snapshots(homes)
+    if any(snapshot.board is not None and snapshot.board.unreadable for snapshot in snapshots):
+        return None
     recorded = [snapshot for snapshot in snapshots if snapshot.board is not None
                 and snapshot.board.supported and snapshot.board.last_active_at is not None]
     if not recorded:
-        return SessionScope()
+        return None
     latest = max(snapshot.board.last_active_at for snapshot in recorded)  # type: ignore[union-attr,type-var]
     newest = [snapshot for snapshot in recorded if snapshot.board.last_active_at == latest]  # type: ignore[union-attr]
-    if len(newest) != 1:
-        return SessionScope()
-    source = newest[0]
-    board = source.board
-    assert board is not None and board.session_started_at is not None
-    identity = board.session_id
+    return newest[0] if len(newest) == 1 else None
+
+
+def session_identity(source: HomeSnapshot | None) -> tuple[str, str] | None:
+    if source is None or source.board is None or not source.board.session_id:
+        return None
+    return str(source.board.path.resolve()), source.board.session_id
+
+
+def session_scope(homes: list[HomeSnapshot], now: datetime) -> SessionScope:
+    source = session_source(homes)
+    identity = session_identity(source)
     if identity is None:
         return SessionScope()
-    start = min(board.session_started_at, now)
-    scope = SessionScope(start)
+    assert source is not None and source.board is not None and source.board.session_started_at is not None
+    board = source.board
+    scope = SessionScope(min(board.session_started_at, now), identity)
     family = all_snapshots([source])
     try:
-        turns = transcript_turns(transcript_dir(source.spec), session_id=identity)
+        turns = transcript_turns(transcript_dir(source.spec), session_id=identity[1])
     except OSError:
         turns = []
     said = "\n".join(turn.text for turn in turns if turn.role in {"owner", "firstmate"} and turn.at <= now)
     scope.links = list(dict.fromkeys(session_urls(said)))
+    said = SESSION_URL_RE.sub(" ", said)
     tokens = {token.rstrip(".") for token in SESSION_TOKEN_RE.findall(said)}
     topic_paths = set(SESSION_TOPIC_PATH_RE.findall(said))
     named_topics: set[tuple[int, str]] = set()
@@ -13581,10 +13683,9 @@ def session_scope(homes: list[HomeSnapshot], now: datetime) -> SessionScope:
         if task in snapshot_items(owner) or token in board_tasks:
             scope.tasks.add((id(owner), task))
     for item in board.items:
-        if item.session_id == identity and item.touched_at is not None and start <= item.touched_at <= now:
+        if item.session_id == identity[1] and item.touched_at is not None and item.touched_at <= now:
             add_task(source, item.task)
             if item.topic:
-                named_topics.add((id(source), item.topic.casefold()))
                 owner, _task = task_owner(source, item.task)
                 named_topics.add((id(owner), item.topic.casefold()))
     if source.spec.home is not None and not source.spec.remote_host:
@@ -13593,15 +13694,15 @@ def session_scope(homes: list[HomeSnapshot], now: datetime) -> SessionScope:
         except AttentionSourceError:
             records = []
         for record in records:
-            if (record.get("session_id") == identity
+            if (record.get("session_id") == identity[1]
                     and (record["event"] == "task.dispatched" or str(record["event"]).startswith("captain."))
-                    and start.timestamp() <= float(record["ts"]) <= now.timestamp()):
+                    and float(record["ts"]) <= now.timestamp()):
                 add_task(source, str(record["task"]))
     reports_in_chat = set(report_ids_in(said))
     for item in snapshot_items(source).values():
         hold_session = item.attrs.get("hold-session-id") or item.attrs.get("hold_session_id")
-        held_at = parse_board_time(hold_stamp(item)) if item.held and hold_session == identity else None
-        if held_at is not None and start <= held_at <= now:
+        held_at = parse_board_time(hold_stamp(item)) if item.held and hold_session == identity[1] else None
+        if held_at is not None and held_at <= now:
             add_task(source, item.id)
     for snapshot in family:
         for topic in snapshot.topics:
@@ -13614,7 +13715,7 @@ def session_scope(homes: list[HomeSnapshot], now: datetime) -> SessionScope:
                 scope.topics.add((id(snapshot), topic.topic_id))
                 for piece in topic.pieces:
                     add_task(snapshot, piece)
-    for snapshot in snapshots:
+    for snapshot in all_snapshots(homes):
         items = list(snapshot_items(snapshot).values())
         data_dir = snapshot.data_dir or snapshot.spec.data_dir
         if data_dir is None:
@@ -13726,24 +13827,68 @@ def session_link_label(url: str) -> str:
     return f"{parsed.netloc}{path}" if len(parsed.netloc + path) <= 72 else f"{parsed.netloc}{path[:72 - len(parsed.netloc)]}…"
 
 
-def load_site(args: argparse.Namespace, main_href: str = "index.html", *,
-              include_calls: bool = False) -> tuple[dict[str, object], list[HomeSnapshot], Bearings]:
-    """Read the configured homes and review marks, then classify them into bearings."""
+def site_home_specs(args: argparse.Namespace) -> tuple[dict[str, object], list[HomeSpec], bool]:
     if args.config is None:
         default_path = default_config_path()
         args.config = default_path if default_path.is_file() else None
     config = load_config(args.config)
     specs, legacy_single_home = resolve_home_specs(args, config)
+    return config, specs, legacy_single_home
+
+
+def served_session(args: argparse.Namespace) -> tuple[str, str] | None:
+    _config, specs, _legacy_single_home = site_home_specs(args)
+    homes = [load_home_snapshot(spec, discover_secondmates=True, board_only=True) for spec in specs]
+    return session_identity(session_source(homes))
+
+
+def unresolved_push_tags(homes: list[HomeSnapshot], attention: dict[str, object],
+                         waits: dict[str, dict[str, object]]) -> set[str]:
+    tags = {push_tag(card) for card in topic_push_cards(homes) if card["section"] == "needs_you"}
+    snapshots = all_snapshots(homes)
+    backlog = {task_key(snapshot, item.id, snapshots): item
+               for snapshot in snapshots for item in snapshot_items(snapshot).values()}
+    outstanding = {key for key, item in backlog.items() if needs_captain(item)} | decision_rows(homes, attention).keys()
+    for key in outstanding:
+        wait = waits.get(key)
+        if wait and wait.get("status") == "waiting" and wait_is_hidden(wait):
+            continue
+        stamp = hold_stamp(backlog[key]) if key in backlog else None
+        tags.add(push_tag({"id": f"call:{key}", "hold_set": stamp}))
+    return tags
+
+
+def load_site(
+    args: argparse.Namespace, main_href: str = "index.html", *,
+    include_calls: bool = False, notification_resolution: bool = False,
+) -> tuple[dict[str, object], list[HomeSnapshot], Bearings]:
+    """Read the configured homes and review marks, then classify them into bearings."""
+    config, specs, legacy_single_home = site_home_specs(args)
     homes = [load_home_snapshot(spec, discover_secondmates=True) for spec in specs]
     load_error = legacy_home_load_error(homes, legacy_single_home)
     if load_error:
         raise ValueError(load_error)
     state_path = validate_review_state_location(homes)
     apply_review_marks(homes, load_review_state(state_path))
-    scope = session_scope(homes, datetime.now(timezone.utc))
+    now = datetime.now(timezone.utc)
+    scope = session_scope(homes, now)
+    scripts_enabled = not getattr(args, "no_snapshot", False)
+    settings = wait_settings(config, args.config.expanduser().resolve() if args.config else None)
+    feed_runner = functools.cache(run_attention_feed)
+    resolution = None
+    if notification_resolution:
+        all_waits, wait_error = load_wait_cards(settings, homes)
+        all_attention = attention_view(homes, now, all_decisions=True, use_feed=scripts_enabled,
+                                       feed_runner=feed_runner, waits=all_waits)
+        topics_incomplete = any(snapshot.topics_error or any(
+            problem.level == "error" for topic in snapshot.topics for problem in topic.problems
+        ) for snapshot in all_snapshots(homes))
+        resolution = (not wait_error and not topics_incomplete and not needs_unread(all_attention),
+                      unresolved_push_tags(homes, all_attention, all_waits))
     scope_homes(homes, scope)
-    use_snapshot = scope.started is not None and not getattr(args, "no_snapshot", False)
-    bearings = build_bearings(homes, use_snapshot=use_snapshot, main_href=main_href)
+    use_snapshot = scope.started is not None and scripts_enabled
+    bearings = build_bearings(homes, now=now, use_snapshot=use_snapshot, main_href=main_href)
+    bearings.notification_resolution = resolution
     bearings.session = scope
     if include_calls:
         bearings.topic_pages = assign_topic_pages(homes)
@@ -13751,10 +13896,9 @@ def load_site(args: argparse.Namespace, main_href: str = "index.html", *,
         document = read_preferences(preferences_path(args))
     except ValueError:
         document = {}  # a damaged preference file must not stop the page
-    waits, waits_error = ({}, "") if scope.started is None else load_wait_cards(
-        wait_settings(config, args.config.expanduser().resolve() if args.config else None), homes)
+    waits, waits_error = ({}, "") if scope.started is None else load_wait_cards(settings, homes)
     bearings.attention = attention_view(
-        homes, bearings.generated, all_decisions=True, use_feed=use_snapshot,
+        homes, bearings.generated, all_decisions=True, use_feed=use_snapshot, feed_runner=feed_runner,
         priority_projects=list(document.get("priority_projects", [])),  # type: ignore[call-overload]
         saved_views=effective_views(document), all_views=True, waits=waits,
         completions_out=bearings.completions,
@@ -13782,7 +13926,7 @@ def render(args: argparse.Namespace) -> int:
         output_path = output_path.parent.resolve() / output_path.name
         validate_output_path(output_path, homes)
         output_path.parent.mkdir(parents=True, exist_ok=True)
-        front = bool(bearings.topic_pages) or (bearings.session is not None and not args.lavish and not args.all)
+        front = bool(bearings.topic_pages)
         index = build_html(homes, title, lavish=args.lavish, show_all=args.all, bearings=bearings,
                            front_href=output_path.name if front else None)
         activity = site_cards(homes, bearings, False) if front else []
@@ -13794,7 +13938,7 @@ def render(args: argparse.Namespace) -> int:
             pages[TOPICS_PAGE] = topics_page_html(homes, title, bearings, calls_href=output_path.name)
             index = calls_page_html(homes, title, bearings, activity, pages=pages, calls_href=output_path.name)
         pages[output_path.name] = index
-        publish_render(output_path.parent, pages)
+        publish_render(output_path, pages, bearings.session.identity if bearings.session else None)
     except (OSError, ValueError) as exc:
         print(f"quarterdeck: {exc}", file=sys.stderr)
         return 2

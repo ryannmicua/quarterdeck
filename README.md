@@ -80,7 +80,7 @@ for server requirements, phone setup and withdrawal behavior.
   marked "Not yet sorted". See the
   [board file reference](docs/reference/captain-board.md).
 - Board writer: `quarterdeck board upsert|touch|remove <task-id>`,
-  `quarterdeck board active` and `quarterdeck board list` let Firstmate keep the board current without
+  `quarterdeck board active --session-id ID` and `quarterdeck board list` let Firstmate keep the board current without
   hand-editing JSON; the writer changes only
   the board file. See [Keep the captain board current](docs/how-to/keep-the-board-current.md).
 - Decision briefs: a touch-friendly, theme-aware

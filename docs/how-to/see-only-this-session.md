@@ -3,7 +3,8 @@
 Quarterdeck shows the topics, tasks, reports and links from your current
 conversation with Firstmate. Calls, Topics, Search, the previous views, readable
 documents and exports use the same session. The session stays visible when idle
-until a newer operator record selects another conversation.
+until a newer operator record selects another conversation. A resumed chat
+keeps work attributed to its conversation ID.
 
 ## Record the conversation
 
@@ -32,6 +33,11 @@ identify one current conversation.
 Conversation evidence stays with its home. Use a registered route and task ID
 together, such as `mate/tide-merge`, to refer to a secondmate's task.
 
+The classic front page is used when the conversation has no topics. Adoption
+counts status questions tagged with this conversation’s `session_id` in its
+Firstmate home. Older metrics without conversation attribution stay out of
+the page.
+
 ## Links and output
 
 Calls includes HTTP and HTTPS links from the conversation under **Links from
@@ -39,6 +45,8 @@ this session**. Links carrying credentials, tokens or signing parameters are
 omitted. Classic, Lavish and `render --all` include the links, as do JSON exports
 and standalone artifacts.
 
-Re-rendering in the same directory removes obsolete pages from the previous
-render tracked in `.quarterdeck-render.json`. User files and files edited since
-rendering are preserved.
+Re-rendering in the same directory retires obsolete pages verified by
+`.quarterdeck-render.json` or a legacy Quarterdeck filename and page marker.
+Normal and Lavish renders can coexist for the same conversation. User files
+and unverifiable files, including untracked legacy raw documents, are
+preserved.

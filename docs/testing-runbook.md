@@ -62,8 +62,8 @@ automatically.
 
 Run `PYTHONPATH=tests python3 -m unittest -v test_quarterdeck.SessionScopeTests`.
 The fictional homes exercise conversation IDs, interleaved replies, routed
-decisions, report association, link disclosure and re-rendering in an existing
-output directory. The Lavish case checks generated HTML without launching
+decisions, report association, link disclosure, cache isolation on a session
+switch, notification resolution and side-by-side static renders. The Lavish case checks generated HTML without launching
 Lavish. The artifact case checks the JSON payload that the artifact consumes.
 
 ### Shared page output and topic layout

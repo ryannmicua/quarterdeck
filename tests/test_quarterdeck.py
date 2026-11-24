@@ -10648,8 +10648,8 @@ class SessionScopeTests(unittest.TestCase):
             "homes": [{"label": "Harbor", "path": str(self.home), "transcripts": str(self.transcripts)}], **extra,
         }), encoding="utf-8")
 
-    def render(self, *flags: str) -> Path:
-        out = self.root / "out" / "-".join(flags or ("default",))
+    def render(self, *flags: str, out: Path | None = None) -> Path:
+        out = out or self.root / "out" / "-".join(flags or ("default",))
         args = quarterdeck.make_parser().parse_args(
             ["render", "--config", str(self.config), "--no-snapshot", "--output", str(out / "index.html"), *flags])
         errors = io.StringIO()
@@ -10685,7 +10685,7 @@ class SessionScopeTests(unittest.TestCase):
         self.assertFalse((out / "topic-old-survey.html").exists(), "a topic from an earlier session gets no page")
         pages = self.every_page(out)
         for hidden in ("Kelp survey scope", "kelp-call", "Old survey", "Keep the old survey?", "gull-count",
-                       "example.com/old/page", "example.com/interleaved", "adoption.html"):
+                       "example.com/old/page", "example.com/interleaved"):
             self.assertNotIn(hidden, pages, f"{hidden} belongs to an earlier session and must not show anywhere")
 
     def test_historical_view_overrides_are_rejected(self) -> None:
@@ -10705,16 +10705,23 @@ class SessionScopeTests(unittest.TestCase):
             out = self.render()
             calls = (out / "index.html").read_text(encoding="utf-8")
             self.assertIn("No conversation is recorded for this session.", calls)
-            self.assertEqual(self.search_tasks(out), [])
+            self.assertFalse((out / "search.html").exists())
             self.assertNotIn("Kelp survey scope", self.every_page(out))
 
-    def test_a_session_with_no_topic_still_opens_on_calls(self) -> None:
+    def test_a_session_with_no_topic_keeps_the_classic_front(self) -> None:
         for name in ("tide-launch.md", "old-survey.md"):
             (self.data / "topics" / name).unlink()
         (self.data / "topics").rmdir()
         out = self.render()
-        self.assertIn("Your calls", (out / "index.html").read_text(encoding="utf-8"))
-        self.assertIn("No topic has come up in this session yet.", (out / "topics.html").read_text(encoding="utf-8"))
+        page = (out / "index.html").read_text(encoding="utf-8")
+        self.assertIn("Details by home", page)
+        self.assertIn("Only this session, since", page)
+        self.assertIn('href="https://example.com/buoy/preview"', page)
+        self.assertFalse((out / "topics.html").exists())
+        serve = quarterdeck.make_parser().parse_args(["serve", "--config", str(self.config), "--no-snapshot"])
+        pages = quarterdeck.site_builder(serve)()
+        self.assertIn("Details by home", pages["index.html"])
+        self.assertNotIn("topics.html", pages)
         self.assertNotIn("kelp-call", self.every_page(out))
 
     def test_new_session_removes_owned_pages_and_preserves_user_files(self) -> None:
@@ -10788,11 +10795,13 @@ class SessionScopeTests(unittest.TestCase):
 
     def test_safe_chat_links_survive_each_output_and_have_no_cap(self) -> None:
         safe = ["https://example.com/releases/build_", "http://[::1]:4387/session/example",
-                "https://example.com/wiki/Ship_(boat)", "https://example.com/view?tab=latest"]
+                "https://example.com/wiki/Ship_(boat)", "https://example.com/view?tab=latest",
+                "https://example.com/services/shipping"]
         safe.extend(f"https://example.com/preview/{number}" for number in range(45))
         hidden = ["https://user:pass@example.com/secret", "https://example.com/signed?X-Amz-Signature=private",
                   "https://example.com/oauth#access_token=private", "https://example.com/a?%74oken=private",
-                  "https://[invalid"]
+                  "https://hooks.slack.com/%73ervices/demo/team/fictional-key",
+                  "https://example.com/api/webhooks/demo/fictional-key", "https://[invalid"]
         with (self.transcripts / "session.jsonl").open("a", encoding="utf-8") as stream:
             links = " ".join(f"[Preview]({url})" for url in safe)
             stream.write(wait_record("assistant", "m4", self.iso(self.now), links + " " + " ".join(hidden),
@@ -10806,7 +10815,7 @@ class SessionScopeTests(unittest.TestCase):
         serve = quarterdeck.make_parser().parse_args(["serve", "--config", str(self.config), "--no-snapshot"])
         pages = quarterdeck.site_builder(serve)()
         self.assertIn(f'href="{safe[-1]}"', pages["index.html"])
-        self.assertNotIn("adoption.html", pages)
+        self.assertIn("adoption.html", pages)
         artifact = self.root / "artifact.html"
         args = quarterdeck.make_parser().parse_args(
             ["export", "--config", str(self.config), "--no-snapshot", "--artifact", str(artifact)])
@@ -10822,8 +10831,159 @@ class SessionScopeTests(unittest.TestCase):
             with redirect_stdout(io.StringIO()):
                 self.assertEqual(quarterdeck.main(["board", *args, "--home", str(self.home)]), 0)
         out = self.render()
-        self.assertEqual(self.search_tasks(out), ["kelp-call"])
+        self.assertIn("Kelp survey scope", self.every_page(out))
         self.assertNotIn("Tide launch", self.every_page(out))
+
+
+    def test_unrelated_urls_link_without_selecting_topics_tasks_or_reports(self) -> None:
+        urls = ["https://example.com/help?tab=old-survey", "https://example.com/?task=gull-count",
+                "https://example.com/?file=data/topics/old-survey.md", "https://example.com/?file=data/gull-count/report.md"]
+        (self.transcripts / "other.jsonl").write_text(
+            wait_record("owner", "url-only", self.iso(self.now), " ".join(urls), sessionId="url-only"), encoding="utf-8")
+        with redirect_stdout(io.StringIO()):
+            self.assertEqual(quarterdeck.main(["board", "active", "--session-id", "url-only", "--home", str(self.home)]), 0)
+        out = self.render()
+        page = (out / "index.html").read_text(encoding="utf-8")
+        for url in urls:
+            self.assertIn(f'href="{url}"', page)
+        for title in ("Old survey", "Gull count tally", "gull-count findings"):
+            self.assertNotIn(title, self.every_page(out))
+        self.assertFalse(list(out.glob("topic-*.html")))
+        self.assertFalse(list(out.glob("report-*.html")))
+
+    def test_routed_touch_and_idle_resume_keep_only_attributed_work(self) -> None:
+        child = self.root / "mate"
+        (child / "data" / "topics").mkdir(parents=True)
+        (child / "data" / "topics" / "child-survey.md").write_text(
+            "# Old survey\n\nNow: Child charts are ready.\nPieces: child-choice\n", encoding="utf-8")
+        (child / "data" / "backlog.md").write_text(
+            held_row("child-choice", "Child survey choice", "Pick a chart", self.iso(self.start)), encoding="utf-8")
+        (self.data / "secondmates.md").write_text(f"- mate - Charts water. (home: {child})\n", encoding="utf-8")
+        path = self.data / "captain-board.json"
+        document = json.loads(path.read_text(encoding="utf-8"))
+        document["operator"]["last_active_at"] = self.iso(self.start - timedelta(hours=5))
+        document["operator"]["session_started_at"] = self.iso(self.start - timedelta(hours=6))
+        document["items"].append({"id": "child-choice", "group": "decide", "title": "Child survey choice",
+                                  "ask": "Pick a chart", "task": "mate/child-choice", "topic": "Old survey",
+                                  "session_id": "current", "touched_at": self.iso(self.start - timedelta(hours=5))})
+        path.write_text(json.dumps(document), encoding="utf-8")
+        with redirect_stdout(io.StringIO()):
+            self.assertEqual(quarterdeck.main(["board", "active", "--session-id", "current", "--home", str(self.home)]), 0)
+            self.assertEqual(quarterdeck.main(["board", "touch", "mate/child-choice", "--home", str(self.home)]), 0)
+        out = self.render()
+        self.assertTrue((out / "topic-child-survey.html").is_file())
+        self.assertFalse((out / "topic-old-survey.html").exists())
+        self.assertIn("Lamp test hold", self.every_page(out))
+        self.assertIn("Reef sonar scan", self.every_page(out))
+
+    def test_adoption_uses_only_session_attributed_status_tags(self) -> None:
+        log = self.data / "qd-adoption" / "tags.jsonl"
+        log.parent.mkdir()
+        log.write_text("".join(json.dumps(tag) + "\n" for tag in (
+            {"kind": "status", "session_id": "current", "topic": "Current chart", "qd_had_answer": True},
+            {"kind": "status", "session_id": "previous", "topic": "Historical chart", "qd_had_answer": True},
+            {"kind": "status", "topic": "Untagged chart", "qd_had_answer": False},
+        )), encoding="utf-8")
+        out = self.render()
+        self.assertIn('href="adoption.html"', (out / "index.html").read_text(encoding="utf-8"))
+        adoption = (out / "adoption.html").read_text(encoding="utf-8")
+        self.assertIn('href="index.html"', adoption)
+        self.assertIn("1 status question", adoption)
+        self.assertIn("Current chart", adoption)
+        for hidden in ("Historical chart", "Untagged chart", "Week against week"):
+            self.assertNotIn(hidden, adoption)
+
+    def test_coexisting_renders_and_identifiable_legacy_files(self) -> None:
+        out = self.render()
+        self.render("--lavish", out=out)
+        for name in ("index.html", "index.lavish.html", "search.html", "topic-tide-launch.html"):
+            self.assertTrue((out / name).is_file(), name)
+        self.render(out=out)
+        self.assertTrue((out / "index.lavish.html").is_file())
+        self.board(operator=False)
+        self.render(out=out)
+        for name in ("index.lavish.html", "search.html", "topic-tide-launch.html"):
+            self.assertFalse((out / name).exists(), name)
+
+        self.board(operator=True)
+        self.render(out=out)
+        (out / ".quarterdeck-render.json").unlink()
+        user_page = out / "topic-personal.html"
+        user_page.write_text("<h1>Personal page</h1>", encoding="utf-8")
+        unverifiable_raw = out / "raw-0123456789ab.html"
+        unverifiable_raw.write_text("<h1>Personal raw page</h1>", encoding="utf-8")
+        self.board(operator=False)
+        self.render(out=out)
+        self.assertFalse((out / "topic-tide-launch.html").exists())
+        self.assertFalse((out / "search.html").exists())
+        self.assertTrue(user_page.exists())
+        self.assertTrue(unverifiable_raw.exists())
+
+    def test_cache_rejects_previous_conversation_on_switch_or_failed_rebuild(self) -> None:
+        args = quarterdeck.make_parser().parse_args(["serve", "--config", str(self.config), "--no-snapshot"])
+        build = quarterdeck.site_builder(args)
+        fail = False
+        switched_during_build = False
+
+        def generate():
+            if fail:
+                raise ValueError("fictional failed build")
+            pages = build()
+            if switched_during_build:
+                self.board(operator=False)
+            return pages
+
+        cache = quarterdeck.SiteCache(generate, current_session=lambda: quarterdeck.served_session(args))
+        original = cache.get()
+        self.assertIn("topic-tide-launch.html", original)
+        self.assertIn("Merge the tide tables now?", original["index.html"])
+        self.assertIn(quarterdeck.CARDS_PAGE, original)
+        self.board(operator=False)
+        fail = True
+        with redirect_stderr(io.StringIO()), self.assertRaisesRegex(ValueError, "fictional failed build"):
+            cache.get()
+        fail = False
+        fresh = cache.get()
+        self.assertNotIn("topic-tide-launch.html", fresh)
+        self.assertEqual(json.loads(fresh[quarterdeck.CARDS_PAGE])["cards"], [])
+        self.board(operator=True)
+        switched_during_build = True
+        with redirect_stderr(io.StringIO()):
+            try:
+                page = cache.get()["index.html"]
+            except ValueError:
+                pass
+            else:
+                self.assertNotIn("Merge the tide tables now?", page)
+        self.assertNotIn("topic-tide-launch.html", cache.get())
+
+    def test_notification_survives_scope_switch_until_topic_decision_resolves(self) -> None:
+        args = quarterdeck.make_parser().parse_args(["serve", "--config", str(self.config)])
+        notifier = quarterdeck.PushNotifier(self.root / "push", background=False)
+        sent = []
+
+        def deliver(messages):
+            sent.extend(messages)
+            state = quarterdeck.read_private_json(notifier.items_path)
+            for message in messages:
+                state["items"][message["tag"]]["shown"] = message["type"] == "new"
+            quarterdeck.write_private_json(notifier.items_path, state)
+
+        with patch.object(notifier, "send_all", side_effect=deliver), patch.object(
+            quarterdeck, "run_attention_feed", return_value={"open_decisions": []}
+        ):
+            notifier.observe([], complete=True)
+            build = quarterdeck.site_builder(args, push=notifier)
+            build()
+            tag = next(message["tag"] for message in sent if message.get("body") == "Merge the tide tables now?")
+            self.board(operator=False)
+            build()
+            self.assertNotIn({"type": "withdraw", "tag": tag}, sent)
+            topic = self.data / "topics" / "tide-launch.md"
+            topic.write_text(topic.read_text(encoding="utf-8").replace("Now:", "Status: done\nNow:", 1),
+                             encoding="utf-8")
+            build()
+            self.assertIn({"type": "withdraw", "tag": tag}, sent)
 
 
 class TopicTests(unittest.TestCase):
@@ -11822,7 +11982,7 @@ Decision: Decision newer
         seen: list[dict[str, object]] = []
 
         class Spy:
-            def observe(self, cards, complete):  # noqa: ANN001, ANN201 - records what the build hands to notifications
+            def observe(self, cards, complete, *, unresolved=frozenset()):  # noqa: ANN001, ANN201
                 seen.extend(cards)
                 return []
 
