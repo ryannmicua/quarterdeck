@@ -4,7 +4,7 @@
 
 ```text
 quarterdeck add --kind resource|list|questions --title TEXT --description TEXT
-                [--url URL --link-text TEXT] [--body-file PATH|-] [--worker NAME]
+                [--url URL --link-text TEXT] [--body-file PATH|-]
 quarterdeck list
 quarterdeck show ID
 quarterdeck mark ID[.PART] answered|closed|open
@@ -25,7 +25,7 @@ Item commands report validation errors on stderr and exit with status 2.
 
 | Command | What it does |
 | --- | --- |
-| `add` | Saves a new item and prints its ID. A `resource` needs `--url` and `--link-text`. A `list` or `questions` item needs `--body-file`. See [the input formats and examples](../how-to/save-items.md#add-an-item). `--worker NAME` marks a `questions` item as asked by that worker, so the [workers section](../how-to/read-workers.md#follow-a-link) can link to it. |
+| `add` | Saves a new item and prints its ID. A `resource` needs `--url` and `--link-text`. A `list` or `questions` item needs `--body-file`. See [the input formats and examples](../how-to/save-items.md#add-an-item). |
 | `list` | Prints saved items, newest first, with ID, kind, saved date and title. |
 | `show` | Prints one item in full, numbering list entries and questions as `Q7.1`, `Q7.2`. |
 | `mark` | Sets the state of one question or every question in a questions item. It preserves any saved answer, timestamp and delivery status. See [Read answers](../how-to/read-answers.md) for examples. |
@@ -42,11 +42,11 @@ Item commands report validation errors on stderr and exit with status 2.
 
 A served page also has a **Workers** section when `firstmate_home` is set. The
 page asks `GET workers.json` (under any `base_path`) on entry and on **Refresh
-workers**. Each request runs the home's `bin/fm-fleet-snapshot.sh --local`, a
-read-only command that uses no model, with `FM_HOME` set to that home and a
-60 second limit. It answers 502 if the command fails, times out or prints
-something unexpected, and 404 when `firstmate_home` is not set. Quarterdeck
-writes nothing to the home.
+workers**. The endpoint runs the home's `bin/fm-fleet-snapshot.sh --local`,
+a read-only command that uses no model, with `FM_HOME` set to that home and a
+60 second limit. It answers 502 if a read is already running or the command
+fails, times out or prints something unexpected. It answers 404 when
+`firstmate_home` is absent. Quarterdeck writes nothing to the home.
 
 | Field in `workers.json` | Meaning |
 | --- | --- |
@@ -93,9 +93,10 @@ or `${XDG_CONFIG_HOME:-~/.config}/quarterdeck.json` when it exists.
 | `base_path` | string | none | The URL prefix described above. |
 | `firstmate_home` | absolute path after expanding `~` | see legacy fallback below | Local destination for answers submitted to `serve`, and the home whose workers the page lists. |
 
-When `firstmate_home` is absent, `serve` uses a legacy `homes` list only if it
-contains exactly one object with a valid `path`. Relative legacy paths are
-resolved from the config file's directory. Without a destination,
-Quarterdeck saves answers with delivery pending. `captain_waits` is ignored.
+When `firstmate_home` is absent, `serve` uses a legacy `homes` list only for
+answer delivery and only if it contains exactly one object with a valid
+`path`. Relative legacy paths are resolved from the config file's directory.
+Without a destination, Quarterdeck saves answers with delivery pending.
+`captain_waits` is ignored.
 Any other key is an error. See
 [`quarterdeck.example.json`](../../quarterdeck.example.json).

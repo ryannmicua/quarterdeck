@@ -13,6 +13,10 @@ as files instead, run `quarterdeck render`; see the
 
 To submit a decision, see [Answer questions](answer-questions.md).
 
+Set `firstmate_home` to opt in to publishing that home's live workers roster.
+Anyone who can reach the served page can see it. See
+[Read the workers section](read-workers.md).
+
 ## Reach it from a phone
 
 Serve HTTPS on an address the phone can reach:

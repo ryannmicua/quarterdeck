@@ -38,21 +38,16 @@ refresh after the terminal closes. Second mates are listed separately, under
 | Unknown | The home gave no clear state, such as a paused worker or an old reading. |
 
 Quarterdeck never guesses a status from silence. A row shows **Activity
-unavailable** when the home names no task for the worker.
+unavailable** when the home names no task for the worker. The snapshot has
+no status for pending checks. A second mate without a confirmed contact
+shows **Contact unavailable**. Quarterdeck keeps no contact history.
 
 ## Follow a link
 
-A row links to the worker's pull request when the home names one. A worker
-with **Question asked** also links to **Saved question** when a questions item
-saved for that worker still has an open question. Save it with the worker's name:
-
-```sh
-quarterdeck add --kind questions --worker Wren --title "Map scale" \
-  --description "Which markers the trail map shows." --body-file questions.json
-```
+A row links to the worker's pull request when the snapshot supplies its URL.
 
 ## If a refresh fails
 
 The page keeps the last list and says **Refresh failed** with the time of that
-list. Select **Refresh workers** to try again. Quarterdeck waits up to a minute
-for the home before it gives up.
+list. Select **Refresh workers** to try again. A read can take up to a minute.
+If a read is already in progress, the new refresh fails immediately.

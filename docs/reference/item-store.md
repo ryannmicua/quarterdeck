@@ -42,7 +42,6 @@ Readers validate the records without taking the lock.
 | `description` | Up to 600 characters describing what the item is and why it was saved. |
 | `saved_at` | UTC time when the item was saved. |
 | `body` | Depends on the kind; see below. |
-| `worker` | Optional, on `questions` items only: the name of the worker who asked, up to 64 letters, digits, dots, underscores and hyphens. Set by `add --worker`. The [workers section](../how-to/read-workers.md#follow-a-link) links that worker's row to the item while a question is open. |
 
 | Kind | `body` |
 | --- | --- |

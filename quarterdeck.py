@@ -324,9 +324,6 @@ def check_store(data: object) -> dict[str, object]:
                 raise ValueError("saved_at must be a UTC timestamp") from exc
             if timestamp.isoformat() + "Z" != saved_at:
                 raise ValueError("saved_at must be a UTC timestamp")
-            if "worker" in item and (item["kind"] != "questions" or not isinstance(item["worker"], str)
-                                     or not WORKER_RE.fullmatch(item["worker"])):
-                raise ValueError("worker must name a worker on a questions item")
             body = validated_body(item["kind"], item.get("body"))
             if (title, description, body) != (item["title"], item["description"], item["body"]):
                 raise ValueError("item text or body is not in the saved format")
@@ -570,10 +567,6 @@ def add_item(args: argparse.Namespace) -> int:
             "description": clean_text(args.description, "description", DESCRIPTION_LIMIT, multiline=True),
             "saved_at": now_text(), "body": body,
         }
-        if args.worker is not None:
-            if args.kind != "questions" or not WORKER_RE.fullmatch(args.worker):
-                raise ValueError("--worker names the worker who asked, and only a questions item takes it")
-            item["worker"] = args.worker
         with changing_store(store_path()) as data:
             item = {"id": f"Q{data['next_id']}", **item}
             data["next_id"] = int(data["next_id"]) + 1  # type: ignore[call-overload]
@@ -648,7 +641,7 @@ def run_snapshot(home: Path) -> object:
         raise SnapshotError("the fleet snapshot failed")
     try:
         return json.loads(output)
-    except ValueError as exc:
+    except (ValueError, RecursionError) as exc:
         raise SnapshotError("the fleet snapshot was not readable") from exc
 
 
@@ -660,7 +653,7 @@ def snapshot_text(value: object, limit: int = TITLE_LIMIT) -> str | None:
 
 
 def utc_text(moment: datetime) -> str:
-    return moment.astimezone(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+    return moment.astimezone(timezone.utc).isoformat(timespec="seconds").removesuffix("+00:00") + "Z"
 
 
 def worker_status(task: dict[str, object]) -> str:
@@ -670,26 +663,24 @@ def worker_status(task: dict[str, object]) -> str:
         return "Question asked"
     if not isinstance(current, dict) or current.get("freshness") not in {None, "fresh"}:
         return "Unknown"
-    return WORKER_STATES.get(str(current.get("state")), "Unknown")
+    return WORKER_STATES.get(current.get("state"), "Unknown")
 
 
-def worker_row(task: dict[str, object], observed: datetime) -> dict[str, object] | None:
-    key = task.get("id")
-    if not isinstance(key, str) or not WORKER_RE.fullmatch(key):
-        return None
+def worker_row(key: str, task: dict[str, object], observed: datetime) -> dict[str, object]:
     backlog = task.get("backlog") if isinstance(task.get("backlog"), dict) else {}
     project = None
     if isinstance(task.get("project"), str) and task["project"]:  # type: ignore[index]
         project = snapshot_text(Path(str(task["project"])).name, 80)
     row: dict[str, object] = {
-        "key": key, "name": key, "status": worker_status(task), "project": project or snapshot_text(backlog.get("repo"), 80),  # type: ignore[union-attr]
+        "name": key, "status": worker_status(task), "project": project or snapshot_text(backlog.get("repo"), 80),  # type: ignore[union-attr]
         "activity": snapshot_text(backlog.get("title")) or ACTIVITY_UNAVAILABLE, "active_at": None, "links": [],  # type: ignore[union-attr]
     }
     paths = task.get("paths")
     last = paths.get("status_log", {}).get("last_event") if isinstance(paths, dict) and isinstance(paths.get("status_log"), dict) else None
     age = last.get("age_seconds") if isinstance(last, dict) else None
     if isinstance(age, (int, float)) and not isinstance(age, bool) and 0 <= age < 10 * 365 * 86400:
-        row["active_at"] = utc_text(observed - timedelta(seconds=age))
+        with contextlib.suppress(OverflowError):
+            row["active_at"] = utc_text(observed - timedelta(seconds=age))
     pr = task.get("pr")
     if isinstance(pr, dict) and isinstance(pr.get("url"), str):
         try:
@@ -710,45 +701,49 @@ def second_mate_row(task: dict[str, object], row: dict[str, object], observed: d
 
 def workers_snapshot(home: Path) -> dict[str, object]:
     """Every worker with a live terminal screen, plus the second mate roster, as the page shows them."""
-    data = run_snapshot(home)
+    if not snapshot_lock.acquire(blocking=False):
+        raise SnapshotError("the fleet snapshot is already running")
+    try:
+        data = run_snapshot(home)
+    finally:
+        snapshot_lock.release()
     tasks = data.get("tasks") if isinstance(data, dict) else None
     generated = data.get("generated") if isinstance(data, dict) else None
     if not isinstance(tasks, list) or not isinstance(generated, str) or not UTC_RE.fullmatch(generated):
         raise SnapshotError("the fleet snapshot was not in the expected shape")
-    observed = datetime.strptime(generated, "%Y-%m-%dT%H:%M:%SZ").replace(tzinfo=timezone.utc)
-    workers, second_mates, seen = [], [], set()
+    try:
+        observed = datetime.strptime(generated, "%Y-%m-%dT%H:%M:%SZ").replace(tzinfo=timezone.utc)
+    except ValueError as exc:
+        raise SnapshotError("the fleet snapshot timestamp was invalid") from exc
+    workers, second_mates = {}, {}
     for task in tasks:
         if not isinstance(task, dict):
-            continue
-        row = worker_row(task, observed)
-        if row is None or row["key"] in seen:
-            continue
-        seen.add(row["key"])
-        if task.get("kind") == "secondmate":
-            second_mates.append(second_mate_row(task, row, observed))
-        elif isinstance(task.get("endpoint"), dict) and task["endpoint"].get("exists") is True:  # type: ignore[union-attr]
-            workers.append(row)
-    return {"observed_at": generated, "workers": workers, "second_mates": second_mates}
-
-
-def worker_questions(data: dict[str, object]) -> dict[str, str]:
-    """The newest saved question set still open for each worker."""
-    found: dict[str, str] = {}
-    for item in newest_first(data["items"]):  # type: ignore[arg-type]
-        worker = item.get("worker")
-        if isinstance(worker, str) and worker not in found and item["kind"] == "questions" and question_summary(item)[1]:
-            found[worker] = item_page_name(str(item["id"]))
-    return found
-
-
-def workers_payload(home: Path, data: dict[str, object]) -> dict[str, object]:
-    with snapshot_lock:
-        snapshot = workers_snapshot(home)
-    questions = worker_questions(data)
-    for row in snapshot["workers"] + snapshot["second_mates"]:  # type: ignore[operator]
-        if row["status"] == "Question asked" and row["key"] in questions:
-            row["links"].append({"text": "Saved question", "href": questions[row["key"]]})
-    return snapshot
+            raise SnapshotError("the fleet snapshot has an invalid task")
+        key, kind, endpoint = task.get("id"), task.get("kind"), task.get("endpoint")
+        if (not isinstance(key, str) or not WORKER_RE.fullmatch(key)
+                or not isinstance(kind, str) or not kind.strip() or not isinstance(endpoint, dict)):
+            raise SnapshotError("the fleet snapshot has an invalid task")
+        exists = endpoint.get("exists")
+        if not isinstance(exists, bool) and (kind != "secondmate" or exists is not None):
+            raise SnapshotError("the fleet snapshot has no reliable terminal state")
+        current = task.get("current_state")
+        if current is not None and (not isinstance(current, dict) or any(
+                not isinstance(current.get(field), (str, type(None))) for field in ("state", "freshness"))):
+            raise SnapshotError("the fleet snapshot has an invalid task status")
+        hints = task.get("hints")
+        if hints is not None and (not isinstance(hints, dict)
+                                  or not isinstance(hints.get("open_decisions"), (list, type(None)))):
+            raise SnapshotError("the fleet snapshot has an invalid task status")
+        if kind == "secondmate":
+            second_mates.setdefault(key, task)
+        elif exists:
+            workers.setdefault(key, task)
+    return {
+        "observed_at": generated,
+        "workers": [worker_row(key, task, observed) for key, task in workers.items() if key not in second_mates],
+        "second_mates": [second_mate_row(task, worker_row(key, task, observed), observed)
+                         for key, task in second_mates.items()],
+    }
 
 
 # --- Pages ------------------------------------------------------------------------------
@@ -847,9 +842,10 @@ table.items td.when { white-space:normal; }
 .desk .work { max-width:none; margin:0; padding:1rem; border-width:0 0 1px; border-left:5px solid var(--rule); border-radius:0; background:transparent;
   display:grid; grid-template-columns:minmax(0,1fr) auto; gap:0 1.5rem; align-items:center; }
 .desk .work.next { border-left-color:var(--signal); background:var(--signal-ground); }
-.desk .work > .eyebrow, .desk .work > h3, .desk .work > p { grid-column:1; }
+.desk .work > .eyebrow, .desk .work > h3, .desk .work > p, .desk .work > ul { grid-column:1; }
 .desk .work > p { margin:.2rem 0 0; }
-.desk .work > .actions { grid-column:2; grid-row:1 / span 3; justify-content:flex-end; }
+.desk .work > ul { margin:.4rem 0 0; padding-inline-start:1.25rem; }
+.desk .work > .actions { grid-column:2; grid-row:1 / span 4; justify-content:flex-end; }
 .button-link, .work-action { display:inline-flex; align-items:center; min-height:44px; padding:.5rem .85rem; border-radius:5px; font:600 var(--text-md)/1.3 var(--sans);
   text-decoration:none; border:1px solid var(--soft); background:var(--raised); color:var(--ink); }
 .work-action { background:var(--ink); color:var(--raised); border-color:var(--ink); }
@@ -891,7 +887,7 @@ WORKERS_SCRIPT = r"""
   const status = section.querySelector('#workers-status');
   const list = section.querySelector('#workers-list');
   const exceptions = new Set(['Question asked', 'Stuck', 'Unreachable']);
-  let last = null, latest = 0;
+  let last = null;
   const clock = iso => {
     const moment = new Date(iso);
     const today = moment.toDateString() === new Date().toDateString();
@@ -959,7 +955,6 @@ WORKERS_SCRIPT = r"""
   };
   const load = async () => {
     if (button.getAttribute('aria-disabled') === 'true') return;
-    const mine = ++latest;
     button.setAttribute('aria-disabled', 'true');
     list.setAttribute('aria-busy', 'true');
     status.className = 'meta';
@@ -968,17 +963,14 @@ WORKERS_SCRIPT = r"""
       const response = await fetch('workers.json', {cache: 'no-store', headers: {Accept: 'application/json'}});
       if (!response.ok) throw new Error('refresh failed');
       const data = await response.json();
-      if (mine !== latest) return;
       if (last && data.observed_at < last.observed_at) throw new Error('older answer');
       last = data;
       show(data);
     } catch (error) {
-      if (mine === latest) failed();
+      failed();
     } finally {
-      if (mine === latest) {
-        button.removeAttribute('aria-disabled');
-        list.removeAttribute('aria-busy');
-      }
+      button.removeAttribute('aria-disabled');
+      list.removeAttribute('aria-busy');
     }
   };
   button.addEventListener('click', load);
@@ -1084,9 +1076,13 @@ def question_card(item, *, served, primary):
     progress = f'{remaining} of {len(question_parts(item))} open' if remaining else state
     action = "Read questions" if not served else ("Answer questions" if remaining else "Review answers")
     link_class = ' class="work-action"' if primary else ' class="button-link"'
+    prompts = "".join(f'<li>{esc(question["question"])}</li>'
+                      for number, question in enumerate(item["body"]["questions"], 1)
+                      if part_record(item, number).get("state", "open") == "open")
     return (f'<article class="work{' next' if primary else ''}"><div class="eyebrow"><span class="id">{item["id"]}</span> Questions</div>'
             f'<h3>{esc(item["title"])}</h3><p>{linked_text(item["description"])}</p>'
-            f'<div class="actions"><span class="badge">{progress}</span>'
+            + (f'<ul>{prompts}</ul>' if prompts else '')
+            + f'<div class="actions"><span class="badge">{progress}</span>'
             + ('<span>Not delivered</span>' if pending else '')
             + f'<a{link_class} href="{href}">{action}</a></div></article>')
 
@@ -1294,20 +1290,23 @@ def list_page(data: dict[str, object], site_title: str, *, served: bool, saved_n
     items = newest_first(data["items"])  # type: ignore[arg-type]
     empty = "Nothing is saved yet. Ask Firstmate to send something to Quarterdeck: a link, a list or open questions."
     attention, reviewed, references = [], [], []
+    primary = None
     for item in items:
         if item["kind"] != "questions":
             references.append(item)
             continue
         _, remaining, pending = question_summary(item)
         (attention if remaining or pending else reviewed).append(item)
+        if remaining and primary is None:
+            primary = item
     body = ""
 
-    def desk(group: list[dict[str, object]], *, first: bool) -> str:
-        cards = "".join(question_card(item, served=served, primary=first and index == 0) for index, item in enumerate(group))
+    def desk(group: list[dict[str, object]]) -> str:
+        cards = "".join(question_card(item, served=served, primary=item is primary) for item in group)
         return f'<div class="desk">{cards}</div>'
 
     if attention:
-        body += "<h1>My desk</h1>" + desk(attention, first=True)
+        body += "<h1>My desk</h1>" + desk(attention)
     elif served:
         nothing = empty if not items else "Nothing is waiting for you. Saved questions that need an answer show here."
         body += f'<h1>My desk</h1><p class="empty">{esc(nothing)}</p>'
@@ -1315,7 +1314,7 @@ def list_page(data: dict[str, object], site_title: str, *, served: bool, saved_n
         body += workers_section(workers)
     if reviewed:
         level = 2 if body else 1
-        body += f"<h{level}>Reviewed questions</h{level}>" + desk(reviewed, first=False)
+        body += f"<h{level}>Reviewed questions</h{level}>" + desk(reviewed)
     if references:
         level = 2 if body else 1
         body += f"<h{level}>References</h{level}>" + items_table(references)
@@ -1609,7 +1608,8 @@ def make_server(host: str, port: int, handler: type[BaseHTTPRequestHandler],
     return Server((host, port), handler)
 
 
-def make_handler(site_title: str, base_path: str = "", store: Path | None = None, home: Path | None = None) -> type[BaseHTTPRequestHandler]:
+def make_handler(site_title: str, base_path: str = "", store: Path | None = None, home: Path | None = None,
+                 *, workers_home: Path | None = None) -> type[BaseHTTPRequestHandler]:
     """Every page is built from the item store when it is requested."""
     class Handler(BaseHTTPRequestHandler):
         server_version = "Quarterdeck"
@@ -1659,7 +1659,15 @@ def make_handler(site_title: str, base_path: str = "", store: Path | None = None
             if name in APP_ICON_PATHS:
                 self.send_text(200, app_asset(name) or b"", APP_ICON_PATHS[name], cache="public, max-age=86400")
                 return
-            if name != "index.html" and not ITEM_PAGE_RE.fullmatch(name) and not (name == "workers.json" and home):
+            if name == "workers.json" and workers_home is not None:
+                try:
+                    snapshot = workers_snapshot(workers_home)
+                except SnapshotError:
+                    self.send_text(502, json.dumps({"error": "The workers could not be read."}), "application/json")
+                else:
+                    self.send_text(200, json.dumps(snapshot), "application/json")
+                return
+            if name != "index.html" and not ITEM_PAGE_RE.fullmatch(name):
                 self.send_text(404, "Not found\n")
                 return
             try:
@@ -1667,14 +1675,8 @@ def make_handler(site_title: str, base_path: str = "", store: Path | None = None
             except ValueError:
                 self.send_text(500, "Quarterdeck could not read its item store\n")
                 return
-            if name == "workers.json":
-                try:
-                    self.send_text(200, json.dumps(workers_payload(home, data)), "application/json")  # type: ignore[arg-type]
-                except SnapshotError:
-                    self.send_text(502, json.dumps({"error": "The workers could not be read."}), "application/json")
-                return
             if name == "index.html":
-                self.send_text(200, list_page(data, site_title, served=True, workers=home is not None),
+                self.send_text(200, list_page(data, site_title, served=True, workers=workers_home is not None),
                                "text/html; charset=utf-8")
                 return
             try:
@@ -1743,7 +1745,9 @@ def serve(args: argparse.Namespace) -> int:
         config = load_config(config_path)
         tls = tls_context(args)
         base_path = effective_base_path(args)
-        handler = make_handler(page_title(args, config), base_path, home=answer_home(config, config_path))
+        explicit_home = config.get("firstmate_home")
+        handler = make_handler(page_title(args, config), base_path, home=answer_home(config, config_path),
+                               workers_home=Path(explicit_home) if isinstance(explicit_home, str) else None)
         port = args.port
         for host in bind_hosts(args):
             server = make_server(host, port, handler, tls)
@@ -1993,7 +1997,6 @@ def make_parser() -> argparse.ArgumentParser:
     add.add_argument("--url", help="a resource's http(s) address")
     add.add_argument("--link-text", help="a resource's link text")
     add.add_argument("--body-file", metavar="PATH", help="the body of a list or questions; - reads standard input")
-    add.add_argument("--worker", metavar="NAME", help="questions only: the worker who asked, so that worker's row links here while a question is open")
 
     command("list", "list saved items, newest first", "List saved items, newest first.", list_items)
 

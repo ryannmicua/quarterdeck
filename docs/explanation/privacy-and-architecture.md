@@ -1,8 +1,8 @@
 # Privacy and architecture
 
 Quarterdeck is a shelf the captain fills by hand. Firstmate saves an item only
-when the captain asks, with `quarterdeck add`, and the page shows those items
-and nothing else.
+when the captain asks, with `quarterdeck add`. The page shows those items and,
+when enabled, the live Firstmate workers roster.
 
 ## What Quarterdeck reads and writes
 
