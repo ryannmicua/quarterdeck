@@ -42,6 +42,7 @@ board file, Quarterdeck omits the captain board section.
 | `version` | yes | Must be integer `1`. Another value shows a warning and skips the board items. |
 | `updated_at` | yes | ISO 8601 UTC time of the last write. Drives the age and stale flag. |
 | `operator.last_active_at` | no | ISO 8601 time of the operator's latest message to Firstmate, written by `quarterdeck board active`. Groups the desk by session (below). |
+| `operator.session_id` | no | Claude Code conversation ID from `board active --session-id ID`. The page scope requires this ID. |
 | `operator.session_started_at` | no | ISO 8601 time of the first message of that session. Missing or invalid means the session starts at `last_active_at`. |
 | `items[].id` | yes | Stable slug, unique within the file. |
 | `items[].group` | yes | `merge`, `approve`, `decide`, `forward`, or `read`. |
@@ -51,6 +52,7 @@ board file, Quarterdeck omits the captain board section.
 | `items[].topic` | no | Topic label shown as a chip. |
 | `items[].task` | yes | Backlog task id used for the cross-check. A `route/id` form names a registered secondmate's task. |
 | `items[].links` | no | List of `{label, url}`; only `http` and `https` URLs are kept. Use it for the pull request or a Lavish page. A merge item's backlog PR link is added if no board link already points to it. |
+| `items[].session_id` | no | Conversation ID supplied with `board touch` or `board upsert --touch`. Attributes the touch to that conversation. |
 | `items[].touched_at` | no | ISO 8601 time (UTC recommended; no zone means UTC) Firstmate raised the ask or the captain last engaged with the item or its project: discussed it, answered, commented on its brief, or asked about it. Defines conversation recency and drives the ranking below. |
 | `items[].project` | no | Project name shown as a chip. Defaults to the backlog item's `repo`. |
 | `items[].brief` | no | `{url, recommendation}`. `url` is an http(s) link to the [decision brief](../how-to/write-decision-briefs.md), shown as an **Open brief** button; `recommendation` is one short line shown as a chip. Either may be omitted. |
@@ -111,8 +113,8 @@ Weekly sweep : Parked items with a known touched time over 14 days ago get a "ke
 `quarterdeck board active` records each operator message. A message more than
 **4 hours** after the previous one (or one recorded with `--new-session`)
 starts a new session, so the session is the run of messages with no gap over
-four hours. The page uses the same threshold to decide whether the operator is
-still in that session.
+four hours. Pass `--session-id ID` to bind the page to the Claude Code
+conversation. A different conversation ID also starts a new session.
 
 **Active session** (last message 4 hours ago or less). The desk is headed
 "On your desk" and grouped by when each item was raised or engaged

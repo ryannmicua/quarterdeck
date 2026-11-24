@@ -58,6 +58,14 @@ All homes and outputs are disposable fictional fixtures with isolated config
 and state; no real home scripts or inbox writes are needed. Fixtures clean up
 automatically.
 
+### Session-scoped page output
+
+Run `PYTHONPATH=tests python3 -m unittest -v test_quarterdeck.SessionScopeTests`.
+The fictional homes exercise conversation IDs, interleaved replies, routed
+decisions, report association, link disclosure and re-rendering in an existing
+output directory. The Lavish case checks generated HTML without launching
+Lavish. The artifact case checks the JSON payload that the artifact consumes.
+
 ### Shared page output and topic layout
 
 Run `PYTHONPATH=tests python3 -m unittest -v test_quarterdeck.OneLookTests test_quarterdeck.TopicTests`.

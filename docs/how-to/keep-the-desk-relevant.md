@@ -66,9 +66,8 @@ desk's items plus in-flight backlog work. An item is related through:
 - a shared project, or a shared topic.
 
 Each card says why it is there. Stale and discarded items are never listed.
-While the page shows only this session (the default; see
-[See only this session](see-only-this-session.md)), only items that belong to
-the session can be listed here.
+Related items on the page also follow the
+[current conversation scope](see-only-this-session.md).
 
 Firstmate records explicit relations when it knows two things belong together:
 

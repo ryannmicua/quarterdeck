@@ -575,6 +575,17 @@
     var byBand = function (band) { return calls.filter(function (call) { return call.band === band; }); };
 
     var session = snapshot.session;
+    if (snapshot.session_links && !session) {
+      root.appendChild(el("p", { "class": "note", text: "No conversation is recorded for this session." }));
+    }
+    if (snapshot.session_links && snapshot.session_links.length) {
+      var links = snapshot.session_links.map(function (link) {
+        return safeUrl(link.url) ? el("li", {}, [el("a", { href: link.url, text: link.label })]) : null;
+      });
+      root.appendChild(el("section", { "class": "session-links" }, [
+        el("h2", { text: "Links from this session" }), el("ul", { "class": "rows" }, links)
+      ]));
+    }
     var desk = byBand("desk");
     var nodes = [];
     var lastHeading = null;

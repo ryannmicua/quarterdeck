@@ -3,6 +3,7 @@ from __future__ import annotations
 import argparse
 import base64
 import dataclasses
+import hashlib
 import json
 import html
 import io
@@ -10558,7 +10559,7 @@ EXAMPLE_TOPIC = ROOT / "docs" / "reference" / "examples" / "maple-harbor-catalog
 
 
 class SessionScopeTests(unittest.TestCase):
-    """By default every page shows only what the captain's current session raised, touched or discussed."""
+    """Pages publish only content from the recorded conversation."""
 
     def setUp(self) -> None:
         self.temp = tempfile.TemporaryDirectory()
@@ -10573,11 +10574,19 @@ class SessionScopeTests(unittest.TestCase):
         self.transcripts.mkdir()
         self.now = datetime.now(timezone.utc).replace(microsecond=0)
         self.start = self.now - timedelta(hours=1)
+        settings = patch.dict(os.environ, {
+            "XDG_STATE_HOME": str(self.root / "qd-state"), "XDG_CONFIG_HOME": str(self.root / "qd-config"),
+        })
+        settings.start()
+        self.addCleanup(settings.stop)
         start, iso = self.start, self.iso
         stamp = lambda when: when.strftime("%Y-%m-%d %H:%M")  # noqa: E731
         (self.data / "backlog.md").write_text(
             "# Backlog\n\n## Held\n\n"
-            + held_row("tide-merge", "Tide table merge", "Merge word for PR 7", iso(start + timedelta(minutes=10))) + "\n"
+            + held_row("tide-merge", "Tide table merge data/tide-review/report.md", "Merge word for PR 7",
+                       iso(start + timedelta(minutes=10))) + "\n"
+            + held_row("lamp-test", "Lamp test hold", "Choose the test", iso(start + timedelta(minutes=10))).replace(
+                "(hold:", "(hold-session-id: current) (hold:", 1) + "\n"
             + held_row("kelp-call", "Kelp survey scope", "Pick a scope", iso(start - timedelta(days=2))) + "\n"
             + held_row("buoy-refit", "Buoy light refit", "Pick a lamp", iso(start - timedelta(days=3))) + "\n"
             + "\n## Queued\n\n- [ ] reef-scan - Reef sonar scan (repo: harbor-app)\n"
@@ -10595,24 +10604,27 @@ class SessionScopeTests(unittest.TestCase):
         )
         (self.data / "topics" / "old-survey.md").write_text(
             "# Old survey\n\nNow: Parked.\nWaiting on: you - say whether to keep it\nPieces: kelp-call\n\n"
-            f"## {stamp(start - timedelta(days=2))} | firstmate | chat\nId: survey-keep\n"
+            f"## {stamp(start + timedelta(minutes=15))} | firstmate | chat\nId: survey-keep\n"
             "Decision: Keep the old survey?\nOptions: Keep | Drop\n",
             encoding="utf-8",
         )
-        for task, when in (("tide-merge", self.now), ("gull-count", start - timedelta(days=4))):
+        for task, when in (("tide-review", start - timedelta(days=4)), ("gull-count", self.now)):
             (self.data / task).mkdir()
             report = self.data / task / "report.md"
             report.write_text(f"# {task} findings\n\nRecommendation: merge\n", encoding="utf-8")
             os.utime(report, (when.timestamp(), when.timestamp()))
         (self.home / "state" / "fleet-ledger.jsonl").write_text("".join(json.dumps(record) + "\n" for record in (
-            {"v": 1, "ts": (start + timedelta(minutes=2)).timestamp(), "event": "task.dispatched", "task": "reef-scan"},
-            {"v": 1, "ts": (start - timedelta(days=1)).timestamp(), "event": "task.dispatched", "task": "gull-count"},
+            {"v": 1, "ts": (start + timedelta(minutes=2)).timestamp(), "event": "task.dispatched",
+             "task": "reef-scan", "session_id": "current"},
+            {"v": 1, "ts": (start + timedelta(minutes=3)).timestamp(), "event": "task.dispatched", "task": "gull-count"},
         )), encoding="utf-8")
         (self.transcripts / "session.jsonl").write_text("".join(json.dumps(record) + "\n" for record in (
             json.loads(wait_record("owner", "m0", iso(start - timedelta(days=1)),
-                                   "Earlier: gull-count and https://example.com/old/page")),
-            json.loads(wait_record("owner", "m1", iso(start + timedelta(minutes=5)),
-                                   "What about buoy-refit? See https://example.com/buoy/preview.")),
+                                   "Earlier: gull-count and https://example.com/old/page", sessionId="previous")),
+            json.loads(wait_record("assistant", "m2", iso(start + timedelta(minutes=8)),
+                                   "Old survey and gull-count https://example.com/interleaved", sessionId="previous")),
+            json.loads(wait_record("owner", "m1", iso(start - timedelta(seconds=1)),
+                                   "Tide launch and buoy-refit? See https://example.com/buoy/preview.", sessionId="current")),
         )), encoding="utf-8")
         self.config = self.root / "config.json"
         self.write_config()
@@ -10628,7 +10640,7 @@ class SessionScopeTests(unittest.TestCase):
         ]}
         if operator:
             document["operator"] = {"last_active_at": self.iso(self.start + timedelta(minutes=30)),
-                                    "session_started_at": self.iso(self.start)}
+                                    "session_started_at": self.iso(self.start), "session_id": "current"}
         (self.data / "captain-board.json").write_text(json.dumps(document), encoding="utf-8")
 
     def write_config(self, **extra: object) -> None:
@@ -10640,8 +10652,9 @@ class SessionScopeTests(unittest.TestCase):
         out = self.root / "out" / "-".join(flags or ("default",))
         args = quarterdeck.make_parser().parse_args(
             ["render", "--config", str(self.config), "--no-snapshot", "--output", str(out / "index.html"), *flags])
-        with redirect_stdout(io.StringIO()), redirect_stderr(io.StringIO()):
-            self.assertEqual(quarterdeck.render(args), 0)
+        errors = io.StringIO()
+        with redirect_stdout(io.StringIO()), redirect_stderr(errors), patch("quarterdeck.shutil.which", return_value=None):
+            self.assertEqual(quarterdeck.render(args), 0, errors.getvalue())
         return out
 
     def every_page(self, out: Path) -> str:
@@ -10652,16 +10665,11 @@ class SessionScopeTests(unittest.TestCase):
         index = json.loads(re.search(r'id="search-index">(.*?)</script>', page, re.S).group(1))  # type: ignore[union-attr]
         return sorted(row["l"] for row in index if row["k"] == "Task")
 
-    def test_scope_collects_the_session_from_board_topics_holds_ledger_transcript_and_reports(self) -> None:
-        homes = [quarterdeck.load_home_snapshot(quarterdeck.HomeSpec("Harbor", self.home, transcripts=self.transcripts))]
-        scope = quarterdeck.session_scope(homes, self.now)
-        assert scope is not None
-        self.assertEqual(scope.started, self.start)
-        self.assertEqual(sorted(scope.keys), ["harbor/buoy-refit", "harbor/reef-scan", "harbor/tide-merge"],
-                         "a hold set, a mention, a dispatch and a topic piece count; older work does not")
-        self.assertEqual(scope.topics, {("Harbor", "tide-launch")})
-        self.assertEqual({path.parent.name for path in scope.reports}, {"tide-merge"})
-        self.assertEqual(scope.links, ["https://example.com/buoy/preview"], "only links said since the session began")
+    def test_attributed_dispatch_hold_and_explicit_report_show_in_public_pages(self) -> None:
+        out = self.render()
+        self.assertEqual(self.search_tasks(out), ["buoy-refit", "lamp-test", "reef-scan", "tide-merge"])
+        self.assertIn("tide-review findings", self.every_page(out))
+        self.assertNotIn("gull-count findings", self.every_page(out))
 
     def test_pages_show_only_the_session_and_hide_everything_else(self) -> None:
         out = self.render()
@@ -10672,33 +10680,33 @@ class SessionScopeTests(unittest.TestCase):
         self.assertIn("Links from this session", calls)
         topics = (out / "topics.html").read_text(encoding="utf-8")
         self.assertIn("Tide launch", topics)
-        self.assertEqual(self.search_tasks(out), ["buoy-refit", "reef-scan", "tide-merge"])
+        self.assertEqual(self.search_tasks(out), ["buoy-refit", "lamp-test", "reef-scan", "tide-merge"])
         self.assertTrue((out / "topic-tide-launch.html").is_file())
         self.assertFalse((out / "topic-old-survey.html").exists(), "a topic from an earlier session gets no page")
         pages = self.every_page(out)
         for hidden in ("Kelp survey scope", "kelp-call", "Old survey", "Keep the old survey?", "gull-count",
-                       "example.com/old/page"):
+                       "example.com/old/page", "example.com/interleaved", "adoption.html"):
             self.assertNotIn(hidden, pages, f"{hidden} belongs to an earlier session and must not show anywhere")
 
-    def test_all_sessions_flag_and_config_restore_the_full_view(self) -> None:
-        for out in (self.render("--all-sessions"), (self.write_config(session_only=False), self.render())[1]):
-            self.assertTrue((out / "topic-old-survey.html").is_file())
-            self.assertIn("kelp-call", self.search_tasks(out))
-            calls = (out / "index.html").read_text(encoding="utf-8")
-            self.assertIn("Keep the old survey?", calls)
-            self.assertNotIn("Only this session", calls)
-            self.assertNotIn("Links from this session", calls)
-        self.write_config(session_only="no")
-        with self.assertRaisesRegex(ValueError, "session_only must be true or false"):
+    def test_historical_view_overrides_are_rejected(self) -> None:
+        for command in ("render", "serve", "service", "export"):
+            with self.subTest(command=command), redirect_stderr(io.StringIO()), self.assertRaises(SystemExit):
+                quarterdeck.make_parser().parse_args([command, "--all-sessions"])
+        self.write_config(session_only=False)
+        with self.assertRaisesRegex(ValueError, "unsupported config key.*session_only"):
             quarterdeck.load_config(self.config)
 
-    def test_without_a_recorded_session_the_page_shows_everything_and_says_why(self) -> None:
-        self.board(operator=False)
-        out = self.render()
-        calls = (out / "index.html").read_text(encoding="utf-8")
-        self.assertIn("No session is recorded yet, so this shows everything.", calls)
-        self.assertIn("Keep the old survey?", calls)
-        self.assertIn("kelp-call", self.search_tasks(out))
+    def test_without_a_recorded_conversation_the_page_is_empty(self) -> None:
+        path = self.data / "captain-board.json"
+        original = json.loads(path.read_text(encoding="utf-8"))
+        original["operator"].pop("session_id")
+        for document in (original, {key: value for key, value in original.items() if key != "operator"}):
+            path.write_text(json.dumps(document), encoding="utf-8")
+            out = self.render()
+            calls = (out / "index.html").read_text(encoding="utf-8")
+            self.assertIn("No conversation is recorded for this session.", calls)
+            self.assertEqual(self.search_tasks(out), [])
+            self.assertNotIn("Kelp survey scope", self.every_page(out))
 
     def test_a_session_with_no_topic_still_opens_on_calls(self) -> None:
         for name in ("tide-launch.md", "old-survey.md"):
@@ -10709,37 +10717,113 @@ class SessionScopeTests(unittest.TestCase):
         self.assertIn("No topic has come up in this session yet.", (out / "topics.html").read_text(encoding="utf-8"))
         self.assertNotIn("kelp-call", self.every_page(out))
 
-    def test_scope_attention_drops_other_tasks_and_recounts(self) -> None:
-        child = quarterdeck.HomeSnapshot(quarterdeck.HomeSpec("Cove", self.home, route_id="cove"))
-        parent = quarterdeck.HomeSnapshot(quarterdeck.HomeSpec("Harbor", self.home), children=[child])
-        attention: dict[str, object] = {"homes": [{
-            "label": "Harbor", "more_count": 2,
-            "waiting": {"decisions": [{"key": "harbor/tide-merge"}, {"key": "harbor/kelp-call"}]},
-            "waiting_more": {"decisions": [{"key": "harbor/kelp-call"}, {"key": "cove/reef-scan"}]},
-            "decisions": {"relevant": [{"task": "tide-merge", "home": "main"}, {"task": "reef-scan", "home": "cove"},
-                                       {"task": "kelp-call", "home": "main"}], "background": [{"task": "gull-count"}],
-                          "background_count": 1},
-            "recent_work": {"windows": [{"started": [{"task": "tide-merge"}, {"task": "gull-count"}], "started_count": 2}]},
-            "recent_work_6h": [{"task": "gull-count", "event": "started"}],
-        }], "views": [{"sections": [{"needs_you": [{"key": "harbor/kelp-call", "home": "Harbor"}],
-                                     "background": {"items": [{"key": "harbor/tide-merge"}], "count": 4}}]}]}
-        quarterdeck.scope_attention(attention, [parent], {"harbor/tide-merge", "cove/reef-scan"})
-        home = attention["homes"][0]  # type: ignore[index]
-        self.assertEqual(home["waiting"]["decisions"], [{"key": "harbor/tide-merge"}])
-        self.assertEqual((home["waiting_more"]["decisions"], home["more_count"]), ([{"key": "cove/reef-scan"}], 1))
-        self.assertEqual([row["task"] for row in home["decisions"]["relevant"]], ["tide-merge", "reef-scan"],
-                         "a feed row's home names the owner: main is the home itself, a route its secondmate")
-        self.assertEqual((home["decisions"]["background"], home["decisions"]["background_count"]), ([], 0))
-        self.assertEqual(home["recent_work"]["windows"][0], {"started": [{"task": "tide-merge"}], "started_count": 1})
-        self.assertEqual(home["recent_work_6h"], [])
-        section = attention["views"][0]["sections"][0]  # type: ignore[index]
-        self.assertEqual((section["needs_you"], section["background"]["count"]), ([], 1))
+    def test_new_session_removes_owned_pages_and_preserves_user_files(self) -> None:
+        report_html = self.data / "tide-review" / "report.html"
+        report_html.write_text("<h1>Fictional tide report</h1>", encoding="utf-8")
+        out = self.render()
+        old = {path for path in out.iterdir() if path.name.startswith(("topic-", "report-", "raw-"))}
+        self.assertTrue({"topic", "report", "raw"} <= {path.name.split("-")[0] for path in old})
+        unrelated = out / "raw-personal.html"
+        unrelated.write_text("Personal file", encoding="utf-8")
+        edited = out / "topic-tide-launch.html"
+        edited.write_text("Owner's changes", encoding="utf-8")
+        self.board(operator=False)
+        self.assertEqual(self.render(), out)
+        self.assertTrue(all(not path.exists() for path in old - {edited}))
+        self.assertEqual(edited.read_text(encoding="utf-8"), "Owner's changes")
+        self.assertEqual(unrelated.read_text(encoding="utf-8"), "Personal file")
 
-    def test_service_unit_keeps_all_sessions(self) -> None:
-        args = quarterdeck.make_parser().parse_args(["service", "--all-sessions", "--config", str(self.config)])
-        self.assertIn("--all-sessions", quarterdeck.service_unit(args))
-        args = quarterdeck.make_parser().parse_args(["service", "--config", str(self.config)])
-        self.assertNotIn("--all-sessions", quarterdeck.service_unit(args))
+    def test_title_mentions_stay_in_the_conversation_home_and_keep_public_ids(self) -> None:
+        other = self.root / "cove"
+        (other / "data" / "topics").mkdir(parents=True)
+        (other / "data" / "backlog.md").write_text("- [ ] buoy-refit - Other home buoy task\n", encoding="utf-8")
+        (other / "data" / "topics" / "tide-launch.md").write_text("# Tide launch\n\nNow: Other home launch\n",
+                                                               encoding="utf-8")
+        (other / "data" / "tide-review").mkdir()
+        (other / "data" / "tide-review" / "report.md").write_text("# Other home report\n", encoding="utf-8")
+        self.write_config(homes=[
+            {"label": "Harbor", "path": str(self.home), "transcripts": str(self.transcripts)},
+            {"label": "Harbor!", "path": str(other), "transcripts": str(self.transcripts)},
+        ])
+        out = self.render()
+        names = {path.name for path in out.glob("topic-*.html")}
+        suffix = hashlib.sha256(str(self.home).encode()).hexdigest()[:6]
+        self.assertEqual(names, {f"topic-tide-launch-{suffix}.html"})
+        self.assertNotIn("Other home", self.every_page(out))
+        args = quarterdeck.make_parser().parse_args(["export", "--config", str(self.config), "--no-snapshot"])
+        output = io.StringIO()
+        with redirect_stdout(output):
+            self.assertEqual(quarterdeck.export_snapshot(args), 0)
+        reports = json.loads(output.getvalue())["reports"]
+        self.assertEqual([(report["id"], report["ambiguous"]) for report in reports], [("harbor/tide-review", True)])
+
+    def test_keyed_and_backlog_fallback_decisions_keep_their_owners(self) -> None:
+        child = self.root / "mate"
+        (child / "data").mkdir(parents=True)
+        (child / "data" / "backlog.md").write_text(
+            held_row("child-choice", "Fictional child choice", "Pick a chart", self.iso(self.now)) + "\n",
+            encoding="utf-8",
+        )
+        (self.data / "secondmates.md").write_text(f"- mate - Charts water. (home: {child})\n", encoding="utf-8")
+        with (self.transcripts / "session.jsonl").open("a", encoding="utf-8") as stream:
+            stream.write(wait_record("owner", "m3", self.iso(self.now), "Discuss mate/child-choice", sessionId="current"))
+        homes = [quarterdeck.load_home_snapshot(
+            quarterdeck.HomeSpec("Harbor", self.home, transcripts=self.transcripts), discover_secondmates=True)]
+        quarterdeck.scope_homes(homes, quarterdeck.session_scope(homes, self.now))
+        row = {"task": "mate", "key": "child-choice", "kind": "keyed", "title": "Fictional keyed choice",
+               "bucket": "live", "opened_at": self.iso(self.now)}
+        for rows, title in (([row], "Fictional keyed choice"), ([], "Fictional child choice")):
+            with self.subTest(title=title):
+                view = quarterdeck.attention_view(
+                    homes, self.now, feed_runner=lambda _home, _data: {
+                        "open_decisions": [*rows, dict(row, task="kelp-call", kind="captain_hold", title="Kelp survey scope")],
+                    }, all_decisions=True, all_views=True,
+                )
+                decisions = quarterdeck.decision_rows(homes, view)
+                key = "mate-charts-water/child-choice"
+                self.assertIn(key, decisions)
+                self.assertEqual(decisions[key]["title"], title)
+                self.assertNotIn("harbor/kelp-call", decisions)
+                self.assertNotIn("Kelp survey scope", json.dumps(view["views"]))
+
+    def test_safe_chat_links_survive_each_output_and_have_no_cap(self) -> None:
+        safe = ["https://example.com/releases/build_", "http://[::1]:4387/session/example",
+                "https://example.com/wiki/Ship_(boat)", "https://example.com/view?tab=latest"]
+        safe.extend(f"https://example.com/preview/{number}" for number in range(45))
+        hidden = ["https://user:pass@example.com/secret", "https://example.com/signed?X-Amz-Signature=private",
+                  "https://example.com/oauth#access_token=private", "https://example.com/a?%74oken=private",
+                  "https://[invalid"]
+        with (self.transcripts / "session.jsonl").open("a", encoding="utf-8") as stream:
+            links = " ".join(f"[Preview]({url})" for url in safe)
+            stream.write(wait_record("assistant", "m4", self.iso(self.now), links + " " + " ".join(hidden),
+                                     sessionId="current"))
+        for flags, name in (((), "index.html"), (("--lavish",), "index.lavish.html"), (("--all",), "index.html")):
+            page = (self.render(*flags) / name).read_text(encoding="utf-8")
+            for url in safe:
+                self.assertIn(f'href="{url}"', page)
+            for url in hidden:
+                self.assertNotIn(url, page)
+        serve = quarterdeck.make_parser().parse_args(["serve", "--config", str(self.config), "--no-snapshot"])
+        pages = quarterdeck.site_builder(serve)()
+        self.assertIn(f'href="{safe[-1]}"', pages["index.html"])
+        self.assertNotIn("adoption.html", pages)
+        artifact = self.root / "artifact.html"
+        args = quarterdeck.make_parser().parse_args(
+            ["export", "--config", str(self.config), "--no-snapshot", "--artifact", str(artifact)])
+        with redirect_stdout(io.StringIO()):
+            self.assertEqual(quarterdeck.export_snapshot(args), 0)
+        embedded = re.search(r'id="qd-snapshot">(.*?)</script>', artifact.read_text(encoding="utf-8"), re.S)
+        assert embedded is not None
+        self.assertEqual([entry["url"] for entry in json.loads(embedded.group(1))["session_links"]],
+                         ["https://example.com/buoy/preview", *safe])
+
+    def test_board_active_records_identity_and_touch_keeps_its_provenance(self) -> None:
+        for args in (["active", "--session-id", "replacement"], ["touch", "kelp-call", "--session-id", "replacement"]):
+            with redirect_stdout(io.StringIO()):
+                self.assertEqual(quarterdeck.main(["board", *args, "--home", str(self.home)]), 0)
+        out = self.render()
+        self.assertEqual(self.search_tasks(out), ["kelp-call"])
+        self.assertNotIn("Tide launch", self.every_page(out))
 
 
 class TopicTests(unittest.TestCase):
