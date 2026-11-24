@@ -1,8 +1,8 @@
 # Use the cloud artifact
 
-Quarterdeck can render the same desk, this week, related section and report
-list as a private Claude artifact, for use when you are in Claude rather than
-on the local network. The local page and Lavish page keep working unchanged.
+Quarterdeck can package the current conversation's desk, this-week calls,
+related items and reports as a private Claude artifact for off-network access.
+The export follows [See only this session](see-only-this-session.md).
 
 ## Publish
 

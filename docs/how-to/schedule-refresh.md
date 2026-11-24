@@ -6,8 +6,8 @@ For a page that is always current without scheduling, see
 Quarterdeck does not schedule rendered snapshots itself. A user's cron job or
 systemd timer can run the normal `render` command when a recurring snapshot is
 useful; use `serve` for the always-current page.
-For a combined page, pass `--config` with the private config that lists the
-homes instead of using `--home`.
+To select the conversation across multiple homes, pass `--config` with your
+[registered homes](configure-multiple-homes.md).
 
 ## Cron example
 
@@ -23,7 +23,7 @@ Cron has a limited environment; set `XDG_STATE_HOME` on the command when a
 non-default state directory is needed. Do not point output into the Quarterdeck
 repository.
 
-To refresh the combined view, use the config file:
+To refresh using the registered homes, use the config file:
 
 ```cron
 0 * * * * /usr/local/bin/quarterdeck render --config ~/.config/quarterdeck.json

@@ -11,7 +11,9 @@ installer checks for Python 3. Quarterdeck reads that home's
 
 ## Render and open the page
 
-Register the home, then render the page:
+Ask Firstmate to record your current conversation using
+[Record the conversation](../how-to/see-only-this-session.md#record-the-conversation).
+Then register the same home and render the page:
 
 ```sh
 quarterdeck add /path/to/firstmate
@@ -36,5 +38,5 @@ associated report includes a `Recommendation` heading or field.
 Run `quarterdeck render` again to replace the page with a fresh snapshot.
 For recurring refreshes, follow the [scheduled refresh how-to](../how-to/schedule-refresh.md).
 
-To place several independent homes on one page, continue with
+To select the current conversation across several independent homes, continue with
 [Configure multiple homes](../how-to/configure-multiple-homes.md).

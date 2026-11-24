@@ -65,6 +65,9 @@ The fictional homes exercise conversation IDs, interleaved replies, routed
 decisions, report association, link disclosure, cache isolation on a session
 switch, notification resolution and side-by-side static renders. The Lavish case checks generated HTML without launching
 Lavish. The artifact case checks the JSON payload that the artifact consumes.
+For live `render`, `serve` and `export` checks below, record a fictional
+conversation and attribute the topics, tasks and waits the fixture needs.
+Follow [See only this session](how-to/see-only-this-session.md).
 
 ### Shared page output and topic layout
 
@@ -445,7 +448,7 @@ and earlier briefing paragraphs, clarification questions and board recommendatio
 Manual document-link check: serve fictional homes with isolated XDG config/state
 and `--no-snapshot`; seed saved wait cards in a disposable store outside the
 checkout and homes. At 375px, open a card and follow both its Markdown report
-and bare `explainer.html` links. Check current/earlier briefing and question
+and bare `explainer.html` links. Check the current briefing and question
 references, then edit the board and wait for cache refresh plus card polling.
 Also run `render --output <disposable-output>/index.html` and follow its links.
 Use same-path parent/child reports with distinct headings to check ownership;

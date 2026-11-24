@@ -67,8 +67,9 @@ missing file and parent directory, and `add` and `remove` write atomically with
 mode `0600`. Config writes inside the Quarterdeck checkout are refused.
 
 Homes for `render` are selected in this order: `--home`, the `homes` array in
-the selected config, then `FM_HOME`. `--home` renders just that home and
-overrides a configured home list. If there is no configured home list, the
+the selected config, then `FM_HOME`. `--home` overrides a configured home
+list. See [See only this session](../how-to/see-only-this-session.md) for
+which work appears in the rendered page. If there is no configured home list, the
 single-home behavior remains: set `FM_HOME` or pass `--home`. Without a
 selected home, the command prints an error and exits with status 2.
 
@@ -81,8 +82,8 @@ path and only unregisters the entry; it never changes Firstmate data.
 
 For each configured home, Quarterdeck reads `data/backlog.md` and immediate
 child `*/report.md` files. It also reads the parent's optional
-`data/secondmates.md` registry and renders each registered local secondmate
-under that parent. It may run that home's
+`data/secondmates.md` registry to resolve registered secondmates. It may run
+that home's
 `bin/fm-bearings-snapshot.sh --json` for the bearings view and
 `bin/fm-attention.sh --json` for the "Decisions and recent work" section, unless
 `--no-snapshot` is set, and it reads `state/fleet-ledger.jsonl` for that
@@ -92,12 +93,9 @@ no other Firstmate script directly, apart from `bin/fm-inbox.sh note` for reacti
 for discarding a captain wait. The captain-wait watcher also reads the home's
 saved Claude Code sessions and runs the configured helper command; see
 [Captain waits](#captain-waits). The snapshot wrapper may read registered
-remote secondmate ledgers through Firstmate's routes and cache, and Quarterdeck
-shows the returned rows. A missing or unreadable home in a configured list
-gets a failure section;
-the other homes still render. The page links to readable HTML copies of
-selected reports and backlogs, generated beside the main page, and HTTPS links
-for GitHub pull requests.
+remote secondmate ledgers through Firstmate's routes and cache. The page links
+to readable HTML copies of scoped reports and backlogs, generated beside the
+main page, and to GitHub pull requests over HTTPS.
 
 `priorities set` replaces the saved priorities with one to three project names
 recorded in selected homes' route registry project entries or waiting items.
@@ -178,7 +176,7 @@ for how marks affect the dashboard.
 | `--output PATH` | Output HTML path; overrides `output_dir` in config. Keep it outside the repo and selected homes; those locations are refused. |
 | `--config FILE` | JSON config for this command; defaults to the private user config where documented above. It may supply homes, title, and output directory. |
 | `--title TEXT` | Page title; overrides `page_title` in config. |
-| `--all` | Include other backlog records and all reports; [decision relevance](attention-json.md#decisions) still applies. |
+| `--all` | Use the classic layout and include other backlog records, such as queued, finished and closed work, and all reports in the [current conversation](../how-to/see-only-this-session.md). [Decision relevance](attention-json.md#decisions) still applies. |
 | `--lavish` | Write a separate `*.lavish.html` review page with stable IDs on review cards, then open it with `lavish-axi` when available. Without Lavish, print a command hint and succeed. |
 | `--no-snapshot` | Do not run a home's `bin/fm-bearings-snapshot.sh` or `bin/fm-attention.sh`; use backlog decisions with recorded board and ledger activity, and show recent work from the ledger. |
 
@@ -190,7 +188,8 @@ on each repeatable `--host` address (default `127.0.0.1` only) and `--port`
 report review request, the reaction request, the saved-view request
 (`POST /api/views`, which writes only the preferences file) described in the
 [serving guide](../how-to/serve-the-page.md), and the captain-wait discard
-request (`POST /api/waits/discard`, body `{"key", "hold_set"}`), and the
+request (`POST /api/waits/discard` with string fields `key`, `hold_set` and
+`hold_instance`, the 24-character lowercase hex token supplied by the card), the
 [visit log](../how-to/see-your-adoption.md#the-visit-log), and
 [phone notifications](../how-to/serve-the-page.md#get-phone-notifications)
 (`GET /api/push/key`, `GET /sw.js`, `POST /api/push/subscribe` with body
@@ -264,10 +263,12 @@ snapshots carry `decision_window_days`; their calls retain the real activity
 time in `touched_at` and identify its classification with `activity_reason`.
 Artifact cards and details label worker-only activity as "worked on" and do
 not claim captain-message recency. Output paths must
-be outside the checkout and selected homes. A failed attention view aborts
-export with status 2 before writing either output. `--bodies` picks which waiting
-reports carry their Markdown: `all` (default), `desk` (only reports linked to
-a desk or this-week call, or related to the session) or `none`. `import` applies the artifact's
+be outside the checkout and selected homes. Export checks for a recorded
+conversation, a successful attention view and a matching conversation at
+publication. If any of these checks fails, export exits with status 2 and leaves
+existing exports in place. See
+[Use the cloud artifact](../how-to/use-the-cloud-artifact.md#keep-the-snapshot-small)
+for the report body modes. `import` applies the artifact's
 recorded mark and discard actions from a file (or `-` for standard input) to
 the local state; actions for changed reports are skipped and listed. Exit
 status is 0 when the file was read, even if some actions were skipped, and 2
@@ -412,8 +413,7 @@ and the helper runs in `work/`.
 Report recommendations are shown only when the report explicitly labels one.
 Board recommendation chips come from the optional
 [`brief.recommendation` field](captain-board.md). See [The attention
-model](../explanation/attention-model.md) for dashboard inclusion and `--all`
-behavior.
+model](../explanation/attention-model.md) for dashboard inclusion.
 
 The page is regenerated on demand. `quarterdeck render --lavish` writes a
 separate Lavish-ready file beside the normal output (for example,

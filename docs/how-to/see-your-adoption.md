@@ -18,8 +18,8 @@ counts status tags from that home and conversation and skips damaged lines
 and tags from the page or artifact. It reads tags without storing the
 messages. See [See only this session](see-only-this-session.md).
 
-Quarterdeck still records local arrival and triage events when configured to
-do so. The session Adoption page displays the attributed chat tags.
+For local arrival and triage events, see
+[Privacy and architecture](../explanation/privacy-and-architecture.md).
 
 ## The visit log
 

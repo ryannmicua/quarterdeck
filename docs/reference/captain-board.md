@@ -18,7 +18,11 @@ board file, Quarterdeck omits the captain board section.
 {
   "version": 1,
   "updated_at": "2026-10-08T10:00:00Z",
-  "operator": {"last_active_at": "2026-10-08T09:55:00Z", "session_started_at": "2026-10-08T08:10:00Z"},
+  "operator": {
+    "last_active_at": "2026-10-08T09:55:00Z",
+    "session_started_at": "2026-10-08T08:10:00Z",
+    "session_id": "fictional-chat"
+  },
   "items": [
     {
       "id": "dock-merge",
@@ -30,6 +34,7 @@ board file, Quarterdeck omits the captain board section.
       "task": "dock-fix",
       "links": [{"label": "Pull request", "url": "https://example.com/pull/1"}],
       "touched_at": "2026-10-08T09:30:00Z",
+      "session_id": "fictional-chat",
       "project": "dock-demo",
       "brief": {"url": "https://example.com/brief/dock", "recommendation": "Merge"}
     }
@@ -75,12 +80,9 @@ recorded activity times and activity-based labels rather than inferring
 conversation groups from worker events. Concrete dated hold notes stop
 deferring the call when due; independent task dependencies still apply.
 
-Without shared relevance, the board follows the conversation rules below.
-The board leads the page, ranked by what the captain touched recently rather
-than by group, so what they are working on comes first. When the board records
-operator activity, the desk follows the captain's conversation with Firstmate:
-it holds what was raised or discussed in the current session, and items from
-earlier sessions drop to "This week" or "Parked" until they are touched again.
+The page first applies the
+[current conversation scope](../how-to/see-only-this-session.md).
+Without shared relevance, the following recency rules rank the items in scope.
 
 ```text
 conversation = the board item's touched_at; backlog dates do not establish conversation activity
@@ -96,10 +98,9 @@ deferred  = the backlog item has (hold-until: <date>) in the future,
                task ids compared exactly; unknown tokens and self-references are not dependencies)
             Bare "parked" or "deferred" wording does not defer an item.
 
-session      = from the operator record: last message L and session start S (see "Sessions" below)
-               the newest record across all shown homes is used, because the operator is one person
+session      = the operator record's last message and session start S (see "Sessions" below)
 On your desk : with a session: conversation at or after S and not deferred   open, no cap
-               without one:    touched within 48 hours and not deferred     open, at most 5, then "+N more you touched recently"
+               without one (calls list): touched within 48 hours and not deferred
 This week    : not on the desk, touched within 7 days and not deferred     collapsed, counts per group
 Parked       : older, never touched, or deferred          collapsed, counts per group
 Within a band: merge > approve > decide > forward > read > not yet sorted, then newest first
@@ -110,11 +111,10 @@ Weekly sweep : Parked items with a known touched time over 14 days ago get a "ke
 
 ### Sessions
 
-`quarterdeck board active` records each operator message. A message more than
-**4 hours** after the previous one (or one recorded with `--new-session`)
-starts a new session, so the session is the run of messages with no gap over
-four hours. Pass `--session-id ID` to bind the page to the Claude Code
-conversation. A different conversation ID also starts a new session.
+`quarterdeck board active` records each operator message. A gap longer
+than **4 hours**, `--new-session`, or a different conversation ID resets the
+desk's `session_started_at` timestamp. Recording the same ID after a gap
+keeps the conversation in scope.
 
 **Active session** (last message 4 hours ago or less). The desk is headed
 "On your desk" and grouped by when each item was raised or engaged
@@ -136,12 +136,7 @@ session bounds the desk, so it is not capped at five.
 **Idle** (last message more than 4 hours ago). The page reads like a
 `/bearings` catch-up: the desk is headed "Open items from our last session"
 with every not-deferred item with a board conversation touch at or after that session began, ungrouped,
-and "This week" starts open. Parked stays collapsed. The next recorded
-message starts a new session, so items from the last session leave the desk
-until they are touched again.
-
-**No operator record** (Firstmate never ran `board active`, or the record is
-invalid, which shows a warning). The desk uses the 48-hour rule.
+and "This week" starts open. Parked stays collapsed.
 
 Captain-directed asks such as "Waiting on the captain to approve" or "Waiting
 for approval from the captain" do not establish a task dependency.
@@ -173,12 +168,9 @@ for approval from the captain" do not establish a task dependency.
   its value takes precedence, so a false value prevents stale hold text from
   keeping the item visible.
 - **Not yet sorted.** Open backlog items waiting on the captain that no board
-  item references are ranked into the same bands from their backlog dates,
-  marked "Not yet sorted" and shown with their decoded hold note, so nothing is
-  lost. Without a board conversation touch they stay in "This week" or
-  "Parked" when operator activity is recorded; they can reach the desk only
-  under the legacy 48-hour rule. When the board file is present but unreadable,
-  every such item appears this way.
+  item references can appear in scope as "Not yet sorted" with their decoded
+  hold note. Without shared relevance or a board touch, their backlog dates
+  determine their placement in "This week" or "Parked".
 - **Age and staleness.** The header shows how long ago `updated_at` was, and
   flags the board as possibly out of date when the backlog file changed after
   `updated_at` (or `updated_at` is missing or invalid).
@@ -186,7 +178,7 @@ for approval from the captain" do not establish a task dependency.
   link, or detail URL produces a visible warning naming the problem;
   malformed detail is shown as text and the page never fails because of the board.
 - **Unsupported version.** Board items are skipped with a warning naming the
-  version; captain-gated backlog items from that home still appear as
+  version. In-scope captain-gated backlog items from that home can appear as
   “Not yet sorted.”
 - The reports-to-review list moves below the board in a collapsed section.
   The page reloads on its regular schedule and restores open items and sections

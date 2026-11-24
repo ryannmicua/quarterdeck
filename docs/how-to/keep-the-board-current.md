@@ -16,11 +16,8 @@ quarterdeck board active --session-id "$session_id"
 ```
 
 Use the Claude Code hook’s `session_id` for this command and the item
-commands below. The board records the message time as
-`operator.last_active_at`. A new conversation ID switches the page to that
-conversation. See
-the [board file reference](../reference/captain-board.md#what-the-page-does-with-it)
-for shared relevance and the fallback session rules.
+commands below. See [See only this session](see-only-this-session.md)
+for how Quarterdeck selects the conversation.
 
 So that the desk shows every question Firstmate asks in a session, put each
 ask on the board in the same turn with `upsert ... --touch --session-id "$session_id"`, and `touch` items

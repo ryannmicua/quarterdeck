@@ -7,7 +7,8 @@ a file in its home; Quarterdeck shows it as a page. The file format is in the
 
 ## Decide on Calls (owner)
 
-When a home keeps topic files, Quarterdeck opens on **Calls**: one queue of what needs you now, each call decidable
+When the [current conversation](see-only-this-session.md) includes topics,
+Quarterdeck opens on **Calls**: one queue of what needs you now, each call decidable
 on its card. Topics and Search are the other two tabs.
 
 - **Your calls** lists every open topic decision, `Waiting on: you` line and held item outside topics, newest first;
@@ -30,8 +31,8 @@ on its card. Topics and Search are the other two tabs.
   its UTC day overlaps that interval. Each task appears once, with a merge preferred when both a merge and a
   closure qualify. A merge title links to its pull request when the ledger supplies an HTTPS link. The section
   appears only when there is qualifying work.
-- **Nothing is guessed away.** An unanswered call stays in **Your calls** whatever its age, the conversation after
-  it, or the wording of its note, until it is answered or its record closes.
+- **Unanswered calls** stay in **Your calls** while they remain in scope and
+  open, regardless of age, later messages or the wording of the note.
 - **Ask Firstmate**, on the served page, with **Goes to** (see below).
 
 Everything is read again on each refresh (every minute on the served page), so a call answered in chat, closed in
@@ -48,9 +49,9 @@ The **Topics** tab holds **Changed since you last looked** and the topic list:
   previous page when they have none. Once an item's task is a topic's piece, it shows through that topic instead.
 - **Changed since you last looked:** one row per topic with something new from Firstmate or anyone else after
   your last look, with "N more entries" when there is more than one.
-- **Topics:** every open topic, those needing you first, with its **Now** line. Closed topics are in search.
+- **Topics:** every open topic in the session, those needing you first, with its **Now** line. Closed topics are in search.
 - **Ask Firstmate**, on the served page, with **Goes to** (see below).
-- **Search** finds everything else: reports, underway, waiting and queued work, and finished work,
+- **Search** finds other work in the session: reports, underway, waiting and queued work, and finished work,
   with the filters All, Needs you, Underway, Waiting, Queued and Done. A search with no match lists the topics and
   offers to ask Firstmate.
 
@@ -60,8 +61,9 @@ more than two minutes away, Quarterdeck moves the cutoff to the time you left. I
 a more recent departure while you were away, Quarterdeck uses that time even after a shorter absence. Linked
 document previews count as Quarterdeck pages.
 
-A report counts as waiting for your review for two weeks. After that it stays findable in search (under All) but
-no longer counts as awaiting review; nothing is changed in its review record. A recent report also shows under
+A report counts as waiting for your review for two weeks. An older in-scope
+report is still findable in Search under **All**, with its review record
+intact. A recent report also shows under
 **To review** on the topic whose **Links** or **Pieces** name it.
 
 The front page before Calls, with **Needs you**, **Changed since you last looked**, **Topics** and the ask box on

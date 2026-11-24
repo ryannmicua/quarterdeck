@@ -56,9 +56,10 @@ discard is your decision to stop reading it.
 ## Related to this session
 
 Below the desk (never on it) a collapsed "Related to this session" section
-lists older reports and captain calls that connect to what the active
-session is working on, most related first, then newest. The session is the
-desk's items plus in-flight backlog work. An item is related through:
+ranks eligible reports and captain calls by their connection to the desk
+and in-flight work, most related first, then newest. Each candidate follows
+the [current conversation scope](see-only-this-session.md). Quarterdeck scores
+these connections:
 
 - a relation Firstmate set explicitly (strongest);
 - a task link: it is the report for a desk or in-flight task, waits on one, or
@@ -66,8 +67,6 @@ desk's items plus in-flight backlog work. An item is related through:
 - a shared project, or a shared topic.
 
 Each card says why it is there. Stale and discarded items are never listed.
-Related items on the page also follow the
-[current conversation scope](see-only-this-session.md).
 
 Firstmate records explicit relations when it knows two things belong together:
 

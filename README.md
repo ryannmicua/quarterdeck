@@ -13,10 +13,8 @@ which decisions appear. Without a board, the waiting view follows the cards, the
 Captain's Call, Underway, and Charted Next from Firstmate's `/bearings` digest. See
 [See recent work](docs/how-to/see-recent-work.md) for the waiting queues and
 recent-work display. Reports waiting on your
-review also appear. Configure several homes to review them together; each home
-is grouped under a clear label, with its registered local secondmates under
-their parent. Run `quarterdeck render --all` to include other backlog records
-and all reports; decision relevance still applies.
+review also appear. You can register several Firstmate homes.
+See [Configure multiple homes](docs/how-to/configure-multiple-homes.md).
 
 Render on demand, or run `quarterdeck serve` for a page that stays current on
 its own. Open the result in a browser, or hand a rendered file to `lavish-axi`
@@ -29,11 +27,8 @@ for server requirements, phone setup and withdrawal behavior.
 
 ## Features
 
-- This session only: every page shows what your current
-  session with Firstmate raised, touched or discussed (its board items, waits,
-  topics, tasks and reports) and the links said in the chat, under **Links
-  from this session**. Everything else stays off the page. The session is the one
-  `quarterdeck board active --session-id ID` records. See
+- Session view: the page shows work from your current conversation with
+  Firstmate and collects links under **Links from this session**. See
   [See only this session](docs/how-to/see-only-this-session.md).
 - One look on every screen: generated pages and the cloud artifact share one
   stylesheet; the standalone decision brief uses the same visual style.
@@ -50,15 +45,15 @@ for server requirements, phone setup and withdrawal behavior.
   lower on the page. New cards slide in and are marked New until seen, without a
   reload. See
   [Watch Firstmate's activity as cards](docs/how-to/watch-activity-cards.md).
-- Captain waits: with `serve --watch-waits` (or `quarterdeck waits watch`), each
-  task Firstmate holds for you gets a card saying what kind of ask it is (look at
+- Captain waits: with `serve --watch-waits` (or `quarterdeck waits watch`), a
+  saved wait card shows what kind of ask it is (look at
   a screen, give the word to merge, pick an option, provide a login) with a
   one-line summary, and opens to Firstmate's first briefing and the
   clarifications it gave when you asked, with dates. Cards are released when the
   hold is gone; Discard asks Firstmate to drop a wait. Nothing changes in
   Firstmate. See [Track what is waiting on you](docs/how-to/track-captain-waits.md).
-- Topic threads: when Firstmate keeps `data/topics/<topic-id>.md` files, each
-  topic gets a thread page with what stands now, what waits on whom, its
+- Topic threads: each topic in the session gets a thread page with what stands
+  now, what waits on whom, its
   backlog tasks, the open decisions and the whole conversation, and the front
   page lists the topics. On the page `serve --allow-marks` serves, a decision
   is answered with one tap or in words and five seconds to undo, then folds to
@@ -101,8 +96,7 @@ for server requirements, phone setup and withdrawal behavior.
 - Relevance: Firstmate marks reports and past captain calls current or stale
   (`reports set-relevance`, `calls set-relevance`); stale ones are hidden by
   default behind a collapsed section. A collapsed "Related to this session"
-  section below the desk surfaces related items that share
-  a project, topic, task link or explicit relation with the active session.
+  section below the desk surfaces related work within the current conversation.
   See [Keep the desk relevant](docs/how-to/keep-the-desk-relevant.md).
 - Cloud artifact: `quarterdeck export --artifact FILE` builds a Claude
   artifact page from [`templates/artifact.html.tmpl`](templates/artifact.html.tmpl)
@@ -128,14 +122,14 @@ for server requirements, phone setup and withdrawal behavior.
   `quarterdeck priorities set`, up to three), the decisions still in play, and
   the last six hours of merged and started work from Firstmate's fleet ledger,
   shown only when there is some. See the guide for background and deferred decisions.
-  `quarterdeck attention --json` prints the same view for other readers, and
+  `quarterdeck attention --json` prints attention data for selected homes, and
   `quarterdeck attention --check` validates Firstmate's formats after an
   update. See [See recent work](docs/how-to/see-recent-work.md).
 - Views: a rail of saved briefing views (Morning and Priorities to start; a row
   of buttons on a phone), each an ordered stack of Waiting decisions and needs, recent work,
   priority projects and For your information, with an editor. An item shows
   once, in the first section that claims it. `quarterdeck views` manages them
-  and `quarterdeck attention --json --view` prints the same sections.
+  and `quarterdeck attention --json --view` prints those sections for selected homes.
 - Uses Firstmate's own `bin/fm-bearings-snapshot.sh --json` when a home has it,
   and says so when it falls back to parsing the backlog.
 - `quarterdeck serve` serves the page over HTTP, or HTTPS with `--tls-cert`
@@ -150,9 +144,7 @@ for server requirements, phone setup and withdrawal behavior.
 - Stable report IDs, Markdown and readable HTML reading, and local review state (reviewed, discarded, relevance) in a private SQLite database.
 - Reports needing review appear independently of backlog attention.
 - Underway tasks and pull requests marked ready for review.
-- Attention filtering; see [the attention model](docs/explanation/attention-model.md) for `--all` behavior.
-- Combined pages for configured homes, with registered secondmates grouped
-  under their parent.
+- Attention filtering. See [the CLI reference](docs/reference/cli-and-config.md#command) for `--all`.
 - Inline-styled review page with readable local report and backlog pages.
 - Optional `quarterdeck render --lavish` creates and opens an annotation-ready Lavish review page.
 - Lavish request controls queue a report or backlog-item page request for an armed session listener.
@@ -162,12 +154,11 @@ for server requirements, phone setup and withdrawal behavior.
 
 ## Quick Start: Make Ready to Sail
 
-Install Quarterdeck, register a Firstmate home, and render your lookout page:
+Install Quarterdeck and register a Firstmate home:
 
 ```sh
 curl -fsSL https://raw.githubusercontent.com/ryannmicua/quarterdeck/main/install.sh | sh
 quarterdeck add ~/firstmate
-quarterdeck render
 ```
 
 For a read-first install, download `install.sh`, read it, then run it. Here
@@ -175,11 +166,11 @@ For a read-first install, download `install.sh`, read it, then run it. Here
 `quarterdeck help` for command help or `quarterdeck help --json` for the command
 index.
 
-You should see Quarterdeck installed, your home registered, and the path to the
-rendered page. Open that printed `index.html` in your browser. By default, it
-lives at `${XDG_STATE_HOME:-~/.local/state}/quarterdeck/index.html`; run
-`quarterdeck render` again whenever you want a fresh page. To update the
-installation later, run `quarterdeck update`.
+Follow [See only this session](docs/how-to/see-only-this-session.md) to record
+a conversation. Run `quarterdeck render` and open the printed `index.html`.
+By default it lives at `${XDG_STATE_HOME:-~/.local/state}/quarterdeck/index.html`.
+Run `quarterdeck render` again whenever you want a fresh page. To update
+the installation later, run `quarterdeck update`.
 
 For the first-render walkthrough, installation, update and refresh how-tos, and
 command reference, see the [tutorial](docs/tutorials/first-render.md),

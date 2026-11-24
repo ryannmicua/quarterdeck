@@ -13,7 +13,10 @@ the conversation is saved. Use the Claude Code conversation ID, the
 `session_id` supplied to Claude Code hooks and the `sessionId` in its saved
 messages. The newest operator record selects the conversation and its home.
 Quarterdeck shows an empty view with a short explanation when it cannot
-identify one current conversation.
+identify one current conversation. A tie between distinct newest records,
+a newest record without a conversation ID, or an unreadable board can leave
+the selection empty. For export-specific behavior, see the
+[CLI reference](../reference/cli-and-config.md#command).
 
 ## What appears
 
@@ -24,20 +27,20 @@ identify one current conversation.
   or a board touch, dispatch, hold or captain action carries the current
   conversation ID. Use `--session-id ID` on `board touch` and
   `board upsert --touch`. Fleet ledger events can carry `session_id` and a
-  timed captain hold can carry the backlog field `(hold-session-id: ID)`.
-- Reports appear when named in the chat or linked to an in-scope task or topic.
-  A report file's modification time alone does not make it part of the session.
-- Captain waits, activity cards, finished work and saved views follow the same
-  task membership. Wait briefings and clarifications must belong to the
-  current hold and conversation.
+  timed captain hold can carry `(hold-session-id: ID)` in a backlog bullet or
+  `Hold session ID` in a backlog table.
+- Reports appear when the chat names their directory ID or when an in-scope
+  task or topic points to them. A saved report-to-task relation can bring a
+  report into scope. A report's modification time alone does not admit it.
+- Activity cards, finished work and saved views follow the same membership.
+  See [captain wait cards](track-captain-waits.md#read-the-cards) for how saved
+  briefings and clarifications are selected.
 
 Conversation evidence stays with its home. Use a registered route and task ID
 together, such as `mate/tide-merge`, to refer to a secondmate's task.
 
-The classic front page is used when the conversation has no topics. Adoption
-counts status questions tagged with this conversation’s `session_id` in its
-Firstmate home. Older metrics without conversation attribution stay out of
-the page.
+The classic front page is used when the conversation has no topics. See
+[Adoption](see-your-adoption.md) for status questions tagged in the conversation.
 
 ## Links and output
 
@@ -48,13 +51,13 @@ Other references show the home-relative path as text. A reference alone does
 not publish a copy of the file.
 It excludes hidden paths, `config/` and `state/` directories, and filenames
 that suggest credentials or secrets. It also omits web links carrying credentials,
-tokens or signing parameters. Classic, Lavish and `render --all` include eligible links. JSON exports
-and standalone artifacts list the local document names. Exported report text follows the existing
-`--bodies` setting.
+recognized tokens or signing parameters. Classic, Lavish and `render --all`
+include eligible links. JSON exports and standalone artifacts list local
+documents by their home-relative labels. See
+[Use the cloud artifact](use-the-cloud-artifact.md) for export options.
 
 Re-rendering in the same directory retires obsolete pages verified by
 `.quarterdeck-render.json` or a legacy Quarterdeck filename and page marker.
-Normal and Lavish renders can coexist while they reflect the same scoped
-content. User files
-and unverifiable files, including untracked legacy raw documents, are
-preserved.
+Normal and Lavish renders can coexist while they show the same conversation
+and scoped content. User files and unverifiable files, including untracked
+legacy raw documents, are preserved.

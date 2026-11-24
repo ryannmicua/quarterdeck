@@ -1,14 +1,15 @@
 # Serve the always-current review page
 
 `quarterdeck serve` runs a small local web server. It reads your Firstmate homes
-at startup and keeps serving the last built pages while refreshing them.
+at startup and rebuilds pages as the conversation changes.
 After the Needs-you cards, when any selected home or registered secondmate has
 a captain board, its list appears; otherwise the shared waiting view appears, followed by
 Firstmate's `/bearings` sections (Captain's Call, Underway, Charted Next).
 See [See recent work](see-recent-work.md) for the waiting view and recent-work display.
 Reports waiting on your review also appear. See the
 [captain board reference](../reference/captain-board.md) for its file and display
-rules. Serving costs no tokens and needs no Firstmate session.
+rules. Serving requires no running Firstmate process. To populate the page,
+[record the conversation](see-only-this-session.md#record-the-conversation).
 
 ## Run it
 
@@ -44,19 +45,20 @@ review", and the count goes away when nothing is waiting. A file written by
 
 The server finishes its first build before accepting requests. After that,
 the first request at least 30 seconds after a build finishes starts a background rebuild
-and immediately receives the previous pages. Other requests also receive those
-pages until the rebuild finishes; only one build runs at a time. Captain-wait
-watcher updates also request a background rebuild. A failed rebuild logs the
-error and keeps the previous pages, with another attempt on a request after
-30 seconds unless a new invalidation requests one sooner.
+and receives the cached pages while they match the current conversation.
+When the selected conversation changes, requests wait for a matching build.
+Only one build runs at a time. Captain-wait watcher updates also request a
+background rebuild. A failed rebuild is logged. Cached pages for the same
+conversation remain available and retry after the cache interval or on a
+new invalidation. Requests without matching cached pages get the build error.
 
 For feed failures within a completed rebuild, see the
 [failed-feed refresh contract](../reference/attention-json.md#failed-feed-refreshes).
 
 With `--allow-marks`, report marks, saved views and wait discards wait for a
 rebuild before responding so the page can reload with the change. A render
-failure still returns the successful write result and leaves the previous pages
-available. Reactions acknowledge delivery without waiting for rendering; the
+failure still returns the successful write result. The cache rules above
+determine which pages remain available. Reactions acknowledge delivery without waiting for rendering; the
 card updates from the response while the server refreshes pages in the background.
 
 To see the serving address, run `quarterdeck url`. See the
@@ -134,12 +136,13 @@ site in the browser or phone settings and reload.
 
 ### What arrives, and when it goes
 
-- One notification for each Needs-you card that appears after the server
-  starts tracking. Items already waiting at the first complete observation are
+- One notification for each new Needs-you card in the current conversation
+  after the server starts tracking. Items already waiting at the first complete observation are
   recorded, not announced. While a subscription exists, the server checks about once a
   minute even when every browser is closed.
-- When the item is answered or goes away, Quarterdeck withdraws its
-  notification on Android and desktop browsers. An iPhone allows no silent
+- When the item is answered or otherwise stops needing you, Quarterdeck
+  withdraws its notification on Android and desktop browsers. A conversation
+  switch alone leaves alerts for still-outstanding items in place. An iPhone allows no silent
   withdrawal, so no withdrawal push is sent there; the notification is cleared
   the next time you open Quarterdeck. Chrome may occasionally show its own
   generic "updated in the background" line after a silent withdrawal.
@@ -236,7 +239,7 @@ drop the hold, and hides the card once the note is delivered. See
 
 ## Where the sections come from
 
-When any home keeps [topic files](keep-topic-threads.md), the served page opens
+When the current conversation includes [topics](keep-topic-threads.md), the served page opens
 on [Calls](keep-topic-threads.md#decide-on-calls-owner), with Topics and Search
 beside it; the front page before Calls is at `previous.html`, and the sections
 below appear on `classic.html`, both for this release.

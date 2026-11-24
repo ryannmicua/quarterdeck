@@ -2,8 +2,9 @@
 
 Quarterdeck is a small local renderer, not a Firstmate extension. A render can
 use one home from `--home` or `FM_HOME`, or several independent homes from the
-`homes` array in a config file. For each home it reads the configured data
-directory and adds a labeled section to one self-contained page.
+`homes` array in a config file. It reads each home's configured data
+directory and uses the [current conversation](../how-to/see-only-this-session.md)
+to select work for the page.
 `FM_DATA_OVERRIDE` selects a non-default data directory for the legacy
 single-home invocation. In a home list, each entry may set its own `data_dir`;
 otherwise that home's `data/` directory is used.
@@ -24,10 +25,8 @@ works without a server. The front page keeps when you last left it in the
 browser's `localStorage`; Quarterdeck stores nothing about it. For each
 configured parent home, Quarterdeck also reads the optional
 `data/secondmates.md` route registry. Each local route's `home:` field points
-to another Firstmate home, which gets its own labeled section underneath the
-parent. That secondmate has its own `data/backlog.md` and report files. A remote
-route is shown as unavailable as a separately loaded home. The parent's
-bearings snapshot may still include remote secondmate rows collected through
+to another Firstmate home with its own `data/backlog.md` and report files.
+The parent's bearings snapshot may include in-scope remote secondmate rows collected through
 Firstmate's routes and cache. Quarterdeck does not use SSH or fetch remote
 secondmate data itself. This follows Firstmate's [secondmate route and home layout](https://github.com/kunchenguid/firstmate/blob/main/docs/configuration.md).
 
@@ -120,16 +119,11 @@ page name or `+new` for a new topic) and an answer to a topic decision (`kind`
 to record it in `data/topics/<topic-id>.md`; Quarterdeck itself never writes the
 topic file. A topic, decision or answer that does not exist, or a decision the
 file already shows answered or that was already answered from Quarterdeck, is refused before anything is sent.
-Each configured home is loaded independently. A missing or unreadable home
-shows its own error while other sections still render.
-
-Pages and exports show the conversation selected by the newest operator record
-(see [See only this session](../how-to/see-only-this-session.md)). Quarterdeck reads
-saved Claude Code messages from that home and uses that conversation's typed
-messages and Firstmate's text replies. Parsed messages can be cached in memory.
-Eligible chat links are included in the generated output. Credentials and
-recognized token and signing parameters are omitted. The transcript files are
-read-only.
+Quarterdeck reads saved Claude Code messages for the selected conversation
+and uses the owner's typed messages and Firstmate's text replies. Parsed
+messages can be cached in memory. The transcript files are read-only. See
+[session links and output](../how-to/see-only-this-session.md#links-and-output)
+for link inclusion and filtering.
 
 The captain-wait watcher (`quarterdeck waits sync|watch`, or `serve
 --watch-waits`) is opt-in. Besides the backlog it reads the home's saved Claude
@@ -152,8 +146,9 @@ that named an item, so Quarterdeck refuses a store inside its checkout, a
 selected home or a home's data directory. Each helper run has a time limit,
 runs in the store's `work/` folder, and at most one runs per wait.
 
-`serve --allow-marks` also enables `POST /api/waits/discard` (body `{key,
-hold_set}`), and `quarterdeck waits discard` does the same from a terminal. With
+`serve --allow-marks` also enables the
+[wait-discard endpoint](../reference/cli-and-config.md#command), and
+`quarterdeck waits discard` does the same from a terminal. With
 the same origin, content-type and no-key rules as reactions, it runs the owning
 home's `bin/fm-inbox.sh note --request-id qd-wait-<hash> --json -- <one line>`
 asking Firstmate to drop the hold, and only after that succeeds marks the card
@@ -208,18 +203,14 @@ the state directory is outside the repository checkout, all selected homes, and
 their configured data directories. The database contains IDs, fingerprints and
 short reasons, not a copy of the report or Firstmate data.
 
-The Adoption page reads status tags from `data/qd-adoption/tags.jsonl` in the
-active home whose `session_id` matches the recorded conversation. It displays
-the tagged topics and whether Quarterdeck already had the answer. See
-[see how much you use Quarterdeck](../how-to/see-your-adoption.md).
+The Adoption page reads [conversation tags](../how-to/see-your-adoption.md).
 
-With `serve --allow-marks`, Quarterdeck appends page visits to
-`${XDG_STATE_HOME:-~/.local/state}/quarterdeck/visits.jsonl`. Visits contain the
-time, page and device category. Automatic refreshes are excluded. With the
-same flag, accepted page builds record first-observed report and Needs-you
+With `serve --allow-marks`, Quarterdeck appends to the
+[local visit log](../how-to/see-your-adoption.md#the-visit-log).
+With the same flag, accepted page builds record first-observed report and Needs-you
 arrivals in the private review-state database. Triage actions from the CLI,
 served page and artifact imports also record events. These events contain
-kind, item ID and time. The session Adoption page uses the chat tags.
+kind, item ID and time.
 
 For notification prerequisites, setup and phone-specific withdrawal behavior, see
 [Get phone notifications](../how-to/serve-the-page.md#get-phone-notifications).

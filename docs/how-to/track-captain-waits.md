@@ -7,7 +7,7 @@ Open the card to read Firstmate's first briefing on the item and the
 clarifications it gave when you asked about it, each with its date.
 
 Nothing changes in Firstmate. Quarterdeck reads what Firstmate already records:
-the backlog, the `Captain hold set:` stamp on each held task, and the Claude
+the backlog, the attribution on each held task, and the Claude
 Code sessions saved for the Firstmate home.
 
 ## What the watcher does
@@ -15,15 +15,15 @@ Code sessions saved for the Firstmate home.
 Each pass of the watcher:
 
 1. Reads each home's backlog. A task held for the captain (`hold-kind:
-   captain`) with a `Captain hold set:` stamp is one wait; the task id plus
-   that stamp is its identity. A new identity opens a card. A task whose hold
-   predates stamps uses its filed date instead.
+   captain`) has a wait identified by its home, task ID, `Captain hold set:`
+   stamp and conversation ID when present. A hold that predates stamps uses
+   the task's filed date.
 2. Releases cards whose hold is gone. A card moves to done when the hold is
    lifted, the task closes, or the task leaves the backlog, and it keeps its
    record. A home whose backlog cannot be read changes nothing.
-3. Re-holds. When a task is held again with a new stamp, the card is waiting
-   again, gets a new briefing, and its kind and summary are refreshed. The
-   earlier hold's briefing stays under "Earlier holds of this task".
+3. Re-holds. When the hold stamp or attributed conversation changes, the
+   card is waiting again and gets a fresh briefing, kind and summary. Earlier
+   briefings remain in the store.
 4. Collects the briefing. Ten minutes after the hold (so Firstmate has
    finished explaining it), Quarterdeck takes Firstmate's messages from twenty
    minutes before the hold to ten minutes after, numbers Firstmate's
@@ -115,9 +115,11 @@ for every key.
 
 ## Read the cards
 
-On the served page, each waiting item in "Needs you" shows the kind of ask and
-the summary under its title. Open the card for the briefing and the
-clarifications, oldest first, with dates. "Decisions and recent work" shows the same line.
+For a saved wait card to appear, the task must be in the
+[current conversation](see-only-this-session.md) and its current hold must
+carry that conversation ID. The briefing and clarifications must match both
+the hold stamp and conversation ID. Open a card for these messages, oldest
+first. "Decisions and recent work" shows the same summary.
 Until the briefing is collected, the card shows the hold note and says the
 briefing is being collected; a failing helper shows its error and the next try.
 
@@ -146,8 +148,8 @@ Quarterdeck sends the home's Firstmate a note through its own
 hold. Only after the note is delivered is the card hidden, from the cards,
 "Decisions and recent work" and Captain's Call. The captain board keeps its own entry
 until Firstmate updates it. The card is released for good when the hold
-disappears from the backlog. If the task is held again later with a new stamp,
-a new card appears.
+disappears from the backlog. A new hold can appear again when it belongs to
+the current conversation.
 
 ## Where the cards are kept
 

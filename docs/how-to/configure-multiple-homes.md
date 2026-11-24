@@ -1,8 +1,7 @@
 # Configure multiple Firstmate homes
 
-Register independent Firstmate homes in Quarterdeck's private user config and
-render them together. Each home appears under its label, with local secondmates
-registered by that home beneath it.
+Register independent Firstmate homes in Quarterdeck's private user config
+so one command can find your current conversation across them.
 
 ## Register and inspect homes
 
@@ -57,7 +56,7 @@ home paths and may reveal which Firstmate instances you use. Start from
 [`quarterdeck.example.json`](../../quarterdeck.example.json) for invented
 sample values.
 
-## Render the combined page
+## Render from the registered homes
 
 Run:
 
@@ -65,19 +64,18 @@ Run:
 quarterdeck render
 ```
 
-The page includes all registered homes. If a home is missing or unreadable,
-Quarterdeck shows the problem in that home's section and renders the rest.
-`quarterdeck render --home PATH` overrides the list and renders that one home,
-including its registered local secondmates.
+The registered homes are candidates for
+[the current conversation](see-only-this-session.md). Pass `--home PATH` to
+limit that search to one home and its registered local secondmates.
 
 ## Include registered secondmates
 
-Quarterdeck reads the parent's `data/secondmates.md` directly. It renders each
-local route with its `home:` path beneath the parent, reading that home's own
-`data/backlog.md` and reports. This is read-only discovery; Quarterdeck does
+Quarterdeck reads the parent's `data/secondmates.md` directly. A local route's
+`home:` path supplies that secondmate's own `data/backlog.md` and reports.
+Panels for in-scope secondmate work appear beneath the parent when its panel
+is also visible. This is read-only discovery; Quarterdeck does
 not create or edit route entries. The registry format and home layout are
 described in [Firstmate configuration](https://github.com/kunchenguid/firstmate/blob/main/docs/configuration.md).
 
-Remote routes appear as unavailable sections because Quarterdeck does not load
-those homes directly. See [privacy and architecture](../explanation/privacy-and-architecture.md)
-for what the parent's bearings snapshot may include.
+See [privacy and architecture](../explanation/privacy-and-architecture.md)
+for how the parent's bearings snapshot handles remote routes.

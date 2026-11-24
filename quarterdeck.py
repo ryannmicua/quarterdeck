@@ -5463,7 +5463,7 @@ def related_items(
 ) -> list[RelatedItem]:
     """Reports and deferred or held captain calls that relate to the active session, most related first.
 
-    The session is the desk's items plus in-flight backlog work. A candidate relates through an explicit relation
+    The desk and in-flight backlog supply the scoring context. A candidate relates through an explicit relation
     set with `quarterdeck reports relate` / `calls relate`, a task link (the report of, a dependency on or from),
     a shared project, or a shared topic.
     """
@@ -13485,9 +13485,10 @@ def build_snapshot(
     homes: list[HomeSnapshot], title: str, now: datetime, bodies: str = "all", *,
     attention: dict[str, object] | None = None,
 ) -> dict[str, object]:
-    """The data the cloud artifact renders: the desk, this week, related items, the report list and the latest
-    reaction per item. Nothing else. `bodies` picks which waiting reports carry their Markdown: "all" (the
-    default), "desk" (only reports linked to a desk or this-week call, or related to the session) or "none"."""
+    """Serialize the supplied view and optional conversation links for the cloud artifact.
+
+    See docs/how-to/use-the-cloud-artifact.md for report body modes.
+    """
     if attention is not None and not attention["ok"]:
         raise ValueError(attention_check_line(attention))
     if bodies not in BODIES_MODES:

@@ -1,8 +1,9 @@
 # Attention JSON (`quarterdeck-attention.v1`)
 
 `quarterdeck attention --json` prints one JSON object with waiting queues,
-project priorities, and recent work. The page's "Decisions and recent work" section renders
-this shared view. Readers use `recent_work_6h` and `show_recent` for recent-work
+project priorities, and recent work for the selected homes. The page's
+"Decisions and recent work" section applies the same rules within the
+[current conversation](../how-to/see-only-this-session.md). Readers use `recent_work_6h` and `show_recent` for recent-work
 display; the older three-window `recent_work` member remains for compatibility.
 
 ```text
@@ -255,12 +256,13 @@ a waiting item's key, the item carries `wait`:
 | --- | --- |
 | `key`, `task`, `home` | The card's key (`<home-label-slug>/<task-id>`), task id and home label. |
 | `hold_set` | The `Captain hold set:` stamp of the current hold (or `filed <date>` for an unstamped legacy hold). |
+| `hold_instance` | Opaque token for the hold's home, task, stamp and conversation ID. The served card sends it when discarding a wait. |
 | `status` | `waiting`, or `done` once released (only in `quarterdeck waits list --all`). |
 | `kind`, `kind_label` | `screen` (Look at a screen), `merge` (Give the word to merge), `choice` (Pick an option), `login` (Provide a login) or `other` (Other ask); `null` until the current hold's briefing is collected. |
 | `summary` | One line saying what is asked; the hold note's first line until the briefing is collected. |
 | `briefing` | `ready`, `pending`, or `retrying` (then `briefing_error` and `briefing_next_at` say why and when). |
-| `entries` | The current hold's briefing, then its clarifications, oldest first. Each has `type` (`briefing` or `clarification`), `hold_set`, `at`, `paragraphs` (`{text, at}`, Firstmate's words copied as written) and, for a clarification, `asked` (the first line of the captain's message) and `asked_at`. |
-| `earlier_entries` | Entries from earlier holds of the same task. |
+| `entries` | Briefing and clarifications with the current hold stamp, oldest first within each type. Each has `type` (`briefing` or `clarification`), `hold_set`, `session_id` when recorded, `at`, `paragraphs` (`{text, at}`, Firstmate's words copied as written) and, for a clarification, `asked` (the first line of the captain's message) and `asked_at`. |
+| `earlier_entries` | Entries for the same task with a different hold stamp. |
 | `released_at`, `release_reason` | When and why a card was released (`hold lifted`, `task closed`, `no longer in the backlog` or `discarded`); `null` while waiting. |
 | `discarded` | `true` when the captain discarded the current hold; such items are not listed. |
 

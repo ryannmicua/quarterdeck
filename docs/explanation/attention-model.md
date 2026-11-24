@@ -1,13 +1,14 @@
 # The attention model
 
 Quarterdeck's default page is a current review surface. It uses local review
-marks to determine which reports need review. The files it reads, optional
+marks to determine which reports need review within the
+[current conversation](../how-to/see-only-this-session.md). The files it reads, optional
 Firstmate snapshot, and read boundary are described in
 [privacy and architecture](privacy-and-architecture.md).
 
 ## Reports needing review
 
-Every discovered `data/<task-id>/report.md` without a reviewed mark for its
+Each in-scope `data/<task-id>/report.md` without a reviewed mark for its
 current bytes appears in a separate **Reports needing review** section on the
 default page. This section is independent of the backlog attention cards, so
 queued, finished, closed, and unlinked reports remain visible until reviewed.
@@ -20,7 +21,7 @@ already decided) moves to a collapsed "Stale reports" section; the same
 rules for a changed report apply to a discard. Unclassified reports are
 current. Past captain calls marked stale likewise leave the desk, week and
 parked bands, and a collapsed "Related to this session" section below the desk
-ranks older reports and deferred calls that connect to the active session. See
+ranks in-scope reports and calls by what connects them to current work. See
 [Keep the desk relevant](../how-to/keep-the-desk-relevant.md). See the [CLI reference](../reference/cli-and-config.md)
 for report commands and the [privacy and architecture guide](privacy-and-architecture.md)
 for how review marks are stored.
@@ -52,13 +53,10 @@ Queued, finished, closed, and unclassified records are not backlog attention
 cards. A historical `hold_kind` or `hold_reason` does not keep a record visible
 after `held` is false. A report linked from a backlog card appears there only
 while its item is held for the captain or marked review-ready. Independently,
-any unreviewed report appears in the reports section. A quiet line may give
+an in-scope unreviewed report appears in the reports section. A quiet line may give
 counts for queued and finished or closed backlog records.
 
-Use `quarterdeck render --all` to include other backlog records and every
-report, including reports that have already been reviewed. Decision relevance
-still applies: background decisions remain collapsed and deferred decisions
-remain hidden. Each report appears once with its review state.
+See the [`--all` option](../reference/cli-and-config.md#command) for the expanded view.
 
 ## Counts
 
@@ -67,4 +65,4 @@ in the four attention sections. A
 separate total counts reports needing review. In `--all` mode, two additional
 counts cover other backlog records and all scout reports. Per-home counts
 include that home's local secondmates only in their own panel; the section's
-totals cover all configured homes and secondmates.
+totals cover work in the current conversation.
