@@ -5568,7 +5568,7 @@ class AttentionTests(unittest.TestCase):
                     self.assertEqual(output.read_text(), "existing JSON")
                     self.assertEqual(artifact.read_text(), "existing artifact")
 
-    def test_export_reports_failed_home_when_another_home_skips_the_feed(self) -> None:
+    def test_export_ignores_an_unrelated_homes_invalid_ledger(self) -> None:
         with tempfile.TemporaryDirectory() as temp:
             root = Path(temp)
             for name in ("good", "bad"):
@@ -5576,6 +5576,10 @@ class AttentionTests(unittest.TestCase):
             good = self.make_home(root / "good")
             record_fixture_conversation(self, root, good, 'Discuss kelp-survey.')
             bad = self.make_home(root / "bad", ledger='{"v":2,"ts":1782990400,"event":"task.status","task":"kelp-survey"}\n')
+            for home, title in ((good, "Session kelp findings"), (bad, "Unrelated kelp findings")):
+                report = home / "data" / "kelp-survey" / "report.md"
+                report.parent.mkdir()
+                report.write_text(f"# {title}\n", encoding="utf-8")
             config = root / "config.json"
             config.write_text(json.dumps({"homes": [{"label": "good", "path": str(good)}, {"label": "bad", "path": str(bad)}]}))
             env = dict(os.environ, XDG_CONFIG_HOME=str(root / "unused-config"), XDG_STATE_HOME=str(root / "review-state"))
@@ -5583,11 +5587,48 @@ class AttentionTests(unittest.TestCase):
                 [sys.executable, str(ROOT / "quarterdeck.py"), "export", "--config", str(config), "--no-snapshot"],
                 capture_output=True, text=True, check=False, env=env,
             )
-            self.assertNotEqual(result.returncode, 0)
-            self.assertEqual(result.stdout, "")
-            self.assertIn("bad: ledger:", result.stderr)
-            self.assertIn("record version 2", result.stderr)
-            self.assertNotIn("Traceback", result.stderr)
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertEqual(result.stderr, "")
+            reports = json.loads(result.stdout)["reports"]
+            self.assertEqual([(report["id"], report["title"]) for report in reports],
+                             [("good/kelp-survey", "Session kelp findings")])
+
+    def test_export_reports_a_scoped_failure_for_a_routed_sessions_parent(self) -> None:
+        cases = (
+            {"ledger": '{"v":2,"ts":1782990400,"event":"task.status","task":"private-parent-task"}\n'},
+            {"feed": '{"schema":"fm-attention.v2","open_decisions":[]}'},
+        )
+        for options in cases:
+            with self.subTest(options=options), tempfile.TemporaryDirectory() as temp:
+                root = Path(temp)
+                home = self.make_home(root, **options)
+                child = self.make_home(root / "child", ledger="", script=False)
+                (home / "data" / "secondmates.md").write_text(
+                    f"- mate - Charts water. (home: {child})\n", encoding="utf-8",
+                )
+                record_fixture_conversation(self, root, home, "Discuss mate/kelp-survey.")
+                output = root / "export.json"
+                output.write_text("existing JSON", encoding="utf-8")
+                env = dict(os.environ, XDG_CONFIG_HOME=str(root / "config"), XDG_STATE_HOME=str(root / "state"))
+                cmd = [sys.executable, str(ROOT / "quarterdeck.py")]
+                result = subprocess.run(
+                    [*cmd, "export", "--home", str(home), "--output", str(output)],
+                    capture_output=True, text=True, check=False, env=env,
+                )
+                diagnostic = "An attention source needed for this session could not be read"
+                self.assertEqual(result.returncode, 2, result.stderr)
+                self.assertIn("quarterdeck attention check: FAILED", result.stderr)
+                self.assertIn(diagnostic, result.stderr)
+                self.assertNotIn(str(home), result.stderr)
+                self.assertNotIn("Traceback", result.stderr)
+                self.assertEqual(output.read_text(encoding="utf-8"), "existing JSON")
+                page = root / "out" / "index.html"
+                rendered = subprocess.run(
+                    [*cmd, "render", "--home", str(home), "--output", str(page)],
+                    capture_output=True, text=True, check=False, env=env,
+                )
+                self.assertEqual(rendered.returncode, 0, rendered.stderr)
+                self.assertIn(diagnostic, page.read_text(encoding="utf-8"))
 
     def test_unescalated_secondmate_calls_use_local_evidence_in_every_consumer(self) -> None:
         with tempfile.TemporaryDirectory() as temp:
@@ -10776,6 +10817,20 @@ class SessionScopeTests(unittest.TestCase):
         self.assertEqual(self.search_tasks(out), ["buoy-refit", "lamp-test", "reef-scan", "tide-merge"])
         self.assertIn("tide-review findings", self.every_page(out))
         self.assertNotIn("gull-count findings", self.every_page(out))
+
+    def test_hold_attribution_requires_the_documented_bullet_field(self) -> None:
+        with (self.data / "backlog.md").open("a", encoding="utf-8") as backlog:
+            stamp = self.iso(self.start)
+            backlog.write("\n## Held\n\n" + held_row(
+                "alias-hold", "Unattributed alias hold", "Choose a chart", stamp,
+            ).replace("(hold:", "(hold_session_id: current) (hold:", 1) + "\n")
+            backlog.write("\n| ID | Task | State | Held | Hold kind | Hold session ID | Hold set |\n"
+                          "| --- | --- | --- | --- | --- | --- | --- |\n"
+                          f"| table-hold | Attributed table hold | queued | yes | captain | current | {stamp} |\n")
+        tasks = self.search_tasks(self.render())
+        self.assertIn("lamp-test", tasks)
+        self.assertIn("table-hold", tasks)
+        self.assertNotIn("alias-hold", tasks)
 
     def test_pages_show_only_the_session_and_hide_everything_else(self) -> None:
         out = self.render()

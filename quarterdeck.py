@@ -3629,10 +3629,11 @@ def home_attention(
         }
         if not use_feed and home_has_session_content(snapshot):
             view["decisions"]["skipped"] = "the Firstmate scripts were skipped with --no-snapshot"
-    view["ok"] = not errors and not view.get("feed_stale")
-    if not home_has_session_content(snapshot):
-        errors.clear()
+    if (errors or view.get("feed_stale")) and not home_has_session_content(snapshot):
+        errors[:] = [{"source": "session attention", "code": "session_source_unavailable",
+                      "message": "An attention source needed for this session could not be read"}]
         view.pop("feed_stale", None)
+    view["ok"] = not errors and not view.get("feed_stale")
     return view
 
 
@@ -4053,7 +4054,12 @@ def attention_check_line(view: dict[str, object]) -> str:
     for home in view["homes"]:  # type: ignore[union-attr]
         assert isinstance(home, dict)
         if home["errors"]:
-            parts.append(f"{home['label']}: " + "; ".join(f"{e['source']}: {e['message']}" for e in home["errors"]))
+            for error in home["errors"]:
+                if error.get("code") == "session_source_unavailable":
+                    parts.append(error["message"])
+                    break
+            else:
+                parts.append(f"{home['label']}: " + "; ".join(f"{e['source']}: {e['message']}" for e in home["errors"]))
             continue
         ledger, work, decisions = home["ledger"], home["recent_work"], home["decisions"]
         if ledger["present"]:
@@ -4361,6 +4367,9 @@ def attention_errors_html(view: dict[str, object]) -> list[str]:
                        f'<details><summary>Details</summary><p>{html.escape(str(home["feed_stale"]["detail"]))}. '
                        f'Run <code>quarterdeck attention --check</code> and report this line.</p></details></div>')
         for error in home["errors"]:  # type: ignore[union-attr]
+            if error.get("code") == "session_source_unavailable":
+                out.append(f'<div class="warning" role="status"><p>{html.escape(error["message"])}.</p></div>')
+                continue
             if error.get("code") == "home_not_local" and "remote host" in str(error.get("message")):
                 out.append(f'<p class="source-note">{html.escape(label)}Runs on a remote host; Quarterdeck reads only this machine\'s homes.</p>')
                 continue
@@ -11796,7 +11805,7 @@ def wait_time(value: datetime) -> str:
 
 
 def hold_session_id(item: BacklogItem) -> str | None:
-    return item.attrs.get("hold-session-id") or item.attrs.get("hold_session_id")
+    return item.attrs.get("hold-session-id") or None
 
 
 def hold_stamp(item: BacklogItem) -> str:
