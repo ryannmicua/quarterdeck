@@ -257,7 +257,11 @@ class PageTests(StoreCase):
             "Skip https://example.org:99999/?x=1&y=2. "
             "Try [http://[2001:db8::1]]! Or HTTPS://example.org/?q=go!. "
             "Read (https://example.org/docs#setup)! Try (https://example.org/?q=go!)? "
-            "Compare https://example.org/Alzheimer's_disease and 'https://example.org/its_(owner)'?"
+            "Compare https://example.org/Alzheimer's_disease and 'https://example.org/its_(owner)'? "
+            'Use "https://example.org/?tag=red;" or <https://example.org/?tag=blue;>. '
+            "Try 'https://example.org/?q=writers';format=text','https://example.org/next'. "
+            "See (details: https://example.org/docs#setup)! "
+            "[Docs](https://example.org/docs),[Runbook](https://example.org/runbook)"
         )
         self.add("resource", "Notes", description, "--url", "https://example.org/notes", "--link-text", "Notes")
         self.add("questions", "Decisions", description, "--body-file", "-", stdin=json.dumps(QUESTIONS))
@@ -271,7 +275,17 @@ class PageTests(StoreCase):
             'Try (<a href="https://example.org/?q=go!" rel="noopener noreferrer">https://example.org/?q=go!</a>)? '
             'Compare <a href="https://example.org/Alzheimer&#x27;s_disease" rel="noopener noreferrer">'
             'https://example.org/Alzheimer&#x27;s_disease</a> and &#x27;'
-            '<a href="https://example.org/its_(owner)" rel="noopener noreferrer">https://example.org/its_(owner)</a>&#x27;?'
+            '<a href="https://example.org/its_(owner)" rel="noopener noreferrer">https://example.org/its_(owner)</a>&#x27;? '
+            'Use &quot;<a href="https://example.org/?tag=red;" rel="noopener noreferrer">'
+            'https://example.org/?tag=red;</a>&quot; or &lt;<a href="https://example.org/?tag=blue;" rel="noopener noreferrer">'
+            'https://example.org/?tag=blue;</a>&gt;. '
+            'Try &#x27;<a href="https://example.org/?q=writers&#x27;;format=text" rel="noopener noreferrer">'
+            'https://example.org/?q=writers&#x27;;format=text</a>&#x27;,&#x27;'
+            '<a href="https://example.org/next" rel="noopener noreferrer">https://example.org/next</a>&#x27;. '
+            'See (details: <a href="https://example.org/docs#setup" rel="noopener noreferrer">'
+            'https://example.org/docs#setup</a>)! '
+            '[Docs](<a href="https://example.org/docs" rel="noopener noreferrer">https://example.org/docs</a>),'
+            '[Runbook](<a href="https://example.org/runbook" rel="noopener noreferrer">https://example.org/runbook</a>)'
         )
         pages = self.pages()
         self.assertIn(f'<td class="description">{expected}</td>', pages["index.html"])
