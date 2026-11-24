@@ -55,6 +55,25 @@ quarterdeck add --kind questions --title "Tide launch decisions" \
   --description "The two questions holding the tide launch." --body-file questions.json
 ```
 
+### A question that points to a review page
+
+When a question is easier to decide with a picture or a mock-up, add `links` to
+that question. Each link has the `text` the reader sees and a `url` that starts
+with `http://` or `https://`:
+
+```json
+[
+  {"question": "How should the pop-up show up?",
+   "context": "Three layouts are drawn on the review page.",
+   "options": ["Centered", "Docked"], "suggestion": "Docked",
+   "links": [{"text": "See the mock-ups", "url": "https://example.org/review/popup"}]}
+]
+```
+
+The link opens in a new tab, directly above the options. The card for the item
+on the Saved page shows the first link of the first open question.
+`quarterdeck show` prints every link with its address.
+
 The questions are numbered on the page, for example Q3.1 and Q3.2.
 See [Answer questions](answer-questions.md) to send decisions.
 

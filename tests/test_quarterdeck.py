@@ -347,6 +347,59 @@ class PageTests(StoreCase):
         self.assertIn("&lt;b&gt;bold&lt;/b&gt;", pages["q1.html"])
 
 
+LINKED = [
+    {"question": "How should the pop-up show up?", "context": "Three layouts are drawn on the review page.",
+     "options": ["Centered", "Docked"], "suggestion": "Docked",
+     "links": [{"text": "See the mock-ups", "url": "https://example.org/review/popup"},
+               {"text": "Second view", "url": "https://example.org/review/two"}]},
+    {"question": "Which colour?", "context": "Plain.", "options": ["Red"]},
+]
+
+
+class QuestionLinkTests(StoreCase):
+    def save(self, questions: object) -> tuple[int, str, str]:
+        return self.run_cli("add", "--kind", "questions", "--title", "Pop-up", "--description", "Layout choice.",
+                            "--body-file", "-", stdin=json.dumps(questions))
+
+    def test_links_are_stored_shown_by_show_and_rendered(self) -> None:
+        self.assertEqual(self.save(LINKED)[0], 0)
+        stored = self.store()["items"][0]["body"]["questions"]
+        self.assertEqual(stored[0]["links"][0], {"text": "See the mock-ups", "url": "https://example.org/review/popup"})
+        self.assertNotIn("links", stored[1])
+        shown = self.run_cli("show", "Q1")[1]
+        self.assertIn("      Link: See the mock-ups: https://example.org/review/popup", shown)
+        data = quarterdeck.read_store(quarterdeck.store_path())
+        pages = quarterdeck.site_pages(data, "Quarterdeck", "index.html")
+        link = ('<a class="ref-link" href="https://example.org/review/popup" target="_blank" '
+                'rel="noopener noreferrer">See the mock-ups</a>')
+        self.assertIn(link, pages["q1.html"])
+        self.assertLess(pages["q1.html"].index(link), pages["q1.html"].index("<li>Centered</li>"))
+        self.assertEqual(pages["index.html"].count(link), 1, "the card shows only the first link")
+        self.assertNotIn("Second view", pages["index.html"])
+
+    def test_card_skips_closed_questions(self) -> None:
+        self.save(LINKED)
+        self.assertEqual(self.run_cli("mark", "Q1.1", "closed")[0], 0)
+        pages = quarterdeck.site_pages(quarterdeck.read_store(quarterdeck.store_path()), "Quarterdeck", "index.html")
+        self.assertNotIn("See the mock-ups", pages["index.html"])
+
+    def test_bad_links_are_refused(self) -> None:
+        base = {"question": "Q?", "context": "C", "options": ["A"]}
+        cases = [
+            ([{"text": "x", "url": "javascript:alert(1)"}], "link 1 url must be an http:// or https://"),
+            ([{"text": "x", "url": "ftp://example.org/a"}], "link 1 url"),
+            ([{"text": "x"}], "link 1 must be an object with text and url"),
+            ([{"url": "https://example.org"}], "link 1 must be an object with text and url"),
+            ([{"text": " ", "url": "https://example.org"}], "link 1 text must not be empty"),
+            ("https://example.org", "links must be a list"),
+        ]
+        for links, message in cases:
+            code, _out, err = self.save([{**base, "links": links}])
+            self.assertEqual(code, 2, links)
+            self.assertIn(message, err)
+        self.assertFalse(quarterdeck.store_path().exists())
+
+
 class RenderTests(StoreCase):
     def test_render_replaces_historical_output_and_retires_only_marked_item_pages(self) -> None:
         self.add_all_kinds()

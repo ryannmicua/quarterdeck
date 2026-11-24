@@ -237,6 +237,22 @@ def list_entries(entries: object) -> list[str]:
             for number, entry in enumerate(entries, 1)]
 
 
+def question_links(raw: object, where: str) -> list[dict[str, str]]:
+    if not isinstance(raw, list):
+        raise ValueError(f"{where} links must be a list of objects with text and url")
+    links = []
+    for number, link in enumerate(raw, 1):
+        name = f"{where} link {number}"
+        if not isinstance(link, dict) or set(link) != {"text", "url"}:
+            raise ValueError(f"{name} must be an object with text and url")
+        try:
+            url = clean_url(link["url"])
+        except ValueError as exc:
+            raise ValueError(f"{name} {exc}") from exc
+        links.append({"text": clean_text(link["text"], f"{name} text", TITLE_LIMIT), "url": url})
+    return links
+
+
 def question_entries(raw: object) -> list[dict[str, object]]:
     if not isinstance(raw, list) or not raw:
         raise ValueError("questions body must be a non-empty JSON array")
@@ -245,7 +261,7 @@ def question_entries(raw: object) -> list[dict[str, object]]:
         where = f"question {number}"
         if not isinstance(entry, dict):
             raise ValueError(f"{where} must be an object")
-        unknown = sorted(set(entry) - {"question", "context", "options", "suggestion"})
+        unknown = sorted(set(entry) - {"question", "context", "options", "suggestion", "links"})
         if unknown:
             raise ValueError(f"{where} has unsupported field(s): {', '.join(unknown)}")
         options = entry.get("options", [])
@@ -258,6 +274,8 @@ def question_entries(raw: object) -> list[dict[str, object]]:
         }
         if entry.get("suggestion") not in (None, ""):
             cleaned["suggestion"] = clean_text(entry["suggestion"], f"{where} suggestion", TEXT_LIMIT, multiline=True)
+        if entry.get("links"):
+            cleaned["links"] = question_links(entry["links"], where)
         if not cleaned["options"] and "suggestion" not in cleaned:
             raise ValueError(f"{where} needs options or a suggestion to decide from")
         questions.append(cleaned)
@@ -537,6 +555,8 @@ def item_text(item: dict[str, object]) -> str:
         for number, question in enumerate(body["questions"], 1):  # type: ignore[index]
             lines.append(f"{item_id}.{number}  {question['question']}")
             lines.append(f"      Context: {question['context']}")
+            for link in question.get("links", []):
+                lines.append(f"      Link: {link['text']}: {link['url']}")
             if question["options"]:
                 lines.append("      Options: " + " | ".join(question["options"]))
             if question.get("suggestion"):
@@ -856,6 +876,10 @@ label { display:block; font-weight:600; }
 textarea { display:block; width:100%; resize:vertical; background:var(--ground); color:var(--ink);
  border:1px solid var(--soft); border-radius:4px; padding:.55rem; font:inherit; }
 .record { white-space:pre-wrap; }
+.ref-links { list-style:none; margin:0 0 .8rem; padding:0; font-family:var(--sans); }
+.ref-links li { margin:0; }
+.ref-link { display:inline-block; padding:.6rem 0; min-height:44px; box-sizing:border-box; font-size:1.1rem; font-weight:600; text-decoration:underline; color:var(--ink); }
+.visual { margin:.2rem 0 1rem; font-family:var(--sans); }
 table.items td.when { white-space:normal; }
 .desk { margin:0 0 1rem; }
 .desk .work { max-width:none; margin:0; padding:1rem; border-width:0 0 1px; border-left:5px solid var(--rule); border-radius:0; background:transparent;
@@ -1094,12 +1118,24 @@ def question_card(item, summary, *, served, primary):
     link_class = ' class="work-action"' if primary else ' class="button-link"'
     questions = item["body"]["questions"]
     prompts = "".join(f'<li>{esc(questions[n - 1]["question"])}</li>' for n in open_parts)
+    first = next((questions[n - 1]["links"][0] for n in open_parts if questions[n - 1].get("links")), None)
+    visual = f'<p class="visual">{link_html(first)}</p>' if first else ''
     return (f'<article class="work{' next' if primary else ''}"><div class="eyebrow"><span class="id">{item["id"]}</span> Questions</div>'
             f'<h3>{esc(item["title"])}</h3><p>{linked_text(item["description"])}</p>'
             + (f'<ul>{prompts}</ul>' if prompts else '')
+            + visual
             + f'<div class="actions"><span class="badge">{progress}</span>'
             + ('<span>Not delivered</span>' if pending else '')
             + f'<a{link_class} href="{href}">{action}</a></div></article>')
+
+
+def link_html(link):
+    return f'<a class="ref-link" href="{esc(link["url"])}" target="_blank" rel="noopener noreferrer">{esc(link["text"])}</a>'
+
+
+def links_html(question):
+    links = question.get("links")
+    return '<ul class="ref-links">' + ''.join(f'<li>{link_html(l)}</li>' for l in links) + '</ul>' if links else ''
 
 
 def has_answer_controls(item):
@@ -1139,12 +1175,12 @@ def question_form(item, served):
                 labels.append(f'<label class="choice"><input type="radio" name="choice-{part}" data-choice="{esc(choice)}"'
                               + (' data-suggested' if suggested else '') + f'> {esc(choice)}'
                               + (' <small>Suggested</small>' if suggested else '') + '</label>')
-            controls = ('<div class="choices">' + ''.join(labels) + '</div>'
+            controls = (links_html(question) + '<div class="choices">' + ''.join(labels) + '</div>'
                         + f'<label for="answer-{part}">Your answer</label><textarea id="answer-{part}" '
                         + f'maxlength="{TEXT_LIMIT}" rows="2" aria-describedby="error-{part}">{esc(answer)}</textarea>'
                         + f'<p id="error-{part}" hidden></p>')
         else:
-            controls = '<ul>' + ''.join(f'<li>{esc(v)}</li>' for v in question["options"]) + '</ul>'
+            controls = links_html(question) + '<ul>' + ''.join(f'<li>{esc(v)}</li>' for v in question["options"]) + '</ul>'
             if question.get("suggestion"):
                 controls += f'<p><strong>Suggested answer</strong><br>{esc(question["suggestion"])}</p>'
         cards.append(f'<section class="decision" id="{part}" aria-labelledby="title-{part}"{editor}>'
@@ -1979,7 +2015,8 @@ def show_help(args: argparse.Namespace) -> int:
 # --- command line -------------------------------------------------------------------------
 
 KIND_HELP = ("resource (a link: --url and --link-text), list (one entry per non-blank line), "
-             "questions (a JSON array of {question, context, options, suggestion})")
+             "questions (a JSON array of {question, context, options, suggestion, links}; "
+             "links is a list of {text, url} shown above the options")
 
 
 def add_serve_options(parser: argparse.ArgumentParser) -> None:

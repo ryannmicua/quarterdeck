@@ -47,7 +47,7 @@ Readers validate the records without taking the lock.
 | --- | --- |
 | `resource` | A `url` and `link_text`. The URL must use `http` or `https`, include a hostname, and pass port validation. |
 | `list` | `{"entries": ["...", "..."]}`, at least one. |
-| `questions` | A nonempty `questions` array of objects. `question` and `context` are required text fields. `options` is an array of text and can be empty when the object has a `suggestion`. |
+| `questions` | A nonempty `questions` array of objects. `question` and `context` are required text fields. `options` is an array of text and can be empty when the object has a `suggestion`. `links` is an optional array of `{"text": "...", "url": "..."}` objects, both required; `url` must be `http` or `https`, and anything else is refused when the item is saved. A link is shown with its text exactly as saved, directly above the options. |
 
 Quarterdeck trims text when saving it and escapes it when building pages.
 On the Saved page and individual item pages, standalone `http://` and
