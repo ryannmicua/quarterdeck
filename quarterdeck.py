@@ -2019,7 +2019,7 @@ def show_help(args: argparse.Namespace) -> int:
 
 KIND_HELP = ("resource (a link: --url and --link-text), list (one entry per non-blank line), "
              "questions (a JSON array of {question, context, options, suggestion, links}; "
-             "links is a list of {text, url} shown above the options")
+             "links is a list of {text, url} shown above the options)")
 
 
 def add_serve_options(parser: argparse.ArgumentParser) -> None:
