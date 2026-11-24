@@ -1,7 +1,7 @@
 # Watch Firstmate's activity as cards
 
-The served page leads with the **Needs you** cards, so what is waiting on you is
-the first thing you see. Empty-state messages are explained
+The classic page leads with **Needs you** cards from the
+[current conversation](see-only-this-session.md). Empty-state messages are explained
 [below](#if-the-feed-is-empty-or-incomplete).
 What Firstmate started, merged and finished is in a collapsed **Activity**
 section lower on the page (in the jump strip, with its count). It works like the
@@ -48,8 +48,8 @@ data directory, including a local secondmate's; an unavailable owner or a
 namespace shared by distinct home labels leaves links out.
 
 Markdown opens rendered and HTML retains its content and scripts. A link appears
-only for a readable UTF8 regular `.md` or `.html` file of 2 MB or less that really
-sits inside that data directory; missing files and links that escape it are left out.
+only for a readable regular `.md` or `.html` file of 2 MB or less in UTF8 inside
+that data directory. Topic files must also belong to the current conversation.
 The card text is not changed. Report references use the [report view](#read-the-report)
 below. Other opened documents carry a small bar with a
 link back to Quarterdeck and **Open file by itself**. The second link opens the
@@ -67,9 +67,10 @@ A card shows **Read the report** for each report directory named by a
 `data/<id>/report.md` or `data/<id>/report.html` reference, including bare report
 filenames resolved beside another named document. It also links reports belonging
 to the card's task or to the task named by `Captain hold origin: <id>` in its
-backlog body, using an explicit report directory or the task ID. Repeated
-references to the same directory share one link; multiple reports include their
-titles in the links.
+backlog body, using an explicit report directory or the task ID. These report
+links use the [current conversation scope](see-only-this-session.md#what-appears).
+Repeated references to the same directory share one link. When there are
+multiple reports, the links include their titles.
 
 Topic **Links** and conversation entries use this report view too. When a readable
 `report.html` is available, the page shows it first and offers **Open file by

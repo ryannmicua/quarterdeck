@@ -4,16 +4,9 @@
 
 ## What it is
 
-Quarterdeck turns running Firstmate homes' backlogs and scout reports into one
-local HTML review page. Serving is read-only by default; report review marks are
-available as an opt-in. What needs you leads the page, followed by the captain
-board when any selected home or registered secondmate has one. The shared
-[decision relevance rules](docs/reference/attention-json.md#decisions) determine
-which decisions appear. Without a board, the waiting view follows the cards, then
-Captain's Call, Underway, and Charted Next from Firstmate's `/bearings` digest. See
-[See recent work](docs/how-to/see-recent-work.md) for the waiting queues and
-recent-work display. Reports waiting on your
-review also appear. You can register several Firstmate homes.
+Quarterdeck turns the work in your current Firstmate conversation into a local
+HTML review page. Serving is read-only by default, with opt-in report review
+marks. You can register several Firstmate homes.
 See [Configure multiple homes](docs/how-to/configure-multiple-homes.md).
 
 Render on demand, or run `quarterdeck serve` for a page that stays current on
@@ -37,8 +30,8 @@ for server requirements, phone setup and withdrawal behavior.
   a topic's state beside its conversation, a report beside its review buttons,
   search filters as a sidebar) while reading lines stay about 75 characters.
   Heading counts appear only when there is more than one item.
-- Needs-you cards and activity: the served page leads with the decisions,
-  merges and anything else waiting on you, each a card that
+- Needs-you cards and activity: the classic page leads with the decisions,
+  merges and other items waiting on you, each a card that
   opens to the ask, options and links and uses the desk's
   [reaction controls and growing reply box](docs/how-to/serve-the-page.md#react-to-calls-and-reports-from-the-page). What
   Firstmate started, merged and finished sits in a collapsed Activity section

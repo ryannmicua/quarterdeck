@@ -825,7 +825,9 @@ def source_pages(
 
 def legacy_render_pages(output_dir: Path) -> Iterator[Path]:
     fixed = {"index.html", "index.lavish.html", CLASSIC_PAGE, PREVIOUS_PAGE, TOPICS_PAGE, SEARCH_PAGE, ADOPTION_PAGE}
-    marker = re.compile(rb'<meta name="quarterdeck-generated" content="read-only (?:source page|review page|topic page|adoption summary)">')
+    marker = re.compile(
+        rb'<meta name="quarterdeck-' rb'generated" content="read-only (?:source page|review page|topic page|adoption summary)">'
+    )
     for path in output_dir.iterdir():
         if path.name not in fixed and not re.fullmatch(
             r"(?:topic-[a-z0-9][a-z0-9-]*|(?:backlog|report|item|doc|rv|rm)-[a-f0-9]{12})\.html", path.name
@@ -14308,14 +14310,18 @@ def make_parser() -> argparse.ArgumentParser:
     command_parsers: dict[str, argparse.ArgumentParser] = {}
 
     render_parser = subparsers.add_parser(
-        "render", help="regenerate the local HTML page", description="Render registered or explicitly selected homes using the attention view; --all includes queued, finished, closed, and unlinked report records. --lavish writes a separate Lavish review page and opens it when available."
+        "render", help="regenerate the local HTML page",
+        description="Render the current Firstmate conversation as a local HTML page.",
     )
     command_parsers["render"] = render_parser
     render_parser.add_argument("--home", help="render this Firstmate home instead of configured homes or FM_HOME")
     render_parser.add_argument("--output", help="HTML file path; defaults to the configured state directory")
     render_parser.add_argument("--config", type=Path, help="optional JSON config file")
     render_parser.add_argument("--title", help="override the page title")
-    render_parser.add_argument("--all", action="store_true", help="show every backlog item and scout report, including queued and finished work")
+    render_parser.add_argument(
+        "--all", action="store_true",
+        help="expand the current conversation in the classic layout to include queued, finished, and closed backlog items and all its scout reports",
+    )
     render_parser.add_argument("--lavish", action="store_true", help="write a separate Lavish-ready page and open it when lavish-axi is available")
     render_parser.add_argument("--no-snapshot", action="store_true", help="skip the Firstmate bearings snapshot script and parse backlogs directly")
     render_parser.set_defaults(handler=render)

@@ -6,7 +6,8 @@ stale decisions stay collapsed; dated decisions stay hidden until due.
 
 ## On the page
 
-`render` and `serve` add a "Decisions and recent work" section after the board. Select a
+The classic page has a "Decisions and recent work" section after the board.
+It follows the [current conversation scope](see-only-this-session.md). Select a
 saved briefing view to choose which sections appear and in what order (see
 [Briefing views](#briefing-views) below). The
 [view reference](../reference/attention-json.md#briefing-views) defines section
