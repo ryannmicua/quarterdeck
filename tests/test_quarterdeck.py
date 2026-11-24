@@ -356,6 +356,26 @@ LINKED = [
 ]
 
 
+class QuestionAddressTests(StoreCase):
+    def test_web_addresses_in_question_text_become_links_but_answers_do_not_change(self) -> None:
+        a, b, c, d = (f"https://example.org/{name}" for name in ("ask", "why", "opt", "tip"))
+        questions = [{"question": f"Does {a} look right?", "context": f"See {b}, then decide.",
+                      "options": [f"Use {c}", "Hold"], "suggestion": f"Use {c}"},
+                     {"question": "Plain?", "context": "C", "options": [f"Go {d}"]}]
+        code, _out, err = self.run_cli("add", "--kind", "questions", "--title", "T", "--description", "D",
+                                       "--body-file", "-", stdin=json.dumps(questions))
+        self.assertEqual(code, 0, err)
+        data = quarterdeck.read_store(quarterdeck.store_path())
+        pages = quarterdeck.site_pages(data, "Quarterdeck", "index.html")
+        served = quarterdeck.item_page(data["items"][0], "Quarterdeck", served=True)
+        for page in (pages["q1.html"], served):
+            for url in (a, b, c, d):
+                self.assertIn(f'<a href="{url}" rel="noopener noreferrer">{url}</a>', page)
+        self.assertIn(f'<a href="{a}" rel="noopener noreferrer">{a}</a>', pages["index.html"])
+        self.assertIn(f'data-choice="Use {c}"', served, "the answer value stays plain text")
+        self.assertNotIn(f'data-choice="Use <a', served)
+
+
 class QuestionLinkTests(StoreCase):
     def save(self, questions: object) -> tuple[int, str, str]:
         return self.run_cli("add", "--kind", "questions", "--title", "Pop-up", "--description", "Layout choice.",

@@ -12,7 +12,9 @@ sentence description: what it is and why it was saved, so the captain
 recognises it later. `add` prints the new ID.
 
 See [description links](../reference/item-store.md#format-version-1) for ways
-to include web addresses in a description.
+to include web addresses in a description. A web address in a question, its
+context, an option or a suggested answer is also shown as a link with the address
+visible; the answer saved for an option is still the plain text.
 
 ### A resource (a link)
 

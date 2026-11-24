@@ -1118,7 +1118,7 @@ def question_card(item, summary, *, served, primary):
     action = "Read questions" if not served else ("Answer questions" if remaining else "Review answers")
     link_class = ' class="work-action"' if primary else ' class="button-link"'
     questions = item["body"]["questions"]
-    prompts = "".join(f'<li>{esc(questions[n - 1]["question"])}</li>' for n in open_parts)
+    prompts = "".join(f'<li>{linked_text(questions[n - 1]["question"])}</li>' for n in open_parts)
     first_link = next((link_html(questions[n - 1]["links"][0], prefix=f'{item["id"]}.{n} ')
                        for n in open_parts if questions[n - 1].get("links")), '')
     visual = f'<p class="visual">{first_link}</p>' if first_link else ''
@@ -1176,19 +1176,19 @@ def question_form(item, served):
             for choice in choices:
                 suggested = choice == suggestions
                 labels.append(f'<label class="choice"><input type="radio" name="choice-{part}" data-choice="{esc(choice)}"'
-                              + (' data-suggested' if suggested else '') + f'> {esc(choice)}'
+                              + (' data-suggested' if suggested else '') + f'> {linked_text(choice)}'
                               + (' <small>Suggested</small>' if suggested else '') + '</label>')
             controls = (links_html(question) + '<div class="choices">' + ''.join(labels) + '</div>'
                         + f'<label for="answer-{part}">Your answer</label><textarea id="answer-{part}" '
                         + f'maxlength="{TEXT_LIMIT}" rows="2" aria-describedby="error-{part}">{esc(answer)}</textarea>'
                         + f'<p id="error-{part}" hidden></p>')
         else:
-            controls = links_html(question) + '<ul>' + ''.join(f'<li>{esc(v)}</li>' for v in question["options"]) + '</ul>'
+            controls = links_html(question) + '<ul>' + ''.join(f'<li>{linked_text(v)}</li>' for v in question["options"]) + '</ul>'
             if question.get("suggestion"):
-                controls += f'<p><strong>Suggested answer</strong><br>{esc(question["suggestion"])}</p>'
+                controls += f'<p><strong>Suggested answer</strong><br>{linked_text(question["suggestion"])}</p>'
         cards.append(f'<section class="decision" id="{part}" aria-labelledby="title-{part}"{editor}>'
                      f'<div class="eyebrow"><span class="id">{part}</span><span class="badge">{status.capitalize()}</span></div>'
-                     f'<h2 id="title-{part}">{esc(question["question"])}</h2><p>{esc(question["context"])}</p>{saved}{controls}</section>')
+                     f'<h2 id="title-{part}">{linked_text(question["question"])}</h2><p>{linked_text(question["context"])}</p>{saved}{controls}</section>')
     total = len(cards)
     progress = f"{remaining} of {total} open" if remaining else state
     toolbar = ""
