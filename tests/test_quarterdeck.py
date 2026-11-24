@@ -364,17 +364,24 @@ class QuestionLinkTests(StoreCase):
     def test_links_are_stored_shown_by_show_and_rendered(self) -> None:
         self.assertEqual(self.save(LINKED)[0], 0)
         stored = self.store()["items"][0]["body"]["questions"]
-        self.assertEqual(stored[0]["links"][0], {"text": "See the mock-ups", "url": "https://example.org/review/popup"})
+        expected_links = LINKED[0]["links"]
+        self.assertEqual(stored[0]["links"], expected_links)
         self.assertNotIn("links", stored[1])
-        shown = self.run_cli("show", "Q1")[1]
-        self.assertIn("      Link: See the mock-ups: https://example.org/review/popup", shown)
+        code, shown, err = self.run_cli("show", "Q1")
+        self.assertEqual(code, 0, err)
         data = quarterdeck.read_store(quarterdeck.store_path())
         pages = quarterdeck.site_pages(data, "Quarterdeck", "index.html")
-        link = ('<a class="ref-link" href="https://example.org/review/popup" target="_blank" '
-                'rel="noopener noreferrer">See the mock-ups</a>')
-        self.assertIn(link, pages["q1.html"])
-        self.assertLess(pages["q1.html"].index(link), pages["q1.html"].index("<li>Centered</li>"))
-        card_link = link.replace(">See the mock-ups", ">Q1.1 See the mock-ups")
+        served_page = quarterdeck.item_page(data["items"][0], "Quarterdeck", served=True)
+        for link in expected_links:
+            text, url = link["text"], link["url"]
+            with self.subTest(text=text):
+                self.assertIn(f"      Link: {text}: {url}", shown)
+                anchor = (f'<a class="ref-link" href="{url}" target="_blank" '
+                          f'rel="noopener noreferrer">{text}</a>')
+                self.assertLess(pages["q1.html"].index(anchor), pages["q1.html"].index("<li>Centered</li>"))
+                self.assertLess(served_page.index(anchor), served_page.index('<div class="choices">'))
+        card_link = ('<a class="ref-link" href="https://example.org/review/popup" target="_blank" '
+                     'rel="noopener noreferrer">Q1.1 See the mock-ups</a>')
         self.assertEqual(pages["index.html"].count(card_link), 1)
         self.assertNotIn("Second view", pages["index.html"])
 
