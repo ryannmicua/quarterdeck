@@ -1,14 +1,13 @@
 # Read the workers section
 
-The served Saved page lists the workers running in your Firstmate home under
-**Workers**, directly below **My desk**.
+Open **Workers** on the served Saved page to see who is running in your
+Firstmate home.
 
 ## Before you start
 
-Set `firstmate_home` to the home's absolute path in the
-[config](../reference/cli-and-config.md#json-configuration), then restart
-`quarterdeck serve`. Without it, **Workers** says so and shows nothing. The
-section only appears on the served page, not in a rendered snapshot.
+Set [`firstmate_home`](../reference/cli-and-config.md#json-configuration) in the
+config, then restart `quarterdeck serve`. Without that setting, **Workers**
+shows a setup message. Rendered snapshots omit the section.
 
 ## Read the list
 
@@ -16,6 +15,7 @@ section only appears on the served page, not in a rendered snapshot.
    workers** while it waits.
 2. Read each row. The name and status come first, followed by the project,
    activity, time of last activity or contact, and links when available.
+   Row times use your local date and time.
 3. Select **Refresh workers** to read the home again. The page never refreshes
    the list by itself. **Last refreshed** shows the time of the last successful
    read, in your local time zone.
@@ -48,9 +48,10 @@ A row links to the worker's pull request when the snapshot supplies its URL.
 
 ## Known limits
 
-If the snapshot lists the same second mate twice, once with a closed terminal
-and once with a live terminal, the closed entry can win. The row then shows
-**Unreachable** until a refresh lists the second mate once.
+If the snapshot lists a second mate with both a closed and a live terminal,
+the row can show **Unreachable** when the closed entry comes first. See the
+[endpoint reference](../reference/cli-and-config.md#workers-endpoint) for
+how duplicate rows are selected.
 
 ## If a refresh fails
 

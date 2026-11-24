@@ -69,6 +69,11 @@ if the command fails, exceeds 60 seconds, or returns invalid snapshot data.
 | `workers` | Ordinary tasks whose terminals are open, one row per ID. Each row has `name`, `project`, `activity`, `status`, `active_at` and `links`. |
 | `second_mates` | Second mates reported in the snapshot, one row per ID. Each row has the same fields, with `contact_at` in place of `active_at`. |
 
+For duplicate IDs, the first worker with an open terminal or the first second
+mate with a valid endpoint wins within its group. A selected second mate takes
+precedence over an ordinary worker with the same ID. An unresolved terminal
+state returns 502 if no eligible record resolves it.
+
 `project` uses the project directory's basename or the backlog repository.
 `activity` uses the backlog title. `active_at` is calculated from the most
 recent reported event's age. `contact_at` uses `observed_at` when the snapshot
