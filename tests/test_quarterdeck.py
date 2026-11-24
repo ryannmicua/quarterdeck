@@ -569,7 +569,7 @@ const sendBatch = () => new Promise(resolve => {
 </body>"""), encoding="utf-8")
         result = subprocess.run([chrome, "--headless", "--disable-background-networking", "--no-first-run", "--lang=en-US",
                                  f"--user-data-dir={self.root / 'browser'}", "--dump-dom", fixture.as_uri()],
-                                env={**os.environ, "TZ": "Asia/Tokyo", "LC_ALL": "en_US.UTF-8"},
+                                env={**os.environ, "TZ": "Asia/Tokyo", "LC_ALL": "en_US.utf-8"},
                                 capture_output=True, text=True, timeout=30, check=True)
         browser_result = result.stdout.partition('<output id="browser-result">')[2].partition("</output>")[0]
         self.assertEqual(browser_result, "PASS", result.stderr)
