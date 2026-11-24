@@ -386,17 +386,22 @@ class QuestionLinkTests(StoreCase):
         self.assertNotIn("Second view", pages["index.html"])
 
     def test_card_preview_uses_first_open_question_with_links(self) -> None:
-        self.assertEqual(self.save([{**LINKED[1], "links": []}, LINKED[0]])[0], 0)
+        later_question = {"question": "Where should the button go?", "context": "Review the placements.",
+                          "options": ["Top", "Bottom"],
+                          "links": [{"text": "See the placements", "url": "https://example.org/review/placements"}]}
+        self.assertEqual(self.save([{**LINKED[1], "links": []}, LINKED[0], later_question])[0], 0)
         self.assertNotIn("links", self.store()["items"][0]["body"]["questions"][0])
-        for state in ("open", "answered", "closed", "open"):
-            with self.subTest(state=state):
-                self.assertEqual(self.run_cli("mark", "Q1.2", state)[0], 0)
+        first = "Q1.2 See the mock-ups"
+        later = "Q1.3 See the placements"
+        cases = [("Q1.2", "open", first), ("Q1.2", "answered", later), ("Q1.2", "closed", later),
+                 ("Q1.3", "closed", None), ("Q1.3", "open", later), ("Q1.2", "open", first)]
+        for part, state, expected in cases:
+            with self.subTest(part=part, state=state):
+                self.assertEqual(self.run_cli("mark", part, state)[0], 0)
                 data = quarterdeck.read_store(quarterdeck.store_path())
                 page = quarterdeck.site_pages(data, "Quarterdeck", "index.html")["index.html"]
-                if state == "open":
-                    self.assertIn(">Q1.2 See the mock-ups</a>", page)
-                else:
-                    self.assertNotIn("See the mock-ups", page)
+                for label in (first, later):
+                    self.assertEqual(page.count(f">{label}</a>"), int(label == expected))
 
     def test_bad_links_are_refused(self) -> None:
         base = {"question": "Q?", "context": "C", "options": ["A"]}
