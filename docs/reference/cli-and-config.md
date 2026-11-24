@@ -25,17 +25,17 @@ Item commands report validation errors on stderr and exit with status 2.
 
 | Command | What it does |
 | --- | --- |
-| `add` | Saves a new item and prints its ID. A `resource` needs `--url` and `--link-text`. A `list` or `questions` item needs `--body-file`. See [the input formats and examples](../how-to/save-items.md#add-an-item). |
+| `add` | Saves a new item and prints its ID. A `resource` needs `--url` and `--link-text`. A `list` or `questions` item needs `--body-file`. Questions may carry images, which are copied into the private store. See [the input formats and examples](../how-to/save-items.md#add-an-item). |
 | `list` | Prints saved items, newest first, with ID, kind, saved date and title. |
 | `show` | Prints one item in full, numbering list entries and questions as `Q7.1`, `Q7.2`. Each question link is printed with its text and URL. |
 | `mark` | Sets the state of one question or every question in a questions item. It preserves any saved answer, timestamp and delivery status. See [Read answers](../how-to/read-answers.md) for examples. |
-| `remove` | Deletes an item. Its ID is never used again. |
+| `remove` | Deletes an item and its saved images. Its ID is never used again. |
 
 ### Pages
 
 | Command | What it does |
 | --- | --- |
-| `render` | Writes `index.html` (Saved) and one `q<N>.html` page per item. `--output PATH` names the Saved page and puts the item pages beside it. Otherwise the pages go to `output_dir`. Item filenames `q<N>.html` are reserved. Existing destination files must carry Quarterdeck's generated-page marker. Render retires only marked item pages that are no longer needed. Separately named Saved pages are kept and share the item pages in that directory. The output must be outside the Quarterdeck checkout. |
+| `render` | Writes `index.html` (Saved) and one `q<N>.html` page per item. `--output PATH` names the Saved page and puts the item pages beside it. Otherwise the pages go to `output_dir`. The names `q<N>.html` and `images` are reserved. Existing destination pages must carry Quarterdeck's generated-page marker. Render uses the live images in the default state directory and copies images to `images/<id>/` for external output. It retires obsolete marked item pages. It never deletes an image, so an external output keeps the copies of removed items. Separately named Saved pages are kept and share the item pages in that directory. The output must be outside the Quarterdeck checkout. |
 | `serve` | Serves the Saved page and item pages over HTTP, or HTTPS with `--tls-cert` and `--tls-key`. Page requests read the store, so a new item shows on the next load. Open item Q7 at `/q7.html`. `--host` may be repeated. `--port` defaults to 8765. See [serving security](../how-to/serve-the-page.md#security-loopback-by-default) for the default bind and browser access rules. |
 | `service` | Prints a systemd user unit with the supplied serving options, or writes it to `${XDG_CONFIG_HOME:-~/.config}/systemd/user/quarterdeck.service` with `--write`. |
 | `url` | Prints the address the installed unit serves, or the default address when no unit is installed. |

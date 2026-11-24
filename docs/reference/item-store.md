@@ -9,7 +9,7 @@ ${XDG_STATE_HOME:-~/.local/state}/quarterdeck/items.json
 Item commands and submitted answers update the store. Both set the store
 directory to mode 0700, take an exclusive lock on `items.json.lock`, validate
 the existing records, and atomically replace `items.json` with mode 0600.
-Readers validate the records without taking the lock.
+`render` takes the same lock from its store read through publication of its output. Other readers validate records without taking the lock.
 
 ## Format (version 1)
 
@@ -47,7 +47,7 @@ Readers validate the records without taking the lock.
 | --- | --- |
 | `resource` | A `url` and `link_text`. |
 | `list` | `{"entries": ["...", "..."]}`, at least one. |
-| `questions` | A nonempty `questions` array of objects. `question` and `context` are required text fields. `options` is an array of text and can be empty when the object has a `suggestion`. Each question may include `links`, an array of objects with exactly two fields, `text` and `url`. |
+| `questions` | A nonempty `questions` array of objects. `question` and `context` are required text fields. `options` is an array of text or option objects and can be empty when the object has a `suggestion`. Each question may include `links`, an array of objects with exactly two fields, `text` and `url`. A question may also have `images`. |
 
 Resource and question link URLs must use `http` or `https`, include a hostname,
 and pass port validation. After trimming, a URL may contain at most 2,000
@@ -75,6 +75,49 @@ Separate multiple addresses with spaces so they are recognized individually.
 Bare addresses lose trailing punctuation such as periods and exclamation
 marks. Enclose an address in angle brackets, as in
 `<https://example.com/?q=go!>`, to keep that punctuation in the destination.
+
+## Question images
+
+A question may carry `images`, and an option may be an object with a `label`
+and an `image`. Plain text options are strings. A pictured option's label
+must be distinct from all other option labels in its question after whitespace
+normalization.
+
+```json
+{"question": "Which card style?", "context": "Both fit a phone.",
+ "images": [{"path": "~/shots/overview.png", "alt": "Both card styles side by side"}],
+ "options": ["Plain", {"label": "Framed", "image": {"path": "~/shots/framed.png", "alt": "A card with a frame"}}]}
+```
+
+| Field | Meaning |
+| --- | --- |
+| `path` | A local PNG, JPEG or still WebP file, up to 5 MiB. It is read once, when the item is saved, and the type is checked from the file's content, not its name. Any other type is refused with a message naming the file. |
+| `alt` | Required text that describes the image, up to 300 characters. |
+
+An item holds at most 24 images. Saving copies each file into the private
+store and keeps this record in `items.json` in place of `path`:
+
+```json
+{"file": "3f9a0c2d41b7e6a8.png", "alt": "A card with a frame"}
+```
+
+`file` is the first 16 hexadecimal characters of the content's hash
+plus the type's extension.
+
+### Store layout
+
+```text
+${XDG_STATE_HOME:-~/.local/state}/quarterdeck/images/<id>/<file>
+```
+
+The `images` folder has mode 0700 and each file mode 0600. `<id>` is the
+lowercase item ID, such as `q3`. `remove` deletes exactly the files the removed
+item's record names, then the folder if it is empty. `add` and `render` never delete an image. A page links to `images/<id>/<file>` relative to itself, so it works
+under a [base path](cli-and-config.md#pages). `serve` returns only a file the
+store lists for that item. `render` copies the files beside the pages, into
+`images/<id>/`.
+
+A failed `add` or an interrupted `remove` can leave files that no item names; they are never served and retrying does not clean them. See the [known limits](../how-to/save-items.md#questions-with-images).
 
 ## Question answers
 

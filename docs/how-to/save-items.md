@@ -81,6 +81,52 @@ the first such question, prefixed with that question's ID, as in
 `Q6.2 See the mock-ups`.
 On both surfaces, the links open in a new tab.
 
+#### Questions with images
+
+When a decision is easier to make by looking, add images. A question can have
+`images`, shown under its text. An option can be an object with a `label` and
+an `image`, shown above its label so options can be compared. Plain text
+options still work in the same question.
+
+```json
+[
+  {"question": "Which card style?",
+   "context": "Both fit a phone. Tap an image to pick it, or open it full size.",
+   "images": [{"path": "~/shots/overview.png", "alt": "Both card styles side by side"}],
+   "options": [
+     {"label": "Plain", "image": {"path": "~/shots/plain.png", "alt": "A card with no frame"}},
+     {"label": "Framed", "image": {"path": "~/shots/framed.png", "alt": "A card with a thin frame"}}
+   ]}
+]
+```
+
+Every image needs a `path` to a PNG, JPEG or still WebP file of at most 5 MiB, and
+`alt` text that describes it. Saving checks the whole body first, then reads
+each real file once, even when several images name the same path, and copies it
+into Quarterdeck's private store, so the original can move or go away.
+`remove` deletes the item's copies. A file of another type, one that is
+too large or one with no alt text is refused with a message naming it, and
+nothing is saved. Give each pictured option a label distinct from the other
+options in its question. See the [store layout](../reference/item-store.md#question-images).
+
+Images are shown exactly as saved to everyone who can view the item, so save only images fit to share with that audience.
+
+Only `remove` deletes an image, and only the files the removed item names.
+`add` and `render` never delete one. Some clean-up is given up in return:
+
+- An exported folder keeps the image copies of removed items until you delete
+  `<output>/images/<id>/` by hand. Render still retires the pages of removed items.
+- A failed `add` or an interrupted `remove` can leave files in the store's
+  `images/<id>/` folder that no item names. They are never served.
+- A refused render can leave new image copies in the output folder.
+- Two paths to one file through hard links count as different files.
+- Another store that renders into this store's folder can replace or retire
+  generated pages. It can add image files but never remove one.
+
+On a phone the images fit the width and a tap on an image in a question opens
+it full size. On an option, a tap on the image or its label picks it and
+**Open image** shows it full size.
+
 ## Find, read and remove items
 
 ```sh

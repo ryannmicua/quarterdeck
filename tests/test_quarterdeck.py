@@ -1,9 +1,13 @@
 from __future__ import annotations
 
 import errno
+import fcntl
+import hashlib
+import http.client
 import io
 import json
 import os
+import re
 import select
 import shlex
 import shutil
@@ -12,16 +16,18 @@ import socket
 import stat
 import subprocess
 import sys
+import struct
 import tempfile
 import threading
 import unittest
 import urllib.error
 import urllib.request
+import zlib
 from concurrent.futures import ThreadPoolExecutor
 from configparser import ConfigParser
 from contextlib import contextmanager, redirect_stderr, redirect_stdout, suppress
 from pathlib import Path
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 from urllib.parse import urljoin
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -483,6 +489,41 @@ class RenderTests(StoreCase):
             self.assertEqual(path.read_text().count('href="Shelf%20%231.html"'), 2)
             self.assertEqual(urljoin(path.as_uri(), "Shelf%20%231.html"), output.as_uri())
         self.assertFalse((output.parent / "index.html").exists())
+
+    def test_store_named_saved_pages_can_be_updated_in_an_external_export(self) -> None:
+        self.add_all_kinds()
+        directory = self.root / "site"
+        for name in ("items.json", "items.json.lock"):
+            code, _, err = self.run_cli("render", "--output", str(directory / name))
+            self.assertEqual(code, 0, err)
+        self.add("list", "New export item", "Added between renders.", "--body-file", "-", stdin="Line one")
+        for name in ("items.json", "items.json.lock"):
+            with self.subTest(name=name):
+                output = directory / name
+                code, _, err = self.run_cli("render", "--output", str(output))
+                self.assertEqual(code, 0, err)
+                self.assertIn("New export item", output.read_text())
+
+    def test_render_leaves_unrelated_site_data_and_lock_files_in_place(self) -> None:
+        self.add_all_kinds()
+        site = self.root / "site"
+        site.mkdir()
+        data_file = site / "items.json"
+        lock_file = site / "items.json.lock"
+        data_file.write_text('{"items": ["navigation entry"]}')
+        lock_file.touch()
+        for directory in (site, site / "images" / "preview"):
+            with self.subTest(directory=directory):
+                output = directory / "index.html"
+                code, _, err = self.run_cli("render", "--output", str(output))
+                self.assertEqual(code, 0, err)
+                self.assertTrue(output.is_file())
+        for path in (data_file, lock_file):
+            code, _, err = self.run_cli("render", "--output", str(path))
+            self.assertEqual(code, 2)
+            self.assertIn("refusing to overwrite an unrelated file", err)
+        self.assertEqual(data_file.read_text(), '{"items": ["navigation entry"]}')
+        self.assertEqual(lock_file.read_bytes(), b"")
 
     def test_render_preflights_destinations_and_protects_store(self) -> None:
         self.add_all_kinds()
@@ -1431,6 +1472,550 @@ class ServiceAndHelpTests(StoreCase):
                                 env=dict(os.environ), check=False)
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertIn("No saved items.", result.stdout)
+
+
+def tiny_png(color: tuple[int, int, int], size: int = 4, *, comment: bytes | None = None) -> bytes:
+    """A small invented PNG: one flat colour."""
+    def chunk(kind: bytes, data: bytes) -> bytes:
+        body = kind + data
+        return struct.pack(">I", len(data)) + body + struct.pack(">I", zlib.crc32(body))
+    rows = b"".join(b"\x00" + bytes(color) * size for _ in range(size))
+    text = chunk(b"tEXt", b"Comment\0" + comment) if comment is not None else b""
+    return (b"\x89PNG\r\n\x1a\n" + chunk(b"IHDR", struct.pack(">IIBBBBB", size, size, 8, 2, 0, 0, 0))
+            + chunk(b"IDAT", zlib.compress(rows)) + text + chunk(b"IEND", b""))
+
+
+class ImageCase(StoreCase):
+    def setUp(self) -> None:
+        super().setUp()
+        self.pictures = self.root / "pictures"
+        self.pictures.mkdir()
+        self.red = self.picture("red.png", tiny_png((200, 40, 40)))
+        self.blue = self.picture("blue.png", tiny_png((40, 40, 200)))
+        self.wide = self.picture("wide.png", tiny_png((40, 160, 40), 8))
+
+    def picture(self, name: str, data: bytes) -> Path:
+        path = self.pictures / name
+        path.write_bytes(data)
+        return path
+
+    def assert_store_locked(self) -> None:
+        lock_path = quarterdeck.store_path().with_name("items.json.lock")
+        with lock_path.open("r+") as lock, self.assertRaises(BlockingIOError):
+            fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+
+    def pictured(self) -> list[dict]:
+        return [{"question": "Which colour for the quay?", "context": "Both fit the quay.",
+                 "images": [{"path": str(self.wide), "alt": "Both colours side by side"}],
+                 "options": [{"label": "Red", "image": {"path": str(self.red), "alt": "A red quay"}},
+                             {"label": "Blue", "image": {"path": str(self.blue), "alt": "A blue quay"}}, "Neither"],
+                 "suggestion": "Red"}]
+
+    def add_pictured(self, questions: list[dict] | None = None) -> str:
+        return self.add("questions", "Quay colours", "Saved to pick a colour.", "--body-file", "-",
+                        stdin=json.dumps(questions or self.pictured()))
+
+
+class QuestionImageTests(ImageCase):
+    def test_images_are_copied_into_the_private_store(self) -> None:
+        png = tiny_png((200, 40, 40))
+        self.red = self.picture("red.jpg", png)
+        expected_name = hashlib.sha256(png).hexdigest()[:16] + ".png"
+        item_id = self.add_pictured()
+        stored = self.store()["items"][0]["body"]["questions"][0]
+        self.assertNotIn("path", json.dumps(stored))
+        self.assertEqual(stored["options"][2], "Neither")
+        image = stored["options"][0]["image"]
+        self.assertEqual(image, {"file": expected_name, "alt": "A red quay"})
+        folder = quarterdeck.store_path().parent / "images" / item_id.lower()
+        self.assertEqual((folder / expected_name).read_bytes(), png)
+        self.assertEqual(stat.S_IMODE((folder / expected_name).stat().st_mode), 0o600)
+        self.assertEqual(stat.S_IMODE(folder.stat().st_mode), 0o700)
+
+    def test_import_preserves_whitespace_and_snapshots_repeated_image_paths(self) -> None:
+        questions = self.pictured()
+        self.picture("mockup A.png", tiny_png((0, 0, 0)))
+        expected = tiny_png((255, 255, 255))
+        exact = self.picture("mockup  A.png", expected)
+        replacement = tiny_png((120, 30, 90))
+        next_picture = self.picture("next.png", replacement)
+        questions[0]["images"][0]["path"] = f"{exact.parent}/./{exact.name}"
+        questions[0]["images"].append({
+            "path": f"{exact.parent}/../{exact.parent.name}/{exact.name}",
+            "alt": "Another view of the quay",
+        })
+        questions[0]["options"][0]["image"]["path"] = str(exact)
+        open_file = open
+
+        def open_and_replace(path, *args, **kwargs):
+            stream = open_file(path, *args, **kwargs)
+            if path == str(exact) and next_picture.exists():
+                next_picture.replace(exact)
+            return stream
+
+        with patch("builtins.open", side_effect=open_and_replace):
+            item_id = self.add_pictured(questions)
+        saved = self.store()["items"][0]["body"]["questions"][0]
+        gallery, alternate = saved["images"]
+        option = saved["options"][0]["image"]
+        self.assertEqual({gallery["file"], alternate["file"], option["file"]}, {gallery["file"]})
+        self.assertEqual((gallery["alt"], alternate["alt"], option["alt"]),
+                         ("Both colours side by side", "Another view of the quay", "A red quay"))
+        root = quarterdeck.store_path().parent / "images"
+        self.assertEqual((root / item_id.lower() / gallery["file"]).read_bytes(), expected)
+
+        next_id = self.add_pictured(questions)
+        next_image = self.store()["items"][1]["body"]["questions"][0]["images"][0]
+        self.assertEqual((root / next_id.lower() / next_image["file"]).read_bytes(), replacement)
+
+    def test_image_path_cache_preserves_parent_traversal_through_symlinks(self) -> None:
+        direct = self.picture("mockup.png", tiny_png((10, 20, 30)))
+        nested = self.pictures / "nested" / "child"
+        nested.mkdir(parents=True)
+        expected = tiny_png((30, 20, 10))
+        (nested.parent / direct.name).write_bytes(expected)
+        alias = self.pictures / "alias"
+        alias.symlink_to(nested, target_is_directory=True)
+        questions = self.pictured()
+        questions[0]["options"][0]["image"]["path"] = str(direct)
+        questions[0]["images"][0]["path"] = str(alias / ".." / direct.name)
+        item_id = self.add_pictured(questions)
+        gallery = self.store()["items"][0]["body"]["questions"][0]["images"][0]
+        self.assertEqual((quarterdeck.store_path().parent / "images" /
+                          item_id.lower() / gallery["file"]).read_bytes(), expected)
+
+    def test_plain_text_options_keep_working_unchanged(self) -> None:
+        self.add_all_kinds()
+        self.assertEqual(self.store()["items"][2]["body"]["questions"][0]["options"], ["Merge", "Hold"])
+        self.assertFalse((quarterdeck.store_path().parent / "images").exists())
+
+    def test_unsuitable_images_are_refused_and_nothing_is_saved(self) -> None:
+        gif = self.picture("pic.gif", b"GIF89a" + bytes(20))
+        svg = self.picture("pic.svg", b"<svg xmlns='http://www.w3.org/2000/svg'/>")
+        renamed = self.picture("fake.png", b"not an image at all")
+        empty_comment = tiny_png((1, 2, 3), comment=b"")
+        comment = b"x" * (5 * 1024 * 1024 + 1 - len(empty_comment))
+        big = self.picture("big.png", tiny_png((1, 2, 3), comment=comment))
+        cases = {
+            "gif": ({"path": str(gif), "alt": "x"}, "must be a PNG, JPEG or still WebP image"),
+            "svg": ({"path": str(svg), "alt": "x"}, "must be a PNG, JPEG or still WebP image"),
+            "renamed": ({"path": str(renamed), "alt": "x"}, "must be a PNG, JPEG or still WebP image"),
+            "big": ({"path": str(big), "alt": "x"}, "larger than 5 MB"),
+            "missing": ({"path": str(self.pictures / "none.png"), "alt": "x"}, "could not be read"),
+            "no alt": ({"path": str(self.red)}, "needs alt text"),
+            "blank alt": ({"path": str(self.red), "alt": "  "}, "alt text must not be empty"),
+            "no path": ({"alt": "x"}, "path must be text"),
+            "extra field": ({"path": str(self.red), "alt": "x", "url": "https://example.com/a.png"}, "unsupported field"),
+            "stored field": ({"file": "0123456789abcdef.png", "alt": "x"}, "unsupported field"),
+        }
+        for name, (image, message) in cases.items():
+            with self.subTest(name):
+                question = {"question": "Which?", "context": "Pick one.", "options": ["A"], "images": [image]}
+                code, _out, err = self.run_cli("add", "--kind", "questions", "--title", "T", "--description", "D",
+                                               "--body-file", "-", stdin=json.dumps([question]))
+                self.assertEqual(code, 2)
+                self.assertIn(message, err)
+        self.assertEqual(self.store()["items"] if quarterdeck.store_path().exists() else [], [])
+        self.assertFalse((quarterdeck.store_path().parent / "images").exists())
+
+    def test_truncated_images_are_refused_in_either_attachment_type(self) -> None:
+        for filename, content in (
+            ("short.png", tiny_png((1, 2, 3))[:-12]),
+            ("short.jpg", b"\xff\xd8\xff\xd9"),
+            ("short.webp", b"RIFF\x04\x00\x00\x00WEBP"),
+        ):
+            image = {"path": str(self.picture(filename, content)), "alt": "A mockup"}
+            for field, value in (("images", [image]), ("options", [{"label": "One", "image": image}])):
+                with self.subTest(filename=filename, field=field):
+                    question = {"question": "Which?", "context": "Pick one.", "options": ["One"], field: value}
+                    code, _, err = self.run_cli("add", "--kind", "questions", "--title", "T", "--description", "D",
+                                                "--body-file", "-", stdin=json.dumps([question]))
+                    self.assertEqual(code, 2)
+                    self.assertIn("must be a PNG, JPEG or still WebP image", err)
+        self.assertFalse(quarterdeck.store_path().exists())
+
+    def test_too_many_images_and_malformed_options_are_refused(self) -> None:
+        many = [{"path": str(self.red), "alt": "A red quay"}] * (quarterdeck.IMAGE_COUNT_LIMIT + 1)
+        for question, message in (
+            ({"question": "Q", "context": "C", "options": ["A"], "images": many}, "at most 24 images"),
+            ({"question": "Q", "context": "C", "options": [{"label": "A", "colour": "red"}]}, "unsupported field"),
+            ({"question": "Q", "context": "C", "options": [{"label": "A"}]}, "image must be an object"),
+            ({"question": "Q", "context": "C", "options": [{"label": "A", "image": None}]}, "image must be an object"),
+            ({"question": "Q", "context": "C", "options": [{"image": {"path": str(self.red), "alt": "x"}}]}, "label"),
+            ({"question": "Q", "context": "C", "options": ["A"], "images": "red.png"}, "images must be a list"),
+        ):
+            with self.subTest(message):
+                code, _out, err = self.run_cli("add", "--kind", "questions", "--title", "T", "--description", "D",
+                                               "--body-file", "-", stdin=json.dumps([question]))
+                self.assertEqual(code, 2)
+                self.assertIn(message, err)
+
+    def test_mixed_attachment_limit_is_checked_before_opening_paths(self) -> None:
+        missing = {"path": str(self.pictures / "missing.png"), "alt": "A mockup"}
+        questions = [
+            {"question": "Q1", "context": "C", "options": ["A"], "images": [missing] * 24},
+            {"question": "Q2", "context": "C", "options": [{"label": "A", "image": missing}]},
+        ]
+        code, _, err = self.run_cli("add", "--kind", "questions", "--title", "T", "--description", "D",
+                                    "--body-file", "-", stdin=json.dumps(questions))
+        self.assertEqual(code, 2)
+        self.assertIn("at most 24 images", err)
+
+    def test_pictured_choices_cannot_share_a_normalized_label(self) -> None:
+        pictured = {"label": " A  card ", "image": {"path": str(self.red), "alt": "A red quay"}}
+        other = {"label": "A card", "image": {"path": str(self.blue), "alt": "A blue quay"}}
+        for options in ([pictured, other], [pictured, "A card"], ["A card", pictured]):
+            with self.subTest(options=options):
+                question = {"question": "Which?", "context": "Pick one.", "options": options}
+                code, _, err = self.run_cli("add", "--kind", "questions", "--title", "T", "--description", "D",
+                                            "--body-file", "-", stdin=json.dumps([question]))
+                self.assertEqual(code, 2)
+                self.assertIn("duplicates", err)
+        self.assertFalse(quarterdeck.store_path().exists())
+
+    def test_an_interrupt_after_commit_preserves_saved_images(self) -> None:
+        replace = os.replace
+
+        def interrupt_after_replace(source, destination):
+            replace(source, destination)
+            if destination == quarterdeck.store_path():
+                raise KeyboardInterrupt
+
+        with patch.object(os, "replace", side_effect=interrupt_after_replace), self.assertRaises(KeyboardInterrupt):
+            self.run_cli("add", "--kind", "questions", "--title", "T", "--description", "D",
+                         "--body-file", "-", stdin=json.dumps(self.pictured()))
+
+        self.assertEqual(self.store()["items"][0]["id"], "Q1")
+        code, _, err = self.run_cli("render")
+        self.assertEqual(code, 0, err)
+        folder = quarterdeck.store_path().parent / "images" / "q1"
+        self.assertEqual({path.read_bytes() for path in folder.iterdir()},
+                         {tiny_png((200, 40, 40)), tiny_png((40, 40, 200)), tiny_png((40, 160, 40), 8)})
+
+    def test_remove_deletes_the_images_with_the_item(self) -> None:
+        keep = self.add_pictured()
+        gone = self.add_pictured()
+        folder = quarterdeck.store_path().parent / "images"
+        self.assertEqual({path.name for path in folder.iterdir()}, {keep.lower(), gone.lower()})
+        self.assertEqual(self.run_cli("remove", gone)[0], 0)
+        self.assertEqual({path.name for path in folder.iterdir()}, {keep.lower()})
+
+    def test_a_stored_image_record_that_is_not_canonical_is_reported_as_damage(self) -> None:
+        self.add_pictured()
+        data = self.store()
+        data["items"][0]["body"]["questions"][0]["images"][0]["file"] = "../../items.json"
+        quarterdeck.store_path().write_text(json.dumps(data))
+        code, _out, err = self.run_cli("list")
+        self.assertEqual(code, 2)
+        self.assertIn("damaged", err)
+
+    def test_help_mentions_images(self) -> None:
+        out = io.StringIO()
+        with redirect_stdout(out), self.assertRaises(SystemExit):
+            quarterdeck.main(["add", "--help"])
+        self.assertIn("image", out.getvalue())
+        self.assertIn("PNG, JPEG or still WebP", " ".join(out.getvalue().split()))
+
+
+class QuestionImagePageTests(ImageCase):
+    @contextmanager
+    def observe_image_reads(self):
+        image_root = quarterdeck.store_path().parent.resolve() / "images"
+        open_path = Path.open
+        reads = {}
+
+        def observe_open(path, *args, **kwargs):
+            stream = open_path(path, *args, **kwargs)
+            if image_root not in path.resolve().parents:
+                return stream
+            reads.setdefault(path, 0)
+            observed = MagicMock(wraps=stream)
+            observed.__enter__.return_value = observed
+            observed.__exit__.side_effect = stream.__exit__
+
+            def read(*args, **kwargs):
+                reads[path] += 1
+                return stream.read(*args, **kwargs)
+
+            observed.read.side_effect = read
+            return observed
+
+        with patch.object(Path, "open", autospec=True, side_effect=observe_open):
+            yield reads
+
+    def start(self, base_path: str = "") -> int:
+        server = quarterdeck.make_server("127.0.0.1", 0, quarterdeck.make_handler("Quarterdeck", base_path))
+        threading.Thread(target=server.serve_forever, daemon=True).start()
+        self.addCleanup(server.server_close)
+        self.addCleanup(server.shutdown)
+        return server.server_address[1]
+
+    def fetch(self, port: int, path: str) -> tuple[int, bytes, dict]:
+        try:
+            with urllib.request.urlopen(f"http://127.0.0.1:{port}{path}", timeout=5) as response:
+                return response.status, response.read(), dict(response.headers)
+        except urllib.error.HTTPError as error:
+            return error.code, error.read(), dict(error.headers)
+
+    def test_served_question_shows_images_with_alt_text_on_the_question_and_each_option(self) -> None:
+        item_id = self.add_pictured()
+        port = self.start()
+        page_url = f"/{item_id.lower()}.html"
+        status, body, _headers = self.fetch(port, page_url)
+        page = body.decode()
+        self.assertEqual(status, 200)
+        wide = self.store()["items"][0]["body"]["questions"][0]["images"][0]["file"]
+        self.assertIn(f'<img src="images/{item_id.lower()}/{wide}" alt="Both colours side by side"', page)
+        self.assertEqual(page.count("<img "), 3)
+        pictured = re.findall(r'<label\b[^>]*>(<img\b[^>]*>.*?)</label>', page, re.DOTALL)
+        self.assertEqual(len(pictured), 2)
+        for label, alt, expected in (("Red", "A red quay", tiny_png((200, 40, 40))),
+                                     ("Blue", "A blue quay", tiny_png((40, 40, 200)))):
+            with self.subTest(label=label):
+                choice, = (markup for markup in pictured if f'data-choice="{label}"' in markup)
+                source, mockup_id = re.search(r'<img\b[^>]*\bsrc="([^"]+)"[^>]*\bid="([^"]+)"', choice).groups()
+                self.assertIn(f'alt="{alt}"', choice)
+                self.assertEqual(self.fetch(port, urljoin(page_url, source))[:2], (200, expected))
+                name_id, description = re.search(
+                    r'<input type="radio"[^>]*\baria-labelledby="([^"]+)"[^>]*\baria-describedby="([^"]+)"', choice,
+                ).groups()
+                self.assertIn(f'<span id="{name_id}">{label}</span>', choice)
+                description_ids = description.split()
+                self.assertEqual(description_ids[0], mockup_id)
+                if label == "Red":
+                    self.assertEqual(len(description_ids), 2)
+                    self.assertIn(f'<small id="{description_ids[1]}">Suggested</small>', choice)
+                else:
+                    self.assertEqual(description_ids, [mockup_id])
+        self.assertIn('aria-label="Open image for Red">Open image</a>', page)
+        self.assertIn('<label class="choice"><input type="radio" name="choice-Q1.1" data-choice="Neither"> Neither</label>', page)
+
+    def assert_read_only_option_images(self, page, read_image) -> None:
+        options = re.findall(
+            r'<li class="option"><a\b[^>]*\bhref="([^"]+)"[^>]*><img\b[^>]*\bsrc="([^"]+)"[^>]*></a>'
+            r'<span>([^<]+)</span></li>', page,
+        )
+        self.assertEqual([label for _, _, label in options], ["Red", "Blue"])
+        expected = {"Red": tiny_png((200, 40, 40)), "Blue": tiny_png((40, 40, 200))}
+        for link, source, label in options:
+            with self.subTest(label=label):
+                self.assertEqual(link, source)
+                self.assertEqual(read_image(source), expected[label])
+
+    def test_read_only_options_link_their_images_and_text_is_escaped(self) -> None:
+        questions = self.pictured()
+        questions[0]["options"][0]["image"]["alt"] = '<b onclick="x">"red"</b>'
+        item_id = self.add_pictured(questions)
+        self.run_cli("mark", item_id, "closed")
+        port = self.start()
+        page_url = f"/{item_id.lower()}.html"
+        status, body, _headers = self.fetch(port, page_url)
+        self.assertEqual(status, 200)
+        page = body.decode()
+        self.assertNotIn("<b onclick", page)
+        self.assertIn("&lt;b onclick=&quot;x&quot;&gt;", page)
+        self.assertRegex(page, r'<li class="option"><a class="shot" href="images/q1/[0-9a-f]{16}[.]png" target="_blank" rel="noopener"><img ')
+
+        def read_image(source):
+            status, content, _headers = self.fetch(port, urljoin(page_url, source))
+            self.assertEqual(status, 200)
+            return content
+
+        self.assert_read_only_option_images(page, read_image)
+
+    def test_images_are_served_only_from_the_store_and_only_for_their_item(self) -> None:
+        first = self.add_pictured()
+        second = self.add("questions", "Plain", "No images.", "--body-file", "-", stdin=json.dumps(QUESTIONS))
+        for original in (self.red, self.blue, self.wide):
+            original.unlink()
+        port = self.start()
+        question = self.store()["items"][0]["body"]["questions"][0]
+        image = question["options"][0]["image"]["file"]
+        for file, expected in ((image, tiny_png((200, 40, 40))),
+                               (question["images"][0]["file"], tiny_png((40, 160, 40), 8))):
+            status, body, headers = self.fetch(port, f"/images/{first.lower()}/{file}")
+            self.assertEqual((status, body, headers["Content-Type"]), (200, expected, "image/png"))
+            self.assertEqual(headers["X-Content-Type-Options"], "nosniff")
+            self.assertEqual(headers["Cache-Control"], "no-store")
+            self.assertNotIn("Content-Encoding", headers)
+        for path in (f"/images/{second.lower()}/{image}", f"/images/{first.lower()}/0123456789abcdef.png",
+                     f"/images/{first.lower()}/..%2Fitems.json", f"/images/{first.lower()}/%2e%2e/items.json",
+                     "/images/q1/", "/images/q1", "/images/q9/" + image, f"/images/{first.upper()}/{image}",
+                     "/items.json", f"/images/{first.lower()}/{image[:-4]}.gif"):
+            with self.subTest(path=path):
+                self.assertEqual(self.fetch(port, path)[0], 404)
+        self.run_cli("remove", first)
+        self.assertEqual(self.fetch(port, f"/images/{first.lower()}/{image}")[0], 404)
+
+    def test_images_are_served_under_a_base_path_and_the_page_links_stay_relative(self) -> None:
+        item_id = self.add_pictured()
+        port = self.start("/qd")
+        page = self.fetch(port, f"/qd/{item_id.lower()}.html")[1].decode()
+        source = re.search(r'<img src="([^"]+)"', page).group(1)
+        self.assertFalse(source.startswith("/"))
+        self.assertEqual(self.fetch(port, "/qd/" + source)[0], 200)
+        connection = http.client.HTTPConnection("127.0.0.1", port, timeout=5)
+        connection.request("GET", "/" + source)
+        response = connection.getresponse()
+        self.assertEqual((response.status, response.getheader("Location")), (308, "/qd/" + source))
+        connection.close()
+
+    def images_of(self, state: Path) -> dict[str, bytes]:
+        folder = state / "quarterdeck" / "images"
+        return {str(path.relative_to(folder)): path.read_bytes() for path in sorted(folder.rglob("*")) if path.is_file()}
+
+    def test_render_from_another_store_never_deletes_this_stores_images(self) -> None:
+        damage = {"missing": None, "empty object": "{}", "no next_id": '{"version": 1, "items": []}',
+                  "no version": '{"next_id": 1, "items": []}', "damaged": "{not json", "empty file": ""}
+        other = {"empty": [], "same id, other content": ["pictured"], "same id, text only": ["text"]}
+        for name, text in damage.items():
+            for shape, items in other.items():
+                with self.subTest(store=name, other=shape), tempfile.TemporaryDirectory() as temp:
+                    first, second = Path(temp) / "first", Path(temp) / "second"
+                    with patch.dict(os.environ, {"XDG_STATE_HOME": str(first)}):
+                        self.add_pictured()
+                        store = quarterdeck.store_path()
+                    before = self.images_of(first)
+                    self.assertEqual(len(before), 3)
+                    if text is None:
+                        store.unlink()
+                    else:
+                        store.write_text(text)
+                    with patch.dict(os.environ, {"XDG_STATE_HOME": str(second)}):
+                        for kind in items:
+                            if kind == "pictured":
+                                self.picture("red.png", tiny_png((9, 9, 9)))
+                                self.add_pictured(self.pictured())
+                            else:
+                                self.add("questions", "Plain", "No images.", "--body-file", "-", stdin=json.dumps(QUESTIONS))
+                        self.run_cli("render", "--output", str(first / "quarterdeck" / "index.html"))
+                    self.assertEqual({name: data for name, data in self.images_of(first).items()
+                                      if name in before}, before)
+
+    def test_remove_deletes_exactly_the_files_the_record_names(self) -> None:
+        keep, gone = self.add_pictured(), self.add_pictured()
+        images = quarterdeck.store_path().parent / "images"
+        stray = images / gone.lower() / "stray.txt"
+        stray.write_text("not an image of the record")
+        named = quarterdeck.item_image_files(self.store()["items"][1])
+        self.assertEqual(self.run_cli("remove", gone)[0], 0)
+        self.assertEqual({path.name for path in (images / gone.lower()).iterdir()}, {"stray.txt"})
+        self.assertFalse(named & {path.name for path in (images / gone.lower()).iterdir()})
+        self.assertEqual(len(list((images / keep.lower()).iterdir())), 3)
+        stray.unlink()
+        self.assertEqual(self.run_cli("remove", keep)[0], 0)
+        self.assertFalse((images / keep.lower()).exists())
+
+    def test_a_failed_add_deletes_nothing_and_the_retry_succeeds(self) -> None:
+        images = quarterdeck.store_path().parent / "images" / "q1"
+        images.mkdir(parents=True)
+        stray = images / "stray.txt"
+        stray.write_text("kept")
+        with patch.object(quarterdeck, "write_store", side_effect=OSError("disk full")):
+            code, _out, err = self.run_cli("add", "--kind", "questions", "--title", "T", "--description", "D",
+                                           "--body-file", "-", stdin=json.dumps(self.pictured()))
+        self.assertEqual(code, 2)
+        self.assertIn("disk full", err)
+        self.assertTrue(stray.exists())
+        self.assertEqual(self.add_pictured(), "Q1")
+        self.assertEqual(len(list(images.iterdir())), 4)
+
+    def test_a_retargeted_symlink_is_resolved_once_for_every_reference(self) -> None:
+        link = self.pictures / "link.png"
+        link.symlink_to(self.red)
+        real = os.path.realpath
+
+        def retargeting(path, *args, **kwargs):
+            result = real(path, *args, **kwargs)
+            if Path(path) == link:
+                link.unlink()
+                link.symlink_to(self.blue)
+            return result
+
+        question = {"question": "Which?", "context": "Pick one.", "options": [
+            {"label": "A", "image": {"path": str(link), "alt": "First"}},
+            {"label": "B", "image": {"path": str(link), "alt": "Second"}}]}
+        with patch.object(os.path, "realpath", side_effect=retargeting):
+            self.add_pictured([question])
+        options = self.store()["items"][0]["body"]["questions"][0]["options"]
+        self.assertEqual(options[0]["image"]["file"], options[1]["image"]["file"])
+        folder = quarterdeck.store_path().parent / "images" / "q1"
+        self.assertEqual((folder / options[0]["image"]["file"]).read_bytes(), tiny_png((200, 40, 40)))
+
+    def test_no_file_is_opened_until_the_whole_body_is_valid(self) -> None:
+        opened: list[str] = []
+        real_open = open
+
+        def recording(file, *args, **kwargs):
+            if str(file).startswith(str(self.pictures)):
+                opened.append(str(file))
+            return real_open(file, *args, **kwargs)
+
+        questions = self.pictured() + [{"question": "No context", "options": ["A"]}]
+        with patch("builtins.open", side_effect=recording):
+            code, _out, err = self.run_cli("add", "--kind", "questions", "--title", "T", "--description", "D",
+                                           "--body-file", "-", stdin=json.dumps(questions))
+        self.assertEqual(code, 2)
+        self.assertIn("context", err)
+        self.assertEqual(opened, [])
+
+    def test_render_deletes_no_image_in_an_export(self) -> None:
+        keep, gone = self.add_pictured(), self.add_pictured()
+        output = self.root / "site" / "index.html"
+        self.assertEqual(self.run_cli("render", "--output", str(output))[0], 0)
+        exported = {path for path in (output.parent / "images").rglob("*") if path.is_file()}
+        self.assertEqual(len(exported), 6)
+        self.assertEqual(self.run_cli("remove", gone)[0], 0)
+        self.assertEqual(self.run_cli("render", "--output", str(output))[0], 0)
+        self.assertFalse((output.parent / f"{gone.lower()}.html").exists())
+        self.assertTrue((output.parent / f"{keep.lower()}.html").exists())
+        self.assertEqual({path for path in (output.parent / "images").rglob("*") if path.is_file()}, exported)
+
+    def test_render_reserves_images_even_before_the_first_pictured_add(self) -> None:
+        for directory in (quarterdeck.store_path().parent, self.root / "site"):
+            output = directory / "images"
+            code, _, err = self.run_cli("render", "--output", str(output))
+            self.assertEqual(code, 2)
+            self.assertIn("reserved for images", err)
+            self.assertFalse(output.exists())
+        self.assertEqual(self.add_pictured(), "Q1")
+
+    def test_live_render_reads_its_snapshot_under_the_store_lock(self) -> None:
+        self.add_pictured()
+        state = quarterdeck.store_path().parent
+        alias = self.root / "state-alias"
+        alias.symlink_to(state, target_is_directory=True)
+        read_store = quarterdeck.read_store
+        def read_snapshot(path):
+            self.assert_store_locked()
+            return read_store(path)
+
+        for args in ((), ("--output", str(alias / "index.html"))):
+            with (self.subTest(args=args), self.observe_image_reads() as reads,
+                  patch.object(quarterdeck, "read_store", side_effect=read_snapshot)):
+                code, _, err = self.run_cli("render", *args)
+                self.assertEqual(code, 0, err)
+                self.assertEqual(sorted(reads.values()), [0] * 3)
+
+    def test_render_into_the_state_folder_keeps_the_stores_own_images(self) -> None:
+        item_id = self.add_pictured()
+        self.assertEqual(self.run_cli("render")[0], 0)
+        folder = quarterdeck.store_path().parent / "images" / item_id.lower()
+        self.assertEqual(len(list(folder.iterdir())), 3)
+        self.assertEqual(self.run_cli("render")[0], 0)
+        self.assertEqual(len(list(folder.iterdir())), 3)
+
+    def test_render_reports_a_missing_stored_image(self) -> None:
+        item_id = self.add_pictured()
+        shutil.rmtree(quarterdeck.store_path().parent / "images" / item_id.lower())
+        for args in ((), ("--output", str(self.root / "site" / "index.html"))):
+            with self.subTest(args=args):
+                code, _out, err = self.run_cli("render", *args)
+                self.assertEqual(code, 2)
+                self.assertIn("missing from the store", err)
+
+    def test_the_privacy_guard_still_rejects_image_files(self) -> None:
+        self.assertIn("image", privacy_guard.forbidden_path("images/q1/0123456789abcdef.png"))
 
 
 class PrivacyGuardTests(unittest.TestCase):
