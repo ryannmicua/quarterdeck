@@ -253,6 +253,8 @@ class PageTests(StoreCase):
         self.assertIn("Checks are green and the preview looks right.", questions)
         self.assertIn("<li>Hold</li>", questions)
         self.assertIn('<strong>Suggested answer</strong><br>Merge', questions)
+        for attribute in ("data-revision", "data-state", "data-pending"):
+            self.assertNotIn(f" {attribute}=", questions)
         self.assertNotIn(">https://example.com/lavish/calls<", pages["q1.html"])
 
     def test_text_is_escaped_and_no_server_path_appears(self) -> None:
@@ -394,6 +396,7 @@ class ServeTests(StoreCase):
         self.assertEqual(self.post_answer(port, "Q3.1", answer, record["revision"])[0], 409)
         status, retry = self.post_answer(port, "Q3.1", answer, before_retry["revision"])
         self.assertEqual((status, retry["state"], retry["delivery"]), (200, "open", "sent"))
+        self.assertEqual(self.post_answer(port, "Q3.1", answer, before_retry["revision"]), (200, retry))
         self.assertEqual(self.store()["items"][2]["answers"]["1"], {**before_retry, "delivery": "sent"})
         self.assertEqual((home / saved["request_id"]).read_text(), "Q3.1 Green & blue\nNo varnish.")
         self.assertEqual(self.post_answer(port, "Q3.1", "Changed")[0], 409)
@@ -407,7 +410,7 @@ class ServeTests(StoreCase):
         self.assertEqual(0, self.run_cli("mark", "Q3.1", "open")[0])
         reopened = self.store()["items"][2]["answers"]["1"]
         self.assertNotIn("updated_at", reopened)
-        self.assertEqual(self.post_answer(port, "Q3.1", "Changed", reopened["revision"])[0], 409)
+        self.assertEqual(self.post_answer(port, "Q3.1", "Changed", correction["revision"])[0], 409)
         self.assertEqual(self.store()["items"][2]["answers"]["1"], reopened)
         self.assertEqual(0, self.run_cli("mark", "Q3", "closed")[0])
         self.assertEqual(self.post_answer(port, "Q3.1", "New", correction["revision"])[0], 409)
@@ -464,14 +467,26 @@ const typeAnswer = (n, text) => {
   field(n).value = text;
   field(n).dispatchEvent(new Event('input', {bubbles: true}));
 };
+const sendBatch = () => new Promise(resolve => {
+  const status = document.querySelector('[role="status"]');
+  const observer = new MutationObserver(() => {
+    if (!status.textContent.startsWith('Sending')) {
+      observer.disconnect();
+      resolve();
+    }
+  });
+  observer.observe(status, {childList: true});
+  button('send').click();
+});
 (async () => {
 """ + script + """
   button('browser-result').textContent = 'PASS';
 })().catch(error => { button('browser-result').textContent = error.message; });
 </script>
 </body>"""), encoding="utf-8")
-        result = subprocess.run([chrome, "--headless", "--disable-background-networking", "--no-first-run",
+        result = subprocess.run([chrome, "--headless", "--disable-background-networking", "--no-first-run", "--lang=en-US",
                                  f"--user-data-dir={self.root / 'browser'}", "--dump-dom", fixture.as_uri()],
+                                env={**os.environ, "TZ": "Asia/Tokyo", "LC_ALL": "en_US.UTF-8"},
                                 capture_output=True, text=True, timeout=30, check=True)
         browser_result = result.stdout.partition('<output id="browser-result">')[2].partition("</output>")[0]
         self.assertEqual(browser_result, "PASS", result.stderr)
@@ -519,8 +534,9 @@ check(button('undo').hidden, 'Undo history was not empty');
 """)
 
     def test_batch_conflict_keeps_its_draft_and_sends_independent_answers(self):
-        self.add("questions", "Tide decisions", "Decide the launch plan.", "--body-file", "-",
-                 stdin=json.dumps(QUESTIONS * 2 + QUESTIONS[:1]))
+        with patch.object(quarterdeck, "now_text", return_value="2026-01-10T16:25:00Z"):
+            self.add("questions", "Tide decisions", "Decide the launch plan.", "--body-file", "-",
+                     stdin=json.dumps(QUESTIONS * 2 + QUESTIONS[:1]))
         home = self.root / "home"
         port = self.start("/qd", home=home)
         self.assertEqual(self.post_answer(port, "Q1.5", "Merge")[1]["delivery"], "pending")
@@ -529,13 +545,15 @@ check(button('undo').hidden, 'Undo history was not empty');
         script.parent.mkdir(parents=True)
         script.write_text("#!/bin/sh\nexit 0\n")
         script.chmod(0o700)
-        self.assertEqual(self.post_answer(port, "Q1.4", "Red")[1]["delivery"], "sent")
+        with patch.object(quarterdeck, "now_text", return_value="2026-01-10T16:25:00Z"):
+            self.assertEqual(self.post_answer(port, "Q1.4", "\ufeffRed")[1]["delivery"], "sent")
         self.assertEqual(self.run_cli("mark", "Q1.4", "open")[0], 0)
-        self.check_answer_page(port, """
+        self.check_answer_page(port, r"""
 const savedDay = document.querySelector('main > .meta time');
-check(savedDay.textContent === savedDay.dateTime.slice(0, 10), 'The saved date gained a time');
+check(savedDay.textContent === '2026-01-10', 'The saved date changed');
 const originalAnswerTime = card(4).querySelector('.saved-answer time');
-check(originalAnswerTime.textContent !== originalAnswerTime.dateTime, 'The initial answer time was not localized');
+check(originalAnswerTime.textContent.replace(/\s+/g, ' ') === 'Jan 11, 2026, 1:25 AM',
+      'Wrong local time for the saved answer');
 check(button('send').textContent === 'Send 1 answer', 'Only the reopened pending answer should be queued at page load');
 typeAnswer(1, 'Hold <for the pilot>');
 typeAnswer(2, 'Blue');
@@ -553,17 +571,6 @@ window.fetch = async (url, options) => {
     answered_at: '2026-01-12T15:00:00Z', delivery: 'sent'
   })};
 };
-const status = document.querySelector('[role="status"]');
-const sendBatch = () => new Promise(resolve => {
-  const observer = new MutationObserver(() => {
-    if (!status.textContent.startsWith('Sending')) {
-      observer.disconnect();
-      resolve();
-    }
-  });
-  observer.observe(status, {childList: true});
-  button('send').click();
-});
 await sendBatch();
 check(sent.join(',') === 'Q1.1,Q1.2,Q1.3,Q1.5', 'The conflict blocked another draft or the retry');
 check(card(1).querySelector('.badge').textContent === 'Answered', 'The saved badge was stale');
@@ -572,17 +579,43 @@ check(!saved.hidden && saved.querySelector('.record').textContent === 'Hold <for
       'The saved answer was missing or interpreted as HTML');
 check(saved.querySelector('.delivery').textContent === 'Sent', 'The delivery label was stale');
 check(saved.querySelector('time').dateTime === '2026-01-12T15:00:00Z', 'The saved timestamp was stale');
-check(saved.querySelector('time').textContent !== saved.querySelector('time').dateTime, 'The updated time was not localized');
+check(saved.querySelector('time').textContent.replace(/\s+/g, ' ') === 'Jan 13, 2026, 12:00 AM',
+      'Wrong local time after sending');
 check(card(5).querySelector('.badge').textContent === 'Open' &&
       card(5).querySelector('.delivery').textContent === 'Sent', 'The retry did not preserve the reopened state');
 check(document.querySelector('.progress').textContent === '3 of 5 open', 'Progress was stale');
 check(field(2).value === 'Blue', 'The conflicting draft was lost');
 check(button('send').disabled, 'A saved, conflicting or unchanged reopened answer was still queued');
-check(status.textContent.includes('Q1.2: Question changed.'), 'The conflict was hidden');
+check(document.querySelector('[role="status"]').textContent.includes('Q1.2: Question changed.'), 'The conflict was hidden');
 typeAnswer(4, 'Blue');
 await sendBatch();
 check(sent.join(',') === 'Q1.1,Q1.2,Q1.3,Q1.5,Q1.4', 'The next send retried the conflicted draft');
 check(field(2).value === 'Blue', 'A later send discarded the conflicting draft');
+""")
+
+    def test_successful_send_preserves_suggestion_text_without_reloading(self):
+        question = {**QUESTIONS[0], "suggestion": "\ufeffMerge"}
+        self.add("questions", "Tide decisions", "Decide the launch plan.", "--body-file", "-",
+                 stdin=json.dumps([question, question, QUESTIONS[1]]))
+        self.check_answer_page(self.start("/qd"), r"""
+card(1).querySelector('[data-suggested]').click();
+button('suggest').click();
+typeAnswer(3, '\u0085');
+check(button('send').textContent === 'Send 2 answers', 'A whitespace-only answer was queued');
+const sent = [];
+window.fetch = async (url, options) => {
+  const {part, answer} = JSON.parse(options.body);
+  sent.push([part, answer]);
+  return {ok: true, json: async () => ({
+    answer, state: 'answered', revision: 'saved-revision', answered_at: '2026-01-12T15:00:00Z', delivery: 'pending'
+  })};
+};
+await sendBatch();
+check(JSON.stringify(sent) === JSON.stringify([['Q1.1', '\ufeffMerge'], ['Q1.2', '\ufeffMerge']]),
+      'The submitted text did not preserve both suggestions');
+check(card(1).querySelector('.delivery').textContent === 'Not delivered', 'Pending delivery was hidden');
+check(!field(3).disabled && field(3).value === '\u0085', 'The other draft or its editor was lost');
+check(!button('send').disabled && button('send').textContent === 'Send 2 answers', 'Pending answers cannot be retried');
 """)
 
     def test_binding_uses_only_an_explicit_or_single_home(self):

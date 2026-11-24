@@ -460,8 +460,6 @@ def send_answer(store, home, payload):
         same = old.get("answer") == answer
         if not (same and state == "answered") and payload["revision"] != old.get("revision", ""):
             raise AnswerConflict("Question changed. Reload before sending.")
-        if same and state == "open" and not delivery_pending(old):
-            raise AnswerConflict("Enter a new answer for the reopened question.")
         if same:
             record = old
         else:
@@ -740,16 +738,19 @@ def question_form(item, served):
         record = part_record(item, number)
         status = record.get("state", "open")
         answer = record.get("answer", "")
+        editable = served and status != "closed"
         saved = ""
-        if answer or (served and status != "closed"):
+        if answer or editable:
             at = esc(record.get("answered_at", ""))
             delivery = delivery_label(record) if answer else ""
             hidden = "" if answer else " hidden"
             saved = (f'<div class="saved-answer"{hidden}><p class="record">{esc(answer)}</p>'
                      f'<p class="meta"><span class="delivery">{delivery}</span> '
                      f'<time datetime="{at}">{at}</time></p></div>')
-        controls = ""
-        if served and status != "closed":
+        editor = ""
+        if editable:
+            editor = (f' data-revision="{esc(record.get("revision", ""))}"'
+                      f' data-state="{status}" data-pending="{int(delivery_pending(record))}"')
             suggestions = question.get("suggestion")
             choices = list(question["options"])
             if suggestions and suggestions not in choices:
@@ -767,8 +768,7 @@ def question_form(item, served):
             controls = '<ul>' + ''.join(f'<li>{esc(v)}</li>' for v in question["options"]) + '</ul>'
             if question.get("suggestion"):
                 controls += f'<p><strong>Suggested answer</strong><br>{esc(question["suggestion"])}</p>'
-        cards.append(f'<section class="decision" id="{part}" aria-labelledby="title-{part}" data-revision="{esc(record.get("revision", ""))}" '
-                     f'data-state="{status}" data-pending="{int(delivery_pending(record))}">'
+        cards.append(f'<section class="decision" id="{part}" aria-labelledby="title-{part}"{editor}>'
                      f'<div class="eyebrow"><span class="id">{part}</span><span class="badge">{status.capitalize()}</span></div>'
                      f'<h2 id="title-{part}">{esc(question["question"])}</h2><p>{esc(question["context"])}</p>{saved}{controls}</section>')
     total = len(cards)
@@ -783,7 +783,7 @@ def question_form(item, served):
     return f'<p class="progress">{progress}</p>' + toolbar + ''.join(cards)
 
 
-ANSWER_SCRIPT = """
+ANSWER_SCRIPT = r"""
 const send = document.querySelector('#send');
 if (send) {
   const fields = [...document.querySelectorAll('textarea')];
@@ -793,9 +793,11 @@ if (send) {
   const undo = document.querySelector('#undo');
   const conflicts = new Map();
   let history = [];
+  const answerText = value => value.replace(/^[\p{White_Space}\x1c-\x1f]+|[\p{White_Space}\x1c-\x1f]+$/gu, '');
   const changed = f => {
     const {pending} = f.closest('section').dataset;
-    return !conflicts.has(f) && f.value.trim() && (f.value.trim() !== f.defaultValue || pending === '1');
+    const answer = answerText(f.value);
+    return !conflicts.has(f) && answer && (answer !== f.defaultValue || pending === '1');
   };
   const suggestionFor = f => {
     const section = f.closest('section');
@@ -875,7 +877,7 @@ if (send) {
         output.textContent = 'Sending ' + (i+1) + ' of ' + pending.length;
         const section = f.closest('section');
         const response = await fetch('answers', {method:'POST', headers:{'Content-Type':'application/json'},
-          body:JSON.stringify({part:section.id, revision:section.dataset.revision, answer:f.value.trim()})});
+          body:JSON.stringify({part:section.id, revision:section.dataset.revision, answer:answerText(f.value)})});
         if (response.status === 409) {
           conflicts.set(f, section.id + ': ' + await response.text());
           continue;
@@ -886,13 +888,9 @@ if (send) {
     } catch (err) {
       interrupted = navigator.onLine ? 'Send interrupted. ' + err.message : 'Offline. Reconnect and send again.';
     }
-    if (conflicts.size || interrupted) {
-      output.textContent = [...conflicts.values(), interrupted].filter(Boolean).join(' ');
-      controls.forEach(c => c.disabled = false);
-      refresh();
-    } else {
-      location.reload();
-    }
+    output.textContent = [...conflicts.values(), interrupted].filter(Boolean).join(' ') || 'Answers saved.';
+    controls.forEach(c => c.disabled = false);
+    refresh();
   });
   refresh();
 }
