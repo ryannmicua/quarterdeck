@@ -3,9 +3,12 @@ from __future__ import annotations
 
 import json
 import re
+import shutil
+import subprocess
 import sys
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
@@ -25,12 +28,6 @@ ASK = [
 class ClassificationCase(base.StoreCase):
     def questions(self, title="Harbor choices", *extra, body=ASK) -> str:
         return self.add("questions", title, "Saved to decide later.", *extra, "--body-file", "-", stdin=json.dumps(body))
-
-    def write_config(self, classification: dict) -> Path:
-        path = self.root / "config" / "quarterdeck.json"
-        path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text(json.dumps({"classification": classification}), encoding="utf-8")
-        return path
 
     def answer(self, part: str, text: str) -> None:
         item_id, number = part.split(".")
@@ -100,37 +97,21 @@ class FieldTests(ClassificationCase):
         self.questions("Dupes", "--tag", "ui", "--tag", "UI")
         self.assertEqual(self.store()["items"][0]["tags"], ["ui"])
 
-    def test_the_config_replaces_the_default_lists(self) -> None:
-        self.write_config({"kinds": ["vote"], "tags": ["harbor-law"], "answered_via": ["phone"]})
-        code, _, err = self.run_cli("add", "--kind", "list", "--title", "T", "--description", "D", "--body-file", "-",
-                                    "--tag", "ui", stdin="one\n")
-        self.assertEqual((code, "allowed: harbor-law" in err), (2, True))
-        self.questions("Custom", "--tag", "harbor-law", body=[{**ASK[0], "kind": "vote", "tags": []}])
-        self.assertEqual(self.run_cli("mark", "Q1.1", "answered", "--via", "phone")[0], 0)
-        code, _, err = self.run_cli("mark", "Q1.1", "open")
-        self.assertEqual(code, 0, err)
-        code, _, err = self.run_cli("mark", "Q1.1", "answered", "--via", "chat")
-        self.assertEqual((code, "allowed: phone" in err), (2, True))
+    def test_saved_classification_can_still_be_read_after_vocabulary_changes(self) -> None:
+        self.questions(body=ASK[:1])
+        self.edit_store(lambda d: d["items"][0].update(tags=["harbor-law"]))
+        self.assertIn("Tags: harbor-law", self.run_cli("show", "Q1")[1])
 
-    def test_a_missing_classification_section_uses_the_defaults_and_a_bad_one_is_refused(self) -> None:
-        self.assertEqual(self.questions().startswith("Q"), True)
-        for bad, message in (({"tags": []}, "must be a list of different lowercase words"),
-                             ({"tags": ["Ui"]}, "lowercase words"),
-                             ({"tags": ["ui", "ui"]}, "different"),
-                             ({"answered_via": ["desk"]}, "must not list desk"),
-                             ({"moods": ["calm"]}, "unsupported config classification key")):
-            with self.subTest(bad=bad):
-                self.write_config(bad)
-                code, _, err = self.run_cli("add", "--kind", "list", "--title", "T", "--description", "D",
-                                            "--body-file", "-", stdin="one\n")
-                self.assertEqual(code, 2)
-                self.assertIn(message, err)
-
-    def test_the_store_accepts_values_the_config_no_longer_lists(self) -> None:
-        self.write_config({"tags": ["harbor-law"]})
-        self.questions("Old", "--tag", "harbor-law", body=ASK[2:])
-        self.write_config({"tags": ["other"]})
-        self.assertEqual(self.run_cli("show", "Q1")[0], 0)
+    def test_item_commands_use_fixed_values_and_the_config_refuses_overrides(self) -> None:
+        config = self.root / "quarterdeck.json"
+        config.write_text(json.dumps({"classification": {"answered_via": ["phone"]}}), encoding="utf-8")
+        code, _, err = self.run_cli("render", "--config", str(config))
+        self.assertEqual(code, 2)
+        self.assertIn("unsupported config key(s): classification", err)
+        self.questions()
+        code, _, err = self.run_cli("mark", "Q1.1", "answered", "--via", "phone")
+        self.assertEqual(code, 2)
+        self.assertIn("allowed: chat, review-page, elsewhere, superseded", err)
 
     def test_a_damaged_classification_in_the_store_is_reported(self) -> None:
         self.questions()
@@ -191,12 +172,13 @@ class ClassifyTests(ClassificationCase):
 
 
 class AnsweredViaTests(ClassificationCase):
-    def test_desk_answers_record_the_desk(self) -> None:
+    def test_desk_answers_record_the_desk_once_even_on_retry(self) -> None:
         self.questions()
         self.answer("Q1.1", "Merge")
         record = self.store()["items"][0]["answers"]["1"]
-        self.assertEqual(record["via"], "desk")
-        self.assertEqual(self.run_cli("show", "Q1")[0], 0)
+        self.assertEqual(record["answer_marks"], [{"via": "desk", "answered_at": record["answered_at"]}])
+        self.answer("Q1.1", "Merge")
+        self.assertEqual(self.store()["items"][0]["answers"]["1"], record)
 
     def test_marking_answered_needs_a_known_via(self) -> None:
         self.questions()
@@ -205,108 +187,120 @@ class AnsweredViaTests(ClassificationCase):
         code, _, err = self.run_cli("mark", "Q1.1", "answered", "--via", "desk")
         self.assertEqual((code, "unknown via 'desk'" in err), (2, True))
         code, _, err = self.run_cli("mark", "Q1.1", "closed", "--via", "chat")
-        self.assertEqual((code, "go with answered" in err), (2, True))
+        self.assertEqual((code, "goes with answered" in err), (2, True))
         self.assertNotIn("answers", self.store()["items"][0])
 
-    def test_mark_answered_records_where_when_and_why(self) -> None:
+    def test_mark_answered_records_only_the_source_and_time(self) -> None:
         self.questions()
-        code, out, err = self.run_cli("mark", "Q1.1", "answered", "--via", "review-page", "--note", "Chose Merge on the review page")
+        at = "2026-11-03T09:00:00Z"
+        with patch.object(quarterdeck, "now_text", return_value=at):
+            code, out, err = self.run_cli("mark", "Q1.1", "answered", "--via", "review-page")
         self.assertEqual((code, out), (0, "Q1.1 Answered via review-page\n"), err)
         record = self.store()["items"][0]["answers"]["1"]
-        self.assertEqual((record["state"], record["via"], record["note"]), ("answered", "review-page", "Chose Merge on the review page"))
-        self.assertRegex(record["answered_at"], r"^\d{4}-\d\d-\d\dT\d\d:\d\d:\d\dZ$")
-        self.assertNotIn("answer", record)
-        shown = self.run_cli("show", "Q1")[1]
-        self.assertIn("Answered elsewhere: review-page", shown)
-        self.assertIn("Note: Chose Merge on the review page", shown)
+        self.assertEqual(record["state"], "answered")
+        self.assertEqual(set(record), {"state", "revision", "answer_marks"})
+        self.assertEqual(record["answer_marks"], [{"via": "review-page", "answered_at": at}])
+        self.assertIn(f"Answered elsewhere: review-page ({at})", self.run_cli("show", "Q1")[1])
 
-    def test_marking_a_whole_item_skips_questions_already_answered(self) -> None:
+    def test_whole_item_mark_changes_only_open_questions(self) -> None:
         self.questions()
         self.answer("Q1.2", "Red")
-        self.assertEqual(self.run_cli("mark", "Q1", "answered", "--via", "chat")[0], 0)
+        self.assertEqual(self.run_cli("mark", "Q1.3", "closed")[0], 0)
+        before = self.store()["items"][0]["answers"]
+        code, out, err = self.run_cli("mark", "Q1", "answered", "--via", "chat")
+        self.assertEqual(code, 0, err)
+        self.assertEqual(out.splitlines(), ["Q1.1 Answered via chat", "Q1.2 skipped (already answered)", "Q1.3 skipped (already closed)"])
         answers = self.store()["items"][0]["answers"]
-        self.assertEqual({n: quarterdeck.answer_via(r) for n, r in answers.items()}, {"1": "chat", "2": "desk", "3": "chat"})
-        self.assertEqual(answers["2"]["answer"], "Red")
-        code, _, err = self.run_cli("mark", "Q1", "answered", "--via", "chat")
-        self.assertEqual((code, "already answered" in err), (2, True))
+        self.assertEqual(answers["1"]["answer_marks"][0]["via"], "chat")
+        self.assertEqual({n: answers[n] for n in before}, before)
+        code, out, err = self.run_cli("mark", "Q1", "answered", "--via", "chat")
+        self.assertEqual(code, 0, err)
+        self.assertEqual(out.count("skipped"), 3)
+        self.assertEqual(self.store()["items"][0]["answers"], answers)
 
-    def test_a_question_answered_on_the_desk_is_not_overwritten(self) -> None:
+    def test_single_mark_reports_and_preserves_non_open_questions(self) -> None:
         self.questions()
         self.answer("Q1.1", "Merge")
+        self.assertEqual(self.run_cli("mark", "Q1.2", "closed")[0], 0)
         before = self.store()
-        code, _, err = self.run_cli("mark", "Q1.1", "answered", "--via", "chat")
-        self.assertEqual((code, "mark it open first" in err), (2, True))
+        for number, state in ((1, "answered"), (2, "closed")):
+            code, out, err = self.run_cli("mark", f"Q1.{number}", "answered", "--via", "chat")
+            self.assertEqual(code, 0, err)
+            self.assertIn(f"Q1.{number} skipped (already {state})", out)
         self.assertEqual(self.store(), before)
 
-    def test_reopening_keeps_the_record_and_answering_again_replaces_it(self) -> None:
+    def test_answer_history_survives_close_reopen_and_reanswer(self) -> None:
         self.questions()
-        self.run_cli("mark", "Q1.1", "answered", "--via", "chat", "--note", "Told in chat")
-        self.run_cli("mark", "Q1.1", "closed")
+        events = [
+            ("chat", "2026-11-02T00:00:00Z"),
+            ("desk", "2026-11-03T00:00:00Z"),
+            ("superseded", "2026-11-04T00:00:00Z"),
+            ("chat", "2026-11-05T00:00:00Z"),
+        ]
+        for via, at in events:
+            with patch.object(quarterdeck, "now_text", return_value=at):
+                if via == "desk":
+                    self.answer("Q1.1", "Hold")
+                else:
+                    self.assertEqual(self.run_cli("mark", "Q1.1", "answered", "--via", via)[0], 0)
+            self.assertEqual(self.run_cli("mark", "Q1.1", "closed")[0], 0)
+            self.assertEqual(self.run_cli("mark", "Q1.1", "open")[0], 0)
         record = self.store()["items"][0]["answers"]["1"]
-        self.assertEqual((record["state"], record["via"], record["note"]), ("closed", "chat", "Told in chat"))
-        self.run_cli("mark", "Q1.1", "open")
-        self.assertEqual(self.run_cli("mark", "Q1.1", "answered", "--via", "superseded")[0], 0)
-        record = self.store()["items"][0]["answers"]["1"]
-        self.assertEqual((record["via"], "note" in record), ("superseded", False))
+        self.assertEqual(record["answer_marks"], [{"via": via, "answered_at": at} for via, at in events])
+        self.assertNotIn("answer", record)
+        total = json.loads(self.run_cli("stats", "--json")[1])["total"]
+        self.assertEqual((total["answered_desk"], total["answered_elsewhere"], total["via"]["chat"]), (1, 1, 1))
 
-    def test_a_desk_answer_replaces_an_elsewhere_record(self) -> None:
+    def test_legacy_marks_remain_readable_and_notes_stay_private(self) -> None:
         self.questions()
-        self.run_cli("mark", "Q1.1", "answered", "--via", "chat", "--note", "Told in chat")
-        self.answer("Q1.1", "Hold")
-        record = self.store()["items"][0]["answers"]["1"]
-        self.assertEqual((record["via"], record["answer"], "note" in record), ("desk", "Hold", False))
+        self.edit_store(lambda d: d["items"][0].update(answers={
+            "1": {"state": "answered", "revision": "a" * 32},
+            "2": {"state": "answered", "revision": "b" * 32, "via": "chat",
+                  "answered_at": "2026-11-01T00:00:00Z", "note": "Private excerpt"},
+        }))
+        stats = json.loads(self.run_cli("stats", "--json")[1])["total"]
+        self.assertEqual(stats["via"]["elsewhere"], 1)
+        self.assertEqual(stats["via"]["chat"], 1)
+        shown = self.run_cli("show", "Q1")[1]
+        self.assertIn("Answered elsewhere: chat", shown)
+        self.assertNotIn("Private excerpt", shown)
+        item = quarterdeck.read_store(quarterdeck.store_path())["items"][0]
+        for served in (True, False):
+            page = quarterdeck.item_page(item, "Quarterdeck", served=served)
+            self.assertIn("Answered elsewhere · chat", page)
+            self.assertIn('<time datetime="2026-11-01T00:00:00Z">', page)
+            self.assertNotIn("Private excerpt", page)
+        self.assertEqual(self.run_cli("mark", "Q1.2", "open")[0], 0)
+        self.answer("Q1.2", "Red")
+        marks = self.store()["items"][0]["answers"]["2"]["answer_marks"]
+        self.assertEqual(marks[0], {"via": "chat", "answered_at": "2026-11-01T00:00:00Z"})
+        self.assertEqual(marks[1]["via"], "desk")
 
-    def test_a_bare_mark_from_before_counts_as_answered_elsewhere(self) -> None:
+    def test_malformed_answer_marks_are_rejected_on_read(self) -> None:
         self.questions()
-        self.edit_store(lambda d: d["items"][0].update(answers={"1": {"state": "answered", "revision": "a" * 32}}))
-        self.assertEqual(quarterdeck.answer_via(self.store()["items"][0]["answers"]["1"]), "elsewhere")
-        self.assertEqual(self.run_cli("show", "Q1")[0], 0)
-
-    def test_the_page_shows_answered_elsewhere_with_its_note(self) -> None:
-        self.questions()
-        self.run_cli("mark", "Q1.1", "answered", "--via", "chat", "--note", "Told in chat <b>")
-        data = quarterdeck.read_store(quarterdeck.store_path())
-        page = quarterdeck.item_page(data["items"][0], "Quarterdeck", served=True)
-        section = re.search(r'<section class="decision" id="Q1.1".*?</section>', page, re.S)[0]
-        self.assertIn('<span class="badge">Answered</span>', section)
-        self.assertIn("Answered elsewhere", section)
-        self.assertIn("Told in chat &lt;b&gt;", section)
-        self.assertRegex(section, r'<time datetime="\d{4}-[^"]+Z">')
-        self.assertNotIn("Sent", section)
-        rendered = quarterdeck.item_page(data["items"][0], "Quarterdeck", served=False)
-        self.assertIn("Answered elsewhere", rendered)
-
-    def test_a_stored_via_record_is_validated(self) -> None:
-        self.questions()
-        self.run_cli("mark", "Q1.1", "answered", "--via", "chat")
-        bad = [{"answer": "x"}, {"via": "Bad Word"}, {"note": ""}, {"answered_at": "yesterday"}]
-        for change in bad:
-            self.edit_store(lambda d: d["items"][0]["answers"]["1"].update(change))
-            self.assertEqual(self.run_cli("show", "Q1")[0], 2, change)
-            self.edit_store(lambda d: d["items"][0].update(answers={"1": {
-                "state": "answered", "revision": "b" * 32, "via": "chat", "answered_at": "2026-11-01T00:00:00Z"}}))
+        bad = [[], {}, ["chat"], [{"via": "Bad Word", "answered_at": "2026-11-01T00:00:00Z"}],
+               [{"via": "chat", "answered_at": "yesterday"}], [{"via": "chat"}]]
+        for marks in bad:
+            self.edit_store(lambda d: d["items"][0].update(answers={
+                "1": {"state": "answered", "revision": "b" * 32, "answer_marks": marks}}))
+            self.assertEqual(self.run_cli("show", "Q1")[0], 2, marks)
 
 
 class StatsTests(ClassificationCase):
     def seed(self) -> None:
-        self.questions("Harbor choices", "--project", "Harbor", "--tag", "process")
-        self.questions("Quay choices", "--project", "Quay", body=ASK[:2])
-        self.questions("Loose ends", body=[ASK[2]])
-        self.answer("Q1.1", "Merge")  # matched the suggestion
-        self.answer("Q1.2", "Blue")
-        self.run_cli("mark", "Q1.3", "answered", "--via", "chat")
-        self.run_cli("mark", "Q2.1", "answered", "--via", "superseded")
-        self.run_cli("mark", "Q2.2", "closed")
-
-        def times(data):
-            for item, saved in zip(data["items"], ("2026-11-01T00:00:00Z", "2026-11-10T00:00:00Z", "2026-11-20T00:00:00Z")):
-                item["saved_at"] = saved
-            base_answers = data["items"][0]["answers"]
-            base_answers["1"]["answered_at"] = "2026-11-01T02:00:00Z"
-            base_answers["2"]["answered_at"] = "2026-11-02T00:00:00Z"
-            base_answers["3"]["answered_at"] = "2026-11-01T01:00:00Z"
-            data["items"][1]["answers"]["1"]["answered_at"] = "2026-11-10T06:00:00Z"
-        self.edit_store(times)
+        with patch.object(quarterdeck, "now_text", side_effect=[
+            "2026-11-01T00:00:00Z", "2026-11-10T00:00:00Z", "2026-11-20T00:00:00Z",
+            "2026-11-01T02:00:00Z", "2026-11-02T00:00:00Z",
+            "2026-11-01T01:00:00Z", "2026-11-10T06:00:00Z",
+        ]):
+            self.questions("Harbor choices", "--project", "Harbor", "--tag", "process")
+            self.questions("Quay choices", "--project", "Quay", body=ASK[:2])
+            self.questions("Loose ends", body=[ASK[2]])
+            self.answer("Q1.1", "Merge")
+            self.answer("Q1.2", "Blue")
+            self.assertEqual(self.run_cli("mark", "Q1.3", "answered", "--via", "chat")[0], 0)
+            self.assertEqual(self.run_cli("mark", "Q2.1", "answered", "--via", "superseded")[0], 0)
+        self.assertEqual(self.run_cli("mark", "Q2.2", "closed")[0], 0)
 
     def report(self, *extra: str) -> dict:
         code, out, err = self.run_cli("stats", "--json", *extra)
@@ -316,25 +310,23 @@ class StatsTests(ClassificationCase):
     def test_totals_and_median_waits(self) -> None:
         self.seed()
         total = self.report()["total"]
-        self.assertEqual({k: total[k] for k in ("saved", "answered_desk", "answered_elsewhere", "open", "closed", "matched_suggestion")},
-                         {"saved": 6, "answered_desk": 2, "answered_elsewhere": 2, "open": 1, "closed": 1, "matched_suggestion": 1})
-        self.assertEqual(total["via"], {"chat": 1, "review-page": 0, "elsewhere": 0, "superseded": 1})
-        # waits: 2h, 24h, 1h, 6h -> median of 1h 2h 6h 24h is 4h
-        self.assertEqual(total["median_wait_seconds"], 4 * 3600)
-        self.assertEqual(total["median_wait_desk_seconds"], 13 * 3600)
-        self.assertEqual(total["median_wait_elsewhere_seconds"], 3.5 * 3600)
+        self.assertEqual(total, {
+            "saved": 6, "answered_desk": 2, "answered_elsewhere": 2, "open": 1, "closed": 1,
+            "via": {"chat": 1, "review-page": 0, "elsewhere": 0, "superseded": 1},
+            "median_wait_desk_seconds": 13 * 3600,
+        })
 
     def test_groups_by_kind_tag_and_project(self) -> None:
         self.seed()
         report = self.report()
-        self.assertEqual({k: v["saved"] for k, v in report["by_kind"].items()}, {"approve": 2, "pick": 2, "unclassified": 2})
+        self.assertEqual({k: v["saved"] for k, v in report["by_kind"].items()}, {"approve": 2, "pick": 2, "(unclassified)": 2})
         self.assertEqual(report["by_kind"]["approve"]["answered_desk"], 1)
         self.assertEqual(report["by_kind"]["approve"]["answered_elsewhere"], 1)
         # question tags plus item tags; the first item adds "process" to all three of its questions
         self.assertEqual({k: v["saved"] for k, v in report["by_tag"].items()},
-                         {"process": 3, "product-design": 2, "release": 2, "ui": 2, "unclassified": 1})
-        self.assertEqual({k: v["saved"] for k, v in report["by_project"].items()}, {"Harbor": 3, "Quay": 2, "unclassified": 1})
-        self.assertEqual(list(report["by_project"])[-1], "unclassified")
+                         {"process": 3, "product-design": 2, "release": 2, "ui": 2, "(unclassified)": 1})
+        self.assertEqual({k: v["saved"] for k, v in report["by_project"].items()}, {"Harbor": 3, "Quay": 2, "(unclassified)": 1})
+        self.assertEqual(list(report["by_project"])[-1], "(unclassified)")
 
     def test_since_keeps_questions_saved_on_or_after_the_date(self) -> None:
         self.seed()
@@ -344,6 +336,31 @@ class StatsTests(ClassificationCase):
         code, _, err = self.run_cli("stats", "--since", "last week")
         self.assertEqual((code, "such as 2026-11-01" in err), (2, True))
 
+    def test_since_includes_an_older_question_marked_then_closed_in_the_window(self) -> None:
+        with patch.object(quarterdeck, "now_text", return_value="2026-10-14T00:00:00Z"):
+            self.questions("October decisions", "--project", "Harbor", body=ASK[:1])
+        with patch.object(quarterdeck, "now_text", return_value="2026-11-02T00:00:00Z"):
+            self.assertEqual(self.run_cli("mark", "Q1.1", "answered", "--via", "chat")[0], 0)
+        self.assertEqual(self.run_cli("mark", "Q1.1", "closed")[0], 0)
+        report = self.report("--since", "2026-11-01")
+        self.assertEqual((report["total"]["saved"], report["total"]["answered_elsewhere"]), (0, 1))
+        self.assertEqual(report["by_project"]["Harbor"]["via"]["chat"], 1)
+        self.assertIn("Harbor", self.run_cli("stats", "--since", "2026-11-01")[1])
+        self.assertEqual(self.report("--since", "2026-11-03")["total"]["answered_elsewhere"], 0)
+
+    def test_missing_classifications_stay_distinct_from_the_name_unclassified(self) -> None:
+        self.questions("Named", "--project", "unclassified", body=ASK[2:])
+        self.questions("Missing", body=ASK[2:])
+        self.edit_store(lambda d: d["items"][0]["body"]["questions"][0].update(
+            kind="unclassified", tags=["unclassified"]))
+        report = self.report()
+        for key in ("by_kind", "by_tag", "by_project"):
+            self.assertEqual({name: row["saved"] for name, row in report[key].items()},
+                             {"unclassified": 1, "(unclassified)": 1})
+        lines = self.run_cli("stats")[1].splitlines()
+        self.assertEqual(sum(line.split()[0] == "unclassified" for line in lines if line), 3)
+        self.assertEqual(sum(line.split()[0] == "(unclassified)" for line in lines if line), 3)
+
     def test_text_report_is_an_aligned_table(self) -> None:
         self.seed()
         code, out, _ = self.run_cli("stats")
@@ -352,11 +369,11 @@ class StatsTests(ClassificationCase):
         self.assertEqual(lines[0], "All saved questions")
         header = next(line for line in lines if line.startswith("Kind"))
         self.assertEqual(header.split(), ["Kind", "Saved", "Desk", "Chat", "Review", "page", "Elsewhere", "Superseded",
-                                          "Open", "Closed", "Median", "wait", "Matched"])
+                                          "Open", "Closed", "Median", "Desk", "wait"])
         row = next(line for line in lines if line.startswith("approve"))
         self.assertEqual(len(row), len(header))
         self.assertIn("All questions", out)
-        self.assertEqual(self.run_cli("stats", "--since", "2026-12-01")[1], "Questions saved since 2026-12-01\nNo questions saved.\n")
+        self.assertEqual(self.run_cli("stats", "--since", "2026-12-01")[1], "Question activity since 2026-12-01\nNo questions saved.\n")
 
     def test_an_empty_store_reports_no_questions(self) -> None:
         self.assertEqual(self.run_cli("stats")[1], "All saved questions\nNo questions saved.\n")
@@ -399,21 +416,74 @@ class PageTests(ClassificationCase):
         self.assertIn('<th scope="col">Project</th>', page)
         self.assertIn('<td class="project">Harbor</td>', page)
 
-    def test_lists_filter_by_project_and_tag_only_when_there_is_something_to_filter(self) -> None:
-        for number, project in enumerate(("Harbor", "Quay"), 1):
+    def test_filters_apply_to_rendered_references_and_reviewed_questions(self) -> None:
+        chrome = shutil.which("google-chrome")
+        if not chrome:
+            self.skipTest("google-chrome is required for the classification filter browser test")
+        for number, tag in enumerate(("research", "bug"), 1):
             self.add("resource", f"Chart {number}", "A chart.", "--url", "https://example.com/t", "--link-text", "Chart",
-                     "--project", project, "--tag", "research" if number == 1 else "bug")
+                     "--project", "Harbor", "--tag", tag)
+        for project, tag in (("Harbor", "research"), ("Quay", "bug")):
+            item_id = self.questions(project, "--project", project, "--tag", tag, body=ASK[2:])
+            self.assertEqual(self.run_cli("mark", item_id, "answered", "--via", "chat")[0], 0)
+        fixture = self.root / "filters.html"
+        fixture.write_text(self.pages()["index.html"].replace("</body>", """
+<output id="browser-result">Incomplete</output>
+<script>
+const result = document.getElementById('browser-result');
+let filterError;
+window.addEventListener('error', event => { filterError = event.message; });
+const [reviewed, references] = document.querySelectorAll('main .filters');
+const control = (bar, label) => [...bar.querySelectorAll('label')]
+  .find(element => element.firstChild.textContent === label)?.querySelector('select');
+const choose = (bar, label, value) => {
+  const select = control(bar, label);
+  select.value = value;
+  select.dispatchEvent(new Event('change', {bubbles: true}));
+};
+const visible = selector => [...document.querySelectorAll(selector)].filter(element => element.checkVisibility());
+const check = (condition, message) => { if (!condition) throw new Error(message); };
+const visibleIds = selector => visible(selector).map(element => element.textContent.trim()).join(',');
+try {
+  check(!control(references, 'Project'), 'References should only offer a tag filter');
+  choose(references, 'Tag', 'bug');
+  check(visibleIds('table .id') === 'Q2', 'Reference tag filter should show only Q2');
+  check(visibleIds('article .id') === 'Q4,Q3', 'Reference filter affected reviewed cards');
+  choose(reviewed, 'Project', 'Harbor');
+  check(visibleIds('article .id') === 'Q3', 'Reviewed project filter should show only Q3');
+  choose(reviewed, 'Tag', 'bug');
+  check(!visibleIds('article .id'), 'Incompatible reviewed filters should hide both cards');
+  check(visible('.no-match').length === 1 && visible('.no-match')[0].previousElementSibling.contains(
+    document.querySelector('article')), 'Only Reviewed should show an empty state');
+  check(visibleIds('table .id') === 'Q2', 'Reviewed filters affected references');
+  choose(reviewed, 'Tag', '');
+  check(visibleIds('article .id') === 'Q3' && visible('.no-match').length === 0, 'Clearing the tag should restore Q3');
+  choose(references, 'Tag', '');
+  check(visibleIds('table .id') === 'Q2,Q1', 'Clearing the reference filter should restore both rows');
+  check(!filterError, filterError);
+  result.textContent = 'PASS';
+} catch (error) {
+  result.textContent = error.message;
+}
+</script>
+</body>"""), encoding="utf-8")
+        for width in (390, 1024):
+            with self.subTest(width=width):
+                result = subprocess.run(
+                    [chrome, "--headless", "--disable-background-networking", "--no-first-run",
+                     f"--user-data-dir={self.root / 'browser'}", f"--window-size={width},800", "--dump-dom", fixture.as_uri()],
+                    capture_output=True, text=True, timeout=30, check=True)
+                marker = result.stdout.partition('<output id="browser-result">')[2].partition("</output>")[0]
+                self.assertEqual(marker, "PASS", result.stderr)
+
+    def test_primary_card_and_anchor_follow_newest_open_item_across_groups(self) -> None:
+        self.questions("Old Harbor", "--project", "Harbor", body=ASK[:1])
+        self.questions("Open Quay", "--project", "Quay", body=ASK[:1])
+        self.questions("New Harbor", "--project", "Harbor", body=ASK[:1])
+        self.answer("Q3.1", "Merge")
         page = self.pages()["index.html"]
-        bar = re.search(r'<div class="filters" data-list="references-list">(.*?)</div>', page, re.S)[1]
-        self.assertIn('<option value="Harbor">Harbor</option>', bar)
-        self.assertIn('<option value="bug">bug</option>', bar)
-        self.assertIn("All projects", bar)
-        self.assertIn("All tags", bar)
-        self.assertEqual(page.count("data-project="), 2)
-        self.assertIn("Nothing matches these filters.", page)
-        self.assertIn("document.querySelectorAll('.filters')", page)
-        self.run_cli("remove", "Q2")
-        self.assertNotIn('class="filters"', self.pages()["index.html"])
+        self.assertEqual(re.findall(r'<a class="work-action" href="([^"]+)">', page), ["q2.html#Q2.1"])
+        self.assertLess(page.index("New Harbor"), page.index("Open Quay"))
 
     def test_item_page_shows_project_tags_kind_and_question_tags(self) -> None:
         self.questions("Harbor choices", "--project", "Harbor", "--tag", "process")
@@ -422,15 +492,6 @@ class PageTests(ClassificationCase):
         self.assertIn("<li>process</li>", page)
         self.assertIn("<span>Approve</span>", page)
         self.assertIn("<li>product design</li>", page)
-
-    def test_answered_questions_filter_too(self) -> None:
-        self.questions("Harbor choices", "--project", "Harbor", body=ASK[:1])
-        self.questions("Quay choices", "--project", "Quay", body=ASK[:1])
-        self.run_cli("mark", "Q1", "answered", "--via", "chat")
-        self.run_cli("mark", "Q2", "answered", "--via", "chat")
-        page = self.pages()["index.html"]
-        self.assertIn('<div class="filters" data-list="reviewed-list">', page)
-        self.assertIn('<div class="desk" id="reviewed-list">', page)
 
 
 if __name__ == "__main__":

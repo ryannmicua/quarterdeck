@@ -39,7 +39,7 @@ from urllib.parse import quote, unquote, urlparse
 DEFAULT_TITLE = "Quarterdeck"
 DEFAULT_HOST = "127.0.0.1"
 DEFAULT_PORT = 8765
-ALLOWED_CONFIG_KEYS = {"page_title", "output_dir", "base_path", "firstmate_home", "classification"}
+ALLOWED_CONFIG_KEYS = {"page_title", "output_dir", "base_path", "firstmate_home"}
 # Legacy configuration. Only a sole registered home can supply the note destination.
 LEGACY_CONFIG_KEYS = {"homes", "captain_waits"}
 # Split so the privacy guard, which rejects committed generated pages by this marker, does not flag the source.
@@ -132,8 +132,6 @@ def load_config(path: Path | None) -> dict[str, object]:
             raise ValueError(f"config {exc}") from exc
     if "output_dir" in config and not isinstance(config["output_dir"], str):
         raise ValueError("config output_dir must be a path string")
-    if "classification" in config:
-        classification_rules(config)
     return config
 
 
@@ -200,43 +198,17 @@ def write_private_bytes(path: Path, data: bytes) -> None:
 
 
 # --- The item store -----------------------------------------------------------------
-# Classification. The allowed kinds, tags and answered-via values come from the private config's `classification`
-# section; the lists below are the generic defaults. The store only checks that a value is well formed, so changing the
-# lists never makes an old item unreadable.
-
-DEFAULT_CLASSIFICATION = {
+CLASSIFICATION = {
     "kinds": ("pick", "confirm", "rule", "wording", "scope", "approve", "inform"),
     "tags": ("product-design", "ui", "architecture", "business-rule", "terminology", "process", "bug",
              "security-privacy", "release", "research"),
     "answered_via": ("chat", "review-page", "elsewhere", "superseded"),
 }
-CLASSIFICATION_NAMES = {"kinds": "kind", "tags": "tag", "answered_via": "via"}
-DESK = "desk"  # where an answer sent from the page came from; always allowed, never listed in the config
+DESK = "desk"
 WORD_RE = re.compile(r"[a-z][a-z0-9]*(?:-[a-z0-9]+)*")
 WORD_LIMIT = 30
 TAG_LIMIT = 3
 PROJECT_LIMIT = 40
-NOTE_LIMIT = 600
-
-
-def classification_rules(config: dict[str, object]) -> dict[str, tuple[str, ...]]:
-    """The allowed values: the config's `classification` section over the defaults."""
-    section = config.get("classification", {})
-    if not isinstance(section, dict):
-        raise ValueError("config classification must be an object")
-    unknown = sorted(set(section) - set(DEFAULT_CLASSIFICATION))
-    if unknown:
-        raise ValueError(f"unsupported config classification key(s): {', '.join(unknown)}")
-    rules = dict(DEFAULT_CLASSIFICATION)
-    for name, values in section.items():
-        if (not isinstance(values, list) or not values or len(set(values)) != len(values)
-                or not all(isinstance(v, str) and WORD_RE.fullmatch(v) and len(v) <= WORD_LIMIT for v in values)):
-            raise ValueError(f"config classification {name} must be a list of different lowercase words "
-                             "(letters, digits and single hyphens)")
-        if name == "answered_via" and DESK in values:
-            raise ValueError(f"config classification answered_via must not list {DESK}: the page records it")
-        rules[name] = tuple(values)
-    return rules
 
 
 def clean_word(value: object, name: str, allowed: tuple[str, ...] | None) -> str:
@@ -265,12 +237,8 @@ def clean_project(value: object) -> str:
     return project
 
 
-def clean_note(value: object) -> str:
-    return clean_text(value, "note", NOTE_LIMIT, multiline=True)
-
-
-def item_classification(raw_project: object, raw_tags: object, rules: dict[str, tuple[str, ...]] | None,
-                        ) -> dict[str, object]:
+def item_classification(raw_project: object, raw_tags: object,
+                        rules: dict[str, tuple[str, ...]] | None) -> dict[str, object]:
     """The project and tags to store on an item, left out when empty."""
     fields: dict[str, object] = {}
     if raw_project is not None:
@@ -771,16 +739,20 @@ def part_record(item, part):
     return item.get("answers", {}).get(str(part), {})
 
 
-ANSWER_FIELDS = ("answer", "answered_at", "delivery", "request_id", "via", "note")
+DESK_FIELDS = ("answer", "answered_at", "delivery", "request_id")
 
 
-def answer_via(record):
-    """Where an answered question's answer came from: desk, or one of the answered-via values."""
-    if record.get("state") != "answered":
-        return None
-    if "via" in record:
-        return record["via"]
-    return DESK if "answer" in record else "elsewhere"  # a bare mark from before answers carried a source
+def answer_marks(record):
+    if "answer_marks" in record:
+        return record["answer_marks"]
+    if "answered_at" in record:
+        return [{"via": record.get("via", DESK), "answered_at": record["answered_at"]}]
+    return []
+
+
+def latest_off_desk_mark(record):
+    marks = answer_marks(record)
+    return marks[-1] if marks and marks[-1]["via"] != DESK else None
 
 
 def delivery_pending(record):
@@ -798,19 +770,26 @@ def validate_records(item):
         if record.get("state") not in ("open", "answered", "closed") or not re.fullmatch(
                 r"[0-9a-f]{32}", str(record.get("revision"))):
             raise ValueError("invalid question state")
-        if any(k in record for k in ANSWER_FIELDS):
+        if any(k in record for k in (*DESK_FIELDS, "via")):
             via = record.get("via", DESK)
             if via != DESK:
-                clean_word(via, "via", None)
-                if any(k in record for k in ("answer", "delivery", "request_id")):
+                if (clean_word(via, "via", None) != via
+                        or any(k in record for k in ("answer", "delivery", "request_id"))):
                     raise ValueError("invalid saved answer")
-                if "note" in record and clean_note(record["note"]) != record["note"]:
-                    raise ValueError("invalid answer note")
-            elif ("note" in record or clean_text(record.get("answer"), "answer", TEXT_LIMIT, multiline=True) != record["answer"]
+            elif (clean_text(record.get("answer"), "answer", TEXT_LIMIT, multiline=True) != record["answer"]
                     or record.get("delivery") not in ("pending", "sent")
                     or not re.fullmatch(r"quarterdeck-[0-9a-f]{32}", str(record.get("request_id")))):
                 raise ValueError("invalid saved answer")
-            datetime.strptime(str(record.get("answered_at")), "%Y-%m-%dT%H:%M:%SZ")
+            parse_utc(record.get("answered_at"))
+        if "answer_marks" in record:
+            marks = record["answer_marks"]
+            if not isinstance(marks, list) or not marks:
+                raise ValueError("invalid answer marks")
+            for mark in marks:
+                if (not isinstance(mark, dict) or mark.keys() != {"via", "answered_at"}
+                        or clean_word(mark["via"], "via", None) != mark["via"]):
+                    raise ValueError("invalid answer mark")
+                parse_utc(mark["answered_at"])
 
 
 def put_record(item, part, state, **fields):
@@ -832,32 +811,41 @@ def part_numbers(item, target):
 
 def mark_item(args):
     def action():
-        via = note = None
+        via = None
         if args.state == "answered":
+            allowed = CLASSIFICATION["answered_via"]
             if args.via is None:
-                allowed = classification_rules(selected_config(args))["answered_via"]
                 raise ValueError(f"marking answered needs --via, where the answer came from: {', '.join(allowed)}")
-            via = clean_word(args.via, "via", classification_rules(selected_config(args))["answered_via"])
-            note = clean_note(args.note) if args.note is not None else None
-        elif args.via is not None or args.note is not None:
-            raise ValueError("--via and --note go with answered")
-        item_id, dot, _ = args.id.partition(".")
-        changed = 0
-        with changing_store(store_path()) as data:
+            via = clean_word(args.via, "via", allowed)
+        elif args.via is not None:
+            raise ValueError("--via goes with answered")
+        item_id = args.id.partition(".")[0]
+        messages = []
+        changed = False
+        store = store_path()
+        with locked_store(store):
+            data = read_store(store)
             item = find_item(data, item_id)
             for number in part_numbers(item, args.id):
                 previous = part_record(item, number)
-                if args.state != "answered":
-                    put_record(item, number, args.state, **{k: previous[k] for k in ANSWER_FIELDS if k in previous})
-                elif previous.get("state") == "answered":
-                    if dot:
-                        raise ValueError(f"{args.id.upper()} is already answered; mark it open first to record a new answer")
+                if via:
+                    state = previous.get("state", "open")
+                    if state != "open":
+                        messages.append(f"{item['id']}.{number} skipped (already {state})")
+                        continue
+                    marks = [*answer_marks(previous), {"via": via, "answered_at": now_text()}]
+                    put_record(item, number, "answered", answer_marks=marks)
+                    messages.append(f"{item['id']}.{number} Answered via {via}")
                 else:
-                    put_record(item, number, "answered", via=via, answered_at=now_text(), **({"note": note} if note else {}))
-                    changed += 1
-            if args.state == "answered" and not changed:
-                raise ValueError(f"every question in {item['id']} is already answered")
-        print(f"{args.id.upper()} {args.state.capitalize()}" + (f" via {via}" if via else ""))
+                    fields = {k: previous[k] for k in (*DESK_FIELDS, "via", "answer_marks") if k in previous}
+                    put_record(item, number, args.state, **fields)
+                changed = True
+            if changed:
+                write_store(store, data)
+        if via:
+            print("\n".join(messages))
+        else:
+            print(f"{args.id.upper()} {args.state.capitalize()}")
         return 0
     return run_item_command(action)
 
@@ -866,7 +854,6 @@ def classify_item(args):
     def action():
         if args.project is None and args.tags is None and args.kind is None:
             raise ValueError("give at least one of --project, --tag or --kind")
-        rules = classification_rules(selected_config(args))
         item_id, dot, _ = args.id.partition(".")
         with changing_store(store_path()) as data:
             item = find_item(data, item_id)
@@ -876,21 +863,16 @@ def classify_item(args):
                 number = part_numbers(item, args.id)[0]
                 question = item["body"]["questions"][number - 1]
                 if args.kind is not None:
-                    question["kind"] = clean_word(args.kind, "kind", rules["kinds"])
+                    question["kind"] = clean_word(args.kind, "kind", CLASSIFICATION["kinds"])
                 if args.tags is not None:
-                    tags = clean_tags(args.tags, "question", rules)
-                    question["tags"] = tags
-                    if not tags:
-                        del question["tags"]
+                    question["tags"] = clean_tags(args.tags, "question", CLASSIFICATION)
             else:
                 if args.kind is not None:
                     raise ValueError("a kind belongs to one question; classify a question such as " + item["id"] + ".1")
                 if args.project is not None:
                     item["project"] = clean_project(args.project)
                 if args.tags is not None:
-                    item.pop("tags", None)
-                    fields = item_classification(None, args.tags, rules)
-                    item.update(fields)
+                    item["tags"] = clean_tags(args.tags, "item", CLASSIFICATION)
         print(f"{args.id.upper()} Classified")
         return 0
     return run_item_command(action)
@@ -933,7 +915,9 @@ def send_answer(store, home, payload):
         if same:
             record = old
         else:
-            record = put_record(item, part, "answered", answer=answer, answered_at=now_text(), via=DESK,
+            at = now_text()
+            marks = [*answer_marks(old), {"via": DESK, "answered_at": at}]
+            record = put_record(item, part, "answered", answer=answer, answered_at=at, answer_marks=marks,
                                 delivery="pending", request_id="quarterdeck-" + uuid.uuid4().hex)
     # The first transaction commits before the external call. Serialize delivery against edits and reuse its note ID on retries.
     if home and delivery_pending(record):
@@ -990,10 +974,8 @@ def item_text(item: dict[str, object]) -> str:
             lines.append("      " + record.get("state", "open").capitalize())
             if "answer" in record:
                 lines.append(f"      Answer: {record['answer']} ({record['answered_at']}, {delivery_label(record)})")
-            elif "via" in record:
-                lines.append(f"      Answered elsewhere: {record['via']} ({record['answered_at']})")
-                if record.get("note"):
-                    lines.append(f"      Note: {record['note']}")
+            elif mark := latest_off_desk_mark(record):
+                lines.append(f"      Answered elsewhere: {mark['via']} ({mark['answered_at']})")
     return "\n".join(lines).rstrip() + "\n"
 
 
@@ -1060,13 +1042,12 @@ def remove_images(store: Path, item: dict[str, object]) -> None:
 def add_item(args: argparse.Namespace) -> int:
     def action() -> int:
         images: dict[str, bytes] = {}
-        rules = classification_rules(selected_config(args))
         body = make_body(args.kind, url=args.url, link_text=args.link_text, body=read_body(args.body_file), images=images,
-                         rules=rules)
+                         rules=CLASSIFICATION)
         item: dict[str, object] = {
             "kind": args.kind, "title": clean_text(args.title, "title", TITLE_LIMIT),
             "description": clean_text(args.description, "description", DESCRIPTION_LIMIT, multiline=True),
-            "saved_at": now_text(), **item_classification(args.project, args.tags, rules), "body": body,
+            "saved_at": now_text(), **item_classification(args.project, args.tags, CLASSIFICATION), "body": body,
         }
         store = store_path()
         with locked_store(store):
@@ -1119,7 +1100,7 @@ def remove_item(args: argparse.Namespace) -> int:
 # Counts questions by kind, tag and project. A question's tags are its own plus its item's.
 # It reads only the store and never decides whether anything was answered elsewhere.
 
-UNCLASSIFIED = "unclassified"
+UNCLASSIFIED = "(unclassified)"
 
 
 def parse_utc(text: object) -> datetime:
@@ -1129,54 +1110,57 @@ def parse_utc(text: object) -> datetime:
 def question_facts(data: dict[str, object], since: str | None) -> list[dict[str, object]]:
     facts = []
     for item in data["items"]:  # type: ignore[union-attr]
-        if item["kind"] != "questions" or (since and saved_day(item) < since):
+        if item["kind"] != "questions":
             continue
+        saved_at = parse_utc(item["saved_at"])
+        saved = since is None or saved_day(item) >= since
         for number, question in enumerate(item["body"]["questions"], 1):
             record = part_record(item, number)
-            via = answer_via(record)
-            wait = None
-            if via and "answered_at" in record:
-                wait = max(0, int((parse_utc(record["answered_at"]) - parse_utc(item["saved_at"])).total_seconds()))
-            facts.append({
-                "kind": question.get("kind"), "project": item.get("project"), "state": record.get("state", "open"),
-                "tags": list(dict.fromkeys([*question.get("tags", []), *item.get("tags", [])])),
-                "via": via, "wait": wait,
-                "matched": via == DESK and " ".join(str(record["answer"]).split()) == " ".join(str(question.get("suggestion", "\0")).split()),
-            })
+            state = record.get("state", "open")
+            sources, desk_waits = set(), []
+            marks = answer_marks(record)
+            for mark in marks:
+                at = parse_utc(mark["answered_at"])
+                if since is not None and at.date().isoformat() < since:
+                    continue
+                sources.add(mark["via"])
+                if mark["via"] == DESK:
+                    desk_waits.append(max(0, int((at - saved_at).total_seconds())))
+            if since is None and state == "answered" and not marks:
+                sources.add("elsewhere")
+            if saved or sources:
+                facts.append({
+                    "kind": question.get("kind"), "project": item.get("project"), "state": state,
+                    "tags": list(dict.fromkeys([*question.get("tags", []), *item.get("tags", [])])),
+                    "saved": saved, "sources": sources, "desk_waits": desk_waits,
+                })
     return facts
 
 
-def median_seconds(waits: list[int]) -> int | None:
-    return int(statistics.median(waits)) if waits else None
-
-
 def summarize(facts: list[dict[str, object]], via_values: list[str]) -> dict[str, object]:
-    answered = [fact for fact in facts if fact["via"]]
-    elsewhere = [fact for fact in answered if fact["via"] != DESK]
+    desk_waits = [wait for fact in facts for wait in fact["desk_waits"]]
     return {
-        "saved": len(facts),
-        "answered_desk": len(answered) - len(elsewhere),
-        "answered_elsewhere": len(elsewhere),
-        "via": {value: sum(1 for fact in elsewhere if fact["via"] == value) for value in via_values},
+        "saved": sum(1 for fact in facts if fact["saved"]),
+        "answered_desk": sum(1 for fact in facts if DESK in fact["sources"]),
+        "answered_elsewhere": sum(1 for fact in facts if fact["sources"] - {DESK}),
+        "via": {value: sum(1 for fact in facts if value in fact["sources"]) for value in via_values},
         "open": sum(1 for fact in facts if fact["state"] == "open"),
         "closed": sum(1 for fact in facts if fact["state"] == "closed"),
-        "median_wait_seconds": median_seconds([int(f["wait"]) for f in answered if f["wait"] is not None]),
-        "median_wait_desk_seconds": median_seconds([int(f["wait"]) for f in answered if f["via"] == DESK and f["wait"] is not None]),
-        "median_wait_elsewhere_seconds": median_seconds([int(f["wait"]) for f in elsewhere if f["wait"] is not None]),
-        "matched_suggestion": sum(1 for fact in answered if fact["matched"]),
+        "median_wait_desk_seconds": int(statistics.median(desk_waits)) if desk_waits else None,
     }
 
 
-def build_report(data: dict[str, object], since: str | None, rules: dict[str, tuple[str, ...]]) -> dict[str, object]:
+def build_report(data: dict[str, object], since: str | None) -> dict[str, object]:
     facts = question_facts(data, since)
-    found = {str(f["via"]) for f in facts if f["via"] and f["via"] != DESK}
-    via_values = [*rules["answered_via"], *sorted(found - set(rules["answered_via"]))]
+    found = {via for fact in facts for via in fact["sources"] if via != DESK}
+    allowed = CLASSIFICATION["answered_via"]
+    via_values = [*allowed, *sorted(found - set(allowed))]
     groups: dict[str, dict[str, list[dict[str, object]]]] = {"by_kind": {}, "by_tag": {}, "by_project": {}}
     for fact in facts:
-        groups["by_kind"].setdefault(str(fact["kind"] or UNCLASSIFIED), []).append(fact)
-        groups["by_project"].setdefault(str(fact["project"] or UNCLASSIFIED), []).append(fact)
+        groups["by_kind"].setdefault(fact["kind"] or UNCLASSIFIED, []).append(fact)
+        groups["by_project"].setdefault(fact["project"] or UNCLASSIFIED, []).append(fact)
         for tag in fact["tags"] or [UNCLASSIFIED]:  # type: ignore[union-attr]
-            groups["by_tag"].setdefault(str(tag), []).append(fact)
+            groups["by_tag"].setdefault(tag, []).append(fact)
     report: dict[str, object] = {"since": since, "via_values": via_values, "total": summarize(facts, via_values)}
     for name, group in groups.items():
         report[name] = {key: summarize(group[key], via_values) for key in sorted(group, key=lambda k: (k == UNCLASSIFIED, k))}
@@ -1196,10 +1180,9 @@ def wait_text(seconds: object) -> str:
 
 def report_table(title: str, rows: dict[str, dict[str, object]], via_values: list[str]) -> list[str]:
     heads = [title, "Saved", "Desk", *(value.replace("-", " ").capitalize() for value in via_values),
-             "Open", "Closed", "Median wait", "Matched"]
+             "Open", "Closed", "Median Desk wait"]
     table = [heads] + [[label, *(str(v) for v in (r["saved"], r["answered_desk"], *r["via"].values(),  # type: ignore[union-attr]
-                                                  r["open"], r["closed"])), wait_text(r["median_wait_seconds"]),
-                        str(r["matched_suggestion"])] for label, r in rows.items()]
+                                                  r["open"], r["closed"])), wait_text(r["median_wait_desk_seconds"])] for label, r in rows.items()]
     widths = [max(len(row[column]) for row in table) for column in range(len(heads))]
     return ["  ".join(cell.ljust(widths[0]) if column == 0 else cell.rjust(widths[column])
                       for column, cell in enumerate(row)).rstrip() for row in table]
@@ -1207,9 +1190,9 @@ def report_table(title: str, rows: dict[str, dict[str, object]], via_values: lis
 
 def report_text(report: dict[str, object]) -> str:
     since = report["since"]
-    lines = [f"Questions saved since {since}" if since else "All saved questions"]
+    lines = [f"Question activity since {since}" if since else "All saved questions"]
     via_values = report["via_values"]  # type: ignore[assignment]
-    if not report["total"]["saved"]:  # type: ignore[index]
+    if not report["by_kind"]:
         return lines[0] + "\nNo questions saved.\n"
     for title, key in (("All", "total"), ("Kind", "by_kind"), ("Tag", "by_tag"), ("Project", "by_project")):
         rows = {"All questions": report[key]} if key == "total" else report[key]  # type: ignore[dict-item]
@@ -1225,11 +1208,10 @@ def show_stats(args: argparse.Namespace) -> int:
                 since = datetime.strptime(args.since, "%Y-%m-%d").strftime("%Y-%m-%d")
             except ValueError as exc:
                 raise ValueError("--since must be a date such as 2026-11-01") from exc
-        rules = classification_rules(selected_config(args))
         store = store_path()
         with locked_store(store, read_only=True):
             data = read_store(store)
-        report = build_report(data, since, rules)
+        report = build_report(data, since)
         print(json.dumps(report, indent=2) if args.as_json else report_text(report), end="" if not args.as_json else "\n")
         return 0
     return run_item_command(action)
@@ -1470,7 +1452,7 @@ h3 { margin: .3rem 0; font-size: 1.55rem; line-height: 1.25; }
 .progress { margin-bottom:.4rem; }
 button { cursor:pointer; background:var(--raised); color:var(--ink); border:1px solid var(--soft);
   border-radius:5px; padding:.5rem .85rem; min-height:44px; font-size:1rem; max-width:100%; overflow-wrap:anywhere; }
-button[hidden] { display:none; }
+button[hidden], table.items tr[hidden], .desk .work[hidden] { display:none; }
 button.primary { color:var(--raised); background:var(--ink); }
 button:disabled, button[aria-disabled="true"] { opacity:.55; cursor:default; }
 :focus-visible { outline:3px solid var(--focus); outline-offset:2px; }
@@ -1697,19 +1679,21 @@ def linked_text(value: object) -> str:
 FILTER_SCRIPT = """
 for (const bar of document.querySelectorAll('.filters')) {
   const list = document.getElementById(bar.dataset.list);
-  const selects = [...bar.querySelectorAll('select')];
-  const none = list.parentElement.querySelector('.no-match');
+  const projectSelect = bar.querySelector('[name="project"]');
+  const tagSelect = bar.querySelector('[name="tag"]');
+  const none = document.getElementById(bar.dataset.list + '-empty');
   const apply = () => {
+    const project = projectSelect?.value;
+    const tag = tagSelect?.value;
     let shown = 0;
     for (const entry of list.querySelectorAll('[data-project]')) {
-      const [project, tag] = selects.map(select => select.value);
       const ok = (!project || entry.dataset.project === project) && (!tag || entry.dataset.tags.split('|').includes(tag));
       entry.hidden = !ok;
       if (ok) shown += 1;
     }
     none.hidden = shown > 0;
   };
-  for (const select of selects) select.addEventListener('change', apply);
+  bar.addEventListener('change', apply);
 }
 """
 
@@ -1738,20 +1722,21 @@ def filter_data(item) -> str:
 def filter_bar(list_id: str, items) -> str:
     """Project and tag filters for a list; a filter shows only when it could tell the items apart."""
     projects = sorted({item["project"] for item in items if item.get("project")}, key=str.casefold)
-    tags = sorted({tag for item in items for tag in all_tags(item)})
+    item_tags = [set(all_tags(item)) for item in items]
+    tags = sorted(set().union(*item_tags)) if item_tags and any(t != item_tags[0] for t in item_tags) else []
     fields = ""
     for label, name, values, unset in (("Project", "projects", projects, any(not i.get("project") for i in items)),
-                                       ("Tag", "tags", tags, any(not all_tags(i) for i in items))):
+                                       ("Tag", "tags", tags, any(not t for t in item_tags))):
         if len(values) > 1 or (values and unset):
             options = "".join(f'<option value="{esc(v)}">{esc(tag_text(v) if name == "tags" else v)}</option>' for v in values)
-            fields += f'<label>{label}<select><option value="">All {name}</option>{options}</select></label>'
+            fields += f'<label>{label}<select name="{label.lower()}"><option value="">All {name}</option>{options}</select></label>'
     if not fields:
         return ""
     return (f'<div class="filters" data-list="{list_id}">{fields}</div>')
 
 
-def no_match() -> str:
-    return '<p class="empty no-match" hidden>Nothing matches these filters.</p>'
+def no_match(list_id: str) -> str:
+    return f'<p class="empty no-match" id="{list_id}-empty" hidden>Nothing matches these filters.</p>'
 
 
 def item_page_name(item_id: str) -> str:
@@ -1900,12 +1885,12 @@ def question_form(item, served):
         answer = record.get("answer", "")
         editable = served and status != "closed"
         saved = ""
-        elsewhere = "via" in record and not answer
+        elsewhere = latest_off_desk_mark(record)
         if answer or elsewhere or editable:
-            at = esc(record.get("answered_at", ""))
-            delivery = "Answered elsewhere" if elsewhere else delivery_label(record) if answer else ""
+            at = esc((elsewhere or record).get("answered_at", ""))
+            delivery = f'Answered elsewhere · {esc(elsewhere["via"])}' if elsewhere else delivery_label(record) if answer else ""
             hidden = "" if answer or elsewhere else " hidden"
-            saved = (f'<div class="saved-answer"{hidden}><p class="record">{esc(answer or record.get("note", ""))}</p>'
+            saved = (f'<div class="saved-answer"{hidden}><p class="record">{esc(answer)}</p>'
                      f'<p class="meta"><span class="delivery">{delivery}</span> '
                      f'<time datetime="{at}">{at}</time></p></div>')
         editor = ""
@@ -2101,8 +2086,6 @@ def list_page(data: dict[str, object], site_title: str, *, served: bool, saved_n
     # With more than one project on the Desk, its cards group by project, the group holding the newest item first.
     projects = list(dict.fromkeys(item.get("project", "") for item, _ in attention))
     grouped = len(projects) > 1
-    if grouped:
-        attention = [pair for project in projects for pair in attention if pair[0].get("project", "") == project]
     primary = next((item for item, summary in attention if summary[1]), None)
     body = ""
 
@@ -2129,12 +2112,13 @@ def list_page(data: dict[str, object], site_title: str, *, served: bool, saved_n
         level = 2 if body else 1
         bar = filter_bar("reviewed-list", [item for item, _ in reviewed])
         filters = filters or bool(bar)
-        body += f"<h{level}>Reviewed questions</h{level}>" + bar + desk(reviewed, list_id="reviewed-list") + (no_match() if bar else "")
+        body += (f"<h{level}>Reviewed questions</h{level}>" + bar + desk(reviewed, list_id="reviewed-list")
+                 + (no_match("reviewed-list") if bar else ""))
     if references:
         level = 2 if body else 1
         bar = filter_bar("references-list", references)
         filters = filters or bool(bar)
-        body += f"<h{level}>References</h{level}>" + bar + items_table(references) + (no_match() if bar else "")
+        body += f"<h{level}>References</h{level}>" + bar + items_table(references) + (no_match("references-list") if bar else "")
     if not items and not served:
         body = f'<h1>Saved</h1><p class="empty">{esc(empty)}</p>'
     return page_shell(site_title, site_title, body, served=served, saved_name=saved_name, workers=served and workers,
@@ -2860,9 +2844,7 @@ def make_parser() -> argparse.ArgumentParser:
     add.add_argument("--link-text", help="a resource's link text")
     add.add_argument("--project", help="the project or repository the item belongs to: one short word or name")
     add.add_argument("--tag", dest="tags", action="append", metavar="TAG",
-                     help=f"a topic tag, repeatable, up to {TAG_LIMIT}; the allowed tags are the classification tags in the config "
-                          f"(default: {', '.join(DEFAULT_CLASSIFICATION['tags'])})")
-    add.add_argument("--config", type=Path, help="optional JSON config file; its classification section lists the allowed values")
+                     help=f"a topic tag, repeatable, up to {TAG_LIMIT}; allowed: {', '.join(CLASSIFICATION['tags'])}")
     add.add_argument("--body-file", metavar="PATH", help="the body of a list or questions; - reads standard input. Questions may carry PNG, JPEG or still WebP images "
                                                           "(up to 5 MB each) that are copied in when saved")
 
@@ -2873,13 +2855,11 @@ def make_parser() -> argparse.ArgumentParser:
 
     mark = command("mark", "mark questions answered, closed or open",
                    "Set the state of a question (Q7.3) or every question in an item (Q7). Marking answered records an "
-                   "answer given somewhere other than the page, and needs --via.", mark_item)
+                   "answer given somewhere other than the page, requires --via, and skips questions that are already "
+                   "answered or closed.", mark_item)
     mark.add_argument("id", help="question or item ID")
     mark.add_argument("state", choices=("answered", "closed", "open"))
-    mark.add_argument("--via", metavar="WHERE", help="with answered: where the answer came from, one of the config's classification "
-                                                    f"answered_via values (default: {', '.join(DEFAULT_CLASSIFICATION['answered_via'])})")
-    mark.add_argument("--note", help="with answered: a short note about the answer, shown on the question")
-    mark.add_argument("--config", type=Path, help="optional JSON config file; its classification section lists the allowed values")
+    mark.add_argument("--via", metavar="WHERE", help=f"with answered: where the answer came from ({', '.join(CLASSIFICATION['answered_via'])})")
 
     classify = command("classify", "set an item's or question's classification",
                        "Set or replace the project and tags of an item (Q7), or the kind and tags of one question (Q7.3), "
@@ -2888,16 +2868,13 @@ def make_parser() -> argparse.ArgumentParser:
     classify.add_argument("--project", help="an item's project (item IDs only)")
     classify.add_argument("--tag", dest="tags", action="append", metavar="TAG",
                           help=f"a tag, repeatable, up to {TAG_LIMIT}; replaces the tags already there")
-    classify.add_argument("--kind", help=f"a question's kind (question IDs only; default: {', '.join(DEFAULT_CLASSIFICATION['kinds'])})")
-    classify.add_argument("--config", type=Path, help="optional JSON config file; its classification section lists the allowed values")
+    classify.add_argument("--kind", help=f"a question's kind (question IDs only; allowed: {', '.join(CLASSIFICATION['kinds'])})")
 
     stats = command("stats", "count questions by kind, tag and project",
                     "Print, by kind, by tag and by project: questions saved, answered on the Desk, answered elsewhere "
-                    "(per where the answer came from), still open, closed, median wait from saved to answered, and how many "
-                    "Desk answers matched the suggestion.", show_stats)
-    stats.add_argument("--since", metavar="DATE", help="only questions saved on or after this UTC date, such as 2026-11-01")
+                    "(by source), still open, closed, and the median wait for answers given on the Desk.", show_stats)
+    stats.add_argument("--since", metavar="DATE", help="include saves and dated answers on or after this UTC date, such as 2026-11-01")
     stats.add_argument("--json", dest="as_json", action="store_true", help="print the same numbers as JSON")
-    stats.add_argument("--config", type=Path, help="optional JSON config file; its classification section lists the answered_via values to show")
 
     remove = command("remove", "delete an item", "Delete an item. Its ID is never given to another item.", remove_item)
     remove.add_argument("id", help="item ID, such as Q7")

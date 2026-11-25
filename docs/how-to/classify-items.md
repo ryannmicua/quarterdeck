@@ -24,7 +24,7 @@ three times. In the questions JSON, each question may carry its own `kind` and
 ]
 ```
 
-The kinds, from the default list: `pick` (choose between options), `confirm`
+The kinds are `pick` (choose between options), `confirm`
 (yes or no on a proposal), `rule` (set a rule others will follow), `wording`
 (choose the words), `scope` (what is in or out), `approve` (permission to go
 ahead) and `inform` (nothing to decide, only to read).
@@ -42,15 +42,6 @@ quarterdeck classify Q5.3 --kind rule --tag business-rule
 `Q5` sets the project and tags of the item. `Q5.3` sets the kind and tags of one
 question. Options you leave out stay as they are. `--tag` replaces all the tags
 already there. The question text, options and answers are never touched.
-
-## Use your own words
-
-Put a `classification` section in the [config](../reference/cli-and-config.md#json-configuration)
-to replace the default tags, kinds or answered-via values:
-
-```json
-{"classification": {"tags": ["billing", "onboarding", "bug"]}}
-```
 
 ## See it on the page
 

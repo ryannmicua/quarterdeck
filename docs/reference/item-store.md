@@ -67,12 +67,11 @@ array when saving.
 
 ## Classification
 
-`project` and `tags` on an item, and `kind` and `tags` on a question, are
-lowercase words (a project keeps its capitals). The store checks only that
-each is well formed. The allowed values live in the [config](cli-and-config.md#classification)
-and are checked when `add`, `classify` or `mark` writes. A question's tags in a
-report include its item's tags. Items saved before these fields existed need no
-migration.
+Kinds and tags are lowercase words. Project names preserve case. The store
+checks that existing values are well formed. `add`, `classify` and `mark`
+check new values against the [fixed lists](cli-and-config.md#classification).
+A question's tags in a report include its item's tags. Items saved before
+these fields existed need no migration.
 
 ## Inline web addresses
 
@@ -153,8 +152,17 @@ and [export behavior](cli-and-config.md#rendered-images).
 
 Questions items may contain an `answers` object keyed by the one-based part number as a string. Missing entries mean Open. Records carry `state` (open, answered or closed) and an opaque `revision` for detecting concurrent edits. Older items need no migration.
 
-A browser answer also stores `answer` (plain text, up to 20,000 characters), `answered_at` (UTC), `delivery` (pending or sent), a stable `request_id` for inbox retries and `via` set to `desk`. The answer is saved before delivery. A correction replaces the current record and gets a new request ID. The [`mark` command](cli-and-config.md#items) also refreshes the revision.
+Each answer adds an entry to `answer_marks`, in recording order. An entry
+contains `via` and `answered_at` (UTC). The list survives closing, reopening,
+and later answers. A reconciliation mark records only the source and the
+time it was made. Removing the item removes its answer records.
 
-An answer given somewhere else, recorded with `mark ... answered --via`, stores `via` (one of the configured answered-via values), `answered_at` (UTC) and an optional `note` of up to 600 characters. It has no `answer`, `delivery` or `request_id`, and nothing is sent to the inbox. A record that is answered but carries no source at all comes from before sources were recorded; reports count it as answered elsewhere, with no wait.
+A Desk answer also stores the current `answer` (plain text, up to 20,000
+characters), `answered_at` (UTC), `delivery` (pending or sent), and a stable
+`request_id` for inbox retries. A correction gets a new request ID and adds
+a mark. Retrying delivery reuses the same ID and mark.
 
-The item's `saved_at` and the record's `answered_at` are both UTC. Reports measure the wait between them.
+Reports can read dated answers saved before `answer_marks` existed. An old
+answered record with no source or timestamp counts as Elsewhere in the
+all-time report. The report measures wait from the item's `saved_at` to
+each included Desk answer's `answered_at`.
