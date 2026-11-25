@@ -5,9 +5,13 @@
 ```text
 quarterdeck add --kind resource|list|questions --title TEXT --description TEXT
                 [--url URL --link-text TEXT] [--body-file PATH|-]
+                [--project NAME] [--tag TAG ...]
 quarterdeck list
 quarterdeck show ID
-quarterdeck mark ID[.PART] answered|closed|open
+quarterdeck mark ID[.PART] answered --via WHERE
+quarterdeck mark ID[.PART] closed|open
+quarterdeck classify ID[.PART] [--project NAME] [--tag TAG ...] [--kind KIND]
+quarterdeck stats [--since DATE] [--json]
 quarterdeck remove ID
 quarterdeck render [--output PATH] [--config FILE] [--title TEXT]
 quarterdeck serve [--host ADDRESS ...] [--port N] [--base-path PATH] [--tls-cert FILE --tls-key FILE] [--config FILE] [--title TEXT]
@@ -25,10 +29,12 @@ Item commands report validation errors on stderr and exit with status 2.
 
 | Command | What it does |
 | --- | --- |
-| `add` | Saves a new item and prints its ID. A `resource` needs `--url` and `--link-text`. A `list` or `questions` item needs `--body-file`. See [the input formats and examples](../how-to/save-items.md#add-an-item). |
+| `add` | Saves a new item and prints its ID. A `resource` needs `--url` and `--link-text`. A `list` or `questions` item needs `--body-file`. See [the input formats and examples](../how-to/save-items.md#add-an-item) and [how to classify items and questions when saving](../how-to/classify-items.md#classify-when-you-save). |
 | `list` | Prints saved items, newest first, with ID, kind, saved date and title. |
 | `show` | Prints the item's text, numbering list entries and questions as `Q7.1`, `Q7.2`. Each question link is printed with its text and URL. |
-| `mark` | Sets the state of one question or every question in a questions item. It preserves any saved answer, timestamp and delivery status. See [Read answers](../how-to/read-answers.md) for examples. |
+| `mark` | Sets question state, optionally for a whole questions item. `--via` is required with `answered` and accepted only with that state. Skips exit with status 0. See [Read answers](../how-to/read-answers.md) for which questions are marked. |
+| `classify` | Requires at least one classification option. Use `--project` for an item ID, `--kind` for a question ID, and `--tag` for either. See [how to change classification](../how-to/classify-items.md#change-it-later). |
+| `stats` | Prints a question activity table by default or JSON with `--json`. See [Read the report](../how-to/read-the-report.md) for date filtering and field definitions. |
 | `remove` | Deletes an item. Its ID is never used again. See [image removal](item-store.md#store-layout). |
 
 ### Pages
@@ -124,3 +130,15 @@ Without a destination, Quarterdeck saves answers with delivery pending.
 `captain_waits` is ignored.
 Any other key is an error. See
 [`quarterdeck.example.json`](../../quarterdeck.example.json).
+
+## Classification
+
+| Field | Allowed values | Accepted by |
+| --- | --- | --- |
+| `kind` | `pick`, `confirm`, `rule`, `wording`, `scope`, `approve`, `inform` | a question's `kind` |
+| `tags` | `product-design`, `ui`, `architecture`, `business-rule`, `terminology`, `process`, `bug`, `security-privacy`, `release`, `research` | an item's or a question's `tags` |
+| `via` | `chat`, `review-page`, `elsewhere`, `superseded` | `mark --via` |
+
+Use the exact lowercase spelling shown in these lists. A validation error
+names the allowed values. Quarterdeck records answers submitted from the page
+with the source `desk`.

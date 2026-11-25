@@ -1,16 +1,27 @@
 # Read answers
 
-Run `quarterdeck show Q7` to read each question's state and any saved answer,
-including its UTC timestamp and delivery status.
+Run `quarterdeck show Q7` to read each question's state, any saved Desk answer
+with its UTC timestamp and delivery status, and the latest off-Desk mark.
 
-If a decision came through another channel, mark that question answered. Use
-the item ID to change every question in it at once.
+If a decision came through another channel, mark the open question answered
+and use `--via` to record its [source](../reference/cli-and-config.md#classification).
+The question page shows the latest off-Desk source and the time it was marked.
+Any saved Desk answer stays visible. After an off-Desk mark, a previously
+pending Desk answer shows as **Sending stopped**. To send a new Desk decision,
+edit the saved answer.
+Use the item ID to mark every open question in the item. Both forms report
+any answered or closed question they skip.
 
 ```sh
-quarterdeck mark Q7.3 answered
+quarterdeck mark Q7.3 answered --via chat
 quarterdeck mark Q7 closed
 quarterdeck mark Q7.3 open
 ```
+
+Reopen an answered or closed question before recording an off-Desk answer.
+See [Read the report](read-the-report.md) for counts that include earlier marks.
+If a question is reopened between reading it and marking it by hand, use
+`quarterdeck mark Q7.3 open` to restore its Open state.
 
 Closed questions show their saved answers but have no editor. Reopen a closed
 question before editing its answer. See the [CLI reference](../reference/cli-and-config.md#items)

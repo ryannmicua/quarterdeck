@@ -20,6 +20,7 @@ import signal
 import socket
 import ssl
 import stat
+import statistics
 import subprocess
 import sys
 import tempfile
@@ -197,6 +198,59 @@ def write_private_bytes(path: Path, data: bytes) -> None:
 
 
 # --- The item store -----------------------------------------------------------------
+CLASSIFICATION = {
+    "kind": ("pick", "confirm", "rule", "wording", "scope", "approve", "inform"),
+    "tag": ("product-design", "ui", "architecture", "business-rule", "terminology", "process", "bug",
+             "security-privacy", "release", "research"),
+    "via": ("chat", "review-page", "elsewhere", "superseded"),
+}
+DESK = "desk"
+WORD_RE = re.compile(r"[a-z][a-z0-9]*(?:-[a-z0-9]+)*")
+WORD_LIMIT = 30
+TAG_LIMIT = 3
+PROJECT_LIMIT = 40
+
+
+def clean_word(value: object, field: str, *, where: str = "", stored: bool = False) -> str:
+    name = f"{where} {field}" if where else field
+    if not isinstance(value, str) or len(value) > WORD_LIMIT or not WORD_RE.fullmatch(value):
+        raise ValueError(f"{name} must be one lowercase word (up to {WORD_LIMIT} letters, digits and single hyphens)")
+    allowed = CLASSIFICATION[field]
+    if not stored and value not in allowed:
+        raise ValueError(f"unknown {name} {value!r}; allowed: {', '.join(allowed)}")
+    return value
+
+
+def clean_tags(raw: object, where: str, *, stored: bool = False) -> list[str]:
+    if not isinstance(raw, list):
+        raise ValueError(f"{where} tags must be a list")
+    tags = list(dict.fromkeys(clean_word(tag, "tag", where=where, stored=stored) for tag in raw))
+    if len(tags) > TAG_LIMIT:
+        raise ValueError(f"{where} can carry at most {TAG_LIMIT} tags")
+    return tags
+
+
+def clean_project(value: object) -> str:
+    project = clean_text(value, "project", PROJECT_LIMIT)
+    parts = project.split("/")
+    if (len(parts) > 2 or (len(parts) == 2 and any(part in (".", "..") for part in parts))
+            or not all(part and part == part.strip()
+                       and all(character.isalnum() or character in " ._-" for character in part) for part in parts)):
+        raise ValueError("project must be a plain name or owner/name (letters, digits, spaces, hyphens, dots, underscores)")
+    return project
+
+
+def item_classification(raw_project: object, raw_tags: object, *, stored: bool = False) -> dict[str, object]:
+    """The project and tags to store on an item, left out when empty."""
+    fields: dict[str, object] = {}
+    if raw_project is not None:
+        fields["project"] = clean_project(raw_project)
+    tags = clean_tags(raw_tags if raw_tags is not None else [], "item", stored=stored)
+    if tags:
+        fields["tags"] = tags
+    return fields
+
+
 # Item records live in one JSON file. Every item was saved by hand through `quarterdeck add`; its body is stored by value
 # at save time and never read again from anywhere else. An ID is never reused, even after its item is removed.
 
@@ -442,7 +496,8 @@ def item_image_files(item: dict[str, object]) -> set[str]:
     return files
 
 
-def question_entries(raw: object, pending: dict[str, bytes] | None = None) -> list[dict[str, object]]:
+def question_entries(raw: object, pending: dict[str, bytes] | None = None, *,
+                     stored: bool = False) -> list[dict[str, object]]:
     if not isinstance(raw, list) or not raw:
         raise ValueError("questions body must be a non-empty JSON array")
     image_count = 0
@@ -458,7 +513,7 @@ def question_entries(raw: object, pending: dict[str, bytes] | None = None) -> li
         if not isinstance(images, list):
             raise ValueError(f"{where} images must be a list")
         image_count += len(images)
-        unknown = sorted(set(entry) - {"question", "context", "options", "suggestion", "links", "images"})
+        unknown = sorted(set(entry) - {"question", "context", "options", "suggestion", "links", "images", "kind", "tags"})
         if unknown:
             raise ValueError(f"{where} has unsupported field(s): {', '.join(unknown)}")
         choices: list[object] = []
@@ -498,6 +553,11 @@ def question_entries(raw: object, pending: dict[str, bytes] | None = None) -> li
         links = question_links(entry.get("links", []), where)
         if links:
             cleaned["links"] = links
+        if "kind" in entry:
+            cleaned["kind"] = clean_word(entry["kind"], "kind", where=where, stored=stored)
+        tags = clean_tags(entry.get("tags", []), where, stored=stored)
+        if tags:
+            cleaned["tags"] = tags
         if not cleaned["options"] and "suggestion" not in cleaned:
             raise ValueError(f"{where} needs options or a suggestion to decide from")
         questions.append(cleaned)
@@ -506,14 +566,15 @@ def question_entries(raw: object, pending: dict[str, bytes] | None = None) -> li
     return questions
 
 
-def validated_body(kind: str, body: object, pending: dict[str, bytes] | None = None) -> dict[str, object]:
+def validated_body(kind: str, body: object, pending: dict[str, bytes] | None = None, *,
+                   stored: bool = False) -> dict[str, object]:
     if not isinstance(body, dict):
         raise ValueError("body must be an object")
     if kind == "resource":
         return {"url": clean_url(body.get("url")), "link_text": clean_text(body.get("link_text"), "link text", TITLE_LIMIT)}
     if kind == "list":
         return {"entries": list_entries(body.get("entries"))}
-    return {"questions": question_entries(body.get("questions"), pending)}
+    return {"questions": question_entries(body.get("questions"), pending, stored=stored)}
 
 
 def make_body(kind: str, *, url: str | None, link_text: str | None, body: str | None,
@@ -566,9 +627,12 @@ def check_store(data: object) -> dict[str, object]:
                 raise ValueError("saved_at must be a UTC timestamp") from exc
             if timestamp.isoformat() + "Z" != saved_at:
                 raise ValueError("saved_at must be a UTC timestamp")
-            body = validated_body(item["kind"], item.get("body"))
+            body = validated_body(item["kind"], item.get("body"), stored=True)
             if (title, description, body) != (item["title"], item["description"], item["body"]):
                 raise ValueError("item text or body is not in the saved format")
+            if item_classification(item.get("project"), item.get("tags"), stored=True) != {
+                    k: item[k] for k in ("project", "tags") if k in item}:
+                raise ValueError("item project or tags are not in the saved format")
             if "answers" in item:
                 validate_records(item)
         except ValueError as exc:
@@ -677,6 +741,23 @@ def part_record(item, part):
     return item.get("answers", {}).get(str(part), {})
 
 
+DESK_FIELDS = ("answer", "answered_at", "delivery", "request_id")
+
+
+def answer_marks(record):
+    if "answer_marks" in record:
+        return record["answer_marks"]
+    if "answered_at" in record:
+        return [{"via": record.get("via", DESK), "answered_at": record["answered_at"]}]
+    if record.get("state") == "answered":
+        return [{"via": "elsewhere", "answered_at": None}]
+    return []
+
+
+def latest_off_desk_mark(record):
+    return next((mark for mark in reversed(answer_marks(record)) if mark["via"] != DESK), None)
+
+
 def delivery_pending(record):
     return record.get("delivery") == "pending" and record.get("state") != "closed"
 
@@ -692,35 +773,119 @@ def validate_records(item):
         if record.get("state") not in ("open", "answered", "closed") or not re.fullmatch(
                 r"[0-9a-f]{32}", str(record.get("revision"))):
             raise ValueError("invalid question state")
-        if any(k in record for k in ("answer", "answered_at", "delivery", "request_id")):
-            if (clean_text(record.get("answer"), "answer", TEXT_LIMIT, multiline=True) != record["answer"]
-                    or record.get("delivery") not in ("pending", "sent")
+        if any(k in record for k in (*DESK_FIELDS, "via")):
+            via = record.get("via", DESK)
+            if via != DESK:
+                clean_word(via, "via", stored=True)
+                if any(k in record for k in ("answer", "delivery", "request_id")):
+                    raise ValueError("invalid saved answer")
+            elif (clean_text(record.get("answer"), "answer", TEXT_LIMIT, multiline=True) != record["answer"]
+                    or record.get("delivery") not in ("pending", "sent", "cancelled")
                     or not re.fullmatch(r"quarterdeck-[0-9a-f]{32}", str(record.get("request_id")))):
                 raise ValueError("invalid saved answer")
-            datetime.strptime(str(record.get("answered_at")), "%Y-%m-%dT%H:%M:%SZ")
+            parse_utc(record.get("answered_at"))
+        if "answer_marks" in record:
+            marks = record["answer_marks"]
+            if not isinstance(marks, list) or not marks:
+                raise ValueError("invalid answer marks")
+            for mark in marks:
+                if not isinstance(mark, dict) or mark.keys() != {"via", "answered_at"}:
+                    raise ValueError("invalid answer mark")
+                clean_word(mark["via"], "via", stored=True)
+                if mark["answered_at"] is not None or mark["via"] != "elsewhere":
+                    parse_utc(mark["answered_at"])
 
 
-def put_record(item, part, state, **fields):
-    record = {**fields, "state": state, "revision": uuid.uuid4().hex}
+def put_record(item, part, state, *, mark=None, **desk_fields):
+    previous = part_record(item, part)
+    if "answer" in previous and not desk_fields:
+        desk_fields = {k: previous[k] for k in DESK_FIELDS}
+    marks = answer_marks(previous)
+    if mark is not None:
+        marks = [*marks, mark]
+    record = {**desk_fields, "state": state, "revision": uuid.uuid4().hex}
+    if marks:
+        record["answer_marks"] = marks
     item.setdefault("answers", {})[str(part)] = record
     return record
 
 
+def part_numbers(item, target):
+    """The question numbers a command names: one question (Q7.3) or all of an item (Q7)."""
+    parts = question_parts(item)
+    _, dot, part = target.partition(".")
+    if not dot:
+        return list(parts)
+    if not re.fullmatch(r"[1-9][0-9]*", part) or int(part) not in parts:
+        raise ValueError("Unknown question.")
+    return [int(part)]
+
+
 def mark_item(args):
     def action():
-        item_id, dot, part = args.id.partition(".")
+        via = None
+        if args.state == "answered":
+            allowed = CLASSIFICATION["via"]
+            if args.via is None:
+                raise ValueError(f"marking answered needs --via, where the answer came from: {', '.join(allowed)}")
+            via = clean_word(args.via, "via")
+        elif args.via is not None:
+            raise ValueError("--via goes with answered")
+        item_id = args.id.partition(".")[0]
+        messages = []
+        changed = False
+        store = store_path()
+        with locked_store(store):
+            data = read_store(store)
+            item = find_item(data, item_id)
+            for number in part_numbers(item, args.id):
+                previous = part_record(item, number)
+                if via:
+                    state = previous.get("state", "open")
+                    if state != "open":
+                        messages.append(f"{item['id']}.{number} skipped (already {state})")
+                        continue
+                    record = put_record(item, number, "answered", mark={"via": via, "answered_at": now_text()})
+                    if delivery_pending(record):
+                        record["delivery"] = "cancelled"
+                    messages.append(f"{item['id']}.{number} Answered via {via}")
+                else:
+                    put_record(item, number, args.state)
+                changed = True
+            if changed:
+                write_store(store, data)
+        if via:
+            print("\n".join(messages))
+        else:
+            print(f"{args.id.upper()} {args.state.capitalize()}")
+        return 0
+    return run_item_command(action)
+
+
+def classify_item(args):
+    def action():
+        if args.project is None and args.tags is None and args.kind is None:
+            raise ValueError("give at least one of --project, --tag or --kind")
+        item_id, dot, _ = args.id.partition(".")
         with changing_store(store_path()) as data:
             item = find_item(data, item_id)
-            parts = question_parts(item)
             if dot:
-                if not re.fullmatch(r"[1-9][0-9]*", part) or int(part) not in parts:
-                    raise ValueError("Unknown question.")
-                parts = [int(part)]
-            for number in parts:
-                previous = part_record(item, number)
-                put_record(item, number, args.state, **{k: previous[k] for k in
-                           ("answer", "answered_at", "delivery", "request_id") if k in previous})
-        print(f"{args.id.upper()} {args.state.capitalize()}")
+                if args.project is not None:
+                    raise ValueError("a project belongs to the whole item; classify " + item["id"] + " instead")
+                number = part_numbers(item, args.id)[0]
+                question = item["body"]["questions"][number - 1]
+                if args.kind is not None:
+                    question["kind"] = clean_word(args.kind, "kind")
+                if args.tags is not None:
+                    question["tags"] = clean_tags(args.tags, "question")
+            else:
+                if args.kind is not None:
+                    raise ValueError("a kind belongs to one question; classify a question such as " + item["id"] + ".1")
+                if args.project is not None:
+                    item["project"] = clean_project(args.project)
+                if args.tags is not None:
+                    item["tags"] = clean_tags(args.tags, "item")
+        print(f"{args.id.upper()} Classified")
         return 0
     return run_item_command(action)
 
@@ -757,12 +922,14 @@ def send_answer(store, home, payload):
         if state == "closed":
             raise AnswerConflict("Question closed. Reopen it before sending.")
         same = old.get("answer") == answer
-        if not (same and state == "answered") and payload["revision"] != old.get("revision", ""):
+        repeat = same and state == "answered" and old.get("delivery") != "cancelled"
+        if not repeat and payload["revision"] != old.get("revision", ""):
             raise AnswerConflict("Question changed. Reload before sending.")
         if same:
             record = old
         else:
-            record = put_record(item, part, "answered", answer=answer, answered_at=now_text(),
+            at = now_text()
+            record = put_record(item, part, "answered", mark={"via": DESK, "answered_at": at}, answer=answer, answered_at=at,
                                 delivery="pending", request_id="quarterdeck-" + uuid.uuid4().hex)
     # The first transaction commits before the external call. Serialize delivery against edits and reuse its note ID on retries.
     if home and delivery_pending(record):
@@ -790,6 +957,10 @@ def item_text(item: dict[str, object]) -> str:
     item_id, body = str(item["id"]), item["body"]
     lines = [f"{item_id} · {item['title']}", f"{KIND_LABELS[str(item['kind'])]} · saved {saved_day(item)}",
              "", str(item["description"]), ""]
+    if item.get("project"):
+        lines.insert(2, f"Project: {item['project']}")
+    if item.get("tags"):
+        lines.insert(3 if item.get("project") else 2, "Tags: " + ", ".join(item["tags"]))
     if item["kind"] == "resource":
         lines.append(f"{body['link_text']}: {body['url']}")  # type: ignore[index]
     elif item["kind"] == "list":
@@ -800,6 +971,10 @@ def item_text(item: dict[str, object]) -> str:
         lines.extend([f"{state} ({remaining} of {len(question_parts(item))} open)" if remaining else state, ""])
         for number, question in enumerate(body["questions"], 1):  # type: ignore[index]
             lines.append(f"{item_id}.{number}  {question['question']}")
+            if question.get("kind"):
+                lines.append(f"      Kind: {question['kind']}")
+            if question.get("tags"):
+                lines.append("      Tags: " + ", ".join(question["tags"]))
             lines.append(f"      Context: {question['context']}")
             for link in question.get("links", []):
                 lines.append(f"      Link: {link['text']}: {link['url']}")
@@ -811,6 +986,9 @@ def item_text(item: dict[str, object]) -> str:
             lines.append("      " + record.get("state", "open").capitalize())
             if "answer" in record:
                 lines.append(f"      Answer: {record['answer']} ({record['answered_at']}, {delivery_label(record)})")
+            if mark := latest_off_desk_mark(record):
+                at = f" ({mark['answered_at']})" if mark["answered_at"] else ""
+                lines.append(f"      Answered elsewhere: {mark['via']}{at}")
     return "\n".join(lines).rstrip() + "\n"
 
 
@@ -881,7 +1059,7 @@ def add_item(args: argparse.Namespace) -> int:
         item: dict[str, object] = {
             "kind": args.kind, "title": clean_text(args.title, "title", TITLE_LIMIT),
             "description": clean_text(args.description, "description", DESCRIPTION_LIMIT, multiline=True),
-            "saved_at": now_text(), "body": body,
+            "saved_at": now_text(), **item_classification(args.project, args.tags), "body": body,
         }
         store = store_path()
         with locked_store(store):
@@ -926,6 +1104,125 @@ def remove_item(args: argparse.Namespace) -> int:
         except (OSError, ValueError) as exc:
             raise ValueError(f"removed {item['id']} from the store but could not delete its images: {exc}") from exc
         print(f"Removed {item['id']}; its ID is not reused")
+        return 0
+    return run_item_command(action)
+
+
+# --- Report -------------------------------------------------------------------------------
+# Counts questions by kind, tag and project. A question's tags are its own plus its item's.
+# It reads only the store and never decides whether anything was answered elsewhere.
+
+UNCLASSIFIED = "(unclassified)"
+
+
+def parse_utc(text: object) -> datetime:
+    return datetime.strptime(str(text), "%Y-%m-%dT%H:%M:%SZ").replace(tzinfo=timezone.utc)
+
+
+def question_facts(data: dict[str, object], since: str | None) -> list[dict[str, object]]:
+    facts = []
+    for item in data["items"]:  # type: ignore[union-attr]
+        if item["kind"] != "questions":
+            continue
+        saved_at = parse_utc(item["saved_at"])
+        saved = since is None or saved_day(item) >= since
+        for number, question in enumerate(item["body"]["questions"], 1):
+            record = part_record(item, number)
+            state = record.get("state", "open")
+            sources, desk_waits = set(), []
+            for mark in answer_marks(record):
+                timestamp = mark["answered_at"]
+                if timestamp is None:
+                    if since is None:
+                        sources.add(mark["via"])
+                    continue
+                at = parse_utc(timestamp)
+                if since is not None and at.date().isoformat() < since:
+                    continue
+                sources.add(mark["via"])
+                if mark["via"] == DESK:
+                    desk_waits.append(max(0, int((at - saved_at).total_seconds())))
+            if saved or sources:
+                facts.append({
+                    "kind": question.get("kind"), "project": item.get("project"), "state": state,
+                    "tags": list(dict.fromkeys([*question.get("tags", []), *item.get("tags", [])])),
+                    "saved": saved, "sources": sources, "desk_waits": desk_waits,
+                })
+    return facts
+
+
+def summarize(facts: list[dict[str, object]]) -> dict[str, object]:
+    desk_waits = [wait for fact in facts for wait in fact["desk_waits"]]
+    return {
+        "saved": sum(1 for fact in facts if fact["saved"]),
+        "answered_desk": sum(1 for fact in facts if DESK in fact["sources"]),
+        "answered_elsewhere": sum(1 for fact in facts if fact["sources"] - {DESK}),
+        "via": {value: sum(1 for fact in facts if value in fact["sources"]) for value in CLASSIFICATION["via"]},
+        "open": sum(1 for fact in facts if fact["state"] == "open"),
+        "closed": sum(1 for fact in facts if fact["state"] == "closed"),
+        "median_wait_desk_seconds": statistics.median(desk_waits) if desk_waits else None,
+    }
+
+
+def build_report(data: dict[str, object], since: str | None) -> dict[str, object]:
+    facts = question_facts(data, since)
+    groups: dict[str, dict[str, list[dict[str, object]]]] = {"by_kind": {}, "by_tag": {}, "by_project": {}}
+    for fact in facts:
+        groups["by_kind"].setdefault(fact["kind"] or UNCLASSIFIED, []).append(fact)
+        groups["by_project"].setdefault(fact["project"] or UNCLASSIFIED, []).append(fact)
+        for tag in fact["tags"] or [UNCLASSIFIED]:  # type: ignore[union-attr]
+            groups["by_tag"].setdefault(tag, []).append(fact)
+    report: dict[str, object] = {"since": since, "via_values": list(CLASSIFICATION["via"]), "total": summarize(facts)}
+    for name, group in groups.items():
+        report[name] = {key: summarize(group[key]) for key in sorted(group, key=lambda k: (k == UNCLASSIFIED, k))}
+    return report
+
+
+def wait_text(seconds: object) -> str:
+    if seconds is None:
+        return "none"
+    minutes = int(seconds) // 60  # type: ignore[call-overload]
+    days, rest = divmod(minutes, 1440)
+    hours, minutes = divmod(rest, 60)
+    if days:
+        return f"{days}d {hours}h"
+    return f"{hours}h {minutes}m" if hours else f"{minutes}m"
+
+
+def report_table(title: str, rows: dict[str, dict[str, object]]) -> list[str]:
+    heads = [title, "Saved", "Desk", *(value.replace("-", " ").capitalize() for value in CLASSIFICATION["via"]),
+             "Open", "Closed", "Median Desk wait"]
+    table = [heads] + [[label, *(str(v) for v in (r["saved"], r["answered_desk"], *r["via"].values(),  # type: ignore[union-attr]
+                                                  r["open"], r["closed"])), wait_text(r["median_wait_desk_seconds"])] for label, r in rows.items()]
+    widths = [max(len(row[column]) for row in table) for column in range(len(heads))]
+    return ["  ".join(cell.ljust(widths[0]) if column == 0 else cell.rjust(widths[column])
+                      for column, cell in enumerate(row)).rstrip() for row in table]
+
+
+def report_text(report: dict[str, object]) -> str:
+    since = report["since"]
+    lines = [f"Question activity since {since}" if since else "All saved questions"]
+    if not report["by_kind"]:
+        return lines[0] + "\nNo questions saved.\n"
+    for title, key in (("All", "total"), ("Kind", "by_kind"), ("Tag", "by_tag"), ("Project", "by_project")):
+        rows = {"All questions": report[key]} if key == "total" else report[key]  # type: ignore[dict-item]
+        lines += ["", *report_table(title, rows)]  # type: ignore[arg-type]
+    return "\n".join(lines) + "\n"
+
+
+def show_stats(args: argparse.Namespace) -> int:
+    def action() -> int:
+        since = None
+        if args.since is not None:
+            try:
+                since = datetime.strptime(args.since, "%Y-%m-%d").strftime("%Y-%m-%d")
+            except ValueError as exc:
+                raise ValueError("--since must be a date such as 2026-11-01") from exc
+        store = store_path()
+        with locked_store(store, read_only=True):
+            data = read_store(store)
+        report = build_report(data, since)
+        print(json.dumps(report, indent=2) if args.as_json else report_text(report), end="" if not args.as_json else "\n")
         return 0
     return run_item_command(action)
 
@@ -1165,7 +1462,7 @@ h3 { margin: .3rem 0; font-size: 1.55rem; line-height: 1.25; }
 .progress { margin-bottom:.4rem; }
 button { cursor:pointer; background:var(--raised); color:var(--ink); border:1px solid var(--soft);
   border-radius:5px; padding:.5rem .85rem; min-height:44px; font-size:1rem; max-width:100%; overflow-wrap:anywhere; }
-button[hidden] { display:none; }
+button[hidden], table.items tr[hidden], .desk .work[hidden] { display:none; }
 button.primary { color:var(--raised); background:var(--ink); }
 button:disabled, button[aria-disabled="true"] { opacity:.55; cursor:default; }
 :focus-visible { outline:3px solid var(--focus); outline-offset:2px; }
@@ -1221,7 +1518,19 @@ table.items td.when { white-space:normal; }
 .status.exception { color:var(--signal); background:var(--signal-ground); border-color:var(--signal); }
 .failed { color:var(--signal); }
 #workers h3 { font:700 var(--text-md)/1.3 var(--sans); margin:1.4rem 0 0; }
+.tags { display:flex; flex-wrap:wrap; gap:.3rem .5rem; list-style:none; margin:.35rem 0 0; padding:0; font-family:var(--sans); }
+.tags li { font-size:var(--text-sm); color:var(--soft); border:1px solid var(--rule); border-radius:5px; padding:.05rem .5rem; }
+.desk .work > .tags { grid-column:1; padding-inline-start:0; margin:.5rem 0 0; }
+.project-name { color:var(--soft); font-size:var(--text-sm); font-weight:400; }
+.group-name { font:700 var(--text-md)/1.3 var(--sans); margin:1.4rem 0 .3rem; color:var(--soft); }
+.filters { display:flex; flex-wrap:wrap; gap:.6rem 1.2rem; align-items:end; margin:.6rem 0; font-family:var(--sans); }
+.filters label { display:flex; flex-direction:column; gap:.2rem; font-size:var(--text-sm); color:var(--soft); }
+.filters select { min-height:var(--tap); min-width:min(100%,12rem); max-width:100%; font:var(--text-md)/1.3 var(--sans); padding:.4rem .6rem;
+  background:var(--raised); color:var(--ink); border:1px solid var(--soft); border-radius:5px; }
+.saved-answer .record:empty { display:none; }
+table.items td.project { white-space:normal; }
 @media (max-width: 40rem) {
+  table.items td.project { display:inline; color:var(--soft); margin-right:.6rem; }
   .desk .work { grid-template-columns:minmax(0,1fr); }
   .desk .work > .actions { grid-column:1; grid-row:auto; justify-content:flex-start; margin-top:.6rem; }
 }
@@ -1230,7 +1539,7 @@ table.items td.when { white-space:normal; }
 
 TIME_SCRIPT = """
 const localTime = dateTime => new Date(dateTime).toLocaleString(undefined, {dateStyle:'medium', timeStyle:'short'});
-for (const time of document.querySelectorAll('.saved-answer time[datetime]:not([datetime=""])')) {
+for (const time of document.querySelectorAll('.saved-answer time[datetime]:not([datetime=""]), .answer-source time')) {
   time.textContent = localTime(time.dateTime);
 }
 """
@@ -1377,12 +1686,74 @@ def linked_text(value: object) -> str:
     return "".join(parts) + esc(text[last:])
 
 
+FILTER_SCRIPT = """
+for (const bar of document.querySelectorAll('.filters')) {
+  const list = document.getElementById(bar.dataset.list);
+  const projectSelect = bar.querySelector('[name="project"]');
+  const tagSelect = bar.querySelector('[name="tag"]');
+  const none = document.getElementById(bar.dataset.list + '-empty');
+  const apply = () => {
+    const project = projectSelect?.value;
+    const tag = tagSelect?.value;
+    let shown = 0;
+    for (const entry of list.querySelectorAll('[data-project]')) {
+      const ok = (!project || entry.dataset.project === project) && (!tag || entry.dataset.tags.split('|').includes(tag));
+      entry.hidden = !ok;
+      if (ok) shown += 1;
+    }
+    none.hidden = shown > 0;
+  };
+  bar.addEventListener('change', apply);
+}
+"""
+
+
+def tag_text(tag: str) -> str:
+    return tag.replace("-", " ")
+
+
+def tag_labels(tags: list[str]) -> str:
+    return '<ul class="tags">' + "".join(f"<li>{esc(tag_text(tag))}</li>" for tag in tags) + "</ul>" if tags else ""
+
+
+def all_tags(item) -> list[str]:
+    """An item's tags, then those of its questions."""
+    tags = list(item.get("tags", []))
+    if item["kind"] == "questions":
+        for question in item["body"]["questions"]:
+            tags.extend(question.get("tags", []))
+    return list(dict.fromkeys(tags))
+
+
+def filter_data(item) -> str:
+    return f' data-project="{esc(item.get("project", ""))}" data-tags="{esc("|".join(all_tags(item)))}"'
+
+
+def filter_bar(list_id: str, items) -> str:
+    """Show distinct project choices and every tag in use."""
+    project_values = {item.get("project", "") for item in items}
+    projects = sorted(project_values - {""}, key=str.casefold) if len(project_values) > 1 else []
+    tags = sorted({tag for item in items for tag in all_tags(item)})
+    fields = ""
+    for label, name, values in (("Project", "projects", projects), ("Tag", "tags", tags)):
+        if values:
+            options = "".join(f'<option value="{esc(v)}">{esc(tag_text(v) if name == "tags" else v)}</option>' for v in values)
+            fields += f'<label>{label}<select name="{label.lower()}"><option value="">(All {name})</option>{options}</select></label>'
+    if not fields:
+        return ""
+    return (f'<div class="filters" data-list="{list_id}">{fields}</div>')
+
+
+def no_match(list_id: str) -> str:
+    return f'<p class="empty no-match" id="{list_id}-empty" hidden>Nothing matches these filters.</p>'
+
+
 def item_page_name(item_id: str) -> str:
     return f"{item_id.lower()}.html"
 
 
 def page_shell(title: str, site_title: str, body: str, *, served: bool, saved_name: str, interactive: bool = False,
-               workers: bool = False) -> str:
+               workers: bool = False, filters: bool = False) -> str:
     saved_href = quote(saved_name, safe="")
     links = (
         '<link rel="manifest" href="manifest.webmanifest">\n  <link rel="icon" href="icon.svg" type="image/svg+xml">\n'
@@ -1394,24 +1765,28 @@ def page_shell(title: str, site_title: str, body: str, *, served: bool, saved_na
         f"  {GENERATED_MARKER}\n  <title>{esc(title)}</title>\n  {links}<style>{PAGE_CSS}</style>\n</head>\n<body>\n"
         f'<header class="bar"><a class="mark" href="{saved_href}">{esc(site_title)}</a>'
         f'<nav><a href="{saved_href}">Saved</a></nav></header>\n'
-        f"<main>\n{body}\n</main><script>{TIME_SCRIPT}{ANSWER_SCRIPT if interactive else ''}{WORKERS_SCRIPT if workers else ''}</script>\n</body>\n</html>\n"
+        f"<main>\n{body}\n</main><script>{TIME_SCRIPT}{ANSWER_SCRIPT if interactive else ''}{WORKERS_SCRIPT if workers else ''}{FILTER_SCRIPT if filters else ''}</script>\n</body>\n</html>\n"
     )
 
 
 def items_table(items: list[dict[str, object]]) -> str:
+    projects = any(item.get("project") for item in items)
     rows = "".join(
-        f'<tr><td class="id">{esc(item["id"])}</td><td class="kind">{esc(KIND_LABELS[str(item["kind"])])}</td>'
-        f'<td class="title"><a href="{item_page_name(str(item["id"]))}">{esc(item["title"])}</a></td>'
+        f'<tr{filter_data(item)}><td class="id">{esc(item["id"])}</td><td class="kind">{esc(KIND_LABELS[str(item["kind"])])}</td>'
+        + (f'<td class="project">{esc(item.get("project", ""))}</td>' if projects else '')
+        + f'<td class="title"><a href="{item_page_name(str(item["id"]))}">{esc(item["title"])}</a>{tag_labels(all_tags(item))}</td>'
         f'<td class="description">{linked_text(item["description"])}</td>'
         f'<td class="when"><time datetime="{esc(item["saved_at"])}">{esc(saved_day(item))}</time></td></tr>'
         for item in items
     )
-    return ('<table class="items"><thead><tr><th scope="col">ID</th><th scope="col">Kind</th><th scope="col">Title</th>'
-            f'<th scope="col">Description</th><th scope="col">Saved</th></tr></thead><tbody>{rows}</tbody></table>')
+    return ('<table class="items"><thead><tr><th scope="col">ID</th><th scope="col">Kind</th>'
+            + ('<th scope="col">Project</th>' if projects else '')
+            + '<th scope="col">Title</th>'
+            f'<th scope="col">Description</th><th scope="col">Saved</th></tr></thead><tbody id="references-list">{rows}</tbody></table>')
 
 
 def delivery_label(record):
-    return "Sent" if record["delivery"] == "sent" else "Not delivered"
+    return {"sent": "Sent", "pending": "Not delivered", "cancelled": "Sending stopped"}[record["delivery"]]
 
 
 def question_summary(item) -> tuple[str, list[int], bool]:
@@ -1422,7 +1797,7 @@ def question_summary(item) -> tuple[str, list[int], bool]:
     return state, open_parts, pending
 
 
-def question_card(item, summary, *, served, primary):
+def question_card(item, summary, *, served, primary, show_project=True):
     state, open_parts, pending = summary
     remaining = len(open_parts)
     href = item_page_name(item["id"])
@@ -1436,9 +1811,11 @@ def question_card(item, summary, *, served, primary):
     first_link = next((link_html(questions[n - 1]["links"][0], prefix=f'{item["id"]}.{n} ')
                        for n in open_parts if questions[n - 1].get("links")), '')
     visual = f'<p class="visual">{first_link}</p>' if first_link else ''
-    return (f'<article class="work{' next' if primary else ''}"><div class="eyebrow"><span class="id">{item["id"]}</span> Questions</div>'
+    project = f' <span class="project-name">{esc(item["project"])}</span>' if show_project and item.get("project") else ""
+    return (f'<article class="work{' next' if primary else ''}"{filter_data(item)}><div class="eyebrow"><span class="id">{item["id"]}</span> Questions{project}</div>'
             f'<h3>{esc(item["title"])}</h3><p>{linked_text(item["description"])}</p>'
             + (f'<ul>{prompts}</ul>' if prompts else '')
+            + tag_labels(all_tags(item))
             + visual
             + f'<div class="actions"><span class="badge">{progress}</span>'
             + ('<span>Not delivered</span>' if pending else '')
@@ -1524,6 +1901,10 @@ def question_form(item, served):
             saved = (f'<div class="saved-answer"{hidden}><p class="record">{esc(answer)}</p>'
                      f'<p class="meta"><span class="delivery">{delivery}</span> '
                      f'<time datetime="{at}">{at}</time></p></div>')
+        if elsewhere := latest_off_desk_mark(record):
+            at = esc(elsewhere["answered_at"]) if elsewhere["answered_at"] else ""
+            time = f' <time datetime="{at}">{at}</time>' if at else ""
+            saved += f'<p class="meta answer-source">Answered elsewhere · {esc(elsewhere["via"])}{time}</p>'
         editor = ""
         if editable:
             editor = (f' data-revision="{esc(record.get("revision", ""))}"'
@@ -1546,7 +1927,9 @@ def question_form(item, served):
             if question.get("suggestion"):
                 controls += f'<p><strong>Suggested answer</strong><br>{linked_text(question["suggestion"])}</p>'
         cards.append(f'<section class="decision" id="{part}" aria-labelledby="title-{part}"{editor}>'
-                     f'<div class="eyebrow"><span class="id">{part}</span><span class="badge">{status.capitalize()}</span></div>'
+                     f'<div class="eyebrow"><span class="id">{part}</span><span class="badge">{status.capitalize()}</span>'
+                     f'{f"<span>{esc(question['kind'].capitalize())}</span>" if question.get("kind") else ""}</div>'
+                     f'{tag_labels(question.get("tags", []))}'
                      f'<h2 id="title-{part}">{linked_text(question["question"])}</h2><p>{linked_text(question["context"])}</p>'
                      f'{question_shots(item, question)}{saved}{controls}</section>')
     total = len(cards)
@@ -1647,7 +2030,7 @@ if (send) {
 
     const saved = section.querySelector('.saved-answer');
     saved.querySelector('.record').textContent = record.answer;
-    saved.querySelector('.delivery').textContent = record.delivery === 'sent' ? 'Sent' : 'Not delivered';
+    saved.querySelector('.delivery').textContent = {sent: 'Sent', pending: 'Not delivered', cancelled: 'Sending stopped'}[record.delivery];
     const time = saved.querySelector('time');
     time.dateTime = record.answered_at;
     time.textContent = localTime(record.answered_at);
@@ -1705,7 +2088,6 @@ def list_page(data: dict[str, object], site_title: str, *, served: bool, saved_n
     items = newest_first(data["items"])  # type: ignore[arg-type]
     empty = "Nothing is saved yet. Ask Firstmate to send something to Quarterdeck: a link, a list or open questions."
     attention, reviewed, references = [], [], []
-    primary = None
     for item in items:
         if item["kind"] != "questions":
             references.append(item)
@@ -1713,30 +2095,46 @@ def list_page(data: dict[str, object], site_title: str, *, served: bool, saved_n
         summary = question_summary(item)
         _, open_parts, pending = summary
         (attention if open_parts or pending else reviewed).append((item, summary))
-        if open_parts and primary is None:
-            primary = item
+    # With more than one project on the Desk, its cards group by project, the group holding the newest item first.
+    projects = list(dict.fromkeys(item.get("project", "") for item, _ in attention))
+    grouped = len(projects) > 1
+    primary = next((item for item, summary in attention if summary[1]), None)
     body = ""
 
-    def desk(group) -> str:
-        cards = "".join(question_card(item, summary, served=served, primary=item is primary) for item, summary in group)
-        return f'<div class="desk">{cards}</div>'
+    def desk(group, *, list_id: str = "", show_project: bool = True) -> str:
+        cards = "".join(question_card(item, summary, served=served, primary=item is primary, show_project=show_project)
+                        for item, summary in group)
+        return f'<div class="desk"{f' id="{list_id}"' if list_id else ""}>{cards}</div>'
 
     if attention:
-        body += "<h1>My desk</h1>" + desk(attention)
+        body += "<h1>My desk</h1>"
+        if grouped:
+            for project in projects:
+                members = [pair for pair in attention if pair[0].get("project", "") == project]
+                body += f'<h2 class="group-name">{esc(project or "(No project)")}</h2>' + desk(members, show_project=False)
+        else:
+            body += desk(attention)
     elif served:
         nothing = empty if not items else "Nothing is waiting for you. Saved questions that need an answer show here."
         body += f'<h1>My desk</h1><p class="empty">{esc(nothing)}</p>'
     if served:
         body += workers_section(workers)
+    filters = False
     if reviewed:
         level = 2 if body else 1
-        body += f"<h{level}>Reviewed questions</h{level}>" + desk(reviewed)
+        bar = filter_bar("reviewed-list", [item for item, _ in reviewed])
+        filters = filters or bool(bar)
+        body += (f"<h{level}>Reviewed questions</h{level}>" + bar + desk(reviewed, list_id="reviewed-list")
+                 + (no_match("reviewed-list") if bar else ""))
     if references:
         level = 2 if body else 1
-        body += f"<h{level}>References</h{level}>" + items_table(references)
+        bar = filter_bar("references-list", references)
+        filters = filters or bool(bar)
+        body += f"<h{level}>References</h{level}>" + bar + items_table(references) + (no_match("references-list") if bar else "")
     if not items and not served:
         body = f'<h1>Saved</h1><p class="empty">{esc(empty)}</p>'
-    return page_shell(site_title, site_title, body, served=served, saved_name=saved_name, workers=served and workers)
+    return page_shell(site_title, site_title, body, served=served, saved_name=saved_name, workers=served and workers,
+                      filters=filters)
 
 
 def item_body_html(item: dict[str, object]) -> str:
@@ -1756,8 +2154,9 @@ def item_page(item: dict[str, object], site_title: str, *, served: bool, saved_n
     content = question_form(item, served) if item["kind"] == "questions" else item_body_html(item)
     body = (
         f'<p class="id">{esc(item_id)}</p><h1>{esc(item["title"])}</h1>'
-        f'<p class="meta">{esc(KIND_LABELS[str(item["kind"])])} · saved <time datetime="{esc(item["saved_at"])}">'
-        f'{esc(saved_day(item))}</time></p>'
+        f'<p class="meta">{esc(KIND_LABELS[str(item["kind"])])}{" · " + esc(item["project"]) if item.get("project") else ""}'
+        f' · saved <time datetime="{esc(item["saved_at"])}">{esc(saved_day(item))}</time></p>'
+        f'{tag_labels(list(item.get("tags", [])))}'
         f'<p class="lead">{linked_text(item["description"])}</p>{content}'
     )
     return page_shell(f"{item_id} {item['title']} · {site_title}", site_title, body,
@@ -2362,7 +2761,9 @@ def url(args: argparse.Namespace) -> int:
 
 COMMAND_DOCS = {
     "mark": ["how-to/read-answers.md", "reference/item-store.md"],
-    "add": ["how-to/save-items.md", "reference/cli-and-config.md", "reference/item-store.md"],
+    "classify": ["how-to/classify-items.md", "reference/cli-and-config.md", "reference/item-store.md"],
+    "stats": ["how-to/read-the-report.md", "reference/cli-and-config.md"],
+    "add": ["how-to/save-items.md", "how-to/classify-items.md", "reference/cli-and-config.md", "reference/item-store.md"],
     "list": ["how-to/save-items.md", "reference/cli-and-config.md"],
     "show": ["how-to/read-answers.md", "how-to/save-items.md", "reference/cli-and-config.md"],
     "remove": ["how-to/save-items.md", "reference/cli-and-config.md"],
@@ -2417,7 +2818,7 @@ def show_help(args: argparse.Namespace) -> int:
 # --- command line -------------------------------------------------------------------------
 
 KIND_HELP = ("resource (a link: --url and --link-text), list (one entry per non-blank line), "
-             "questions (a JSON array of {question, context, options, suggestion, links, images}; "
+             "questions (a JSON array of {question, context, options, suggestion, links, images, kind, tags}; "
              "links is a list of {text, url} shown above the options; an option may be "
              "{label, image}, and an image is {path, alt}, copied into the private store when saved)")
 
@@ -2453,6 +2854,9 @@ def make_parser() -> argparse.ArgumentParser:
     add.add_argument("--description", required=True, help="one or two sentences: what it is and why it was saved")
     add.add_argument("--url", help="a resource's http(s) address")
     add.add_argument("--link-text", help="a resource's link text")
+    add.add_argument("--project", help="the item's project name or owner/name repository")
+    add.add_argument("--tag", dest="tags", action="append", metavar="TAG",
+                     help=f"a lowercase topic tag, repeatable, up to {TAG_LIMIT}; allowed: {', '.join(CLASSIFICATION['tag'])}")
     add.add_argument("--body-file", metavar="PATH", help="the body of a list or questions; - reads standard input. Questions may carry PNG, JPEG or still WebP images "
                                                           "(up to 5 MB each) that are copied in when saved")
 
@@ -2462,9 +2866,28 @@ def make_parser() -> argparse.ArgumentParser:
     show.add_argument("id", help="item ID, such as Q7")
 
     mark = command("mark", "mark questions answered, closed or open",
-                   "Set the state of a question (Q7.3) or every question in an item (Q7).", mark_item)
+                   "Set the state of a question (Q7.3) or every question in an item (Q7). Marking answered records an "
+                   "answer given somewhere other than the page, requires --via, and skips questions that are already "
+                   "answered or closed.", mark_item)
     mark.add_argument("id", help="question or item ID")
     mark.add_argument("state", choices=("answered", "closed", "open"))
+    mark.add_argument("--via", metavar="WHERE", help=f"with answered: lowercase answer source ({', '.join(CLASSIFICATION['via'])})")
+
+    classify = command("classify", "set an item's or question's classification",
+                       "Set or replace the project and tags of an item (Q7), or the kind and tags of one question (Q7.3), "
+                       "without touching its content or answers. Options you leave out stay as they are.", classify_item)
+    classify.add_argument("id", help="item ID such as Q7, or question ID such as Q7.3")
+    classify.add_argument("--project", help="the item's project name or owner/name repository (item IDs only)")
+    classify.add_argument("--tag", dest="tags", action="append", metavar="TAG",
+                          help=f"a lowercase tag, repeatable, up to {TAG_LIMIT}; replaces the tags already there")
+    classify.add_argument("--kind", help=f"a question's lowercase kind (question IDs only; allowed: {', '.join(CLASSIFICATION['kind'])})")
+
+    stats = command("stats", "count questions by kind, tag and project",
+                    "Print, by kind, by tag and by project: questions saved, answered on the Desk, answered elsewhere "
+                    "(by source), still open, closed, and the median wait for answers given on the Desk.", show_stats)
+    stats.add_argument("--since", metavar="DATE", help="include saves and dated answers on or after this UTC date, such as 2026-11-01")
+    stats.add_argument("--json", dest="as_json", action="store_true",
+                       help="print structured counts, including the off-Desk total, and median waits in seconds")
 
     remove = command("remove", "delete an item", "Delete an item. Its ID is never given to another item.", remove_item)
     remove.add_argument("id", help="item ID, such as Q7")

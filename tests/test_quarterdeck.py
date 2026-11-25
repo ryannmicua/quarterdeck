@@ -434,7 +434,7 @@ class QuestionLinkTests(StoreCase):
                  ("Q1.3", "closed", None), ("Q1.3", "open", later), ("Q1.2", "open", first)]
         for part, state, expected in cases:
             with self.subTest(part=part, state=state):
-                self.assertEqual(self.run_cli("mark", part, state)[0], 0)
+                self.assertEqual(self.run_cli("mark", part, state, *(["--via", "chat"] if state == "answered" else []))[0], 0)
                 data = quarterdeck.read_store(quarterdeck.store_path())
                 page = quarterdeck.site_pages(data, "Quarterdeck", "index.html")["index.html"]
                 for label in (first, later):
@@ -829,7 +829,7 @@ const sendBatch = () => new Promise(resolve => {
         self.assertEqual(self.post_answer(port, "Q1.1", "Wait for low tide")[0], 200)
         self.assertEqual(self.post_answer(port, "Q1.6", "Ask the harbourmaster")[0], 200)
         for part, state in (("Q1.5", "answered"), ("Q1.6", "open"), ("Q1.7", "closed")):
-            self.assertEqual(self.run_cli("mark", part, state)[0], 0)
+            self.assertEqual(self.run_cli("mark", part, state, *(["--via", "chat"] if state == "answered" else []))[0], 0)
         self.check_answer_page(port, """
 typeAnswer(2, 'Wait for the pilot');
 card(3).querySelector('input[data-choice="Hold"]').click();
