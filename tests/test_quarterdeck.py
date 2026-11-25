@@ -5668,22 +5668,42 @@ class TalkToFirstmateTests(ImageCase):
                                       "--link-text", "Plan", "--url", "https://example.com/plan",
                                       "--image", str(self.red), "--alt", "A red quay")
         self.assertEqual((code, out, err), (0, "Q1\n", ""))
-        self.assertEqual(self.run_cli("post", "q1", "--text", "Halfway there.")[1:], ("Q1 Updated\n", ""))
-        first, update = self.thread()
+        (first,) = self.thread()
         self.assertEqual((first["author"], first["read"], "ask" in first, first["links"][0]["text"]), ("firstmate", False, False, "Plan"))
         self.assertNotIn("home", first)
         self.assertTrue((quarterdeck.store_path().parent / "reply-images" / "q1" / first["images"][0]["file"]).is_file())
+
+        port = self.start("/qd", ask_home=home)
+        self.assertEqual(self.post(port, "/qd/replies/read", {"part": "Q1", "ids": [first["id"]]})[0], 200)
+        status, page, _ = self.fetch(port, "/qd/")
+        self.assertEqual(status, 200)
+        self.assertNotIn('<div class="desk"><table>', page)
+        self.assertIn('href="q1.html"', page)
+
+        code, out, err = self.run_cli("post", "q1", "--text", "Halfway there.",
+                                      "--link-text", "Progress", "--url", "https://example.com/progress",
+                                      "--image", str(self.blue), "--alt", "A blue quay")
+        self.assertEqual((code, out, err), (0, "Q1 Updated\n", ""))
+        _, update = self.thread()
         self.assertEqual((update["text"], update["read"], "ask" in update), ("Halfway there.", False, False))
+        self.assertEqual(update["links"], [{"text": "Progress", "url": "https://example.com/progress"}])
+        self.assertEqual(update["images"][0]["alt"], "A blue quay")
+        self.assertTrue((quarterdeck.store_path().parent / "reply-images" / "q1" / update["images"][0]["file"]).is_file())
+        status, page, _ = self.fetch(port, "/qd/")
+        self.assertEqual(status, 200)
+        desk = page.partition('<div class="desk"><table>')[2].partition("</table>")[0]
+        rows = [row for row in re.findall(r"<tr\b[^>]*>.*?</tr>", desk, re.DOTALL) if 'href="q1.html"' in row]
+        self.assertEqual(len(rows), 1)
+        self.assertIn('<span class="badge">Replied</span>', rows[0])
+
         shown = self.run_cli("show", "Q1")[1]
         self.assertEqual(shown.count("Update"), 2)
         self.assertNotIn("In reply to", shown)
-        port = self.start("/qd", ask_home=home)
         page = self.fetch(port, "/qd/q1.html")[1]
         self.assertEqual(page.count("Firstmate update"), 2)
         self.assertNotIn("In reply to", page)
         self.assertIn('id="send-message"', page)
-        self.assertIn("Replied", self.fetch(port, "/qd/")[1])
-        self.assertEqual(self.post(port, "/qd/replies/read", {"part": "Q1", "ids": [first["id"], update["id"]]})[0], 200)
+        self.assertEqual(self.post(port, "/qd/replies/read", {"part": "Q1", "ids": [update["id"]]})[0], 200)
         self.assertFalse(any(m["read"] is False for m in self.thread()))
         self.assertFalse((home / "notes").exists())
         # The owner continues it as any conversation, and Firstmate replies to that message as usual.

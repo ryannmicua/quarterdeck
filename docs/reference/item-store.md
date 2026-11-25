@@ -147,9 +147,9 @@ item folders in place. `add` and `render` preserve saved image files.
 
 See the [supported umask](../how-to/save-items.md#known-limits).
 
-A failed `add` or `reply`, or an interrupted `remove`, can leave files that no item names.
+A failed `add`, `reply`, `post` or `converse`, or an interrupted `remove`, can leave files that no item names.
 Retrying does not clean them up. Where the destination does not support hard
-links, an interrupted image write during `add`, `reply`, or `render` can leave a partial
+links, an interrupted image write during `add`, `reply`, `post`, `converse` or `render` can leave a partial
 file. Delete that partial file by hand before retrying the write. See the
 [serving boundary](../explanation/privacy-and-architecture.md#what-quarterdeck-reads-and-writes)
 and [export behavior](cli-and-config.md#rendered-images).

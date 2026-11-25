@@ -39,6 +39,9 @@ uppercase form.
 `XDG_STATE_HOME` if it uses a custom state directory. For `converse`,
 `--config FILE` selects the settings file, and `XDG_STATE_HOME` selects the state directory.
 
+Before using `post` or `converse`, [update Quarterdeck and restart the live server](../how-to/update.md)
+so it can read standalone updates in the item store.
+
 | Command | What it does |
 | --- | --- |
 | `add` | Saves a new item and prints its ID. A `resource` needs `--url` and `--link-text`. A `list` or `questions` item needs `--body-file`. See [the input formats and examples](../how-to/save-items.md#add-an-item) and [how to classify items and questions when saving](../how-to/classify-items.md#classify-when-you-save). |

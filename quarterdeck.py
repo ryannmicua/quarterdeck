@@ -4743,6 +4743,12 @@ def make_parser() -> argparse.ArgumentParser:
     show = command("show", "show one item in full", "Show one item in full, with its parts numbered (Q7.1, Q7.2, ...).", show_item)
     show.add_argument("id", help="item ID, such as Q7")
 
+    def attachment_options(sub: argparse.ArgumentParser) -> None:
+        sub.add_argument("--link-text", action="append", metavar="TEXT", help="the words of a link; repeat for more links")
+        sub.add_argument("--url", action="append", metavar="URL", help="the http(s) address for the matching --link-text")
+        sub.add_argument("--image", action="append", metavar="PATH", help="a PNG, JPEG or still WebP file (up to 5 MB) copied into the private store; repeat for more")
+        sub.add_argument("--alt", action="append", metavar="TEXT", help="alt text that describes the matching --image")
+
     reply = command("reply", "add Firstmate's reply to an ask or a conversation message",
                     "Add Firstmate's reply under an ask on a question item (Q7) or one question (Q7.1), or under a message in a "
                     "conversation started with Talk to Firstmate (an inbox note that begins CONVERSATION; reply to its item ID, "
@@ -4751,28 +4757,19 @@ def make_parser() -> argparse.ArgumentParser:
     reply.add_argument("id", help="item or question ID, such as Q7 or Q7.1; a conversation's item ID, such as Q12")
     reply.add_argument("--ask", required=True, metavar="ID", help="the ask or message ID from the inbox note")
     reply.add_argument("--text", required=True, help="the reply")
-    reply.add_argument("--link-text", action="append", metavar="TEXT", help="the words of a link; repeat for more links")
-    reply.add_argument("--url", action="append", metavar="URL", help="the http(s) address for the matching --link-text")
+    attachment_options(reply)
     reply.add_argument("--clarify", action="append", metavar="Q7.1=TEXT",
                        help="on a reply to the whole item: context that now shows at that question; repeat for more questions")
     reply.add_argument("--option-changed", action="append", metavar="Q7.1",
                        help="with --clarify for the same question: an option really changed, so the owner reviews a draft before sending")
-    reply.add_argument("--image", action="append", metavar="PATH", help="a PNG, JPEG or still WebP file (up to 5 MB) copied into the private store; repeat for more")
-    reply.add_argument("--alt", action="append", metavar="TEXT", help="alt text that describes the matching --image")
-
-    def media(sub):
-        sub.add_argument("--text", required=True, help="the message")
-        sub.add_argument("--link-text", action="append", metavar="TEXT", help="the words of a link; repeat for more links")
-        sub.add_argument("--url", action="append", metavar="URL", help="the http(s) address for the matching --link-text")
-        sub.add_argument("--image", action="append", metavar="PATH", help="a PNG, JPEG or still WebP file (up to 5 MB) copied into the private store; repeat for more")
-        sub.add_argument("--alt", action="append", metavar="TEXT", help="alt text that describes the matching --image")
 
     post = command("post", "post Firstmate's own update on a conversation",
                    "Add an update from Firstmate to a conversation, with no ask to answer. It shows in time order as a "
                    "Firstmate update and as Replied until the owner opens it. Sends no inbox note. Pair each --link-text "
                    "with a --url and each --image with an --alt, in the order given.", post_update)
     post.add_argument("id", help="a conversation's item ID, such as Q12")
-    media(post)
+    post.add_argument("--text", required=True, help="the message")
+    attachment_options(post)
 
     converse_cmd = command("converse", "open a conversation in Firstmate's name and print its ID",
                            "Open a conversation with a title and a first message from Firstmate, shown as a Firstmate update "
@@ -4780,7 +4777,8 @@ def make_parser() -> argparse.ArgumentParser:
                            "it as any conversation. Pair each --link-text with a --url and each --image with an --alt.", converse)
     converse_cmd.add_argument("--title", required=True, help="a short topic that says what the conversation is about")
     converse_cmd.add_argument("--config", type=Path, help="use the same JSON config file as serve")
-    media(converse_cmd)
+    converse_cmd.add_argument("--text", required=True, help="the message")
+    attachment_options(converse_cmd)
 
     mark = command("mark", "mark questions answered, closed or open",
                    "Set the state of a question (Q7.3) or every question in an item (Q7). Marking answered records an "

@@ -9,9 +9,9 @@ for who can start conversations and use the other browser controls.
 - Item commands use the [item store and its lock](../reference/item-store.md).
   `add` copies body text from the named file or standard input into the store.
   A questions body can also name [local image attachments](../reference/item-store.md#question-images).
-  `quarterdeck reply --image` reads the explicitly named image files and copies
-  them into the [private reply image folder](../reference/item-store.md#store-layout).
-- `render`, `serve`, `service` and `url` can read the
+  With `--image`, `reply`, `post` and `converse` read the explicitly named image
+  files and copy them into the [private reply image folder](../reference/item-store.md#store-layout).
+- `converse`, `render`, `serve`, `service` and `url` can read the
   [optional config](../reference/cli-and-config.md#json-configuration).
 - `render` reads the item store and the images attached to questions and
   options. It inspects existing output files before replacing or retiring
@@ -30,20 +30,20 @@ for who can start conversations and use the other browser controls.
 - `service --write` writes the systemd unit. `url` reads it if it exists.
 - `install` and `update` invoke the [user-local installer](../how-to/install.md).
 
-Apart from explicitly supplied `add` inputs, images named with `reply --image`,
-and the workers snapshot,
+Apart from explicitly supplied `add` inputs, images named with `--image` on
+`reply`, `post` or `converse`, and the workers snapshot,
 Quarterdeck reads no backlog, board, topic, report, ledger or saved session
 from a Firstmate home, and it does not read terminal text. The
 [saved workers reading](../reference/cli-and-config.md#workers-endpoint)
 never goes to disk. Quarterdeck saves card asks, conversation
-messages and replies in the [item store](../reference/item-store.md#conversations).
+messages, replies and standalone updates in the [item store](../reference/item-store.md#conversations).
 Quarterdeck writes nothing to the home except through the configured home's
 `bin/fm-inbox.sh note` command when a user sends or retries an answer,
 [card ask](../reference/cli-and-config.md#ask-endpoint), or
 [conversation message](../reference/cli-and-config.md#conversation-endpoint).
 It passes an answer as the part ID followed by the text.
-Replies come back only through `quarterdeck reply`, which Firstmate runs on
-the same machine. Quarterdeck never calls a model.
+Firstmate runs `quarterdeck reply`, `post` and `converse` on the same machine.
+Quarterdeck never calls a model.
 
 Firstmate handles any periodic checks for decisions made in chat or on review
 pages. Quarterdeck records the [source supplied with `mark`](../how-to/read-answers.md)

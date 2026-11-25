@@ -66,6 +66,9 @@ Firstmate can add news that answers no message. `post` adds an update to a
 conversation and `converse` opens a new conversation in Firstmate's name. Both
 take the same `--link-text`/`--url` and `--image`/`--alt` options as `reply`.
 
+Before using either command, [update Quarterdeck and restart the live server](update.md)
+so it can read standalone updates in the item store.
+
 For `converse`, use the same configuration as `serve`, including
 `--config FILE` if the server uses a custom file. If `firstmate_home` is set,
 it must resolve to an existing directory. The conversation binds to that
