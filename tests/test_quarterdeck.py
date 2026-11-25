@@ -5671,6 +5671,7 @@ class TalkToFirstmateTests(ImageCase):
         self.assertEqual(self.run_cli("post", "q1", "--text", "Halfway there.")[1:], ("Q1 Updated\n", ""))
         first, update = self.thread()
         self.assertEqual((first["author"], first["read"], "ask" in first, first["links"][0]["text"]), ("firstmate", False, False, "Plan"))
+        self.assertNotIn("home", first)
         self.assertTrue((quarterdeck.store_path().parent / "reply-images" / "q1" / first["images"][0]["file"]).is_file())
         self.assertEqual((update["text"], update["read"], "ask" in update), ("Halfway there.", False, False))
         shown = self.run_cli("show", "Q1")[1]
@@ -5694,6 +5695,52 @@ class TalkToFirstmateTests(ImageCase):
         self.assertEqual(self.run_cli("reply", "Q1", "--ask", ask["id"], "--text", "The spring tide.")[0], 0)
         self.assertEqual(self.thread()[-1]["ask"], ask["id"])
         self.assertIn("In reply to message 1", self.fetch(port, "/qd/q1.html")[1])
+        replacement = self.inbox(name="replacement")
+        other_port = self.start("/qd", ask_home=replacement)
+        other_binding = re.search(r'data-home="([^"]+)"', self.fetch(other_port, "/qd/")[1])[1]
+        follow_up = {**ask, "id": uuid.uuid4().hex, "home": other_binding}
+        self.assertEqual(self.post(other_port, "/qd/asks", follow_up)[0], 409)
+        self.assertFalse((replacement / "attempts").exists())
+
+    def test_firstmate_conversation_binds_before_the_first_owner_message(self) -> None:
+        original = self.inbox(accept=False)
+        replacement = self.inbox(name="replacement")
+        alias = self.root / "current"
+        alias.symlink_to(original, target_is_directory=True)
+        config = self.root / "explicit.json"
+        config.write_text(json.dumps({"firstmate_home": str(alias)}))
+        code, out, err = self.run_cli(
+            "converse", "--title", "Tide work", "--text", "Started the tide job.", "--config", str(config))
+        self.assertEqual((code, out, err), (0, "Q1\n", ""))
+        self.assertFalse((original / "attempts").exists())
+
+        original_port = self.start("/qd", ask_home=original)
+        original_page = self.fetch(original_port, "/qd/q1.html")[1]
+        binding = re.search(r'id="send-message" data-home="([^"]+)"', original_page)[1]
+        ask = {"part": "Q1", "id": uuid.uuid4().hex, "text": "Which tide?", "home": binding}
+        alias.unlink()
+        alias.symlink_to(replacement, target_is_directory=True)
+        with self.serve_cli("--config", str(config), "--base-path", "/qd") as port:
+            page = self.fetch(port, "/qd/q1.html")[1]
+            other_binding = re.search(r'data-home="([^"]+)"', self.fetch(port, "/qd/")[1])[1]
+            self.assertIn("Restore the original firstmate_home", page)
+            self.assertNotIn('id="send-message"', page)
+            rebound = {**ask, "home": other_binding}
+            refusal = (409, {"message": "Firstmate home changed. This ask belongs to the original home.",
+                             "saved": False})
+            self.assertEqual(self.post(port, "/qd/asks", rebound), refusal)
+            self.assertEqual(self.post(port, "/qd/asks", {**rebound, "action": "retry"}), refusal)
+            self.assertEqual(len(self.thread()), 1)
+
+            self.assertEqual(self.post(original_port, "/qd/asks", ask)[1]["message"],
+                             "Message saved. Not delivered.")
+            retry = {"part": "Q1", "id": ask["id"], "action": "retry"}
+            self.assertEqual(self.post(port, "/qd/asks", retry), (409, {**refusal[1], "saved": True}))
+            self.assertFalse((replacement / "attempts").exists())
+            self.inbox()
+            self.assertEqual(self.post(original_port, "/qd/asks", retry)[1]["message"], "Message sent.")
+            self.assertEqual((original / "notes").read_text(),
+                             f"CONVERSATION Q1 {ask['id']} Topic: Tide work\nWhich tide?\n")
 
     def test_post_and_converse_reject_bad_input_and_change_nothing(self) -> None:
         self.assertEqual(self.run_cli("converse", "--title", "Tide work", "--text", "Hello.")[0], 0)

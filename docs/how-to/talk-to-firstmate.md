@@ -24,8 +24,10 @@ messages shows **Sent** or **Not delivered**. Select **Send message again**
 under a message that shows **Not delivered** once the
 [inbox is available](read-answers.md#connect-the-inbox). The retry keeps the
 original message and note IDs. The conversation stays bound to the resolved
-Firstmate home path from when it started. Restore access to that directory
-and point `firstmate_home` to it to send more messages or retry delivery.
+Firstmate home path from when it started. If Firstmate started it without a
+configured home, the owner's first message establishes the binding. Restore
+access to the bound directory and point `firstmate_home` to it to send more
+messages or retry delivery.
 
 ## Read replies
 

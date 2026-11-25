@@ -150,6 +150,11 @@ def selected_config(args: argparse.Namespace) -> dict[str, object]:
     return load_config(selected_config_path(args))
 
 
+def configured_firstmate_home(config: dict[str, object]) -> Path | None:
+    home = config.get("firstmate_home")
+    return Path(home) if isinstance(home, str) else None
+
+
 def page_title(args: argparse.Namespace, config: dict[str, object]) -> str:
     configured = config.get("page_title")
     return getattr(args, "title", None) or (configured if isinstance(configured, str) and configured.strip() else DEFAULT_TITLE)
@@ -840,7 +845,7 @@ def validate_conversation(item):
                 or not isinstance(messages, list) or not messages):
             raise ValueError("invalid conversation")
         asks = set()
-        for message in messages:
+        for index, message in enumerate(messages):
             if not isinstance(message, dict):
                 raise ValueError("invalid message")
             author = message.get("author")
@@ -848,7 +853,10 @@ def validate_conversation(item):
                 raise ValueError("invalid message")
             you = author == "you"
             required = {"id", "author", "text", "at"} | ({"delivery", "request_id", "home"} if you else {"read"})
-            if not required <= set(message) <= required | (set() if you else {"ask", "links", "images", "clarify"}):
+            optional = set() if you else {"ask", "links", "images", "clarify"}
+            if not you and index == 0 and item["kind"] == "conversation":
+                optional.add("home")
+            if not required <= set(message) <= required | optional:
                 raise ValueError("invalid message")
             if (not isinstance(message["id"], str) or not re.fullmatch(r"[0-9a-f]{32}", message["id"])
                     or message["id"] in seen
@@ -856,12 +864,13 @@ def validate_conversation(item):
                 raise ValueError("invalid message")
             seen.add(message["id"])
             parse_utc(message["at"])
+            if "home" in message and (not isinstance(message["home"], str)
+                                      or not re.fullmatch(r"[0-9a-f]{64}", message["home"])):
+                raise ValueError("invalid message home")
             if you:
                 if (message["delivery"] not in ("pending", "sent")
                         or not isinstance(message["request_id"], str)
-                        or not re.fullmatch(r"quarterdeck-[0-9a-f]{32}", message["request_id"])
-                        or not isinstance(message["home"], str)
-                        or not re.fullmatch(r"[0-9a-f]{64}", message["home"])):
+                        or not re.fullmatch(r"quarterdeck-[0-9a-f]{32}", message["request_id"])):
                     raise ValueError("invalid ask")
                 asks.add(message["id"])
                 continue
@@ -1169,8 +1178,7 @@ def conversation_home_matches(item, binding):
 
 
 def thread_home(thread):
-    """The home of the owner's first message; None while Firstmate has written every message so far."""
-    return next((m["home"] for m in thread if m["author"] == "you"), None)
+    return next((m["home"] for m in thread if "home" in m), None)
 
 
 def ask_message(store, home, binding, payload, *, home_available=True, include_thread=True):
@@ -1718,6 +1726,13 @@ def converse(args: argparse.Namespace) -> int:
     def action() -> int:
         title = clean_text(args.title, "title", TITLE_LIMIT)
         text, links, images, pending = reply_parts(args)
+        home = configured_firstmate_home(selected_config(args))
+        message = firstmate_message(text, links, images)
+        if home is not None:
+            _, binding = ask_destination(home, require_directory=False)
+            if binding is None:
+                raise ValueError("could not resolve firstmate_home")
+            message["home"] = binding
         store = store_path()
         with locked_store(store):
             data = read_store(store)
@@ -1725,7 +1740,7 @@ def converse(args: argparse.Namespace) -> int:
             data["next_id"] = int(data["next_id"]) + 1  # type: ignore[call-overload]
             data["items"].append({"id": item_id, "kind": "conversation", "title": title,  # type: ignore[union-attr]
                                   "description": "Conversation with Firstmate.", "saved_at": now_text(), "body": {},
-                                  "conversation": {"item": [firstmate_message(text, links, images)]}})
+                                  "conversation": {"item": [message]}})
             save_images(store, item_id, pending, tree=REPLY_IMAGES)
             write_store(store, data)
         print(item_id)
@@ -2752,7 +2767,8 @@ def thread_html(item, number, *, editable):
     if item["kind"] == "conversation":
         thread = part_thread(item, number)
         numbers = conversation_message_numbers(thread)
-        messages = ''.join(message_html(item, m, editable=editable and m.get("home") == thread_home(thread),
+        home = thread_home(thread) if editable else None
+        messages = ''.join(message_html(item, m, editable=editable and m.get("home") == home,
                                         message_number=numbers.get(m.get("ask", m["id"])))
                            for m in thread)
         return f'<ol class="exchange">{messages}</ol>' if messages else ''
@@ -4234,22 +4250,23 @@ class VisitLog:
             os.close(descriptor)
 
 
+def ask_destination(ask_home: Path | None, *, require_directory: bool) -> tuple[Path | None, str | None]:
+    if ask_home is not None:
+        try:
+            resolved = ask_home.resolve(strict=require_directory)
+            if require_directory and not resolved.is_dir():
+                return None, None
+        except (OSError, RuntimeError):
+            return None, None
+        return resolved, hashlib.sha256(os.fsencode(resolved)).hexdigest()
+    return None, None
+
+
 def make_handler(site_title: str, base_path: str = "", store: Path | None = None, home: Path | None = None,
                  *, ask_home: Path | None = None, workers_home: Path | None = None) -> type[BaseHTTPRequestHandler]:
     """Every page is built from the item store when it is requested."""
     visit_log = VisitLog(visits_path())
     saved_workers = SavedWorkers()
-
-    def ask_destination(*, require_directory):
-        if ask_home is not None:
-            try:
-                resolved = ask_home.resolve(strict=require_directory)
-                if require_directory and not resolved.is_dir():
-                    return None, None
-            except (OSError, RuntimeError):
-                return None, None
-            return resolved, hashlib.sha256(os.fsencode(resolved)).hexdigest()
-        return None, None
 
     class Handler(BaseHTTPRequestHandler):
         server_version = "Quarterdeck"
@@ -4344,7 +4361,7 @@ def make_handler(site_title: str, base_path: str = "", store: Path | None = None
                     visit_log.record(self.headers.get("User-Agent"))
                 except (OSError, ValueError) as exc:  # a visit that cannot be logged must never stop the page
                     print(f"quarterdeck: could not log the visit: {exc}", file=sys.stderr, flush=True)
-                _, ask_binding = ask_destination(require_directory=True)
+                _, ask_binding = ask_destination(ask_home, require_directory=True)
                 self.send_text(200, list_page(data, site_title, served=True, ask_binding=ask_binding), "text/html; charset=utf-8",
                                prevent_framing=bool(ask_binding))
                 return
@@ -4355,7 +4372,7 @@ def make_handler(site_title: str, base_path: str = "", store: Path | None = None
                 return
             if discussion:
                 if item["kind"] == "questions":
-                    _, binding = ask_destination(require_directory=False)
+                    _, binding = ask_destination(ask_home, require_directory=False)
                     snapshot = set_discussion(item, editable=binding is not None and conversation_editable(item, None))
                     self.send_text(200, json.dumps(snapshot), "application/json")
                 else:
@@ -4363,7 +4380,7 @@ def make_handler(site_title: str, base_path: str = "", store: Path | None = None
                 return
             ask_binding = None
             if item["kind"] in ("questions", "conversation"):
-                _, ask_binding = ask_destination(require_directory=item["kind"] == "conversation")
+                _, ask_binding = ask_destination(ask_home, require_directory=item["kind"] == "conversation")
             content = item_page(item, site_title, served=True, ask_binding=ask_binding)
             prevent_framing = has_answer_controls(item) or item["kind"] == "conversation" or (
                 item["kind"] == "questions" and (bool(part_thread(item, None)) or question_summary(item)[0] == "Replied"))
@@ -4384,10 +4401,10 @@ def make_handler(site_title: str, base_path: str = "", store: Path | None = None
                 self.send_text(403, "Open the question on Quarterdeck.")
                 return
             if endpoint in ("/asks", "/conversations"):
-                ask_path, ask_binding = ask_destination(require_directory=True)
+                ask_path, ask_binding = ask_destination(ask_home, require_directory=True)
                 home_available = ask_path is not None
                 if endpoint == "/asks" and not home_available:
-                    ask_path, ask_binding = ask_destination(require_directory=False)
+                    ask_path, ask_binding = ask_destination(ask_home, require_directory=False)
                 if ask_path is None:
                     self.send_text(403, "Configure an available firstmate_home to ask Firstmate.")
                     return
@@ -4454,8 +4471,7 @@ def serve(args: argparse.Namespace) -> int:
         config = load_config(config_path)
         tls = tls_context(args)
         base_path = effective_base_path(args)
-        explicit_home = config.get("firstmate_home")
-        firstmate = Path(explicit_home) if isinstance(explicit_home, str) else None
+        firstmate = configured_firstmate_home(config)
         handler = make_handler(page_title(args, config), base_path, home=answer_home(config, config_path),
                                ask_home=firstmate, workers_home=firstmate)
         port = args.port
@@ -4763,6 +4779,7 @@ def make_parser() -> argparse.ArgumentParser:
                            "and as Replied until the owner opens it. Sends no inbox note; the owner and Firstmate continue "
                            "it as any conversation. Pair each --link-text with a --url and each --image with an --alt.", converse)
     converse_cmd.add_argument("--title", required=True, help="a short topic that says what the conversation is about")
+    converse_cmd.add_argument("--config", type=Path, help="use the same JSON config file as serve")
     media(converse_cmd)
 
     mark = command("mark", "mark questions answered, closed or open",

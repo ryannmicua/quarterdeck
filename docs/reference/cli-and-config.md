@@ -11,7 +11,7 @@ quarterdeck show ID
 quarterdeck reply ID[.PART] --ask ID --text TEXT [--link-text TEXT --url URL]... [--image PATH --alt TEXT]...
                    [--clarify ID.PART=TEXT]... [--option-changed ID.PART]...
 quarterdeck post ID --text TEXT [--link-text TEXT --url URL]... [--image PATH --alt TEXT]...
-quarterdeck converse --title TITLE --text TEXT [--link-text TEXT --url URL]... [--image PATH --alt TEXT]...
+quarterdeck converse --title TITLE --text TEXT [--config FILE] [--link-text TEXT --url URL]... [--image PATH --alt TEXT]...
 quarterdeck mark ID[.PART] answered --via WHERE
 quarterdeck mark ID[.PART] closed|open
 quarterdeck classify ID[.PART] [--project NAME] [--tag TAG ...] [--kind KIND]
@@ -41,7 +41,7 @@ uppercase form.
 | `show` | Prints the item's text, numbering list entries and questions as `Q7.1`, `Q7.2`. Includes question links, stored states, and saved answers with their timestamps and delivery status. For a standalone conversation, prints the messages and replies in saved order with timestamps, IDs, delivery status for outgoing messages, and reply attachments. Image references are paths relative to the served site or the item store directory. |
 | `reply` | Adds Firstmate's reply to an existing ask on a whole question item (`Q7`) or one question (`Q7.1`), or to a message in a [conversation](../how-to/talk-to-firstmate.md) (`Q12`). It preserves saved answers and question states. Supply the required `--ask ID` from the inbox note and the reply in `--text`. Pair `--link-text` with `--url` and `--image` with `--alt` in the order given. See [Reply from the command line](../how-to/reply-from-the-command-line.md). |
 | `post` | Adds an update from Firstmate to a [conversation](../how-to/talk-to-firstmate.md) (`Q12`), with no `--ask`. It shows in time order as a Firstmate update, not "In reply to", and as Replied until the owner opens it. It sends no inbox note. Links and images work as for `reply`. Prints `Q12 Updated`. Question items are refused. |
-| `converse` | Opens a conversation in Firstmate's name, with `--title` and a first message in `--text`, and prints its item ID. The first message is a Firstmate update and shows as Replied. It sends no inbox note. The owner and Firstmate then continue as in any conversation. Links and images work as for `reply`. |
+| `converse` | Opens a conversation in Firstmate's name, with `--title` and a first message in `--text`, and prints its item ID. The first message is a Firstmate update and shows as Replied. It sends no inbox note. Use `--config FILE` when serving with a custom config file so the conversation binds to the same `firstmate_home`. Links and images work as for `reply`. |
 | `mark` | Sets question state, optionally for a whole questions item. `--via` is required with `answered` and accepted only with that state. Skips exit with status 0. See [Read answers](../how-to/read-answers.md) for which questions are marked. |
 | `classify` | Requires at least one classification option. Use `--project` for an item ID, `--kind` for a question ID, and `--tag` for either. See [how to change classification](../how-to/classify-items.md#change-it-later). |
 | `stats` | Prints a question activity table by default or JSON with `--json`. See [Read the report](../how-to/read-the-report.md) for date filtering and field definitions. |
