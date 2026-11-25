@@ -28,8 +28,6 @@ the [private reply image folder](../reference/item-store.md#store-layout).
 Quarterdeck prints `Q7.1 Replied`. The question shows **Replied** on its card
 and on its page while any reply is unread.
 
-A reply never changes the question's answer or state. Run `quarterdeck show Q7`
-to read the whole conversation, with each message's author, UTC time, and
-ask ID or reference. It prints each question's stored state and adds a
-separate Replied line while that question has an unread reply.
+A reply preserves the question's answer and state. Open **Messages** on the
+question card to read the conversation.
 See the [CLI reference](../reference/cli-and-config.md#items) for the command.

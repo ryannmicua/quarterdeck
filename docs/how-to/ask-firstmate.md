@@ -33,6 +33,8 @@ select **Send ask again** once the
 original ask and note IDs. Reopen a closed question before sending or
 retrying an ask. If the configured Firstmate home has changed, Quarterdeck
 refuses the retry.
+If an ask never reaches Quarterdeck, reloading the page clears the draft and
+you’ll need to type it again.
 
 A validation error puts the draft back in the field. Correct it and select
 **Ask Firstmate** again. The draft stays out of **Send answers** while

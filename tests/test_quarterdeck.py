@@ -3167,7 +3167,6 @@ class ConversationTests(ImageCase):
         self.assertEqual((home / "notes").read_text(), f"ASK Q4.1 {message['id']} Show me mockups,\nnot just text\n")
         self.assertEqual(self.store()["items"][3].get("answers"), before)
         self.assertIn("Open (2 of 2 open)", self.run_cli("show", "Q4")[1])
-        self.assertIn("You (", self.run_cli("show", "Q4")[1])
 
     def test_an_undelivered_ask_can_be_retried_with_the_same_note(self) -> None:
         home = self.inbox(accept=False)
@@ -3332,10 +3331,9 @@ class ConversationTests(ImageCase):
         self.assertNotIn("answers", self.store()["items"][3])
         shown = self.run_cli("show", "Q4")[1]
         self.assertIn("\nOpen (2 of 2 open)\n", shown)
-        self.assertIn("\n      Open\n      Replied\n", shown)
-        self.assertIn("Firstmate (", shown)
-        self.assertIn("Link: Open the preview: https://example.com/preview", shown)
-        self.assertIn("Image: A red quay (", shown)
+        self.assertIn("\n      Open\n", shown)
+        for text in ("Replied", "Show both layouts.", "Here are both.", "Open the preview", "A red quay"):
+            self.assertNotIn(text, shown)
         self.assertEqual(self.run_cli("remove", "Q4")[0], 0)
         self.assertEqual(list((quarterdeck.store_path().parent / "reply-images" / "q4").iterdir()), [])
 
@@ -3387,13 +3385,11 @@ class ConversationTests(ImageCase):
             self.assertIn('<p class="progress">Replied, 2 of 2 open</p>', page)
             self.assertIn("Blue is the newer sign.", page)
             self.assertFalse(self.messages("2", 3)[1]["read"])
-            self.assertIn("\n      Open\n      Replied\n", self.run_cli("show", "Q4")[1])
         self.assertEqual(self.post(port, "/qd/replies/read", {"part": "Q4.2", "ids": [reply["id"]]}),
                          (200, {"replies": {reply["id"]: True}}))
         self.assertTrue(self.messages("2", 3)[1]["read"])
         self.assertIn('<p class="progress">2 of 2 open</p>', self.fetch(port, "/qd/q4.html")[1])
         self.assertNotIn('>Replied</span>', self.fetch(port, "/qd/")[1])
-        self.assertNotIn("Replied", self.run_cli("show", "Q4")[1])
 
     def test_a_new_ask_an_answer_and_closing_preserve_unread_replies(self) -> None:
         port = self.start("/qd", ask_home=self.inbox())
@@ -3402,13 +3398,13 @@ class ConversationTests(ImageCase):
         self.assertEqual(self.ask(port, "Q4.1", "And then?")[0], 200)
         self.assertIn('<span class="badge">Replied</span>', self.fetch(port, "/qd/q4.html")[1])
         self.assertEqual(self.post(port, "/qd/answers", {"part": "Q4.1", "answer": "Merge", "revision": ""})[0], 200)
-        self.assertIn("\n      Answered\n      Replied\n", self.run_cli("show", "Q4")[1])
+        self.assertIn("\n      Answered\n      Answer: Merge (", self.run_cli("show", "Q4")[1])
         self.run_cli("mark", "Q4", "closed")
         _, page, headers = self.fetch(port, "/qd/q4.html")
         self.assertIn('<p class="progress">Replied</p>', page)
         shown = self.run_cli("show", "Q4")[1]
         self.assertIn("\nClosed\n", shown)
-        self.assertIn("\n      Closed\n      Replied\n", shown)
+        self.assertIn("\n      Closed\n      Answer: Merge (", shown)
         self.assertEqual(headers.get("Content-Security-Policy"), "frame-ancestors 'none'")
         _, reply, _ = self.messages("1", 3)
         self.assertEqual(self.post(port, "/qd/replies/read", {"part": "Q4.1", "ids": [reply["id"]]}),
@@ -3537,6 +3533,26 @@ class ConversationTests(ImageCase):
             with self.subTest(damage=damage):
                 quarterdeck.store_path().write_text(json.dumps(damaged))
                 self.assertEqual(self.run_cli("show", "Q4")[0], 2)
+
+    def test_the_store_rejects_numeric_conversation_identifiers(self) -> None:
+        port = self.start("/qd", ask_home=self.inbox())
+        ask = {**self.ask_body(port, "Q4.1", "How is it?"), "id": "1" * 32}
+        self.assertEqual(self.post(port, "/qd/asks", ask)[0], 200)
+        self.assertEqual(self.run_cli("reply", "Q4.1", "--ask", ask["id"], "--text", "Fine.")[0], 0)
+        data = self.store()
+        for author, field, width in (("you", "id", 32), ("you", "home", 64), ("you", "request_id", 32),
+                                     ("firstmate", "id", 32), ("firstmate", "ask", 32)):
+            with self.subTest(author=author, field=field):
+                damaged = json.loads(json.dumps(data))
+                thread = damaged["items"][3]["conversation"]["1"]
+                if author == "you" and field == "id":
+                    thread.pop()
+                message = next(record for record in thread if record["author"] == author)
+                message[field] = int("1" * width)
+                quarterdeck.store_path().write_text(json.dumps(damaged))
+                status, body, _ = self.fetch(port, "/qd/q4.html")
+                self.assertEqual(status, 500)
+                self.assertIn("could not read its item store", body)
 
     def test_acknowledgment_is_same_origin_and_scoped_to_shown_replies_on_one_part(self) -> None:
         port = self.start("/qd", ask_home=self.inbox())

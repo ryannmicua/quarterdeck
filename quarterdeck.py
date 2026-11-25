@@ -828,15 +828,18 @@ def validate_conversation(item):
             required = {"id", "author", "text", "at"} | ({"delivery", "request_id", "home"} if you else {"read", "ask"})
             if not required <= set(message) <= required | (set() if you else {"links", "images"}):
                 raise ValueError("invalid message")
-            if (not re.fullmatch(r"[0-9a-f]{32}", str(message["id"])) or message["id"] in seen
+            if (not isinstance(message["id"], str) or not re.fullmatch(r"[0-9a-f]{32}", message["id"])
+                    or message["id"] in seen
                     or clean_text(message["text"], "message", TEXT_LIMIT, multiline=True) != message["text"]):
                 raise ValueError("invalid message")
             seen.add(message["id"])
             datetime.strptime(str(message["at"]), "%Y-%m-%dT%H:%M:%SZ")
             if you:
                 if (message["delivery"] not in ("pending", "sent")
-                        or not re.fullmatch(r"quarterdeck-[0-9a-f]{32}", str(message["request_id"]))
-                        or not re.fullmatch(r"[0-9a-f]{64}", str(message["home"]))):
+                        or not isinstance(message["request_id"], str)
+                        or not re.fullmatch(r"quarterdeck-[0-9a-f]{32}", message["request_id"])
+                        or not isinstance(message["home"], str)
+                        or not re.fullmatch(r"[0-9a-f]{64}", message["home"])):
                     raise ValueError("invalid ask")
                 asks.add(message["id"])
                 continue
@@ -1137,22 +1140,12 @@ def item_text(item: dict[str, object]) -> str:
             if question.get("suggestion"):
                 lines.append(f"      Suggestion: {question['suggestion']}")
             record = part_record(item, number)
-            thread = part_thread(item, number)
             lines.append("      " + record.get("state", "open").capitalize())
-            if any(map(unread_reply, thread)):
-                lines.append("      Replied")
             if "answer" in record:
                 lines.append(f"      Answer: {record['answer']} ({record['answered_at']}, {delivery_label(record)})")
             if mark := latest_off_desk_mark(record):
                 at = f" ({mark['answered_at']})" if mark["answered_at"] else ""
                 lines.append(f"      Answered elsewhere: {mark['via']}{at}")
-            for message in thread:
-                detail = (f"ask {message['id']}, {delivery_label(message)}" if message["author"] == "you"
-                          else f"reply to {message['ask']}")
-                lines.append(f"      {AUTHOR_LABELS[message['author']]} ({message['at']}, {detail}): "
-                             + message["text"].replace("\n", "\n          "))
-                lines.extend(f"          Link: {link['text']}: {link['url']}" for link in message.get("links", []))
-                lines.extend(f"          Image: {image['alt']} ({image['file']})" for image in message.get("images", []))
     return "\n".join(lines).rstrip() + "\n"
 
 
