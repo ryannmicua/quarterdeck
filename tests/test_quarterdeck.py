@@ -408,12 +408,21 @@ class PageTests(StoreCase):
                 body = page.split('<div id="questions">')[1].split("</main>")[0]
                 self.assertLess(body.index('id="Q1.2"'), body.index('<details class="done">'))
                 self.assertIn('<summary><span class="id">Q1.1</span><span class="sum-q">Merge the tide tables now?</span>'
-                              '<span class="sum-a">Answer 1</span></summary>', body)
+                              '<span class="sum-a">Saved Desk answer: Answer 1</span></summary>', body)
                 self.assertIn("1 of 2 open", page)
                 self.assertEqual(page.count('class="sendbar"'), 1 if served else 0)
                 if served:
                     self.assertGreater(body.index('class="sendbar"'), body.index("</details>"))
                 self.assertNotIn("Return to Desk</a>", page)
+        self.assertEqual(self.run_cli("mark", "Q1.1", "open")[0], 0)
+        self.assertEqual(self.run_cli("mark", "Q1.1", "answered", "--via", "chat")[0], 0)
+        item = quarterdeck.read_store(quarterdeck.store_path())["items"][0]
+        for served in (True, False):
+            with self.subTest(served=served, via="chat"):
+                page = quarterdeck.item_page(item, "Quarterdeck", served=served)
+                summary, expanded = page.split('<details class="done">', 1)[1].split("</summary>", 1)
+                self.assertIn("Saved Desk answer: Answer 1", summary)
+                self.assertIn("Answered elsewhere · chat", expanded)
         for state in ("closed", "open", "answered"):
             with self.subTest(state=state):
                 if state == "answered":
@@ -1220,6 +1229,7 @@ typeAnswer(2, 'Blue');
 focusDuringSend = card(2).querySelector('a');
 await sendBatch();
 const secondSummary = card(2).closest('details').querySelector('summary');
+check(secondSummary.querySelector('.sum-a').textContent === 'Saved Desk answer: Blue', 'First delivery left the saved answer unlabeled');
 check(document.activeElement === secondSummary, 'First delivery dropped focus from the row');
 focusDuringSend = null;
 check(order() === 'Q1.1,Q1.2,Q1.3', 'The later question was not inserted before a higher-numbered folded question');
@@ -1244,7 +1254,7 @@ check(folded.open && field(1).value === longAnswer &&
 typeAnswer(1, 'Hold for the pilot');
 focusDuringSend = card(1).querySelector('a');
 await sendBatch();
-check(!folded.open && folded.querySelector('.sum-a').textContent === 'Hold for the pilot',
+check(!folded.open && folded.querySelector('.sum-a').textContent === 'Saved Desk answer: Hold for the pilot',
       'The delivered correction did not close the row with the corrected answer');
 check(document.activeElement === summary, 'Refolding a correction dropped focus from the row');
 summary.click();

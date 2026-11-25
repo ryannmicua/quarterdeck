@@ -2144,7 +2144,7 @@ def question_form(item, served):
         if status == "answered" and record.get("delivery") == "sent":
             folded.append(f'<details class="done"><summary><span class="id">{part}</span>'
                           f'<span class="sum-q">{esc(question["question"])}</span>'
-                          f'<span class="sum-a">{esc(answer)}</span></summary>{card}</details>')
+                          f'<span class="sum-a">Saved Desk answer: {esc(answer)}</span></summary>{card}</details>')
         else:
             cards.append(card)
     progress = f"{remaining} of {len(cards) + len(folded)} open" if remaining else state
@@ -2291,7 +2291,7 @@ if (send) {
         .find(child => questionNumber(child.lastElementChild) > number);
       list.insertBefore(box, next ?? null);
     }
-    box.querySelector('.sum-a').textContent = record.answer;
+    box.querySelector('.sum-a').textContent = 'Saved Desk answer: ' + record.answer;
     box.open = false;
     if (focusInSection) box.querySelector('summary').focus();
   }
