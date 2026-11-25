@@ -283,7 +283,7 @@ def question_links(raw: object, where: str) -> list[dict[str, str]]:
 
 # Question images. A file named in a questions body is copied into the store's own images folder when the item is
 # saved, under the item's ID, and is never read from its original path again.
-IMAGE_BYTES_LIMIT = 5 * 1024 * 1024
+IMAGE_BYTES_LIMIT = 5_000_000
 IMAGE_COUNT_LIMIT = 24
 IMAGE_TEXT_LIMIT = 300
 IMAGE_TYPES = {"png": "image/png", "jpg": "image/jpeg", "webp": "image/webp"}
@@ -389,7 +389,7 @@ def read_images(named: list[tuple[dict[str, str], str]], pending: dict[str, byte
             except OSError as exc:
                 raise ValueError(f"{where} could not be read: {value!r} ({exc})") from exc
             if len(data) > IMAGE_BYTES_LIMIT:
-                raise ValueError(f"{where} is larger than {IMAGE_BYTES_LIMIT // (1024 * 1024)} MB: {value!r}")
+                raise ValueError(f"{where} is larger than {IMAGE_BYTES_LIMIT // 1_000_000} MB: {value!r}")
             try:
                 kind = image_kind(data)
             except ValueError:

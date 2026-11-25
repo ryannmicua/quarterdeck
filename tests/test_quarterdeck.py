@@ -1594,7 +1594,7 @@ class QuestionImageTests(ImageCase):
         svg = self.picture("pic.svg", b"<svg xmlns='http://www.w3.org/2000/svg'/>")
         renamed = self.picture("fake.png", b"not an image at all")
         empty_comment = tiny_png((1, 2, 3), comment=b"")
-        comment = b"x" * (5 * 1024 * 1024 + 1 - len(empty_comment))
+        comment = b"x" * (5_000_000 + 1 - len(empty_comment))
         big = self.picture("big.png", tiny_png((1, 2, 3), comment=comment))
         cases = {
             "gif": ({"path": str(gif), "alt": "x"}, "must be a PNG, JPEG or still WebP image"),

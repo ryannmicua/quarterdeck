@@ -91,7 +91,7 @@ See the [example questions body](../how-to/save-items.md#questions-with-images).
 
 | Field | Meaning |
 | --- | --- |
-| `path` | A local regular file containing a PNG, JPEG or still WebP image, up to 5 MiB. Quarterdeck checks the file contents to identify its type. It rejects directories, named pipes and other nonregular files. |
+| `path` | A local regular file containing a PNG, JPEG or still WebP image, up to 5 MB. Quarterdeck checks the file contents to identify its type. It rejects directories, named pipes and other nonregular files. |
 | `alt` | Required text that describes the image, up to 300 characters. |
 
 Relative paths are resolved from the directory where you run `quarterdeck add`.
