@@ -1208,6 +1208,11 @@ def mark_replies_read(store, payload):
         return {"replies": {message_id: reply["read"] for message_id, reply in replies.items()}}
 
 
+def conversation_message_numbers(messages):
+    return {message["id"]: number
+            for number, message in enumerate((m for m in messages if m["author"] == "you"), 1)}
+
+
 def item_text(item: dict[str, object]) -> str:
     """One item as plain text, numbered the way the page numbers it."""
     item_id, body = str(item["id"]), item["body"]
@@ -1223,10 +1228,17 @@ def item_text(item: dict[str, object]) -> str:
         lines.extend(f"{item_id}.{number}  {entry}" for number, entry in enumerate(body["entries"], 1))  # type: ignore[index]
     elif item["kind"] == "conversation":
         lines = lines[:-2]
-        for message in part_thread(item, None):
+        messages = part_thread(item, None)
+        numbers = conversation_message_numbers(messages)
+        for message in messages:
             who = AUTHOR_LABELS[message["author"]]
-            label = f"{who} ({delivery_label(message).lower()})" if message["author"] == "you" else who
-            lines.append(f"{message['at']}  {label}  {message['id']}")
+            if message["author"] == "you":
+                label = f"{who} ({delivery_label(message).lower()})"
+                reference = f"Message {numbers[message['id']]}"
+            else:
+                label = who
+                reference = f"In reply to message {numbers[message['ask']]}"
+            lines.append(f"{message['at']}  {label}  {message['id']}  {reference}")
             lines.extend("  " + line for line in message["text"].splitlines())
             lines.extend(f"  Link: {link['text']}: {link['url']}" for link in message.get("links", []))
             lines.extend(f"  Image: {image['alt']}: {image_url(item, image, REPLY_IMAGES)}"
@@ -2474,7 +2486,7 @@ def read_only_option(item, option):
     return f'<li class="option">{image_link(item, option["image"])}<span>{linked_text(option["label"])}</span></li>'
 
 
-def message_html(item, message, *, editable):
+def message_html(item, message, *, editable, message_number=None):
     you = message["author"] == "you"
     when = esc(message["at"])
     delivery = f' <span class="delivery">{delivery_label(message)}</span>' if you else ''
@@ -2484,15 +2496,25 @@ def message_html(item, message, *, editable):
                     f'<button type="button" data-retry-ask="{message["id"]}">'
                     f'{"Send message again" if item["kind"] == "conversation" else "Send ask again"}</button></div>')
     identity = f' data-ask-id="{message["id"]}"' if you else f' data-reply-id="{message["id"]}"'
+    reference = ""
+    if message_number is not None:
+        if you:
+            identity += f' id="message-{message_number}" tabindex="-1"'
+            reference = f' <span>Message {message_number}</span>'
+        else:
+            reference = f' <a href="#message-{message_number}">In reply to message {message_number}</a>'
     unread = " data-unread" if unread_reply(message) else ""
     return (f'<li class="msg {message["author"]}"{identity}{unread}><p class="who"><strong>{AUTHOR_LABELS[message["author"]]}</strong> '
-            f'<time datetime="{when}">{when}</time>{delivery}</p><p class="record">{linked_text(message["text"])}</p>'
+            f'<time datetime="{when}">{when}</time>{delivery}{reference}</p><p class="record">{linked_text(message["text"])}</p>'
             f'{links_html(message)}{shots_html(item, message, tree=REPLY_IMAGES)}{controls}</li>')
 
 
 def thread_html(item, number, *, editable):
     if item["kind"] == "conversation":
-        messages = ''.join(message_html(item, m, editable=editable) for m in part_thread(item, number))
+        thread = part_thread(item, number)
+        numbers = conversation_message_numbers(thread)
+        messages = ''.join(message_html(item, m, editable=editable, message_number=numbers[m.get("ask", m["id"])])
+                           for m in thread)
         return f'<ol class="exchange">{messages}</ol>' if messages else ''
     groups = {}
     for message in part_thread(item, number):

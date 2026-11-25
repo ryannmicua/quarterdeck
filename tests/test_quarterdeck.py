@@ -4646,6 +4646,13 @@ class TalkToFirstmateTests(ImageCase):
         self.assertEqual(text, ["Which amber suits the pier lamps?", "Also, which green?", "Sea green.", "Warm amber."])
         page = self.fetch(port, "/qd/q1.html")[1]
         self.assertEqual([page.index(t) for t in text], sorted(page.index(t) for t in text))
+        status, transcript, err = self.run_cli("show", "Q1")
+        self.assertEqual(status, 0, err)
+        self.assertEqual([transcript.index(t) for t in text], sorted(transcript.index(t) for t in text))
+        self.assertIn(f"{first['id']}  Message 1\n  {first['text']}", transcript)
+        self.assertIn(f"{second['id']}  Message 2\n  {second['text']}", transcript)
+        self.assertIn("In reply to message 2\n  Sea green.", transcript)
+        self.assertIn("In reply to message 1\n  Warm amber.", transcript)
         self.assertIn("Content-Security-Policy", self.fetch(port, "/qd/q1.html")[2])
         self.assertIn('id="send-message"', page)
         self.assertNotIn('class="lead"', page)
@@ -4657,6 +4664,16 @@ class TalkToFirstmateTests(ImageCase):
         desk = self.fetch(port, "/qd/")[1]
         self.assertNotIn("Read reply", desk)
         self.assertIn("Nothing is on your Desk. A question that needs an answer shows here.", desk)
+        status, sent = self.post(port, "/qd/asks", {**second, "id": uuid.uuid4().hex, "text": "Thanks."})
+        self.assertEqual((status, sent["message"]), (200, "Message sent."))
+        status, retried = self.post(port, "/qd/asks", {"part": "Q1", "id": second["id"], "action": "retry"})
+        self.assertEqual((status, retried["message"]), (200, "Message sent."))
+        for path, markup in (("open", page), ("send", sent["thread"]), ("retry", retried["thread"])):
+            with self.subTest(path=path):
+                self.assertRegex(markup, rf'data-ask-id="{first["id"]}" id="message-1"[^>]*>[^\n]*<span>Message 1</span>')
+                self.assertRegex(markup, rf'data-ask-id="{second["id"]}" id="message-2"[^>]*>[^\n]*<span>Message 2</span>')
+                self.assertIn('<a href="#message-2">In reply to message 2</a></p><p class="record">Sea green.</p>', markup)
+                self.assertIn('<a href="#message-1">In reply to message 1</a></p><p class="record">Warm amber.</p>', markup)
 
     def test_a_conversation_cannot_send_messages_to_a_replacement_home(self) -> None:
         home = self.inbox()
