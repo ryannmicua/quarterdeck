@@ -48,8 +48,8 @@ class ClassificationCase(base.StoreCase):
     def check_browser(self, page, script, *, widths=(1024,)) -> None:
         chrome = shutil.which("google-chrome")
         if not chrome:
-            self.skipTest("google-chrome is required for the classification filter browser tests")
-        fixture = self.root / "filters.html"
+            self.skipTest("google-chrome is required for the classification browser tests")
+        fixture = self.root / "browser-check.html"
         fixture.write_text(page.replace("</body>", """
 <output id="browser-result">Incomplete</output>
 <script>
@@ -105,7 +105,6 @@ check(document.querySelectorAll('main .tags').length === 0, 'Unclassified items 
             (("--tag", " ui "), "item tag must be one lowercase word"),
             (("--tag", "gossip"), "unknown item tag 'gossip'; allowed: product-design, ui, architecture"),
             (("--tag", "ui", "--tag", "bug", "--tag", "release", "--tag", "process"), "at most 3 tags"),
-            (("--project", "a/b"), "project must be a short word or name"),
             (("--project", "x" * 41), "longer than 40"),
         ]
         for extra, message in cases:
@@ -128,6 +127,24 @@ check(document.querySelectorAll('main .tags').length === 0, 'Unclassified items 
                                             "--body-file", "-", stdin=json.dumps(body))
                 self.assertEqual(code, 2)
                 self.assertIn(message, err)
+        self.assertFalse(quarterdeck.store_path().exists())
+
+    def test_project_accepts_qualified_repository_names(self) -> None:
+        item_id = self.questions("Repository decisions", "--project", "TideWorks/Harbor-tools")
+        self.assertIn("Project: TideWorks/Harbor-tools", self.run_cli("show", item_id)[1])
+        code, _, err = self.run_cli("classify", item_id, "--project", "QuayWorks/Dock.tools")
+        self.assertEqual(code, 0, err)
+        code, output, err = self.run_cli("stats", "--json")
+        self.assertEqual(code, 0, err)
+        self.assertEqual(list(json.loads(output)["by_project"]), ["QuayWorks/Dock.tools"])
+
+    def test_project_refuses_invalid_qualified_names(self) -> None:
+        for project in ("a/b/c", "/harbor", "harbor/", "a//b", "a/b?c", "a\\b", "a/ b", "../harbor", "a/.."):
+            with self.subTest(project=project):
+                code, _, err = self.run_cli("add", "--kind", "list", "--title", "T", "--description", "D",
+                                            "--body-file", "-", "--project", project, stdin="one\n")
+                self.assertEqual(code, 2)
+                self.assertIn("project must be a plain name or owner/name", err)
         self.assertFalse(quarterdeck.store_path().exists())
 
     def test_tags_are_deduplicated(self) -> None:
@@ -328,11 +345,6 @@ class AnsweredViaTests(ClassificationCase):
         shown = self.run_cli("show", "Q1")[1]
         self.assertIn(f"Answer: Hold ({desk_at}, Sending stopped)", shown)
         self.assertIn(f"Answered elsewhere: chat ({chat_at})", shown)
-        for served in (True, False):
-            page = quarterdeck.item_page(item, "Quarterdeck", served=served)
-            for value in ("Hold", "Sending stopped", "Answered elsewhere · chat", desk_at, chat_at):
-                self.assertIn(value, page)
-
         old = item["answers"]["1"]
         payload = {"part": "Q1.1", "answer": "Hold", "revision": opened["revision"]}
         with patch.object(quarterdeck.subprocess, "run") as inbox:
@@ -573,7 +585,7 @@ class PageTests(ClassificationCase):
         for number, tag in enumerate(("research", "bug"), 1):
             self.add("resource", f"Chart {number}", "A chart.", "--url", "https://example.com/t", "--link-text", "Chart",
                      "--project", "Harbor", "--tag", tag)
-        for project, tag in (("All projects", "research"), ("Quay", "bug")):
+        for project, tag in (("All projects", "research"), ("QuayWorks/Dock.tools", "bug")):
             item_id = self.questions(project, "--project", project, "--tag", tag, body=ASK[2:])
             self.assertEqual(self.run_cli("mark", item_id, "answered", "--via", "chat")[0], 0)
         self.check_browser(self.saved_page(), """
@@ -594,7 +606,9 @@ choose(references, 'Tag', 'bug');
 check(visibleIds('table .id') === 'Q2', 'Reference tag filter should show only Q2');
 check(visibleIds('article .id') === 'Q4,Q3', 'Reference filter affected reviewed cards');
 check([...control(reviewed, 'Project').options].map(option => option.textContent).join(',') ===
-  '(All projects),All projects,Quay', 'The reset choice and literal project should have distinct labels');
+  '(All projects),All projects,QuayWorks/Dock.tools', 'The reset choice and literal project should have distinct labels');
+choose(reviewed, 'Project', 'QuayWorks/Dock.tools');
+check(visibleIds('article .id') === 'Q4', 'The repository filter should show only Q4');
 choose(reviewed, 'Project', 'All projects');
 check(visibleIds('article .id') === 'Q3', 'Reviewed project filter should show only Q3');
 choose(reviewed, 'Tag', 'bug');
@@ -613,18 +627,36 @@ check(!filterError, filterError);
 
     def test_reconciled_answer_stays_out_of_the_browser_send_queue(self) -> None:
         self.questions()
-        self.answer("Q1.1", "Hold")
+        with patch.object(quarterdeck, "now_text", return_value="2026-11-03T00:00:00Z"):
+            self.answer("Q1.1", "Hold")
         self.assertEqual(self.run_cli("mark", "Q1.1", "open")[0], 0)
-        self.assertEqual(self.run_cli("mark", "Q1.1", "answered", "--via", "chat")[0], 0)
+        with patch.object(quarterdeck, "now_text", return_value="2026-11-04T00:00:00Z"):
+            self.assertEqual(self.run_cli("mark", "Q1.1", "answered", "--via", "chat")[0], 0)
         item = quarterdeck.read_store(quarterdeck.store_path())["items"][0]
-        self.check_browser(quarterdeck.item_page(item, "Quarterdeck", served=True), """
+        saved_answer = """
+const question = document.getElementById('Q1.1');
+const saved = question.querySelector('.saved-answer');
+const answer = saved.querySelector('.record');
+const delivery = saved.querySelector('.delivery');
+check(answer.checkVisibility() && answer.innerText === 'Hold', 'The saved answer should visibly read Hold');
+check(delivery.checkVisibility() && delivery.innerText === 'Sending stopped', 'The saved answer should show Sending stopped');
+check(saved.querySelector('time').dateTime === '2026-11-03T00:00:00Z', 'The Desk answer date should be retained');
+const source = question.querySelector('.answer-source');
+check(source.checkVisibility() && source.innerText.startsWith('Answered elsewhere · chat'), 'The off-Desk source should be visible');
+check(source.querySelector('time').dateTime === '2026-11-04T00:00:00Z', 'The source should show the reconciliation date');
+"""
+        queue_check = """
 const send = document.getElementById('send');
 check(send.disabled, 'A reconciled Desk answer should not enable sending');
 const field = document.getElementById('answer-Q1.2');
 field.value = 'Red';
 field.dispatchEvent(new Event('input', {bubbles: true}));
 check(!send.disabled && send.textContent === 'Send 1 answer', 'Only the new draft should be queued');
-""")
+"""
+        for served in (True, False):
+            with self.subTest(served=served):
+                page = quarterdeck.item_page(item, "Quarterdeck", served=served)
+                self.check_browser(page, saved_answer + (queue_check if served else ""))
 
     def test_primary_card_and_anchor_follow_newest_open_item_across_groups(self) -> None:
         self.questions("Old Harbor", "--project", "Harbor", body=ASK[:1])

@@ -45,7 +45,7 @@ records without taking the lock.
 | `title` | Up to 200 characters after whitespace is collapsed to single spaces. |
 | `description` | Up to 600 characters describing what the item is and why it was saved. |
 | `saved_at` | UTC time when the item was saved. |
-| `project` | Optional. The project or repository the item belongs to: up to 40 characters of letters, digits, spaces, dots, hyphens and underscores. |
+| `project` | Optional. A plain project name or an `owner/name` repository, up to 40 characters total. Name parts may contain letters, digits, internal spaces, dots, hyphens, and underscores. A qualified name uses one slash, with a nonempty name on each side. Neither part may be `.` or `..`. |
 | `tags` | Optional list of up to three [classification tags](cli-and-config.md#classification). Left out when empty. |
 | `body` | Depends on the kind; see below. |
 

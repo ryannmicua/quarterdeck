@@ -232,8 +232,11 @@ def clean_tags(raw: object, where: str, *, stored: bool = False) -> list[str]:
 
 def clean_project(value: object) -> str:
     project = clean_text(value, "project", PROJECT_LIMIT)
-    if not all(character.isalnum() or character in " ._-" for character in project):
-        raise ValueError("project must be a short word or name (letters, digits, spaces, hyphens, dots, underscores)")
+    parts = project.split("/")
+    if (len(parts) > 2 or (len(parts) == 2 and any(part in (".", "..") for part in parts))
+            or not all(part and part == part.strip()
+                       and all(character.isalnum() or character in " ._-" for character in part) for part in parts)):
+        raise ValueError("project must be a plain name or owner/name (letters, digits, spaces, hyphens, dots, underscores)")
     return project
 
 
@@ -2852,7 +2855,7 @@ def make_parser() -> argparse.ArgumentParser:
     add.add_argument("--description", required=True, help="one or two sentences: what it is and why it was saved")
     add.add_argument("--url", help="a resource's http(s) address")
     add.add_argument("--link-text", help="a resource's link text")
-    add.add_argument("--project", help="the project or repository the item belongs to: one short word or name")
+    add.add_argument("--project", help="the item's project name or owner/name repository")
     add.add_argument("--tag", dest="tags", action="append", metavar="TAG",
                      help=f"a lowercase topic tag, repeatable, up to {TAG_LIMIT}; allowed: {', '.join(CLASSIFICATION['tag'])}")
     add.add_argument("--body-file", metavar="PATH", help="the body of a list or questions; - reads standard input. Questions may carry PNG, JPEG or still WebP images "
@@ -2875,7 +2878,7 @@ def make_parser() -> argparse.ArgumentParser:
                        "Set or replace the project and tags of an item (Q7), or the kind and tags of one question (Q7.3), "
                        "without touching its content or answers. Options you leave out stay as they are.", classify_item)
     classify.add_argument("id", help="item ID such as Q7, or question ID such as Q7.3")
-    classify.add_argument("--project", help="an item's project (item IDs only)")
+    classify.add_argument("--project", help="the item's project name or owner/name repository (item IDs only)")
     classify.add_argument("--tag", dest="tags", action="append", metavar="TAG",
                           help=f"a lowercase tag, repeatable, up to {TAG_LIMIT}; replaces the tags already there")
     classify.add_argument("--kind", help=f"a question's lowercase kind (question IDs only; allowed: {', '.join(CLASSIFICATION['kind'])})")

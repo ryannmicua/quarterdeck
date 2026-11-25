@@ -12,9 +12,9 @@ quarterdeck add --kind questions --title "Pop-up layout" \
   --project harbor --tag ui --tag product-design --body-file questions.json
 ```
 
-`--project` names one project or repository. `--tag` can be repeated, up to
-three times. In the questions JSON, each question may carry its own `kind` and
-`tags`:
+`--project` takes a plain project name or an `owner/name` repository. You can
+repeat `--tag` up to three times. In the questions JSON, each question may
+carry its own `kind` and `tags`:
 
 ```json
 [
