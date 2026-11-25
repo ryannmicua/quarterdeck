@@ -9,7 +9,7 @@ Run one group while changing it, then the whole suite before a pull request
 | Classification, answer history, reports, and list filters | `PYTHONPATH=tests python3 -m unittest -v test_classification` |
 | Page content | `PYTHONPATH=tests python3 -m unittest -v test_quarterdeck.PageTests` |
 | Inline question addresses and plain-text choice values | `PYTHONPATH=tests python3 -m unittest -v test_quarterdeck.QuestionAddressTests` |
-| Question link validation and Saved card previews | `PYTHONPATH=tests python3 -m unittest -v test_quarterdeck.QuestionLinkTests` |
+| Question link validation and Desk card previews | `PYTHONPATH=tests python3 -m unittest -v test_quarterdeck.QuestionLinkTests` |
 | `render` | `PYTHONPATH=tests python3 -m unittest -v test_quarterdeck.RenderTests` |
 | Question image import, serving, and export | `PYTHONPATH=tests python3 -m unittest -v test_quarterdeck.QuestionImageTests test_quarterdeck.QuestionImagePageTests` |
 | `serve`, base path and host checks | `PYTHONPATH=tests python3 -m unittest -v test_quarterdeck.ServeTests` |
@@ -38,6 +38,6 @@ The timeout test checks that the snapshot shell and its child both release a
 shared pipe when the endpoint returns 502.
 
 For a screen change, also save one item of each kind, run `quarterdeck serve`,
-and check the Saved page and each item page at phone width (about 390 px) and
+and check the Desk, each tab of the library pop-out (try 3, 30 and 200 saved items) and each item page at phone width (about 390 px) and
 desktop width: the page scrolls to its last element and back, and nothing
 scrolls sideways.

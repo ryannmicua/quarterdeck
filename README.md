@@ -27,10 +27,14 @@ the saved content.
 
 ## Features
 
-- **My desk** shows open question prompts grouped by set. It also keeps sets
-  with pending answer deliveries on editable questions in view. Other question sets
-  appear under **Reviewed questions**. Links and lists appear under **References**.
-- **Workers** follows **My desk** on the served page. See
+- **Desk** shows each question item that still needs an answer, and keeps an
+  item in view while an answer is not delivered. Tap anywhere on a card to open
+  its item. An item whose questions are all answered or closed leaves the Desk
+  by itself and returns when a question is open again.
+- **Open library** opens a bottom sheet on a phone and a right-side drawer on a
+  desktop, with **References** (links and lists) and **Answered** tabs, each
+  searchable. See [Find references and answered questions](docs/how-to/use-the-library.md).
+- **Workers** follows **Desk** on the served page. See
   [how to enable and refresh the roster](docs/how-to/read-workers.md).
 - One page per item, with its ID and title at the top. A resource's link opens
   the saved address; list entries and questions are numbered.
@@ -83,7 +87,7 @@ for where saved items live and who can see a served page. See
 ### What happened to the old page?
 
 Earlier versions built the page from Firstmate's backlogs, boards, topics and
-reports. There is no migration to the Saved page. See the
+reports. There is no migration to the Desk. See the
 [CLI and configuration reference](docs/reference/cli-and-config.md) for older
 config keys and service flags that are still accepted.
 

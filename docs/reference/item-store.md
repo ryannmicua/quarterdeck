@@ -80,7 +80,7 @@ fields if they pass the same validation as resource URLs.
 
 | Where | Fields |
 | --- | --- |
-| Saved page | Item descriptions and the open question prompts shown on Desk cards |
+| Desk and library | Item descriptions on Desk cards, in References and in rendered sections, and the open question prompts shown on Desk cards |
 | Item page | Item descriptions, question prompts, context, options and suggested answers |
 
 Quarterdeck uses the address as the link text. Inline links open in a new tab

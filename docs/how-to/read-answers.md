@@ -23,6 +23,10 @@ See [Read the report](read-the-report.md) for counts that include earlier marks.
 If a question is reopened between reading it and marking it by hand, use
 `quarterdeck mark Q7.3 open` to restore its Open state.
 
+Marking the last open question answered or closed moves its item from the
+Desk to **Answered** in the [library](use-the-library.md). Marking any question
+open returns the item to the Desk.
+
 Closed questions show their saved answers but have no editor. Reopen a closed
 question before editing its answer. See the [CLI reference](../reference/cli-and-config.md#items)
 for the `mark` command.

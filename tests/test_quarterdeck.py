@@ -259,21 +259,141 @@ class PageTests(StoreCase):
         self.assertIn("Nothing is saved yet.", pages["index.html"])
         self.assertNotIn("<table", pages["index.html"])
 
+    def served_pages(self) -> tuple[str, dict]:
+        data = quarterdeck.read_store(quarterdeck.store_path())
+        return quarterdeck.list_page(data, "Quarterdeck", served=True), data
+
+    def inbox_home(self) -> Path:
+        home = self.root / "home"
+        script = home / "bin" / "fm-inbox.sh"
+        script.parent.mkdir(parents=True, exist_ok=True)
+        script.write_text("#!/bin/sh\nexit 0\n")
+        script.chmod(0o700)
+        return home
+
+    def answer_all(self, item_id: str, count: int = 2) -> None:
+        home = self.inbox_home()
+        for part in range(1, count + 1):
+            quarterdeck.send_answer(quarterdeck.store_path(), home,
+                                    {"part": f"{item_id}.{part}", "answer": f"Answer {part}", "revision": ""})
+
     def test_saved_page_lists_items_newest_first_with_their_fields(self) -> None:
         self.add_all_kinds()
         index = self.pages()["index.html"]
-        rows = index
-        self.assertLess(rows.index("My desk"), rows.index("References"))
-        self.assertLess(rows.index(">Q3<"), rows.index(">Q2<"))
-        self.assertLess(rows.index(">Q2<"), rows.index(">Q1<"))
+        for gone in ("My desk", "Needs attention", "Reviewed questions", "<table"):
+            self.assertNotIn(gone, index)
+        self.assertLess(index.index("<h1>Desk</h1>"), index.index("<h2>References</h2>"))
+        self.assertLess(index.index(">Q2<"), index.index(">Q1<"))
         self.assertIn("Harbor chores", index)
-        self.assertIn("<h3>Tide launch decisions</h3>", index)
+        self.assertIn('<h3><a class="card-link" href="q3.html">Tide launch decisions</a></h3>', index)
         self.assertIn('<a class="work-action" href="q3.html#Q3.1">Read questions</a>', index)
         self.assertEqual(index.count('href="q3.html#Q3.1"'), 1)
         self.assertIn("Two open questions, saved to decide later.", index)
         self.assertIn("<li>Merge the tide tables now?</li><li>Which colour for the quay?</li>", index)
-        for heading in ("ID", "Kind", "Title", "Description", "Saved"):
-            self.assertIn(f'<th scope="col">{heading}</th>', index)
+        self.assertNotIn("<dialog", index)
+        self.assertNotIn("open-library", index)
+        self.assertIn("<h2>Answered</h2>", index)
+        self.assertIn("Nothing is answered yet.", index)
+
+    def test_served_desk_opens_references_and_answered_in_one_pop_out(self) -> None:
+        self.add_all_kinds()
+        page, _ = self.served_pages()
+        self.assertEqual(page.count('id="open-library"'), 1)
+        self.assertEqual(page.count("<dialog"), 1)
+        for text in ('role="tab" id="tab-references"', 'role="tab" id="tab-answered"', ">Close library<",
+                     'id="search-references"'):
+            self.assertIn(text, page)
+        self.assertIn("Nothing is answered yet.", page.split('id="panel-answered"')[1])
+        self.assertNotIn("<table", page)
+        self.assertNotIn("<h2>References</h2>", page)
+        self.assertNotIn("<h2>Answered</h2>", page)
+        references = page.split('id="panel-references"')[1].split('id="panel-answered"')[0]
+        self.assertLess(references.index('data-id="Q2"'), references.index('data-id="Q1"'))
+        self.assertIn('href="https://example.com/lavish/calls"', references)
+
+    def test_a_question_item_moves_between_desk_and_answered_by_itself(self) -> None:
+        self.add_all_kinds()
+        self.add("questions", "Pier lights", "Pick the lamp colour.", "--body-file", "-", stdin=json.dumps(QUESTIONS))
+        for state in ("answered", "closed"):
+            with self.subTest(state=state):
+                self.assertEqual(self.run_cli("mark", "Q4", state)[0], 0)
+                page, _ = self.served_pages()
+                desk, library = page.split("<dialog", 1)
+                self.assertNotIn("Pier lights", desk)
+                self.assertIn('data-id="Q4"', library.split('id="panel-answered"')[1])
+                self.assertIn("Tide launch decisions", desk)
+        self.assertEqual(self.run_cli("mark", "Q4.2", "open")[0], 0)
+        page, data = self.served_pages()
+        desk, library = page.split("<dialog", 1)
+        self.assertIn("Pier lights", desk)
+        self.assertNotIn('data-id="Q4"', library)
+        self.assertEqual([item["id"] for item in data["items"]], ["Q1", "Q2", "Q3", "Q4"])
+
+    def test_answering_every_question_moves_the_item_and_a_pending_delivery_keeps_it_on_the_desk(self) -> None:
+        self.add("questions", "Pier lights", "Pick the lamp colour.", "--body-file", "-", stdin=json.dumps(QUESTIONS))
+        quarterdeck.send_answer(quarterdeck.store_path(), None, {"part": "Q1.1", "answer": "Merge", "revision": ""})
+        quarterdeck.send_answer(quarterdeck.store_path(), None, {"part": "Q1.2", "answer": "Blue", "revision": ""})
+        page, _ = self.served_pages()
+        self.assertIn("Not delivered", page.split("<dialog", 1)[0])
+        self.assertIn('<a class="button-link" href="q1.html">Review answers</a>', page)
+        for part in (1, 2):
+            record = quarterdeck.read_store(quarterdeck.store_path())["items"][0]["answers"][str(part)]
+            quarterdeck.send_answer(quarterdeck.store_path(), self.inbox_home(),
+                                    {"part": f"Q1.{part}", "answer": record["answer"], "revision": record["revision"]})
+        page, _ = self.served_pages()
+        desk, library = page.split("<dialog", 1)
+        self.assertNotIn("Pier lights", desk)
+        self.assertIn("Nothing is on your Desk.", desk)
+        answered = library.split('id="panel-answered"')[1]
+        self.assertIn('<span class="id">Q1.2</span> Which colour for the quay?</a><p class="record">Blue</p>', answered)
+        self.assertEqual(quarterdeck.read_store(quarterdeck.store_path())["items"][0]["answers"]["2"]["answer"], "Blue")
+
+    def test_answered_rows_list_newest_answer_first(self) -> None:
+        for number in range(3):
+            self.add("questions", f"Set {number}", "Pick.", "--body-file", "-", stdin=json.dumps(QUESTIONS[:1]))
+        with patch.object(quarterdeck, "now_text", side_effect=["2026-03-01T10:00:00Z", "2026-05-01T10:00:00Z", "2026-04-01T10:00:00Z"] * 2):
+            for number in (1, 2, 3):
+                self.answer_all(f"Q{number}", 1)
+        page, _ = self.served_pages()
+        answered = page.split('id="panel-answered"')[1]
+        self.assertEqual(re.findall(r'<li class="lib-item" data-id="(Q\d)"', answered), ["Q2", "Q3", "Q1"])
+        self.assertIn('<time class="day" datetime="2026-05-01T10:00:00Z">2026-05-01</time>', answered)
+
+    def test_static_pages_keep_references_and_answered_as_plain_sections(self) -> None:
+        self.add_all_kinds()
+        self.add("questions", "Pier lights", "Pick the lamp colour.", "--body-file", "-", stdin=json.dumps(QUESTIONS[:1]))
+        self.assertEqual(self.run_cli("mark", "Q4", "answered")[0], 0)
+        pages = self.pages()
+        index = pages["index.html"]
+        for needle in ("<dialog", "open-library", 'id="search-', "showModal"):
+            self.assertNotIn(needle, index)
+        self.assertIn('<section class="page-section"><h2>References</h2>', index)
+        self.assertIn('<section class="page-section"><h2>Answered</h2>', index)
+        self.assertLess(index.index("<h2>References</h2>"), index.index("<h2>Answered</h2>"))
+        self.assertIn('href="q4.html"', index.split("<h2>Answered</h2>")[1])
+        for page in pages.values():
+            self.assertNotIn("<dialog", page)
+
+    def test_item_page_lists_open_questions_first_and_folds_answered_ones(self) -> None:
+        self.add("questions", "Pier lights", "Pick the lamp colour.", "--body-file", "-", stdin=json.dumps(QUESTIONS))
+        self.answer_all("Q1", 1)
+        data = quarterdeck.read_store(quarterdeck.store_path())
+        for served in (True, False):
+            with self.subTest(served=served):
+                page = quarterdeck.item_page(data["items"][0], "Quarterdeck", served=served, data=data if served else None)
+                body = page.split('<div id="questions">')[1].split("</main>")[0]
+                self.assertLess(body.index('id="Q1.2"'), body.index('<details class="done">'))
+                self.assertIn('<summary><span class="id">Q1.1</span><span class="sum-q">Merge the tide tables now?</span>'
+                              '<span class="sum-a">Answer 1</span></summary>', body)
+                self.assertIn("1 of 2 open", page)
+                self.assertEqual(page.count('class="sendbar"'), 1 if served else 0)
+                if served:
+                    self.assertGreater(body.index('class="sendbar"'), body.index("</details>"))
+                self.assertIn('Return to Desk</a>', page)
+        self.assertEqual(self.run_cli("mark", "Q1.1", "open")[0], 0)
+        data = quarterdeck.read_store(quarterdeck.store_path())
+        page = quarterdeck.item_page(data["items"][0], "Quarterdeck", served=True, data=data)
+        self.assertNotIn('<details class="done">', page)
 
     def test_web_addresses_in_descriptions_become_links(self) -> None:
         self.add("resource", "Notes", "See https://example.com/notes/1, then <b> https://example.org/a?x=1&y=2 </b>. Not javascript:alert(1).",
@@ -325,8 +445,8 @@ class PageTests(StoreCase):
             'Install from git+https://example.org/tools.git@v2.'
         )
         pages = self.pages()
-        self.assertIn(f'<td class="description">{expected}</td>', pages["index.html"])
-        self.assertIn(f'<h3>Decisions</h3><p>{expected}</p>', pages["index.html"])
+        self.assertIn(f'<p class="lib-desc">{expected}</p>', pages["index.html"])
+        self.assertIn(f'<a class="card-link" href="q2.html">Decisions</a></h3><p>{expected}</p>', pages["index.html"])
         for name in ("q1.html", "q2.html"):
             self.assertIn(f'<p class="lead">{expected}</p>', pages[name])
 
@@ -486,7 +606,8 @@ class RenderTests(StoreCase):
         output = self.root / "site" / "Shelf #1.html"
         self.assertEqual(self.run_cli("render", "--output", str(output))[0], 0)
         for path in output.parent.iterdir():
-            self.assertEqual(path.read_text().count('href="Shelf%20%231.html"'), 2)
+            # The header mark and the Desk link, plus Return to Desk on an item page.
+            self.assertEqual(path.read_text().count('href="Shelf%20%231.html"'), 2 if path == output else 3)
             self.assertEqual(urljoin(path.as_uri(), "Shelf%20%231.html"), output.as_uri())
         self.assertFalse((output.parent / "index.html").exists())
 
@@ -643,16 +764,16 @@ class ServeTests(StoreCase):
         self.assertEqual(0, self.run_cli("mark", "Q3", "closed")[0])
         self.assertEqual(self.post_answer(port, "Q3.1", "New", correction["revision"])[0], 409)
         index = self.fetch(port, "/qd/")[1]
-        self.assertIn("Nothing is waiting for you", index)
-        self.assertRegex(index, r'<a[^>]* href="q3.html">Review answers</a>')
-        self.assertEqual(index.count('href="q3.html"'), 1)
+        self.assertIn("Nothing is on your Desk", index)
+        self.assertNotIn("Review answers", index)
+        self.assertIn('data-id="Q3"', index.split('id="panel-answered"')[1])
         closed = self.fetch(port, "/qd/q3.html")[1]
         self.assertIn("<li>Hold</li>", closed)
         self.assertIn('<strong>Suggested answer</strong><br>Merge', closed)
         self.assertNotIn("<textarea", closed)
         self.assertEqual(0, self.run_cli("mark", "Q3.2", "open")[0])
         self.assertEqual(set(self.store()["items"][2]["answers"]["2"]), {"state", "revision"})
-        desk = self.fetch(port, "/qd/")[1].split("<h1>My desk</h1>", 1)[1].split('<section id="workers">', 1)[0]
+        desk = self.fetch(port, "/qd/")[1].split("<h1>Desk</h1>", 1)[1].split('<section id="workers">', 1)[0]
         self.assertIn("<li>Which colour for the quay?</li>", desk)
         self.assertNotIn("Merge the tide tables now?", desk)
         self.assertIn('<span class="badge">1 of 2 open</span>', desk)
@@ -668,7 +789,7 @@ class ServeTests(StoreCase):
         self.add("questions", "Delivery to retry", "A choice already made.", "--body-file", "-", stdin=json.dumps(delivery))
         port = self.start("/qd")
         self.assertEqual(self.post_answer(port, "Q2.1", "Yes")[0], 200)
-        desk = self.fetch(port, "/qd/")[1].split("<h1>My desk</h1>", 1)[1].split('<section id="workers">', 1)[0]
+        desk = self.fetch(port, "/qd/")[1].split("<h1>Desk</h1>", 1)[1].split('<section id="workers">', 1)[0]
         self.assertIn('<a class="button-link" href="q2.html">Review answers</a>', desk)
         self.assertIn('<a class="work-action" href="q1.html#Q1.1">Answer questions</a>', desk)
         self.assertIn("<li>Merge the tide tables now?</li><li>Which colour for the quay?</li>", desk)
@@ -780,11 +901,11 @@ class ServeTests(StoreCase):
         status, record = self.post_answer(port, "Q3.1", "Hold", origin=public_origin, forwarded_proto="https")
         self.assertEqual((status, record["answer"]), (200, "Hold"))
 
-    def check_answer_page(self, port, script):
+    def check_answer_page(self, port, script, path="/qd/q1.html"):
         chrome = shutil.which("google-chrome")
         if not chrome:
             self.skipTest("google-chrome is required for the answer-card browser tests")
-        status, page, _ = self.fetch(port, "/qd/q1.html")
+        status, page, _ = self.fetch(port, path)
         self.assertEqual(status, 200)
         fixture = self.root / "question.html"
         fixture.write_text(page.replace("</body>", """
@@ -844,6 +965,85 @@ check(field(7) === null, 'A closed question had an editable field');
 check(button('suggest').disabled, 'Bulk suggestions remained available with nothing to fill');
 """)
 
+    def test_an_answered_question_folds_to_one_line_below_the_open_ones(self):
+        self.add("questions", "Tide decisions", "Decide the launch plan.", "--body-file", "-", stdin=json.dumps(QUESTIONS))
+        self.check_answer_page(self.start("/qd"), r"""
+const list = document.querySelector('#questions');
+check(list.children.length === 2 && !list.querySelector('details'), 'Open questions should not be folded');
+typeAnswer(1, 'Hold');
+window.fetch = async (url, options) => {
+  const {answer} = JSON.parse(options.body);
+  return {ok: true, json: async () => ({answer, state: 'answered', revision: 'saved-revision',
+    answered_at: '2026-01-12T15:00:00Z', delivery: 'sent'})};
+};
+await sendBatch();
+check(list.children.length === 2 && list.children[0].id === 'Q1.2', 'The open question did not move up');
+const folded = list.children[1];
+check(folded.matches('details.done') && !folded.open, 'The answered question was not folded');
+check(folded.querySelector('summary').textContent.includes('Merge the tide tables now?') &&
+      folded.querySelector('.sum-a').textContent === 'Hold', 'The folded line lacks the question or answer');
+folded.querySelector('summary').click();
+check(folded.open && folded.querySelector('textarea').value === 'Hold', 'The folded question did not open to its answer');
+check(document.querySelector('.progress').textContent === '1 of 2 open', 'Progress was stale');
+""")
+
+    def test_the_library_pop_out_searches_and_returns_focus(self):
+        self.add("questions", "Tide decisions", "Decide the launch plan.", "--body-file", "-", stdin=json.dumps(QUESTIONS))
+        self.add("questions", "Pier lights", "Pick the lamp colour.", "--body-file", "-", stdin=json.dumps(QUESTIONS[:1]))
+        self.add("resource", "Harbour map", "A chart of the quay.", "--url", "https://example.org/map", "--link-text", "Open the chart")
+        home = self.root / "home"
+        script = home / "bin" / "fm-inbox.sh"
+        script.parent.mkdir(parents=True)
+        script.write_text("#!/bin/sh\nexit 0\n")
+        script.chmod(0o700)
+        port = self.start("/qd", home=home)
+        with patch.object(quarterdeck, "now_text", return_value="2026-01-10T16:25:00Z"):
+            self.assertEqual(self.post_answer(port, "Q2.1", "Use amber")[1]["delivery"], "sent")
+        self.check_answer_page(port, r"""
+const opener = document.getElementById('open-library');
+const dialog = document.getElementById('library');
+const desk = [...document.querySelectorAll('.desk .work')];
+check(desk.length === 1 && desk[0].textContent.includes('Tide decisions'), 'Only the unanswered item belongs on the Desk');
+opener.click();
+check(dialog.open, 'The library did not open');
+const tabs = [...dialog.querySelectorAll('[role="tab"]')];
+check(document.activeElement === tabs[0], 'Focus did not move to the first tab');
+tabs[0].dispatchEvent(new KeyboardEvent('keydown', {key: 'ArrowRight', bubbles: true}));
+check(tabs[1].getAttribute('aria-selected') === 'true' && document.activeElement === tabs[1], 'Arrow keys did not change tab');
+const panel = document.getElementById('panel-answered');
+check(!panel.hidden && document.getElementById('panel-references').hidden, 'The tab did not switch panels');
+const search = document.getElementById('search-answered');
+const date = document.getElementById('date-answered');
+const shown = () => [...panel.querySelectorAll('.lib-item')].filter(row => !row.hidden).map(row => row.dataset.id);
+const parts = () => [...panel.querySelectorAll('[data-part]')].filter(part => !part.hidden).map(part => part.dataset.part);
+const type = text => { search.value = text; search.dispatchEvent(new Event('input', {bubbles: true})); };
+check(shown().join() === 'Q2' && parts().length === 0, 'The answered list was wrong');
+type('amber');
+check(shown().join() === 'Q2' && parts().join() === 'Q2.1', 'A word in an answer did not reveal it');
+type('q2.1');
+check(shown().join() === 'Q2' && parts().join() === 'Q2.1', 'An item part ID did not match');
+type('q2.9');
+check(shown().length === 0 && panel.querySelector('[data-none]').hidden === false, 'A missing part still matched');
+type('q20');
+check(shown().length === 0, 'Q20 matched Q2');
+type('');
+date.value = '2026-01-10';
+date.dispatchEvent(new Event('input', {bubbles: true}));
+check(shown().length === 0, 'The date filter used the UTC day, not the local one');
+date.value = '2026-01-11';
+date.dispatchEvent(new Event('input', {bubbles: true}));
+check(shown().join() === 'Q2' && parts().join() === 'Q2.1', 'The local answer date did not match');
+const answeredTime = panel.querySelector('time.day');
+check(answeredTime.textContent === 'Jan 11, 2026', 'The answer day was not shown in local time');
+tabs[0].click();
+const references = document.getElementById('search-references');
+references.value = 'chart';
+references.dispatchEvent(new Event('input', {bubbles: true}));
+check([...document.querySelectorAll('#panel-references .lib-item')].filter(row => !row.hidden).length === 1, 'References search failed');
+await new Promise(resolve => { dialog.addEventListener('close', resolve, {once: true}); dialog.close(); });
+check(document.activeElement === opener, 'Focus did not return to the library button');
+""", path="/qd/")
+
     def test_undo_reverses_one_option_action_and_preserves_later_drafts(self):
         self.add("questions", "Tide decisions", "Decide the launch plan.", "--body-file", "-",
                  stdin=json.dumps([QUESTIONS[0]] * 4))
@@ -881,7 +1081,7 @@ check(button('undo').hidden, 'Undo history was not empty');
         self.assertEqual(self.run_cli("mark", "Q1.4", "open")[0], 0)
         self.check_answer_page(port, r"""
 const savedDay = document.querySelector('main > .meta time');
-check(savedDay.textContent === '2026-01-10', 'The saved date changed');
+check(savedDay.textContent === 'Jan 11, 2026', 'The saved date was not shown in local time');
 const originalAnswerTime = card(4).querySelector('.saved-answer time');
 check(originalAnswerTime.textContent.replace(/\s+/g, ' ') === 'Jan 11, 2026, 1:25 AM',
       'Wrong local time for the saved answer');
@@ -1339,7 +1539,7 @@ class WorkersTests(StoreCase):
         port = self.start("/qd", workers_home=self.make_home([]))
         page = self.fetch(port, "/qd/")[1]
         self.assertEqual(page.count("<h1>"), 1)
-        self.assertLess(page.index("My desk"), page.index("Workers"))
+        self.assertLess(page.index("<h1>Desk</h1>"), page.index("Workers"))
         self.assertIn('id="refresh-workers">Refresh workers</button>', page)
         self.assertEqual(self.fetch(port, "/qd/workers.json", host="intruder.example")[0], 403)
 
