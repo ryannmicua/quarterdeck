@@ -3064,13 +3064,15 @@ class QuestionImagePageTests(ImageCase):
         self.assertTrue((output.parent / f"{keep.lower()}.html").exists())
         self.assertEqual({path for path in (output.parent / "images").rglob("*") if path.is_file()}, exported)
 
-    def test_render_reserves_images_even_before_the_first_pictured_add(self) -> None:
+    def test_render_reserves_image_directories_before_the_first_pictured_add(self) -> None:
         for directory in (quarterdeck.store_path().parent, self.root / "site"):
-            output = directory / "images"
-            code, _, err = self.run_cli("render", "--output", str(output))
-            self.assertEqual(code, 2)
-            self.assertIn("reserved for images", err)
-            self.assertFalse(output.exists())
+            for name in ("images", "reply-images", "Reply-Images"):
+                with self.subTest(directory=directory, name=name):
+                    output = directory / name
+                    code, _, err = self.run_cli("render", "--output", str(output))
+                    self.assertEqual(code, 2)
+                    self.assertIn(f"the Saved filename is reserved for {name.lower()}", err)
+                    self.assertFalse(output.exists())
         self.assertEqual(self.add_pictured(), "Q1")
 
     def test_live_render_reads_its_snapshot_under_the_store_lock(self) -> None:
@@ -4181,7 +4183,28 @@ check(document.execCommand('insertText', false, fill[0]) && editor.value === fil
 (suggested ? card(1).querySelector('[data-choice="Merge"]') : option).click();
 check(editor.value === fill && ask.disabled, 'Selecting the option did not replace the manual origin');
 document.getElementById('undo').click();
-check(editor.value === fill && ask.disabled, 'Undo changes made matching manual text askable');
+check(editor.value === fill && !ask.disabled, 'Undo changes lost the saved hand-edited origin');
+""", setup=f"const suggested = {json.dumps(suggested)};")
+
+    def test_native_history_treats_whitespace_around_fills_as_an_answer(self) -> None:
+        port = self.start("/qd", ask_home=self.inbox())
+        for suggested in (False, True):
+            with self.subTest(suggested=suggested):
+                self.check_page(port, r"""
+const editor = field(1);
+const ask = card(1).querySelector('.ask-button');
+const fill = suggested ? 'Merge' : 'Hold';
+(suggested ? document.getElementById('suggest') : card(1).querySelector('[data-choice="Hold"]')).click();
+editor.focus();
+editor.setSelectionRange(fill.length, fill.length);
+check(document.execCommand('insertText', false, ' ') && editor.value === fill + ' ', 'Adding whitespace failed');
+check(document.execCommand('undo') && editor.value === fill && ask.disabled, 'Undo made the original fill askable');
+check(document.execCommand('redo') && editor.value === fill + ' ' && ask.disabled,
+      'Redo made a draft askable that would send the unchanged answer');
+editor.setSelectionRange(0, 0);
+check(document.execCommand('insertText', false, '?') && !ask.disabled, 'Editing the fill did not enable Ask');
+check(document.execCommand('undo') && editor.value === fill + ' ' && ask.disabled,
+      'Undo made a draft askable that would send the unchanged answer');
 """, setup=f"const suggested = {json.dumps(suggested)};")
 
     def test_grouped_backspaces_undo_and_redo_classify_the_restored_text(self) -> None:

@@ -2600,10 +2600,6 @@ if (send) {
   const answerText = value => value.replace(/^[\p{White_Space}\x1c-\x1f]+|[\p{White_Space}\x1c-\x1f]+$/gu, '');
   const newDraft = f => answerText(f.value) && answerText(f.value) !== answerText(f.defaultValue);
   const handEdited = origin => origin === 'manual' || origin === 'ask' || origin?.edited;
-  const restoredOrigin = (field, origin) => {
-    // Undo and redo treat matching hand-edited text as the fill. Retype it to ask.
-    return origin?.choice ? {choice: origin.choice, edited: field.value !== origin.choice.dataset.choice} : origin;
-  };
   const askDraft = f => (f.closest('.item-conversation') || handEdited(draftOrigins.get(f))) && newDraft(f);
   const changed = f => {
     const {pending} = f.closest('section').dataset;
@@ -2659,7 +2655,9 @@ if (send) {
     const origin = draftOrigins.get(field);
     if (origin?.choice) {
       const restoring = e.inputType === 'historyUndo' || e.inputType === 'historyRedo';
-      draftOrigins.set(field, restoring ? restoredOrigin(field, origin) : {choice: origin.choice, edited: true});
+      // Native undo and redo treat matching hand-edited text as the fill. Retype it to ask.
+      const edited = !restoring || answerText(field.value) !== answerText(origin.choice.dataset.choice);
+      draftOrigins.set(field, {choice: origin.choice, edited});
     } else if (origin === 'filled') {
       draftOrigins.set(field, 'manual');
     }
@@ -2725,7 +2723,7 @@ if (send) {
       const step = history.pop();
       for (const [f, {value, origin, askError}] of step) {
         f.value = value;
-        if (origin) draftOrigins.set(f, restoredOrigin(f, origin));
+        if (origin) draftOrigins.set(f, origin);
         if (askError) rejections.set(f, askError);
       }
       refresh();
@@ -3104,14 +3102,14 @@ def render(args: argparse.Namespace) -> int:
         store = store_path()
         root = output.parent / "images"
         private_images = store.parent.resolve() / REPLY_IMAGES
-        if output == private_images or private_images in output.parents:
+        if private_images in output.parents:
             raise ValueError("the rendered page must be outside the private reply image tree")
         live = output.parent == store.parent.resolve()
         protected = {store.resolve(), store.with_name(store.name + ".lock").resolve()}
         if ITEM_PAGE_RE.fullmatch(output.name.lower()):
             raise ValueError("the Saved filename is reserved for item pages")
-        if output.name.lower() == "images":
-            raise ValueError("the Saved filename is reserved for images")
+        if output.name.lower() in ("images", REPLY_IMAGES):
+            raise ValueError(f"the Saved filename is reserved for {output.name.lower()}")
         with locked_store(store, read_only=not live):
             data = read_store(store)
             pages = site_pages(data, page_title(args, config), output.name)

@@ -69,8 +69,9 @@ checks recovery when an ask is already saved and when the first request
 never arrived, and checks assets from plain and external renders. Its
 headless Chrome checks cover native undo and redo of rejected asks,
 option and suggestion fills, and edits with history in a sibling editor.
-They check matching text after native Undo, Redo, and **Undo changes**, and
-verify that grouped Backspaces cannot make a restored fill askable.
+They check matching text, including surrounding whitespace, after native
+Undo and Redo, and verify that grouped Backspaces cannot make a restored
+fill askable. **Undo changes** preserves the prior draft's edit origin.
 The tests also verify that an owner
 can edit and save an answer after replacing a rejected ask. Tests open
 **Messages** explicitly and exercise both response orders for overlapping
