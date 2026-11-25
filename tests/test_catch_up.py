@@ -62,7 +62,11 @@ class CatchUpCommandTests(CatchUpCase):
     def test_add_prints_ids_that_are_never_reused(self) -> None:
         self.assertEqual(self.notice(), "C1")
         self.assertEqual(self.notice("Second"), "C2")
+        self.assertEqual(self.run_cli("catch-up", "read", "--all")[0], 0)
+        self.age_read("C1", 8)
+        self.age_read("C2", 8)
         self.assertEqual(self.run_cli("catch-up", "read", "C2")[0], 0)
+        self.assertEqual(self.store()["catch_ups"], [])
         self.assertEqual(self.notice("Third"), "C3")
         self.assertEqual(self.store()["next_catch_up"], 4)
 

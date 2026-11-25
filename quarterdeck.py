@@ -629,6 +629,18 @@ def make_body(kind: str, *, url: str | None, link_text: str | None, body: str | 
     return validated_body(kind, {"questions": questions}, images)
 
 
+def utc_stamp(value: object, name: str) -> datetime:
+    try:
+        if not isinstance(value, str):
+            raise ValueError
+        moment = datetime.strptime(value, "%Y-%m-%dT%H:%M:%SZ")
+        if moment.isoformat() + "Z" != value:
+            raise ValueError
+    except ValueError as exc:
+        raise ValueError(f"{name} must be a UTC timestamp") from exc
+    return moment
+
+
 def check_store(data: object) -> dict[str, object]:
     """Validate a store read from disk; raise ValueError when it is not one Quarterdeck wrote."""
     if not isinstance(data, dict) or type(data.get("version")) is not int or data["version"] != STORE_VERSION:
@@ -649,15 +661,7 @@ def check_store(data: object) -> dict[str, object]:
         try:
             title = clean_text(item.get("title"), "title", TITLE_LIMIT)
             description = clean_text(item.get("description"), "description", DESCRIPTION_LIMIT, multiline=True)
-            saved_at = item.get("saved_at")
-            if not isinstance(saved_at, str):
-                raise ValueError("saved_at must be a UTC timestamp")
-            try:
-                timestamp = datetime.strptime(saved_at, "%Y-%m-%dT%H:%M:%SZ")
-            except ValueError as exc:
-                raise ValueError("saved_at must be a UTC timestamp") from exc
-            if timestamp.isoformat() + "Z" != saved_at:
-                raise ValueError("saved_at must be a UTC timestamp")
+            utc_stamp(item.get("saved_at"), "saved_at")
             body = validated_body(item["kind"], item.get("body"), stored=True)
             if (title, description, body) != (item["title"], item["description"], item["body"]):
                 raise ValueError("item text or body is not in the saved format")
@@ -1502,18 +1506,6 @@ def remove_item(args: argparse.Namespace) -> int:
 # --- Catch-up ---------------------------------------------------------------------------
 
 
-def utc_stamp(value: object, name: str) -> datetime:
-    try:
-        if not isinstance(value, str):
-            raise ValueError
-        moment = datetime.strptime(value, "%Y-%m-%dT%H:%M:%SZ")
-        if moment.isoformat() + "Z" != value:
-            raise ValueError
-    except ValueError as exc:
-        raise ValueError(f"{name} must be a UTC timestamp") from exc
-    return moment
-
-
 def parse_catch_up_id(value: str) -> str:
     if not CATCH_UP_ID_RE.fullmatch(value.upper()):
         raise ValueError(f"not a catch-up ID: {value!r} (IDs look like C4)")
@@ -1570,8 +1562,7 @@ def catch_ups(data: dict[str, object]) -> list[dict[str, object]]:
 
 def unread_catch_ups(data: dict[str, object]) -> list[dict[str, object]]:
     """Unread notices, newest first."""
-    unread = [notice for notice in catch_ups(data) if "read_at" not in notice]
-    return sorted(unread, key=lambda notice: int(str(notice["id"])[1:]), reverse=True)
+    return newest_first([notice for notice in catch_ups(data) if "read_at" not in notice])
 
 
 def prune_catch_ups(data: dict[str, object], days: int) -> None:
