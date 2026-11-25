@@ -4414,7 +4414,8 @@ check(composer.value === '', 'The sent draft remained in the composer');
     def test_set_discussion_sends_only_the_request_and_keeps_the_cover_draft(self) -> None:
         port = self.start("/qd", ask_home=self.inbox())
         self.check_page(port, self.SET_STUB + r"""
-type(1, 'Hold');
+const hold = card(1).querySelector('[data-choice="Hold"]');
+hold.click();
 queueText('Please send me the proof before ordering the run.');
 check(queueItems().length === 2 && document.getElementById('send').textContent === 'Send 1 answer', 'The draft was not queued');
 [...document.querySelectorAll('#queue-list button')].find(b => b.textContent === 'Remove from send').click();
@@ -4429,6 +4430,12 @@ await settled();
 check(calls.length === 1 && calls[0][0] === 'asks' && calls[0][1].part === 'Q4', 'A message-only send also sent an answer');
 check(card(1).dataset.state === 'open' && card(2).dataset.state === 'open' && field(1).value === 'Hold',
       'A message-only send closed a question or lost the cover draft');
+hold.click();
+check(!document.getElementById('send').disabled && queueItems().length === 1 && queueItems()[0].includes('Q4.1'),
+      'Reselecting the checked option did not return it to the send');
+document.getElementById('undo').click();
+check(field(1).value === 'Hold' && document.getElementById('send').disabled &&
+      document.getElementById('send-queue').disabled, 'Undo did not restore the exclusion');
 type(1, 'Hold ');
 check(!document.getElementById('send').disabled && queueItems().length === 1 && queueItems()[0].includes('Answer \u00b7 Q4.1'),
       'Editing the kept draft did not put it back in the send');
@@ -4552,12 +4559,14 @@ type(2, '');
 check(field(1).value === 'Hold' && !card(1).querySelector('.review').hidden &&
       card(2).querySelector('.clarified').textContent.includes('The printer can make one sample first.'),
       'The open page lost the draft or missed the clarification');
+type(1, ' Hold ');
 send.click();
 sendQueue.click();
-check(requests.length === 1 && send.disabled && sendQueue.disabled, 'A send button accepted a stale draft');
+check(requests.length === 1 && send.disabled && sendQueue.disabled && !card(1).querySelector('.review').hidden,
+      'A whitespace-only edit cleared the review hold or let a send button accept a stale draft');
 card(1).querySelector('[data-choice="Merge"]').click();
 document.getElementById('undo').click();
-check(field(1).value === 'Hold' && !card(1).querySelector('.review').hidden && send.disabled,
+check(field(1).value === ' Hold ' && !card(1).querySelector('.review').hidden && send.disabled,
       'Undo released the review-held draft');
 card(1).querySelector('.keep-draft').click();
 check(send.disabled && sendQueue.disabled, 'Confirming the draft cleared its send exclusion');
@@ -4566,7 +4575,7 @@ composer.dispatchEvent(new Event('input', {bubbles: true}));
 document.getElementById('queue-add').click();
 sendQueue.click();
 await settled();
-check(requests.length === 2 && requests[1][0] === 'asks' && field(1).value === 'Hold' && send.disabled,
+check(requests.length === 2 && requests[1][0] === 'asks' && field(1).value === ' Hold ' && send.disabled,
       'Following up sent or discarded the cover draft');
 type(1, 'Hold');
 sendQueue.click();
@@ -4607,6 +4616,54 @@ check(document.getElementById('send').textContent === 'Send 2 answers' && card(1
       queueItems().length === 2, 'Keeping the draft did not release it');
 """, page=page)
         self.assertIn("This choice is for the cover proof.", self.fetch(port, "/qd/q4.html")[1])
+
+    def test_live_option_review_reveals_a_folded_correction(self) -> None:
+        home = self.inbox()
+        port = self.start("/qd", home=home, ask_home=home)
+        status, saved = self.post(port, "/qd/answers", {"part": "Q4.1", "answer": "Merge", "revision": ""})
+        self.assertEqual((status, saved["delivery"]), (200, "sent"))
+        before_reply = self.fetch(port, "/qd/q4.html")[1]
+        ask = self.ask_body(port, "Q4", "Can we see the proof?")
+        self.assertEqual(self.post(port, "/qd/asks", ask)[0], 200)
+        self.assertEqual(self.run_cli("reply", "Q4", "--ask", ask["id"], "--text", "Check the revised proof.",
+                                      "--clarify", "Q4.1=The cover option changed.", "--option-changed", "Q4.1")[0], 0)
+        snapshot = json.loads(self.fetch(port, "/qd/q4.discussion.json")[1])
+        for via_poll in (True, False):
+            with self.subTest(via_poll=via_poll):
+                self.check_page(port, r"""
+const calls = [];
+window.fetch = async (url, options) => {
+  calls.push(url);
+  const result = url === 'q4.discussion.json' || !viaPoll ? snapshot : {thread: ''};
+  return {ok: true, status: 200, json: async () => ({...result, delivery: 'sent', message: 'Ask sent.'})};
+};
+const fold = card(1).closest('details.done');
+fold.open = true;
+type(1, 'Hold');
+fold.open = false;
+document.getElementById('open-item-ask').click();
+document.querySelector('#queue-list button').click();
+const composer = document.getElementById('ask-Q4');
+composer.value = 'Can we see the proof?';
+composer.dispatchEvent(new Event('input', {bubbles: true}));
+document.getElementById('queue-add').click();
+document.getElementById('send-queue').click();
+await settled();
+if (viaPoll) await refreshDiscussion();
+check(calls.join() === (viaPoll ? 'asks,q4.discussion.json' : 'asks'), 'The excluded correction was sent');
+const review = card(1).querySelector('.review');
+check(fold.open && review.getClientRects().length > 0 && field(1).value === 'Hold' &&
+      document.getElementById('send').disabled && document.getElementById('send-queue').disabled,
+      'The correction stayed folded, lost its text, or entered a send without review');
+type(1, 'Wait for the proof.');
+check(review.hidden && !document.getElementById('send').disabled && !document.getElementById('send-queue').disabled,
+      'A change to the submitted answer text did not release the review hold');
+""", page=before_reply, setup=f"""
+const snapshot = {json.dumps(snapshot)};
+const viaPoll = {json.dumps(via_poll)};
+let refreshDiscussion;
+window.setInterval = callback => {{ refreshDiscussion = callback; }};
+""")
 
     def test_mixed_queue_reports_delivered_pending_and_rejected_entries(self) -> None:
         port = self.start("/qd", ask_home=self.inbox())

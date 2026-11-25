@@ -27,9 +27,10 @@ You can send more messages before answering anything.
 
 When Firstmate's reply clarifies a question, **Clarified after discussion**
 appears on that card. If the reply says an option changed, the card asks you to
-review your draft. Both send buttons hold it until you edit it, pick an option,
-or select **Keep this draft**. The open page refreshes the set discussion and
-its clarifications without replacing your drafts.
+review your draft. Both send buttons hold it until you change the answer text,
+pick an option, or select **Keep this draft**. Adding or removing surrounding
+whitespace keeps the review hold. The open page refreshes the set discussion
+and its clarifications without replacing your drafts.
 
 When every question is answered, the discussion stays readable. Select **Read
 set discussion** under the item in **Answered** in the Library.
@@ -56,13 +57,13 @@ from oldest to newest, with its replies underneath in the order they arrived.
 ## Read replies
 
 Firstmate's reply appears under its ask and can include text, links, and images.
-Sending or retrying a numbered ask refreshes its conversation. If the refresh
-finds an unread reply on a folded
-answer, the question expands and its **Messages** panel stays open if you
-already opened it.
+Reload the page to see new replies to numbered asks. Sending or retrying a
+numbered ask also refreshes its conversation. If that refresh finds an unread
+reply on a folded answer, the question expands and its **Messages** panel stays
+open if you already opened it.
 
 Select **Messages** on the question to acknowledge the replies shown there.
-If it is already open, close and reopen it to acknowledge new replies. A
+If it is already open, close and reopen it to acknowledge the replies it shows. A
 closed question can also show **Replied**. See
 [where to find items with unread replies](use-the-library.md#when-an-item-moves).
 

@@ -3083,11 +3083,13 @@ if (send) {
   const askDraft = f => handEdited(draftOrigins.get(f)) && newDraft(f);
   const requestRejected = status => [400, 403, 405, 409, 415].includes(status);
   const optionRevision = section => section.querySelector('.clarified').dataset.optionRevision;
-  const changed = f => {
-    const {pending} = f.closest('section').dataset;
+  const answerDraft = f => {
     const answer = answerText(f.value);
+    return answer && (answer !== f.defaultValue || f.closest('section').dataset.pending === '1');
+  };
+  const changed = f => {
     return !rejectedAsk(draftOrigins.get(f)) && !rejections.has(f) && !excluded.has(f)
-      && !f.closest('section').hasAttribute('data-review') && answer && (answer !== f.defaultValue || pending === '1');
+      && !f.closest('section').hasAttribute('data-review') && answerDraft(f);
   };
   const suggestionFor = f => {
     const section = f.closest('section');
@@ -3146,6 +3148,9 @@ if (send) {
   function reviewed(section) {
     section.removeAttribute('data-review');
   }
+  function holdForReview(field) {
+    field.closest('section').dataset.review = answerText(field.value);
+  }
   function updateClarification(section, html) {
     const current = section.querySelector('.clarified');
     const template = document.createElement('template');
@@ -3153,7 +3158,10 @@ if (send) {
     const next = template.content.firstElementChild;
     if (Number(next.dataset.notes) <= Number(current.dataset.notes)) return;
     if (section.hasAttribute('data-revision') && next.dataset.optionRevision !== current.dataset.optionRevision) {
-      section.setAttribute('data-review', '');
+      const field = section.querySelector('textarea');
+      holdForReview(field);
+      const folded = section.closest('details.done');
+      if (folded && answerDraft(field)) folded.open = true;
     }
     const restoreFocus = current.contains(document.activeElement);
     const review = next.querySelector('.review');
@@ -3274,8 +3282,13 @@ if (send) {
     forget(field);
     const card = field.closest('.decision');
     if (card) {
-      excluded.delete(field);
-      card.toggleAttribute('data-review', restoring && Boolean(optionRevision(card)));
+      const answer = answerText(field.value);
+      if (restoring && optionRevision(card)) {
+        holdForReview(field);
+      } else if (!card.hasAttribute('data-review') || (answer && answer !== card.dataset.review)) {
+        excluded.delete(field);
+        reviewed(card);
+      }
     }
     refresh();
   });
@@ -3344,10 +3357,11 @@ if (send) {
         const section = f.closest('section');
         const option = choice ? (section.contains(choice) && choice) : suggestionFor(f);
         const origin = draftOrigins.get(f);
-        if (option && (option.dataset.choice !== f.value || handEdited(origin) || section.hasAttribute('data-review'))) {
+        if (option && (option.dataset.choice !== f.value || handEdited(origin) || excluded.has(f) ||
+                       section.hasAttribute('data-review'))) {
           const askError = rejectedAsk(origin) ? rejections.get(f) : undefined;
           step.set(f, {value: f.value, origin, askError, excluded: excluded.has(f),
-            review: section.hasAttribute('data-review'), revision: optionRevision(section)});
+            review: section.getAttribute('data-review'), revision: optionRevision(section)});
           if (askError) rejections.delete(f);
           f.value = option.dataset.choice;
           excluded.delete(f);
@@ -3375,7 +3389,9 @@ if (send) {
         pending.querySelector('button').addEventListener('click', () => askRequest(section, {...body, action: 'retry'}, pending));
         thread.querySelector('.pending-asks').append(pending);
         field.value = field.defaultValue;
-        if (section.dataset.pending === '1' && optionRevision(section)) section.setAttribute('data-review', '');
+        if (section.hasAttribute('data-review') || (section.dataset.pending === '1' && optionRevision(section))) {
+          holdForReview(field);
+        }
         if (rejectedAsk(draftOrigins.get(field))) rejections.delete(field);
         if (draftOrigins.has(field)) draftOrigins.set(field, 'filled');
         forget(field);
@@ -3399,7 +3415,9 @@ if (send) {
         if (askError) rejections.set(f, askError);
         if (draft.excluded) excluded.add(f);
         else excluded.delete(f);
-        section.toggleAttribute('data-review', review || revision !== optionRevision(section));
+        if (revision !== optionRevision(section)) holdForReview(f);
+        else if (review !== null) section.dataset.review = review;
+        else reviewed(section);
       }
       refresh();
       if (history.length) undo.focus();
@@ -3462,6 +3480,7 @@ if (send) {
         if (pending && saved === false && !blockedRetry) {
           failedDraft = section.querySelector('textarea');
           failedDraft.value = pending.querySelector('.record').textContent;
+          if (section.hasAttribute('data-review')) holdForReview(failedDraft);
           forget(failedDraft);
           if (draftOrigins.has(failedDraft)) draftOrigins.set(failedDraft, {rejected: body.text});
           rejections.set(failedDraft, {message, draft: body.text});
@@ -3568,6 +3587,9 @@ if (send) {
     return {...totals, message: output.textContent};
   }
   send?.addEventListener('click', () => submitAnswers(fields.filter(changed)));
+  for (const field of fields) {
+    if (field.closest('section').hasAttribute('data-review')) holdForReview(field);
+  }
   refresh();
 }
 """
