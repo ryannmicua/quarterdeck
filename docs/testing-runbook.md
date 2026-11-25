@@ -9,7 +9,7 @@ Run one group while changing it, then the whole suite before a pull request
 | Classification, answer history, reports, and list filters | `PYTHONPATH=tests python3 -m unittest -v test_classification` |
 | Page content | `PYTHONPATH=tests python3 -m unittest -v test_quarterdeck.PageTests` |
 | Inline question addresses and plain-text choice values | `PYTHONPATH=tests python3 -m unittest -v test_quarterdeck.QuestionAddressTests` |
-| Question link validation and Desk card previews | `PYTHONPATH=tests python3 -m unittest -v test_quarterdeck.QuestionLinkTests` |
+| Question link validation and placement | `PYTHONPATH=tests python3 -m unittest -v test_quarterdeck.QuestionLinkTests` |
 | `render` | `PYTHONPATH=tests python3 -m unittest -v test_quarterdeck.RenderTests` |
 | Question image import, serving, and export | `PYTHONPATH=tests python3 -m unittest -v test_quarterdeck.QuestionImageTests test_quarterdeck.QuestionImagePageTests` |
 | `serve`, base path, host checks and the visit log | `PYTHONPATH=tests python3 -m unittest -v test_quarterdeck.ServeTests` |
@@ -36,10 +36,14 @@ questions. It verifies the bar at both ends of the page and after its status
 message grows, including that the last answer field can scroll clear of the bar.
 On the long phone page, it also checks that Undo and status messages leave the
 focused control visible. A long send error scrolls inside the bar. The browser
-checks also cover focus through delivery transitions and the hit targets for
-the Desk card action and its independent links. A 320-pixel sheet check covers
-both tabs and Close library. A zoomed viewport check verifies the sheet at
-640 CSS pixels and the drawer at a fractional width just above it.
+checks also cover focus through delivery transitions. At 390, 641, and 1440
+pixels, the Desk check confirms one row per fixture item and that every cell
+hits its row's item link.
+It also checks that the item ID labels the link when the title is invisible
+and that a long project name and delivery status fit without horizontal
+scrolling. A 320-pixel sheet check covers both tabs and Close library. A
+zoomed viewport check verifies the sheet at 640 CSS pixels and the drawer
+at a fractional width just above it.
 At 140 pixels tall, browser checks cover the Send
 bar with Undo and a long error, and search and results in both library layouts.
 A 320 × 355 check switches tabs and reaches results past stacked library filters.
@@ -49,10 +53,12 @@ in the sheet and drawer with 60 pixels visible, then restores the full height.
 The Desk history check opens a library item, updates answers, then goes Back,
 Forward, and Back again. Both returns verify the same tab and search against a
 fresh Desk and archive, including filters whose values disappear from the
-refreshed results. After dismissal, returning from a Desk card and
-reloading the Desk both leave the library closed.
+refreshed results. After dismissal, returning from an item opened through
+the Desk table and reloading the Desk both leave the library closed.
 
-The classification browser test uses headless `google-chrome` to select
+The classification tests parse served and exported HTML to verify item and
+project pairs in a single Desk table, including sets with multiple prompts.
+The classification browser tests use headless `google-chrome` to select
 filters and check which reference rows, reviewed cards, and empty messages
 are visible in the narrow and desktop layouts.
 

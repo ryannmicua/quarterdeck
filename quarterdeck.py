@@ -1826,14 +1826,21 @@ textarea { display:block; width:100%; resize:vertical; background:var(--ground);
 .msg .record { margin:0; font-family:var(--serif); }
 .msg .ref-links, .msg .shots { margin-top:.5rem; }
 .msg .actions { margin-top:.5rem; }
-.desk { margin:0 0 1rem; }
-.desk .work { max-width:none; margin:0; padding:1rem; border-width:0 0 1px; border-left:5px solid var(--rule); border-radius:0; background:transparent;
-  display:grid; grid-template-columns:minmax(0,1fr) auto; gap:0 1.5rem; align-items:center; }
-.desk .work.next { border-left-color:var(--signal); background:var(--signal-ground); }
-.desk .work > .eyebrow, .desk .work > h3, .desk .work > p, .desk .work > ul { grid-column:1; }
-.desk .work > p { margin:.2rem 0 0; }
-.desk .work > ul { margin:.4rem 0 0; padding-inline-start:1.25rem; }
-.desk .work > .actions { grid-column:2; grid-row:1 / span 4; justify-content:flex-end; }
+.desk { margin:0 0 1rem; overflow-x:auto; font-family:var(--sans); }
+.desk table { width:100%; border-collapse:collapse; text-align:left; }
+.desk thead th { color:var(--soft); font-size:var(--text-sm); font-weight:500; }
+.desk th, .desk td { padding:.7rem .5rem; border-bottom:1px solid var(--rule); vertical-align:middle; }
+.desk tbody th { font-weight:600; }
+.desk td { overflow-wrap:normal; }
+.desk td.project { overflow-wrap:anywhere; }
+.desk .work { position:relative; cursor:pointer; border-left:5px solid var(--rule); }
+.desk .work.next { background:var(--signal-ground); }
+.desk .work:hover { background:var(--faint); }
+.desk .work.next:hover { background:var(--signal-ground); box-shadow:inset 0 0 0 2px var(--signal); }
+.desk .work:has(.card-link:focus-visible) { outline:3px solid var(--focus); outline-offset:-3px; }
+.desk .card-link { display:inline-block; padding:.35rem 0; }
+.desk .card-link::after { content:""; position:absolute; inset:0; }
+.sr { position:absolute; width:1px; height:1px; overflow:hidden; clip-path:inset(50%); white-space:nowrap; }
 .button-link, .work-action { display:inline-flex; align-items:center; min-height:44px; padding:.5rem .85rem; border-radius:5px; font:600 var(--text-md)/1.3 var(--sans);
   text-decoration:none; border:1px solid var(--soft); background:var(--raised); color:var(--ink); }
 .work-action { background:var(--ink); color:var(--raised); border-color:var(--ink); }
@@ -1853,30 +1860,19 @@ textarea { display:block; width:100%; resize:vertical; background:var(--ground);
 #workers h3 { font:700 var(--text-md)/1.3 var(--sans); margin:1.4rem 0 0; }
 .tags { display:flex; flex-wrap:wrap; gap:.3rem .5rem; list-style:none; margin:.35rem 0 0; padding:0; font-family:var(--sans); }
 .tags li { font-size:var(--text-sm); color:var(--soft); border:1px solid var(--rule); border-radius:5px; padding:.05rem .5rem; }
-.desk .work > .tags { grid-column:1; padding-inline-start:0; margin:.5rem 0 0; }
 .project-name { color:var(--soft); font-size:var(--text-sm); font-weight:400; }
-.group-name { font:700 var(--text-md)/1.3 var(--sans); margin:1.4rem 0 .3rem; color:var(--soft); }
 .filters { display:flex; flex-wrap:wrap; gap:.6rem 1.2rem; align-items:end; margin:.6rem 0; font-family:var(--sans); }
 .filters label { display:flex; flex-direction:column; gap:.2rem; min-width:0; max-width:100%; font-size:var(--text-sm); color:var(--soft); }
 .filters select { min-height:var(--tap); min-width:min(100%,12rem); max-width:100%; font:var(--text-md)/1.3 var(--sans); padding:.4rem .6rem;
   background:var(--raised); color:var(--ink); border:1px solid var(--soft); border-radius:5px; }
 .saved-answer .record:empty { display:none; }
 @media (max-width: 40rem) {
-  .desk .work { grid-template-columns:minmax(0,1fr); }
-  .desk .work > .actions { grid-column:1; grid-row:auto; justify-content:flex-start; margin-top:.6rem; }
+  .desk th, .desk td { padding:.6rem .3rem; }
 }
 [hidden] { display:none !important; }
 .bar nav { display:flex; flex-wrap:wrap; gap:.4rem 1rem; align-items:center; }
 .bar nav a { margin-left:0; }
 .bar button { min-height:40px; font-size:var(--text-sm); }
-.desk .work { position:relative; cursor:pointer; }
-.desk .work:hover { background:var(--faint); }
-.desk .work.next:hover { background:var(--signal-ground); box-shadow:inset 0 0 0 2px var(--signal); }
-.desk .work h3 { margin:.3rem 0; }
-.card-link::after { content:""; position:absolute; inset:0; z-index:0; }
-.card-link:focus { outline:none; }
-.desk .work:has(.card-link:focus) { outline:3px solid var(--focus); outline-offset:-3px; }
-.desk .work a:not(.card-link), .desk .work button { position:relative; z-index:1; }
 html:has(.sendbar) { --sendbar-space:calc(var(--sendbar-height, 0px) + var(--visible-bottom, 0px)); scroll-padding-bottom:var(--sendbar-space); }
 main:has(> .sendbar) { padding-bottom:var(--sendbar-space); }
 .sendbar { position:fixed; inset:auto 0 var(--visible-bottom, 0px); z-index:2;
@@ -2406,31 +2402,22 @@ def progress_text(item, summary):
     return remaining or state
 
 
-def question_card(item, summary, *, served, primary, show_project=True):
+def desk_row(item, summary, *, primary):
     state, open_parts, pending = summary
-    remaining = len(open_parts)
     href = item_page_name(item["id"])
     if open_parts:
         href += f'#{item["id"]}.{open_parts[0]}'
-    progress = progress_text(item, summary)
-    action = "Read questions" if not served else ("Answer questions" if remaining else "Review answers")
-    link_style = "work-action" if primary else "button-link"
     title = esc(item["title"])
-    questions = item["body"]["questions"]
-    prompts = "".join(f'<li>{linked_text(questions[n - 1]["question"])}</li>' for n in open_parts)
-    first_link = next((link_html(questions[n - 1]["links"][0], prefix=f'{item["id"]}.{n} ')
-                       for n in open_parts if questions[n - 1].get("links")), '')
-    visual = f'<p class="visual">{first_link}</p>' if first_link else ''
-    project = f' <span class="project-name">{esc(item["project"])}</span>' if show_project and item.get("project") else ""
-    return (f'<article class="work{' next' if primary else ''}"><div class="eyebrow"><span class="id">{item["id"]}</span> Questions{project}</div>'
-            f'<h3>{title}</h3><p>{linked_text(item["description"])}</p>'
-            + (f'<ul>{prompts}</ul>' if prompts else '')
-            + tag_labels(all_tags(item))
-            + visual
-            + (f'<div class="actions"><span class="badge">Replied</span>' + (f'<span>{remaining} of {len(question_parts(item))} open</span>' if remaining else '')
-               if state == "Replied" else f'<div class="actions"><span class="badge">{progress}</span>')
-            + ('<span>Not delivered</span>' if pending else '')
-            + f'<a class="card-link {link_style}" href="{href}" aria-label="{action} for {title}">{action}</a></div></article>')
+    project = esc(item["project"]) if item.get("project") else ""
+    remaining = len(open_parts)
+    count = f'{remaining} of {len(question_parts(item))} open' if remaining else "None open"
+    latest = ('<span class="badge">Replied</span>' if state == "Replied" else
+              "Asked" if remaining else esc(state))
+    if pending:
+        latest += ' <span>Not delivered</span>'
+    return (f'<tr class="work{' next' if primary else ''}"><th scope="row">'
+            f'<a class="card-link" href="{href}"><span class="id">{item["id"]}</span> {title}</a></th>'
+            f'<td class="project">{project}</td><td>{count}</td><td>{latest}</td></tr>')
 
 
 def link_html(link, *, prefix=""):
@@ -3291,15 +3278,6 @@ def workers_section(ready: bool) -> str:
             '<p class="meta" id="workers-status" role="status">Loading workers</p><div id="workers-list"></div></section>')
 
 
-def conversation_card(item, *, show_project=True):
-    href, title = item_page_name(item["id"]), esc(item["title"])
-    project = f' <span class="project-name">{esc(item["project"])}</span>' if show_project and item.get("project") else ""
-    return (f'<article class="work"><div class="eyebrow"><span class="id">{item["id"]}</span> Conversation{project}</div>'
-            f'<h3>{title}</h3>{tag_labels(list(item.get("tags", [])))}'
-            f'<div class="actions"><span class="badge">Replied</span>'
-            f'<a class="card-link button-link" href="{href}" aria-label="Read the reply in {title}">Read reply</a></div></article>')
-
-
 def talk_form(binding):
     return ('<form id="talk-form" class="talk" hidden novalidate><label for="talk-topic">Topic</label>'
             f'<input id="talk-topic" maxlength="{TITLE_LIMIT}" autocomplete="off">'
@@ -3319,30 +3297,21 @@ def list_page(data: dict[str, object], site_title: str, *, served: bool, saved_n
             attention.append((item, summary))
         elif served and item["kind"] == "conversation" and thread_unread(item, None):
             attention.append((item, ("Replied", [], False)))
-    # With more than one project on the Desk, its cards group by project, the group holding the newest item first.
-    projects = list(dict.fromkeys(item.get("project", "") for item, _ in attention))
-    grouped = len(projects) > 1
     primary = next((item for item, summary in attention if summary[1]), None)
     body = ""
 
-    def desk(group, *, show_project: bool = True) -> str:
-        cards = "".join(conversation_card(item, show_project=show_project) if item["kind"] == "conversation" else
-                        question_card(item, summary, served=served, primary=item is primary, show_project=show_project)
-                        for item, summary in group)
-        return f'<div class="desk">{cards}</div>'
+    def desk() -> str:
+        rows = "".join(desk_row(item, summary, primary=item is primary) for item, summary in attention)
+        return ('<div class="desk"><table><caption class="sr">Items that need you, newest first</caption><thead><tr>'
+                '<th scope="col">Item</th><th scope="col" class="project">Project</th>'
+                f'<th scope="col">Questions</th><th scope="col">Latest</th></tr></thead><tbody>{rows}</tbody></table></div>')
 
     heading = "<h1>Desk</h1>"
     if served and ask_binding:
         heading = ('<div class="page-head"><h1>Desk</h1><button type="button" id="open-talk" aria-expanded="false" '
                    'aria-controls="talk-form">Talk to Firstmate</button></div>' + talk_form(ask_binding))
     if attention:
-        body += heading
-        if grouped:
-            for project in projects:
-                members = [pair for pair in attention if pair[0].get("project", "") == project]
-                body += f'<h2 class="group-name">{esc(project or "(No project)")}</h2>' + desk(members, show_project=False)
-        else:
-            body += desk(attention)
+        body += heading + desk()
     elif not items:
         body = f'{heading}<p class="empty">{esc(empty)}</p>'
     else:

@@ -80,11 +80,8 @@ For link field requirements, see the
 A question may also carry a `kind` and `tags`, and the item a project and
 tags; see [Classify items](classify-items.md).
 
-The question page shows the links above the options and suggested answer.
-If any open question has links, the Desk card shows the first link from
-the first such question, prefixed with that question's ID, as in
-`Q6.2 See the mock-ups`.
-On both surfaces, the links open in a new tab.
+The item page shows the links above the question's options and suggested
+answer. The links open in a new tab.
 
 ### Questions with images
 

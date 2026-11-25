@@ -298,17 +298,17 @@ class PageTests(StoreCase):
     def test_saved_page_lists_items_newest_first_with_their_fields(self) -> None:
         self.add_all_kinds()
         index = self.pages()["index.html"]
-        for gone in ("My desk", "Needs attention", "Reviewed questions", "<table"):
+        for gone in ("My desk", "Needs attention", "Reviewed questions"):
             self.assertNotIn(gone, index)
         self.assertLess(index.index("<h1>Desk</h1>"), index.index("<h2>References</h2>"))
         self.assertLess(index.index(">Q2<"), index.index(">Q1<"))
         self.assertIn("Harbor chores", index)
-        self.assertIn('<h3>Tide launch decisions</h3>', index)
-        self.assertIn('href="q3.html#Q3.1" aria-label="Read questions for Tide launch decisions">Read questions</a>', index)
+        self.assertIn('<a class="card-link" href="q3.html#Q3.1"><span class="id">Q3</span> Tide launch decisions</a>', index)
         self.assertNotIn('href="q3.html"', index)
         self.assertEqual(index.count('href="q3.html#Q3.1"'), 1)
-        self.assertIn("Two open questions, saved to decide later.", index)
-        self.assertIn("<li>Merge the tide tables now?</li><li>Which colour for the quay?</li>", index)
+        self.assertIn("<td>2 of 2 open</td>", index)
+        for prompt in ("Two open questions, saved to decide later.", "Merge the tide tables now?", "Which colour for the quay?"):
+            self.assertNotIn(prompt, index.split("<h2>References</h2>")[0])
         self.assert_no_library_controls(index)
         self.assertIn("<h2>Answered</h2>", index)
         self.assertIn("Nothing is answered yet.", index)
@@ -322,7 +322,6 @@ class PageTests(StoreCase):
                      'id="search-references"', 'id="search-answered"'):
             self.assertIn(text, page)
         self.assertIn("Nothing is answered yet.", page.split('id="panel-answered"')[1])
-        self.assertNotIn("<table", page)
         self.assertNotIn("<h2>References</h2>", page)
         self.assertNotIn("<h2>Answered</h2>", page)
         references = page.split('id="panel-references"')[1].split('id="panel-answered"')[0]
@@ -354,8 +353,8 @@ class PageTests(StoreCase):
         quarterdeck.send_answer(quarterdeck.store_path(), None, {"part": "Q1.1", "answer": "Merge", "revision": ""})
         quarterdeck.send_answer(quarterdeck.store_path(), None, {"part": "Q1.2", "answer": "Blue", "revision": ""})
         page, _ = self.served_pages()
-        self.assertIn("Not delivered", page.split("<dialog", 1)[0])
-        self.assertIn('href="q1.html" aria-label="Review answers for Pier lights">Review answers</a>', page)
+        self.assertIn('<td>None open</td><td>Answered <span>Not delivered</span></td>', page.split("<dialog", 1)[0])
+        self.assertIn('<a class="card-link" href="q1.html"><span class="id">Q1</span> Pier lights</a>', page)
         for part in (1, 2):
             record = quarterdeck.read_store(quarterdeck.store_path())["items"][0]["answers"][str(part)]
             quarterdeck.send_answer(quarterdeck.store_path(), self.inbox_home(),
@@ -497,7 +496,7 @@ class PageTests(StoreCase):
         )
         pages = self.pages()
         self.assertIn(f'<p class="lib-desc">{expected}</p>', pages["index.html"])
-        self.assertIn(f'<h3>Decisions</h3><p>{expected}</p>', pages["index.html"])
+        self.assertNotIn(expected, pages["index.html"].split("<h2>References</h2>")[0])
         for name in ("q1.html", "q2.html"):
             self.assertIn(f'<p class="lead">{expected}</p>', pages[name])
 
@@ -537,6 +536,18 @@ LINKED = [
 ]
 
 
+def anchor_destinations(page: str) -> set[str]:
+    destinations = set()
+
+    class Anchors(HTMLParser):
+        def handle_starttag(self, tag, attrs):
+            if tag == "a":
+                destinations.update(value for name, value in attrs if name == "href" and value is not None)
+
+    Anchors().feed(page)
+    return destinations
+
+
 class QuestionAddressTests(StoreCase):
     def test_web_addresses_in_question_text_become_links_but_answers_do_not_change(self) -> None:
         prompt_url, context_url, option_url, suggestion_url = (
@@ -551,7 +562,9 @@ class QuestionAddressTests(StoreCase):
         pages = quarterdeck.site_pages(data, "Quarterdeck", "index.html")
         served = quarterdeck.item_page(data["items"][0], "Quarterdeck", served=True)
         prompt_link = f'<a href="{prompt_url}" target="_blank" rel="noopener noreferrer">{prompt_url}</a>'
-        self.assertIn(prompt_link, pages["index.html"])
+        addresses = {prompt_url, context_url, option_url, suggestion_url}
+        for desk in (pages["index.html"], quarterdeck.list_page(data, "Quarterdeck", served=True)):
+            self.assertTrue(addresses.isdisjoint(anchor_destinations(desk)))
         for page in (pages["q1.html"], served):
             self.assertIn(prompt_link, page)
             for url in (context_url, option_url):
@@ -588,28 +601,27 @@ class QuestionLinkTests(StoreCase):
                           f'rel="noopener noreferrer">{text}</a>')
                 self.assertLess(pages["q1.html"].index(anchor), pages["q1.html"].index("<li>Centered</li>"))
                 self.assertLess(served_page.index(anchor), served_page.index('<div class="choices">'))
-        card_link = ('<a class="ref-link" href="https://example.org/review/popup" target="_blank" '
-                     'rel="noopener noreferrer">Q1.1 See the mock-ups</a>')
-        self.assertEqual(pages["index.html"].count(card_link), 1)
-        self.assertNotIn("Second view", pages["index.html"])
+        self.assertTrue({link["url"] for link in expected_links}.isdisjoint(anchor_destinations(pages["index.html"])))
 
-    def test_card_preview_uses_first_open_question_with_links(self) -> None:
+    def test_desk_rows_do_not_repeat_question_links(self) -> None:
         later_question = {"question": "Where should the button go?", "context": "Review the placements.",
                           "options": ["Top", "Bottom"],
                           "links": [{"text": "See the placements", "url": "https://example.org/review/placements"}]}
         self.assertEqual(self.save([{**LINKED[1], "links": []}, LINKED[0], later_question])[0], 0)
         self.assertNotIn("links", self.store()["items"][0]["body"]["questions"][0])
-        first = "Q1.2 See the mock-ups"
-        later = "Q1.3 See the placements"
-        cases = [("Q1.2", "open", first), ("Q1.2", "answered", later), ("Q1.2", "closed", later),
-                 ("Q1.3", "closed", None), ("Q1.3", "open", later), ("Q1.2", "open", first)]
-        for part, state, expected in cases:
+        destinations = {link["url"] for question in (LINKED[0], later_question) for link in question["links"]}
+        cases = [("Q1.2", "open"), ("Q1.2", "answered"), ("Q1.2", "closed"),
+                 ("Q1.3", "closed"), ("Q1.3", "open"), ("Q1.2", "open")]
+        for part, state in cases:
             with self.subTest(part=part, state=state):
                 self.assertEqual(self.run_cli("mark", part, state, *(["--via", "chat"] if state == "answered" else []))[0], 0)
                 data = quarterdeck.read_store(quarterdeck.store_path())
-                page = quarterdeck.site_pages(data, "Quarterdeck", "index.html")["index.html"]
-                for label in (first, later):
-                    self.assertEqual(page.count(f">{label}</a>"), int(label == expected))
+                pages = quarterdeck.site_pages(data, "Quarterdeck", "index.html")
+                served_desk = quarterdeck.list_page(data, "Quarterdeck", served=True)
+                served_item = quarterdeck.item_page(data["items"][0], "Quarterdeck", served=True)
+                for desk, item in ((pages["index.html"], pages["q1.html"]), (served_desk, served_item)):
+                    self.assertEqual(destinations & anchor_destinations(desk), set())
+                    self.assertEqual(destinations & anchor_destinations(item), destinations)
 
     def test_bad_links_are_refused(self) -> None:
         base = {"question": "Q?", "context": "C", "options": ["A"]}
@@ -642,7 +654,7 @@ class RenderTests(StoreCase):
         code, out, err = self.run_cli("render", "--output", str(output))
         self.assertEqual(code, 0, err)
         self.assertEqual(out.strip(), str(output.resolve()))
-        self.assertIn('href="q3.html#Q3.1" aria-label="Read questions for Tide launch decisions">Read questions</a>',
+        self.assertIn('<a class="card-link" href="q3.html#Q3.1"><span class="id">Q3</span> Tide launch decisions</a>',
                       output.read_text())
         self.assertIn('<section class="decision" id="Q3.1"', (output.parent / "q3.html").read_text())
         self.assertEqual({path.name for path in output.parent.iterdir()},
@@ -829,10 +841,10 @@ class ServeTests(StoreCase):
         self.assertEqual(0, self.run_cli("mark", "Q3.2", "open")[0])
         self.assertEqual(set(self.store()["items"][2]["answers"]["2"]), {"state", "revision"})
         desk = self.fetch(port, "/qd/")[1].split("<h1>Desk</h1>", 1)[1].split('<section id="workers">', 1)[0]
-        self.assertIn("<li>Which colour for the quay?</li>", desk)
+        self.assertNotIn("Which colour for the quay?", desk)
         self.assertNotIn("Merge the tide tables now?", desk)
-        self.assertIn('<span class="badge">1 of 2 open</span>', desk)
-        self.assertIn('href="q3.html#Q3.2" aria-label="Answer questions for Tide launch decisions">Answer questions</a>', desk)
+        self.assertIn('<td>1 of 2 open</td>', desk)
+        self.assertIn('<a class="card-link" href="q3.html#Q3.2"><span class="id">Q3</span> Tide launch decisions</a>', desk)
         question_page = self.fetch(port, "/qd/q3.html")[1]
         self.assertIn('<section class="decision" id="Q3.2"', question_page)
         self.assertIn('<p class="progress">1 of 2 open</p>', question_page)
@@ -845,9 +857,9 @@ class ServeTests(StoreCase):
         port = self.start("/qd")
         self.assertEqual(self.post_answer(port, "Q2.1", "Yes")[0], 200)
         desk = self.fetch(port, "/qd/")[1].split("<h1>Desk</h1>", 1)[1].split('<section id="workers">', 1)[0]
-        self.assertIn('class="card-link button-link" href="q2.html"', desk)
-        self.assertIn('class="card-link work-action" href="q1.html#Q1.1"', desk)
-        self.assertIn("<li>Merge the tide tables now?</li><li>Which colour for the quay?</li>", desk)
+        self.assertIn('<tr class="work"><th scope="row"><a class="card-link" href="q2.html"', desk)
+        self.assertIn('<tr class="work next"><th scope="row"><a class="card-link" href="q1.html#Q1.1"', desk)
+        self.assertNotIn("Merge the tide tables now?", desk)
         self.assertNotIn("Deliver the harbour chart?", desk)
 
     def test_invalid_answers_leave_the_store_untouched(self):
@@ -1451,35 +1463,54 @@ references.click();
 reach(button('panel-references').querySelector('a[href="q1.html"]'));
 """, path="/qd/", viewport=(320, 355))
 
-    def test_desk_card_stretches_one_action_without_covering_its_links(self):
+    def test_desk_row_stretches_its_one_link_across_the_row(self):
         question = {**QUESTIONS[1], "question": "Use https://example.org/options?",
                     "links": [{"text": "Review the chart", "url": "https://example.org/review"}]}
         self.add("questions", "Pier lights", "See https://example.org/notes", "--body-file", "-",
                  stdin=json.dumps([QUESTIONS[0], question]))
-        self.add("questions", "Tide tables", "Check the latest plan.", "--body-file", "-",
+        self.add("questions", "Tide tables", "Check the latest plan.", "--project", "W" * 40, "--body-file", "-",
                  stdin=json.dumps(QUESTIONS))
+        self.add("questions", "\u200b", "Review the chart.", "--body-file", "-",
+                 stdin=json.dumps(QUESTIONS[:1]))
         self.assertEqual(self.run_cli("mark", "Q1.1", "closed")[0], 0)
-        self.check_answer_page(self.start("/qd"), r"""
-const [first, second] = document.querySelectorAll('.desk article');
+        port = self.start("/qd")
+        for part, answer in (("Q2.2", "Blue"), ("Q3.1", "Merge")):
+            status, record = self.post_answer(port, part, answer)
+            self.assertEqual((status, record["delivery"]), (200, "pending"))
+        script = r"""
+const desk = document.querySelector('.desk');
+const rows = desk.querySelectorAll('table tr:not(thead tr)');
+check(rows.length === 3, 'The Desk should have one row per fixture item');
+const [pending, first, second] = rows;
+const project = first.querySelector('.project');
+check(project.checkVisibility() && project.textContent === 'W'.repeat(40), 'The Project column lost the saved name');
+check(desk.scrollWidth === desk.clientWidth, 'A long project widened the Desk beyond its container');
+check(first.cells[3].textContent === 'Asked Not delivered', 'An open row lost its delivery notice');
+check(pending.cells[3].textContent === 'Answered Not delivered', 'A pending-only row lost its delivery notice');
 const hit = node => {
   node.scrollIntoView({block:'center'});
   const rect = node.getClientRects()[0];
   return document.elementFromPoint(rect.left + rect.width / 2, rect.top + rect.height / 2)?.closest('a');
 };
-for (const [item, destination, expectedLinks] of [[first, 'q2.html#Q2.1', []], [second, 'q1.html#Q1.2',
-    ['https://example.org/notes', 'https://example.org/options', 'https://example.org/review']]]) {
-  const links = [...item.querySelectorAll('a')];
-  const action = links.find(link => link.getAttribute('href') === destination);
-  check(action && links.length === expectedLinks.length + 1, 'A card had multiple actions or jumped to the wrong question');
-  check(hit(item.querySelector('h3')) === action && hit(action) === action, 'The card and its action had different hit targets');
-  action.focus();
-  check(document.activeElement === action && getComputedStyle(item).outlineStyle === 'solid', 'The card lost its keyboard focus ring');
-  for (const url of expectedLinks) {
-    const link = links.find(anchor => anchor.getAttribute('href') === url);
-    check(link && hit(link) === link, 'The stretched action covered an independent link');
+for (const [row, destination, label] of [
+  [pending, 'q3.html', 'Q3'], [first, 'q2.html#Q2.1', 'Q2 Tide tables'], [second, 'q1.html#Q1.2', 'Q1 Pier lights']
+]) {
+  const links = [...row.querySelectorAll('a')];
+  const action = links[0];
+  check(action && links.length === 1 && action.getAttribute('href') === destination, 'A row had several links or the wrong destination');
+  check(action.innerText.replace('\u200b', '').replace(/\s+/g, ' ').trim() === label,
+        `The item link did not have the readable label "${label}"`);
+  check(hit(action) === action, 'The title link missed its hit target');
+  for (const cell of row.cells) {
+    check(hit(cell) === action, `Cell ${cell.cellIndex + 1} did not open ${destination}`);
   }
+  action.focus();
+  check(document.activeElement === action && getComputedStyle(row).outlineStyle === 'solid', 'The row lost its keyboard focus ring');
 }
-""", path="/qd/")
+"""
+        for viewport in ((390, 844), (641, 900), (1440, 900)):
+            with self.subTest(viewport=viewport):
+                self.check_answer_page(port, script, path="/qd/", viewport=viewport)
 
     def test_restored_desk_reloads_archive_membership_and_search(self):
         chrome = shutil.which("google-chrome")
@@ -3524,8 +3555,8 @@ class ConversationTests(ImageCase):
         _, reply = self.messages("2", 3)
         for _ in range(2):
             desk = self.fetch(port, "/qd/")[1].split("<h1>Desk</h1>", 1)[1].split('<section id="workers">', 1)[0]
-            self.assertIn('<span class="badge">Replied</span><span>2 of 2 open</span>', desk)
-            self.assertIn('class="card-link work-action" href="q4.html#Q4.1"', desk)
+            self.assertIn('<td>2 of 2 open</td><td><span class="badge">Replied</span></td>', desk)
+            self.assertIn('<tr class="work next"><th scope="row"><a class="card-link" href="q4.html#Q4.1"', desk)
             page = self.fetch(port, "/qd/q4.html")[1]
             self.assertRegex(page, r'id="Q4.2".*?<span class="badge">Replied</span>')
             self.assertIn('<p class="progress">Replied, 2 of 2 open</p>', page)
@@ -3563,10 +3594,11 @@ class ConversationTests(ImageCase):
         self.ask(port, "Q3.2", "How does it look?")
         self.assertEqual(self.run_cli("reply", "Q3.2", "--ask", self.messages("2", 2)[0]["id"], "--text", "Looked at it.")[0], 0)
         desk = self.fetch(port, "/qd/")[1].split("<h1>Desk</h1>")[1].split('<section id="workers">')[0]
-        self.assertEqual(re.findall(r'<h3>([^<]+)</h3>', desk), ["Newest decision", "Two decisions", "Tide launch decisions"])
-        self.assertEqual(desk.count('class="card-link work-action"'), 1)
-        self.assertIn('class="card-link work-action" href="q5.html#Q5.1"', desk)
-        self.assertIn('class="card-link button-link" href="q3.html#Q3.1"', desk)
+        links = re.findall(r'<a class="card-link" href="[^"]+"><span class="id">(Q\d+)</span> ([^<]+)</a>', desk)
+        self.assertEqual(links, [("Q5", "Newest decision"), ("Q4", "Two decisions"), ("Q3", "Tide launch decisions")])
+        self.assertEqual(desk.count('<tr class="work next"'), 1)
+        self.assertIn('<tr class="work next"><th scope="row"><a class="card-link" href="q5.html#Q5.1"', desk)
+        self.assertIn('<tr class="work"><th scope="row"><a class="card-link" href="q3.html#Q3.1"', desk)
 
     def test_reply_and_pending_ask_leave_answered_items_in_the_library(self) -> None:
         port = self.start("/qd", ask_home=self.inbox(accept=False))
@@ -4800,12 +4832,12 @@ class TalkToFirstmateTests(ImageCase):
         self.assertIn('id="send-message"', page)
         self.assertNotIn('class="lead"', page)
         desk = self.fetch(port, "/qd/")[1]
-        self.assertIn("Read reply", desk)
+        self.assertIn('<td>None open</td><td><span class="badge">Replied</span></td>', desk)
         self.assertIn('<span class="badge">Replied</span>', self.fetch(port, "/qd/")[1])
         ids = [m["id"] for m in self.thread() if m["author"] == "firstmate"]
         self.assertEqual(self.post(port, "/qd/replies/read", {"part": "Q1", "ids": ids})[0], 200)
         desk = self.fetch(port, "/qd/")[1]
-        self.assertNotIn("Read reply", desk)
+        self.assertNotIn('<td>None open</td>', desk)
         self.assertIn("Nothing is on your Desk. A question that needs an answer shows here.", desk)
         status, sent = self.post(port, "/qd/asks", {**second, "id": uuid.uuid4().hex, "text": "Thanks."})
         self.assertEqual((status, sent["message"]), (200, "Message sent."))
@@ -4867,7 +4899,7 @@ class TalkToFirstmateTests(ImageCase):
                                       "--image", str(self.red), "--alt", "A red lamp")[0], 0)
         desk = self.fetch(port, "/qd/")[1]
         self.assertIn('id="tab-conversations"', desk)
-        self.assertIn("Read reply", desk)
+        self.assertIn('<td>None open</td><td><span class="badge">Replied</span></td>', desk)
         panel = desk[desk.index('id="panel-conversations"'):]
         self.assertLess(panel.index("Quay sign colours"), panel.index("Harbor lamp colours"))
         for private in (first["text"], "Navy or black lettering?", "Use golden amber.", "https://example.org/chart",

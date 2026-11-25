@@ -7,6 +7,7 @@ import shutil
 import subprocess
 import sys
 import unittest
+from html.parser import HTMLParser
 from pathlib import Path
 from unittest.mock import patch
 
@@ -548,35 +549,94 @@ class StatsTests(ClassificationCase):
         self.assertEqual([quarterdeck.wait_text(v) for v in (None, 0, 90, 3660, 90000)], ["none", "0m", "1m", "1h 1m", "1d 1h"])
 
 
+class DeskTables(HTMLParser):
+    def __init__(self) -> None:
+        super().__init__()
+        self.in_main = False
+        self.in_table = False
+        self.in_header = False
+        self.table_count = 0
+        self.rows: list[list[str]] = []
+        self.cell: list[str] | None = None
+
+    def handle_starttag(self, tag, attrs) -> None:
+        if tag == "main":
+            self.in_main = True
+        elif self.in_main and tag == "table":
+            self.in_table = True
+            self.table_count += 1
+        elif self.in_table and tag == "thead":
+            self.in_header = True
+        elif self.in_table and not self.in_header:
+            if tag == "tr":
+                self.rows.append([])
+            elif tag in ("th", "td"):
+                self.cell = []
+
+    def handle_data(self, text) -> None:
+        if self.cell is not None:
+            self.cell.append(text)
+
+    def handle_endtag(self, tag) -> None:
+        if tag == "main":
+            self.in_main = False
+        elif tag == "table":
+            self.in_table = False
+        elif tag == "thead":
+            self.in_header = False
+        elif tag in ("th", "td") and self.cell is not None:
+            self.rows[-1].append(" ".join("".join(self.cell).split()))
+            self.cell = None
+
+
 class PageTests(ClassificationCase):
     def pages(self):
         return quarterdeck.site_pages(quarterdeck.read_store(quarterdeck.store_path()), "Quarterdeck", "index.html")
 
-    def test_one_project_shows_on_each_card_without_group_headings(self) -> None:
-        self.questions("Harbor choices", "--project", "Harbor", "--tag", "process")
-        self.questions("More choices", "--project", "Harbor", body=ASK[:1])
-        page = self.pages()["index.html"]
-        self.assertEqual(page.count('<span class="project-name">Harbor</span>'), 2)
-        self.assertNotIn('class="group-name"', page)
+    def check_desk_projects(self, expected_rows: list[tuple[str, str]]) -> None:
+        data = quarterdeck.read_store(quarterdeck.store_path())
+        for served in (True, False):
+            with self.subTest(served=served):
+                page = (quarterdeck.list_page(data, "Quarterdeck", served=True) if served else
+                        quarterdeck.site_pages(data, "Quarterdeck", "index.html")["index.html"])
+                desk = DeskTables()
+                desk.feed(page)
+                desk.close()
+                self.assertEqual(desk.table_count, 1)
+                self.assertEqual([tuple(row[:2]) for row in desk.rows], expected_rows)
 
-    def test_several_projects_group_the_desk_with_plain_headings(self) -> None:
+    def test_shared_project_shows_once_per_row_in_one_table(self) -> None:
+        self.questions("Quay choices", "--project", "Harbor", "--tag", "process")
+        self.questions("More choices", "--project", "Harbor", body=ASK[:1])
+        self.check_desk_projects([("Q2 More choices", "Harbor"), ("Q1 Quay choices", "Harbor")])
+
+    def test_mixed_projects_show_in_one_table(self) -> None:
         self.questions("Harbor choices", "--project", "Harbor")
         self.questions("Named project", "--project", "No project")
         self.questions("Loose ends")
+        self.check_desk_projects([
+            ("Q3 Loose ends", ""), ("Q2 Named project", "No project"), ("Q1 Harbor choices", "Harbor"),
+        ])
         page = self.pages()["index.html"]
-        headings = re.findall(r'<h2 class="group-name">(.*?)</h2>', page)
-        self.assertEqual(headings, ["(No project)", "No project", "Harbor"])
-        self.assertNotIn('class="project-name"', page)
-        self.assertEqual(page.count('<article class="work next"'), 1)
+        self.assertEqual(page.count('<tr class="work next"'), 1)
         self.assertLess(page.index("work next"), page.index("Named project"))
 
-    def test_tags_show_as_quiet_labels_on_cards_and_reference_rows(self) -> None:
+    def test_more_prompts_add_no_desk_rows_or_prompt_text(self) -> None:
+        self.questions("Harbor choices", "--project", "Harbor", body=ASK[:1])
+        self.check_desk_projects([("Q1 Harbor choices", "Harbor")])
+        self.questions("Second set", "--project", "Harbor", body=ASK * 3)
+        self.check_desk_projects([("Q2 Second set", "Harbor"), ("Q1 Harbor choices", "Harbor")])
+        after = self.pages()["index.html"]
+        for prompt in [q["question"] for q in ASK]:
+            self.assertNotIn(prompt, after.split("<h2>References</h2>")[0])
+
+    def test_tags_show_as_quiet_labels_on_reference_rows_not_the_desk(self) -> None:
         self.questions("Harbor choices", "--project", "Harbor", "--tag", "process")
         self.add("resource", "Tide chart", "A chart.", "--url", "https://example.com/t", "--link-text", "Chart",
                  "--project", "Harbor", "--tag", "security-privacy")
         page = self.pages()["index.html"]
-        self.assertIn("<li>process</li>", page)
-        self.assertIn("<li>product design</li>", page)
+        self.assertNotIn("<li>process</li>", page.split("<h2>References</h2>")[0])
+        self.assertIn("<li>process</li>", self.pages()["q1.html"])
         self.assertIn("<li>security privacy</li>", page)
         self.assertIn('<span class="project-name">Harbor</span>',
                       page.split("<h2>References</h2>")[1].split("</section>")[0])
@@ -703,7 +763,7 @@ check(!send.disabled && send.textContent === 'Send 1 answer', 'Only the new draf
         self.questions("New Harbor", "--project", "Harbor", body=ASK[:1])
         self.answer("Q3.1", "Merge")
         page = self.pages()["index.html"]
-        self.assertEqual(re.findall(r'<a class="card-link work-action" href="([^"]+)"', page), ["q2.html#Q2.1"])
+        self.assertEqual(re.findall(r'<tr class="work next"><th scope="row">.*?<a class="card-link" href="([^"]+)"', page), ["q2.html#Q2.1"])
         self.assertLess(page.index("New Harbor"), page.index("Open Quay"))
 
     def test_item_page_shows_project_tags_kind_and_question_tags(self) -> None:

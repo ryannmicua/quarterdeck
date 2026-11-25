@@ -1,9 +1,18 @@
 # Answer questions
 
-On the served **Desk**, tap the card or select **Answer questions** to open
-its first open question. Links inside the card open their own destinations.
-When no question is open but an answer is still pending delivery, the card
-action reads **Review answers**. Each question has an ID you can cite later.
+The **Desk** table shows items newest first. The **Item** column links the
+saved ID and title, **Project** shows the assigned project, **Questions**
+shows the open count, and **Latest** shows the current status. Select the
+item link or tap anywhere on its row. The link jumps to the first open
+question when there is one and opens the top of the item page otherwise.
+The item page has the question wording, options, and suggestions. Each
+question has an ID you can cite later.
+
+Items with open questions show **Asked**. If no questions are open and an
+answer still needs delivery, the row shows **None open** and **Answered**.
+**Replied** takes precedence over both **Asked** and **Answered** when there is
+an unread reply. The row also shows **Not delivered** alongside any of these
+statuses while an answer needs delivery.
 
 An item page lists every question in one list. A question marked **Answered**
 with a **Sent** answer and no unread replies collapses to one line below the
@@ -56,7 +65,7 @@ to the whole question or appears on a read-only option.
 
 ## Known limits
 
-- If the saved-items file becomes unreadable or the disk fills, Send can report an error after saving the answer. Restore access or free space, reopen the card, and retry any answer marked **Not delivered**.
+- If the saved-items file becomes unreadable or the disk fills, Send can report an error after saving the answer. Restore access or free space, reopen the item page, and retry any answer marked **Not delivered**.
 - If two tabs edit the same answer while delivery is down, a retry can send the newer submission when both texts match. Reload one tab and check the saved text before retrying.
-- If someone removes the item while its question page is open, Send reports an error. Copy your draft before reloading. If the decision is still needed, save the questions again and send the answer from the new card.
+- If someone removes the item while its question page is open, Send reports an error. Copy your draft before reloading. If the decision is still needed, save the questions again and send the answer from the new item page.
 - The send bar can show an earlier send result. Check the delivery status beside the question before sending again.

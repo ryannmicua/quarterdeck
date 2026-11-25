@@ -32,7 +32,7 @@ After opening an item from the library, use your browser’s Back button to
 return to the same tab, search and filters with fresh results. A restored
 filter remains selected and can be cleared even if no items match it.
 Closing the library clears the saved lookup, so reloading the Desk or
-returning from a Desk card leaves the library closed.
+returning from an item opened through the Desk table leaves the library closed.
 
 When there’s enough room, results scroll beneath the search box. The whole
 sheet or drawer scrolls when the window is short or the controls leave too
