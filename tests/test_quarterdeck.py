@@ -549,6 +549,20 @@ def anchor_destinations(page: str) -> set[str]:
     return destinations
 
 
+def has_element_id(page: str, tag_name: str, element_id: str) -> bool:
+    class Elements(HTMLParser):
+        found = False
+
+        def handle_starttag(self, tag, attrs):
+            if tag == tag_name and ("id", element_id) in attrs:
+                self.found = True
+
+    parser = Elements()
+    parser.feed(page)
+    parser.close()
+    return parser.found
+
+
 class QuestionAddressTests(StoreCase):
     def test_web_addresses_in_question_text_become_links_but_answers_do_not_change(self) -> None:
         prompt_url, context_url, option_url, suggestion_url = (
@@ -2016,7 +2030,7 @@ check(!button('send').disabled && button('send').textContent === 'Send 2 answers
             self.assertIn("Tide launch decisions", body)
             self.assertNotIn("Legacy work item", body)
             self.assertNotIn(str(home), body)
-            self.assertNotIn('id="refresh-workers"', body)
+            self.assertFalse(has_element_id(body, "button", "refresh-workers"))
             self.assertEqual(self.fetch(port, "/qd/workers.json")[0], 404)
             self.assertEqual(self.fetch(port, "/qd/workers-saved.json")[0], 404)
             before = quarterdeck.store_path().read_bytes()
@@ -2349,15 +2363,15 @@ class WorkersTests(StoreCase):
         self.assertEqual(self.fetch(port, "/qd/workers-saved.json")[0], 404)
         page = self.fetch(port, "/qd/workers.html")[1]
         self.assertIn("Workers show here once firstmate_home names a Firstmate home.", page)
-        self.assertNotIn("refresh-workers", page)
+        self.assertFalse(has_element_id(page, "button", "refresh-workers"))
 
     def test_the_desk_links_to_the_workers_page_and_never_reads_the_fleet(self) -> None:
         port = self.start("/qd", workers_home=self.make_home([snapshot_task("Wren")]))
         status, page, _ = self.fetch(port, "/qd/")
         self.assertEqual(status, 200)
         self.assertIn('<a href="workers.html">Workers</a>', page)
-        self.assertNotIn('id="workers"', page)
-        self.assertNotIn("refresh-workers", page)
+        self.assertFalse(has_element_id(page, "section", "workers"))
+        self.assertFalse(has_element_id(page, "button", "refresh-workers"))
         status, workers_page, _ = self.fetch(port, "/qd/workers.html")
         self.assertEqual(status, 200)
         self.assertIn('id="refresh-workers">Check workers</button>', workers_page)

@@ -1,7 +1,7 @@
 # Read the Workers page
 
 Open **Workers** from the served Desk to see who is running in your
-Firstmate home. The Desk itself never reads the home.
+Firstmate home. Loading the Desk never runs the fleet snapshot.
 
 ## Before you start
 
