@@ -2,7 +2,7 @@
 
 Catch-up shows short notices that Firstmate saves when a piece of work is
 finished. Read a notice, follow its link if you want, and mark it read. The
-notice then leaves the Desk and is removed a few days later.
+notice then leaves the Desk.
 
 Quarterdeck never creates a notice by itself. A notice appears only when you or
 Firstmate saves it with `quarterdeck catch-up add`.
@@ -46,9 +46,12 @@ unread ones.
 
 ## How long a notice stays
 
-Unread notices stay until they are read. A read notice is removed after
-`catch_up_days` days, which is 7 unless the
-[default config file](../reference/cli-and-config.md#json-configuration) says otherwise.
-Removal happens when a notice is next saved or marked read. The store keeps
-`read_at` for each notice until then, so a count of notices read is possible
-within that time. See the [store format](../reference/item-store.md#catch-up-notices).
+Unread notices stay until they are read. Each Quarterdeck process uses
+`catch_up_days` from the [config it loads](../reference/cli-and-config.md#json-configuration),
+with a default of 7 days. The served Desk reads the setting at startup, so
+restart it after changing the config. If the CLI and the Desk use different
+retention periods, either can remove a notice once its own period has elapsed.
+
+A read notice stays on disk until its retention period has elapsed and a
+notice is saved or marked read. The store keeps `read_at` until then. See the
+[store format](../reference/item-store.md#catch-up-notices).

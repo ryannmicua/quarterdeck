@@ -10,7 +10,7 @@ These are terms Quarterdeck uses on its pages.
 | Mark read | The button that moves one notice off the Desk. |
 | Mark all read | The button that moves every shown notice off the Desk. |
 | Unread | A notice that has not been marked read. Only unread notices show on the Desk. |
-| Read | A notice that was marked read. It leaves the Desk at once and is removed after `catch_up_days` days. |
+| Read | A notice that was marked read. It leaves the Desk at once. |
 | item | Something saved by hand: a resource, a list or questions. |
 | question | A numbered part of a questions item that waits for an answer. |
 | Workers | The section that lists who is running in the Firstmate home. |

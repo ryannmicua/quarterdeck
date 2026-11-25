@@ -80,12 +80,9 @@ def strip_base_path(path: str, base: str) -> str | None:
 # --- Configuration and locations ---------------------------------------------------
 
 
-def config_home() -> Path:
-    return Path(os.environ.get("XDG_CONFIG_HOME") or "~/.config").expanduser().absolute()
-
-
 def default_config_path() -> Path:
-    return config_home() / "quarterdeck.json"
+    config_home = Path(os.environ.get("XDG_CONFIG_HOME") or "~/.config").expanduser()
+    return (config_home / "quarterdeck.json").resolve()
 
 
 def state_dir() -> Path:
@@ -108,33 +105,15 @@ def inbox_path(value: object) -> Path:
     return path
 
 
-class CatchUpConfigError(ValueError):
-    pass
-
-
-def read_config(path: Path | None) -> dict[str, object]:
+def load_config(path: Path | None) -> dict[str, object]:
     if path is None:
         return {}
     try:
-        if not stat.S_ISREG(path.stat().st_mode):
-            raise ValueError("expected a regular file")
         config = json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, ValueError, RecursionError) as exc:
+    except (OSError, json.JSONDecodeError) as exc:
         raise ValueError(f"could not read config {path}: {exc}") from exc
     if not isinstance(config, dict):
         raise ValueError("config must be a JSON object")
-    return config
-
-
-def retention_days(config: dict[str, object]) -> int:
-    days = config.get("catch_up_days", CATCH_UP_DAYS)
-    if type(days) is not int or not 1 <= days <= 3650:
-        raise ValueError("config catch_up_days must be a whole number of days from 1 to 3650")
-    return days
-
-
-def load_config(path: Path | None) -> dict[str, object]:
-    config = read_config(path)
     unknown = sorted(set(config) - ALLOWED_CONFIG_KEYS - LEGACY_CONFIG_KEYS)
     if unknown:
         raise ValueError(f"unsupported config key(s): {', '.join(unknown)}")
@@ -155,30 +134,24 @@ def load_config(path: Path | None) -> dict[str, object]:
             raise ValueError(f"config {exc}") from exc
     if "output_dir" in config and not isinstance(config["output_dir"], str):
         raise ValueError("config output_dir must be a path string")
+    if "catch_up_days" in config:
+        days = config["catch_up_days"]
+        if type(days) is not int or not 1 <= days <= 3650:
+            raise ValueError("config catch_up_days must be a whole number of days from 1 to 3650")
     return config
 
 
-def catch_up_days() -> int:
-    """Read the current retention setting from the default config."""
-    try:
-        return retention_days(read_config(selected_config_path()))
-    except (OSError, ValueError) as exc:
-        raise CatchUpConfigError(str(exc)) from exc
+def catch_up_days(config: dict[str, object]) -> int:
+    return config.get("catch_up_days", CATCH_UP_DAYS)  # type: ignore[return-value]
 
 
-def selected_config_path(args: argparse.Namespace | None = None) -> Path | None:
+def selected_config_path(args: argparse.Namespace) -> Path | None:
     """The --config file, else the default config when it exists, else no config."""
     path = getattr(args, "config", None)
     if path is None:
-        path = default_config_path()
-        try:
-            path.lstat()
-        except FileNotFoundError:
-            for parent in path.parents:
-                if parent.is_symlink():
-                    parent.stat()
-            return None
-    return path.expanduser().absolute()
+        default_path = default_config_path()
+        path = default_path if default_path.is_file() else None
+    return path.expanduser() if path else None
 
 
 def selected_config(args: argparse.Namespace) -> dict[str, object]:
@@ -1614,7 +1587,7 @@ class CatchUpConflict(ValueError):
     pass
 
 
-def mark_catch_ups_read(store: Path, ids: list[str] | None) -> list[str]:
+def mark_catch_ups_read(store: Path, ids: list[str] | None, days: int) -> list[str]:
     """Mark the named notices, or all unread notices, and return their IDs."""
     with locked_store(store):
         data = read_store(store)
@@ -1625,7 +1598,6 @@ def mark_catch_ups_read(store: Path, ids: list[str] | None) -> list[str]:
         notices = {notice["id"]: notice for notice in catch_ups(data)}
         if not notices.keys() >= set(ids):
             raise CatchUpConflict("Unknown catch-up notice.")
-        days = catch_up_days()
         stamp = now_text()
         for notice_id in ids:
             notices[notice_id].setdefault("read_at", stamp)
@@ -1636,6 +1608,7 @@ def mark_catch_ups_read(store: Path, ids: list[str] | None) -> list[str]:
 
 def add_catch_up(args: argparse.Namespace) -> int:
     def action() -> int:
+        days = catch_up_days(selected_config(args))
         notice: dict[str, object] = {
             "title": clean_text(args.title, "title", TITLE_LIMIT),
             "summary": clean_text(args.summary, "summary", CATCH_UP_SUMMARY_LIMIT),
@@ -1645,7 +1618,6 @@ def add_catch_up(args: argparse.Namespace) -> int:
             notice["project"] = clean_project(args.project)
         store = store_path()
         with changing_store(store) as data:
-            days = catch_up_days()
             if args.item is not None:
                 notice["item"] = find_item(data, args.item)["id"]
             notice_id = f"C{data.get('next_catch_up', 1)}"
@@ -1680,7 +1652,7 @@ def read_catch_up(args: argparse.Namespace) -> int:
             ids = list(dict.fromkeys(parse_catch_up_id(value) for value in args.ids))
         else:
             raise ValueError("give a catch-up ID such as C4, or --all")
-        marked = mark_catch_ups_read(store, ids)
+        marked = mark_catch_ups_read(store, ids, catch_up_days(selected_config(args)))
         if not marked:
             print("No unread catch-up notices.")
         for notice_id in marked:
@@ -4448,14 +4420,12 @@ def base_path_option(value: str) -> str:
         raise argparse.ArgumentTypeError(str(exc)) from exc
 
 
-def effective_base_path(args: argparse.Namespace, config: dict[str, object] | None = None) -> str:
+def effective_base_path(args: argparse.Namespace) -> str:
     """--base-path when given (even as "" to switch a configured prefix off), else the config's base_path, else none."""
     given = getattr(args, "base_path", None)
     if given is not None:
         return normalize_base_path(given)
-    if config is None:
-        config = selected_config(args)
-    return normalize_base_path(config.get("base_path"))
+    return normalize_base_path(selected_config(args).get("base_path"))
 
 
 def is_loopback(host: str) -> bool:
@@ -4578,7 +4548,8 @@ def ask_destination(ask_home: Path | None, *, require_directory: bool) -> tuple[
 
 
 def make_handler(site_title: str, base_path: str = "", store: Path | None = None, home: Path | None = None,
-                 *, ask_home: Path | None = None, workers_home: Path | None = None) -> type[BaseHTTPRequestHandler]:
+                 *, ask_home: Path | None = None, workers_home: Path | None = None,
+                 retention_days: int = CATCH_UP_DAYS) -> type[BaseHTTPRequestHandler]:
     """Every page is built from the item store when it is requested."""
     visit_log = VisitLog(visits_path())
     saved_workers = SavedWorkers()
@@ -4749,15 +4720,13 @@ def make_handler(site_title: str, base_path: str = "", store: Path | None = None
                         isinstance(value, str) and CATCH_UP_ID_RE.fullmatch(value) for value in ids
                     ):
                         raise ValueError("Invalid catch-up IDs.")
-                    record = {"read": mark_catch_ups_read(active_store, ids)}
+                    record = {"read": mark_catch_ups_read(active_store, ids, retention_days)}
                 else:
                     record = mark_replies_read(active_store, payload)
             except AskHomeUnavailable:
                 self.send_text(403, "Configure an available firstmate_home to ask Firstmate.")
             except OptionChanged as exc:
                 self.send_text(409, json.dumps({"clarification": clarified_html(exc.notes, True)}), "application/json")
-            except CatchUpConfigError:
-                self.send_text(500, "Could not read the Catch-up retention config.")
             except CatchUpConflict as exc:
                 self.send_text(409, str(exc))
             except AnswerConflict as exc:
@@ -4789,33 +4758,22 @@ def answer_home(config: dict[str, object], config_path: Path | None) -> Path | N
     homes = config.get("homes")
     if config_path is not None and isinstance(homes, list) and len(homes) == 1 and isinstance(homes[0], dict):
         try:
-            return (config_path.parent / inbox_path(homes[0].get("path"))).resolve()
+            return (config_path.resolve().parent / inbox_path(homes[0].get("path"))).resolve()
         except (OSError, RuntimeError, ValueError):
             return None
     return None
 
 
-def serve_config(args: argparse.Namespace) -> tuple[Path | None, dict[str, object]]:
-    catch_up_days()
-    config_path = selected_config_path(args)
-    if config_path is not None:
-        try:
-            config_path = config_path.resolve(strict=True)
-        except (OSError, RuntimeError) as exc:
-            raise ValueError(f"could not resolve serving config {config_path}: {exc}") from exc
-    config = load_config(config_path)
-    return config_path, config
-
-
 def serve(args: argparse.Namespace) -> int:
     servers: list[ThreadingHTTPServer] = []
     try:
-        config_path, config = serve_config(args)
+        config_path = selected_config_path(args)
+        config = load_config(config_path)
         tls = tls_context(args)
-        base_path = effective_base_path(args, config)
+        base_path = effective_base_path(args)
         firstmate = configured_firstmate_home(config)
         handler = make_handler(page_title(args, config), base_path, home=answer_home(config, config_path),
-                               ask_home=firstmate, workers_home=firstmate)
+                               ask_home=firstmate, workers_home=firstmate, retention_days=catch_up_days(config))
         port = args.port
         for host in bind_hosts(args):
             server = make_server(host, port, handler, tls)
@@ -4835,7 +4793,14 @@ def serve(args: argparse.Namespace) -> int:
         shown = f"[{host}]" if ":" in host else host
         print(f"Serving Quarterdeck at {'https' if tls else 'http'}://{shown}:{port}{base_path}/ (Ctrl+C to stop)",
               flush=True)
-    warn_non_loopback(args)
+    exposed = [host for host in bind_hosts(args) if not is_loopback(host)]
+    if exposed:
+        print(f"quarterdeck: warning: {', '.join(exposed)} is not a loopback address; anyone who can reach this port can "
+              "read saved items, answers, conversations, images, and unread Catch-up notice titles, summaries and links. "
+              "They can submit answers, acknowledge replies, and mark Catch-up notices read. "
+              "With firstmate_home set, they can read or check the worker and second mate roster, "
+              "send asks, start conversations and send messages.",
+              file=sys.stderr, flush=True)
     for server in servers[1:]:
         threading.Thread(target=server.serve_forever, daemon=True).start()
     try:
@@ -4848,17 +4813,6 @@ def serve(args: argparse.Namespace) -> int:
                 server.shutdown()
             server.server_close()
     return 0
-
-
-def warn_non_loopback(args: argparse.Namespace) -> None:
-    exposed = [host for host in bind_hosts(args) if not is_loopback(host)]
-    if exposed:
-        print(f"quarterdeck: warning: {', '.join(exposed)} is not a loopback address. Anyone who can reach the service "
-              "can read saved items, answers, conversations, images, unread Catch-up notices (including titles, summaries "
-              "and links). They can also submit answers, acknowledge replies, and mark Catch-up notices read. "
-              "With firstmate_home set, they can read or check the worker and second mate roster, "
-              "send asks, start conversations and send messages.",
-              file=sys.stderr, flush=True)
 
 
 # --- service and url --------------------------------------------------------------------
@@ -4884,19 +4838,18 @@ def service_unit(args: argparse.Namespace) -> str:
         raise ValueError("--tls-cert and --tls-key go together")
     if tls_cert and tls_key:
         command += ["--tls-cert", str(Path(tls_cert).expanduser().resolve()), "--tls-key", str(Path(tls_key).expanduser().resolve())]
-    config_path, _ = serve_config(args)
-    if config_path is not None:
+    config_path = args.config.expanduser().resolve() if args.config else default_config_path()
+    if args.config or config_path.is_file():
+        load_config(config_path)
         command += ["--config", str(config_path)]
     exec_start = " ".join(systemd_quote(part, literal_dollars=True) for part in command)
-    environment = []
+    environment = ""
     if os.environ.get("XDG_STATE_HOME"):
         state_home = Path(os.environ["XDG_STATE_HOME"]).expanduser().resolve()
-        environment.append(systemd_quote(f"XDG_STATE_HOME={state_home}"))
-    environment.append(systemd_quote(f"XDG_CONFIG_HOME={config_home()}"))
-    environment_line = f"Environment={' '.join(environment)}\n"
+        environment = "Environment=" + systemd_quote("XDG_STATE_HOME=" + str(state_home)) + "\n"
     return (
         "[Unit]\nDescription=Quarterdeck page of saved items\nAfter=network.target\n\n"
-        f"[Service]\n{environment_line}ExecStart={exec_start}\nRestart=on-failure\nRestartSec=5\n\n"
+        f"[Service]\n{environment}ExecStart={exec_start}\nRestart=on-failure\nRestartSec=5\n\n"
         "[Install]\nWantedBy=default.target\n"
     )
 
@@ -4907,7 +4860,8 @@ def service(args: argparse.Namespace) -> int:
         if not args.write:
             sys.stdout.write(unit)
             return 0
-        unresolved_unit_path = config_home() / "systemd" / "user" / "quarterdeck.service"
+        config_home = Path(os.environ.get("XDG_CONFIG_HOME") or "~/.config").expanduser()
+        unresolved_unit_path = config_home / "systemd" / "user" / "quarterdeck.service"
         if unresolved_unit_path.is_symlink():
             raise ValueError(f"refusing to replace symbolic-link unit: {unresolved_unit_path}")
         unit_path = unresolved_unit_path.parent.resolve() / unresolved_unit_path.name
@@ -4920,13 +4874,17 @@ def service(args: argparse.Namespace) -> int:
         return 2
     print(f"Wrote {unit_path}")
     print("Start it with: systemctl --user daemon-reload && systemctl --user enable --now quarterdeck.service")
-    warn_non_loopback(args)
+    exposed = [host for host in bind_hosts(args) if not is_loopback(host)]
+    if exposed:
+        print(f"quarterdeck: warning: {', '.join(exposed)} is not a loopback address; anyone who can reach the port can "
+              "read your saved items and unread Catch-up notice titles, summaries and links. They can send answers and "
+              "mark Catch-up notices read as the owner.", file=sys.stderr)
     return 0
 
 
 def installed_unit_command() -> tuple[list[str], str] | None:
     """The installed service's serve arguments and the unit's path, or None when no unit is installed."""
-    unit_path = config_home() / "systemd/user/quarterdeck.service"
+    unit_path = Path(os.environ.get("XDG_CONFIG_HOME") or "~/.config").expanduser() / "systemd/user/quarterdeck.service"
     if not unit_path.is_file():
         return None
     match = re.search(r"(?m)^ExecStart=(.*)$", unit_path.read_text(encoding="utf-8"))
@@ -5151,8 +5109,9 @@ def make_parser() -> argparse.ArgumentParser:
 
     catch_up = command("catch-up", "save and read catch-up notices",
                        "Short notices Firstmate saves when finished work is ready. Unread notices show on the Desk above the "
-                       "questions. A read notice leaves the Desk and is removed after catch_up_days days (default "
-                       f"{CATCH_UP_DAYS}). Quarterdeck never saves one by itself.", None)
+                       "questions. A read notice leaves the Desk. After catch_up_days days (default "
+                       f"{CATCH_UP_DAYS}), the next save or mark-read removes it. Quarterdeck never saves one by itself.",
+                       None)
     catch_up_actions = catch_up.add_subparsers(dest="catch_up_action", required=True)
     catch_up_add = catch_up_actions.add_parser("add", help="save a notice and print its ID",
                                                description="Save a notice and print its ID, such as C4.")
@@ -5182,9 +5141,10 @@ def make_parser() -> argparse.ArgumentParser:
     render_parser.add_argument("--title", help="override the page title")
 
     serve_parser = command("serve", "serve the page over HTTP",
-                           "Anyone who can reach the service can read saved items, answers, conversations and reply images, "
-                           "and can submit answers or acknowledge replies as the owner. With firstmate_home set, they can "
-                           "also send asks, start conversations, send messages and read or check that home's workers "
+                           "Anyone who can reach the service can read saved items, answers, conversations, reply images, "
+                           "and unread Catch-up notice titles, summaries and links. They can submit answers, acknowledge "
+                           "replies, and mark Catch-up notices read as the owner. With firstmate_home set, they can also "
+                           "send asks, start conversations, send messages and read or check that home's workers "
                            "and second mates from the Workers page or workers.json. Browser "
                            "writes require the same origin as the served page.", serve)
     add_serve_options(serve_parser)

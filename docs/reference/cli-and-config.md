@@ -73,9 +73,9 @@ delivery status. Earlier answers, conversation text, clarifications, reply
 links, reply images, and Replied badges are exclusive to the served site,
 along with Catch-up notices and answer controls.
 
-The generated unit preserves `XDG_STATE_HOME` when set so it uses the same
-[item store](item-store.md) and [visit log](#visit-log). It records the shell's config directory
-(`XDG_CONFIG_HOME` or `~/.config`) so retention uses the same default file as the CLI.
+If `XDG_STATE_HOME` is set when you run `service`, the generated unit includes
+that setting so it uses the same [item store](item-store.md) and
+[visit log](#visit-log).
 
 `--base-path /qd` (or `base_path` in the config) serves pages and their images
 under that prefix for a reverse proxy. A request for the bare prefix is redirected (308)
@@ -268,21 +268,16 @@ the documentation to read; `help --json` prints a machine-readable index.
 
 ## JSON configuration
 
-The config is optional. The default is
-`${XDG_CONFIG_HOME:-~/.config}/quarterdeck.json` when it exists.
-`converse`, `render`, `serve` and `service` accept `--config FILE`. The served Desk,
-`catch-up add` and `catch-up read` all take `catch_up_days` from the default file.
-Quarterdeck reads this setting under the store lock before each notice change.
-When the default file supplies only retention, Quarterdeck checks that it is a
-JSON object and validates `catch_up_days`. Serving options are validated in
-the file selected for serving.
+The config is optional. `converse`, `render`, `serve` and `service` read `--config FILE`,
+or `${XDG_CONFIG_HOME:-~/.config}/quarterdeck.json` when it exists.
+`catch-up add` and `catch-up read` use the default file.
 
 | Key | Type | Default | Meaning |
 | --- | --- | --- | --- |
 | `page_title` | string | `Quarterdeck` | The site name in the navigation bar and browser title. `--title` overrides it for `render` and `serve`. |
 | `output_dir` | string path | `${XDG_STATE_HOME:-~/.local/state}/quarterdeck` | Where `render` writes the pages. |
 | `base_path` | string | none | The URL prefix described above. |
-| `catch_up_days` | whole number from 1 to 3650 | `7` | How many days a read Catch-up notice is kept before it is removed. Unread notices are kept until they are read. |
+| `catch_up_days` | whole number from 1 to 3650 | `7` | Each process uses the value from its loaded config. Restart the served Desk to apply a change. Once the period elapses, a read notice stays on disk until the next save or mark-read. With different CLI and Desk settings, the shorter period can take effect first. |
 | `firstmate_home` | absolute path after expanding `~` | unset | Local destination for answers, asks and conversation messages submitted to `serve`, and the home whose workers the page lists. When set, `converse` requires it to resolve to an existing directory. See [how the store records the binding](item-store.md#conversations). |
 
 `serve` reads `firstmate_home` at startup. `converse` reads it each time it runs.
