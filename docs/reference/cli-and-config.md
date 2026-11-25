@@ -46,7 +46,7 @@ uppercase form.
 
 | Command | What it does |
 | --- | --- |
-| `render` | Writes `index.html` (the Desk) and one `q<N>.html` page per item. `--output PATH` names the Desk page and puts the item pages beside it. Otherwise the pages go to `output_dir`. The names `q<N>.html` and `images` are reserved regardless of capitalization. The live state directory also reserves `reply-images` regardless of capitalization. Existing destination pages must carry Quarterdeck's generated-page marker. Render retires obsolete marked item pages. Separately named Desk pages are kept and share the item pages in that directory. The output must be outside the Quarterdeck checkout. See [rendered images](#rendered-images). |
+| `render` | Writes `index.html` (the Desk) and one `q<N>.html` page per resource, list or question item. Standalone conversations are served only. `--output PATH` names the Desk page and puts the item pages beside it. Otherwise the pages go to `output_dir`. The names `q<N>.html` and `images` are reserved regardless of capitalization. The live state directory also reserves `reply-images` regardless of capitalization. Existing destination pages must carry Quarterdeck's generated-page marker. Render retires obsolete marked item pages. Separately named Desk pages are kept and share the item pages in that directory. The output must be outside the Quarterdeck checkout. See [rendered images](#rendered-images). |
 | `serve` | Serves the Desk and item pages over HTTP, or HTTPS with `--tls-cert` and `--tls-key`. Page requests read the store, so a new item shows on the next load. Open item Q7 at `/q7.html`. `--host` may be repeated. `--port` defaults to 8765. See [serving security](../how-to/serve-the-page.md#security-loopback-by-default) for the default bind and browser access rules. |
 | `service` | Prints a systemd user unit with the supplied serving options, or writes it to `${XDG_CONFIG_HOME:-~/.config}/systemd/user/quarterdeck.service` with `--write`. |
 | `url` | Prints the address the installed unit serves, or the default address when no unit is installed. |
@@ -128,7 +128,8 @@ response has the fields of `/asks` plus `item` (the new ID, such as `Q12`) and
 `href` (its page).
 
 Later messages use `POST /asks` with `"part": "Q12"`. A conversation has no
-questions, so nothing closes it.
+questions, so nothing closes it. Sending or retrying with a different
+Firstmate home returns 409 before saving or delivering the message.
 The inbox note for every conversation message is
 `CONVERSATION Q12 <message id> Topic: <topic>`, a line break, then the message
 text. Reply with `quarterdeck reply Q12 --ask <message id> --text ...`. Reply

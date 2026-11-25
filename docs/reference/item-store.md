@@ -156,7 +156,7 @@ and [export behavior](cli-and-config.md#rendered-images).
 
 ## Conversations
 
-A questions item may contain a `conversation` object. A `conversation` item always has one, with only the key `item`: its `body` is `{}` and its `description` is the first message, cut to fit. A conversation item is started from the Desk with **Talk to Firstmate**, and `quarterdeck add` cannot save one. Its messages are kept strictly in the order they were saved, and a reply names the message it answers. The key `item` holds the
+A questions item may contain a `conversation` object. A `conversation` item always has one, with only the key `item`. Its `body` is `{}` and its `description` is a generic label. Older descriptions are accepted and omitted from listings. A conversation item is started from the Desk with **Talk to Firstmate**, and `quarterdeck add` cannot save one. Its messages are kept strictly in the order they were saved, and a reply names the message it answers. The first message's home binding also binds the conversation. The key `item` holds the
 whole item's messages, oldest first. The object can also use one-based part
 numbers as string keys for its numbered questions. The conversation is kept
 apart from `answers`. Existing numbered threads keep their keys.

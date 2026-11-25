@@ -16,10 +16,11 @@ when enabled, the live Firstmate workers roster.
   [optional config](../reference/cli-and-config.md#json-configuration).
 - `render` reads the item store and the images attached to questions and
   options. It inspects existing output files before replacing or retiring
-  them. See the [render reference](../reference/cli-and-config.md#pages).
+  them. Standalone conversations are excluded from HTML exports. See the
+  [render reference](../reference/cli-and-config.md#pages).
 - `serve` reads the item store to build pages and writes to it when users
-  submit answers, send asks or acknowledge replies in an item or question
-  conversation. It serves only files listed for the requested item from
+  submit answers, send asks, start conversations, send messages or acknowledge
+  replies. It serves only files listed for the requested item from
   the corresponding [private image folder](../reference/item-store.md#store-layout).
   It reads the TLS certificate and key if you supply them.
 - The [workers endpoint](../reference/cli-and-config.md#workers-endpoint) runs

@@ -22,21 +22,25 @@ conversation shows every message and reply from oldest to newest. Each of your
 messages shows **Sent** or **Not delivered**. Select **Send message again**
 under a message that shows **Not delivered** once the
 [inbox is available](read-answers.md#connect-the-inbox). The retry keeps the
-original message and note IDs.
+original message and note IDs. The conversation stays with the Firstmate home
+where it started. Restore that home in `firstmate_home` to send more messages
+or retry delivery.
 
 If you start a conversation while the inbox is unavailable, Quarterdeck still
 saves it and opens it with the first message marked **Not delivered**.
 
 ## Read replies
 
-Firstmate replies from the command line, so reload the page to see a new reply.
+Firstmate replies from the command line. Reload, send a message, or retry
+delivery to refresh the conversation.
 A conversation with an unread reply shows **Replied** on the Desk and in the
-library. Opening the conversation acknowledges its replies. See
+library. The conversation acknowledges replies as they appear on its card. See
 [how Firstmate replies](reply-from-the-command-line.md#reply-in-a-conversation).
 
 ## Find a conversation later
 
 Select **Open library** and choose **Conversations**. Search matches the topic
-and the text of every message, and the project and tag filters work as they do
-elsewhere. Firstmate can set a conversation's project and tags with
+or the item ID. The project and tag filters work as they do elsewhere.
+Firstmate can set a conversation's project and tags with
 `quarterdeck classify`. See [Find references and answered questions](use-the-library.md).
+Conversations are available through the served site and excluded from HTML exports.

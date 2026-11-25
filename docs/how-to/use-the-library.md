@@ -18,15 +18,15 @@ References, and End opens Conversations.
 
 ## Search
 
-Use the search box in either tab to match text in the title or description.
-**Answered** also searches question and saved answer text, and **Conversations**
-also searches every message. Search ignores case
-and matches every space-separated term literally. Enter an exact ID on its
+**References** and **Answered** search titles and descriptions. **Answered**
+also searches question and saved answer text. **Conversations** searches
+topics and item IDs. Search ignores case and matches every space-separated
+term literally. Enter an exact ID on its
 own, such as `Q5` to find item Q5 or `Q5.3` to find Q5 if it has a third
-question.
+question. An ID-shaped topic such as `Q5.3` also matches in **Conversations**.
 
 Use the [project and tag filters](classify-items.md#see-it-on-the-page) when
-available to narrow either list, including on rendered pages.
+available to narrow the lists, including on rendered pages.
 
 After opening an item from the library, use your browser’s Back button to
 return to the same tab, search and filters with fresh results. A restored
@@ -54,5 +54,5 @@ its item to the Desk. The item stays saved until you remove it with
 ## Rendered pages
 
 If the store has saved items, a page written by `quarterdeck render` shows
-References, Answered and Conversations as plain sections after the Desk. The Answered section
-links each title to its item page.
+References and Answered as plain sections after the Desk. The Answered section
+links each title to its item page. Conversations are available on the served site.

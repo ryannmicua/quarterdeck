@@ -4557,7 +4557,7 @@ class TalkToFirstmateTests(ImageCase):
         self.assertEqual((result["item"], result["href"], result["message"]), ("Q1", "q1.html", "Message sent."))
         (item,) = self.store()["items"]
         self.assertEqual((item["kind"], item["title"], item["body"]), ("conversation", "Harbor lamp colours", {}))
-        self.assertEqual(item["description"], "Which amber suits the pier lamps?")
+        self.assertNotIn(body["text"], item["description"])
         (message,) = self.thread()
         self.assertEqual((message["id"], message["author"], message["delivery"]), (body["id"], "you", "sent"))
         self.assertEqual((home / "notes").read_text(),
@@ -4569,11 +4569,15 @@ class TalkToFirstmateTests(ImageCase):
 
     def test_the_desk_offers_talk_to_firstmate_only_with_a_home(self) -> None:
         port = self.start("/qd", ask_home=self.inbox())
-        page = self.fetch(port, "/qd/")[1]
-        self.assertIn('id="open-talk"', page)
-        self.assertIn('Talk to Firstmate', page)
-        self.assertIn('id="talk-form"', page)
-        self.assertNotIn('id="open-talk"', self.fetch(self.start("/qd"), "/qd/")[1])
+        for path in ("/qd/", "/qd/index.html"):
+            _, page, headers = self.fetch(port, path)
+            self.assertIn('id="open-talk"', page)
+            self.assertIn('Talk to Firstmate', page)
+            self.assertIn('id="talk-form"', page)
+            self.assertEqual(headers["Content-Security-Policy"], "frame-ancestors 'none'")
+        _, page, headers = self.fetch(self.start("/qd"), "/qd/")
+        self.assertNotIn('id="open-talk"', page)
+        self.assertNotIn("Content-Security-Policy", headers)
 
     def test_a_conversation_replays_once_and_retries_with_the_same_note(self) -> None:
         home = self.inbox(accept=False)
@@ -4632,24 +4636,84 @@ class TalkToFirstmateTests(ImageCase):
         self.assertEqual(self.post(port, "/qd/replies/read", {"part": "Q1", "ids": ids})[0], 200)
         self.assertNotIn("Read reply", self.fetch(port, "/qd/")[1])
 
-    def test_conversations_are_listed_and_searchable_in_the_library_and_rendered_read_only(self) -> None:
+    def test_a_conversation_cannot_send_messages_to_a_replacement_home(self) -> None:
+        home = self.inbox()
+        original_port = self.start("/qd", ask_home=home)
+        first, _ = self.begin(original_port)
+        self.inbox(accept=False)
+        pending = {"part": "Q1", "id": uuid.uuid4().hex, "text": "Which green?", "home": first["home"]}
+        self.assertEqual(self.post(original_port, "/qd/asks", pending)[1]["message"], "Message saved. Not delivered.")
+        before = quarterdeck.store_path().read_bytes()
+        replacement = self.inbox(name="replacement")
+        port = self.start("/qd", ask_home=replacement)
+        page = self.fetch(port, "/qd/q1.html")[1]
+        binding = re.search(r'data-home="([^"]+)"', page)[1]
+        self.assertNotEqual(binding, first["home"])
+        for endpoint, request, saved in (
+            ("asks", {**pending, "id": uuid.uuid4().hex, "home": binding}, False),
+            ("asks", {**pending, "home": binding}, True),
+            ("asks", {"part": "Q1", "id": pending["id"], "action": "retry"}, True),
+            ("conversations", {**first, "home": binding}, True),
+        ):
+            with self.subTest(endpoint=endpoint, request=request):
+                status, result = self.post(port, f"/qd/{endpoint}", request)
+                self.assertEqual((status, result["saved"]), (409, saved))
+                self.assertIn("Firstmate home changed", result["message"])
+        self.assertEqual(quarterdeck.store_path().read_bytes(), before)
+        self.assertFalse((replacement / "attempts").exists())
+        self.assertEqual(self.begin(port, "New home topic")[1][1]["message"], "Message sent.")
+
+    def test_conversations_are_listed_on_the_served_desk_and_excluded_from_exports(self) -> None:
         port = self.start("/qd", ask_home=self.inbox())
-        self.begin(port)
+        first, _ = self.begin(port)
         self.begin(port, "Quay sign colours", "Navy or black lettering?")
+        with quarterdeck.changing_store(quarterdeck.store_path()) as data:
+            data["items"][0]["description"] = first["text"]
+        self.assertEqual(self.run_cli("reply", "Q1", "--ask", first["id"], "--text", "Use golden amber.",
+                                      "--link-text", "Colour chart", "--url", "https://example.org/chart",
+                                      "--image", str(self.red), "--alt", "A red lamp")[0], 0)
         desk = self.fetch(port, "/qd/")[1]
         self.assertIn('id="tab-conversations"', desk)
-        self.assertIn("Conversations", desk)
+        self.assertIn("Read reply", desk)
         panel = desk[desk.index('id="panel-conversations"'):]
         self.assertLess(panel.index("Quay sign colours"), panel.index("Harbor lamp colours"))
-        self.assertIn("navy or black lettering?", panel)
+        for private in (first["text"], "Navy or black lettering?", "Use golden amber.", "https://example.org/chart",
+                        "A red lamp"):
+            self.assertNotIn(private.casefold(), desk.casefold())
+        page = self.fetch(port, "/qd/q1.html")[1]
+        for private in (first["text"], "Use golden amber.", "https://example.org/chart", "A red lamp"):
+            self.assertIn(private, page)
+        self.add("resource", "Public chart", "A reference.", "--url", "https://example.org", "--link-text", "Open")
         output = self.root / "site" / "index.html"
+        output.parent.mkdir()
+        (output.parent / "q1.html").write_text(page)
         self.assertEqual(self.run_cli("render", "--output", str(output))[0], 0)
-        self.assertIn("<h2>Conversations</h2>", output.read_text())
-        page = (output.parent / "q1.html").read_text()
-        self.assertIn("Which amber suits the pier lamps?", page)
-        self.assertNotIn("send-message", page)
+        exported = output.read_text()
+        for private in ("<h2>Conversations</h2>", "Harbor lamp colours", "Quay sign colours", first["text"]):
+            self.assertNotIn(private, exported)
+        self.assertIn('href="q3.html"', exported)
+        self.assertEqual({path.name for path in output.parent.glob("*.html")}, {"index.html", "q3.html"})
 
     check_answer_page = ServeTests.check_answer_page
+
+    def test_conversation_search_matches_id_shaped_topics_and_exact_item_ids(self) -> None:
+        port = self.start("/qd", ask_home=self.inbox())
+        self.begin(port, "Q5.3", "Hidden message")
+        self.begin(port, "Other topic", "Q5.3")
+        self.check_answer_page(port, r"""
+button('open-library').click();
+button('tab-conversations').click();
+const search = button('search-conversations');
+const find = query => {
+  search.value = query;
+  search.dispatchEvent(new Event('input', {bubbles: true}));
+  return [...document.querySelectorAll('#conversations-list .lib-item:not([hidden])')].map(row => row.dataset.id).join(',');
+};
+check(find('q5.3') === 'Q1', 'The ID-shaped topic was missed or a message matched');
+check(find('Q2') === 'Q2', 'An exact conversation item ID did not match');
+check(find('hidden message') === '', 'Message content matched a search');
+check(find('other topic') === 'Q2', 'A plain topic did not match');
+""", path="/qd/", viewport=(390, 844))
 
     def test_the_pages_send_messages_and_start_conversations_in_a_browser(self) -> None:
         port = self.start("/qd", ask_home=self.inbox())
@@ -4675,6 +4739,37 @@ check(sent.length === 1 && sent[0][0] === 'asks' && sent[0][1].part === 'Q1' && 
 check(box.value === '' && send.disabled, 'The sent message stayed in the box');
 check(document.querySelector('.thread-messages').textContent === 'stub', 'The conversation was not refreshed');
 check(document.querySelector('output').textContent === 'Message sent.', 'The status was not shown');
+""", path="/qd/q1.html", viewport=(390, 844))
+        self.check_answer_page(port, r"""
+const seen = [];
+const posts = [];
+window.fetch = async (path, init) => {
+  const payload = JSON.parse(init.body);
+  if (path === 'replies/read') {
+    check(payload.part === 'Q1', 'The reply acknowledgment targeted the wrong conversation');
+    check(document.querySelector('.badge').textContent === 'Replied', 'The badge missed a newly visible reply');
+    seen.push(...payload.ids);
+    return {ok:true, json:async () => ({replies:Object.fromEntries(seen.map(id => [id, true]))})};
+  }
+  check(path === 'asks', 'Unexpected conversation request');
+  posts.push(payload);
+  const reply = id => `<p data-reply-id="${id}" data-unread>Firstmate replied.</p>`;
+  const retry = '<button data-retry-ask="saved-message">Send message again</button>';
+  return {ok:true, json:async () => ({thread: reply('reply-one') + (payload.action ? reply('reply-two') : retry),
+    message: 'Message sent.'})};
+};
+const field = button('message-Q1');
+field.value = 'A follow-up';
+field.dispatchEvent(new Event('input', {bubbles:true}));
+button('send-message').click();
+await new Promise(resolve => setTimeout(resolve, 50));
+check(seen.join(',') === 'reply-one', 'Sending did not acknowledge the newly displayed reply');
+check(document.querySelector('.badge').hidden, 'The badge stayed visible even after acknowledgment');
+document.querySelector('[data-retry-ask]').click();
+await new Promise(resolve => setTimeout(resolve, 50));
+check(posts[1].action === 'retry' && posts[1].id === 'saved-message', 'The saved message was not retried');
+check(seen.join(',') === 'reply-one,reply-two', 'Retry did not acknowledge only the newly displayed reply');
+check(document.querySelector('.badge').hidden, 'The badge stayed visible after retry acknowledgment');
 """, path="/qd/q1.html", viewport=(390, 844))
         refusal = stub.replace("ok:true, status:200, json: async () => ({thread:'<ol class=\"exchange\"><li>stub</li></ol>', message:'Message sent.', href:'q9.html'})",
                                "ok:false, status:409, json: async () => ({message:'Firstmate home changed.'})")

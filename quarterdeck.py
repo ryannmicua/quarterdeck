@@ -1089,6 +1089,10 @@ def ask_note(item, target, message):
     return f"ASK {target} {message['id']} {message['text']}"
 
 
+def conversation_home_matches(item, binding):
+    return item["kind"] != "conversation" or part_thread(item, None)[0]["home"] == binding
+
+
 def ask_message(store, home, binding, payload):
     if not isinstance(payload, dict):
         raise ValueError("Invalid ask fields.")
@@ -1108,19 +1112,20 @@ def ask_message(store, home, binding, payload):
             data = read_store(store)
             item = find_answer_item(data, item_id)
             check_conversation_target(item, part, target)
+            home_changed = payload["home"] != binding or not conversation_home_matches(item, binding)
             for number, messages in item.get("conversation", {}).items():
                 message = next((m for m in messages if m["id"] == message_id), None)
                 if message is None:
                     continue
                 if number != key or message["author"] != "you" or message["text"] != text:
                     raise AnswerConflict("Ask ID already in use. Reload the question.")
-                if payload["home"] != binding or (message["delivery"] == "pending" and message["home"] != binding):
+                if home_changed or (message["delivery"] == "pending" and message["home"] != binding):
                     raise SavedAskConflict(changed_home)
                 if not retry:
                     return ask_result(item, part, message)
                 break
             else:
-                if payload["home"] != binding:
+                if home_changed:
                     raise AnswerConflict(changed_home)
                 if not conversation_editable(item, part):
                     raise AnswerConflict("Question closed. Reopen it before asking.")
@@ -1136,6 +1141,8 @@ def ask_message(store, home, binding, payload):
         message = next((m for m in part_thread(item, part) if m["id"] == message_id and m["author"] == "you"), None)
         if message is None:
             raise AnswerConflict("Ask not found. Reload the question.")
+        if not conversation_home_matches(item, binding):
+            raise SavedAskConflict(changed_home)
         if message["delivery"] == "pending":
             if message["home"] != binding:
                 raise SavedAskConflict(changed_home)
@@ -1144,11 +1151,6 @@ def ask_message(store, home, binding, payload):
             if deliver_note(home, message["request_id"], ask_note(item, target, message)):
                 message["delivery"] = "sent"
         return ask_result(item, part, message)
-
-
-def conversation_summary(text):
-    """The first message, cut to fit a description."""
-    return text if len(text) <= DESCRIPTION_LIMIT else text[:DESCRIPTION_LIMIT - 1].rstrip() + "\u2026"
 
 
 def start_conversation(store, home, binding, payload):
@@ -1167,7 +1169,7 @@ def start_conversation(store, home, binding, payload):
             if first and first["id"] == message_id:
                 if (item["title"], first["text"]) != (title, text):
                     raise AnswerConflict("Message ID already in use. Reload the Desk.")
-                if payload["home"] != binding or (first["delivery"] == "pending" and first["home"] != binding):
+                if payload["home"] != binding or first["home"] != binding:
                     raise SavedAskConflict("Firstmate home changed. This message belongs to the original home.")
                 item_id = item["id"]
                 break
@@ -1177,7 +1179,7 @@ def start_conversation(store, home, binding, payload):
             item_id = f"Q{data['next_id']}"
             data["next_id"] = int(data["next_id"]) + 1
             data["items"].append({"id": item_id, "kind": "conversation", "title": title,
-                                  "description": conversation_summary(text), "saved_at": now_text(), "body": {},
+                                  "description": "Conversation with Firstmate.", "saved_at": now_text(), "body": {},
                                   "conversation": {"item": [new_ask(message_id, text, binding)]}})
             write_store(store, data)
     result = ask_message(store, home, binding, {"part": item_id, "id": message_id, "action": "retry"})
@@ -2156,6 +2158,7 @@ LIBRARY_SCRIPT = r"""
   for (const tab of tabs) {
     const panel = panelOf(tab);
     const search = searchOf(tab);
+    const topics = tab.id === 'tab-conversations';
     const savedFilters = tab === restoredTab ? libraryLookup.filters ?? {} : {};
     if (tab === restoredTab) {
       search.value = libraryLookup.query;
@@ -2181,13 +2184,12 @@ LIBRARY_SCRIPT = r"""
     const run = () => {
       const query = search.value.trim();
       const id = idQuery.exec(query);
-      const terms = query && !id ? caseFold(query).split(/\s+/) : [];
+      const terms = caseFold(query).split(/\s+/);
       let hasMatch = false;
       for (const row of rows) {
-        const searchMatch = id
-          ? row.dataset.id.toLowerCase() === id[1].toLowerCase()
-            && (id[2] === undefined || (/^[1-9]\d*$/.test(id[2]) && Number(id[2]) <= Number(row.dataset.questions)))
-          : terms.every(term => row.dataset.search.includes(term));
+        const idMatch = id && row.dataset.id.toLowerCase() === id[1].toLowerCase()
+          && (id[2] === undefined || (/^[1-9]\d*$/.test(id[2]) && Number(id[2]) <= Number(row.dataset.questions)));
+        const searchMatch = idMatch || ((!id || topics) && terms.every(term => row.dataset.search.includes(term)));
         const ok = searchMatch && matchesClassification(row, filters);
         row.hidden = !ok;
         hasMatch ||= ok;
@@ -2325,7 +2327,7 @@ def item_page_name(item_id: str) -> str:
 
 def page_shell(title: str, site_title: str, body: str, *, served: bool, saved_name: str, interactive: bool = False,
                workers: bool = False, library: str = "", conversations: bool = False, filters: bool = False,
-               talking: bool = False, starting: str = "") -> str:
+               talking: bool = False, starting: bool = False) -> str:
     saved_href = quote(saved_name, safe="")
     opener = ('<button type="button" id="open-library" aria-haspopup="dialog" aria-controls="library">Open library</button>'
               if library else "")
@@ -2528,19 +2530,18 @@ def item_conversation(item, ask_binding):
             f'{editor}{thread}</section>')
 
 
-def conversation_page(item, served, ask_binding):
+def conversation_page(item, ask_binding):
     """A conversation: every message and reply in time order, and a box for the next message."""
     target = item["id"]
     thread = thread_html(item, None, editable=bool(ask_binding))
-    unread = served and thread_unread(item, None)
+    unread = thread_unread(item, None)
     badge = '<span class="badge">Replied</span>' if unread else '<span class="badge" hidden></span>'
-    composer = ""
     if ask_binding:
         composer = (f'<div class="composer"><label for="message-{target}">Your message</label>'
                     f'<textarea id="message-{target}" maxlength="{TEXT_LIMIT}" rows="3" aria-describedby="error-{target}"></textarea>'
                     f'<p id="error-{target}" hidden></p><div class="actions"><button type="button" class="primary" id="send-message" '
                     f'data-home="{esc(ask_binding)}" disabled>Send message</button><output role="status" tabindex="0"></output></div></div>')
-    elif served:
+    else:
         composer = '<p class="empty">Set firstmate_home to send Firstmate more messages.</p>'
     return (f'<section id="{target}" class="work item-conversation conversation" data-conversation>'
             f'<div class="eyebrow">{badge}</div><div class="thread-messages">{thread}</div>{composer}</section>')
@@ -2707,7 +2708,11 @@ CONVERSATION_SCRIPT = talk_script(r"""
 (() => {
   const section = document.querySelector('.conversation');
   if (!section) return;
-  acknowledgeReplies(section);
+  const refreshReplies = () => {
+    reconcileReplies(section);
+    acknowledgeReplies(section);
+  };
+  refreshReplies();
   const field = section.querySelector('textarea');
   const button = section.querySelector('#send-message');
   if (!field || !button) return;
@@ -2733,6 +2738,7 @@ CONVERSATION_SCRIPT = talk_script(r"""
       if (outcome.ok) {
         messages.innerHTML = outcome.result.thread;
         localizeTimes(messages);
+        refreshReplies();
         output.textContent = outcome.result.message;
         if (body.text !== undefined) {
           field.value = '';
@@ -3148,14 +3154,14 @@ def library_row(item, *, served):
     unread = served and thread_unread(item, None)
 
     if served:
-        search = [item["title"], item["description"]]
+        search = [item["title"]]
+        if kind != "conversation":
+            search.append(item["description"])
         if kind == "questions":
             parts = question_parts(item)
             search.extend(q["question"] for q in item["body"]["questions"])
             search.extend(part_record(item, n).get("answer", "") for n in parts)
             attributes += f' data-questions="{len(parts)}"'
-        elif kind == "conversation":
-            search.extend(m["text"] for m in part_thread(item, None))
         attributes += f' data-id="{item_id}" data-search="{esc(" ".join(search).casefold())}"'
     if kind == "questions":
         state, _, _ = question_summary(item, replies=served)
@@ -3163,8 +3169,8 @@ def library_row(item, *, served):
         detail = f'<p class="meta">{label}</p>'
     else:
         replied = '<span class="badge">Replied</span>' if unread else ""
-        detail = (f'<p class="lib-desc">{linked_text(item["description"])}</p>'
-                  f'<p class="meta"><span>{KIND_LABELS[kind]}</span>{replied}{day_time(item["saved_at"])}</p>')
+        description = '' if kind == "conversation" else f'<p class="lib-desc">{linked_text(item["description"])}</p>'
+        detail = description + f'<p class="meta"><span>{KIND_LABELS[kind]}</span>{replied}{day_time(item["saved_at"])}</p>'
     return (f'<li class="lib-item"{attributes}>'
             f'<div class="lib-head"><span class="id">{item_id}</span>'
             f'{title}{project}</div>{detail}{tags}</li>')
@@ -3183,24 +3189,22 @@ def library_panel(name: str, items: list[dict[str, object]], empty: str, *, serv
             f'<p class="empty" data-none{" hidden" if rows else ""}>{esc(empty)}</p>')
 
 
-def library_lists(data: dict[str, object], *, served: bool) -> tuple[str, str, str]:
-    references, answered, conversations = [], [], []
+def library_lists(data: dict[str, object], *, served: bool) -> tuple[str, str]:
+    references, answered = [], []
     for item in newest_first(data["items"]):  # type: ignore[arg-type]
-        if item["kind"] == "conversation":
-            conversations.append(item)
-        elif item["kind"] != "questions":
+        if item["kind"] in ("resource", "list"):
             references.append(item)
-        elif not desk_item(item):
+        elif item["kind"] == "questions" and not desk_item(item):
             answered.append(item)
     return (library_panel("references", references, "No references are saved yet.", served=served),
-            library_panel("answered", answered, "Nothing is answered yet.", served=served),
-            library_panel("conversations", conversations,
-                          "No conversations yet. Talk to Firstmate from the Desk to start one.", served=served))
+            library_panel("answered", answered, "Nothing is answered yet.", served=served))
 
 
 def library_dialog(data: dict[str, object]) -> str:
-    """The pop-out: a bottom sheet on a phone and a right drawer on a desktop, with References and Answered."""
-    references, answered, conversations = library_lists(data, served=True)
+    references, answered = library_lists(data, served=True)
+    items = [item for item in newest_first(data["items"]) if item["kind"] == "conversation"]  # type: ignore[arg-type]
+    conversations = library_panel("conversations", items,
+                                  "No conversations yet. Talk to Firstmate from the Desk to start one.", served=True)
     names = (("references", "References"), ("answered", "Answered"), ("conversations", "Conversations"))
     tabs = "".join(f'<button type="button" role="tab" id="tab-{name}" aria-controls="panel-{name}" '
                    f'aria-selected="{"true" if number == 0 else "false"}" tabindex="{0 if number == 0 else -1}">{label}</button>'
@@ -3232,7 +3236,7 @@ def conversation_card(item, *, show_project=True):
     href, title = item_page_name(item["id"]), esc(item["title"])
     project = f' <span class="project-name">{esc(item["project"])}</span>' if show_project and item.get("project") else ""
     return (f'<article class="work"><div class="eyebrow"><span class="id">{item["id"]}</span> Conversation{project}</div>'
-            f'<h3>{title}</h3><p>{linked_text(item["description"])}</p>{tag_labels(list(item.get("tags", [])))}'
+            f'<h3>{title}</h3>{tag_labels(list(item.get("tags", [])))}'
             f'<div class="actions"><span class="badge">Replied</span>'
             f'<a class="card-link button-link" href="{href}" aria-label="Read the reply in {title}">Read reply</a></div></article>')
 
@@ -3290,13 +3294,12 @@ def list_page(data: dict[str, object], site_title: str, *, served: bool, saved_n
     if served:
         library = library_dialog(data)
     elif items:
-        references, answered, conversations = library_lists(data, served=False)
+        references, answered = library_lists(data, served=False)
         body += (f'<section class="page-section"><h2>References</h2>{references}</section>'
-                 f'<section class="page-section"><h2>Answered</h2>{answered}</section>'
-                 f'<section class="page-section"><h2>Conversations</h2>{conversations}</section>')
+                 f'<section class="page-section"><h2>Answered</h2>{answered}</section>')
     return page_shell(site_title, site_title, body, served=served, saved_name=saved_name, workers=served and workers,
                       library=library, filters=bool(items) and not served,
-                      starting=talk_form(ask_binding) if served and ask_binding else "")
+                      starting=served and bool(ask_binding))
 
 
 def item_body_html(item: dict[str, object]) -> str:
@@ -3317,7 +3320,7 @@ def item_page(item: dict[str, object], site_title: str, *, served: bool, saved_n
     questions = item["kind"] == "questions"
     talking = item["kind"] == "conversation"
     content = (question_form(item, served, ask_binding=ask_binding) if questions
-               else conversation_page(item, served, ask_binding) if talking else item_body_html(item))
+               else conversation_page(item, ask_binding) if talking else item_body_html(item))
     lead = "" if talking else f'<p class="lead">{linked_text(item["description"])}</p>'
     body = (
         f'<p class="id">{esc(item_id)}</p><h1>{esc(item["title"])}</h1>'
@@ -3333,10 +3336,11 @@ def item_page(item: dict[str, object], site_title: str, *, served: bool, saved_n
 
 
 def site_pages(data: dict[str, object], site_title: str, saved_name: str) -> dict[str, str]:
+    items = [item for item in data["items"] if item["kind"] != "conversation"]  # type: ignore[union-attr]
     pages = {}
-    for item in data["items"]:  # type: ignore[union-attr]
+    for item in items:
         pages[item_page_name(str(item["id"]))] = item_page(item, site_title, served=False, saved_name=saved_name)
-    pages[saved_name] = list_page(data, site_title, served=False, saved_name=saved_name)
+    pages[saved_name] = list_page({**data, "items": items}, site_title, served=False, saved_name=saved_name)
     return pages
 
 
@@ -3711,8 +3715,10 @@ def make_handler(site_title: str, base_path: str = "", store: Path | None = None
                 self.send_image(data, *picture.groups())
                 return
             if name == "index.html":
+                _, ask_binding = ask_destination()
                 self.send_text(200, list_page(data, site_title, served=True, workers=workers_home is not None,
-                                              ask_binding=ask_destination()[1]), "text/html; charset=utf-8")
+                                              ask_binding=ask_binding), "text/html; charset=utf-8",
+                               prevent_framing=bool(ask_binding))
                 return
             try:
                 item = find_item(data, name.removesuffix(".html"))
@@ -4113,7 +4119,7 @@ def make_parser() -> argparse.ArgumentParser:
     remove.add_argument("id", help="item ID, such as Q7")
 
     render_parser = command("render", "write the page to HTML files",
-                            "Write the Desk page and one page per item as HTML files.", render)
+                            "Write HTML pages for the Desk, resources, lists and question items.", render)
     render_parser.add_argument("--output", help="HTML file path for the Desk page; the other pages go beside it")
     render_parser.add_argument("--config", type=Path, help="optional JSON config file")
     render_parser.add_argument("--title", help="override the page title")
