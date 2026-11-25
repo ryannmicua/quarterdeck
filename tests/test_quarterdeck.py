@@ -976,7 +976,8 @@ const sendBatch = () => new Promise(resolve => {
             width, height = viewport
             page = (f'<iframe width="{width}" height="{height}" style="border:0" srcdoc="{escape(page)}"></iframe>'
                     '<output id="browser-result">Incomplete</output>')
-            timing = ["--virtual-time-budget=1000"]
+            # Give resize observers a rendered frame before headless Chrome dumps the fixture.
+            timing = ["--run-all-compositor-stages-before-draw", "--virtual-time-budget=1000"]
         fixture.write_text(page, encoding="utf-8")
         result = subprocess.run([chrome, "--headless", "--disable-background-networking", "--no-first-run", "--lang=en-US",
                                  f"--user-data-dir={self.root / 'browser'}", *timing, "--dump-dom", fixture.as_uri()],

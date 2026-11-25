@@ -49,6 +49,9 @@ a read-only store. Other readers validate records without taking the lock.
 | `tags` | Optional list of up to three distinct [classification tags](cli-and-config.md#classification). Repeated tags collapse to one. An empty list is omitted. |
 | `body` | Depends on the kind; see below. |
 
+Served pages and rendered HTML display saved dates in the browser's local
+time zone when JavaScript is enabled.
+
 | Kind | `body` |
 | --- | --- |
 | `resource` | A `url` and `link_text`. |
@@ -80,7 +83,7 @@ fields if they pass the same validation as resource URLs.
 
 | Where | Fields |
 | --- | --- |
-| Desk and library | Item descriptions on Desk cards, in References and in rendered sections, and the open question prompts shown on Desk cards |
+| Desk and References | Item descriptions and open question prompts on Desk cards, plus item descriptions in References on served and rendered pages |
 | Item page | Item descriptions, question prompts, context, options and suggested answers |
 
 Quarterdeck uses the address as the link text. Inline links open in a new tab

@@ -1,8 +1,8 @@
 # Find references and answered questions
 
 Select **Open library** in the served Desk header. On a phone it opens a bottom
-sheet. On a desktop it opens a drawer on the right. Press Escape or select
-**Close library** to return to the Desk.
+sheet. On a desktop it opens a drawer on the right. Select **Close library**,
+press Escape, or tap outside the library to return to the Desk.
 
 The pop-out has two tabs.
 
@@ -10,14 +10,20 @@ The pop-out has two tabs.
 - **Answered** lists question items that have left the Desk, newest saved items
   first. Select an item title to read its questions and saved answers.
 
+With a tab focused, use the left or right arrow to switch tabs. Home opens
+References, and End opens Answered.
+
 ## Search
 
-Use the search box in either tab to find words in the title or description.
-**Answered** also searches the question and answer text. Every word must match.
-Enter `Q5` to find item Q5, or `Q5.3` to find Q5 if it has a third question.
+Use the search box in either tab to match text in the title or description.
+**Answered** also searches question and saved answer text. Search ignores case,
+and every term must match. Enter an exact ID on its own, such as `Q5` to find
+item Q5 or `Q5.3` to find Q5 if it has a third question.
 
 After opening an item from the library, use your browser’s Back button to
-return to the same tab and search with fresh results.
+return to the same tab and search with fresh results. Closing the library
+clears the saved lookup, so reloading the Desk or returning from a Desk card
+leaves the library closed.
 
 When there’s enough room, results scroll beneath the search box. In a short
 window, such as when the phone keyboard is open, the whole sheet or drawer
@@ -25,13 +31,14 @@ scrolls. Scroll back to the top to reach Search, the tabs, or **Close library**.
 
 ## When an item moves
 
-An item moves to **Answered** when every question is answered or closed and no
-non-closed question has pending delivery.
-It returns to the Desk when any question is open again, for example after
-`quarterdeck mark Q5.2 open`. Nothing is deleted. Only `quarterdeck remove`
-deletes an item.
+An item stays on the Desk while it has an open question or a non-closed
+question with an answer awaiting delivery. Otherwise it appears under
+**Answered**. Reopen a question with `quarterdeck mark Q5.2 open` to return
+its item to the Desk. The item stays saved until you remove it with
+`quarterdeck remove`.
 
 ## Rendered pages
 
-A page written by `quarterdeck render` shows References and Answered as plain
-sections after the Desk. The Answered section links each title to its item page.
+If the store has saved items, a page written by `quarterdeck render` shows
+References and Answered as plain sections after the Desk. The Answered section
+links each title to its item page.

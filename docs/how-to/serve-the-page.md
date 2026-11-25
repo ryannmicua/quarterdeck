@@ -23,10 +23,9 @@ Serve HTTPS on an address the phone can reach:
 quarterdeck serve --host 192.0.2.10 --tls-cert cert.pem --tls-key key.pem
 ```
 
-On a phone, select **Open library** on the Desk to find References and Answered
-in a bottom sheet. Item pages read in one column. You can pin Quarterdeck to
-your home screen using its app icon and manifest. Read the security section
-below before using a non-loopback address.
+Item pages read in one column. You can pin Quarterdeck to your home screen
+using its app icon and manifest. Read the security section below before using
+a non-loopback address. See [how to open the library on a phone](use-the-library.md).
 
 ## Run it in the background with systemd
 

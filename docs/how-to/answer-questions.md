@@ -7,9 +7,11 @@ action reads **Review answers**. Each question has an ID you can cite later.
 
 An item page lists every question in one list. A question marked **Answered**
 with a **Sent** answer collapses to one line below the expanded questions.
-Tap the line to open it, read the context and edit the
-answer. The **Send answers** bar stays at the bottom of the screen while you
-scroll, so you can compare answers and send them together.
+Tap the line to open it and read the context. On the served page you can edit
+the answer there. A correction that is saved but still awaiting delivery
+returns to the expanded questions. The **Send answers** bar stays at the
+bottom of the screen while you scroll, so you can compare answers and send
+them together.
 
 If the question has [review links](save-items.md#a-question-that-points-to-a-review-page),
 open them for context before choosing an answer.
@@ -18,11 +20,8 @@ open them for context before choosing an answer.
 2. Review the answers. **Undo changes** reverses one option choice or bulk suggestion action at a time and keeps any drafts you typed afterward.
 3. Select **Send answers**. The button counts the answers ready to send. You can send a few now and return for the rest.
 
-Once every question in an item is answered or closed and no non-closed question
-has pending delivery, the item leaves the Desk. Find it again under **Answered** in the
-[library](use-the-library.md). If a question is opened again, for example with
-`quarterdeck mark Q7.3 open`, the item returns to the Desk by itself. Nothing is
-deleted; only [`quarterdeck remove`](save-items.md) deletes an item.
+To find an item after it leaves the Desk, open
+[**Answered** in the library](use-the-library.md#when-an-item-moves).
 
 **Answered** is the question's state. Submitting a new answer sets it, and
 [marking a question](read-answers.md) can set it manually. **Sent** means the

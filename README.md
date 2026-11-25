@@ -27,14 +27,10 @@ the saved content.
 
 ## Features
 
-- **Desk** shows items with an open question or pending delivery on a non-closed
-  question. Tap a card to open its item at the first open question, when it has
-  one. Once all questions are
-  answered or closed and no non-closed question has pending delivery, the item
-  moves to **Answered**. It returns to the Desk when a question opens again.
-- **Open library** opens a bottom sheet on a phone and a right-side drawer on a
-  desktop, with **References** (links and lists) and **Answered** tabs, each
-  searchable. See [Find references and answered questions](docs/how-to/use-the-library.md).
+- **Desk** shows questions that need attention. Tap a card to open its item.
+- **Open library** gives you searchable access to saved links, lists, and
+  answered items on the served Desk. See
+  [Find references and answered questions](docs/how-to/use-the-library.md).
 - **Workers** follows **Desk** on the served page. See
   [how to enable and refresh the roster](docs/how-to/read-workers.md).
 - One page per item, with its ID and title at the top. A resource's link opens
