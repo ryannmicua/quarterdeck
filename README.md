@@ -27,10 +27,10 @@ the saved content.
 
 ## Features
 
-- **Desk** shows each question item that still needs an answer, and keeps an
-  item in view while an answer is not delivered. Tap anywhere on a card to open
-  its item. An item whose questions are all answered or closed leaves the Desk
-  by itself and returns when a question is open again.
+- **Desk** shows items with an open question or pending delivery on a non-closed
+  question. Tap anywhere on a card to open its item. Once all questions are
+  answered or closed and no non-closed question has pending delivery, the item
+  moves to **Answered**. It returns to the Desk when a question opens again.
 - **Open library** opens a bottom sheet on a phone and a right-side drawer on a
   desktop, with **References** (links and lists) and **Answered** tabs, each
   searchable. See [Find references and answered questions](docs/how-to/use-the-library.md).

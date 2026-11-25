@@ -6,9 +6,9 @@ the first open question. The action reads **Review answers** when no question
 is open but an answer is not yet delivered. Each question has an ID you can
 cite later.
 
-An item page lists every question in one list, open questions first. A question
-that already has an answer collapses to one line with its question and answer
-below the open ones. Tap the line to open it, read the context and edit the
+An item page lists every question in one list. A question marked **Answered**
+with a **Sent** answer collapses to one line below the expanded questions.
+Tap the line to open it, read the context and edit the
 answer. The **Send answers** bar stays at the bottom of the screen while you
 scroll, so you can compare answers and send them together.
 
@@ -19,8 +19,8 @@ open them for context before choosing an answer.
 2. Review the answers. **Undo changes** reverses one option choice or bulk suggestion action at a time and keeps any drafts you typed afterward.
 3. Select **Send answers**. The button counts the answers ready to send. You can send a few now and return for the rest.
 
-Once every question in an item is answered or closed, and every answer is
-delivered, the item leaves the Desk. Find it again under **Answered** in the
+Once every question in an item is answered or closed and no non-closed question
+has pending delivery, the item leaves the Desk. Find it again under **Answered** in the
 [library](use-the-library.md). If a question is opened again, for example with
 `quarterdeck mark Q7.3 open`, the item returns to the Desk by itself. Nothing is
 deleted; only [`quarterdeck remove`](save-items.md) deletes an item.

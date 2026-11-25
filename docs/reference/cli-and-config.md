@@ -46,9 +46,9 @@ Item commands report validation errors on stderr and exit with status 2.
 | `service` | Prints a systemd user unit with the supplied serving options, or writes it to `${XDG_CONFIG_HOME:-~/.config}/systemd/user/quarterdeck.service` with `--write`. |
 | `url` | Prints the address the installed unit serves, or the default address when no unit is installed. |
 
-Served pages open References and Answered in one pop-out, a bottom sheet at phone
-width and a right-side drawer on a desktop. A rendered page has no pop-out and
-lists References and Answered as sections after the Desk.
+The served Desk opens References and Answered in one pop-out, a bottom sheet at
+phone width and a right-side drawer on a desktop. A rendered page lists
+References and Answered as sections after the Desk.
 
 Rendered item pages include any saved answers and their timestamps and
 delivery status. Answer controls are available on served pages.

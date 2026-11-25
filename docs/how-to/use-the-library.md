@@ -1,36 +1,32 @@
 # Find references and answered questions
 
-Select **Open library** in the page header. On a phone it opens a bottom sheet;
-on a desktop it opens a drawer on the right. The same pop-out is on the Desk and
-on every item page. Press Escape or select **Close library** to return to where
-you were.
+Select **Open library** in the served Desk header. On a phone it opens a bottom
+sheet. On a desktop it opens a drawer on the right. Press Escape or select
+**Close library** to return to the Desk.
 
 The pop-out has two tabs.
 
 - **References** lists saved links and lists, newest first.
-- **Answered** lists question items that have left the Desk, newest answer first.
+- **Answered** lists question items that have left the Desk, newest saved items
+  first. Select an item title to read its questions and saved answers.
 
 ## Search
 
-Type words to search an item's title, description, questions and answers. Every
-word must match. Type an ID to jump to an item: `Q5` finds item Q5, and `Q5.3`
-finds its third question and shows the saved answer under the item.
-
-On **Answered**, pick an **Answer date** to list only items answered on that
-day in your local time. Combine a date with words to narrow the list. Select
-**Clear date** to remove it.
+Use the search box in either tab to find words in the title or description.
+**Answered** also searches the question and answer text. Every word must match.
+Enter `Q5` to find item Q5, or `Q5.3` to find Q5 if it has a third question.
 
 Long lists scroll inside the pop-out, and the search stays at the top.
 
 ## When an item moves
 
-An item leaves the Desk when every question is answered or closed and every
-answer is delivered. It appears under **Answered** with no further action.
+An item moves to **Answered** when every question is answered or closed and no
+non-closed question has pending delivery.
 It returns to the Desk when any question is open again, for example after
 `quarterdeck mark Q5.2 open`. Nothing is deleted. Only `quarterdeck remove`
 deletes an item.
 
 ## Rendered pages
 
-A page written by `quarterdeck render` has no pop-out. References and Answered
-follow the Desk as plain sections, without search.
+A page written by `quarterdeck render` shows References and Answered as plain
+sections after the Desk. The Answered section links each title to its item page.

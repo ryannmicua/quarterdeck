@@ -1520,7 +1520,6 @@ table.items td.project { white-space:normal; }
   .desk .work > .actions { grid-column:1; grid-row:auto; justify-content:flex-start; margin-top:.6rem; }
 }
 [hidden] { display:none !important; }
-.back { display:inline-block; margin:0 0 .6rem; font:600 var(--text-sm)/1.4 var(--sans); }
 .bar nav { display:flex; flex-wrap:wrap; gap:.4rem 1rem; align-items:center; }
 .bar nav a { margin-left:0; }
 .bar button { min-height:40px; font-size:var(--text-sm); }
@@ -1573,8 +1572,7 @@ body:has(dialog[open]) { overflow:hidden; }
   .lib-top > button { padding:.5rem .7rem; flex:none; }
 }
 .lib-panel { display:flex; flex-direction:column; flex:1; min-height:0; }
-.lib-tools { display:flex; flex-wrap:wrap; gap:.6rem 1rem; padding:.9rem var(--gutter) .4rem; align-items:end; }
-.lib-tools > div { flex:1 1 12rem; min-width:0; }
+.lib-tools { padding:.9rem var(--gutter) .4rem; }
 .lib-tools label { font-size:var(--text-sm); color:var(--soft); margin-bottom:.2rem; }
 .lib-tools input { width:100%; min-height:var(--tap); padding:.4rem .6rem; font:var(--text-md)/1.3 var(--sans); color:var(--ink); background:var(--ground);
   border:1px solid var(--soft); border-radius:5px; }
@@ -1585,13 +1583,8 @@ body:has(dialog[open]) { overflow:hidden; }
 .lib-item p { margin:.2rem 0 0; }
 .lib-head { display:flex; gap:.2rem .8rem; align-items:baseline; }
 .lib-title { font:700 var(--text-lg)/1.3 var(--sans); }
-.lib-desc { font-size:var(--text-md); color:var(--soft); display:-webkit-box; -webkit-line-clamp:3; -webkit-box-orient:vertical; overflow:hidden; }
+.lib-desc { font-size:var(--text-md); color:var(--soft); }
 .lib-item .meta { display:flex; flex-wrap:wrap; gap:0 1rem; font-size:var(--text-md); }
-.lib-item .ref-open { font-size:var(--text-md); font-weight:600; }
-.parts { list-style:none; margin:.5rem 0 0; padding:0; }
-.parts li { margin:.5rem 0 0; padding:.5rem .8rem; border-left:4px solid var(--rule); background:var(--ground); }
-.parts p { margin:.2rem 0 0; font-size:var(--text-md); }
-.parts .record { color:var(--ink); }
 .page-section { margin:2rem 0 0; }
 """
 
@@ -1737,58 +1730,29 @@ LIBRARY_SCRIPT = r"""
     if (e.target === dialog || e.target.closest('[data-close]')) dialog.close();
   });
 
-  const localDay = iso => {
-    const d = new Date(iso);
-    return d.getFullYear() + '-' + String(d.getMonth() + 1).padStart(2, '0') + '-' + String(d.getDate()).padStart(2, '0');
-  };
-  const idQuery = /^q(\d+)(?:\.(\d+))?$/i;
-  for (const panel of dialog.querySelectorAll('[data-list]')) {
-    const search = panel.querySelector('[data-search]');
-    const date = panel.querySelector('[data-date]');
-    const clear = panel.querySelector('[data-clear-date]');
+  const idQuery = /^(q\d+)(?:\.(\d+))?$/;
+  for (const panel of dialog.querySelectorAll('[role="tabpanel"]')) {
+    const search = panel.querySelector('input[type="search"]');
     const status = panel.querySelector('[data-status]');
     const none = panel.querySelector('[data-none]');
     const rows = [...panel.querySelectorAll('.lib-item')];
-    if (!search) continue;
-    const parts = new Map(rows.map(row => [row, [...row.querySelectorAll('[data-part]')]]));
-    for (const row of rows) {
-      for (const part of parts.get(row)) part.dataset.hay = (part.dataset.part + ' ' + part.textContent).toLowerCase();
-      row.dataset.hay = (row.dataset.search + ' ' + parts.get(row).map(part => part.textContent).join(' ')).toLowerCase();
-    }
     const run = () => {
       const query = search.value.trim().toLowerCase();
-      const day = date ? date.value : '';
-      if (clear) clear.hidden = !day;
       const id = idQuery.exec(query);
-      const words = id ? [] : query.split(/\s+/).filter(Boolean);
+      const words = query ? query.split(/\s+/) : [];
       let shown = 0;
       for (const row of rows) {
-        const mine = parts.get(row);
-        let ok = true;
-        let revealed = [];
-        if (id) {
-          ok = row.dataset.id.toLowerCase() === 'q' + id[1] && (!id[2] || Number(id[2]) <= Number(row.dataset.count));
-          if (ok && id[2]) revealed = mine.filter(part => part.dataset.part.toLowerCase() === 'q' + id[1] + '.' + id[2]);
-        } else if (words.length) {
-          ok = words.every(word => row.dataset.hay.includes(word));
-          revealed = mine.filter(part => words.every(word => part.dataset.hay.includes(word)));
-        }
-        const onDay = day ? mine.filter(part => localDay(part.dataset.at) === day) : mine;
-        if (day) {
-          ok = ok && onDay.length > 0;
-          revealed = query ? revealed.filter(part => onDay.includes(part)) : onDay;
-        }
+        const ok = id
+          ? row.dataset.id.toLowerCase() === id[1]
+            && (id[2] === undefined || (/^[1-9]\d*$/.test(id[2]) && Number(id[2]) <= Number(row.dataset.questions)))
+          : words.every(word => row.dataset.search.toLowerCase().includes(word));
         row.hidden = !ok;
-        for (const part of mine) part.hidden = !(ok && revealed.includes(part));
         if (ok) shown += 1;
       }
-      const active = Boolean(query || day);
-      if (none) none.hidden = !(active && !shown);
-      if (status) status.textContent = !active ? '' : shown ? shown + (shown === 1 ? ' match' : ' matches') : 'No matches';
+      none.hidden = Boolean(query) || rows.length > 0;
+      status.textContent = !query ? '' : shown ? shown + (shown === 1 ? ' match' : ' matches') : 'No results match your search.';
     };
     search.addEventListener('input', run);
-    if (date) date.addEventListener('input', run);
-    if (clear) clear.addEventListener('click', () => { date.value = ''; run(); date.focus(); });
     run();
   }
 })();
@@ -2074,13 +2038,12 @@ def question_form(item, served):
                 f'{tag_labels(question.get("tags", []))}'
                 f'<h2 id="title-{part}">{linked_text(question["question"])}</h2><p>{linked_text(question["context"])}</p>'
                 f'{question_shots(item, question)}{saved}{controls}</section>')
-        if status == "open":
-            cards.append(card)
-        else:
-            # An answered or closed question takes one line, with its question and answer, until it is opened.
+        if status == "answered" and record.get("delivery") == "sent":
             folded.append(f'<details class="done"><summary><span class="id">{part}</span>'
                           f'<span class="sum-q">{esc(question["question"])}</span>'
-                          f'<span class="sum-a">{esc(answer or status.capitalize())}</span></summary>{card}</details>')
+                          f'<span class="sum-a">{esc(answer)}</span></summary>{card}</details>')
+        else:
+            cards.append(card)
     progress = f"{remaining} of {len(cards) + len(folded)} open" if remaining else state
     bar = ""
     if served and has_answer_controls(item):
@@ -2172,8 +2135,17 @@ if (send) {
       (history.length ? undo : send.disabled ? fields[0] : send).focus();
     }
   });
-  function fold(section, answer) {
+  function updateFold(section, record) {
     let box = section.closest('details.done');
+    if (record.state !== 'answered' || record.delivery !== 'sent') {
+      if (box) {
+        const number = Number(section.id.split('.')[1]);
+        const next = [...list.children].find(child => child.matches('details.done') || Number(child.id.split('.')[1]) > number);
+        list.insertBefore(section, next);
+        box.remove();
+      }
+      return;
+    }
     if (!box) {
       const part = (tag, className, text) => {
         const node = document.createElement(tag);
@@ -2188,7 +2160,7 @@ if (send) {
       box.append(summary, section);
       list.append(box);
     }
-    box.querySelector('.sum-a').textContent = answer;
+    box.querySelector('.sum-a').textContent = record.answer;
   }
   function showAnswer(section, field, record) {
     section.dataset.state = record.state;
@@ -2206,7 +2178,7 @@ if (send) {
     time.textContent = localTime(record.answered_at);
     saved.hidden = false;
 
-    fold(section, record.answer);
+    updateFold(section, record);
     const remaining = sections.filter(s => s.dataset.state === 'open').length;
     document.querySelector('.progress').textContent = remaining ? remaining + ' of ' + sections.length + ' open' : 'Answered';
   }
@@ -2249,84 +2221,60 @@ def day_time(moment: object) -> str:
     return f'<time class="day" datetime="{esc(moment)}">{esc(str(moment)[:10])}</time>'
 
 
-def reference_row(item: dict[str, object]) -> str:
-    """A saved link or list, as one searchable row."""
-    item_id, body, kind = str(item["id"]), item["body"], item["kind"]
-    if kind == "resource":
-        words, count = [str(body["link_text"])], 1  # type: ignore[index]
-        link = (f'<p><a class="ref-open" href="{esc(body["url"])}" target="_blank" rel="noopener noreferrer">'  # type: ignore[index]
-                f'{esc(body["link_text"])}</a></p>')  # type: ignore[index]
+def library_row(item, *, served):
+    item_id, kind = item["id"], item["kind"]
+    title = f'<a class="lib-title" href="{item_page_name(item_id)}">{esc(item["title"])}</a>'
+    if kind == "questions" and not served:
+        return f'<li class="lib-item">{title}</li>'
+
+    attributes = ""
+    if served:
+        search = [item["title"], item["description"]]
+        if kind == "questions":
+            parts = question_parts(item)
+            search.extend(q["question"] for q in item["body"]["questions"])
+            search.extend(part_record(item, n).get("answer", "") for n in parts)
+            attributes = f' data-questions="{len(parts)}"'
+        attributes += f' data-id="{item_id}" data-search="{esc(" ".join(search))}"'
+    if kind == "questions":
+        detail = f'<p class="meta">{question_summary(item)[0]}</p>'
     else:
-        words, count, link = list(body["entries"]), len(body["entries"]), ""  # type: ignore[index]
-    search = " ".join([item_id, str(item["title"]), str(item["description"]), *words])
-    return (f'<li class="lib-item" data-id="{item_id}" data-count="{count}" data-search="{esc(search)}">'
+        detail = (f'<p class="lib-desc">{linked_text(item["description"])}</p>'
+                  f'<p class="meta"><span>{KIND_LABELS[kind]}</span>{day_time(item["saved_at"])}</p>')
+    return (f'<li class="lib-item"{attributes}>'
             f'<div class="lib-head"><span class="id">{item_id}</span>'
-            f'<a class="lib-title" href="{item_page_name(item_id)}">{esc(item["title"])}</a></div>'
-            f'<p class="lib-desc">{linked_text(item["description"])}</p>{link}'
-            f'<p class="meta"><span>{KIND_LABELS[str(kind)]}</span>{day_time(item["saved_at"])}</p></li>')
+            f'{title}</div>{detail}</li>')
 
 
-def answered_moment(item: dict[str, object]) -> str:
-    stamps = [str(r["answered_at"]) for r in item.get("answers", {}).values() if "answered_at" in r]  # type: ignore[union-attr]
-    return max(stamps, default=str(item["saved_at"]))
+def library_panel(name: str, rows: list[str], empty: str, *, served: bool) -> str:
+    listing = f'<ul class="lib-list">{"".join(rows)}</ul>' if rows else ""
+    if not served:
+        return listing or f'<p class="empty">{esc(empty)}</p>'
+    return (f'<div class="lib-tools"><label for="search-{name}">Search</label>'
+            f'<input type="search" id="search-{name}" placeholder="Words or an ID" autocomplete="off"></div>'
+            f'<p class="lib-status" role="status" data-status></p>{listing}'
+            f'<p class="empty" data-none{" hidden" if rows else ""}>{esc(empty)}</p>')
 
 
-def answered_row(item: dict[str, object]) -> str:
-    """A finished question item, with each saved answer under it for a search to reveal."""
-    item_id = str(item["id"])
-    parts = []
-    for number, question in enumerate(item["body"]["questions"], 1):  # type: ignore[index]
-        record = part_record(item, number)
-        if "answer" in record:
-            part = f"{item_id}.{number}"
-            parts.append(f'<li data-part="{part}" data-at="{esc(record["answered_at"])}">'
-                         f'<a href="{item_page_name(item_id)}#{part}"><span class="id">{part}</span> {esc(question["question"])}</a>'
-                         f'<p class="record">{esc(record["answer"])}</p><p class="meta">{day_time(record["answered_at"])}</p></li>')
-    state = question_summary(item)[0]
-    return (f'<li class="lib-item" data-id="{item_id}" data-count="{len(question_parts(item))}" '
-            f'data-search="{esc(item_id + " " + str(item["title"]) + " " + str(item["description"]))}">'
-            f'<div class="lib-head"><span class="id">{item_id}</span>'
-            f'<a class="lib-title" href="{item_page_name(item_id)}">{esc(item["title"])}</a></div>'
-            f'<p class="meta"><span>{state}</span>{day_time(answered_moment(item))}</p>'
-            + (f'<ul class="parts">{"".join(parts)}</ul>' if parts else "") + '</li>')
-
-
-def library_panel(name: str, rows: list[str], empty: str, *, dated: bool, tools: bool) -> str:
-    """One list of the library, with its search when the page can run one."""
-    if not rows:
-        return f'<p class="empty">{esc(empty)}</p>'
-    search = ""
-    if tools:
-        date = (f'<div><label for="date-{name}">Answer date</label><input type="date" id="date-{name}" data-date></div>'
-                '<button type="button" data-clear-date hidden>Clear date</button>') if dated else ""
-        search = (f'<div class="lib-tools"><div><label for="search-{name}">Search</label>'
-                  f'<input type="search" id="search-{name}" data-search placeholder="Words or an ID like Q5.3" autocomplete="off"></div>'
-                  f'{date}</div><p class="lib-status" role="status" data-status></p>')
-    return f'{search}<ul class="lib-list">{"".join(rows)}</ul><p class="empty" data-none hidden>{esc("No " + name + " match your search.")}</p>'
-
-
-def library_lists(data: dict[str, object], *, tools: bool) -> tuple[str, str]:
+def library_lists(data: dict[str, object], *, served: bool) -> tuple[str, str]:
     references, answered = [], []
     for item in newest_first(data["items"]):  # type: ignore[arg-type]
         if item["kind"] != "questions":
-            references.append(item)
+            references.append(library_row(item, served=served))
         elif not desk_item(item):
-            answered.append(item)
-    answered.sort(key=lambda item: (answered_moment(item), int(str(item["id"])[1:])), reverse=True)
-    return (library_panel("references", [reference_row(i) for i in references],
-                          "No references are saved yet. A link or list saved by hand shows here.", dated=False, tools=tools),
-            library_panel("answered", [answered_row(i) for i in answered],
-                          "Nothing is answered yet. A question with every answer sent shows here.", dated=True, tools=tools))
+            answered.append(library_row(item, served=served))
+    return (library_panel("references", references, "No references are saved yet.", served=served),
+            library_panel("answered", answered, "Nothing is answered yet.", served=served))
 
 
 def library_dialog(data: dict[str, object]) -> str:
     """The pop-out: a bottom sheet on a phone and a right drawer on a desktop, with References and Answered."""
-    references, answered = library_lists(data, tools=True)
+    references, answered = library_lists(data, served=True)
     tabs = "".join(f'<button type="button" role="tab" id="tab-{name}" aria-controls="panel-{name}" '
                    f'aria-selected="{"true" if number == 0 else "false"}" tabindex="{0 if number == 0 else -1}">{label}</button>'
                    for number, (name, label) in enumerate((("references", "References"), ("answered", "Answered"))))
     panels = "".join(f'<section class="lib-panel" role="tabpanel" id="panel-{name}" aria-labelledby="tab-{name}"'
-                     f'{"" if number == 0 else " hidden"} data-list="{name}">{content}</section>'
+                     f'{"" if number == 0 else " hidden"}>{content}</section>'
                      for number, (name, content) in enumerate((("references", references), ("answered", answered))))
     return (f'<dialog id="library" class="library" aria-label="Library"><div class="lib-top">'
             f'<div role="tablist" aria-label="Library">{tabs}</div><button type="button" data-close>Close library</button></div>'
@@ -2334,7 +2282,7 @@ def library_dialog(data: dict[str, object]) -> str:
 
 
 def desk_item(item: dict[str, object]) -> bool:
-    """A question item stays on the Desk while a question is open or an answer has not been delivered."""
+    """A question item stays on the Desk while a question is open or a non-closed question has pending delivery."""
     _, open_parts, pending = question_summary(item)
     return bool(open_parts or pending)
 
@@ -2386,8 +2334,7 @@ def list_page(data: dict[str, object], site_title: str, *, served: bool, saved_n
     if served:
         library = library_dialog(data)
     elif items:
-        # A page saved to a file has no pop-out, so the same lists follow the Desk as plain sections.
-        references, answered = library_lists(data, tools=False)
+        references, answered = library_lists(data, served=False)
         body += (f'<section class="page-section"><h2>References</h2>{references}</section>'
                  f'<section class="page-section"><h2>Answered</h2>{answered}</section>')
     return page_shell(site_title, site_title, body, served=served, saved_name=saved_name, workers=served and workers,
@@ -2406,12 +2353,10 @@ def item_body_html(item: dict[str, object]) -> str:
             for number, entry in enumerate(entries, 1)) + "</ol>"
 
 
-def item_page(item: dict[str, object], site_title: str, *, served: bool, saved_name: str = "index.html",
-              data: dict[str, object] | None = None) -> str:
+def item_page(item: dict[str, object], site_title: str, *, served: bool, saved_name: str = "index.html") -> str:
     item_id = str(item["id"])
     content = question_form(item, served) if item["kind"] == "questions" else item_body_html(item)
     body = (
-        f'<a class="back" href="{quote(saved_name, safe="")}">Return to Desk</a>'
         f'<p class="id">{esc(item_id)}</p><h1>{esc(item["title"])}</h1>'
         f'<p class="meta">{esc(KIND_LABELS[str(item["kind"])])}{" · " + esc(item["project"]) if item.get("project") else ""}'
         f' · saved <time class="day" datetime="{esc(item["saved_at"])}">{esc(saved_day(item))}</time></p>'
@@ -2419,8 +2364,7 @@ def item_page(item: dict[str, object], site_title: str, *, served: bool, saved_n
         f'<p class="lead">{linked_text(item["description"])}</p>{content}'
     )
     return page_shell(f"{item_id} {item['title']} · {site_title}", site_title, body,
-                      served=served, saved_name=saved_name, interactive=served and has_answer_controls(item),
-                      library=library_dialog(data) if served and data is not None else "")
+                      served=served, saved_name=saved_name, interactive=served and has_answer_controls(item))
 
 
 def site_pages(data: dict[str, object], site_title: str, saved_name: str) -> dict[str, str]:
@@ -2798,7 +2742,7 @@ def make_handler(site_title: str, base_path: str = "", store: Path | None = None
             except ValueError:
                 self.send_text(404, "Not found\n")
                 return
-            self.send_text(200, item_page(item, site_title, served=True, data=data), "text/html; charset=utf-8",
+            self.send_text(200, item_page(item, site_title, served=True), "text/html; charset=utf-8",
                            prevent_framing=has_answer_controls(item))
 
         def do_POST(self) -> None:  # noqa: N802 - http.server naming
