@@ -8,7 +8,7 @@ quarterdeck add --kind resource|list|questions --title TEXT --description TEXT
                 [--project NAME] [--tag TAG ...]
 quarterdeck list
 quarterdeck show ID
-quarterdeck reply ID.PART [--ask ID] --text TEXT [--link-text TEXT --url URL]... [--image PATH --alt TEXT]...
+quarterdeck reply ID.PART --ask ID --text TEXT [--link-text TEXT --url URL]... [--image PATH --alt TEXT]...
 quarterdeck mark ID[.PART] answered --via WHERE
 quarterdeck mark ID[.PART] closed|open
 quarterdeck classify ID[.PART] [--project NAME] [--tag TAG ...] [--kind KIND]
@@ -33,7 +33,7 @@ Item commands report validation errors on stderr and exit with status 2.
 | `add` | Saves a new item and prints its ID. A `resource` needs `--url` and `--link-text`. A `list` or `questions` item needs `--body-file`. See [the input formats and examples](../how-to/save-items.md#add-an-item) and [how to classify items and questions when saving](../how-to/classify-items.md#classify-when-you-save). |
 | `list` | Prints saved items, newest first, with ID, kind, saved date and title. |
 | `show` | Prints the item's text, numbering list entries and questions as `Q7.1`, `Q7.2`. Each question link is printed with its text and URL. Prints saved answers and messages in time order with their author, UTC time, ask ID or reference, and the delivery status of each ask. Replied indicates an unread reply. |
-| `reply` | Adds Firstmate's reply to an existing ask on one question, such as `Q7.1`. Use `--ask ID` from the inbox note. It defaults to the only unanswered ask when exactly one exists. `--text` is required. Each `--link-text` pairs with a `--url`, and each `--image` with an `--alt`, in the order given; a reply holds up to 6 of each. It preserves the answer and state. The question shows Replied while any reply is unread. See [Reply from the command line](../how-to/reply-from-the-command-line.md). |
+| `reply` | Adds Firstmate's reply to an existing ask on one question, such as `Q7.1`. Supply the required `--ask ID` from the inbox note and the reply in `--text`. Each `--link-text` pairs with a `--url`, and each `--image` with an `--alt`, in the order given. It preserves the answer and state. The question shows Replied while any reply is unread. See [Reply from the command line](../how-to/reply-from-the-command-line.md). |
 | `mark` | Sets question state, optionally for a whole questions item. `--via` is required with `answered` and accepted only with that state. Skips exit with status 0. See [Read answers](../how-to/read-answers.md) for which questions are marked. |
 | `classify` | Requires at least one classification option. Use `--project` for an item ID, `--kind` for a question ID, and `--tag` for either. See [how to change classification](../how-to/classify-items.md#change-it-later). |
 | `stats` | Prints a question activity table by default or JSON with `--json`. See [Read the report](../how-to/read-the-report.md) for date filtering and field definitions. |
@@ -75,6 +75,7 @@ rendering elsewhere, Quarterdeck copies images beside the pages, reuses
 identical files already there, and refuses to overwrite other files at
 those paths. A missing or unreadable saved image stops the render before it
 writes pages. Keep the `images` folder with the exported pages.
+The state directory's `reply-images` folder belongs to the live site.
 
 Exports in a separate directory keep image copies of removed items until you
 delete `<output>/images/<id>/` by hand. A refused render can leave new image
@@ -91,7 +92,7 @@ See the [image removal rules](item-store.md#store-layout).
 and the same origin as `/answers`. Send
 `{"part": "Q7.1", "id": "<ask id>", "text": "...", "home": "<home binding>"}`
 to save and deliver an ask. The page generates the 32-character lowercase
-hexadecimal ID and takes the home binding from the served form. Repeating the
+hexadecimal ID and takes the resolved home binding from the served form. Repeating the
 same create request returns the existing ask. Send
 `{"part": "Q7.1", "id": "<ask id>", "action": "retry"}` to retry delivery
 of a saved ask using its original note ID. A changed home, closed question,
@@ -103,8 +104,9 @@ or removed item can return 409. The inbox note starts with
 `POST /replies/read` (under any `base_path`) uses the same origin check as
 `/answers`. The served page sends `{"part": "Q7.1", "ids": ["<reply id>"]}`
 when the user opens that question's **Messages**. Every ID must belong to
-a reply on that question. The response field `unread` lists the reply IDs
-that are still unread on that question. Page loads leave these records intact.
+a reply on that question. The response field `replies` maps every reply ID
+on that question to its current read status (`true` for read).
+Page loads leave these records intact.
 
 ### Workers endpoint
 

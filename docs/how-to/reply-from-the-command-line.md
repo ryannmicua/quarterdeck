@@ -8,8 +8,8 @@ the ask text. Pass the ask ID from that note with `--ask`.
 quarterdeck reply Q7.1 --ask "$ask_id" --text "The preview uses the tide tables from Friday."
 ```
 
-You can omit `--ask` when exactly one ask on that question is unanswered.
-A question needs an existing ask before it can receive a reply.
+Each reply requires the ID of an existing ask on that question. Use the
+same ID to send a follow-up to that ask.
 
 A reply can carry links and images. Pair each `--link-text` with a `--url`, and
 each `--image` with an `--alt`, in the order given.
@@ -22,8 +22,8 @@ quarterdeck reply Q7.1 --ask "$ask_id" --text "Here are both layouts." \
 ```
 
 Images follow the same rules as [question images](../reference/item-store.md#question-images):
-PNG, JPEG or still WebP, up to 5 MB, copied into the private store now. A reply
-holds up to 6 links and 6 images.
+PNG, JPEG or still WebP, up to 5 MB per image. The live page serves them from
+the [private reply image folder](../reference/item-store.md#store-layout).
 
 Quarterdeck prints `Q7.1 Replied`. The question shows **Replied** on its card
 and on its page while any reply is unread.

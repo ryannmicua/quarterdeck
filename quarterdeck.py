@@ -342,11 +342,12 @@ IMAGE_COUNT_LIMIT = 24
 IMAGE_TEXT_LIMIT = 300
 IMAGE_TYPES = {"png": "image/png", "jpg": "image/jpeg", "webp": "image/webp"}
 IMAGE_FILE_RE = re.compile(r"[0-9a-f]{16}[.](?:" + "|".join(map(re.escape, IMAGE_TYPES)) + r")")
-IMAGE_URL_RE = re.compile(r"images/(q[1-9][0-9]*)/(" + IMAGE_FILE_RE.pattern + r")")
+REPLY_IMAGES = "reply-images"
+IMAGE_URL_RE = re.compile(rf"(images|{REPLY_IMAGES})/(q[1-9][0-9]*)/({IMAGE_FILE_RE.pattern})")
 
 
-def images_root(store: Path) -> Path:
-    return store.with_name("images")
+def images_root(store: Path, tree: str = "images") -> Path:
+    return store.with_name(tree)
 
 
 def image_chunks(data: bytes, *, webp: bool) -> Iterator[tuple[bytes, bytes]]:
@@ -487,16 +488,17 @@ def option_label(option: object) -> str:
     return str(option["label"] if isinstance(option, dict) else option)  # type: ignore[index]
 
 
-def item_image_files(item: dict[str, object], *, replies: bool = True) -> set[str]:
+def item_image_files(item: dict[str, object], tree: str = "images") -> set[str]:
     files: set[str] = set()
     if item["kind"] == "questions":
-        for question in item["body"]["questions"]:  # type: ignore[index]
-            files.update(image["file"] for image in question.get("images", []))
-            files.update(option["image"]["file"] for option in question["options"] if isinstance(option, dict))
-        if replies:
+        if tree == REPLY_IMAGES:
             for messages in item.get("conversation", {}).values():  # type: ignore[attr-defined]
                 for message in messages:
                     files.update(image["file"] for image in message.get("images", []))
+        else:
+            for question in item["body"]["questions"]:  # type: ignore[index]
+                files.update(image["file"] for image in question.get("images", []))
+                files.update(option["image"]["file"] for option in question["options"] if isinstance(option, dict))
     return files
 
 
@@ -804,8 +806,6 @@ def validate_records(item):
 
 # A question's conversation: the asks the owner sent and the replies Firstmate wrote, oldest first, kept apart from the
 # answer so that a reply never changes what was decided.
-REPLY_LINK_LIMIT = 6
-REPLY_IMAGE_LIMIT = 6
 AUTHORS = ("you", "firstmate")
 AUTHOR_LABELS = {"you": "You", "firstmate": "Firstmate"}
 
@@ -842,8 +842,8 @@ def validate_conversation(item):
                 continue
             links, images = message.get("links", []), message.get("images", [])
             if (not isinstance(message["ask"], str) or message["ask"] not in asks
-                    or type(message["read"]) is not bool or question_links(links, "reply") != links or len(links) > REPLY_LINK_LIMIT
-                    or not isinstance(images, list) or len(images) > REPLY_IMAGE_LIMIT
+                    or type(message["read"]) is not bool or question_links(links, "reply") != links
+                    or not isinstance(images, list)
                     or [image_entry(image, "reply image", None) for image in images] != images):
                 raise ValueError("invalid reply")
 
@@ -1030,7 +1030,6 @@ def parse_part(value):
 
 def ask_result(item, part, message):
     return {"thread": thread_html(item, part, editable=part_record(item, part).get("state") != "closed"),
-            "label": part_state(item, part).capitalize(),
             "message": "Ask sent." if message["delivery"] == "sent" else "Ask saved. Not delivered."}
 
 
@@ -1102,7 +1101,7 @@ def mark_replies_read(store, payload):
             raise ValueError("Unknown reply on this question.")
         for message_id in ids:
             replies[message_id]["read"] = True
-        return {"unread": [m["id"] for m in replies.values() if unread_reply(m)]}
+        return {"replies": {message_id: reply["read"] for message_id, reply in replies.items()}}
 
 
 def item_text(item: dict[str, object]) -> str:
@@ -1171,8 +1170,8 @@ def image_directory(root: Path, item_id: str) -> Path:
     return directory
 
 
-def stored_image(store: Path, item_id: str, file: str) -> Path:
-    path = image_directory(images_root(store), item_id) / file
+def stored_image(store: Path, item_id: str, file: str, tree: str = "images") -> Path:
+    path = image_directory(images_root(store, tree), item_id) / file
     if path.is_symlink() or not path.is_file():
         raise ValueError(f"the image {file} of {item_id} is missing from the store")
     return path
@@ -1191,10 +1190,10 @@ def place_image(target: Path, data: bytes) -> None:
         raise ValueError(f"refusing to overwrite an unrelated file: {target}")
 
 
-def save_images(store: Path, item_id: str, images: dict[str, bytes]) -> None:
+def save_images(store: Path, item_id: str, images: dict[str, bytes], *, tree: str = "images") -> None:
     if not images:
         return
-    directory = image_directory(images_root(store), item_id)
+    directory = image_directory(images_root(store, tree), item_id)
     directory.parent.mkdir(mode=0o700, exist_ok=True)
     os.chmod(directory.parent, 0o700)
     directory.mkdir(mode=0o700, exist_ok=True)
@@ -1204,12 +1203,12 @@ def save_images(store: Path, item_id: str, images: dict[str, bytes]) -> None:
 
 def remove_images(store: Path, item: dict[str, object]) -> None:
     """Delete exactly the files this item's record names."""
-    files = item_image_files(item)
-    if not files:
-        return
-    directory = image_directory(images_root(store), str(item["id"]))
-    for name in files:
-        (directory / name).unlink(missing_ok=True)
+    for tree in ("images", REPLY_IMAGES):
+        files = item_image_files(item, tree)
+        if files:
+            directory = image_directory(images_root(store, tree), str(item["id"]))
+            for name in files:
+                (directory / name).unlink(missing_ok=True)
 
 
 def add_item(args: argparse.Namespace) -> int:
@@ -1397,14 +1396,10 @@ def reply_item(args: argparse.Namespace) -> int:
         link_texts, urls = args.link_text or [], args.url or []
         if len(link_texts) != len(urls):
             raise ValueError("each --link-text needs its own --url")
-        if len(link_texts) > REPLY_LINK_LIMIT:
-            raise ValueError(f"a reply can hold at most {REPLY_LINK_LIMIT} links")
         links = question_links([{"text": t, "url": u} for t, u in zip(link_texts, urls)], "reply")
         paths, alts = args.image or [], args.alt or []
         if len(paths) != len(alts):
             raise ValueError("each --image needs its own --alt text that describes it")
-        if len(paths) > REPLY_IMAGE_LIMIT:
-            raise ValueError(f"a reply can hold at most {REPLY_IMAGE_LIMIT} images")
         named: list[tuple[dict[str, str], str]] = []
         images = [image_entry({"path": path, "alt": alt}, f"reply image {number}", named)
                   for number, (path, alt) in enumerate(zip(paths, alts), 1)]
@@ -1421,12 +1416,7 @@ def reply_item(args: argparse.Namespace) -> int:
             if not asks:
                 raise ValueError(f"{item_id}.{part} has no asks")
             ask = args.ask
-            if ask is None:
-                unanswered = asks - {m["ask"] for m in thread if m["author"] == "firstmate"}
-                if len(unanswered) != 1:
-                    raise ValueError("Use --ask with the ID of the ask you are replying to.")
-                (ask,) = unanswered
-            elif ask not in asks:
+            if ask not in asks:
                 raise ValueError(f"No ask {ask!r} on {item_id}.{part}.")
             message: dict[str, object] = {"id": uuid.uuid4().hex, "author": "firstmate", "text": text, "at": now_text(),
                                           "read": False, "ask": ask}
@@ -1435,7 +1425,7 @@ def reply_item(args: argparse.Namespace) -> int:
             if images:
                 message["images"] = images
             thread.append(message)
-            save_images(store, item_id, pending)
+            save_images(store, item_id, pending, tree=REPLY_IMAGES)
             write_store(store, data)
         print(f"{item_id}.{part} Replied")
         return 0
@@ -2303,19 +2293,19 @@ def has_answer_controls(item):
         part_record(item, n).get("state") != "closed" for n in question_parts(item))
 
 
-def image_url(item, image):
-    return f'images/{str(item["id"]).lower()}/{image["file"]}'
+def image_url(item, image, tree="images"):
+    return f'{tree}/{str(item["id"]).lower()}/{image["file"]}'
 
 
-def image_tag(item, image, *, element_id=None):
+def image_tag(item, image, *, element_id=None, tree="images"):
     identifier = f' id="{element_id}"' if element_id else ''
-    return f'<img src="{esc(image_url(item, image))}" alt="{esc(image["alt"])}" loading="lazy" decoding="async"{identifier}>'
+    return f'<img src="{esc(image_url(item, image, tree))}" alt="{esc(image["alt"])}" loading="lazy" decoding="async"{identifier}>'
 
 
-def image_link(item, image):
+def image_link(item, image, *, tree="images"):
     """The image as a link to the full image."""
-    return (f'<a class="shot" href="{esc(image_url(item, image))}" target="_blank" rel="noopener">'
-            f'{image_tag(item, image)}</a>')
+    return (f'<a class="shot" href="{esc(image_url(item, image, tree))}" target="_blank" rel="noopener">'
+            f'{image_tag(item, image, tree=tree)}</a>')
 
 
 def question_shots(item, question):
@@ -2355,7 +2345,7 @@ def message_html(item, message, *, editable):
     delivery = f' <span class="delivery">{delivery_label(message)}</span>' if you else ''
     links = ('<ul class="ref-links">' + ''.join(f'<li>{link_html(link)}</li>' for link in message["links"]) + '</ul>'
              if message.get("links") else '')
-    shots = ('<ul class="shots">' + ''.join(f'<li>{image_link(item, image)}</li>' for image in message["images"]) + '</ul>'
+    shots = ('<ul class="shots">' + ''.join(f'<li>{image_link(item, image, tree=REPLY_IMAGES)}</li>' for image in message["images"]) + '</ul>'
              if message.get("images") else '')
     controls = ''
     if editable and you and message["delivery"] == "pending":
@@ -2470,13 +2460,12 @@ function updateProgress() {
   const state = sections.every(s => s.dataset.state === 'closed') ? 'Closed' : 'Answered';
   document.querySelector('.progress').textContent = replied ? ['Replied', open].filter(Boolean).join(', ') : (open || state);
 }
-function reconcileReplies(section, read = [], unread = []) {
+function reconcileReplies(section, snapshot = {}) {
   const states = replyStates.get(section);
   const replies = section.querySelectorAll('[data-reply-id]');
-  for (const id of unread) {
-    if (!states.has(id)) states.set(id, false);
+  for (const [id, read] of Object.entries(snapshot)) {
+    if (read || !states.has(id)) states.set(id, read);
   }
-  for (const id of read) states.set(id, true);
   for (const reply of replies) {
     const id = reply.dataset.replyId;
     if (!reply.hasAttribute('data-unread')) states.set(id, true);
@@ -2497,7 +2486,7 @@ async function acknowledgeReplies(section) {
         body:JSON.stringify({part:section.id, ids})});
       if (!response.ok) return;
       const result = await response.json();
-      reconcileReplies(section, ids, result.unread);
+      reconcileReplies(section, result.replies);
     } catch {
       return;
     }
@@ -2584,9 +2573,27 @@ if (send) {
     }
   }
   function showPendingText(node, text) {
+    const pattern = /(?<![\p{L}\p{N}_.+-])https?:\/\/\S+/giu;
+    const delimiters = {'"': '"', "'": "'", '<': '>'};
     let end = 0;
-    for (const match of text.matchAll(/(?<![\p{L}\p{N}_.+-])https?:\/\/[^\s<>"']+/giu)) {
-      const url = match[0].replace(/[.,;:!?]+$/, '');
+    for (let match; (match = pattern.exec(text));) {
+      const closer = delimiters[text[match.index - 1]];
+      const boundary = closer ? match[0].indexOf(closer) : -1;
+      let url = boundary >= 0 ? match[0].slice(0, boundary) : match[0].replace(/[.,;:!?]+$/, '');
+      if (boundary < 0) {
+        let depth = 0;
+        for (let i = 0; i < url.length; i++) {
+          if (url[i] === '(') depth += 1;
+          else if (url[i] === ')') {
+            if (depth) depth -= 1;
+            else if (/^[).,;:!?]+$/.test(url.slice(i))) {
+              url = url.slice(0, i).replace(/[.,;:!?]+$/, '');
+              break;
+            }
+          }
+        }
+      }
+      pattern.lastIndex = match.index + url.length;
       if (url.includes('\\')) continue;
       try {
         new URL(url);
@@ -2976,7 +2983,7 @@ def default_output_dir(config: dict[str, object]) -> Path:
 def copy_images(items: list[dict[str, object]], store: Path, root: Path, *, live: bool) -> None:
     """Check images the exported pages use and copy them when rendering outside the state folder."""
     for item in items:
-        files = item_image_files(item, replies=False)
+        files = item_image_files(item)
         if not files:
             continue
         item_id = str(item["id"])
@@ -3014,6 +3021,9 @@ def render(args: argparse.Namespace) -> int:
             raise ValueError("the rendered page must be outside the Quarterdeck checkout")
         store = store_path()
         root = output.parent / "images"
+        private_images = store.parent.resolve() / REPLY_IMAGES
+        if output == private_images or private_images in output.parents:
+            raise ValueError("the rendered page must be outside the private reply image tree")
         live = output.parent == store.parent.resolve()
         protected = {store.resolve(), store.with_name(store.name + ".lock").resolve()}
         if ITEM_PAGE_RE.fullmatch(output.name.lower()):
@@ -3243,7 +3253,14 @@ def make_server(host: str, port: int, handler: type[BaseHTTPRequestHandler],
 def make_handler(site_title: str, base_path: str = "", store: Path | None = None, home: Path | None = None,
                  *, ask_home: Path | None = None, workers_home: Path | None = None) -> type[BaseHTTPRequestHandler]:
     """Every page is built from the item store when it is requested."""
-    ask_binding = hashlib.sha256(os.fsencode(ask_home)).hexdigest() if ask_home is not None else None
+    def ask_destination():
+        if ask_home is not None:
+            try:
+                resolved = ask_home.resolve()
+            except (OSError, RuntimeError):
+                return None, None
+            return resolved, hashlib.sha256(os.fsencode(resolved)).hexdigest()
+        return None, None
 
     class Handler(BaseHTTPRequestHandler):
         server_version = "Quarterdeck"
@@ -3269,13 +3286,13 @@ def make_handler(site_title: str, base_path: str = "", store: Path | None = None
             self.end_headers()
             self.wfile.write(data)
 
-        def send_image(self, data: dict[str, object], item_id: str, file: str) -> None:
+        def send_image(self, data: dict[str, object], tree: str, item_id: str, file: str) -> None:
             """Only a file the store lists for that item is served, and only from the private images folder."""
             try:
                 item = find_item(data, item_id)
-                if file not in item_image_files(item):
+                if file not in item_image_files(item, tree):
                     raise ValueError("not an image of this item")
-                content = stored_image(store or store_path(), item_id, file).read_bytes()
+                content = stored_image(store or store_path(), item_id, file, tree).read_bytes()
             except (OSError, ValueError):
                 self.send_text(404, "Not found\n")
                 return
@@ -3323,7 +3340,7 @@ def make_handler(site_title: str, base_path: str = "", store: Path | None = None
                 self.send_text(500, "Quarterdeck could not read its item store\n")
                 return
             if picture:
-                self.send_image(data, picture[1], picture[2])
+                self.send_image(data, *picture.groups())
                 return
             if name == "index.html":
                 self.send_text(200, list_page(data, site_title, served=True, workers=workers_home is not None),
@@ -3334,6 +3351,7 @@ def make_handler(site_title: str, base_path: str = "", store: Path | None = None
             except ValueError:
                 self.send_text(404, "Not found\n")
                 return
+            _, ask_binding = ask_destination() if item["kind"] == "questions" else (None, None)
             content = item_page(item, site_title, served=True, ask_binding=ask_binding)
             prevent_framing = has_answer_controls(item) or (
                 item["kind"] == "questions" and question_summary(item)[0] == "Replied")
@@ -3353,9 +3371,11 @@ def make_handler(site_title: str, base_path: str = "", store: Path | None = None
                     or (is_loopback(str(self.server.server_address[0])) and not request_host_is_loopback(host))):
                 self.send_text(403, "Open the question on Quarterdeck.")
                 return
-            if endpoint == "/asks" and ask_home is None:
-                self.send_text(403, "Configure firstmate_home to ask Firstmate.")
-                return
+            if endpoint == "/asks":
+                ask_path, ask_binding = ask_destination()
+                if ask_path is None:
+                    self.send_text(403, "Configure an available firstmate_home to ask Firstmate.")
+                    return
             if self.headers.get_content_type() != "application/json":
                 self.send_text(415, f"Expected {subject} data in JSON.")
                 return
@@ -3368,7 +3388,7 @@ def make_handler(site_title: str, base_path: str = "", store: Path | None = None
                 if endpoint == "/answers":
                     record = send_answer(active_store, home, payload)
                 elif endpoint == "/asks":
-                    record = ask_message(active_store, ask_home, ask_binding, payload)
+                    record = ask_message(active_store, ask_path, ask_binding, payload)
                 else:
                     record = mark_replies_read(active_store, payload)
             except AnswerConflict as exc:
@@ -3435,7 +3455,8 @@ def serve(args: argparse.Namespace) -> int:
     exposed = [host for host in bind_hosts(args) if not is_loopback(host)]
     if exposed:
         print(f"quarterdeck: warning: {', '.join(exposed)} is not a loopback address; anyone who can reach this port can "
-              "read your saved items and send answers as the owner.", file=sys.stderr, flush=True)
+              "read saved items, answers, conversations and images, submit answers, acknowledge replies, and send asks "
+              "when firstmate_home is set.", file=sys.stderr, flush=True)
     for server in servers[1:]:
         threading.Thread(target=server.serve_forever, daemon=True).start()
     try:
@@ -3682,7 +3703,7 @@ def make_parser() -> argparse.ArgumentParser:
                     "on the opened question. A reply leaves the answer and state intact. Pair each "
                     "--link-text with a --url and each --image with an --alt, in the order given.", reply_item)
     reply.add_argument("id", help="question ID, such as Q7.1")
-    reply.add_argument("--ask", metavar="ID", help="ask ID from the inbox note; defaults to the only unanswered ask")
+    reply.add_argument("--ask", required=True, metavar="ID", help="ask ID from the inbox note")
     reply.add_argument("--text", required=True, help="the reply")
     reply.add_argument("--link-text", action="append", metavar="TEXT", help="the words of a link; repeat for more links")
     reply.add_argument("--url", action="append", metavar="URL", help="the http(s) address for the matching --link-text")

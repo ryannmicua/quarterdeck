@@ -15,9 +15,10 @@ when enabled, the live Firstmate workers roster.
   files before replacing or retiring them. See the [render reference](../reference/cli-and-config.md#pages).
 - `serve` reads the item store to build pages and writes to it when users
   submit answers, send asks or acknowledge replies to an opened question.
-  Page reads leave the store intact. It serves images only from the private `images` folder and
-  only when the store lists the file for that item. It reads the TLS certificate
-  and key if you supply them.
+  Page reads leave the store intact. It serves question and option images
+  from `images` and reply images from `reply-images`, using the files
+  listed for that item in the store. It reads the TLS certificate and key
+  if you supply them.
 - The [workers endpoint](../reference/cli-and-config.md#workers-endpoint) runs
   the configured home's read-only `bin/fm-fleet-snapshot.sh --local`. This
   command uses no model.
