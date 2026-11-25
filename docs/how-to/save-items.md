@@ -11,11 +11,8 @@ Every item needs a kind, a title that says what it is about, and a one-or-two
 sentence description: what it is and why it was saved, so the captain
 recognises it later. `add` prints the new ID.
 
-See [description links](../reference/item-store.md#format-version-1) for ways
-to include web addresses in a description. A web address in a question, its
-context, an option or a suggested answer is also shown as a link with the address
-visible. Inline links open in a new tab so you can return to a draft answer.
-Choosing an option still uses its plain text as the answer.
+See [inline web addresses](../reference/item-store.md#inline-web-addresses) for
+where pasted URLs become clickable.
 
 ### A resource (a link)
 
