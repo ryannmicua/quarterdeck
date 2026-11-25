@@ -37,7 +37,9 @@ message grows, including that the last answer field can scroll clear of the bar.
 On the long phone page, it also checks that Undo and status messages leave the
 focused control visible. A long send error scrolls inside the bar. The browser
 checks also cover focus through delivery transitions and the hit targets for
-the Desk row link and its whole-row hit target. A 320-pixel sheet check covers
+the Desk row link and its whole-row hit target. At 390, 641, and 1440 pixels,
+the Desk row check verifies that a 40-character unbroken project name stays
+visible in the Project column without horizontal scrolling. A 320-pixel sheet check covers
 both tabs and Close library. A zoomed viewport check verifies the sheet at
 640 CSS pixels and the drawer at a fractional width just above it.
 At 140 pixels tall, browser checks cover the Send

@@ -1832,6 +1832,7 @@ textarea { display:block; width:100%; resize:vertical; background:var(--ground);
 .desk th, .desk td { padding:.7rem .5rem; border-bottom:1px solid var(--rule); vertical-align:middle; }
 .desk tbody th { font-weight:600; }
 .desk td { overflow-wrap:normal; }
+.desk td.project { overflow-wrap:anywhere; }
 .desk td:last-child { white-space:nowrap; }
 .desk .work { position:relative; cursor:pointer; border-left:5px solid var(--rule); }
 .desk .work.next { background:var(--signal-ground); }
@@ -1840,7 +1841,6 @@ textarea { display:block; width:100%; resize:vertical; background:var(--ground);
 .desk .work:has(.card-link:focus-visible) { outline:3px solid var(--focus); outline-offset:-3px; }
 .desk .card-link { display:inline-block; padding:.35rem 0; }
 .desk .card-link::after { content:""; position:absolute; inset:0; }
-.desk .project-name { display:none; }
 .sr { position:absolute; width:1px; height:1px; overflow:hidden; clip-path:inset(50%); white-space:nowrap; }
 .button-link, .work-action { display:inline-flex; align-items:center; min-height:44px; padding:.5rem .85rem; border-radius:5px; font:600 var(--text-md)/1.3 var(--sans);
   text-decoration:none; border:1px solid var(--soft); background:var(--raised); color:var(--ink); }
@@ -1868,8 +1868,6 @@ textarea { display:block; width:100%; resize:vertical; background:var(--ground);
   background:var(--raised); color:var(--ink); border:1px solid var(--soft); border-radius:5px; }
 .saved-answer .record:empty { display:none; }
 @media (max-width: 40rem) {
-  .desk .project { display:none; }
-  .desk .project-name { display:block; font-weight:400; }
   .desk th, .desk td { padding:.6rem .3rem; }
 }
 [hidden] { display:none !important; }
@@ -2405,26 +2403,21 @@ def progress_text(item, summary):
     return remaining or state
 
 
-def desk_row(item, summary, *, served, primary):
-    """One Desk row: the item's title as the link, its open count and its latest action."""
+def desk_row(item, summary, *, primary):
     state, open_parts, pending = summary
     href = item_page_name(item["id"])
     if open_parts:
         href += f'#{item["id"]}.{open_parts[0]}'
     title = esc(item["title"])
     project = esc(item["project"]) if item.get("project") else ""
-    note = f'<span class="project-name">{project}</span>' if project else ""
-    if item["kind"] == "conversation":
-        count, latest = "Conversation", '<span class="badge">Replied</span>'
-    else:
-        remaining = len(open_parts)
-        count = f'{remaining} of {len(question_parts(item))} open' if remaining else "None open"
-        latest = ('<span class="badge">Replied</span>' if state == "Replied" else
-                  "Asked" if remaining else esc(state))
-        if pending:
-            latest += ' <span>Not delivered</span>'
+    remaining = len(open_parts)
+    count = f'{remaining} of {len(question_parts(item))} open' if remaining else "None open"
+    latest = ('<span class="badge">Replied</span>' if state == "Replied" else
+              "Asked" if remaining else esc(state))
+    if pending:
+        latest += ' <span>Not delivered</span>'
     return (f'<tr class="work{' next' if primary else ''}"><th scope="row"><span class="id">{item["id"]}</span> '
-            f'<a class="card-link" href="{href}">{title}</a>{note}</th>'
+            f'<a class="card-link" href="{href}">{title}</a></th>'
             f'<td class="project">{project}</td><td>{count}</td><td>{latest}</td></tr>')
 
 
@@ -3309,7 +3302,7 @@ def list_page(data: dict[str, object], site_title: str, *, served: bool, saved_n
     body = ""
 
     def desk() -> str:
-        rows = "".join(desk_row(item, summary, served=served, primary=item is primary) for item, summary in attention)
+        rows = "".join(desk_row(item, summary, primary=item is primary) for item, summary in attention)
         return ('<div class="desk"><table><caption class="sr">Items that need you, newest first</caption><thead><tr>'
                 '<th scope="col">Item</th><th scope="col" class="project">Project</th>'
                 f'<th scope="col">Questions</th><th scope="col">Latest</th></tr></thead><tbody>{rows}</tbody></table></div>')

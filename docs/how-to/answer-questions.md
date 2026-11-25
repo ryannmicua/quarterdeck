@@ -1,7 +1,7 @@
 # Answer questions
 
-On the served **Desk**, each item is one row: its title, how many questions
-are open, and the latest action (**Asked**, **Replied** or **Not delivered**).
+Each row on the served **Desk** shows the item's title, project, open question
+count, and status (**Asked**, **Replied** or **Not delivered**).
 Select the title or tap anywhere on the row to open the item at its first open
 question. The Desk does not repeat question wording, options or suggestions;
 those stay on the item page. When no question is open but an answer is still

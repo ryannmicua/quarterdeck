@@ -48,7 +48,7 @@ options and answers are never touched.
 ## See it on the page
 
 Projects appear on reference and conversation rows and in the Desk table's
-Project column; on a phone the project sits under the title. Tags show on
+Project column on both desktop and phone. Tags show on
 item pages and in the library, not on the Desk. On an item page, each question shows
 its own kind and tags. In the library tabs, the project
 filter appears when project assignments differ, including when some entries

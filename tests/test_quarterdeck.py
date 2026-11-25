@@ -535,6 +535,18 @@ LINKED = [
 ]
 
 
+def anchor_destinations(page: str) -> set[str]:
+    destinations = set()
+
+    class Anchors(HTMLParser):
+        def handle_starttag(self, tag, attrs):
+            if tag == "a":
+                destinations.update(value for name, value in attrs if name == "href" and value is not None)
+
+    Anchors().feed(page)
+    return destinations
+
+
 class QuestionAddressTests(StoreCase):
     def test_web_addresses_in_question_text_become_links_but_answers_do_not_change(self) -> None:
         prompt_url, context_url, option_url, suggestion_url = (
@@ -549,7 +561,9 @@ class QuestionAddressTests(StoreCase):
         pages = quarterdeck.site_pages(data, "Quarterdeck", "index.html")
         served = quarterdeck.item_page(data["items"][0], "Quarterdeck", served=True)
         prompt_link = f'<a href="{prompt_url}" target="_blank" rel="noopener noreferrer">{prompt_url}</a>'
-        self.assertNotIn(prompt_link, pages["index.html"])
+        addresses = {prompt_url, context_url, option_url, suggestion_url}
+        for desk in (pages["index.html"], quarterdeck.list_page(data, "Quarterdeck", served=True)):
+            self.assertTrue(addresses.isdisjoint(anchor_destinations(desk)))
         for page in (pages["q1.html"], served):
             self.assertIn(prompt_link, page)
             for url in (context_url, option_url):
@@ -586,10 +600,7 @@ class QuestionLinkTests(StoreCase):
                           f'rel="noopener noreferrer">{text}</a>')
                 self.assertLess(pages["q1.html"].index(anchor), pages["q1.html"].index("<li>Centered</li>"))
                 self.assertLess(served_page.index(anchor), served_page.index('<div class="choices">'))
-        card_link = ('<a class="ref-link" href="https://example.org/review/popup" target="_blank" '
-                     'rel="noopener noreferrer">Q1.1 See the mock-ups</a>')
-        self.assertNotIn(card_link, pages["index.html"])
-        self.assertNotIn("Second view", pages["index.html"])
+        self.assertTrue({link["url"] for link in expected_links}.isdisjoint(anchor_destinations(pages["index.html"])))
 
     def test_desk_rows_do_not_repeat_question_links(self) -> None:
         later_question = {"question": "Where should the button go?", "context": "Review the placements.",
@@ -597,17 +608,19 @@ class QuestionLinkTests(StoreCase):
                           "links": [{"text": "See the placements", "url": "https://example.org/review/placements"}]}
         self.assertEqual(self.save([{**LINKED[1], "links": []}, LINKED[0], later_question])[0], 0)
         self.assertNotIn("links", self.store()["items"][0]["body"]["questions"][0])
-        first = "Q1.2 See the mock-ups"
-        later = "Q1.3 See the placements"
-        cases = [("Q1.2", "open", first), ("Q1.2", "answered", later), ("Q1.2", "closed", later),
-                 ("Q1.3", "closed", None), ("Q1.3", "open", later), ("Q1.2", "open", first)]
-        for part, state, expected in cases:
+        destinations = {link["url"] for question in (LINKED[0], later_question) for link in question["links"]}
+        cases = [("Q1.2", "open"), ("Q1.2", "answered"), ("Q1.2", "closed"),
+                 ("Q1.3", "closed"), ("Q1.3", "open"), ("Q1.2", "open")]
+        for part, state in cases:
             with self.subTest(part=part, state=state):
                 self.assertEqual(self.run_cli("mark", part, state, *(["--via", "chat"] if state == "answered" else []))[0], 0)
                 data = quarterdeck.read_store(quarterdeck.store_path())
-                page = quarterdeck.site_pages(data, "Quarterdeck", "index.html")["index.html"]
-                for label in (first, later):
-                    self.assertNotIn(label, page)
+                pages = quarterdeck.site_pages(data, "Quarterdeck", "index.html")
+                served_desk = quarterdeck.list_page(data, "Quarterdeck", served=True)
+                served_item = quarterdeck.item_page(data["items"][0], "Quarterdeck", served=True)
+                for desk, item in ((pages["index.html"], pages["q1.html"]), (served_desk, served_item)):
+                    self.assertEqual(destinations & anchor_destinations(desk), set())
+                    self.assertEqual(destinations & anchor_destinations(item), destinations)
 
     def test_bad_links_are_refused(self) -> None:
         base = {"question": "Q?", "context": "C", "options": ["A"]}
@@ -1450,11 +1463,16 @@ reach(button('panel-references').querySelector('a[href="q1.html"]'));
                     "links": [{"text": "Review the chart", "url": "https://example.org/review"}]}
         self.add("questions", "Pier lights", "See https://example.org/notes", "--body-file", "-",
                  stdin=json.dumps([QUESTIONS[0], question]))
-        self.add("questions", "Tide tables", "Check the latest plan.", "--body-file", "-",
+        self.add("questions", "Tide tables", "Check the latest plan.", "--project", "W" * 40, "--body-file", "-",
                  stdin=json.dumps(QUESTIONS))
         self.assertEqual(self.run_cli("mark", "Q1.1", "closed")[0], 0)
-        self.check_answer_page(self.start("/qd"), r"""
+        port = self.start("/qd")
+        script = r"""
 const [first, second] = document.querySelectorAll('.desk tbody tr');
+const desk = document.querySelector('.desk');
+const project = first.querySelector('.project');
+check(project.checkVisibility() && project.textContent === 'W'.repeat(40), 'The Project column lost the saved name');
+check(desk.scrollWidth === desk.clientWidth, 'A long project widened the Desk beyond its container');
 const hit = node => {
   node.scrollIntoView({block:'center'});
   const rect = node.getClientRects()[0];
@@ -1468,7 +1486,10 @@ for (const [row, destination] of [[first, 'q2.html#Q2.1'], [second, 'q1.html#Q1.
   action.focus();
   check(document.activeElement === action && getComputedStyle(row).outlineStyle === 'solid', 'The row lost its keyboard focus ring');
 }
-""", path="/qd/")
+"""
+        for viewport in ((390, 844), (641, 900), (1440, 900)):
+            with self.subTest(viewport=viewport):
+                self.check_answer_page(port, script, path="/qd/", viewport=viewport)
 
     def test_restored_desk_reloads_archive_membership_and_search(self):
         chrome = shutil.which("google-chrome")
@@ -4711,12 +4732,12 @@ class TalkToFirstmateTests(ImageCase):
         self.assertIn('id="send-message"', page)
         self.assertNotIn('class="lead"', page)
         desk = self.fetch(port, "/qd/")[1]
-        self.assertIn('<td>Conversation</td><td><span class="badge">Replied</span></td>', desk)
+        self.assertIn('<td>None open</td><td><span class="badge">Replied</span></td>', desk)
         self.assertIn('<span class="badge">Replied</span>', self.fetch(port, "/qd/")[1])
         ids = [m["id"] for m in self.thread() if m["author"] == "firstmate"]
         self.assertEqual(self.post(port, "/qd/replies/read", {"part": "Q1", "ids": ids})[0], 200)
         desk = self.fetch(port, "/qd/")[1]
-        self.assertNotIn('<td>Conversation</td>', desk)
+        self.assertNotIn('<td>None open</td>', desk)
         self.assertIn("Nothing is on your Desk. A question that needs an answer shows here.", desk)
         status, sent = self.post(port, "/qd/asks", {**second, "id": uuid.uuid4().hex, "text": "Thanks."})
         self.assertEqual((status, sent["message"]), (200, "Message sent."))
@@ -4778,7 +4799,7 @@ class TalkToFirstmateTests(ImageCase):
                                       "--image", str(self.red), "--alt", "A red lamp")[0], 0)
         desk = self.fetch(port, "/qd/")[1]
         self.assertIn('id="tab-conversations"', desk)
-        self.assertIn('<td>Conversation</td><td><span class="badge">Replied</span></td>', desk)
+        self.assertIn('<td>None open</td><td><span class="badge">Replied</span></td>', desk)
         panel = desk[desk.index('id="panel-conversations"'):]
         self.assertLess(panel.index("Quay sign colours"), panel.index("Harbor lamp colours"))
         for private in (first["text"], "Navy or black lettering?", "Use golden amber.", "https://example.org/chart",

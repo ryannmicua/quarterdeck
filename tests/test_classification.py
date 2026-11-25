@@ -552,11 +552,13 @@ class PageTests(ClassificationCase):
     def pages(self):
         return quarterdeck.site_pages(quarterdeck.read_store(quarterdeck.store_path()), "Quarterdeck", "index.html")
 
-    def test_one_project_shows_on_each_card_without_group_headings(self) -> None:
-        self.questions("Harbor choices", "--project", "Harbor", "--tag", "process")
+    def test_one_project_shows_once_per_row_without_group_headings(self) -> None:
+        self.questions("Quay choices", "--project", "Harbor", "--tag", "process")
         self.questions("More choices", "--project", "Harbor", body=ASK[:1])
         page = self.pages()["index.html"]
-        self.assertEqual(page.count('<span class="project-name">Harbor</span>'), 2)
+        desk = page.split('<div class="desk">', 1)[1].split("</table>", 1)[0]
+        self.assertEqual(desk.count('<td class="project">Harbor</td>'), 2)
+        self.assertEqual(desk.count("Harbor"), 2)
         self.assertNotIn('class="group-name"', page)
 
     def test_several_projects_show_in_the_project_column_not_group_headings(self) -> None:

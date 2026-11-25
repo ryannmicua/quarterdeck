@@ -83,7 +83,7 @@ fields if they pass the same validation as resource URLs.
 
 | Where | Fields |
 | --- | --- |
-| Desk and References | Item titles and project names in the Desk table, plus item descriptions in References on served and rendered pages |
+| References | Item descriptions on served and rendered pages |
 | Item page | Item descriptions, question prompts, context, options and suggested answers |
 | Served item page | Ask and reply text in whole-item and numbered-question conversations |
 
