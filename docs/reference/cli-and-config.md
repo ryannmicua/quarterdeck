@@ -35,7 +35,7 @@ uppercase form.
 | --- | --- |
 | `add` | Saves a new item and prints its ID. A `resource` needs `--url` and `--link-text`. A `list` or `questions` item needs `--body-file`. See [the input formats and examples](../how-to/save-items.md#add-an-item) and [how to classify items and questions when saving](../how-to/classify-items.md#classify-when-you-save). |
 | `list` | Prints saved items, newest first, with ID, kind, saved date and title. |
-| `show` | Prints the item's text, numbering list entries and questions as `Q7.1`, `Q7.2`. Includes question links, stored states, and saved answers with their timestamps and delivery status. |
+| `show` | Prints the item's text, numbering list entries and questions as `Q7.1`, `Q7.2`. Includes question links, stored states, and saved answers with their timestamps and delivery status. For a standalone conversation, prints the messages and replies in saved order with timestamps, IDs, delivery status for outgoing messages, and reply attachments. Image references are paths relative to the served site or the item store directory. |
 | `reply` | Adds Firstmate's reply to an existing ask on a whole question item (`Q7`) or one question (`Q7.1`), or to a message in a [conversation](../how-to/talk-to-firstmate.md) (`Q12`). It preserves saved answers and question states. Supply the required `--ask ID` from the inbox note and the reply in `--text`. Pair `--link-text` with `--url` and `--image` with `--alt` in the order given. See [Reply from the command line](../how-to/reply-from-the-command-line.md). |
 | `mark` | Sets question state, optionally for a whole questions item. `--via` is required with `answered` and accepted only with that state. Skips exit with status 0. See [Read answers](../how-to/read-answers.md) for which questions are marked. |
 | `classify` | Requires at least one classification option. Use `--project` for an item ID, `--kind` for a question ID, and `--tag` for either. See [how to change classification](../how-to/classify-items.md#change-it-later). |
@@ -119,23 +119,24 @@ followed by the ask text.
 
 `POST /conversations` (under any `base_path`) requires an explicit
 `firstmate_home` that resolves to an existing directory and the same origin
-as `/answers`. Send
+as `/answers`. If the directory is unavailable, the request returns 403.
+Send
 `{"id": "<message id>", "title": "...", "text": "...", "home": "<home binding>"}`
 to save a new conversation item and deliver its first message. The title is the
 topic, up to 200 characters. The page generates the 32-character lowercase
 hexadecimal ID. Repeating the same request reuses the saved conversation
 instead of creating another, and retries delivery of the first message while it
 is pending. The same ID with a different topic or text returns 409. A successful
-response contains `message` (delivery status) and `href` (the conversation card).
+response contains `message` (delivery status) and `href` (the relative URL of
+the conversation card).
 
-Later messages use `POST /asks` with `"part": "Q12"` and still require the home
-to resolve to an existing directory. A conversation has no
-questions, so nothing closes it. Sending or retrying with a different
-Firstmate home returns 409 before saving or delivering the message.
+Later messages use the [ask endpoint](#ask-endpoint) with `"part": "Q12"`.
+The directory requirement applies to both sends and retries. A different
+resolved Firstmate home path results in 409 before saving or delivering
+the message.
 The inbox note for every conversation message is
 `CONVERSATION Q12 <message id> Topic: <topic>`, a line break, then the message
-text. Reply with `quarterdeck reply Q12 --ask <message id> --text ...`. Reply
-acknowledgment uses `"part": "Q12"`.
+text. See [Reply in a conversation](../how-to/reply-from-the-command-line.md#reply-in-a-conversation).
 
 ### Reply acknowledgment endpoint
 
@@ -192,7 +193,7 @@ or `${XDG_CONFIG_HOME:-~/.config}/quarterdeck.json` when it exists.
 | `page_title` | string | `Quarterdeck` | The site name in the navigation bar and browser title. `--title` overrides it for `render` and `serve`. |
 | `output_dir` | string path | `${XDG_STATE_HOME:-~/.local/state}/quarterdeck` | Where `render` writes the pages. |
 | `base_path` | string | none | The URL prefix described above. |
-| `firstmate_home` | absolute path after expanding `~` | unset | Local destination for answers and asks submitted to `serve`, and the home whose workers the page lists. |
+| `firstmate_home` | absolute path after expanding `~` | unset | Local destination for answers, asks and conversation messages submitted to `serve`, and the home whose workers the page lists. |
 
 When `firstmate_home` is absent, `serve` uses a legacy `homes` list only for
 answer delivery and only if it contains exactly one object with a valid

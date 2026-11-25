@@ -4,10 +4,10 @@
 
 ## What it is
 
-Quarterdeck shows items saved by hand and, when enabled, the live Firstmate
-workers roster. When you tell Firstmate "send this to Quarterdeck" or "save
-this Lavish page to Quarterdeck", Firstmate runs `quarterdeck add`, and the
-item appears on the page. If nothing has been saved, the page says so.
+Quarterdeck shows saved items, including topic-based conversations, and the
+live Firstmate workers roster when enabled. When you tell Firstmate "send
+this to Quarterdeck" or "save this Lavish page to Quarterdeck", Firstmate
+runs `quarterdeck add`, and the item appears on the page.
 
 Each item gets an ID that is never reused: Q1, Q2, Q3 and so on. The numbered
 parts of a list or a set of questions are cited as Q7.1, Q7.2, so you can say
@@ -21,20 +21,22 @@ parts of a list or a set of questions are cited as Q7.1, Q7.2, so you can say
 | `list` | An ordered list of entries, numbered Q7.1, Q7.2, ... | A shopping list, the steps left in a launch. |
 | `questions` | Numbered questions with context, options or a suggestion, and optional [mockups](docs/how-to/save-items.md#questions-with-images). | The open questions Firstmate is waiting on, including [questions with a review link](docs/how-to/save-items.md#a-question-that-points-to-a-review-page). |
 
-Every item also has a title, a one-or-two-sentence description of what it is
-and why it was saved, and its saved date. Quarterdeck keeps its own copy of
-the saved content.
+Every item saved with `add` also has a title, a one-or-two-sentence description
+of what it is and why it was saved, and its saved date. Quarterdeck keeps its
+own copy of the saved content.
 
 ## Features
 
-- **Desk** shows questions that need attention. Tap a card to open its item.
+- **Desk** shows questions that need attention and conversations with unread
+  replies. Tap a card to open its item.
 - **Open library** gives you searchable access to saved links, lists, and
-  answered items on the served Desk. See
+  answered items and conversations on the served Desk. See
   [Find references and answered questions](docs/how-to/use-the-library.md).
 - **Workers** follows **Desk** on the served page. See
   [how to enable and refresh the roster](docs/how-to/read-workers.md).
-- One page per item, with its ID and title at the top. A resource's link opens
-  the saved address; list entries and questions are numbered.
+- The served Desk gives each item a page with its ID and title at the top.
+  A resource's link opens the saved address. List entries and questions
+  are numbered.
 - `quarterdeck add`, `list`, `show` and `remove` for
   Firstmate to manage items. `add` prints the new ID. See
   [Save items to Quarterdeck](docs/how-to/save-items.md).
@@ -45,7 +47,7 @@ the saved content.
 - `quarterdeck serve` serves the page; each request reads the store, so a new
   item shows on the next load. HTTPS, a reverse-proxy path prefix and a systemd
   user service are supported. See [Serve the page](docs/how-to/serve-the-page.md).
-- `quarterdeck render` writes the pages as HTML files instead.
+- `quarterdeck render` writes [HTML exports](docs/reference/cli-and-config.md#pages).
 - [Answer questions](docs/how-to/answer-questions.md) or
   [ask Firstmate from a card](docs/how-to/ask-firstmate.md) or
   [talk to Firstmate about any topic](docs/how-to/talk-to-firstmate.md) in the browser.
@@ -75,7 +77,8 @@ and the [CLI reference](docs/reference/cli-and-config.md).
 
 Firstmate runs the crew. Quarterdeck is a separate shelf: Firstmate puts
 things on it only when you ask, with the `quarterdeck` command. When you ask
-from a card or start a conversation, Firstmate can reply there with text, links and images.
+from a card or start a conversation, Firstmate can reply there with text,
+links and images.
 See [Reply from the command line](docs/how-to/reply-from-the-command-line.md).
 
 ## Privacy model

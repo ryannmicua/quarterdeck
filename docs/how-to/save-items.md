@@ -7,9 +7,10 @@ automatically. `add` and `remove` change Quarterdeck's own
 
 ## Add an item
 
-Every item needs a kind, a title that says what it is about, and a one-or-two
+With `add`, supply a kind, a title that says what it is about, and a one-or-two
 sentence description: what it is and why it was saved, so the captain
-recognises it later. `add` prints the new ID.
+recognises it later. `add` prints the new ID. To save a conversation, use
+[Talk to Firstmate](talk-to-firstmate.md).
 
 See [inline web addresses](../reference/item-store.md#inline-web-addresses) for
 where pasted URLs become clickable.
@@ -123,8 +124,8 @@ quarterdeck show Q3      # read Q3
 quarterdeck remove Q3    # delete Q3 and retire its ID
 ```
 
-Use the displayed ID, such as `Q3` or `q3`. To correct a saved item, remove it
-and add it again. The new item gets a new ID.
+Use the displayed ID, such as `Q3` or `q3`. To correct an item you saved with
+`add`, remove it and add it again. The new item gets a new ID.
 
 ## See them
 

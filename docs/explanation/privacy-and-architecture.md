@@ -1,9 +1,8 @@
 # Privacy and architecture
 
-Quarterdeck is a shelf the captain fills by hand. Firstmate saves an item only
-when the captain asks, with `quarterdeck add`. The captain can also start a
-conversation with Firstmate from the Desk. The page shows those items and,
-when enabled, the live Firstmate workers roster.
+Quarterdeck keeps a local copy of deliberately saved items. See
+[serving security](../how-to/serve-the-page.md#security-loopback-by-default)
+for who can start conversations and use the other browser controls.
 
 ## What Quarterdeck reads and writes
 
@@ -16,8 +15,8 @@ when enabled, the live Firstmate workers roster.
   [optional config](../reference/cli-and-config.md#json-configuration).
 - `render` reads the item store and the images attached to questions and
   options. It inspects existing output files before replacing or retiring
-  them. Standalone conversations are excluded from HTML exports. See the
-  [render reference](../reference/cli-and-config.md#pages).
+  them. See the [render reference](../reference/cli-and-config.md#pages) for
+  which items are exported.
 - `serve` reads the item store to build pages and writes to it when users
   submit answers, send asks, start conversations, send messages or acknowledge
   replies. It serves only files listed for the requested item from
@@ -33,13 +32,13 @@ Apart from explicitly supplied `add` inputs, images named with `reply --image`,
 and the workers snapshot,
 Quarterdeck reads no backlog, board, topic, report, ledger or saved session
 from a Firstmate home, and it does not read terminal text. Quarterdeck keeps the
-workers snapshot only for the current request. It saves card asks, conversation messages and replies
-with their timestamps in the [item store](../reference/item-store.md#conversations).
+workers snapshot only for the current request. It saves card asks, conversation
+messages and replies in the [item store](../reference/item-store.md#conversations).
 Quarterdeck writes nothing to the home except through the configured home's
-`bin/fm-inbox.sh note` command on explicit answer or ask submission. It passes
-an answer as the part ID followed by the text. Asks go to the explicit
-`firstmate_home` using the [ask note format](../reference/cli-and-config.md#ask-endpoint),
-and a [conversation](../how-to/talk-to-firstmate.md) message goes the same way with its own note format.
+`bin/fm-inbox.sh note` command when a user sends or retries an answer,
+[card ask](../reference/cli-and-config.md#ask-endpoint), or
+[conversation message](../reference/cli-and-config.md#conversation-endpoint).
+It passes an answer as the part ID followed by the text.
 Replies come back only through `quarterdeck reply`, which Firstmate runs on
 the same machine. Quarterdeck never calls a model.
 
@@ -52,7 +51,7 @@ and builds its [report](../how-to/read-the-report.md) from the local item store.
 An item holds its own copy of what was saved: the link, the list, the
 questions with their context. A file that changes or disappears
 later does not change the item, so Q7.3 means the same thing tomorrow as
-today. To correct the saved content, remove the item and save a new one.
+today. To correct content you saved with `add`, remove the item and save a new one.
 To change its classification, use [`classify`](../how-to/classify-items.md#change-it-later).
 
 ## Network

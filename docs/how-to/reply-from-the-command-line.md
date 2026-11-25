@@ -1,10 +1,9 @@
 # Reply from the command line
 
-Use the target ID and ask ID from the [inbox note](../reference/cli-and-config.md#ask-endpoint)
-to reply in the conversation where the ask was sent. Pass the ask ID with
-`--ask`. A note that begins `ASK` comes from a question card. A note that begins
-`CONVERSATION` comes from a [conversation](talk-to-firstmate.md), and
-[replies go to its item ID](#reply-in-a-conversation).
+Use the target and message IDs from the inbox note. A note that begins
+[`ASK`](../reference/cli-and-config.md#ask-endpoint) comes from a question
+card. For [`CONVERSATION`](../reference/cli-and-config.md#conversation-endpoint),
+see [Reply in a conversation](#reply-in-a-conversation).
 
 For both targets, `quarterdeck reply` must use the live server's
 [item store](../reference/item-store.md). If the server uses a custom
@@ -34,8 +33,7 @@ directory, move it before attaching reply images.
 
 ## Reply in a conversation
 
-A conversation note reads `CONVERSATION Q12 <message id> Topic: <topic>`, then the
-message on the following lines. Reply to the item ID with the message ID:
+Pass the conversation's item ID and use `--ask` for the message ID.
 
 ```sh
 quarterdeck reply Q12 --ask "$message_id" --text "Use the 2200 K amber."
@@ -44,10 +42,10 @@ quarterdeck reply Q12 --ask "$message_id" --text "Use the 2200 K amber."
 Links, images and follow-ups work as they do for a card ask. Reply to each
 message by its own ID and the reply shows in time order. A conversation has no
 numbered parts, so `Q12.1` is refused. Run `quarterdeck show Q12` to read the
-whole conversation, including reply links and image references. Image
-references are paths relative to the served site or the item store directory.
-Run `quarterdeck classify Q12 --project NAME --tag TAG` to set its project and tags.
+transcript. See the [CLI reference](../reference/cli-and-config.md#items)
+for the transcript fields.
 
 Quarterdeck prints the target and `Replied`, for example `Q7.1 Replied`.
-See [how to read replies on the card](ask-firstmate.md).
+See how to read replies on a [question card](ask-firstmate.md#read-replies)
+or [conversation card](talk-to-firstmate.md#read-replies).
 See the [CLI reference](../reference/cli-and-config.md#items) for the command.

@@ -41,11 +41,15 @@ or **Close library**.
 
 ## When an item moves
 
-An item stays on the Desk while it has an open question or a non-closed
-question with an answer awaiting delivery. Otherwise it appears under
+An item with questions stays on the Desk while it has an open question or a
+non-closed question with an answer awaiting delivery. Otherwise it appears under
 **Answered**. Pending asks and unread replies leave the item in its current
-listing. The Desk and the library’s **Answered** and **Conversations** tabs show **Replied** while
-an item has unread replies. See [how to read and acknowledge replies](ask-firstmate.md#read-replies).
+listing. Both locations can show **Replied**. See
+[how to read question-card replies](ask-firstmate.md#read-replies).
+
+Standalone conversations are always in **Conversations**. They also appear on
+the Desk while they have unread replies. Both locations show **Replied** until
+you [read the replies on the card](talk-to-firstmate.md#read-replies).
 
 Reopen a question with `quarterdeck mark Q5.2 open` to return
 its item to the Desk. The item stays saved until you remove it with
@@ -53,6 +57,6 @@ its item to the Desk. The item stays saved until you remove it with
 
 ## Rendered pages
 
-If the store has saved items, a page written by `quarterdeck render` shows
+When an [HTML export](../reference/cli-and-config.md#pages) has saved items, it shows
 References and Answered as plain sections after the Desk. The Answered section
-links each title to its item page. Conversations are available on the served site.
+links each title to its item page.

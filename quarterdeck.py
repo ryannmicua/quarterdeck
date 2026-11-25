@@ -251,13 +251,13 @@ def item_classification(raw_project: object, raw_tags: object, *, stored: bool =
     return fields
 
 
-# Item records live in one JSON file. Every item was saved by hand through `quarterdeck add`; its body is stored by value
-# at save time and never read again from anywhere else. An ID is never reused, even after its item is removed.
+# Store item bodies by value so saved content survives changes to the original inputs.
+# An ID is never reused, even after its item is removed.
 
 STORE_VERSION = 1
 KIND_LABELS = {"resource": "Resource", "list": "List", "questions": "Questions", "conversation": "Conversation"}
 KINDS = tuple(KIND_LABELS)
-# A conversation is started from the page with Talk to Firstmate, never saved by hand.
+# The Desk saves a conversation together with its first message.
 ADD_KINDS = tuple(kind for kind in KINDS if kind != "conversation")
 ID_RE = re.compile(r"[Qq][1-9][0-9]*")
 ITEM_PAGE_RE = re.compile(r"q[1-9][0-9]*[.]html")

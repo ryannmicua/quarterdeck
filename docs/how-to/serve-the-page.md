@@ -81,7 +81,9 @@ The default bind is `127.0.0.1`. A loopback listener refuses requests whose
 service can read saved items, their images, answers, conversations, reply
 images, and the enabled workers roster. They can also send answers and
 acknowledge replies as the owner. When `firstmate_home` is set, they can
-start conversations from the Desk and send messages and asks to that home's inbox.
+send asks to that home's inbox and, with the
+[conversation prerequisites](talk-to-firstmate.md) met, start conversations
+from the Desk and send messages.
 Quarterdeck prints a warning when you bind a non-loopback address. Keep the
 listener and proxy on the trusted network, or protect both with an owner access
 gate. Browser submissions require an `Origin` that matches the public host and

@@ -156,18 +156,26 @@ and [export behavior](cli-and-config.md#rendered-images).
 
 ## Conversations
 
-A questions item may contain a `conversation` object. A `conversation` item always has one, with only the key `item`. Its `body` is `{}` and its `description` is a generic label. Older descriptions are accepted and omitted from listings. A conversation item is started from the Desk with **Talk to Firstmate**, and `quarterdeck add` cannot save one. Its messages are kept strictly in the order they were saved, and a reply names the message it answers. The first message's home binding also binds the conversation. The key `item` holds the
-whole item's messages, oldest first. The object can also use one-based part
-numbers as string keys for its numbered questions. The conversation is kept
-apart from `answers`. Existing numbered threads keep their keys.
+A questions item may contain a `conversation` object with `item` for the
+whole-item thread and one-based part numbers as string keys for threads
+on individual questions. These threads are separate from `answers`.
+
+A standalone `conversation` item requires a `conversation` object with only
+the key `item`. Its `body` is `{}` and its `description` is a generic label.
+Older descriptions are accepted and omitted from listings. The home binding
+on the first message also binds the conversation. See
+[how to start a conversation](../how-to/talk-to-firstmate.md).
+
+Each thread stores messages in the order they were saved. Every reply
+names the earlier ask or message it answers.
 
 Every message has `id` (a string of 32 hexadecimal characters), `author`, `text` (plain
 text, up to 20,000 characters) and `at` (UTC).
 
 | `author` | Other fields |
 | --- | --- |
-| `you` | An ask with a browser-generated ID. `delivery` (`pending` or `sent`), a stable `request_id` string for inbox retries, and `home`, a hexadecimal `sha256` digest of the resolved path of the configured Firstmate home. |
-| `firstmate` | A reply added by `quarterdeck reply`. `ask` (ID of an earlier ask in the same conversation), `read` (true once the page acknowledges this reply), and optional `links` (the same `text` and `url` objects as question links) and `images` (`file` and `alt`). |
+| `you` | An ask or conversation message with a browser-generated ID. `delivery` (`pending` or `sent`), a stable `request_id` string for inbox retries, and `home`, a hexadecimal `sha256` digest of the resolved path of the configured Firstmate home. |
+| `firstmate` | A reply added by `quarterdeck reply`. `ask` (ID of an earlier message from `you` in the same thread), `read` (true once the page acknowledges this reply), and optional `links` (the same `text` and `url` objects as question links) and `images` (`file` and `alt`). |
 
 Reply images use the item's [private reply image folder](#store-layout).
 
