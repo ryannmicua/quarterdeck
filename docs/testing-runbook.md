@@ -31,8 +31,10 @@ The send bar check uses 390 × 844 and 1440 × 900 viewports with one and twelve
 questions. It verifies the bar at both ends of the page and after its status
 message grows, including that the last answer field can scroll clear of the bar.
 On the long phone page, it also checks that Undo and status messages leave the
-focused control visible. A 320-pixel sheet check covers both tabs and Close
-library.
+focused control visible. A long send error scrolls inside the bar. The browser
+checks also cover focus through delivery transitions and the hit targets for
+the Desk card action and its independent links. A 320-pixel sheet check covers
+both tabs and Close library.
 
 The classification browser test uses headless `google-chrome` to select
 filters and check which reference rows, reviewed cards, and empty messages

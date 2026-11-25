@@ -1,10 +1,9 @@
 # Answer questions
 
-Find the item on your **Desk** on the served page and tap anywhere on its
-card, or select **Answer questions**. The highlighted action opens the item at
-the first open question. The action reads **Review answers** when no question
-is open but an answer is not yet delivered. Each question has an ID you can
-cite later.
+On the served **Desk**, tap the card or select **Answer questions** to open
+its first open question. Links inside the card open their own destinations.
+When no question is open but an answer is still pending delivery, the card
+action reads **Review answers**. Each question has an ID you can cite later.
 
 An item page lists every question in one list. A question marked **Answered**
 with a **Sent** answer collapses to one line below the expanded questions.

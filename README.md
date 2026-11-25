@@ -28,7 +28,8 @@ the saved content.
 ## Features
 
 - **Desk** shows items with an open question or pending delivery on a non-closed
-  question. Tap anywhere on a card to open its item. Once all questions are
+  question. Tap a card to open its item at the first open question, when it has
+  one. Once all questions are
   answered or closed and no non-closed question has pending delivery, the item
   moves to **Answered**. It returns to the Desk when a question opens again.
 - **Open library** opens a bottom sheet on a phone and a right-side drawer on a

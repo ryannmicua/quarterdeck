@@ -1527,18 +1527,16 @@ table.items td.project { white-space:normal; }
 .desk .work:hover { background:var(--faint); }
 .desk .work.next:hover { background:var(--signal-ground); box-shadow:inset 0 0 0 2px var(--signal); }
 .desk .work h3 { margin:.3rem 0; }
-.card-link { color:inherit; text-decoration:none; }
-.card-link:hover { text-decoration:underline; }
 .card-link::after { content:""; position:absolute; inset:0; z-index:0; }
-.card-link:focus-visible { outline:none; }
-.desk .work:has(.card-link:focus-visible) { outline:3px solid var(--focus); outline-offset:-3px; }
+.card-link:focus { outline:none; }
+.desk .work:has(.card-link:focus) { outline:3px solid var(--focus); outline-offset:-3px; }
 .desk .work a:not(.card-link), .desk .work button { position:relative; z-index:1; }
 html:has(.sendbar) { scroll-padding-bottom:var(--sendbar-height, 0px); }
 main:has(> .sendbar) { padding-bottom:var(--sendbar-height, 0px); }
 .sendbar { position:fixed; inset:auto 0 0; z-index:2;
   padding:.7rem max(var(--gutter), calc((100% - var(--page)) / 2 + var(--gutter))) calc(.7rem + env(safe-area-inset-bottom));
   background:var(--ground); border-top:1px solid var(--rule); box-shadow:0 -6px 14px -10px var(--ink); }
-.sendbar output { margin:.4rem 0 0; }
+.sendbar output { margin:.4rem 0 0; max-height:min(8rem,25vh); max-height:min(8rem,25dvh); overflow:auto; }
 .sendbar output:empty { display:none; }
 details.done { margin:.6rem 0; max-width:52rem; border:1px solid var(--rule); border-radius:8px; background:var(--raised); }
 details.done > summary { display:grid; grid-template-columns:auto minmax(0, 7fr) minmax(0, 5fr); gap:.8rem; align-items:baseline;
@@ -1911,11 +1909,12 @@ def question_card(item, summary, *, served, primary, show_project=True):
     state, open_parts, pending = summary
     remaining = len(open_parts)
     href = item_page_name(item["id"])
-    if primary:
+    if open_parts:
         href += f'#{item["id"]}.{open_parts[0]}'
     progress = f'{remaining} of {len(question_parts(item))} open' if remaining else state
     action = "Read questions" if not served else ("Answer questions" if remaining else "Review answers")
-    link_class = ' class="work-action"' if primary else ' class="button-link"'
+    link_style = "work-action" if primary else "button-link"
+    title = esc(item["title"])
     questions = item["body"]["questions"]
     prompts = "".join(f'<li>{linked_text(questions[n - 1]["question"])}</li>' for n in open_parts)
     first_link = next((link_html(questions[n - 1]["links"][0], prefix=f'{item["id"]}.{n} ')
@@ -1923,13 +1922,13 @@ def question_card(item, summary, *, served, primary, show_project=True):
     visual = f'<p class="visual">{first_link}</p>' if first_link else ''
     project = f' <span class="project-name">{esc(item["project"])}</span>' if show_project and item.get("project") else ""
     return (f'<article class="work{' next' if primary else ''}"{filter_data(item)}><div class="eyebrow"><span class="id">{item["id"]}</span> Questions{project}</div>'
-            f'<h3><a class="card-link" href="{item_page_name(item["id"])}">{esc(item["title"])}</a></h3><p>{linked_text(item["description"])}</p>'
+            f'<h3>{title}</h3><p>{linked_text(item["description"])}</p>'
             + (f'<ul>{prompts}</ul>' if prompts else '')
             + tag_labels(all_tags(item))
             + visual
             + f'<div class="actions"><span class="badge">{progress}</span>'
             + ('<span>Not delivered</span>' if pending else '')
-            + f'<a{link_class} href="{href}">{action}</a></div></article>')
+            + f'<a class="card-link {link_style}" href="{href}" aria-label="{action} for {title}">{action}</a></div></article>')
 
 
 def link_html(link, *, prefix=""):
@@ -2017,7 +2016,7 @@ def question_form(item, served):
             saved += f'<p class="meta answer-source">Answered elsewhere · {esc(elsewhere["via"])}{time}</p>'
         editor = ""
         if editable:
-            editor = (f' data-revision="{esc(record.get("revision", ""))}"'
+            editor = (f' tabindex="-1" data-revision="{esc(record.get("revision", ""))}"'
                       f' data-state="{status}" data-pending="{int(delivery_pending(record))}"')
             suggestions = question.get("suggestion")
             choices = list(question["options"])
@@ -2055,7 +2054,7 @@ def question_form(item, served):
                + ('<button id="suggest">Use all suggestions</button>' if any(
                    q.get("suggestion") and part_record(item, n).get("state") != "closed"
                    for n, q in enumerate(item["body"]["questions"], 1)) else '')
-               + '<button id="undo" hidden>Undo changes</button></div><output role="status"></output></div>')
+               + '<button id="undo" hidden>Undo changes</button></div><output role="status" tabindex="0"></output></div>')
     return f'<p class="progress">{progress}</p><div id="questions">' + ''.join(cards) + ''.join(folded) + '</div>' + bar
 
 
@@ -2162,12 +2161,16 @@ if (send) {
   const questionNumber = section => Number(section.id.split('.')[1]);
   function updateFold(section, record) {
     const number = questionNumber(section);
+    const focused = document.activeElement;
+    const focusInSection = section.contains(focused);
     let box = section.closest('details.done');
     if (record.state !== 'answered' || record.delivery !== 'sent') {
       if (box) {
+        const restoreFocus = box.contains(focused);
         const next = [...list.children].find(child => child.matches('details.done') || questionNumber(child) > number);
         list.insertBefore(section, next);
         box.remove();
+        if (restoreFocus) (focusInSection ? focused : section.querySelector('a[href]') || section).focus();
       }
       return;
     }
@@ -2189,6 +2192,7 @@ if (send) {
     }
     box.querySelector('.sum-a').textContent = record.answer;
     box.open = false;
+    if (focusInSection) box.querySelector('summary').focus();
   }
   function showAnswer(section, field, record) {
     section.dataset.state = record.state;

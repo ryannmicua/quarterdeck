@@ -300,8 +300,9 @@ class PageTests(StoreCase):
         self.assertLess(index.index("<h1>Desk</h1>"), index.index("<h2>References</h2>"))
         self.assertLess(index.index(">Q2<"), index.index(">Q1<"))
         self.assertIn("Harbor chores", index)
-        self.assertIn('<h3><a class="card-link" href="q3.html">Tide launch decisions</a></h3>', index)
-        self.assertIn('<a class="work-action" href="q3.html#Q3.1">Read questions</a>', index)
+        self.assertIn('<h3>Tide launch decisions</h3>', index)
+        self.assertIn('href="q3.html#Q3.1" aria-label="Read questions for Tide launch decisions">Read questions</a>', index)
+        self.assertNotIn('href="q3.html"', index)
         self.assertEqual(index.count('href="q3.html#Q3.1"'), 1)
         self.assertIn("Two open questions, saved to decide later.", index)
         self.assertIn("<li>Merge the tide tables now?</li><li>Which colour for the quay?</li>", index)
@@ -350,7 +351,7 @@ class PageTests(StoreCase):
         quarterdeck.send_answer(quarterdeck.store_path(), None, {"part": "Q1.2", "answer": "Blue", "revision": ""})
         page, _ = self.served_pages()
         self.assertIn("Not delivered", page.split("<dialog", 1)[0])
-        self.assertIn('<a class="button-link" href="q1.html">Review answers</a>', page)
+        self.assertIn('href="q1.html" aria-label="Review answers for Pier lights">Review answers</a>', page)
         for part in (1, 2):
             record = quarterdeck.read_store(quarterdeck.store_path())["items"][0]["answers"][str(part)]
             quarterdeck.send_answer(quarterdeck.store_path(), self.inbox_home(),
@@ -478,7 +479,7 @@ class PageTests(StoreCase):
         )
         pages = self.pages()
         self.assertIn(f'<p class="lib-desc">{expected}</p>', pages["index.html"])
-        self.assertIn(f'<a class="card-link" href="q2.html">Decisions</a></h3><p>{expected}</p>', pages["index.html"])
+        self.assertIn(f'<h3>Decisions</h3><p>{expected}</p>', pages["index.html"])
         for name in ("q1.html", "q2.html"):
             self.assertIn(f'<p class="lead">{expected}</p>', pages[name])
 
@@ -623,7 +624,8 @@ class RenderTests(StoreCase):
         code, out, err = self.run_cli("render", "--output", str(output))
         self.assertEqual(code, 0, err)
         self.assertEqual(out.strip(), str(output.resolve()))
-        self.assertIn('<a class="work-action" href="q3.html#Q3.1">Read questions</a>', output.read_text())
+        self.assertIn('href="q3.html#Q3.1" aria-label="Read questions for Tide launch decisions">Read questions</a>',
+                      output.read_text())
         self.assertIn('<section class="decision" id="Q3.1"', (output.parent / "q3.html").read_text())
         self.assertEqual({path.name for path in output.parent.iterdir()},
                          {"index.html", "q1.html", "q2.html", "q3.html", "q8.html", "snapshot.html"})
@@ -808,7 +810,7 @@ class ServeTests(StoreCase):
         self.assertIn("<li>Which colour for the quay?</li>", desk)
         self.assertNotIn("Merge the tide tables now?", desk)
         self.assertIn('<span class="badge">1 of 2 open</span>', desk)
-        self.assertIn('<a class="work-action" href="q3.html#Q3.2">Answer questions</a>', desk)
+        self.assertIn('href="q3.html#Q3.2" aria-label="Answer questions for Tide launch decisions">Answer questions</a>', desk)
         question_page = self.fetch(port, "/qd/q3.html")[1]
         self.assertIn('<section class="decision" id="Q3.2"', question_page)
         self.assertIn('<p class="progress">1 of 2 open</p>', question_page)
@@ -821,8 +823,8 @@ class ServeTests(StoreCase):
         port = self.start("/qd")
         self.assertEqual(self.post_answer(port, "Q2.1", "Yes")[0], 200)
         desk = self.fetch(port, "/qd/")[1].split("<h1>Desk</h1>", 1)[1].split('<section id="workers">', 1)[0]
-        self.assertIn('<a class="button-link" href="q2.html">Review answers</a>', desk)
-        self.assertIn('<a class="work-action" href="q1.html#Q1.1">Answer questions</a>', desk)
+        self.assertIn('class="card-link button-link" href="q2.html"', desk)
+        self.assertIn('class="card-link work-action" href="q1.html#Q1.1"', desk)
         self.assertIn("<li>Merge the tide tables now?</li><li>Which colour for the quay?</li>", desk)
         self.assertNotIn("Deliver the harbour chart?", desk)
 
@@ -1048,6 +1050,25 @@ if (statusFocus) {
 checkPageEnd();
 """, path=f"/qd/q{item}.html", viewport=(width, height))
 
+    def test_verbose_send_error_leaves_the_question_and_controls_reachable(self):
+        self.add("questions", "Tide decisions", "Decide the launch plan.", "--body-file", "-",
+                 stdin=json.dumps(QUESTIONS[:1]))
+        self.check_answer_page(self.start("/qd"), r"""
+const error = 'Gateway failure. '.repeat(1500) + 'End of response.';
+window.fetch = async () => ({ok: false, status: 502, text: async () => error});
+typeAnswer(1, 'Hold');
+await sendBatch();
+const bar = button('send').closest('.sendbar');
+const status = bar.querySelector('output');
+check(status.textContent.endsWith('End of response.') && status.scrollHeight > status.clientHeight,
+      'A long error was lost or did not fit in its own scroll area');
+status.focus();
+status.scrollTop = status.scrollHeight;
+check(document.activeElement === status && status.scrollTop > 0, 'The full error was not reachable');
+check(bar.getBoundingClientRect().top > innerHeight / 2, 'The error covered most of the question view');
+check(!button('send').disabled && field(1).value === 'Hold', 'The error prevented retrying the draft');
+""", viewport=(390, 844))
+
     def test_bulk_suggestions_skip_saved_answers_and_drafts(self):
         self.add("questions", "Tide decisions", "Decide the launch plan.", "--body-file", "-",
                  stdin=json.dumps([QUESTIONS[0]] * 7))
@@ -1071,9 +1092,10 @@ check(button('suggest').disabled, 'Bulk suggestions remained available with noth
 """)
 
     def test_an_answered_question_folds_to_one_line_below_the_open_ones(self):
-        question = {**QUESTIONS[0], "question": "Merge the tide tables now? " * 8}
+        review = [{"text": "Review the plan", "url": "https://example.org/review"}]
+        question = {**QUESTIONS[0], "question": "Merge the tide tables now? " * 8, "links": review}
         self.add("questions", "Tide decisions", "Decide the launch plan.", "--body-file", "-",
-                 stdin=json.dumps([question, QUESTIONS[1], question]))
+                 stdin=json.dumps([question, {**QUESTIONS[1], "links": review}, question]))
         home = self.root / "home"
         script = home / "bin" / "fm-inbox.sh"
         script.parent.mkdir(parents=True)
@@ -1105,13 +1127,22 @@ const initiallyFolded = card(3).closest('details');
 check(initiallyFolded && !initiallyFolded.open, 'A previously delivered question did not start folded');
 checkSummary(initiallyFolded.querySelector('summary'));
 let delivery = 'sent';
+let focusDuringSend;
 window.fetch = async (url, options) => {
   const {answer} = JSON.parse(options.body);
+  if (focusDuringSend) {
+    focusDuringSend.focus();
+    check(document.activeElement === focusDuringSend, 'The focus fixture did not reach the row during delivery');
+  }
   return {ok: true, json: async () => ({answer, state: 'answered', revision: 'saved-revision',
     answered_at: '2026-01-12T15:00:00Z', delivery})};
 };
 typeAnswer(2, 'Blue');
+focusDuringSend = card(2).querySelector('a');
 await sendBatch();
+const secondSummary = card(2).closest('details').querySelector('summary');
+check(document.activeElement === secondSummary, 'First delivery dropped focus from the row');
+focusDuringSend = null;
 check(order() === 'Q1.1,Q1.2,Q1.3', 'The later question was not inserted before a higher-numbered folded question');
 check(document.querySelector('.progress').textContent === '1 of 3 open', 'Progress was stale');
 const longAnswer = 'Wait for confirmation from the harbourmaster. '.repeat(8).trim();
@@ -1132,16 +1163,25 @@ check(folded.open && field(1).value === longAnswer &&
       card(1).querySelector('h2').textContent === 'Merge the tide tables now? '.repeat(8).trim(),
       'Opening the folded row did not reveal the full question and answer');
 typeAnswer(1, 'Hold for the pilot');
+focusDuringSend = card(1).querySelector('a');
 await sendBatch();
 check(!folded.open && folded.querySelector('.sum-a').textContent === 'Hold for the pilot',
       'The delivered correction did not close the row with the corrected answer');
+check(document.activeElement === summary, 'Refolding a correction dropped focus from the row');
 summary.click();
 typeAnswer(1, 'Use the next tide');
 delivery = 'pending';
+focusDuringSend = summary;
 await sendBatch();
 check(order() === 'Q1.1,Q1.2,Q1.3' && card(1).parentElement === list,
       'The pending correction did not return to its place among expanded questions');
 check(card(1).querySelector('.delivery').textContent === 'Not delivered', 'The pending correction lost its delivery status');
+check(document.activeElement === card(1).querySelector('a'), 'Expanding a pending correction lost focus from its removed summary');
+secondSummary.click();
+typeAnswer(2, 'Red');
+focusDuringSend = card(2).querySelector('a');
+await sendBatch();
+check(document.activeElement === focusDuringSend, 'Expanding a pending correction dropped focus from its existing link');
 """)
 
     def test_narrow_library_header_keeps_both_tabs_and_close_visible(self):
@@ -1164,6 +1204,36 @@ check(tabs[1].getAttribute('aria-selected') === 'true', 'Answered did not open')
 close.click();
 check(!dialog.open, 'Close library did not dismiss the sheet');
 """, path="/qd/", viewport=(320, 800))
+
+    def test_desk_card_stretches_one_action_without_covering_its_links(self):
+        question = {**QUESTIONS[1], "question": "Use https://example.org/options?",
+                    "links": [{"text": "Review the chart", "url": "https://example.org/review"}]}
+        self.add("questions", "Pier lights", "See https://example.org/notes", "--body-file", "-",
+                 stdin=json.dumps([QUESTIONS[0], question]))
+        self.add("questions", "Tide tables", "Check the latest plan.", "--body-file", "-",
+                 stdin=json.dumps(QUESTIONS))
+        self.assertEqual(self.run_cli("mark", "Q1.1", "closed")[0], 0)
+        self.check_answer_page(self.start("/qd"), r"""
+const [first, second] = document.querySelectorAll('.desk article');
+const hit = node => {
+  node.scrollIntoView({block:'center'});
+  const rect = node.getClientRects()[0];
+  return document.elementFromPoint(rect.left + rect.width / 2, rect.top + rect.height / 2)?.closest('a');
+};
+for (const [item, destination, expectedLinks] of [[first, 'q2.html#Q2.1', []], [second, 'q1.html#Q1.2',
+    ['https://example.org/notes', 'https://example.org/options', 'https://example.org/review']]]) {
+  const links = [...item.querySelectorAll('a')];
+  const action = links.find(link => link.getAttribute('href') === destination);
+  check(action && links.length === expectedLinks.length + 1, 'A card had multiple actions or jumped to the wrong question');
+  check(hit(item.querySelector('h3')) === action && hit(action) === action, 'The card and its action had different hit targets');
+  action.focus();
+  check(document.activeElement === action && getComputedStyle(item).outlineStyle === 'solid', 'The card lost its keyboard focus ring');
+  for (const url of expectedLinks) {
+    const link = links.find(anchor => anchor.getAttribute('href') === url);
+    check(link && hit(link) === link, 'The stretched action covered an independent link');
+  }
+}
+""", path="/qd/")
 
     def test_the_library_pop_out_searches_and_returns_focus(self):
         self.add("questions", "Tide decisions", "Decide the launch plan.", "--body-file", "-", stdin=json.dumps(QUESTIONS))
