@@ -1679,12 +1679,7 @@ def roster_row(key: str, task: dict, observed: datetime) -> dict[str, object]:
 
 def workers_snapshot(home: Path) -> dict[str, object]:
     """Every worker with a live terminal screen, plus the second mate roster, as the page shows them."""
-    if not snapshot_lock.acquire(blocking=False):
-        raise SnapshotError("the fleet snapshot is already running")
-    try:
-        data = run_snapshot(home)
-    finally:
-        snapshot_lock.release()
+    data = run_snapshot(home)
     tasks = data.get("tasks") if isinstance(data, dict) else None
     generated = data.get("generated") if isinstance(data, dict) else None
     if not isinstance(tasks, list) or not isinstance(generated, str) or not UTC_RE.fullmatch(generated):
@@ -1731,8 +1726,16 @@ class SavedWorkers:
     def __init__(self) -> None:
         self.snapshot: dict[str, object] | None = None
 
-    def save(self, snapshot: dict[str, object]) -> None:
-        self.snapshot = snapshot
+    def refresh(self, home: Path, *, force: bool) -> dict[str, object]:
+        if not snapshot_lock.acquire(blocking=False):
+            raise SnapshotError("the fleet snapshot is already running")
+        try:
+            if not force and self.snapshot is not None and not self.view()["stale"]:
+                return self.snapshot
+            self.snapshot = workers_snapshot(home)
+            return self.snapshot
+        finally:
+            snapshot_lock.release()
 
     def view(self, now: datetime | None = None) -> dict[str, object]:
         """The saved reading and whether it is missing or older than WORKERS_FRESH_SECONDS."""
@@ -2058,6 +2061,7 @@ WORKERS_SCRIPT = r"""
     const time = make('time', '', localTime(data.observed_at));
     time.dateTime = data.observed_at;
     status.append(time);
+    lastObservedAt = data.observed_at;
   };
   const failed = () => {
     status.className = 'meta failed';
@@ -2065,23 +2069,25 @@ WORKERS_SCRIPT = r"""
       ? 'Check failed. Showing the list from ' + localTime(lastObservedAt) + '.'
       : 'Workers could not be loaded. Try again.';
   };
-  const readSaved = async () => {
-    const response = await fetch('workers-saved.json', {cache: 'no-store', headers: {Accept: 'application/json'}});
-    if (!response.ok) throw new Error('saved read failed');
+  const read = async path => {
+    const response = await fetch(path, {cache: 'no-store', headers: {Accept: 'application/json'}});
+    if (!response.ok) throw new Error('worker read failed');
     return response.json();
   };
-  const load = async () => {
+  const load = async manual => {
     if (button.getAttribute('aria-disabled') === 'true') return;
     button.setAttribute('aria-disabled', 'true');
     list.setAttribute('aria-busy', 'true');
     status.className = 'meta';
     status.textContent = lastObservedAt ? 'Refreshing workers' : 'Loading workers';
     try {
-      const response = await fetch('workers.json', {cache: 'no-store', headers: {Accept: 'application/json'}});
-      if (!response.ok) throw new Error('refresh failed');
-      const data = await response.json();
-      show(data);
-      lastObservedAt = data.observed_at;
+      if (manual) {
+        show(await read('workers.json?force=1'));
+      } else {
+        const saved = await read('workers-saved.json');
+        if (saved.snapshot) show(saved.snapshot);
+        if (saved.stale) show(await read('workers.json'));
+      }
     } catch (error) {
       failed();
     } finally {
@@ -2089,21 +2095,8 @@ WORKERS_SCRIPT = r"""
       list.removeAttribute('aria-busy');
     }
   };
-  button.addEventListener('click', load);
-  (async () => {
-    let saved = null;
-    try {
-      saved = await readSaved();
-    } catch (error) {
-      saved = null;
-    }
-    if (saved && saved.snapshot) {
-      show(saved.snapshot);
-      lastObservedAt = saved.snapshot.observed_at;
-    }
-    if (!saved || saved.stale) load();
-    else if (!saved.snapshot) failed();
-  })();
+  button.addEventListener('click', () => load(true));
+  load(false);
 })();
 """
 
@@ -3822,11 +3815,10 @@ def make_handler(site_title: str, base_path: str = "", store: Path | None = None
                 return
             if name == "workers.json" and workers_home is not None:
                 try:
-                    snapshot = workers_snapshot(workers_home)
+                    snapshot = saved_workers.refresh(workers_home, force=request.query == "force=1")
                 except SnapshotError:
                     self.send_text(502, json.dumps({"error": "The workers could not be read."}), "application/json")
                 else:
-                    saved_workers.save(snapshot)
                     self.send_text(200, json.dumps(snapshot), "application/json")
                 return
             if name == "workers-saved.json" and workers_home is not None:
