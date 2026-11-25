@@ -2415,8 +2415,8 @@ def desk_row(item, summary, *, primary):
               "Asked" if remaining else esc(state))
     if pending:
         latest += ' <span>Not delivered</span>'
-    return (f'<tr class="work{' next' if primary else ''}"><th scope="row"><span class="id">{item["id"]}</span> '
-            f'<a class="card-link" href="{href}">{title}</a></th>'
+    return (f'<tr class="work{' next' if primary else ''}"><th scope="row">'
+            f'<a class="card-link" href="{href}"><span class="id">{item["id"]}</span> {title}</a></th>'
             f'<td class="project">{project}</td><td>{count}</td><td>{latest}</td></tr>')
 
 
