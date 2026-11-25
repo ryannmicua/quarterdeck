@@ -1726,6 +1726,9 @@ function trackVisibleViewport(onChange) {
 
 LIBRARY_SCRIPT = r"""
 (() => {
+  window.addEventListener('pageshow', event => {
+    if (event.persisted) location.reload();
+  });
   const dialog = document.querySelector('#library');
   const opener = document.querySelector('#open-library');
   if (!dialog || !opener || !dialog.showModal) return;

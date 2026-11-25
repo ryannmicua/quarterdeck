@@ -1349,6 +1349,70 @@ for (const [item, destination, expectedLinks] of [[first, 'q2.html#Q2.1', []], [
 }
 """, path="/qd/")
 
+    def test_restored_desk_reloads_archive_membership_and_search(self):
+        chrome = shutil.which("google-chrome")
+        if not chrome:
+            self.skipTest("google-chrome is required for the Desk history browser test")
+        for title in ("Pier lights", "Tide tables"):
+            self.add("questions", title, "Choose an option.", "--body-file", "-", stdin=json.dumps(QUESTIONS[:1]))
+        home = self.root / "home"
+        inbox = home / "bin" / "fm-inbox.sh"
+        inbox.parent.mkdir(parents=True)
+        inbox.write_text("#!/bin/sh\nexit 0\n")
+        inbox.chmod(0o700)
+        port = self.start("/qd", home=home)
+        status, old_answer = self.post_answer(port, "Q2.1", "Saffron")
+        self.assertEqual((status, old_answer["delivery"]), (200, "sent"))
+
+        list_page = quarterdeck.list_page
+
+        def instrumented_page(*args, **kwargs):
+            return list_page(*args, **kwargs).replace("</body>", """
+<output id="browser-result">Incomplete</output>
+<script>
+const result = document.getElementById('browser-result');
+const check = (condition, message) => { if (!condition) throw new Error(message); };
+(async () => {
+  const desk = document.querySelector('main');
+  if (!sessionStorage.getItem('restoring')) {
+    check(desk.textContent.includes('Pier lights'), 'The open item did not start on the Desk');
+    for (const payload of [
+      {part:'Q1.1', answer:'Keep the lights', revision:''},
+      {part:'Q2.1', answer:'Ultramarine', revision:""" + json.dumps(old_answer["revision"]) + """}
+    ]) {
+      const response = await fetch('answers', {method:'POST', headers:{'Content-Type':'application/json'},
+        body:JSON.stringify(payload)});
+      check(response.ok && (await response.json()).delivery === 'sent', 'The fixture answer was not delivered');
+    }
+    sessionStorage.setItem('restoring', 'yes');
+    window.dispatchEvent(new PageTransitionEvent('pageshow', {persisted:true}));
+    return;
+  }
+  check(!desk.textContent.includes('Pier lights'), 'The restored Desk still showed the completed item');
+  document.getElementById('open-library').click();
+  document.getElementById('tab-answered').click();
+  const panel = document.getElementById('panel-answered');
+  check(panel.querySelector('a[href="q1.html"]'), 'The completed item was missing from Answered');
+  const search = panel.querySelector('input');
+  const find = text => {
+    search.value = text;
+    search.dispatchEvent(new Event('input', {bubbles:true}));
+    return [...panel.querySelectorAll('li:not([hidden]) a')].map(link => link.getAttribute('href')).join();
+  };
+  check(find('saffron') === '' && find('ultramarine') === 'q2.html', 'The restored search used stale answer text');
+  result.textContent = 'PASS';
+})().catch(error => { result.textContent = error.message; });
+</script>
+</body>""")
+
+        with patch.object(quarterdeck, "list_page", instrumented_page):
+            browser = subprocess.run([chrome, "--headless", "--disable-background-networking", "--no-first-run",
+                                      f"--user-data-dir={self.root / 'browser'}", "--dump-dom", "--virtual-time-budget=3000",
+                                      f"http://127.0.0.1:{port}/qd/"],
+                                     capture_output=True, text=True, timeout=30, check=True)
+        browser_result = browser.stdout.partition('<output id="browser-result">')[2].partition("</output>")[0]
+        self.assertEqual(browser_result, "PASS", browser.stderr)
+
     def test_the_library_pop_out_searches_and_returns_focus(self):
         self.add("questions", "Tide decisions", "Decide the launch plan.", "--body-file", "-", stdin=json.dumps(QUESTIONS))
         self.add("questions", "Pier lights", "Pick the lamp colour.", "--body-file", "-", stdin=json.dumps(QUESTIONS))

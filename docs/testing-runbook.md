@@ -39,6 +39,8 @@ bar with Undo and a long error, and search and results in both library layouts.
 The keyboard regression simulates visual-viewport resize and pan events while
 holding the layout viewport fixed. It checks Send clearance and library search
 in the sheet and drawer with 60 pixels visible, then restores the full height.
+The Desk history check simulates a persisted browser restore after delivering
+and correcting answers. It verifies a fresh Desk, archive membership, and search.
 
 The classification browser test uses headless `google-chrome` to select
 filters and check which reference rows, reviewed cards, and empty messages
