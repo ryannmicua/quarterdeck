@@ -3168,7 +3168,14 @@ if (send) {
       ...answers.map(f => {
         const section = f.closest('section');
         return item(section.id, 'Answer \u00b7 ' + section.id, answerText(f.value),
-          () => { excluded.add(f); refresh(); });
+          () => {
+            excluded.add(f);
+            for (const step of history) {
+              const draft = step.get(f);
+              if (draft) draft.excluded = true;
+            }
+            refresh();
+          });
       }),
       ...(messageQueued ? [item(whole.id, 'Set message', answerText(queueField.value))] : []),
     ];
@@ -3574,6 +3581,7 @@ if (send) {
     const controls = document.querySelectorAll('button,input,textarea');
     controls.forEach(c => c.disabled = true);
     let interrupted = '';
+    let requestFailure = '';
     let rejected = 0;
     const totals = {sent: 0, pending: 0, failed: 0, unconfirmed: 0, skipped: 0};
     try {
@@ -3589,8 +3597,10 @@ if (send) {
           if (response.status === 409 && response.headers?.get('Content-Type') === 'application/json') {
             const {clarification} = await response.json();
             updateClarification(section, clarification);
-          } else {
+          } else if (response.status === 400 || response.status === 409) {
             rejections.set(f, {message: await response.text(), draft: response.status === 400 ? answer : undefined});
+          } else {
+            requestFailure ||= await response.text();
           }
           const box = f.closest('details.done');
           if (box) box.open = true;
@@ -3607,7 +3617,7 @@ if (send) {
       interrupted = navigator.onLine ? 'Send interrupted. ' + err.message : 'Offline. Reconnect and send again.';
     }
     const summary = rejected ? rejected + (rejected === 1 ? ' answer rejected.' : ' answers rejected.') : '';
-    output.textContent = [summary, interrupted].filter(Boolean).join(' ') || 'Answers saved.';
+    output.textContent = [summary, requestFailure, interrupted].filter(Boolean).join(' ') || 'Answers saved.';
     totals.failed = rejected;
     totals.unconfirmed = Number(Boolean(interrupted));
     totals.skipped = pending.length - totals.failed - totals.unconfirmed - totals.sent - totals.pending;

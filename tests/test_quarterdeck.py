@@ -4419,12 +4419,14 @@ check(composer.value === '', 'The sent draft remained in the composer');
         port = self.start("/qd", ask_home=self.inbox())
         self.check_page(port, self.SET_STUB + r"""
 const hold = card(1).querySelector('[data-choice="Hold"]');
-hold.click();
+type(1, 'Hold');
+card(1).querySelector('[data-choice="Merge"]').click();
 queueText('Please send me the proof before ordering the run.');
 check(queueItems().length === 2 && document.getElementById('send').textContent === 'Send 1 answer', 'The draft was not queued');
 [...document.querySelectorAll('#queue-list button')].find(b => b.textContent === 'Remove from send').click();
+document.getElementById('undo').click();
 check(field(1).value === 'Hold' && queueItems().length === 1 && document.getElementById('send').disabled,
-      'Removing the answer from this send lost its draft');
+      'Undo lost the draft or reversed a later removal');
 card(1).querySelector('[data-choice="Merge"]').click();
 document.getElementById('undo').click();
 check(field(1).value === 'Hold' && queueItems().length === 1 && document.getElementById('send').disabled,
@@ -4751,9 +4753,14 @@ window.setInterval = callback => {{ refreshDiscussion = callback; }};
         port = self.start("/qd", ask_home=self.inbox())
         self.check_page(port, self.SET_STUB + r"""
 const sent = window.fetch;
+let refusal = 403;
+const quantityAttempts = [];
 window.fetch = async (url, options) => {
   const body = JSON.parse(options.body);
-  if (body.part === 'Q4.2') return {ok: false, status: 403, text: async () => 'Open the question on Quarterdeck.'};
+  if (body.part === 'Q4.2') {
+    quantityAttempts.push(body);
+    if (refusal) return {ok: false, status: refusal, text: async () => 'Request refused.'};
+  }
   const response = await sent(url, options);
   if (body.part === 'Q4.1') {
     return {...response, json: async () => ({...(await response.json()), delivery: 'pending'})};
@@ -4768,6 +4775,21 @@ await settled();
 check(status().textContent.startsWith('1 sent. 1 saved for retry. 1 failed.') &&
       card(1).querySelector('.delivery').textContent === 'Not delivered' && field(2).value === 'Red',
       'The successful set message hid an undelivered or rejected answer');
+document.querySelector('#queue-list li button').click();
+const send = document.getElementById('send');
+const sendQueue = document.getElementById('send-queue');
+for (const [code, button] of [[405, send], [415, sendQueue], [0, send]]) {
+  check(!send.disabled && !sendQueue.disabled && field(2).value === 'Red',
+        'A request-level refusal blocked the unchanged draft');
+  refusal = code;
+  button.click();
+  await settled();
+  if (code) check(status().textContent.includes('1 answer rejected.') && status().textContent.includes('Request refused.'),
+                  'The retry did not report the definite refusal');
+}
+check(quantityAttempts.length === 4 && quantityAttempts.every(body => JSON.stringify(body) === JSON.stringify(quantityAttempts[0])) &&
+      card(2).querySelector('.saved-answer .record').textContent === 'Red',
+      'The corrected endpoint could not accept the preserved draft without another edit');
 """)
 
     def test_mixed_queue_keeps_lost_answer_and_message_responses_unconfirmed(self) -> None:
