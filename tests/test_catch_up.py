@@ -361,6 +361,25 @@ class CatchUpPageTests(CatchUpCase):
         unit.read_string(out)
         self.assertEqual(shlex.split(unit["Service"]["ExecStart"])[-2:], ["--config", str(first)])
 
+    def test_serving_config_symlink_loop_is_reported_as_a_config_error(self) -> None:
+        loop = self.root / "loop.json"
+        loop.symlink_to(loop)
+        resolve = Path.resolve
+
+        def resolve_with_runtime_error(path, *args, **kwargs):
+            if path == loop:
+                raise RuntimeError(f"Symlink loop from {path}")
+            return resolve(path, *args, **kwargs)
+
+        with patch.object(Path, "resolve", resolve_with_runtime_error):
+            for options in (("serve",), ("service",), ("service", "--write")):
+                with self.subTest(options=options):
+                    code, output, error = self.run_cli(*options, "--config", str(loop))
+                    self.assertEqual(code, 2)
+                    self.assertEqual(output, "")
+                    self.assertIn(f"could not resolve serving config {loop}", error)
+        self.assertFalse((self.root / "config" / "systemd/user/quarterdeck.service").exists())
+
     def test_dangling_config_home_cannot_prune_or_pass_preflight(self) -> None:
         config_home = self.root / "config"
         target = self.root / "profile"

@@ -4799,7 +4799,10 @@ def serve_config(args: argparse.Namespace) -> tuple[Path | None, dict[str, objec
     catch_up_days()
     config_path = selected_config_path(args)
     if config_path is not None:
-        config_path = config_path.resolve(strict=True)
+        try:
+            config_path = config_path.resolve(strict=True)
+        except (OSError, RuntimeError) as exc:
+            raise ValueError(f"could not resolve serving config {config_path}: {exc}") from exc
     config = load_config(config_path)
     return config_path, config
 
