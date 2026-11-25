@@ -1770,7 +1770,11 @@ LIBRARY_SCRIPT = r"""
     selectedTab().focus();
   };
   opener.addEventListener('click', openLibrary);
-  dialog.addEventListener('close', () => opener.focus());
+  dialog.addEventListener('close', () => {
+    const {libraryLookup, ...otherState} = history.state ?? {};
+    if (libraryLookup) history.replaceState(otherState, '');
+    opener.focus();
+  });
   dialog.addEventListener('click', e => {
     if (e.target === dialog || e.target.closest('[data-close]')) {
       dialog.close();

@@ -1353,7 +1353,7 @@ for (const [item, destination, expectedLinks] of [[first, 'q2.html#Q2.1', []], [
         chrome = shutil.which("google-chrome")
         if not chrome:
             self.skipTest("google-chrome is required for the Desk history browser test")
-        for title in ("Pier lights", "Tide tables"):
+        for title in ("Pier lights", "Tide tables", "Harbor chart"):
             self.add("questions", title, "Choose an option.", "--body-file", "-", stdin=json.dumps(QUESTIONS[:1]))
         home = self.root / "home"
         inbox = home / "bin" / "fm-inbox.sh"
@@ -1405,7 +1405,7 @@ try {
     tab.click();
     check(find('saffron') === 'q2.html', 'The original answer did not match its search');
     panel.querySelector('a[href="q2.html"]').click();
-  } else {
+  } else if (visits <= 2) {
     check(!desk.textContent.includes('Pier lights'), 'The restored Desk still showed the completed item');
     check(dialog.open && tab.getAttribute('aria-selected') === 'true' && !panel.hidden,
           'The library did not reopen on Answered after item visit ' + visits);
@@ -1413,10 +1413,19 @@ try {
     check(panel.querySelector('a[href="q1.html"]'), 'The completed item was missing from Answered');
     check(find('ultramarine') === 'q2.html', 'The restored search did not find the corrected answer');
     if (visits === 1) window.addEventListener('pageshow', () => setTimeout(() => history.forward(), 0), {once:true});
-    else {
-      check(visits === 2, 'The item was visited an unexpected number of times');
-      report('PASS');
-    }
+    else window.addEventListener('pageshow', () => {
+      dialog.addEventListener('close', () => {
+        desk.querySelector('a[href="q3.html#Q3.1"]').click();
+      }, {once:true});
+      dialog.querySelector('[data-close]').click();
+    }, {once:true});
+  } else {
+    check(visits === 3 && !dialog.open, 'Back from a Desk card reopened the dismissed lookup');
+    if (sessionStorage.getItem('reloading-desk')) report('PASS');
+    else window.addEventListener('pageshow', () => {
+      sessionStorage.setItem('reloading-desk', 'yes');
+      location.reload();
+    }, {once:true});
   }
 } catch (error) { report(error.message); }
 </script>
@@ -1429,6 +1438,7 @@ window.addEventListener('pageshow', async () => {
   const visits = Number(sessionStorage.getItem('item-visits')) + 1;
   sessionStorage.setItem('item-visits', visits);
   try {
+    if (visits === 3 && !location.pathname.endsWith('/q3.html')) throw new Error('The Desk card did not open');
     if (visits === 1) {
       for (const payload of [
         {part:'Q1.1', answer:'Keep the lights', revision:''},
@@ -1450,7 +1460,7 @@ window.addEventListener('pageshow', async () => {
                                    f"--user-data-dir={self.root / 'browser'}", f"http://127.0.0.1:{port}/qd/"],
                                   stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL) as browser:
                 try:
-                    self.assertTrue(finished.wait(10), "The browser did not complete Back, Forward, Back")
+                    self.assertTrue(finished.wait(10), "The browser did not complete the Desk history checks")
                 finally:
                     browser.terminate()
         self.assertEqual(results, ["PASS"])

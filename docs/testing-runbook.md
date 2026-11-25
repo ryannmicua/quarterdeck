@@ -41,7 +41,8 @@ holding the layout viewport fixed. It checks Send clearance and library search
 in the sheet and drawer with 60 pixels visible, then restores the full height.
 The Desk history check opens a library item, updates answers, then goes Back,
 Forward, and Back again. Both returns verify the same tab and search against a
-fresh Desk and archive.
+fresh Desk and archive. After dismissal, returning from a Desk card and
+reloading the Desk both leave the library closed.
 
 The classification browser test uses headless `google-chrome` to select
 filters and check which reference rows, reviewed cards, and empty messages
