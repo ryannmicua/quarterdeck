@@ -1014,13 +1014,37 @@ const checkPageEnd = () => {
 };
 checkPosition();
 checkPageEnd();
-const originalHeight = bar.getBoundingClientRect().height;
-bar.querySelector('output').textContent = 'An answer was rejected. '.repeat(12);
-await new Promise(resolve => {
+const waitForBarResize = () => new Promise(resolve => {
   const observer = new ResizeObserver(() => { observer.disconnect(); resolve(); });
   observer.observe(bar);
 });
+const focusAboveBar = control => {
+  control.focus({preventScroll:true});
+  scrollBy(0, control.getBoundingClientRect().bottom - bar.getBoundingClientRect().top + 4);
+  check(document.activeElement === control && control.getBoundingClientRect().bottom <= bar.getBoundingClientRect().top,
+        'The focused control was not visible before the bar grew');
+};
+let statusFocus;
+if (innerWidth === 390 && document.querySelectorAll('textarea').length > 1) {
+  const question = document.querySelectorAll('.decision')[2];
+  const choice = question.querySelector('[data-choice]');
+  focusAboveBar(choice);
+  choice.click();
+  check(choice.getBoundingClientRect().bottom > bar.getBoundingClientRect().top, 'Undo did not grow the bar over the choice');
+  await waitForBarResize();
+  check(document.activeElement === choice && choice.getBoundingClientRect().bottom <= bar.getBoundingClientRect().top,
+        'Showing Undo covered the focused choice');
+  statusFocus = question.querySelector('textarea');
+  focusAboveBar(statusFocus);
+}
+const originalHeight = bar.getBoundingClientRect().height;
+bar.querySelector('output').textContent = 'An answer was rejected. '.repeat(12);
+await waitForBarResize();
 check(bar.getBoundingClientRect().height > originalHeight, 'The status fixture did not grow the bar');
+if (statusFocus) {
+  check(document.activeElement === statusFocus && statusFocus.getBoundingClientRect().bottom <= bar.getBoundingClientRect().top,
+        'The status message covered the focused answer');
+}
 checkPageEnd();
 """, path=f"/qd/q{item}.html", viewport=(width, height))
 
@@ -1119,6 +1143,27 @@ check(order() === 'Q1.1,Q1.2,Q1.3' && card(1).parentElement === list,
       'The pending correction did not return to its place among expanded questions');
 check(card(1).querySelector('.delivery').textContent === 'Not delivered', 'The pending correction lost its delivery status');
 """)
+
+    def test_narrow_library_header_keeps_both_tabs_and_close_visible(self):
+        self.check_answer_page(self.start("/qd"), r"""
+check(innerWidth === 320, 'Wrong fixture viewport');
+button('open-library').click();
+const dialog = button('library');
+const tabs = [...dialog.querySelectorAll('[role="tab"]')];
+const close = dialog.querySelector('button[data-close]');
+const sheet = dialog.getBoundingClientRect();
+for (const control of [...tabs, close]) {
+  const bounds = control.getBoundingClientRect();
+  check(bounds.width > 0 && bounds.left >= sheet.left && bounds.right <= sheet.right,
+        control.textContent + ' was clipped by the sheet');
+  check(control.contains(document.elementFromPoint(bounds.x + bounds.width / 2, bounds.y + bounds.height / 2)),
+        control.textContent + ' was covered');
+}
+tabs[1].click();
+check(tabs[1].getAttribute('aria-selected') === 'true', 'Answered did not open');
+close.click();
+check(!dialog.open, 'Close library did not dismiss the sheet');
+""", path="/qd/", viewport=(320, 800))
 
     def test_the_library_pop_out_searches_and_returns_focus(self):
         self.add("questions", "Tide decisions", "Decide the launch plan.", "--body-file", "-", stdin=json.dumps(QUESTIONS))

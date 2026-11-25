@@ -1570,7 +1570,7 @@ body:has(dialog[open]) { overflow:hidden; }
 [role="tab"][aria-selected="true"] { color:var(--ink); border-bottom-color:var(--signal); }
 .lib-top > button { margin-bottom:.4rem; }
 @media (max-width: 40rem) {
-  .lib-top { flex-wrap:nowrap; gap:.4rem; }
+  .lib-top { gap:.4rem; }
   [role="tab"] { padding:.5rem .55rem; font-size:var(--text-md); }
   [role="tablist"] { gap:0; }
   .lib-top > button { padding:.5rem .7rem; flex:none; }
@@ -2067,7 +2067,17 @@ if (send) {
   const bar = send.closest('.sendbar');
   const output = bar.querySelector('output');
   const reserveBarSpace = () => {
-    document.documentElement.style.setProperty('--sendbar-height', bar.getBoundingClientRect().height + 'px');
+    const pageStyle = document.documentElement.style;
+    const previousHeight = parseFloat(pageStyle.getPropertyValue('--sendbar-height'));
+    const bounds = bar.getBoundingClientRect();
+    pageStyle.setProperty('--sendbar-height', bounds.height + 'px');
+    const focused = document.activeElement;
+    if (bounds.height > previousHeight && focused && focused !== document.body && !bar.contains(focused)) {
+      const control = focused.getBoundingClientRect();
+      if (control.top < bounds.bottom - previousHeight && control.bottom > bounds.top) {
+        focused.scrollIntoView({block:'nearest', inline:'nearest'});
+      }
+    }
   };
   reserveBarSpace();
   new ResizeObserver(reserveBarSpace).observe(bar, {box:'border-box'});

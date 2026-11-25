@@ -23,10 +23,10 @@ Serve HTTPS on an address the phone can reach:
 quarterdeck serve --host 192.0.2.10 --tls-cert cert.pem --tls-key key.pem
 ```
 
-The page fits a phone: the table rows stack, and the item pages read in one
-column. The page names an icon and a manifest, so a phone can pin it to the
-home screen. A non-loopback address has no login; read the security section
-below first.
+On a phone, select **Open library** on the Desk to find References and Answered
+in a bottom sheet. Item pages read in one column. You can pin Quarterdeck to
+your home screen using its app icon and manifest. Read the security section
+below before using a non-loopback address.
 
 ## Run it in the background with systemd
 
