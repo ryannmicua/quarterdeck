@@ -5950,7 +5950,7 @@ class TalkToFirstmateTests(ImageCase):
         self.assertEqual(self.post(port, "/qd/replies/read", {"part": "Q1", "ids": ids})[0], 200)
         desk = self.fetch(port, "/qd/")[1]
         self.assertNotIn('<td>None open</td>', desk)
-        self.assertIn("No questions need your attention.", desk)
+        self.assertIn("Nothing is on your Desk. A question that needs an answer shows here.", desk)
         status, sent = self.post(port, "/qd/asks", {**second, "id": uuid.uuid4().hex, "text": "Thanks."})
         self.assertEqual((status, sent["message"]), (200, "Message sent."))
         status, retried = self.post(port, "/qd/asks", {"part": "Q1", "id": second["id"], "action": "retry"})
@@ -6029,7 +6029,7 @@ class TalkToFirstmateTests(ImageCase):
         (output.parent / "q1.html").write_text(page)
         self.assertEqual(self.run_cli("render", "--output", str(output))[0], 0)
         exported = output.read_text()
-        self.assertIn("No questions need your attention.", exported)
+        self.assertIn("Nothing is on your Desk. A question that needs an answer shows here.", exported)
         for private in ("<h2>Conversations</h2>", "Harbor lamp colours", "Quay sign colours", first["text"]):
             self.assertNotIn(private, exported)
         self.assertIn('href="q3.html"', exported)

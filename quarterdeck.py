@@ -1500,8 +1500,6 @@ def remove_item(args: argparse.Namespace) -> int:
 
 
 # --- Catch-up ---------------------------------------------------------------------------
-# Short notices Firstmate saves by hand. An unread one shows on the Desk; a read one leaves it at once
-# and is removed after the retention setting. Quarterdeck never saves a notice by itself.
 
 
 def utc_stamp(value: object, name: str) -> datetime:
@@ -1577,7 +1575,7 @@ def unread_catch_ups(data: dict[str, object]) -> list[dict[str, object]]:
 
 
 def prune_catch_ups(data: dict[str, object], days: int) -> None:
-    """Drop notices that were read more than `days` days ago. Unread notices stay."""
+    """Drop read notices at or before the retention cutoff."""
     cutoff = datetime.now(timezone.utc).replace(tzinfo=None) - timedelta(days=days)
     data["catch_ups"] = [notice for notice in catch_ups(data)
                          if "read_at" not in notice or utc_stamp(notice["read_at"], "read_at") > cutoff]

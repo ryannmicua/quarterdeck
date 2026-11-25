@@ -1,6 +1,6 @@
 # Item store
 
-Quarterdeck keeps every saved item in one JSON file it owns:
+Quarterdeck keeps saved items and Catch-up notices in one JSON file it owns:
 
 ```text
 ${XDG_STATE_HOME:-~/.local/state}/quarterdeck/items.json
@@ -70,9 +70,11 @@ array when saving.
 
 ## Catch-up notices
 
-A store that holds Catch-up notices also has `next_catch_up` and a `catch_ups`
-list. Both keys are absent until the first notice is saved. Notice IDs are `C`
-followed by a positive integer, and a removed notice's ID is never reused.
+Saving the first Catch-up notice adds both `next_catch_up` and the `catch_ups`
+list. Both keys remain even when the list is empty. A notice ID is uppercase
+`C` followed by a positive integer without leading zeros. The integer is
+unique and less than `next_catch_up`, the number assigned to the next notice.
+Quarterdeck never reuses a removed notice's ID.
 
 ```json
 {
@@ -95,16 +97,16 @@ followed by a positive integer, and a removed notice's ID is never reused.
 
 | Field | Meaning |
 | --- | --- |
-| `title` | Up to 200 characters. |
-| `summary` | Up to 300 characters, one sentence. |
+| `title` | Nonempty text, up to 200 characters after whitespace is collapsed to single spaces. |
+| `summary` | Nonempty text, up to 300 characters after whitespace is collapsed to single spaces. |
 | `saved_at` | UTC time the notice was saved. |
 | `read_at` | Optional. UTC time the notice was first marked read. A notice without it is unread. |
 | `url` and `link_text` | Optional pair. An `http` or `https` address and the words of its link. |
 | `item` | Optional ID of a saved item. The notice links to the item while it exists. |
 | `project` | Optional, with the same rules as an item's project. |
 
-Saving or reading a notice removes notices whose `read_at` is older than
-`catch_up_days` days. Unread notices stay until they are read.
+See [notice retention](../how-to/catch-up.md#how-long-a-notice-stays) for when
+read notices are removed.
 
 ## Classification
 

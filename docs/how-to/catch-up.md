@@ -17,8 +17,10 @@ quarterdeck catch-up add \
   --url https://example.com/review --link-text "Open the review"
 ```
 
-The command prints the notice ID, such as `C4`. Only `--title` and `--summary`
-are required. The summary is one sentence of up to 300 characters.
+Only `--title` and `--summary` are required. Give the notice a short title and
+summarize the result in one sentence. The command prints a notice ID such as
+`C4`. See
+[notice field limits](../reference/item-store.md#catch-up-notices).
 
 - `--item Q3` links the notice to a saved item. The item must exist.
 - `--url` and `--link-text` link to a pull request or a page. Give both or neither.
@@ -26,10 +28,10 @@ are required. The summary is one sentence of up to 300 characters.
 
 ## Read the notices on the Desk
 
-Unread notices show on the served Desk, above the questions, newest first. Each
-row has the title, one sentence, its links and the day it was saved. The
-heading shows a count when more than one notice is unread. The section is absent
-when nothing is unread.
+Unread notices show on the served Desk, above the questions, newest first.
+Each row shows the title, summary, saved date, and any links or project name.
+The heading shows a count when more than one notice is unread. The section is
+absent when nothing is unread.
 
 - Select **Mark read** on a row to read that notice.
 - Select **Mark all read** to read every notice shown.
@@ -39,19 +41,13 @@ stays and the section says **The notice could not be marked read. Try again.**
 If an older tab shows a notice that has since been removed, the Desk refreshes
 so you can mark the remaining notices read.
 
-Catch-up is available on the served Desk only. Mark a notice read from the
-command line with `quarterdeck catch-up read C4`, or every unread one
-with `quarterdeck catch-up read --all`. `quarterdeck catch-up list` prints the
-unread ones.
+To review or acknowledge notices from a terminal, see the
+[`catch-up` commands](../reference/cli-and-config.md#items).
 
 ## How long a notice stays
 
-Unread notices stay until they are read. Each Quarterdeck process uses
-`catch_up_days` from the [config it loads](../reference/cli-and-config.md#json-configuration),
-with a default of 7 days. The served Desk reads the setting at startup, so
-restart it after changing the config. If the CLI and the Desk use different
-retention periods, a write using the shorter period can remove a notice sooner.
-
-A read notice stays on disk until its retention period has elapsed and a
-notice is saved or marked read. The store keeps `read_at` until then. See the
-[store format](../reference/item-store.md#catch-up-notices).
+Unread notices stay until they are read. When you save a notice or successfully
+acknowledge a notice, Quarterdeck removes any read notices whose retention
+period has elapsed since they were first marked read. If the CLI and the Desk
+use different periods, a write using the shorter period can remove a notice
+sooner. See [how each process loads `catch_up_days`](../reference/cli-and-config.md#json-configuration).

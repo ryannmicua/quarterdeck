@@ -11,16 +11,18 @@ for who can start conversations and use the other browser controls.
   A questions body can also name [local image attachments](../reference/item-store.md#question-images).
   With `--image`, `reply`, `post` and `converse` read the explicitly named image
   files and copy them into the [private reply image folder](../reference/item-store.md#store-layout).
+  Catch-up commands use the same store. Notice saves and acknowledgments also
+  use the [optional config](../reference/cli-and-config.md#json-configuration).
 - `converse`, `render`, `serve`, `service` and `url` can read the
   [optional config](../reference/cli-and-config.md#json-configuration).
 - `render` reads the item store and the images attached to questions and
-  options. Catch-up notices appear only on the served Desk. Render inspects existing output files before replacing or retiring
+  options. Render inspects existing output files before replacing or retiring
   them. See the [render reference](../reference/cli-and-config.md#pages) for
   which items are exported.
 - `serve` reads the item store to build pages and writes to it when users
   submit answers, send asks, start conversations, send messages, acknowledge
-  Firstmate messages, or mark Catch-up notices read. It never saves a notice itself. It also
-  writes the [local visit log](../reference/cli-and-config.md#visit-log).
+  Firstmate messages, or [acknowledge Catch-up notices](../how-to/catch-up.md#how-long-a-notice-stays).
+  It also writes the [local visit log](../reference/cli-and-config.md#visit-log).
   It serves only files listed for the requested item from
   the corresponding [private image folder](../reference/item-store.md#store-layout).
   It reads the TLS certificate and key if you supply them.

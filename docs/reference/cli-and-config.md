@@ -205,13 +205,11 @@ thread to its current read status (`true` for read).
 ### Catch-up endpoint
 
 `POST /catch-ups/read` (under any `base_path`) uses the same origin check as
-`/answers`. The served page sends `{"ids": ["C4"]}` when you select **Mark
-read**, or every shown ID when you select **Mark all read**. Each ID uses the
-saved uppercase form. If any ID is missing from the store, the endpoint returns
-409 without changing the store and the Desk reloads. A notice that is already read keeps its first
-read time in the store. The response field `read` lists the acknowledged IDs
-in request order.
-The request also removes notices that were read more than `catch_up_days` days ago.
+`/answers`. Send JSON such as `{"ids": ["C4"]}` with a nonempty array of
+[canonical notice IDs](item-store.md#catch-up-notices). If any ID is missing
+from the store, the endpoint returns 409 without changing the store. The
+response field `read` lists the acknowledged IDs in request order. See
+[notice retention](../how-to/catch-up.md#how-long-a-notice-stays).
 
 ### Workers endpoint
 
@@ -270,14 +268,18 @@ the documentation to read; `help --json` prints a machine-readable index.
 
 The config is optional. `converse`, `render`, `serve` and `service` read `--config FILE`,
 or `${XDG_CONFIG_HOME:-~/.config}/quarterdeck.json` when it exists.
-`catch-up add` and `catch-up read` use the default file.
+`catch-up add` and `catch-up read` use the default file, if present, on each
+invocation.
+`serve` loads its selected file at startup and uses those settings until it
+restarts. When the selected path is a symlink, `serve` resolves it before
+reading the file.
 
 | Key | Type | Default | Meaning |
 | --- | --- | --- | --- |
 | `page_title` | string | `Quarterdeck` | The site name in the navigation bar and browser title. `--title` overrides it for `render` and `serve`. |
 | `output_dir` | string path | `${XDG_STATE_HOME:-~/.local/state}/quarterdeck` | Where `render` writes the pages. |
 | `base_path` | string | none | The URL prefix described above. |
-| `catch_up_days` | whole number from 1 to 3650 | `7` | Each process uses the value from its loaded config. Restart the served Desk to apply a change. Once the period elapses, a read notice stays on disk until the next save or mark-read. With different CLI and Desk settings, the shorter period can take effect first. |
+| `catch_up_days` | whole number from 1 to 3650 | `7` | Retention period for [read Catch-up notices](../how-to/catch-up.md#how-long-a-notice-stays). |
 | `firstmate_home` | absolute path after expanding `~` | unset | Local destination for answers, asks and conversation messages submitted to `serve`, and the home whose workers the page lists. When set, `converse` requires it to resolve to an existing directory. See [how the store records the binding](item-store.md#conversations). |
 
 `serve` reads `firstmate_home` at startup. `converse` reads it each time it runs.
@@ -286,7 +288,8 @@ a conversation the owner can respond to on that server.
 
 When `firstmate_home` is absent, `serve` uses a legacy `homes` list only for
 answer delivery and only if it contains exactly one object with a valid
-`path`. Relative legacy paths are resolved from the config file's directory.
+`path`. Relative legacy paths are resolved from the directory containing the
+resolved config file.
 Without a destination, Quarterdeck saves answers with delivery pending.
 `captain_waits` is ignored.
 Any other key is an error. See

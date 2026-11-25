@@ -36,8 +36,8 @@ systemctl --user enable --now quarterdeck.service
 ```
 
 `quarterdeck service` without `--write` prints the unit instead. `quarterdeck url`
-prints the address the installed unit serves. After `quarterdeck update`,
-restart the service with `systemctl --user restart quarterdeck.service`.
+prints the address the installed unit serves. See
+[Update Quarterdeck](update.md) for restarting it after an update.
 
 ## Serve it under a path prefix behind a reverse proxy
 
