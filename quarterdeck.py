@@ -2778,9 +2778,8 @@ def clarified_html(notes, editable):
 
 def set_discussion(item, *, editable):
     return {"thread": thread_html(item, None, editable=editable),
-            "clarifications": {f'{item["id"]}.{number}': clarified_html(clarifications(item, number),
-                                                                      conversation_editable(item, number))
-                               for number in question_parts(item)}}
+            "clarifications": {f'{item["id"]}.{number}': clarified_html(notes, conversation_editable(item, number))
+                               for number in question_parts(item) if (notes := clarifications(item, number))}}
 
 
 def earlier_answers_html(record):
@@ -2979,6 +2978,9 @@ function updateThread(section, html) {
   const preview = thread.cloneNode(false);
   preview.append(next);
   next.innerHTML = html;
+  if (section === whole && !thread.querySelector('.pending-asks')) {
+    for (const button of next.querySelectorAll('[data-retry-ask]')) button.closest('.actions').remove();
+  }
   localizeTimes(preview);
   if (section !== whole || !messages.isEqualNode(next)) {
     const restoreFocus = messages.contains(document.activeElement);
@@ -3366,7 +3368,7 @@ if (send) {
       const body = {part: whole.id, id: freshId(), text, home};
       const result = await sendAsk(whole, body);
       totals[result.delivery] += 1;
-      if (result.delivery === 'failed' || result.delivery === 'unconfirmed') details.push(result.message);
+      if (result.delivery !== 'sent') details.push(result.message);
     }
     if (!totals.pending && !totals.failed && !totals.unconfirmed && !totals.skipped) {
       output.textContent = 'Queued items sent.';
@@ -3515,6 +3517,7 @@ if (send) {
         const {message, saved} = response.status === 409 ? await response.json() :
           {message: await response.text(), saved: false};
         output.textContent = message;
+        if (saved === true) delivery = 'pending';
         const blockedRetry = [403, 405, 415].includes(response.status) && body.action === 'retry';
         if (pending && saved === false && !blockedRetry) {
           failedDraft = section.querySelector('textarea');
@@ -4292,7 +4295,7 @@ def make_handler(site_title: str, base_path: str = "", store: Path | None = None
                 _, ask_binding = ask_destination(require_directory=item["kind"] == "conversation")
             content = item_page(item, site_title, served=True, ask_binding=ask_binding)
             prevent_framing = has_answer_controls(item) or item["kind"] == "conversation" or (
-                item["kind"] == "questions" and question_summary(item)[0] == "Replied")
+                item["kind"] == "questions" and (bool(part_thread(item, None)) or question_summary(item)[0] == "Replied"))
             self.send_text(200, content, "text/html; charset=utf-8", prevent_framing=prevent_framing)
 
         def do_POST(self) -> None:  # noqa: N802 - http.server naming

@@ -4908,16 +4908,25 @@ check(calls[2][1].id === calls[1][1].id && calls[2][1].action === 'retry',
         self.assertIn("Answered elsewhere", page)
 
     def test_a_closed_set_discussion_refreshes_on_an_open_page(self) -> None:
-        port = self.start("/qd", ask_home=self.inbox())
-        status, _ = self.ask(port, "Q4", "Can we see the proof?")
-        self.assertEqual(status, 200)
+        port = self.start("/qd", ask_home=self.inbox(accept=False))
+        status, result = self.ask(port, "Q4", "Can we see the proof?")
+        self.assertEqual((status, result["delivery"], result["clarifications"]), (200, "pending", {}))
         self.assertEqual(self.run_cli("mark", "Q4", "closed")[0], 0)
-        before_reply = self.fetch(port, "/qd/q4.html")[1]
+        status, before_reply, headers = self.fetch(port, "/qd/q4.html")
+        self.assertEqual(status, 200)
+        self.assertEqual(headers.get("Content-Security-Policy"), "frame-ancestors 'none'")
+        self.assertEqual(self.run_cli("mark", "Q4.2", "open")[0], 0)
         ask, = self.messages("item", 3)
         self.assertEqual(self.run_cli("reply", "Q4", "--ask", ask["id"], "--text", "Here is the proof.",
                                       "--clarify", "Q4.1=The cover proof is ready.")[0], 0)
         status, body, _ = self.fetch(port, "/qd/q4.discussion.json")
         self.assertEqual(status, 200)
+        snapshot = json.loads(body)
+        self.assertEqual(set(snapshot["clarifications"]), {"Q4.1"})
+        self.assertIn("data-retry-ask=", snapshot["thread"])
+        status, follow_up = self.ask(port, "Q4", "Can we see the revised proof?")
+        self.assertEqual(status, 200)
+        self.assertEqual(follow_up["clarifications"], snapshot["clarifications"])
         self.check_page(port, r"""
 const discussion = document.getElementById('Q4');
 const summary = discussion.querySelector('summary');
@@ -4933,8 +4942,11 @@ check(summary.parentElement.open && discussion.querySelector('[data-reply-id] .r
       discussion.querySelector('.badge').textContent === 'Replied' &&
       card(1).querySelector('.clarified .record').textContent === 'The cover proof is ready.',
       'The open read-only discussion did not display the reply and clarification');
+check(discussion.querySelector('[data-ask-id] .delivery').textContent === 'Not delivered' &&
+      !discussion.querySelector('[data-retry-ask]'),
+      'The read-only tab showed a retry control it could not use');
 """, page=before_reply, setup=f"""
-const snapshot = {json.dumps(json.loads(body))};
+const snapshot = {json.dumps(snapshot)};
 let refreshDiscussion;
 window.setInterval = callback => {{ refreshDiscussion = callback; }};
 """)
@@ -5107,6 +5119,10 @@ for (const section of [whole, card(1)]) {
   const first = calls.length;
   sendAsk(section);
   await settled();
+  if (section === whole && !interrupted) {
+    check(status().textContent === '0 sent. 1 saved for retry. 0 failed. ' + conflict,
+          'The saved conflict did not count as pending with the reason delivery was blocked');
+  }
   const recovery = section.querySelector('[data-local-ask] button');
   recovery.click();
   await settled();
