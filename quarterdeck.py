@@ -2389,12 +2389,9 @@ const localizeTimes = root => {
   }
 };
 localizeTimes(document);
-const localizeDays = root => {
-  for (const time of root.querySelectorAll('time.day[datetime]:not([datetime=""])')) {
-    time.textContent = new Date(time.dateTime).toLocaleDateString(undefined, {dateStyle:'medium'});
-  }
-};
-localizeDays(document);
+for (const time of document.querySelectorAll('time.day[datetime]:not([datetime=""])')) {
+  time.textContent = new Date(time.dateTime).toLocaleDateString(undefined, {dateStyle:'medium'});
+}
 """
 
 
@@ -2511,20 +2508,17 @@ CATCH_UP_SCRIPT = r"""
     heading.tabIndex = -1;
     heading.focus();
   };
-  const removeSection = () => {
-    section.remove();
-    const empty = document.querySelector('[data-empty-desk]');
-    if (empty) {
-      empty.textContent = empty.dataset.emptyDesk;
-      empty.removeAttribute('data-empty-desk');
-    }
-    focusHeading(document.querySelector('main h1'));
-  };
   const finish = ids => {
     for (const id of ids) section.querySelector('.note[data-id="' + id + '"]').remove();
     const left = section.querySelectorAll('.note').length;
     if (!left) {
-      removeSection();
+      section.remove();
+      const empty = document.querySelector('[data-empty-desk]');
+      if (empty) {
+        empty.textContent = empty.dataset.emptyDesk;
+        empty.removeAttribute('data-empty-desk');
+      }
+      focusHeading(document.querySelector('main h1'));
       return;
     }
     const count = section.querySelector('[data-count]');
@@ -2544,30 +2538,6 @@ CATCH_UP_SCRIPT = r"""
     try {
       const response = await fetch('catch-ups/read', {method:'POST', redirect:'error', headers:{'Content-Type':'application/json'},
                                                       body:JSON.stringify({ids})});
-      if (response.status === 409) {
-        const refreshed = await fetch(window.location.href, {redirect:'error'});
-        if (!refreshed.ok) throw new Error(refreshed.status);
-        const desk = new DOMParser().parseFromString(await refreshed.text(), 'text/html');
-        if (!desk.querySelector('main #workers')) throw new Error('Could not read the Desk');
-        const empty = document.querySelector('[data-empty-desk]');
-        if (empty) {
-          const refreshedEmpty = desk.querySelector('main > p.empty');
-          if (refreshedEmpty) {
-            empty.dataset.emptyDesk = refreshedEmpty.dataset.emptyDesk ?? refreshedEmpty.textContent;
-          } else {
-            empty.remove();
-          }
-        }
-        const notices = desk.querySelector('main .catch-up');
-        if (notices) {
-          section.replaceChildren(...notices.childNodes);
-          localizeDays(section);
-          focusHeading(section.querySelector('h2'));
-        } else {
-          removeSection();
-        }
-        return;
-      }
       if (!response.ok) throw new Error(response.status);
       const {read} = await response.json();
       if (!Array.isArray(read) || read.length !== ids.length || !ids.every((id, index) => read[index] === id)) {
@@ -2575,7 +2545,7 @@ CATCH_UP_SCRIPT = r"""
       }
       finish(ids);
     } catch (error) {
-      status.textContent = 'The notice could not be marked read. Try again.';
+      status.textContent = 'A notice may already be read. Reload the page when ready.';
     } finally {
       controls.forEach(button => { button.disabled = false; });
     }

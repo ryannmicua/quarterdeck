@@ -11,6 +11,6 @@ These are terms Quarterdeck uses on its pages.
 | Mark all read | Acknowledge every notice shown. |
 | Unread | A notice waiting for acknowledgment. |
 | Read | An acknowledged notice. |
-| item | Something saved by hand: a resource, a list or questions. |
+| item | A saved resource, list, questions item, or conversation. |
 | question | A numbered part of a questions item that waits for an answer. |
 | Workers | The section that lists who is running in the Firstmate home. |
