@@ -949,7 +949,7 @@ class ServeTests(StoreCase):
         status, record = self.post_answer(port, "Q3.1", "Hold", origin=public_origin, forwarded_proto="https")
         self.assertEqual((status, record["answer"]), (200, "Hold"))
 
-    def check_answer_page(self, port, script, path="/qd/q1.html", *, viewport=None):
+    def check_answer_page(self, port, script, path="/qd/q1.html", *, viewport=None, device_scale_factor=None):
         chrome = shutil.which("google-chrome")
         if not chrome:
             self.skipTest("google-chrome is required for the answer-card browser tests")
@@ -994,8 +994,9 @@ const sendBatch = () => new Promise(resolve => {
             # Give resize observers a rendered frame before headless Chrome dumps the fixture.
             timing = ["--run-all-compositor-stages-before-draw", "--virtual-time-budget=1000"]
         fixture.write_text(page, encoding="utf-8")
+        scale = [] if device_scale_factor is None else [f"--force-device-scale-factor={device_scale_factor}"]
         result = subprocess.run([chrome, "--headless", "--disable-background-networking", "--no-first-run", "--lang=en-US",
-                                 f"--user-data-dir={self.root / 'browser'}", *timing, "--dump-dom", fixture.as_uri()],
+                                 f"--user-data-dir={self.root / 'browser'}", *scale, *timing, "--dump-dom", fixture.as_uri()],
                                 env={**os.environ, "TZ": "Asia/Tokyo", "LC_ALL": "en_US.utf-8"},
                                 capture_output=True, text=True, timeout=30, check=True)
         browser_result = result.stdout.partition('<output id="browser-result">')[2].partition("</output>")[0]
@@ -1342,11 +1343,12 @@ check(!dialog.open, 'Close library did not dismiss the sheet');
 
     def test_library_layout_covers_fractional_breakpoint_widths(self):
         port = self.start("/qd")
-        for width in (639.875, 640, 640.125, 641):
-            with self.subTest(width=width):
-                self.check_answer_page(port, r"""
-const width = frameElement.getBoundingClientRect().width;
-const drawer = matchMedia('(width > 640px)').matches;
+        for drawer in (False, True):
+            with self.subTest(drawer=drawer):
+                self.check_answer_page(port, f"const drawer = {json.dumps(drawer)};\n" + r"""
+const widthQuery = drawer ? '(640px < width < 640.16px)' : '(width: 640px)';
+check(matchMedia(widthQuery).matches, 'The fixture did not reach ' + widthQuery);
+const width = visualViewport.width;
 button('open-library').click();
 const dialog = button('library');
 for (const animation of dialog.getAnimations()) animation.finish();
@@ -1362,7 +1364,8 @@ for (const tab of dialog.querySelectorAll('[role="tab"]')) {
   check(search === document.elementFromPoint(target.left + target.width / 2, target.top + target.height / 2),
         'The search field was hidden at ' + width + 'px');
 }
-""", path="/qd/", viewport=(width, 800))
+""", path="/qd/", viewport=(640.125 if drawer else 640, 800),
+                                       device_scale_factor=1.24975 if drawer else None)
 
     def test_short_library_viewports_keep_search_results_and_header_reachable(self):
         self.add("resource", "Harbor chart", "Review the route.", "--url", "https://example.org/chart",
