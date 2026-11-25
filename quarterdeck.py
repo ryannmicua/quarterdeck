@@ -3683,8 +3683,6 @@ def make_server(host: str, port: int, handler: type[BaseHTTPRequestHandler],
 
 # Every served Desk load is logged so Firstmate's adoption reviews can see when the page is used.
 VISITS_NAME = "visits.jsonl"
-VISIT_RETENTION_DAYS = 120
-VISIT_PRUNE_BYTES = 128 * 1024
 PHONE_AGENT_RE = re.compile(r"Mobile|iPhone|iPod", re.IGNORECASE)
 
 
@@ -3697,42 +3695,43 @@ def device_class(user_agent: str | None) -> str:
     return "phone" if user_agent and "ipad" not in user_agent.lower() and PHONE_AGENT_RE.search(user_agent) else "desktop"
 
 
-def visit_time(line: str) -> datetime | None:
-    try:
-        record = json.loads(line)
-        when = datetime.fromisoformat(record["ts"].replace("Z", "+00:00"))
-    except (ValueError, TypeError, KeyError, AttributeError):
-        return None
-    return when if when.tzinfo is not None else None
-
-
 class VisitLog:
     """Append-only local log of page loads: time, page and device class only, never an address or content."""
 
     def __init__(self, path: Path, clock=lambda: datetime.now(timezone.utc)) -> None:  # noqa: ANN001 - test hook
         self.path = path
         self.clock = clock
-        self.lock = threading.Lock()
 
     def record(self, page: str, user_agent: str | None) -> None:
-        now = self.clock()
-        stamp = now.astimezone(timezone.utc).isoformat(timespec="milliseconds").replace("+00:00", "Z")
+        stamp = self.clock().astimezone(timezone.utc).isoformat(timespec="milliseconds").replace("+00:00", "Z")
         line = json.dumps({"ts": stamp, "page": page, "device": device_class(user_agent)}) + "\n"
-        with self.lock:
-            if self.path.is_symlink():
-                raise ValueError(f"refusing symbolic-link visit log: {self.path}")
-            self.path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
-            descriptor = os.open(self.path, os.O_WRONLY | os.O_APPEND | os.O_CREAT, 0o600)
-            try:
-                os.write(descriptor, line.encode("utf-8"))
-                size = os.fstat(descriptor).st_size
-            finally:
-                os.close(descriptor)
-            if size > VISIT_PRUNE_BYTES:
-                cutoff = now - timedelta(days=VISIT_RETENTION_DAYS)
-                kept = [entry for entry in self.path.read_text(encoding="utf-8", errors="replace").splitlines()
-                        if (when := visit_time(entry)) is None or when >= cutoff]
-                write_private(self.path, "".join(entry + "\n" for entry in kept))
+        payload = line.encode("utf-8")
+        self.path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
+        descriptor = os.open(self.path, os.O_RDWR | os.O_APPEND | os.O_CREAT | os.O_NOFOLLOW, 0o600)
+        try:
+            fcntl.flock(descriptor, fcntl.LOCK_EX)
+            info = os.fstat(descriptor)
+            if not stat.S_ISREG(info.st_mode):
+                raise ValueError(f"visit log must be a regular file: {self.path}")
+            if stat.S_IMODE(info.st_mode) != 0o600:
+                os.fchmod(descriptor, 0o600)
+
+            end = info.st_size
+            while end:
+                start = max(0, end - 4096)
+                newline = os.pread(descriptor, end - start, start).rfind(b"\n")
+                if newline >= 0:
+                    end = start + newline + 1
+                    break
+                end = start
+            if end != info.st_size:
+                os.ftruncate(descriptor, end)
+
+            if os.write(descriptor, payload) != len(payload):
+                os.ftruncate(descriptor, end)
+                raise OSError(errno.EIO, "incomplete visit log write", self.path)
+        finally:
+            os.close(descriptor)
 
 
 def make_handler(site_title: str, base_path: str = "", store: Path | None = None, home: Path | None = None,

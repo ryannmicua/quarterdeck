@@ -15,6 +15,7 @@ config.local.json
 *.html
 **/quarterdeck/items.json
 **/quarterdeck/items.json.lock
+**/quarterdeck/visits.jsonl
 
 __pycache__/
 *.py[cod]
