@@ -57,7 +57,8 @@ A confirmed rejection before saving puts the draft back in the field.
 If the inbox becomes unavailable during a retry, the ask keeps its original
 ID because the first attempt may have saved it.
 If the Firstmate home changed, copy the draft before reloading.
-After editing a rejected draft on a numbered question, choose **Ask Firstmate**
-to send it again or **Send answers** to submit it as a decision. If editor Undo
-or **Undo changes** restores the original rejected draft, it stays out of the
-answer batch. Clear the field before retrying a different pending draft.
+After changing the text of a rejected draft on a numbered question, choose
+**Ask Firstmate** to send it again or **Send answers** to submit it as a decision.
+Leading and trailing whitespace do not count as a change. The original
+rejected text stays out of the answer batch, including when restored by editor
+Undo or **Undo changes**. Clear the field before retrying a different pending draft.

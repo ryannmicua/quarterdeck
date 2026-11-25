@@ -2661,9 +2661,8 @@ if (send) {
       const edited = !restoring || answerText(field.value) !== answerText(origin.choice.dataset.choice);
       draftOrigins.set(field, {choice: origin.choice, edited});
     } else if (origin?.rejected && (!restoring || origin.edited !== undefined)) {
-      if (!restoring && origin.edited === undefined && rejections.delete(field)) output.textContent = '';
-      const edited = !restoring || answerText(field.value) !== origin.rejected;
-      draftOrigins.set(field, {rejected: origin.rejected, edited});
+      const edited = answerText(field.value) !== origin.rejected;
+      if (edited || origin.edited !== undefined) draftOrigins.set(field, {rejected: origin.rejected, edited});
     } else if (origin === 'filled') {
       draftOrigins.set(field, 'manual');
     }
