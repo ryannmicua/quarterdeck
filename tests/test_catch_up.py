@@ -258,7 +258,7 @@ class CatchUpPageTests(CatchUpCase):
         default.parent.mkdir()
         default.write_text(json.dumps({"catch_up_days": 7, "base_path": 123}), encoding="utf-8")
         alternate = self.root / "alternate.json"
-        alternate.write_text(json.dumps({"catch_up_days": 7, "base_path": "/qd"}), encoding="utf-8")
+        alternate.write_text(json.dumps({"catch_up_days": 0, "base_path": "/qd"}), encoding="utf-8")
         self.notice("A")
         self.notice("B")
         self.notice("C")
@@ -280,7 +280,7 @@ class CatchUpPageTests(CatchUpCase):
         config_home = self.root / "config"
         default = config_home / "quarterdeck.json"
         alternate = self.root / "alternate.json"
-        alternate.write_text(json.dumps({"base_path": "/qd"}), encoding="utf-8")
+        alternate.write_text(json.dumps({"catch_up_days": 0, "base_path": "/qd"}), encoding="utf-8")
         unit_path = config_home / "systemd" / "user" / "quarterdeck.service"
         unit_path.parent.mkdir(parents=True)
         legacy_unit = f'[Service]\nExecStart=quarterdeck serve --port 9000 --config "{alternate}"\n'
@@ -306,6 +306,60 @@ class CatchUpPageTests(CatchUpCase):
         service = unit["Service"]
         self.assertIn(f"XDG_CONFIG_HOME={config_home}", shlex.split(service["Environment"]))
         self.assertEqual(shlex.split(service["ExecStart"])[-4:], list(options))
+        self.assertEqual(self.run_cli("render", "--config", str(alternate))[0], 0)
+        code, out, error = self.run_cli("url", "--json")
+        self.assertEqual(code, 0, error)
+        self.assertEqual(json.loads(out)["urls"], ["http://127.0.0.1:9000/qd/"])
+
+    def test_unusable_default_config_cannot_prune_or_pass_preflight(self) -> None:
+        default = self.root / "config" / "quarterdeck.json"
+        default.parent.mkdir()
+        default.write_text('{"catch_up_days": 30}', encoding="utf-8")
+        self.notice("A")
+        self.notice("B")
+        self.assertEqual(self.run_cli("catch-up", "read", "C1")[0], 0)
+        self.age_read("C1", 8)
+        before = self.store()
+        port = self.start()
+        alternate = self.root / "alternate.json"
+        alternate.write_text("{}", encoding="utf-8")
+        default.unlink()
+        default.mkdir()
+        for path_type in ("directory", "dangling symlink"):
+            with self.subTest(path_type=path_type):
+                self.assertEqual(self.run_cli("catch-up", "add", "--title", "C", "--summary", "Ready.")[0], 2)
+                self.assertEqual(self.run_cli("catch-up", "read", "C2")[0], 2)
+                self.assertEqual(self.post_read(port, {"ids": ["C2"]})[0], 500)
+                self.assertEqual(self.store(), before)
+                for options in ((), ("--config", str(alternate))):
+                    code, _, error = self.run_cli("service", *options)
+                    self.assertEqual(code, 2)
+                    self.assertIn(str(default), error)
+                if path_type == "directory":
+                    default.rmdir()
+                    default.symlink_to(self.root / "missing.json")
+
+    def test_service_emits_the_config_target_it_validated(self) -> None:
+        first = self.root / "first.json"
+        first.write_text('{"base_path": "/qd"}', encoding="utf-8")
+        second = self.root / "second.json"
+        second.write_text('{"base_path": 123}', encoding="utf-8")
+        linked = self.root / "linked.json"
+        linked.symlink_to(first)
+        load_config = quarterdeck.load_config
+
+        def change_link_after_load(path):
+            config = load_config(path)
+            linked.unlink()
+            linked.symlink_to(second)
+            return config
+
+        with patch.object(quarterdeck, "load_config", change_link_after_load):
+            code, out, error = self.run_cli("service", "--config", str(linked))
+        self.assertEqual(code, 0, error)
+        unit = ConfigParser(interpolation=None)
+        unit.read_string(out)
+        self.assertEqual(shlex.split(unit["Service"]["ExecStart"])[-2:], ["--config", str(first)])
 
     def test_each_notice_write_reads_retention_with_the_store_locked(self) -> None:
         default = self.root / "config" / "quarterdeck.json"

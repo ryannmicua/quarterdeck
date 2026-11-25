@@ -116,6 +116,8 @@ def read_config(path: Path | None) -> dict[str, object]:
     if path is None:
         return {}
     try:
+        if not stat.S_ISREG(path.stat().st_mode):
+            raise ValueError("expected a regular file")
         config = json.loads(path.read_text(encoding="utf-8"))
     except (OSError, ValueError, RecursionError) as exc:
         raise ValueError(f"could not read config {path}: {exc}") from exc
@@ -153,7 +155,6 @@ def load_config(path: Path | None) -> dict[str, object]:
             raise ValueError(f"config {exc}") from exc
     if "output_dir" in config and not isinstance(config["output_dir"], str):
         raise ValueError("config output_dir must be a path string")
-    retention_days(config)
     return config
 
 
@@ -169,9 +170,12 @@ def selected_config_path(args: argparse.Namespace | None = None) -> Path | None:
     """The --config file, else the default config when it exists, else no config."""
     path = getattr(args, "config", None)
     if path is None:
-        default_path = default_config_path()
-        path = default_path if default_path.is_file() else None
-    return path.expanduser().absolute() if path else None
+        path = default_config_path()
+        try:
+            path.lstat()
+        except FileNotFoundError:
+            return None
+    return path.expanduser().absolute()
 
 
 def selected_config(args: argparse.Namespace) -> dict[str, object]:
@@ -4783,12 +4787,12 @@ def answer_home(config: dict[str, object], config_path: Path | None) -> Path | N
     return None
 
 
-def serve_config(args: argparse.Namespace) -> tuple[Path | None, dict[str, object]]:
-    default_path = selected_config_path()
-    config_path = selected_config_path(args) if args.config else default_path
+def serve_config(args: argparse.Namespace, *, resolve: bool = False) -> tuple[Path | None, dict[str, object]]:
+    catch_up_days()
+    config_path = selected_config_path(args)
+    if resolve and config_path is not None:
+        config_path = config_path.resolve(strict=True)
     config = load_config(config_path)
-    if config_path != default_path:
-        retention_days(read_config(default_path))
     return config_path, config
 
 
@@ -4820,14 +4824,7 @@ def serve(args: argparse.Namespace) -> int:
         shown = f"[{host}]" if ":" in host else host
         print(f"Serving Quarterdeck at {'https' if tls else 'http'}://{shown}:{port}{base_path}/ (Ctrl+C to stop)",
               flush=True)
-    exposed = [host for host in bind_hosts(args) if not is_loopback(host)]
-    if exposed:
-        print(f"quarterdeck: warning: {', '.join(exposed)} is not a loopback address; anyone who can reach this port can "
-              "read saved items, answers, conversations and images and Catch-up notices, submit answers, "
-              "acknowledge replies, and mark Catch-up notices read. With "
-              "firstmate_home set, they can read or check the worker and second mate roster, "
-              "send asks, start conversations and send messages.",
-              file=sys.stderr, flush=True)
+    warn_non_loopback(args)
     for server in servers[1:]:
         threading.Thread(target=server.serve_forever, daemon=True).start()
     try:
@@ -4840,6 +4837,17 @@ def serve(args: argparse.Namespace) -> int:
                 server.shutdown()
             server.server_close()
     return 0
+
+
+def warn_non_loopback(args: argparse.Namespace) -> None:
+    exposed = [host for host in bind_hosts(args) if not is_loopback(host)]
+    if exposed:
+        print(f"quarterdeck: warning: {', '.join(exposed)} is not a loopback address. Anyone who can reach the service "
+              "can read saved items, answers, conversations, images, unread Catch-up notices (including titles, summaries "
+              "and links). They can also submit answers, acknowledge replies, and mark Catch-up notices read. "
+              "With firstmate_home set, they can read or check the worker and second mate roster, "
+              "send asks, start conversations and send messages.",
+              file=sys.stderr, flush=True)
 
 
 # --- service and url --------------------------------------------------------------------
@@ -4865,9 +4873,9 @@ def service_unit(args: argparse.Namespace) -> str:
         raise ValueError("--tls-cert and --tls-key go together")
     if tls_cert and tls_key:
         command += ["--tls-cert", str(Path(tls_cert).expanduser().resolve()), "--tls-key", str(Path(tls_key).expanduser().resolve())]
-    config_path, _ = serve_config(args)
+    config_path, _ = serve_config(args, resolve=True)
     if config_path is not None:
-        command += ["--config", str(config_path.resolve())]
+        command += ["--config", str(config_path)]
     exec_start = " ".join(systemd_quote(part, literal_dollars=True) for part in command)
     environment = []
     if os.environ.get("XDG_STATE_HOME"):
@@ -4901,10 +4909,7 @@ def service(args: argparse.Namespace) -> int:
         return 2
     print(f"Wrote {unit_path}")
     print("Start it with: systemctl --user daemon-reload && systemctl --user enable --now quarterdeck.service")
-    exposed = [host for host in bind_hosts(args) if not is_loopback(host)]
-    if exposed:
-        print(f"quarterdeck: warning: {', '.join(exposed)} is not a loopback address; anyone who can reach the port can "
-              "read your saved items and send answers as the owner.", file=sys.stderr)
+    warn_non_loopback(args)
     return 0
 
 
