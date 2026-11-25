@@ -3403,9 +3403,9 @@ class ConversationTests(ImageCase):
         self.assertEqual(self.run_cli("reply", "Q4.2", "--ask", self.messages("2", 3)[0]["id"], "--text", "Blue is the newer sign.")[0], 0)
         _, reply = self.messages("2", 3)
         for _ in range(2):
-            desk = self.fetch(port, "/qd/")[1].split("<h1>My desk</h1>", 1)[1].split('<section id="workers">', 1)[0]
+            desk = self.fetch(port, "/qd/")[1].split("<h1>Desk</h1>", 1)[1].split('<section id="workers">', 1)[0]
             self.assertIn('<span class="badge">Replied</span><span>2 of 2 open</span>', desk)
-            self.assertIn('<a class="work-action" href="q4.html#Q4.1">Answer questions</a>', desk)
+            self.assertIn('class="card-link work-action" href="q4.html#Q4.1"', desk)
             page = self.fetch(port, "/qd/q4.html")[1]
             self.assertRegex(page, r'id="Q4.2".*?<span class="badge">Replied</span>')
             self.assertIn('<p class="progress">Replied, 2 of 2 open</p>', page)
@@ -3442,24 +3442,24 @@ class ConversationTests(ImageCase):
         port = self.start("/qd", ask_home=self.inbox())
         self.ask(port, "Q3.2", "How does it look?")
         self.assertEqual(self.run_cli("reply", "Q3.2", "--ask", self.messages("2", 2)[0]["id"], "--text", "Looked at it.")[0], 0)
-        desk = self.fetch(port, "/qd/")[1].split("<h1>My desk</h1>")[1].split('<section id="workers">')[0]
+        desk = self.fetch(port, "/qd/")[1].split("<h1>Desk</h1>")[1].split('<section id="workers">')[0]
         self.assertEqual(re.findall(r'<h3>([^<]+)</h3>', desk), ["Newest decision", "Two decisions", "Tide launch decisions"])
-        self.assertEqual(desk.count('class="work-action"'), 1)
-        self.assertIn('<a class="work-action" href="q5.html#Q5.1">Answer questions</a>', desk)
-        self.assertIn('<a class="button-link" href="q3.html">Answer questions</a>', desk)
+        self.assertEqual(desk.count('class="card-link work-action"'), 1)
+        self.assertIn('class="card-link work-action" href="q5.html#Q5.1"', desk)
+        self.assertIn('class="card-link button-link" href="q3.html#Q3.1"', desk)
 
-    def test_reply_and_pending_ask_leave_answered_items_in_reviewed(self) -> None:
+    def test_reply_and_pending_ask_leave_answered_items_in_the_library(self) -> None:
         port = self.start("/qd", ask_home=self.inbox(accept=False))
         self.assertEqual(self.run_cli("mark", "Q3", "answered", "--via", "chat")[0], 0)
         self.assertEqual(self.run_cli("mark", "Q4", "answered", "--via", "chat")[0], 0)
         self.ask(port, "Q4.2", "Anything else?")
         self.assertEqual(self.run_cli("reply", "Q4.2", "--ask", self.messages("2", 3)[0]["id"], "--text", "One more thing.")[0], 0)
         self.ask(port, "Q3.2", "Do you have a preview?")
-        desk, reviewed = self.fetch(port, "/qd/")[1].split("<h2>Reviewed questions</h2>")
-        self.assertIn("Nothing is waiting", desk)
-        self.assertIn('<span class="badge">Replied</span>', reviewed)
-        self.assertIn('<a class="button-link" href="q4.html">Review answers</a>', reviewed)
-        self.assertIn('<a class="button-link" href="q3.html">Review answers</a>', reviewed)
+        desk, library = self.fetch(port, "/qd/")[1].split('<dialog', 1)
+        self.assertIn("Nothing is on your Desk", desk)
+        answered = library.split('id="panel-answered"', 1)[1]
+        self.assertRegex(answered, r'href="q4\.html"[^<]*</a></div><p class="meta"><span class="badge">Replied</span>')
+        self.assertRegex(answered, r'href="q3\.html"[^<]*</a></div><p class="meta">Answered</p>')
 
     def test_whole_item_replies_are_private_and_acknowledged_separately(self) -> None:
         home = self.inbox(accept=False)

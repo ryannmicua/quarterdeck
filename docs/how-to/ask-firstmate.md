@@ -34,8 +34,8 @@ links, and images. Reload the served page to see new replies. Select
 **Messages** on the question to open its conversation and acknowledge the
 replies shown there. If it is already open, close and reopen it to
 acknowledge any new replies. The item's listing shows **Replied** while any
-of its replies are unread, including under **Reviewed questions**. A closed
-question can also show **Replied**. An open question stays on **My desk**
+of its replies are unread, including in the library's **Answered** tab. A closed
+question can also show **Replied**. An open question stays on the **Desk**
 after Firstmate replies.
 
 You can send another ask while waiting for a reply. The card shows every ask

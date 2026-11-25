@@ -2295,7 +2295,6 @@ def question_card(item, summary, *, served, primary, show_project=True):
     action = "Read questions" if not served else ("Answer questions" if remaining else "Review answers")
     link_style = "work-action" if primary else "button-link"
     title = esc(item["title"])
-    shown = open_parts
     questions = item["body"]["questions"]
     prompts = "".join(f'<li>{linked_text(questions[n - 1]["question"])}</li>' for n in open_parts)
     first_link = next((link_html(questions[n - 1]["links"][0], prefix=f'{item["id"]}.{n} ')
@@ -2497,7 +2496,7 @@ def question_form(item, served, *, ask_binding=None):
                 f'{tag_labels(question.get("tags", []))}'
                 f'<h2 id="title-{part}">{linked_text(question["question"])}</h2><p>{linked_text(question["context"])}</p>'
                 f'{shots_html(item, question)}{saved}{controls}{thread}</section>')
-        if status == "answered" and record.get("delivery") == "sent":
+        if label == "Answered" and record.get("delivery") == "sent":
             source_hidden = "" if elsewhere else " hidden"
             folded.append(f'<details class="done"><summary><span class="id">{part}</span>'
                           f'<span class="sum-q">{esc(question["question"])}</span>'
@@ -2747,7 +2746,7 @@ if (send) {
     const focused = document.activeElement;
     const focusInSection = section.contains(focused);
     let box = section.closest('details.done');
-    if (record.state !== 'answered' || record.delivery !== 'sent') {
+    if (record.state !== 'answered' || record.delivery !== 'sent' || section.querySelector('.badge').textContent === 'Replied') {
       if (box) {
         const restoreFocus = box.contains(focused);
         const next = [...list.children].find(child => child.matches('details.done') || questionNumber(child) > number);
@@ -2852,8 +2851,8 @@ if (send) {
       source.append(' ', markedAt);
     }
 
-    updateFold(section, record);
     reconcileReplies(section);
+    updateFold(section, record);
   }
   send?.addEventListener('click', async () => {
     const pending = fields.filter(changed);
@@ -2871,7 +2870,7 @@ if (send) {
           body:JSON.stringify({part:section.id, revision:section.dataset.revision, answer})});
         if (response.status === 400 || response.status === 409) {
           rejections.set(f, {message: await response.text(), draft: response.status === 400 ? answer : undefined});
-          const box = f.closest('details');
+          const box = f.closest('details.done');
           if (box) box.open = true;
           rejected += 1;
           continue;
@@ -2914,7 +2913,9 @@ def library_row(item, *, served):
             attributes += f' data-questions="{len(parts)}"'
         attributes += f' data-id="{item_id}" data-search="{esc(" ".join(search).casefold())}"'
     if kind == "questions":
-        detail = f'<p class="meta">{question_summary(item)[0]}</p>'
+        state, _, _ = question_summary(item, replies=served)
+        label = '<span class="badge">Replied</span>' if state == "Replied" else state
+        detail = f'<p class="meta">{label}</p>'
     else:
         detail = (f'<p class="lib-desc">{linked_text(item["description"])}</p>'
                   f'<p class="meta"><span>{KIND_LABELS[kind]}</span>{day_time(item["saved_at"])}</p>')

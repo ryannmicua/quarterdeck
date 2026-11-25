@@ -6,7 +6,8 @@ When no question is open but an answer is still pending delivery, the card
 action reads **Review answers**. Each question has an ID you can cite later.
 
 An item page lists every question in one list. A question marked **Answered**
-with a **Sent** answer collapses to one line below the expanded questions.
+with a **Sent** answer and no unread replies collapses to one line below the
+expanded questions when you open the page.
 The line shows the saved answer, followed by **(Desk)** if the question also
 has an off-Desk mark. Open the row to see the question and any recorded
 answer source. On the served page you can edit the answer there. A saved
