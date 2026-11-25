@@ -19,9 +19,8 @@ for who can start conversations and use the other browser controls.
   which items are exported.
 - `serve` reads the item store to build pages and writes to it when users
   submit answers, send asks, start conversations, send messages or acknowledge
-  replies. It appends each Desk load to its [visit log](../reference/cli-and-config.md#visit-log),
-  which keeps the time, the page and whether the browser is a phone, but no
-  address or content. It serves only files listed for the requested item from
+  replies. It also writes the [local visit log](../reference/cli-and-config.md#visit-log).
+  It serves only files listed for the requested item from
   the corresponding [private image folder](../reference/item-store.md#store-layout).
   It reads the TLS certificate and key if you supply them.
 - The [workers endpoint](../reference/cli-and-config.md#workers-endpoint) runs

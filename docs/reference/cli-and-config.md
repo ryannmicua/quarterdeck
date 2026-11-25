@@ -60,7 +60,8 @@ badges are exclusive to the served site. Answer controls are available on
 served pages.
 
 If `XDG_STATE_HOME` is set when you run `service`, the generated unit includes
-that setting so it reads the same [item store](item-store.md).
+that setting so it uses the same [item store](item-store.md) and
+[visit log](#visit-log).
 
 `--base-path /qd` (or `base_path` in the config) serves pages and their images
 under that prefix for a reverse proxy. A request for the bare prefix is redirected (308)
@@ -74,14 +75,16 @@ to `/qd/`, and a path outside the prefix to the same path beneath it, such as
 
 `serve` appends one line to
 `${XDG_STATE_HOME:-~/.local/state}/quarterdeck/visits.jsonl` each time it
-serves the Desk (`/` or `/index.html` under the base path). The line holds the
-UTC time with milliseconds (`ts`), the page (`main`), and `device`: `phone`
-for a phone browser, otherwise `desktop`, judged from the `User-Agent`. It
-holds no address, item or content. Item pages, images and the workers
-endpoint are not logged. Quarterdeck has no login, so every Desk load counts,
-whoever makes it. Logging needs no flag. The file has mode 0600 and must
-not be a symbolic link. If a visit cannot be logged, the Desk is still served and
-`serve` prints the reason to standard error.
+serves the Desk (`/` or `/index.html` under the base path). Each JSON line
+holds the UTC time with milliseconds (`ts`), the `page` value `main`, and
+`device`, set to `phone` for a phone browser or `desktop` otherwise, judged
+from the `User-Agent`. The record holds no address, item or content. Item
+pages, images and the workers endpoint are not logged. Quarterdeck has no
+login, so every Desk load counts, whoever makes it. Logging needs no flag.
+Quarterdeck keeps existing records without automatic pruning. It rejects
+symbolic links, requires a regular file and sets the file permissions to
+`0600` before appending. If a visit cannot be logged, the Desk is still served
+and `serve` prints the reason to standard error.
 
 ### Rendered images
 

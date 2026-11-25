@@ -46,9 +46,8 @@ own copy of the saved content.
   [Read the report](docs/how-to/read-the-report.md).
 - `quarterdeck serve` serves the page; each request reads the store, so a new
   item shows on the next load. HTTPS, a reverse-proxy path prefix and a systemd
-  user service are supported. Each Desk load is noted in a local
-  [visit log](docs/reference/cli-and-config.md#visit-log). See
-  [Serve the page](docs/how-to/serve-the-page.md).
+  user service are supported. See [Serve the page](docs/how-to/serve-the-page.md)
+  and the [local visit log reference](docs/reference/cli-and-config.md#visit-log).
 - `quarterdeck render` writes [HTML exports](docs/reference/cli-and-config.md#pages).
 - [Answer questions](docs/how-to/answer-questions.md) or
   [ask Firstmate from a card](docs/how-to/ask-firstmate.md) or
