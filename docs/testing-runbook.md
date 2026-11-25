@@ -9,7 +9,7 @@ Run one group while changing it, then the whole suite before a pull request
 | Classification, answer history, reports, and list filters | `PYTHONPATH=tests python3 -m unittest -v test_classification` |
 | Page content | `PYTHONPATH=tests python3 -m unittest -v test_quarterdeck.PageTests` |
 | Inline question addresses and plain-text choice values | `PYTHONPATH=tests python3 -m unittest -v test_quarterdeck.QuestionAddressTests` |
-| Question link validation and Desk card previews | `PYTHONPATH=tests python3 -m unittest -v test_quarterdeck.QuestionLinkTests` |
+| Question link validation and Desk rows leaving links off | `PYTHONPATH=tests python3 -m unittest -v test_quarterdeck.QuestionLinkTests` |
 | `render` | `PYTHONPATH=tests python3 -m unittest -v test_quarterdeck.RenderTests` |
 | Question image import, serving, and export | `PYTHONPATH=tests python3 -m unittest -v test_quarterdeck.QuestionImageTests test_quarterdeck.QuestionImagePageTests` |
 | `serve`, base path and host checks | `PYTHONPATH=tests python3 -m unittest -v test_quarterdeck.ServeTests` |
@@ -37,7 +37,7 @@ message grows, including that the last answer field can scroll clear of the bar.
 On the long phone page, it also checks that Undo and status messages leave the
 focused control visible. A long send error scrolls inside the bar. The browser
 checks also cover focus through delivery transitions and the hit targets for
-the Desk card action and its independent links. A 320-pixel sheet check covers
+the Desk row link and its whole-row hit target. A 320-pixel sheet check covers
 both tabs and Close library. A zoomed viewport check verifies the sheet at
 640 CSS pixels and the drawer at a fractional width just above it.
 At 140 pixels tall, browser checks cover the Send

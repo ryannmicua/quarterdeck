@@ -1,9 +1,12 @@
 # Answer questions
 
-On the served **Desk**, tap the card or select **Answer questions** to open
-its first open question. Links inside the card open their own destinations.
-When no question is open but an answer is still pending delivery, the card
-action reads **Review answers**. Each question has an ID you can cite later.
+On the served **Desk**, each item is one row: its title, how many questions
+are open, and the latest action (**Asked**, **Replied** or **Not delivered**).
+Select the title or tap anywhere on the row to open the item at its first open
+question. The Desk does not repeat question wording, options or suggestions;
+those stay on the item page. When no question is open but an answer is still
+pending delivery, the row stays with **None open**. Each question has an ID you
+can cite later.
 
 An item page lists every question in one list. A question marked **Answered**
 with a **Sent** answer and no unread replies collapses to one line below the

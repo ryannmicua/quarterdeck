@@ -559,24 +559,33 @@ class PageTests(ClassificationCase):
         self.assertEqual(page.count('<span class="project-name">Harbor</span>'), 2)
         self.assertNotIn('class="group-name"', page)
 
-    def test_several_projects_group_the_desk_with_plain_headings(self) -> None:
+    def test_several_projects_show_in_the_project_column_not_group_headings(self) -> None:
         self.questions("Harbor choices", "--project", "Harbor")
         self.questions("Named project", "--project", "No project")
         self.questions("Loose ends")
         page = self.pages()["index.html"]
-        headings = re.findall(r'<h2 class="group-name">(.*?)</h2>', page)
-        self.assertEqual(headings, ["(No project)", "No project", "Harbor"])
-        self.assertNotIn('class="project-name"', page)
-        self.assertEqual(page.count('<article class="work next"'), 1)
+        self.assertNotIn('class="group-name"', page)
+        self.assertEqual(re.findall(r'<td class="project">(.*?)</td>', page), ["", "No project", "Harbor"])
+        self.assertEqual(page.count('<tr class="work next"'), 1)
         self.assertLess(page.index("work next"), page.index("Named project"))
 
-    def test_tags_show_as_quiet_labels_on_cards_and_reference_rows(self) -> None:
+    def test_more_prompts_add_no_desk_rows_or_prompt_text(self) -> None:
+        self.questions("Harbor choices", "--project", "Harbor", body=ASK[:1])
+        before = self.pages()["index.html"]
+        self.questions("Second set", "--project", "Harbor", body=ASK * 3)
+        after = self.pages()["index.html"]
+        self.assertEqual(before.count('<tr class="work'), 1)
+        self.assertEqual(after.count('<tr class="work'), 2)
+        for prompt in [q["question"] for q in ASK]:
+            self.assertNotIn(prompt, after.split("<h2>References</h2>")[0])
+
+    def test_tags_show_as_quiet_labels_on_reference_rows_not_the_desk(self) -> None:
         self.questions("Harbor choices", "--project", "Harbor", "--tag", "process")
         self.add("resource", "Tide chart", "A chart.", "--url", "https://example.com/t", "--link-text", "Chart",
                  "--project", "Harbor", "--tag", "security-privacy")
         page = self.pages()["index.html"]
-        self.assertIn("<li>process</li>", page)
-        self.assertIn("<li>product design</li>", page)
+        self.assertNotIn("<li>process</li>", page.split("<h2>References</h2>")[0])
+        self.assertIn("<li>process</li>", self.pages()["q1.html"])
         self.assertIn("<li>security privacy</li>", page)
         self.assertIn('<span class="project-name">Harbor</span>',
                       page.split("<h2>References</h2>")[1].split("</section>")[0])
@@ -703,7 +712,7 @@ check(!send.disabled && send.textContent === 'Send 1 answer', 'Only the new draf
         self.questions("New Harbor", "--project", "Harbor", body=ASK[:1])
         self.answer("Q3.1", "Merge")
         page = self.pages()["index.html"]
-        self.assertEqual(re.findall(r'<a class="card-link work-action" href="([^"]+)"', page), ["q2.html#Q2.1"])
+        self.assertEqual(re.findall(r'<tr class="work next"><th scope="row">.*?<a class="card-link" href="([^"]+)"', page), ["q2.html#Q2.1"])
         self.assertLess(page.index("New Harbor"), page.index("Open Quay"))
 
     def test_item_page_shows_project_tags_kind_and_question_tags(self) -> None:
