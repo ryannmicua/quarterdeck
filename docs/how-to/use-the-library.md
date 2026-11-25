@@ -16,7 +16,9 @@ Use the search box in either tab to find words in the title or description.
 **Answered** also searches the question and answer text. Every word must match.
 Enter `Q5` to find item Q5, or `Q5.3` to find Q5 if it has a third question.
 
-Long lists scroll inside the pop-out, and the search stays at the top.
+When there’s enough room, results scroll beneath the search box. In a short
+window, such as when the phone keyboard is open, the whole sheet or drawer
+scrolls. Scroll back to the top to reach Search, the tabs, or **Close library**.
 
 ## When an item moves
 
