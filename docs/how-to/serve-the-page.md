@@ -13,7 +13,7 @@ as files instead, run `quarterdeck render`; see the
 
 To submit a decision, see [Answer questions](answer-questions.md).
 
-To enable the roster, see [Read the workers section](read-workers.md).
+To enable the roster, see [Read the Workers page](read-workers.md).
 
 ## Reach it from a phone
 

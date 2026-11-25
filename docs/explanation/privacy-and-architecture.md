@@ -23,20 +23,19 @@ for who can start conversations and use the other browser controls.
   It serves only files listed for the requested item from
   the corresponding [private image folder](../reference/item-store.md#store-layout).
   It reads the TLS certificate and key if you supply them.
-- The [workers endpoint](../reference/cli-and-config.md#workers-endpoint) runs
-  the configured home's read-only `bin/fm-fleet-snapshot.sh --local` when the
-  Workers page opens and no fresh saved reading is available. Anyone who can reach the
-  service can also trigger a fleet read with **Check workers** or a direct
-  `GET /workers.json`. This command uses no model.
+- A fleet check runs the configured home's read-only
+  `bin/fm-fleet-snapshot.sh --local` without a model. See
+  [when checks run](../reference/cli-and-config.md#workers-endpoint) and
+  [who can run them](../how-to/serve-the-page.md#security-loopback-by-default).
 - `service --write` writes the systemd unit. `url` reads it if it exists.
 - `install` and `update` invoke the [user-local installer](../how-to/install.md).
 
 Apart from explicitly supplied `add` inputs, images named with `reply --image`,
 and the workers snapshot,
 Quarterdeck reads no backlog, board, topic, report, ledger or saved session
-from a Firstmate home, and it does not read terminal text. Quarterdeck holds
-the last workers reading in server memory only, so it is lost when `serve`
-stops and is never written to disk. Loading the Desk never runs the snapshot. It saves card asks, conversation
+from a Firstmate home, and it does not read terminal text. The
+[saved workers reading](../reference/cli-and-config.md#workers-endpoint)
+never goes to disk. Quarterdeck saves card asks, conversation
 messages and replies in the [item store](../reference/item-store.md#conversations).
 Quarterdeck writes nothing to the home except through the configured home's
 `bin/fm-inbox.sh note` command when a user sends or retries an answer,

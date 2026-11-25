@@ -11,23 +11,20 @@ page shows a setup message. Rendered snapshots have no Workers page.
 
 ## Read the list
 
-1. Select **Workers** on the Desk. The page shows the last reading with
+1. Select **Workers** on the Desk. If a reading is saved, the page shows it with
    **Last checked** and its time in your local time zone.
-2. After a successful saved-reading lookup, the page asks the server to check
-   if there is no saved reading or the last successful check was more than an
-   hour ago. While refreshing an expired reading, the page shows
-   **Refreshing workers** alongside the saved time. The server can reuse a
-   fresh reading from another visitor's check.
-   A lookup error appears in the status line.
+2. If the saved reading is missing or
+   [has expired](../reference/cli-and-config.md#workers-endpoint), the page
+   requests a check. While refreshing an expired reading, it shows
+   **Refreshing workers** alongside the saved time.
 3. Select **Check workers** to read the home again once the current request
    finishes. The page checks automatically only on entry.
 4. Read each row. The name and status come first, followed by the project,
    activity, time of last activity or contact, and links when available.
    Row times use your local date and time.
 
-The server holds the last reading in memory, so every visitor sees the same one.
-It is lost when `quarterdeck serve` stops, so the first visit after a restart
-reads the home.
+If the page needs a fresh reading and a check is already running, the page
+waits for its result and keeps any saved roster and its time visible.
 
 A worker is listed while its terminal is open, and leaves the list on the next
 successful check after the terminal closes. Second mates are listed
@@ -63,10 +60,6 @@ the row can show **Unreachable** when the closed entry comes first. See the
 how duplicate rows are selected.
 
 ## If a check fails
-
-If the page needs a fresh reading and a check is already running, the page
-waits for its result and keeps any saved roster and its time visible.
-**Check workers** is available once the entry request finishes.
 
 The page keeps the last list in the tab and says **Check failed** with the
 time of that list. If there is no list, the page says **Workers could not
