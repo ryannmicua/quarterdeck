@@ -2791,7 +2791,7 @@ def earlier_answers_html(record):
     for entry in reversed(earlier):
         at = esc(entry["answered_at"])
         entries.append(f'<li><p class="record">{esc(entry["answer"])}</p>'
-                       f'<p class="meta"><time datetime="{at}">{at}</time> · {esc(entry["request_id"])}</p></li>')
+                       f'<p class="meta"><time datetime="{at}">{at}</time></p></li>')
     return ('<details class="earlier-answers meta"><summary>Earlier answers</summary><ol>'
             + ''.join(entries) + '</ol></details>')
 
@@ -3114,7 +3114,7 @@ if (send) {
   const suggest = document.querySelector('#suggest');
   const undo = document.querySelector('#undo');
   const rejections = new Map();
-  const excluded = new Set();
+  const exclusions = new Map();
   let messageQueued = false;
   let sending = false;
   let discussionRequest;
@@ -3139,13 +3139,14 @@ if (send) {
     return answer && (answer !== f.defaultValue || f.closest('section').dataset.pending === '1');
   };
   const needsReview = section => section.hasAttribute('data-review');
+  const isExcluded = field => exclusions.get(field)?.active;
   const changed = f => {
-    return !rejectedAsk(draftOrigins.get(f)) && !rejections.has(f) && !excluded.has(f)
+    return !rejectedAsk(draftOrigins.get(f)) && !rejections.has(f) && !isExcluded(f)
       && !needsReview(f.closest('section')) && answerDraft(f);
   };
   const suggestionFor = f => {
     const section = f.closest('section');
-    if (!excluded.has(f) && !rejections.has(f) && section.dataset.state === 'open' && !f.defaultValue && !f.value) {
+    if (!isExcluded(f) && !rejections.has(f) && section.dataset.state === 'open' && !f.defaultValue && !f.value) {
       return section.querySelector('[data-suggested]');
     }
   };
@@ -3172,10 +3173,11 @@ if (send) {
         const section = f.closest('section');
         return item(section.id, 'Answer \u00b7 ' + section.id, answerText(f.value),
           () => {
-            excluded.add(f);
+            const exclusion = {text: answerText(f.value), active: true, edited: false};
+            exclusions.set(f, exclusion);
             for (const step of history) {
               const draft = step.get(f);
-              if (draft) draft.excluded = true;
+              if (draft) draft.exclusion = exclusion;
             }
             refresh();
           });
@@ -3334,7 +3336,13 @@ if (send) {
     } else if (origin === 'filled') {
       draftOrigins.set(field, 'manual');
     }
-    if (!restoring && answerText(field.value)) excluded.delete(field);
+    const exclusion = exclusions.get(field);
+    const text = answerText(field.value);
+    if (exclusion && !restoring && text) {
+      exclusions.set(field, {...exclusion, active: false, edited: true});
+    } else if (exclusion && restoring) {
+      exclusions.set(field, exclusion.edited ? {...exclusion, active: text === exclusion.text} : {...exclusion, text});
+    }
     forget(field);
     refresh();
   });
@@ -3355,18 +3363,7 @@ if (send) {
       queueField.value = '';
       rejections.delete(queueField);
       const body = {part: whole.id, id: freshId(), text, home};
-      const pending = document.createElement('ol');
-      pending.className = 'exchange';
-      pending.dataset.localAsk = body.id;
-      pending.innerHTML = '<li class="msg you"><p class="who"><strong>You</strong> <span class="delivery">Pending</span></p>'
-        + '<p class="record"></p><div class="actions"><button type="button">Send ask again</button></div></li>';
-      pending.querySelector('.record').textContent = text;
-      pending.querySelector('button').addEventListener('click', () => askRequest(whole, {...body, action: 'retry'}, pending));
-      const thread = whole.querySelector('.thread');
-      thread.querySelector('.pending-asks').append(pending);
-      thread.hidden = false;
-      thread.open = true;
-      const result = await askRequest(whole, body, pending);
+      const result = await sendAsk(whole, body);
       totals[result.delivery] += 1;
       if (result.delivery === 'failed' || result.delivery === 'unconfirmed') details.push(result.message);
     }
@@ -3403,12 +3400,12 @@ if (send) {
         const section = f.closest('section');
         const option = choice ? (section.contains(choice) && choice) : suggestionFor(f);
         const origin = draftOrigins.get(f);
-        if (option && (option.dataset.choice !== f.value || handEdited(origin) || (choice && excluded.has(f)))) {
+        if (option && (option.dataset.choice !== f.value || handEdited(origin) || (choice && isExcluded(f)))) {
           const askError = rejectedAsk(origin) ? rejections.get(f) : undefined;
-          step.set(f, {value: f.value, origin, askError, excluded: excluded.has(f)});
+          step.set(f, {value: f.value, origin, askError, exclusion: exclusions.get(f)});
           if (askError) rejections.delete(f);
           f.value = option.dataset.choice;
-          if (choice) excluded.delete(f);
+          if (choice) exclusions.delete(f);
           if (origin) draftOrigins.set(f, {choice: option, edited: false});
         }
       }
@@ -3420,24 +3417,13 @@ if (send) {
       const section = askButton.closest('section');
       const field = section.querySelector('textarea');
       if (askDraft(field)) {
-        const id = freshId();
-        const body = {part: section.id, id, text: answerText(field.value), home: askButton.dataset.home};
-        const thread = section.querySelector('.thread');
-        const pending = document.createElement('ol');
-        pending.className = 'exchange';
-        pending.dataset.localAsk = id;
-        pending.innerHTML = '<li class="msg you"><p class="who"><strong>You</strong> <span class="delivery">Pending</span></p>'
-          + '<p class="record"></p><div class="actions"><button type="button">Send ask again</button></div></li>';
-        pending.querySelector('.record').textContent = field.value;
-        pending.querySelector('button').addEventListener('click', () => askRequest(section, {...body, action: 'retry'}, pending));
-        thread.querySelector('.pending-asks').append(pending);
+        const draft = field.value;
+        const body = {part: section.id, id: freshId(), text: answerText(draft), home: askButton.dataset.home};
         field.value = field.defaultValue;
         if (rejectedAsk(draftOrigins.get(field))) rejections.delete(field);
         if (draftOrigins.has(field)) draftOrigins.set(field, 'filled');
         forget(field);
-        thread.hidden = false;
-        thread.open = true;
-        askRequest(section, body, pending);
+        sendAsk(section, body, draft);
       }
     }
     const threadButton = e.target.closest('[data-retry-ask]');
@@ -3447,12 +3433,15 @@ if (send) {
     }
     if (e.target === undo && history.length) {
       const step = history.pop();
-      for (const [f, {value, origin, askError, excluded: wasExcluded}] of step) {
+      for (const [f, {value, origin, askError, exclusion}] of step) {
         f.value = value;
         if (origin) draftOrigins.set(f, origin);
         if (askError) rejections.set(f, askError);
-        if (wasExcluded) excluded.add(f);
-        else excluded.delete(f);
+        if (exclusion) {
+          exclusions.set(f, exclusion.active ? {text: answerText(value), active: true, edited: false} : exclusion);
+        } else {
+          exclusions.delete(f);
+        }
       }
       refresh();
       if (history.length) undo.focus();
@@ -3494,6 +3483,20 @@ if (send) {
     box.querySelector('.sum-source').hidden = !record.off_desk_answer;
     box.open = false;
     if (focusInSection) box.querySelector('summary').focus();
+  }
+  function sendAsk(section, body, displayText = body.text) {
+    const pending = document.createElement('ol');
+    pending.className = 'exchange';
+    pending.dataset.localAsk = body.id;
+    pending.innerHTML = '<li class="msg you"><p class="who"><strong>You</strong> <span class="delivery">Pending</span></p>'
+      + '<p class="record"></p><div class="actions"><button type="button">Send ask again</button></div></li>';
+    pending.querySelector('.record').textContent = displayText;
+    pending.querySelector('button').addEventListener('click', () => askRequest(section, {...body, action: 'retry'}, pending));
+    const thread = section.querySelector('.thread');
+    thread.querySelector('.pending-asks').append(pending);
+    thread.hidden = false;
+    thread.open = true;
+    return askRequest(section, body, pending);
   }
   async function askRequest(section, body, pending) {
     let failedDraft;
@@ -3546,6 +3549,7 @@ if (send) {
     section.dataset.revision = record.revision;
     section.dataset.pending = record.delivery === 'pending' ? '1' : '0';
     field.defaultValue = field.value = record.answer;
+    exclusions.delete(field);
     if (reviewedRevision === optionRevision(section)) reviewed(section);
     if (draftOrigins.has(field)) draftOrigins.set(field, 'filled');
     forget(field);

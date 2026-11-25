@@ -4479,10 +4479,21 @@ const revised = 'Wait for the first proof before printing';
 check(!send.disabled && !sendQueue.disabled && queueItems().length === 1 &&
       queueItems()[0].includes('Q4.1') && queueItems()[0].includes(revised),
       'Typing did not put the custom answer back in both send paths');
+check(document.execCommand('undo') && editor.value === original &&
+      send.disabled && sendQueue.disabled && queueItems().length === 0,
+      'Native Undo restored the removed answer to the send queue');
+queueText('Please include the cover.');
 sendQueue.click();
 await settled();
-check(calls.length === 2 && calls[1][0] === 'answers' &&
-      calls[1][1].part === 'Q4.1' && calls[1][1].answer === revised,
+check(calls.length === 2 && calls[1][0] === 'asks' && field(1).value === original && send.disabled,
+      'The follow-up sent the removed answer after native Undo');
+editor.focus();
+check(document.execCommand('redo') && editor.value === revised && !send.disabled && !sendQueue.disabled,
+      'Native Redo did not requeue the revised answer');
+sendQueue.click();
+await settled();
+check(calls.length === 3 && calls[2][0] === 'answers' &&
+      calls[2][1].part === 'Q4.1' && calls[2][1].answer === revised,
       'The send did not use the edited custom answer');
 """)
 
@@ -4919,6 +4930,7 @@ check(calls[2][1].id === calls[1][1].id && calls[2][1].action === 'retry',
             self.assertEqual(self.run_cli("mark", "Q4.1", action)[0], 0)
         self.assertEqual(self.run_cli("mark", "Q4", "answered", "--via", "elsewhere")[0], 0)
         self.assertEqual(self.store()["items"][3]["answers"]["1"]["earlier_answers"], [old_entry])
+        self.assertNotIn(old_entry["request_id"], corrected["earlier_answers_html"])
         self.assertIn('href="q4.html#Q4">Read set discussion</a>', self.fetch(port, "/qd/")[1])
 
         check_history = r"""
@@ -4931,8 +4943,8 @@ history.querySelector('summary').click();
 const entries = history.querySelectorAll('li');
 check(history.open && entries.length === 1 && entries[0].querySelector('.record').textContent === predecessor.answer &&
       entries[0].querySelector('time').dateTime === predecessor.answered_at &&
-      entries[0].textContent.includes(predecessor.request_id),
-      'The previous submitted text, time, or request ID was lost');
+      !entries[0].textContent.includes(predecessor.request_id),
+      'Earlier answers did not show just the previous text and time');
 """
         setup = f"const predecessor = {json.dumps(old_entry)};"
         self.check_page(port, r"""
