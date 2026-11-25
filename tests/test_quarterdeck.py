@@ -2486,11 +2486,13 @@ const quiet = () => new Promise(resolve => setTimeout(resolve, 1500));
     def test_a_missing_reading_is_fetched_on_entry_and_then_only_on_the_button(self) -> None:
         if not shutil.which("google-chrome"):
             self.skipTest("google-chrome is required for the workers browser test")
-        home = self.make_home([snapshot_task("Wren", decisions=["map-scale"])])
+        skerry = snapshot_task("Skerry", kind="secondmate", alive="alive")
+        tern = snapshot_task("Tern", kind="secondmate", alive="alive")
+        home = self.make_home([snapshot_task("Wren", decisions=["map-scale"]), skerry, tern])
         port = self.start("/qd", workers_home=home)
         next_snapshot = {
             "generated": "2026-03-02T13:39:00Z",
-            "tasks": [snapshot_task("Wren", exists=False), snapshot_task("Bracken", state="paused")],
+            "tasks": [snapshot_task("Wren", exists=False), snapshot_task("Bracken", state="paused"), skerry],
         }
         run_snapshot = quarterdeck.run_snapshot
 
@@ -2501,12 +2503,15 @@ const quiet = () => new Promise(resolve => setTimeout(resolve, 1500));
             return snapshot
 
         steps = """
+  const headings = () => [...document.querySelectorAll('#workers :is(h1,h2,h3,h4,h5,h6)')]
+    .map(heading => heading.tagName + ' ' + heading.textContent).join('|');
   button.click();
   await settled();
   check(requestCount('workers-saved.json') === 1, 'Expected one saved read on entry');
   check(requestCount('workers.json?reuse=1') === 1, 'Expected one worker fetch on entry with nothing saved');
   check(requestCount('workers.json') === 0, 'A check overlapped entry');
   check(roster.textContent.includes('Wren') && !roster.textContent.includes('Bracken'), 'The initial roster did not appear');
+  check(headings() === 'H1 Workers|H2 Second mates (2)', 'Second mates must follow Workers at heading level 2');
   check(roster.querySelector('.status.exception')?.textContent === 'Question asked', 'The exception badge was missing');
   check(statusLine.querySelector('time')?.dateTime === '2026-03-02T13:40:00Z', 'The initial observation time was wrong');
   await new Promise(resolve => setTimeout(resolve, 61000));
@@ -2517,6 +2522,7 @@ const quiet = () => new Promise(resolve => setTimeout(resolve, 1500));
   await refreshed;
   check(requestCount('workers.json') === 1, 'The check button did not make exactly one worker request');
   check(!roster.textContent.includes('Wren') && roster.textContent.includes('Bracken'), 'The refreshed roster did not replace the old one');
+  check(headings() === 'H1 Workers|H2 Second mates', 'A single second mate must keep the level 2 heading');
   check(roster.querySelector('.status')?.textContent === 'Unknown' && !roster.querySelector('.status.exception'),
         'Unknown did not use the ordinary badge');
   check(statusLine.querySelector('time')?.dateTime === '2026-03-02T13:39:00Z', 'The refresh did not show the corrected observation time');

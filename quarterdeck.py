@@ -1899,7 +1899,7 @@ textarea { display:block; width:100%; resize:vertical; background:var(--ground);
 .status { font:600 var(--text-md)/1.3 var(--sans); padding:.15rem .6rem; border:1px solid var(--rule); border-radius:5px; white-space:nowrap; }
 .status.exception { color:var(--signal); background:var(--signal-ground); border-color:var(--signal); }
 .failed { color:var(--signal); }
-#workers h3 { font:700 var(--text-md)/1.3 var(--sans); margin:1.4rem 0 0; }
+#workers h2 { font:700 var(--text-md)/1.3 var(--sans); margin:1.4rem 0 0; }
 .tags { display:flex; flex-wrap:wrap; gap:.3rem .5rem; list-style:none; margin:.35rem 0 0; padding:0; font-family:var(--sans); }
 .tags li { font-size:var(--text-sm); color:var(--soft); border:1px solid var(--rule); border-radius:5px; padding:.05rem .5rem; }
 .project-name { color:var(--soft); font-size:var(--text-sm); font-weight:400; }
@@ -2061,7 +2061,7 @@ WORKERS_SCRIPT = r"""
   };
   const group = (title, rows, mate) => {
     const box = make('div');
-    if (title) box.append(make('h3', '', rows.length > 1 ? title + ' (' + rows.length + ')' : title));
+    if (title) box.append(make('h2', '', rows.length > 1 ? title + ' (' + rows.length + ')' : title));
     const roster = make('ul', 'roster');
     for (const worker of rows) roster.append(row(worker, mate));
     box.append(roster);
