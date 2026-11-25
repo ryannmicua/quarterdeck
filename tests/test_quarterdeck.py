@@ -3340,7 +3340,7 @@ class ConversationTests(ImageCase):
     def test_reply_rejects_bad_input_and_changes_nothing(self) -> None:
         before = self.store()
         cases = (
-            (("Q4", "--text", "x"), "Q7.1"), (("Q4.9", "--text", "x"), "no question"), (("Q1.1", "--text", "x"), "questions item"),
+            (("Q4", "--text", "x"), "has no asks"), (("Q4.9", "--text", "x"), "no question"), (("Q1.1", "--text", "x"), "questions item"),
             (("Q9.1", "--text", "x"), "no item"), (("Q4.1", "--text", "x"), "has no asks"), (("Q4.1", "--text", " "), "must not be empty"),
             (("Q4.1", "--text", "x", "--link-text", "Only words"), "--url"),
             (("Q4.1", "--text", "x", "--link-text", "Bad", "--url", "ftp://example.com"), "http"),
@@ -3434,6 +3434,72 @@ class ConversationTests(ImageCase):
         self.assertIn('<span class="badge">Replied</span>', reviewed)
         self.assertIn('<a class="button-link" href="q4.html">Review answers</a>', reviewed)
         self.assertIn('<a class="button-link" href="q3.html">Review answers</a>', reviewed)
+
+    def test_whole_item_replies_are_private_and_acknowledged_separately(self) -> None:
+        home = self.inbox(accept=False)
+        port = self.start("/qd", ask_home=home)
+        whole = self.ask_body(port, "Q4", "Show the whole layout.")
+        self.assertEqual(self.post(port, "/qd/asks", whole)[1]["message"], "Ask saved. Not delivered.")
+        original = self.messages("item", 3)[0]
+        self.inbox()
+        self.assertEqual(self.post(port, "/qd/asks", {**whole, "action": "retry"})[1]["message"], "Ask sent.")
+        self.assertEqual((home / "notes").read_text(), f"ASK Q4 {whole['id']} Show the whole layout.\n")
+        self.assertEqual((home / "attempts").read_text().splitlines(), [original["request_id"]] * 2)
+        part = self.ask_body(port, "Q4.1", "Show the individual option.")
+        self.assertEqual(self.post(port, "/qd/asks", part)[0], 200)
+        self.assertEqual(self.run_cli("reply", "Q4", "--ask", part["id"], "--text", "Wrong scope.")[0], 2)
+        self.assertEqual(self.run_cli("reply", "Q4.1", "--ask", whole["id"], "--text", "Wrong scope.")[0], 2)
+        self.assertEqual(self.run_cli("reply", "q4", "--ask", whole["id"], "--text", "Whole layout.",
+                                      "--image", str(self.red), "--alt", "Whole preview.")[0], 0)
+        self.assertEqual(self.run_cli("reply", "Q4.1", "--ask", part["id"], "--text", "Individual option.")[0], 0)
+        _, whole_reply = self.messages("item", 3)
+        _, part_reply = self.messages("1", 3)
+        page = self.fetch(port, "/qd/q4.html")[1]
+        item_html, question_html = page.split('id="Q4.1"', 1)
+        self.assertIn("Whole layout.", item_html)
+        self.assertNotIn("Whole layout.", question_html)
+        self.assertIn("Individual option.", question_html)
+        image = whole_reply["images"][0]["file"]
+        with urllib.request.urlopen(f"http://127.0.0.1:{port}/qd/reply-images/q4/{image}", timeout=5) as response:
+            self.assertEqual(response.read(), self.red.read_bytes())
+        endpoint = "/qd/replies/read"
+        self.assertEqual(self.post(port, endpoint, {"part": "Q4", "ids": [part_reply["id"]]})[0], 400)
+        self.assertEqual(self.post(port, endpoint, {"part": "Q4.1", "ids": [whole_reply["id"]]})[0], 400)
+        self.assertEqual(self.post(port, endpoint, {"part": "Q4.1", "ids": [part_reply["id"]]})[0], 200)
+        self.assertIn('<p class="progress">Replied, 2 of 2 open</p>', self.fetch(port, "/qd/q4.html")[1])
+        self.assertIn('<span class="badge">Replied</span>', self.fetch(port, "/qd/")[1])
+        self.assertFalse(self.messages("item", 3)[1]["read"])
+        export = self.root / "site" / "index.html"
+        self.assertEqual(self.run_cli("render", "--output", str(export))[0], 0)
+        self.assertNotIn("Whole layout.", (export.parent / "q4.html").read_text())
+        self.assertNotIn("Replied", export.read_text())
+        self.assertFalse((export.parent / "reply-images").exists())
+        self.assertEqual(self.post(port, endpoint, {"part": "Q4", "ids": [whole_reply["id"]]}),
+                         (200, {"replies": {whole_reply["id"]: True}}))
+        self.assertIn('<p class="progress">2 of 2 open</p>', self.fetch(port, "/qd/q4.html")[1])
+        self.assertNotIn('<span class="badge">Replied</span>', self.fetch(port, "/qd/")[1])
+        self.assertNotIn("answers", self.store()["items"][3])
+        damaged = self.store()
+        damaged["items"][3]["conversation"]["item"][1]["ask"] = part["id"]
+        quarterdeck.store_path().write_text(json.dumps(damaged))
+        self.assertEqual(self.fetch(port, "/qd/q4.html")[0], 500)
+
+    def test_whole_item_asks_work_without_answer_controls(self) -> None:
+        with self.subTest(kind="reference"):
+            port = self.start("/qd", ask_home=self.inbox())
+            self.assertEqual(self.ask(port, "Q1", "Explain this link.")[0], 200)
+            ask = self.messages("item", 0)[0]
+            self.assertEqual(self.run_cli("reply", "Q1", "--ask", ask["id"], "--text", "An overview.")[0], 0)
+            self.assertIn('q1.html">Calls redesign</a> <span class="badge">Replied', self.fetch(port, "/qd/")[1])
+            self.assertIn("An overview.", self.fetch(port, "/qd/q1.html")[1])
+        with self.subTest(kind="closed questions"):
+            self.assertEqual(self.run_cli("mark", "Q4", "closed")[0], 0)
+            self.assertEqual(self.ask(port, "Q4", "Explain the whole decision.")[0], 200)
+            status, page, headers = self.fetch(port, "/qd/q4.html")
+            self.assertEqual(status, 200)
+            self.assertIn('id="open-item-ask"', page)
+            self.assertNotIn('<button id="send"', page)
+            self.assertEqual(headers.get("Content-Security-Policy"), "frame-ancestors 'none'")
 
     def test_static_exports_exclude_conversation_and_reply_images(self) -> None:
         port = self.start("/qd", ask_home=self.inbox(accept=False))
@@ -3741,6 +3807,56 @@ const saved = card(1).querySelector('.thread-messages .record');
 check(!pending.firstElementChild && saved.textContent === draft, 'Recovery lost or duplicated the original ask');
 check(saved.querySelector('a').href === 'https://example.com/preview', 'The saved ask link was lost');
 """)
+
+    def test_toolbar_opens_an_independent_whole_item_editor(self) -> None:
+        port = self.start("/qd", ask_home=self.inbox())
+        ask = self.ask_body(port, "Q4", "Show the whole layout.")
+        self.assertEqual(self.post(port, "/qd/asks", ask)[0], 200)
+        self.assertEqual(self.run_cli("reply", "Q4", "--ask", ask["id"], "--text", "Here is the whole layout.")[0], 0)
+        _, reply = self.messages("item", 3)
+        self.check_page(port, r"""
+const calls = [];
+window.fetch = async (url, options) => {
+  const body = JSON.parse(options.body);
+  calls.push([url, body]);
+  const result = url === 'replies/read' ? {replies: {[replyId]: true}} :
+    url === 'answers' ? {state: 'answered', revision: 'new', delivery: 'sent',
+                        answer: 'Hold', answered_at: '2026-11-25T01:00:00Z'} :
+    {thread: `<ol><li data-ask-id="${body.id}"><p class="record">Explain the colors.</p></li></ol>`, message: 'Ask sent.'};
+  return {ok: true, status: 200, json: async () => result};
+};
+const whole = document.getElementById('Q4');
+const opener = document.getElementById('open-item-ask');
+const editor = document.getElementById('item-ask-editor');
+const fieldForItem = editor.querySelector('textarea');
+const send = document.getElementById('send');
+check(editor.hidden && opener.parentElement === send.parentElement, 'The page bar did not own the item editor');
+opener.click();
+check(!editor.hidden && document.activeElement === fieldForItem && calls.length === 0,
+      'Opening the editor did not focus it or acknowledged the unread reply');
+fieldForItem.value = 'Explain the colors.';
+fieldForItem.dispatchEvent(new Event('input', {bubbles: true}));
+check(send.disabled, 'The whole-item draft was queued as an answer');
+type(1, 'Hold');
+check(!card(1).querySelector('.ask-button').disabled && send.textContent === 'Send 1 answer',
+      'The numbered-card actions were changed');
+whole.querySelector('summary').click();
+await settled();
+check(calls[0][0] === 'replies/read' && calls[0][1].part === 'Q4' && calls[0][1].ids.join() === replyId,
+      'Opening Messages acknowledged the wrong conversation');
+check(whole.querySelector('.badge').hidden && document.querySelector('.progress').textContent === '2 of 2 open',
+      'The item-level badge did not clear after acknowledgment');
+whole.querySelector('.ask-button').click();
+await settled();
+check(calls[1][0] === 'asks' && calls[1][1].part === 'Q4' && calls[1][1].text === 'Explain the colors.',
+      'The toolbar ask did not target the whole item');
+check(fieldForItem.value === '' && whole.querySelector('.record').textContent === 'Explain the colors.',
+      'The whole-item ask was not shown in its thread');
+send.click();
+await settled();
+check(calls.length === 3 && calls[2][0] === 'answers' && calls[2][1].part === 'Q4.1',
+      'The batch did not remain scoped to the numbered question');
+""", setup=f"const replyId = {json.dumps(reply['id'])};")
 
     def test_rejected_ask_can_be_corrected_without_entering_answer_batch(self) -> None:
         port = self.start("/qd", ask_home=self.inbox())

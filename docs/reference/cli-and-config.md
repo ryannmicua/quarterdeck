@@ -8,7 +8,7 @@ quarterdeck add --kind resource|list|questions --title TEXT --description TEXT
                 [--project NAME] [--tag TAG ...]
 quarterdeck list
 quarterdeck show ID
-quarterdeck reply ID.PART --ask ID --text TEXT [--link-text TEXT --url URL]... [--image PATH --alt TEXT]...
+quarterdeck reply ID[.PART] --ask ID --text TEXT [--link-text TEXT --url URL]... [--image PATH --alt TEXT]...
 quarterdeck mark ID[.PART] answered --via WHERE
 quarterdeck mark ID[.PART] closed|open
 quarterdeck classify ID[.PART] [--project NAME] [--tag TAG ...] [--kind KIND]
@@ -36,7 +36,7 @@ uppercase form.
 | `add` | Saves a new item and prints its ID. A `resource` needs `--url` and `--link-text`. A `list` or `questions` item needs `--body-file`. See [the input formats and examples](../how-to/save-items.md#add-an-item) and [how to classify items and questions when saving](../how-to/classify-items.md#classify-when-you-save). |
 | `list` | Prints saved items, newest first, with ID, kind, saved date and title. |
 | `show` | Prints the item's text, numbering list entries and questions as `Q7.1`, `Q7.2`. Includes question links, stored states, and saved answers with their timestamps and delivery status. |
-| `reply` | Adds Firstmate's reply to an existing ask on one question, such as `Q7.1`. Supply the required `--ask ID` from the inbox note and the reply in `--text`. Each `--link-text` pairs with a `--url`, and each `--image` with an `--alt`, in the order given. It preserves the answer and state. The question shows Replied while any reply is unread. See [Reply from the command line](../how-to/reply-from-the-command-line.md). |
+| `reply` | Adds Firstmate's reply to an existing ask on a whole item (`Q7`) or one question (`Q7.1`). Supply the required `--ask ID` from the inbox note and the reply in `--text`. Pair `--link-text` with `--url` and `--image` with `--alt` in the order given. See [Reply from the command line](../how-to/reply-from-the-command-line.md). |
 | `mark` | Sets question state, optionally for a whole questions item. `--via` is required with `answered` and accepted only with that state. Skips exit with status 0. See [Read answers](../how-to/read-answers.md) for which questions are marked. |
 | `classify` | Requires at least one classification option. Use `--project` for an item ID, `--kind` for a question ID, and `--tag` for either. See [how to change classification](../how-to/classify-items.md#change-it-later). |
 | `stats` | Prints a question activity table by default or JSON with `--json`. See [Read the report](../how-to/read-the-report.md) for date filtering and field definitions. |
@@ -94,7 +94,8 @@ See the [image removal rules](item-store.md#store-layout).
 `POST /asks` (under any `base_path`) requires the explicit `firstmate_home`
 and the same origin as `/answers`. Send
 `{"part": "Q7.1", "id": "<ask id>", "text": "...", "home": "<home binding>"}`
-to save and deliver an ask. The page generates the 32-character lowercase
+to save and deliver an ask. Use `"part": "Q7"` for the whole item or
+`"part": "Q7.1"` for one question. The page generates the 32-character lowercase
 hexadecimal ID and takes the resolved home binding from the served form.
 Repeating the same create request returns the existing ask. Add
 `"action": "retry"` to the original request to recover from an interrupted
@@ -103,15 +104,17 @@ saved ask, the page can also send
 `{"part": "Q7.1", "id": "<ask id>", "action": "retry"}`. Both forms
 reuse the saved ask and note IDs. A changed home, closed question,
 or removed item can return 409. The inbox note starts with
-`ASK Q7.1 <ask id>`, followed by the ask text.
+`ASK Q7 <ask id>` for the whole item or `ASK Q7.1 <ask id>` for one question,
+followed by the ask text.
 
 ### Reply acknowledgment endpoint
 
 `POST /replies/read` (under any `base_path`) uses the same origin check as
 `/answers`. The served page sends `{"part": "Q7.1", "ids": ["<reply id>"]}`
-when the user opens that question's **Messages**. Every ID must belong to
-a reply on that question. The response field `replies` maps every reply ID
-on that question to its current read status (`true` for read).
+when the user opens that question's **Messages**, or sends `"part": "Q7"`
+when the user opens the whole-item **Messages**. Every ID must belong to
+the named conversation. The response field `replies` maps each reply ID in
+that conversation to its current read status (`true` for read).
 Page loads leave these records intact.
 
 ### Workers endpoint
@@ -157,7 +160,7 @@ or `${XDG_CONFIG_HOME:-~/.config}/quarterdeck.json` when it exists.
 | `page_title` | string | `Quarterdeck` | The site name in the navigation bar and browser title. `--title` overrides it for `render` and `serve`. |
 | `output_dir` | string path | `${XDG_STATE_HOME:-~/.local/state}/quarterdeck` | Where `render` writes the pages. |
 | `base_path` | string | none | The URL prefix described above. |
-| `firstmate_home` | absolute path after expanding `~` | unset | Local destination for answers submitted to `serve`, and the home whose workers the page lists. |
+| `firstmate_home` | absolute path after expanding `~` | unset | Local destination for answers and asks submitted to `serve`, and the home whose workers the page lists. |
 
 When `firstmate_home` is absent, `serve` uses a legacy `homes` list only for
 answer delivery and only if it contains exactly one object with a valid

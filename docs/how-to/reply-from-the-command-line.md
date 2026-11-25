@@ -1,14 +1,16 @@
 # Reply from the command line
 
-Firstmate answers an ask by adding a reply to the question it came from. The
-note for an ask starts with `ASK`, the question ID, and the ask ID, followed by
-the ask text. Pass the ask ID from that note with `--ask`.
+Firstmate answers an ask in the conversation it came from. The note starts
+with `ASK`, the target ID, and the ask ID, followed by the ask text. Use the
+item ID for a whole-card ask or the numbered ID for an ask about one question.
+Pass the ask ID from that note with `--ask`.
 
 ```sh
+quarterdeck reply Q7 --ask "$ask_id" --text "The whole layout is ready for review."
 quarterdeck reply Q7.1 --ask "$ask_id" --text "The preview uses the tide tables from Friday."
 ```
 
-Each reply requires the ID of an existing ask on that question. Use the
+Each reply requires the ID of an existing ask in that conversation. Use the
 same ID to send a follow-up to that ask.
 
 A reply can carry links and images. Pair each `--link-text` with a `--url`, and
@@ -25,9 +27,10 @@ Images follow the same rules as [question images](../reference/item-store.md#que
 PNG, JPEG or still WebP, up to 5 MB per image. The live page serves them from
 the [private reply image folder](../reference/item-store.md#store-layout).
 
-Quarterdeck prints `Q7.1 Replied`. The question shows **Replied** on its card
-and on its page while any reply is unread.
+Quarterdeck prints the target and `Replied`, for example `Q7.1 Replied`.
+The live page shows **Replied** while a reply is unread, and the item's
+listing shows the badge as well.
 
-A reply preserves the question's answer and state. Open **Messages** on the
-question card to read the conversation.
+A reply preserves answers and question states. Open **Messages** in
+**Item conversation** or on the numbered question to read the reply.
 See the [CLI reference](../reference/cli-and-config.md#items) for the command.

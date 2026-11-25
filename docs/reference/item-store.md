@@ -153,12 +153,12 @@ file. Delete that partial file by hand before retrying the write. See the
 [serving boundary](../explanation/privacy-and-architecture.md#what-quarterdeck-reads-and-writes)
 and [export behavior](cli-and-config.md#rendered-images).
 
-## Question conversation
+## Conversations
 
-A questions item may contain a `conversation` object keyed by the one-based part
-number as a string, holding that question's messages oldest first.
-It is kept apart from `answers`, so a message never changes what was decided.
-Items without a conversation need no migration.
+An item may contain a `conversation` object. The key `item` holds the whole
+item's messages, oldest first. A questions item can also use one-based part
+numbers as string keys for its numbered questions. The conversation is kept
+apart from `answers`. Existing numbered threads keep their keys.
 
 Every message has `id` (a string of 32 hexadecimal characters), `author`, `text` (plain
 text, up to 20,000 characters) and `at` (UTC).
@@ -166,7 +166,7 @@ text, up to 20,000 characters) and `at` (UTC).
 | `author` | Other fields |
 | --- | --- |
 | `you` | An ask with a browser-generated ID. `delivery` (`pending` or `sent`), a stable `request_id` string for inbox retries, and `home`, a SHA-256 hex string binding the ask to the resolved path of the configured Firstmate home. |
-| `firstmate` | A reply added by `quarterdeck reply`. `ask` (ID of an earlier ask on the same question), `read` (true once the page acknowledges this reply), and optional `links` (the same `text` and `url` objects as question links) and `images` (`file` and `alt`). |
+| `firstmate` | A reply added by `quarterdeck reply`. `ask` (ID of an earlier ask in the same conversation), `read` (true once the page acknowledges this reply), and optional `links` (the same `text` and `url` objects as question links) and `images` (`file` and `alt`). |
 
 Reply images are copied into the item's [private reply image folder](#store-layout)
 and removed with the item.
@@ -176,8 +176,9 @@ and removed with the item.
 The stored `state` is Open, Answered or Closed. The served site shows a
 Replied badge while any reply on the question has `read` set to false.
 The served page acknowledges displayed replies by ID when the user opens
-that question's **Messages**. When all replies are read, the question shows
-its stored state again.
+**Messages** in their conversation. Whole-item replies also contribute to
+the item's **Replied** badge and are acknowledged independently of question
+replies. When a question's replies are read, it shows its stored state again.
 Static exports omit conversations and their images.
 
 ## Question answers

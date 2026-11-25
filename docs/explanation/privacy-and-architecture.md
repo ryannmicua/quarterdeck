@@ -32,7 +32,7 @@ no snapshot data or contact history on the server.
 Quarterdeck writes nothing to the home except through the configured home's
 `bin/fm-inbox.sh note` command on explicit answer or ask submission. It passes
 an answer as the part ID followed by the text. Asks go to the explicit
-`firstmate_home` with `ASK`, the part ID and the ask ID before the text.
+`firstmate_home` with `ASK`, the item or question ID and the ask ID before the text.
 Replies come back only through `quarterdeck reply`, which Firstmate runs on
 the same machine. Quarterdeck never calls a model.
 

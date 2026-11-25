@@ -72,6 +72,9 @@ hand edits that match a selected answer. They also verify that an owner
 can edit and save an answer after replacing a rejected ask. Tests open
 **Messages** explicitly and exercise both response orders for overlapping
 acknowledgments and live updates.
+The whole-item checks cover the toolbar editor, the inbox target and retry ID,
+separate reply acknowledgment for the item and each question, and private
+reply images.
 
 For a screen change, also save one item of each kind, run `quarterdeck serve`,
 and check the Desk, each tab of the library pop-out (try 3, 30 and 200 saved items) and each item page at phone width (about 390 px) and

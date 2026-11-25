@@ -3,6 +3,17 @@
 Use an ask when you need something explained before you decide. An ask leaves
 the question's state and any saved answer intact.
 
+## Ask about the whole item
+
+Select **Ask Firstmate** in the page bar beside **Send answers**. Type in
+**Message about this item**, then select **Send ask**. The inbox note names
+the item, for example `ASK Q7 <ask id>`. Read replies in **Messages**
+under **Item conversation** above the questions. Opening that conversation
+acknowledges only its replies. Whole-item asks are also available on saved
+links, lists, and items whose questions are all closed.
+
+## Ask about one question
+
 1. Open the served question page and type or edit a draft by hand in
    **Your answer or question**. Selecting an option or using **Use all
    suggestions** fills an answer. **Ask Firstmate** is available for a
@@ -15,7 +26,7 @@ the question's state and any saved answer intact.
 3. Read the ask under **Messages**. Once saved, it shows who wrote it, its
    local time, and **Sent** or **Not delivered**.
 
-Firstmate's reply appears under the ask on the same card. It can include text,
+Firstmate's reply appears under the ask in its own conversation. It can include text,
 links, and images. Reload the served page to see new replies. Select
 **Messages** on the question to open its conversation and acknowledge the
 replies shown there. If it is already open, close and reopen it to
