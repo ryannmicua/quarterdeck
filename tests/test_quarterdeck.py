@@ -1355,9 +1355,11 @@ for (const [item, destination, expectedLinks] of [[first, 'q2.html#Q2.1', []], [
         chrome = shutil.which("google-chrome")
         if not chrome:
             self.skipTest("google-chrome is required for the Desk history browser test")
-        for title in ("Pier lights", "Tide tables", "Harbor chart"):
-            tags = ["--tag", "bug"] if title == "Tide tables" else []
-            self.add("questions", title, "Choose an option.", *tags, "--body-file", "-", stdin=json.dumps(QUESTIONS[:1]))
+        for title, project, tag in (("Pier lights", "Beta", "research"), ("Tide tables", "Alpha", "product-design"),
+                                    ("Harbor chart", "Beta", "research"), ("Berth markers", "Beta", "research")):
+            self.add("questions", title, "Choose an option.", "--project", project, "--tag", tag,
+                     "--body-file", "-", stdin=json.dumps(QUESTIONS[:1]))
+        self.assertEqual(self.run_cli("mark", "Q4", "answered", "--via", "chat")[0], 0)
         home = self.root / "home"
         inbox = home / "bin" / "fm-inbox.sh"
         inbox.parent.mkdir(parents=True)
@@ -1366,6 +1368,7 @@ for (const [item, destination, expectedLinks] of [[first, 'q2.html#Q2.1', []], [
         finished = threading.Event()
         results = []
         handler = quarterdeck.make_handler("Quarterdeck", "/qd", home=home)
+        run_cli = self.run_cli
 
         class HistoryTestHandler(handler):
             def do_POST(self):
@@ -1373,6 +1376,9 @@ for (const [item, destination, expectedLinks] of [[first, 'q2.html#Q2.1', []], [
                     results.append(self.rfile.read(int(self.headers["Content-Length"])).decode())
                     self.send_text(200, "")
                     finished.set()
+                elif self.path == "/qd/history-test-reclassify":
+                    code, _, error = run_cli("classify", "Q2", "--project", "Beta", "--tag", "research")
+                    self.send_text(200 if code == 0 else 500, error)
                 else:
                     super().do_POST()
 
@@ -1393,7 +1399,12 @@ const dialog = document.getElementById('library');
 const tab = document.getElementById('tab-answered');
 const panel = document.getElementById('panel-answered');
 const search = panel.querySelector('input');
+const project = panel.querySelector('select[name="project"]');
 const tag = panel.querySelector('select[name="tag"]');
+const choose = (filter, value) => {
+  filter.value = value;
+  filter.dispatchEvent(new Event('change', {bubbles:true}));
+};
 const shown = () => [...panel.querySelectorAll('.lib-item:not([hidden]) .lib-title')].map(link => link.getAttribute('href')).join();
 const find = text => {
   search.value = text;
@@ -1407,18 +1418,26 @@ try {
     check(desk.textContent.includes('Pier lights'), 'The open item did not start on the Desk');
     document.getElementById('open-library').click();
     tab.click();
-    tag.value = 'bug';
-    tag.dispatchEvent(new Event('change', {bubbles:true}));
+    choose(project, 'Alpha');
+    choose(tag, 'product-design');
     check(find('saffron') === 'q2.html', 'The original answer did not match its search');
     panel.querySelector('a[href="q2.html"]').click();
   } else if (visits <= 2) {
     check(!desk.textContent.includes('Pier lights'), 'The restored Desk still showed the completed item');
     check(dialog.open && tab.getAttribute('aria-selected') === 'true' && !panel.hidden,
           'The library did not reopen on Answered after item visit ' + visits);
-    check(tag.value === 'bug', 'The library did not restore its tag filter');
+    check(project?.value === 'Alpha' && project.checkVisibility(), 'The missing project filter was not restored');
+    check(tag?.value === 'product-design' && tag.checkVisibility() && tag.selectedOptions[0].text === 'product design',
+          'The missing tag choice was not restored');
     check(search.value === 'saffron' && shown() === '', 'The saved search was lost or still used the old answer');
     check(panel.querySelector('a[href="q1.html"]'), 'The completed item was missing from Answered');
-    check(find('ultramarine') === 'q2.html', 'The restored search did not find the corrected answer');
+    check(find('') === '' && panel.querySelector('[role="status"]').textContent.includes('No results'),
+          'The unavailable filters admitted unrelated results');
+    choose(project, '');
+    check(shown() === '', 'Clearing the project also cleared the tag');
+    choose(tag, '');
+    check(find('saffron') === '' && find('ultramarine') === 'q2.html',
+          'Clearing the filters did not restore search against fresh answers');
     if (visits === 1) window.addEventListener('pageshow', () => setTimeout(() => history.forward(), 0), {once:true});
     else window.addEventListener('pageshow', () => {
       dialog.addEventListener('close', () => {
@@ -1455,6 +1474,8 @@ window.addEventListener('pageshow', async () => {
           body:JSON.stringify(payload)});
         if (!response.ok || (await response.json()).delivery !== 'sent') throw new Error('The fixture answer was not delivered');
       }
+      const response = await fetch('history-test-reclassify', {method:'POST'});
+      if (!response.ok) throw new Error('The fixture item was not reclassified');
     }
     history.back();
   } catch (error) { fetch('history-test-result', {method:'POST', body:error.message}); }

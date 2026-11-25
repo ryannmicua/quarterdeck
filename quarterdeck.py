@@ -1788,13 +1788,24 @@ LIBRARY_SCRIPT = r"""
   for (const tab of tabs) {
     const panel = panelOf(tab);
     const search = searchOf(tab);
-    const filters = filtersOf(tab);
+    const savedFilters = tab === restoredTab ? libraryLookup.filters ?? {} : {};
     if (tab === restoredTab) {
       search.value = libraryLookup.query;
-      for (const select of filters) {
-        const value = libraryLookup.filters?.[select.name];
-        if ([...select.options].some(option => option.value === value)) select.value = value;
+      for (const template of panel.querySelectorAll('template[data-filter]')) {
+        if (savedFilters[template.dataset.filter]) {
+          template.parentElement.hidden = false;
+          template.replaceWith(template.content);
+        }
       }
+    }
+    const filters = filtersOf(tab);
+    for (const select of filters) {
+      const value = savedFilters[select.name];
+      if (!value) continue;
+      if (![...select.options].some(option => option.value === value)) {
+        select.add(new Option(select.name === 'tag' ? value.replaceAll('-', ' ') : value, value));
+      }
+      select.value = value;
     }
     const status = panel.querySelector('[data-status]');
     const none = panel.querySelector('[data-none]');
@@ -1813,8 +1824,8 @@ LIBRARY_SCRIPT = r"""
         row.hidden = !ok;
         hasMatch ||= ok;
       }
-      none.hidden = Boolean(query) || rows.length > 0;
       const active = query || filters.some(select => select.value);
+      none.hidden = Boolean(active) || rows.length > 0;
       status.textContent = active && !hasMatch ? 'No results match your search.' : '';
     };
     search.addEventListener('input', run);
@@ -1918,19 +1929,21 @@ def filter_data(item) -> str:
     return f' data-project="{esc(item.get("project", ""))}" data-tags="{esc("|".join(all_tags(item)))}"'
 
 
-def filter_bar(list_id: str, items) -> str:
+def filter_bar(list_id: str, items, *, restorable: bool = False) -> str:
     """Show distinct project choices and every tag in use."""
     project_values = {item.get("project", "") for item in items}
     projects = sorted(project_values - {""}, key=str.casefold) if len(project_values) > 1 else []
     tags = sorted({tag for item in items for tag in all_tags(item)})
     fields = ""
     for label, name, values in (("Project", "projects", projects), ("Tag", "tags", tags)):
-        if values:
+        if values or restorable:
             options = "".join(f'<option value="{esc(v)}">{esc(tag_text(v) if name == "tags" else v)}</option>' for v in values)
-            fields += f'<label>{label}<select name="{label.lower()}"><option value="">(All {name})</option>{options}</select></label>'
+            field = f'<label>{label}<select name="{label.lower()}"><option value="">(All {name})</option>{options}</select></label>'
+            fields += field if values else f'<template data-filter="{label.lower()}">{field}</template>'
     if not fields:
         return ""
-    return (f'<div class="filters" data-list="{list_id}">{fields}</div>')
+    hidden = "" if projects or tags else " hidden"
+    return f'<div class="filters" data-list="{list_id}"{hidden}>{fields}</div>'
 
 
 def no_match(list_id: str) -> str:
@@ -2355,7 +2368,7 @@ def library_row(item, *, served):
 
 def library_panel(name: str, items: list[dict[str, object]], empty: str, *, served: bool) -> str:
     list_id = f"{name}-list"
-    filters = filter_bar(list_id, items)
+    filters = filter_bar(list_id, items, restorable=served)
     rows = "".join(library_row(item, served=served) for item in items)
     listing = f'<ul class="lib-list" id="{list_id}">{rows}</ul>' if rows else ""
     if not served:
