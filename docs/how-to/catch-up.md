@@ -18,8 +18,7 @@ quarterdeck catch-up add \
 ```
 
 Only `--title` and `--summary` are required. Give the notice a short title and
-summarize the result in one sentence. The command prints a notice ID such as
-`C4`. See
+summarize the result in one sentence. See
 [notice field limits](../reference/item-store.md#catch-up-notices).
 
 - `--item Q3` links the notice to a saved item. The item must exist.
@@ -30,15 +29,16 @@ summarize the result in one sentence. The command prints a notice ID such as
 
 Unread notices show on the served Desk, above the questions, newest first.
 Each row shows the title, summary, saved date, and any links or project name.
-The heading shows a count when more than one notice is unread. The section is
-absent when nothing is unread.
+The section appears only when there is an unread notice.
 
 - Select **Mark read** on a row to read that notice.
-- Select **Mark all read** to read every notice shown.
+- When multiple notices are shown, the heading includes a count and
+  **Mark all read** acknowledges every notice shown.
 
-A read notice leaves the Desk at once. If the page cannot confirm the change,
-the rows and any unsent draft stay in place. Try again if the save fails.
-If a notice may already be read, Catch-up asks you to reload when ready.
+A notice leaves the Desk as soon as the page confirms it was marked read.
+If the page cannot confirm the change, the rows and any unsent draft stay
+in place. Try again if the save fails. If Catch-up says a notice may already
+be read, copy any unsent draft before reloading the page.
 
 To review or acknowledge notices from a terminal, see the
 [`catch-up` commands](../reference/cli-and-config.md#items).

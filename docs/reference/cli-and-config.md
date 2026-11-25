@@ -53,7 +53,7 @@ as `reply`.
 | `mark` | Sets question state, optionally for a whole questions item. `--via` is required with `answered` and accepted only with that state. Skips exit with status 0. See [Read answers](../how-to/read-answers.md) for which questions are marked. |
 | `classify` | Requires at least one classification option. Use `--project` for an item ID, `--kind` for a question ID, and `--tag` for either. See [how to change classification](../how-to/classify-items.md#change-it-later). |
 | `stats` | Prints a question activity table by default or JSON with `--json`. See [Read the report](../how-to/read-the-report.md) for date filtering and field definitions. |
-| `catch-up` | Saves and reads Catch-up notices. `catch-up add` prints the new ID, such as `C4`. `catch-up list` prints unread notices, newest first. `catch-up read` marks the named notices, or every unread one with `--all`, as read. See [Catch up on finished work](../how-to/catch-up.md). |
+| `catch-up` | Saves and reads Catch-up notices. `catch-up add` prints the new ID, such as `C4`. `catch-up list` prints the ID, UTC saved date and title of each unread notice, newest first. `catch-up read` marks the named notices, or every unread one with `--all`, as read. See [Catch up on finished work](../how-to/catch-up.md). |
 | `remove` | Deletes an item. Its ID is never used again. See [image removal](item-store.md#store-layout). |
 
 ### Pages
