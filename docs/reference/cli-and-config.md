@@ -79,8 +79,9 @@ serves the Desk (`/` or `/index.html` under the base path). Each JSON line
 holds the UTC time with milliseconds (`ts`), the `page` value `main`, and
 `device`, set to `phone` for a phone browser or `desktop` otherwise, judged
 from the `User-Agent`. The record holds no address, item or content. Item
-pages, images and the workers endpoint are not logged. Quarterdeck has no
-login, so every Desk load counts, whoever makes it. Logging needs no flag.
+pages, images, the Workers page and its JSON endpoints are not logged.
+Quarterdeck has no login, so every Desk load counts, whoever makes it.
+Logging needs no flag.
 Quarterdeck keeps existing records without automatic pruning. It rejects
 symbolic links, requires a regular file and sets the file permissions to
 `0600` before appending. If a visit cannot be logged, the Desk is still served
@@ -168,14 +169,34 @@ intact. Every ID must belong to the named conversation. The response field
 
 ### Workers endpoint
 
-`GET /workers.json` (under any `base_path`) returns a fresh fleet reading. The
+All Workers routes follow the configured `base_path`. `GET /workers.html`
+serves the Workers page. When `firstmate_home` is set, the page reads
+`GET /workers-saved.json` and calls `GET /workers.json?reuse=1` if that lookup
+succeeds and reports a stale reading. **Check workers** calls
+`GET /workers.json` when the page has no request in progress.
+
+`GET /workers-saved.json` returns `{"snapshot": ..., "stale": ...}` without
+reading the home. `snapshot` is the last reading from `workers.json` in the
+same format, or `null` when the server has none. The server keeps the reading
+in memory until `serve` stops and returns it even when it is stale. `stale` is
+`true` when there is no snapshot or more than one hour has elapsed since the
+last successful check. The server uses `CLOCK_BOOTTIME` where available, which
+includes time spent suspended, and falls back to `time.monotonic()` elsewhere.
+The page displays the fleet's
+`observed_at` timestamp. The endpoint returns 404 when `firstmate_home` is absent.
+
+`GET /workers.json` runs and saves a new reading.
+With the exact query `?reuse=1`, it shares the result of a check already in
+progress or reuses a fresh saved reading. Otherwise it starts a new check.
+A failed read keeps the previous reading. The
 [snapshot command](../explanation/privacy-and-architecture.md#what-quarterdeck-reads-and-writes)
 runs with `FM_HOME` set to the configured home. Other inherited `FM_` variables
-are removed. The endpoint returns 404 when `firstmate_home` is absent. It
-returns 502 immediately if the command is already running. It also returns 502
-if the command fails, exceeds 60 seconds, or returns invalid snapshot data.
+are removed. The endpoint returns 404 when `firstmate_home` is absent.
+Requests without the exact reuse query return 502 immediately if a check is
+already in progress. The endpoint also returns 502 if the command fails,
+exceeds 60 seconds, or returns invalid snapshot data.
 
-| Field in `workers.json` | Meaning |
+| Field in a snapshot | Meaning |
 | --- | --- |
 | `observed_at` | UTC time the snapshot was taken. |
 | `workers` | Ordinary tasks whose terminals are open, one row per ID. Each row has `name`, `project`, `activity`, `status`, `active_at` and `links`. |

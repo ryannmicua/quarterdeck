@@ -32,6 +32,7 @@ from datetime import datetime, timezone
 from html import escape
 from html.parser import HTMLParser
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 from urllib.parse import urljoin
 
@@ -548,6 +549,20 @@ def anchor_destinations(page: str) -> set[str]:
     return destinations
 
 
+def has_element_id(page: str, tag_name: str, element_id: str) -> bool:
+    class Elements(HTMLParser):
+        found = False
+
+        def handle_starttag(self, tag, attrs):
+            if tag == tag_name and ("id", element_id) in attrs:
+                self.found = True
+
+    parser = Elements()
+    parser.feed(page)
+    parser.close()
+    return parser.found
+
+
 class QuestionAddressTests(StoreCase):
     def test_web_addresses_in_question_text_become_links_but_answers_do_not_change(self) -> None:
         prompt_url, context_url, option_url, suggestion_url = (
@@ -840,7 +855,7 @@ class ServeTests(StoreCase):
         self.assertNotIn("<textarea", closed)
         self.assertEqual(0, self.run_cli("mark", "Q3.2", "open")[0])
         self.assertEqual(set(self.store()["items"][2]["answers"]["2"]), {"state", "revision"})
-        desk = self.fetch(port, "/qd/")[1].split("<h1>Desk</h1>", 1)[1].split('<section id="workers">', 1)[0]
+        desk = self.fetch(port, "/qd/")[1].split("<h1>Desk</h1>", 1)[1]
         self.assertNotIn("Which colour for the quay?", desk)
         self.assertNotIn("Merge the tide tables now?", desk)
         self.assertIn('<td>1 of 2 open</td>', desk)
@@ -856,7 +871,7 @@ class ServeTests(StoreCase):
         self.add("questions", "Delivery to retry", "A choice already made.", "--body-file", "-", stdin=json.dumps(delivery))
         port = self.start("/qd")
         self.assertEqual(self.post_answer(port, "Q2.1", "Yes")[0], 200)
-        desk = self.fetch(port, "/qd/")[1].split("<h1>Desk</h1>", 1)[1].split('<section id="workers">', 1)[0]
+        desk = self.fetch(port, "/qd/")[1].split("<h1>Desk</h1>", 1)[1]
         self.assertIn('<tr class="work"><th scope="row"><a class="card-link" href="q2.html"', desk)
         self.assertIn('<tr class="work next"><th scope="row"><a class="card-link" href="q1.html#Q1.1"', desk)
         self.assertNotIn("Merge the tide tables now?", desk)
@@ -2015,8 +2030,9 @@ check(!button('send').disabled && button('send').textContent === 'Send 2 answers
             self.assertIn("Tide launch decisions", body)
             self.assertNotIn("Legacy work item", body)
             self.assertNotIn(str(home), body)
-            self.assertNotIn('id="refresh-workers"', body)
+            self.assertFalse(has_element_id(body, "button", "refresh-workers"))
             self.assertEqual(self.fetch(port, "/qd/workers.json")[0], 404)
+            self.assertEqual(self.fetch(port, "/qd/workers-saved.json")[0], 404)
             before = quarterdeck.store_path().read_bytes()
             self.assertEqual(self.fetch(port, "/", method="POST")[0], 405)
             self.assertEqual(quarterdeck.store_path().read_bytes(), before)
@@ -2311,18 +2327,21 @@ class WorkersTests(StoreCase):
     def test_a_busy_snapshot_rejects_the_next_request(self) -> None:
         port = self.start("/qd", workers_home=self.make_home([]))
         entered, release = threading.Event(), threading.Event()
-        run_snapshot = quarterdeck.run_snapshot
+        workers_snapshot = quarterdeck.workers_snapshot
 
         def waiting_snapshot(home):
+            snapshot = workers_snapshot(home)
             entered.set()
             release.wait(timeout=10)
-            return run_snapshot(home)
+            return snapshot
 
-        with patch.object(quarterdeck, "run_snapshot", waiting_snapshot), ThreadPoolExecutor(max_workers=1) as pool:
+        with patch.object(quarterdeck, "workers_snapshot", waiting_snapshot), ThreadPoolExecutor(max_workers=1) as pool:
             first = pool.submit(self.workers, port)
             try:
                 self.assertTrue(entered.wait(timeout=5))
-                self.assertEqual(self.workers(port)[0], 502)
+                error = {"error": "The workers could not be read."}
+                self.assertEqual(self.workers(port), (502, error))
+                self.assertIsNone(self.workers(port, "/qd/workers-saved.json")[1]["snapshot"])
             finally:
                 release.set()
             self.assertEqual(first.result()[0], 200)
@@ -2339,39 +2358,119 @@ class WorkersTests(StoreCase):
     def test_without_a_home_there_is_no_endpoint_and_the_page_says_so(self) -> None:
         port = self.start("/qd")
         self.assertEqual(self.fetch(port, "/qd/workers.json")[0], 404)
-        page = self.fetch(port, "/qd/")[1]
+        self.assertEqual(self.fetch(port, "/qd/workers-saved.json")[0], 404)
+        page = self.fetch(port, "/qd/workers.html")[1]
         self.assertIn("Workers show here once firstmate_home names a Firstmate home.", page)
-        self.assertNotIn("refresh-workers", page)
+        self.assertFalse(has_element_id(page, "button", "refresh-workers"))
 
-    def test_the_workers_section_follows_the_desk_and_obeys_host_checks(self) -> None:
+    def test_the_desk_links_to_the_workers_page_and_never_reads_the_fleet(self) -> None:
+        port = self.start("/qd", workers_home=self.make_home([snapshot_task("Wren")]))
+        status, page, _ = self.fetch(port, "/qd/")
+        self.assertEqual(status, 200)
+        self.assertIn('<a href="workers.html">Workers</a>', page)
+        self.assertFalse(has_element_id(page, "section", "workers"))
+        self.assertFalse(has_element_id(page, "button", "refresh-workers"))
+        status, workers_page, _ = self.fetch(port, "/qd/workers.html")
+        self.assertEqual(status, 200)
+        self.assertIn('id="refresh-workers">Check workers</button>', workers_page)
+        self.assertEqual(workers_page.count("<h1>"), 1)
+
+        if not shutil.which("google-chrome"):
+            self.skipTest("google-chrome is required for the Desk browser test")
+        steps = """
+  await quiet();
+  const workerPaths = new Set(['/qd/workers-saved.json', '/qd/workers.json']);
+  check(!performance.getEntriesByType('resource').some(entry => workerPaths.has(new URL(entry.name).pathname)),
+        'The Desk made a Workers request');
+"""
+        with patch.object(quarterdeck, "list_page", self.instrumented_page(quarterdeck.list_page, steps)), \
+                patch.object(quarterdeck, "run_snapshot", wraps=quarterdeck.run_snapshot) as run_snapshot:
+            outcome, stderr = self.browser_page(port, "/qd/")
+            run_snapshot.assert_not_called()
+        self.assertEqual(outcome, "PASS", stderr)
+
+    def test_the_workers_page_obeys_host_checks(self) -> None:
         port = self.start("/qd", workers_home=self.make_home([]))
-        page = self.fetch(port, "/qd/")[1]
-        self.assertEqual(page.count("<h1>"), 1)
-        self.assertLess(page.index("<h1>Desk</h1>"), page.index("Workers"))
-        self.assertIn('id="refresh-workers">Refresh workers</button>', page)
-        self.assertEqual(self.fetch(port, "/qd/workers.json", host="intruder.example")[0], 403)
+        for path in ("/qd/workers.json", "/qd/workers-saved.json", "/qd/workers.html"):
+            self.assertEqual(self.fetch(port, path, host="intruder.example")[0], 403, path)
 
-    def test_the_page_refreshes_on_entry_and_on_the_button_only(self) -> None:
-        chrome = shutil.which("google-chrome")
-        if not chrome:
-            self.skipTest("google-chrome is required for the workers refresh browser test")
-        home = self.make_home([snapshot_task("Wren", decisions=["map-scale"])])
+    def test_a_reading_is_saved_in_memory_and_goes_stale_after_an_hour(self) -> None:
+        port = self.start("/qd", workers_home=self.make_home())
+        saved_path = "/qd/workers-saved.json"
+        self.assertEqual(self.workers(port, saved_path), (200, {"snapshot": None, "stale": True}))
+        clock = MagicMock()
+        with patch.object(quarterdeck, "time", SimpleNamespace(monotonic=clock)):
+            for checked_at, source_time in ((100, "2000-01-01T00:00:00Z"), (4000, "2099-01-01T00:00:00Z")):
+                with self.subTest(source_time=source_time):
+                    self.make_home(body=json.dumps({"generated": source_time, "tasks": []}))
+                    clock.return_value = checked_at
+                    status, snapshot = self.workers(port)
+                    self.assertEqual(status, 200)
+                    self.assertEqual(snapshot["observed_at"], source_time)
+                    for elapsed, stale in ((0, False), (3600, False), (3601, True)):
+                        clock.return_value = checked_at + elapsed
+                        self.assertEqual(self.workers(port, saved_path), (200, {"snapshot": snapshot, "stale": stale}))
+
+    def test_suspend_time_expires_the_reading_for_lookup_and_automatic_refresh(self) -> None:
+        port = self.start("/qd", workers_home=self.make_home([snapshot_task("Wren")]))
+        clock = SimpleNamespace(CLOCK_BOOTTIME=7, CLOCK_MONOTONIC=1)
+        times = {clock.CLOCK_BOOTTIME: 100, clock.CLOCK_MONOTONIC: 100}
+        clock.clock_gettime = times.__getitem__
+        clock.monotonic = lambda: times[clock.CLOCK_MONOTONIC]
+        saved_path = "/qd/workers-saved.json"
+        with patch.object(quarterdeck, "time", clock):
+            status, initial = self.workers(port)
+            self.assertEqual(status, 200)
+            self.assertEqual(self.workers(port, saved_path), (200, {"snapshot": initial, "stale": False}))
+            times[clock.CLOCK_BOOTTIME] += 3601
+            self.assertEqual(self.workers(port, saved_path), (200, {"snapshot": initial, "stale": True}))
+            self.make_home([snapshot_task("Bracken")])
+            status, refreshed = self.workers(port, "/qd/workers.json?reuse=1")
+            self.assertEqual(status, 200)
+            self.assertEqual([row["name"] for row in refreshed["workers"]], ["Bracken"])
+            self.assertEqual(self.workers(port, saved_path), (200, {"snapshot": refreshed, "stale": False}))
+
+    def test_automatic_refresh_rechecks_freshness_after_another_visitor_refreshes(self) -> None:
+        port = self.start("/qd", workers_home=self.make_home([snapshot_task("Wren")]))
+        automatic_path = "/qd/workers.json?reuse=1"
+        saved_path = "/qd/workers-saved.json"
+        with patch.object(quarterdeck, "workers_clock", return_value=100) as clock:
+            self.assertEqual(self.workers(port)[0], 200)
+            clock.return_value += 3601
+            for _ in range(2):
+                self.assertTrue(self.workers(port, saved_path)[1]["stale"])
+
+            self.make_home([snapshot_task("Bracken")])
+            status, refreshed = self.workers(port, automatic_path)
+            self.assertEqual(status, 200)
+            self.assertEqual([row["name"] for row in refreshed["workers"]], ["Bracken"])
+
+            self.make_home([])
+            self.assertEqual(self.workers(port, automatic_path), (200, refreshed))
+            status, direct = self.workers(port)
+            self.assertEqual(status, 200)
+            self.assertEqual(direct["workers"], [])
+            self.make_home(code=1)
+            self.assertEqual(self.workers(port, "/qd/workers.json?reuse=1&extra=1")[0], 502)
+            self.assertEqual(self.workers(port, saved_path)[1]["snapshot"], direct)
+
+    def test_a_failed_reading_keeps_the_saved_one(self) -> None:
+        home = self.make_home([snapshot_task("Wren")])
         port = self.start("/qd", workers_home=home)
-        next_snapshot = {
-            "generated": "2026-03-02T13:39:00Z",
-            "tasks": [snapshot_task("Wren", exists=False), snapshot_task("Bracken", state="paused")],
-        }
-        list_page = quarterdeck.list_page
-        run_snapshot = quarterdeck.run_snapshot
+        snapshot = self.workers(port)[1]
+        (home / "snapshot.json").write_text("not json")
+        self.assertEqual(self.workers(port)[0], 502)
+        self.assertEqual(self.workers(port, "/qd/workers-saved.json")[1]["snapshot"], snapshot)
 
-        def advance_fixture(home):
-            snapshot = run_snapshot(home)
-            if snapshot["generated"] == SNAPSHOT_TIME:
-                (home / "snapshot.json").write_text(json.dumps(next_snapshot))
-            return snapshot
+    def browser_page(self, port, route="/qd/workers.html", *, budget=5000):
+        chrome = shutil.which("google-chrome")
+        result = subprocess.run([chrome, "--headless", "--disable-background-networking", "--no-first-run",
+                                 f"--user-data-dir={self.root / 'browser'}", "--dump-dom", f"--virtual-time-budget={budget}",
+                                 f"http://127.0.0.1:{port}{route}"],
+                                capture_output=True, text=True, timeout=30, check=True)
+        return result.stdout.partition('<output id="browser-result">')[2].partition("</output>")[0], result.stderr
 
-        def instrumented_page(*args, **kwargs):
-            return list_page(*args, **kwargs).replace("</body>", """
+    BROWSER_HELPERS = """
 <output id="browser-result">Incomplete</output>
 <script>
 const result = document.getElementById('browser-result');
@@ -2380,43 +2479,218 @@ const roster = document.getElementById('workers-list');
 const button = document.getElementById('refresh-workers');
 const settled = () => new Promise(resolve => {
   const watcher = new MutationObserver(() => {
-    if (!button.hasAttribute('aria-disabled')) {
-      watcher.disconnect();
-      resolve();
-    }
+    if (!button.hasAttribute('aria-disabled')) { watcher.disconnect(); resolve(); }
   });
   watcher.observe(button, {attributes: true});
 });
-const requestCount = () => performance.getEntriesByName(new URL('workers.json', location.href).href).length;
+const requestCount = name => performance.getEntriesByName(new URL(name, location.href).href).length;
 const check = (condition, message) => { if (!condition) throw new Error(message); };
-(async () => {
+const quiet = () => new Promise(resolve => setTimeout(resolve, 1500));
+"""
+
+    def instrumented_page(self, page, steps):
+        def instrumented(*args, **kwargs):
+            return page(*args, **kwargs).replace(
+                "</body>", self.BROWSER_HELPERS + "(async () => {\n" + steps +
+                "\n  result.textContent = 'PASS';\n})().catch(error => { result.textContent = error.message; });\n</script>\n</body>")
+        return instrumented
+
+    def test_a_missing_reading_is_fetched_on_entry_and_then_only_on_the_button(self) -> None:
+        if not shutil.which("google-chrome"):
+            self.skipTest("google-chrome is required for the workers browser test")
+        skerry = snapshot_task("Skerry", kind="secondmate", alive="alive")
+        tern = snapshot_task("Tern", kind="secondmate", alive="alive")
+        home = self.make_home([snapshot_task("Wren", decisions=["map-scale"]), skerry, tern])
+        port = self.start("/qd", workers_home=home)
+        next_snapshot = {
+            "generated": "2026-03-02T13:39:00Z",
+            "tasks": [snapshot_task("Wren", exists=False), snapshot_task("Bracken", state="paused"), skerry],
+        }
+        run_snapshot = quarterdeck.run_snapshot
+
+        def advance_fixture(home):
+            snapshot = run_snapshot(home)
+            if snapshot["generated"] == SNAPSHOT_TIME:
+                (home / "snapshot.json").write_text(json.dumps(next_snapshot))
+            return snapshot
+
+        steps = """
+  const headings = () => [...document.querySelectorAll('#workers :is(h1,h2,h3,h4,h5,h6)')]
+    .map(heading => heading.tagName + ' ' + heading.textContent).join('|');
+  check(statusLine.textContent === 'Loading workers', 'Entry without a reading must show that it is loading');
+  button.click();
   await settled();
-  check(requestCount() === 1, 'Expected one worker request on entry');
+  check(requestCount('workers-saved.json') === 1, 'Expected one saved read on entry');
+  check(requestCount('workers.json?reuse=1') === 1, 'Expected one worker fetch on entry with nothing saved');
+  check(requestCount('workers.json') === 0, 'A check overlapped entry');
   check(roster.textContent.includes('Wren') && !roster.textContent.includes('Bracken'), 'The initial roster did not appear');
+  check(headings() === 'H1 Workers|H2 Second mates (2)', 'Second mates must follow Workers at heading level 2');
   check(roster.querySelector('.status.exception')?.textContent === 'Question asked', 'The exception badge was missing');
   check(statusLine.querySelector('time')?.dateTime === '2026-03-02T13:40:00Z', 'The initial observation time was wrong');
   await new Promise(resolve => setTimeout(resolve, 61000));
-  check(requestCount() === 1, 'A worker request ran while the page was idle');
+  check(requestCount('workers.json?reuse=1') === 1 && requestCount('workers.json') === 0,
+        'A worker request ran while the page was idle');
   const refreshed = settled();
   button.click();
   await refreshed;
-  check(requestCount() === 2, 'The refresh button did not make exactly one worker request');
+  check(requestCount('workers.json') === 1, 'The check button did not make exactly one worker request');
   check(!roster.textContent.includes('Wren') && roster.textContent.includes('Bracken'), 'The refreshed roster did not replace the old one');
+  check(headings() === 'H1 Workers|H2 Second mates', 'A single second mate must keep the level 2 heading');
   check(roster.querySelector('.status')?.textContent === 'Unknown' && !roster.querySelector('.status.exception'),
         'Unknown did not use the ordinary badge');
   check(statusLine.querySelector('time')?.dateTime === '2026-03-02T13:39:00Z', 'The refresh did not show the corrected observation time');
-  result.textContent = 'PASS';
-})().catch(error => { result.textContent = error.message; });
-</script>
-</body>""")
+"""
+        with patch.object(quarterdeck, "workers_page", self.instrumented_page(quarterdeck.workers_page, steps)), \
+                patch.object(quarterdeck, "run_snapshot", advance_fixture):
+            outcome, stderr = self.browser_page(port, budget=65000)
+        self.assertEqual(outcome, "PASS", stderr)
 
-        with patch.object(quarterdeck, "list_page", instrumented_page), patch.object(quarterdeck, "run_snapshot", advance_fixture):
-            result = subprocess.run([chrome, "--headless", "--disable-background-networking", "--no-first-run",
-                                     f"--user-data-dir={self.root / 'browser'}", "--dump-dom", "--virtual-time-budget=65000",
-                                     f"http://127.0.0.1:{port}/qd/"],
-                                    capture_output=True, text=True, timeout=30, check=True)
-        browser_result = result.stdout.partition('<output id="browser-result">')[2].partition("</output>")[0]
-        self.assertEqual(browser_result, "PASS", result.stderr)
+    def test_an_expired_saved_reading_is_replaced_on_entry(self) -> None:
+        if not shutil.which("google-chrome"):
+            self.skipTest("google-chrome is required for the workers browser test")
+        port = self.start("/qd", workers_home=self.make_home([snapshot_task("Wren")]))
+        steps = """
+  const refreshed = settled();
+  await new Promise(resolve => {
+    const watcher = new MutationObserver(() => {
+      if (roster.textContent.includes('Wren')) { watcher.disconnect(); resolve(); }
+    });
+    watcher.observe(roster, {childList: true});
+  });
+  check(statusLine.textContent.startsWith('Refreshing workers.') &&
+        statusLine.querySelector('time')?.dateTime === '2026-03-02T13:40:00Z' &&
+        button.getAttribute('aria-disabled') === 'true', 'The saved time and refresh progress must appear together');
+  await refreshed;
+  check(requestCount('workers-saved.json') === 1 && requestCount('workers.json?reuse=1') === 1 &&
+        requestCount('workers.json') === 0, 'Entry did not request a single automatic check');
+  check(!roster.textContent.includes('Wren') && roster.textContent.includes('Bracken'),
+        'The expired roster was not replaced');
+  check(statusLine.textContent.startsWith('Last checked ') && statusLine.querySelector('time')?.dateTime === '2026-03-02T14:45:00Z',
+        'The completed refresh did not show its new time');
+"""
+        with patch.object(quarterdeck, "workers_clock", return_value=100) as clock:
+            self.assertEqual(self.workers(port)[0], 200)
+            clock.return_value += 3601
+            self.make_home(body=json.dumps({"generated": "2026-03-02T14:45:00Z", "tasks": [snapshot_task("Bracken")]}))
+            with patch.object(quarterdeck, "workers_page", self.instrumented_page(quarterdeck.workers_page, steps)), \
+                    patch.object(quarterdeck, "run_snapshot", wraps=quarterdeck.run_snapshot) as run_snapshot:
+                outcome, stderr = self.browser_page(port)
+                run_snapshot.assert_called_once()
+        self.assertEqual(outcome, "PASS", stderr)
+
+    def test_a_fresh_saved_reading_is_shown_without_a_fetch_until_the_button(self) -> None:
+        if not shutil.which("google-chrome"):
+            self.skipTest("google-chrome is required for the workers browser test")
+        port = self.start("/qd", workers_home=self.make_home([snapshot_task("Wren")]))
+        self.assertEqual(self.workers(port)[0], 200)  # saves the reading
+        steps = """
+  await quiet();
+  check(requestCount('workers-saved.json') === 1, 'Expected one saved read on entry');
+  check(requestCount('workers.json') === 0 && requestCount('workers.json?reuse=1') === 0,
+        'A fresh saved reading was fetched again');
+  check(roster.textContent.includes('Wren'), 'The saved roster did not appear');
+  check(statusLine.textContent.startsWith('Last checked ') && statusLine.querySelector('time')?.dateTime === '2026-03-02T13:40:00Z',
+        'The fresh saved reading did not show its settled time');
+  const checked = settled();
+  button.click();
+  check(statusLine.textContent === 'Refreshing workers', 'The manual check did not show its progress');
+  await checked;
+  check(requestCount('workers.json') === 1 && requestCount('workers.json?reuse=1') === 0,
+        'The check button did not make exactly one worker request');
+"""
+        with patch.object(quarterdeck, "workers_page", self.instrumented_page(quarterdeck.workers_page, steps)):
+            outcome, stderr = self.browser_page(port)
+        self.assertEqual(outcome, "PASS", stderr)
+
+    def test_overlapping_workers_pages_receive_the_same_refresh(self) -> None:
+        if not shutil.which("google-chrome"):
+            self.skipTest("google-chrome is required for the workers browser test")
+        home = self.make_home([snapshot_task("Wren")])
+        port = self.start("/qd", workers_home=home)
+        first_started, second_entered, second_returned = (threading.Event() for _ in range(3))
+        run_snapshot = quarterdeck.run_snapshot
+        refresh = quarterdeck.SavedWorkers.refresh
+
+        def hold_snapshot(home):
+            first_started.set()
+            self.assertTrue(second_entered.wait(timeout=5), "the second page never requested a refresh")
+            # Keep the first check active until a rejecting handler returns or a waiting handler can join.
+            second_returned.wait(timeout=0.5)
+            return run_snapshot(home)
+
+        def observe_refresh(saved, home, *, reuse):
+            overlapping = first_started.is_set()
+            if overlapping:
+                second_entered.set()
+            try:
+                return refresh(saved, home, reuse=reuse)
+            finally:
+                if overlapping:
+                    second_returned.set()
+
+        steps = """
+  if (window !== window.top) return;
+  const other = document.createElement('iframe');
+  const otherSettled = new Promise(resolve => {
+    other.addEventListener('load', () => {
+      const otherButton = other.contentDocument.getElementById('refresh-workers');
+      if (!otherButton.hasAttribute('aria-disabled')) { resolve(); return; }
+      const watcher = new MutationObserver(() => {
+        if (!otherButton.hasAttribute('aria-disabled')) { watcher.disconnect(); resolve(); }
+      });
+      watcher.observe(otherButton, {attributes: true});
+    }, {once: true});
+  });
+  other.src = location.href;
+  document.body.append(other);
+  await Promise.all([settled(), otherSettled]);
+  for (const [label, page] of [['first', document], ['second', other.contentDocument]]) {
+    const list = page.getElementById('workers-list');
+    const status = page.getElementById('workers-status');
+    check(list.textContent.includes('Bracken') && !list.textContent.includes('Wren') &&
+          status.querySelector('time')?.dateTime === '2026-03-02T14:45:00Z',
+          'Expected the refreshed roster and time in the ' + label + ' view. ' + status.textContent);
+  }
+"""
+        with patch.object(quarterdeck, "workers_clock", return_value=100) as clock:
+            self.assertEqual(self.workers(port)[0], 200)
+            clock.return_value += 3601
+            (home / "snapshot.json").write_text(json.dumps({
+                "generated": "2026-03-02T14:45:00Z", "tasks": [snapshot_task("Bracken")],
+            }))
+            with patch.object(quarterdeck, "workers_page", self.instrumented_page(quarterdeck.workers_page, steps)), \
+                    patch.object(quarterdeck.SavedWorkers, "refresh", observe_refresh), \
+                    patch.object(quarterdeck, "run_snapshot", side_effect=hold_snapshot) as snapshot:
+                outcome, stderr = self.browser_page(port)
+                self.assertEqual(outcome, "PASS", stderr)
+                snapshot.assert_called_once()
+
+    def test_failed_saved_lookup_waits_for_a_manual_check(self) -> None:
+        if not shutil.which("google-chrome"):
+            self.skipTest("google-chrome is required for the workers browser test")
+        port = self.start("/qd", workers_home=self.make_home([snapshot_task("Wren")]))
+        steps = """
+  await settled();
+  check(statusLine.textContent.includes('Workers could not be loaded'), 'The saved lookup failure was not shown');
+  check(requestCount('workers.json') === 0 && requestCount('workers.json?reuse=1') === 0,
+        'Entry checked the fleet after a failed saved lookup');
+  const checked = settled();
+  button.click();
+  await checked;
+  check(requestCount('workers.json') === 1 && requestCount('workers.json?reuse=1') === 0 && roster.textContent.includes('Wren'),
+        'A manual check did not recover from the failed lookup');
+"""
+        page = self.instrumented_page(quarterdeck.workers_page, steps)
+
+        def failed_saved_page(*args, **kwargs):
+            return page(*args, **kwargs).replace("</head>", """<script>
+const realFetch = window.fetch.bind(window);
+window.fetch = (path, options) => realFetch(path === 'workers-saved.json' ? 'unavailable.json' : path, options);
+</script></head>""", 1)
+
+        with patch.object(quarterdeck, "workers_page", failed_saved_page):
+            outcome, stderr = self.browser_page(port)
+        self.assertEqual(outcome, "PASS", stderr)
 
     def test_explicit_home_enables_workers_only_when_serving(self) -> None:
         home = self.make_home([snapshot_task("Wren")])
@@ -2430,7 +2704,8 @@ const check = (condition, message) => { if (!condition) throw new Error(message)
         with self.serve_cli("--config", str(config), "--base-path", "/qd") as port:
             status, page, _ = self.fetch(port, "/qd/")
             self.assertEqual(status, 200)
-            self.assertIn('id="refresh-workers">Refresh workers</button>', page)
+            self.assertIn('<a href="workers.html">Workers</a>', page)
+            self.assertIn('id="refresh-workers">Check workers</button>', self.fetch(port, "/qd/workers.html")[1])
             status, body, _ = self.fetch(port, "/qd/workers.json")
             self.assertEqual(status, 200)
             self.assertEqual([worker["name"] for worker in json.loads(body)["workers"]], ["Wren"])
@@ -2444,6 +2719,7 @@ class ServiceAndHelpTests(StoreCase):
                 code, _, warning = self.run_cli("serve", "--host", host)
                 self.assertEqual(code, 0, warning)
                 self.assertEqual("start conversations" in warning, host == "192.0.2.10")
+                self.assertEqual("read or check the worker and second mate roster" in warning, host == "192.0.2.10")
         help_output = io.StringIO()
         with redirect_stdout(help_output), self.assertRaises(SystemExit) as exit_info:
             quarterdeck.main(["serve", "--help"])
@@ -3554,7 +3830,7 @@ class ConversationTests(ImageCase):
         self.assertEqual(self.run_cli("reply", "Q4.2", "--ask", self.messages("2", 3)[0]["id"], "--text", "Blue is the newer sign.")[0], 0)
         _, reply = self.messages("2", 3)
         for _ in range(2):
-            desk = self.fetch(port, "/qd/")[1].split("<h1>Desk</h1>", 1)[1].split('<section id="workers">', 1)[0]
+            desk = self.fetch(port, "/qd/")[1].split("<h1>Desk</h1>", 1)[1]
             self.assertIn('<td>2 of 2 open</td><td><span class="badge">Replied</span></td>', desk)
             self.assertIn('<tr class="work next"><th scope="row"><a class="card-link" href="q4.html#Q4.1"', desk)
             page = self.fetch(port, "/qd/q4.html")[1]
@@ -3593,7 +3869,7 @@ class ConversationTests(ImageCase):
         port = self.start("/qd", ask_home=self.inbox())
         self.ask(port, "Q3.2", "How does it look?")
         self.assertEqual(self.run_cli("reply", "Q3.2", "--ask", self.messages("2", 2)[0]["id"], "--text", "Looked at it.")[0], 0)
-        desk = self.fetch(port, "/qd/")[1].split("<h1>Desk</h1>")[1].split('<section id="workers">')[0]
+        desk = self.fetch(port, "/qd/")[1].split("<h1>Desk</h1>")[1]
         links = re.findall(r'<a class="card-link" href="[^"]+"><span class="id">(Q\d+)</span> ([^<]+)</a>', desk)
         self.assertEqual(links, [("Q5", "Newest decision"), ("Q4", "Two decisions"), ("Q3", "Tide launch decisions")])
         self.assertEqual(desk.count('<tr class="work next"'), 1)

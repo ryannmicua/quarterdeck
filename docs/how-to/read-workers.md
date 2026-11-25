@@ -1,27 +1,33 @@
-# Read the workers section
+# Read the Workers page
 
-Open **Workers** on the served Desk to see who is running in your
-Firstmate home.
+Open **Workers** from the served Desk to see who is running in your
+Firstmate home. Loading the Desk never runs the fleet snapshot.
 
 ## Before you start
 
 Set [`firstmate_home`](../reference/cli-and-config.md#json-configuration) in the
-config, then restart `quarterdeck serve`. Without that setting, **Workers**
-shows a setup message. Rendered snapshots omit the section.
+config, then restart `quarterdeck serve`. Without that setting, the Workers
+page shows a setup message. Rendered snapshots have no Workers page.
 
 ## Read the list
 
-1. Open the served page. The section reads the home once and shows **Loading
-   workers** while it waits.
-2. Read each row. The name and status come first, followed by the project,
+1. Select **Workers** on the Desk. If a reading is saved, the page shows it with
+   **Last checked** and its time in your local time zone.
+2. If the saved reading is missing or
+   [has expired](../reference/cli-and-config.md#workers-endpoint), the page
+   requests a check. While refreshing an expired reading, it shows
+   **Refreshing workers** alongside the saved time.
+3. Select **Check workers** to read the home again once the current request
+   finishes. The page checks automatically only on entry.
+4. Read each row. The name and status come first, followed by the project,
    activity, time of last activity or contact, and links when available.
    Row times use your local date and time.
-3. Select **Refresh workers** to read the home again. The page never refreshes
-   the list by itself. **Last refreshed** shows the time of the last successful
-   read, in your local time zone.
+
+If the page needs a fresh reading and a check is already running, the page
+waits for its result and keeps any saved roster and its time visible.
 
 A worker is listed while its terminal is open, and leaves the list on the next
-successful refresh after the terminal closes. Second mates are listed
+successful check after the terminal closes. Second mates are listed
 separately under **Second mates**, even when they have no terminal.
 
 ## What the statuses mean
@@ -53,10 +59,10 @@ the row can show **Unreachable** when the closed entry comes first. See the
 [endpoint reference](../reference/cli-and-config.md#workers-endpoint) for
 how duplicate rows are selected.
 
-## If a refresh fails
+## If a check fails
 
-The page keeps the last list in the tab and says **Refresh failed** with the
-time of that list. If the first read fails, the page says **Workers could not
-be loaded**. Select **Refresh workers** to try again. See the
+The page keeps the last list in the tab and says **Check failed** with the
+time of that list. If there is no list, the page says **Workers could not
+be loaded**. Select **Check workers** to try again. See the
 [endpoint reference](../reference/cli-and-config.md#workers-endpoint) for
 timeout and concurrent-read behavior.

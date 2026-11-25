@@ -13,7 +13,7 @@ as files instead, run `quarterdeck render`; see the
 
 To submit a decision, see [Answer questions](answer-questions.md).
 
-To enable the roster, see [Read the workers section](read-workers.md).
+To enable the roster, see [Read the Workers page](read-workers.md).
 
 ## Reach it from a phone
 
@@ -78,10 +78,11 @@ the browser-facing `Host` and the `/qd/` prefix.
 
 The default bind is `127.0.0.1`. A loopback listener refuses requests whose
 `Host` is outside loopback. Quarterdeck has no login. Anyone who can reach the
-service can read saved items, their images, answers, conversations, reply
-images, and the enabled workers roster. They can also send answers and
-acknowledge replies as the owner. When `firstmate_home` is set, they can
-send asks to that home's inbox and, with the
+service can read saved items, their images, answers, conversations, and reply
+images. They can also send answers and acknowledge replies as the owner.
+When `firstmate_home` is set, anyone who can reach the service can view the
+home's worker and second mate roster and run a check from the Workers page
+or `GET /workers.json`. They can also send asks to that home's inbox and, with the
 [conversation prerequisites](talk-to-firstmate.md) met, start conversations
 from the Desk and send messages.
 Quarterdeck prints a warning when you bind a non-loopback address. Keep the

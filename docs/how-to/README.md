@@ -5,7 +5,7 @@
 - [Uninstall Quarterdeck](uninstall.md)
 - [Save items to Quarterdeck](save-items.md)
 - [Serve the page](serve-the-page.md)
-- [Read the workers section](read-workers.md)
+- [Read the Workers page](read-workers.md)
 - [Answer questions](answer-questions.md)
 - [Ask Firstmate from a card](ask-firstmate.md)
 - [Talk to Firstmate](talk-to-firstmate.md)
