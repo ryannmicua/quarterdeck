@@ -275,7 +275,7 @@ class PageTests(StoreCase):
     def test_empty_quarterdeck_shows_a_plain_empty_state(self) -> None:
         pages = self.pages()
         self.assertEqual(set(pages), {"index.html"})
-        self.assertIn("No questions need your attention.", pages["index.html"])
+        self.assertIn("Nothing is saved yet.", pages["index.html"])
         self.assertNotIn("<table", pages["index.html"])
 
     def served_pages(self) -> tuple[str, dict]:
@@ -363,7 +363,7 @@ class PageTests(StoreCase):
         page, _ = self.served_pages()
         desk, library = page.split("<dialog", 1)
         self.assertNotIn("Pier lights", desk)
-        self.assertIn("No questions need your attention.", desk)
+        self.assertIn("Nothing is on your Desk.", desk)
         answered = library.split('id="panel-answered"')[1]
         self.assertIn('href="q1.html">Pier lights</a></div><p class="meta">Answered</p></li>', answered)
         self.assertNotIn('>Which colour for the quay?', answered)
@@ -846,7 +846,7 @@ class ServeTests(StoreCase):
         self.assertEqual(0, self.run_cli("mark", "Q3", "closed")[0])
         self.assertEqual(self.post_answer(port, "Q3.1", "New", correction["revision"])[0], 409)
         index = self.fetch(port, "/qd/")[1]
-        self.assertIn("No questions need your attention.", index)
+        self.assertIn("Nothing is on your Desk", index)
         self.assertNotIn("Review answers", index)
         self.assertIn('data-id="Q3"', index.split('id="panel-answered"')[1])
         closed = self.fetch(port, "/qd/q3.html")[1]
@@ -1966,7 +1966,7 @@ check(!button('send').disabled && button('send').textContent === 'Send 2 answers
         port = self.start()
         status, body, _headers = self.fetch(port, "/")
         self.assertEqual(status, 200)
-        self.assertIn("No questions need your attention.", body)
+        self.assertIn("Nothing is saved yet.", body)
         self.add_all_kinds()
         self.assertIn("Tide launch decisions", self.fetch(port, "/")[1])
         status, body, _headers = self.fetch(port, "/q3.html")
@@ -3862,7 +3862,7 @@ class ConversationTests(ImageCase):
         self.assertEqual(self.run_cli("reply", "Q4.2", "--ask", self.messages("2", 3)[0]["id"], "--text", "One more thing.")[0], 0)
         self.ask(port, "Q3.2", "Do you have a preview?")
         desk, library = self.fetch(port, "/qd/")[1].split('<dialog', 1)
-        self.assertIn("No questions need your attention.", desk)
+        self.assertIn("Nothing is on your Desk", desk)
         answered = library.split('id="panel-answered"', 1)[1]
         self.assertRegex(answered, r'href="q4\.html"[^<]*</a></div><p class="meta"><span class="badge">Replied</span>')
         self.assertRegex(answered, r'href="q3\.html"[^<]*</a></div><p class="meta">Answered</p>')

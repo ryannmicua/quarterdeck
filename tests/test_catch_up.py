@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import os
 import re
 import shlex
 import shutil
@@ -233,13 +234,16 @@ class CatchUpPageTests(CatchUpCase):
             self.notice(title)
         port = self.start()
         self.assertEqual(self.post_read(port, {"ids": ["C1"]}, origin="https://example.org")[0], 403)
-        for bad in ({"ids": []}, {"ids": ["Q1"]}, {"ids": "C1"}, {"ids": ["C1"], "all": True}, {}, []):
+        for bad in ({"ids": []}, {"ids": ["Q1"]}, {"ids": ["c1"]}, {"ids": ["C1", "c3"]}, {"ids": "C1"},
+                    {"ids": ["C1"], "all": True}, {}, []):
             self.assertEqual(self.post_read(port, bad)[0], 400, bad)
         self.assertNotIn("read_at", self.store()["catch_ups"][0])
         status, record = self.post_read(port, {"ids": ["C1", "C3"]})
         self.assertEqual(status, 200)
-        self.assertEqual(set(record["read"]), {"C1", "C3"})
-        self.assertEqual(self.store()["catch_ups"][0]["read_at"], record["read"]["C1"])
+        self.assertEqual(record, {"read": ["C1", "C3"]})
+        read_at = self.store()["catch_ups"][0]["read_at"]
+        self.assertEqual(self.post_read(port, {"ids": ["C1"]}), (200, {"read": ["C1"]}))
+        self.assertEqual(self.store()["catch_ups"][0]["read_at"], read_at)
         page = self.get(port, "/qd/")
         self.assertIn("B", re.findall(r"<h3>([^<]+)</h3>", page))
         self.assertNotIn("(1)", page)
@@ -299,6 +303,42 @@ class CatchUpPageTests(CatchUpCase):
         self.assertIn(f"XDG_CONFIG_HOME={config_home}", shlex.split(service["Environment"]))
         self.assertEqual(shlex.split(service["ExecStart"])[-4:], list(options))
 
+    def test_generated_service_follows_a_retargeted_config_home(self) -> None:
+        short, long = self.root / "short", self.root / "long"
+        for directory, days in ((short, 7), (long, 30)):
+            directory.mkdir()
+            (directory / "quarterdeck.json").write_text(json.dumps({"catch_up_days": days}), encoding="utf-8")
+        config_home = self.root / "config-link"
+        config_home.symlink_to(short, target_is_directory=True)
+        with patch.dict(os.environ, {"XDG_CONFIG_HOME": str(config_home)}):
+            self.notice("A")
+            self.notice("B")
+            self.run_cli("catch-up", "read", "C1")
+            self.age_read("C1", 8)
+            code, out, error = self.run_cli("service", "--base-path", "/qd")
+            self.assertEqual(code, 0, error)
+            unit = ConfigParser(interpolation=None)
+            unit.read_string(out)
+            service = unit["Service"]
+            environment = dict(entry.split("=", 1) for entry in shlex.split(service["Environment"]))
+            options = shlex.split(service["ExecStart"])[3:]
+            self.assertNotIn("--config", options)
+            with patch.dict(os.environ, environment), self.serve_cli("--base-path", "/qd") as port:
+                config_home.unlink()
+                config_home.symlink_to(long, target_is_directory=True)
+                self.assertEqual(self.post_read(port, {"ids": ["C2"]})[0], 200)
+            self.notice("C")
+            self.assertEqual([n["id"] for n in self.store()["catch_ups"]], ["C1", "C2", "C3"])
+
+    def test_generated_service_pins_the_default_config_home_when_unset(self) -> None:
+        with patch.dict(os.environ, {"HOME": str(self.root)}):
+            os.environ.pop("XDG_CONFIG_HOME")
+            code, out, error = self.run_cli("service")
+        self.assertEqual(code, 0, error)
+        unit = ConfigParser(interpolation=None)
+        unit.read_string(out)
+        self.assertIn(f"XDG_CONFIG_HOME={self.root / '.config'}", shlex.split(unit["Service"]["Environment"]))
+
     def test_acknowledgment_buttons_in_the_browser(self) -> None:
         chrome = shutil.which("google-chrome")
         if not chrome:
@@ -351,6 +391,14 @@ class CatchUpPageTests(CatchUpCase):
       await failed;
       check(control('C3') && !bulk.disabled && status.textContent.includes('Try again.'),
             'A failed save should keep the notice, restore the controls, and show feedback');
+      window.fetch = async () => new Response('<h1>Sign in</h1>', {headers:{'Content-Type':'text/html'}});
+      await clickAndWait(control('C3'));
+      check(control('C3') && status.textContent.includes('Try again.'),
+            'An HTTP 200 sign-in page should leave the notice visible');
+      window.fetch = async () => Response.json({read:['C3']});
+      await clickAndWait(bulk);
+      check(control('C1') && control('C2') && control('C3') && status.textContent.includes('Try again.'),
+            'An incomplete batch acknowledgment should leave all rows visible');
       window.fetch = fetchFromDesk;
       await clickAndWait(control('C3'));
       check(!control('C3') && document.querySelector('[data-count]').textContent === '(2)',
@@ -363,6 +411,8 @@ class CatchUpPageTests(CatchUpCase):
     await clickAndWait(control('C2'));
     check(!document.querySelector('.catch-up') && document.activeElement.textContent === 'Desk',
           'Acknowledging the last notice should remove Catch-up and focus the Desk heading');
+    check(document.querySelector('main p.empty').textContent.startsWith('Nothing is saved yet.'),
+          'An empty Desk should show its getting-started guidance again');
     result.textContent = 'PASS';
   })().catch(error => { result.textContent = error.message; });
 }

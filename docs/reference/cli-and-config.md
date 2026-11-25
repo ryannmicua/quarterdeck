@@ -73,9 +73,9 @@ delivery status. Earlier answers, conversation text, clarifications, reply
 links, reply images, and Replied badges are exclusive to the served site,
 along with Catch-up notices and answer controls.
 
-The generated unit preserves `XDG_STATE_HOME` and `XDG_CONFIG_HOME` when set so
-it uses the same [item store](item-store.md), [visit log](#visit-log), and default
-config file as the CLI.
+The generated unit preserves `XDG_STATE_HOME` when set so it uses the same
+[item store](item-store.md) and [visit log](#visit-log). It records the shell's config directory
+(`XDG_CONFIG_HOME` or `~/.config`) so retention uses the same default file as the CLI.
 
 `--base-path /qd` (or `base_path` in the config) serves pages and their images
 under that prefix for a reverse proxy. A request for the bare prefix is redirected (308)
@@ -206,10 +206,11 @@ thread to its current read status (`true` for read).
 
 `POST /catch-ups/read` (under any `base_path`) uses the same origin check as
 `/answers`. The served page sends `{"ids": ["C4"]}` when you select **Mark
-read**, or every shown ID when you select **Mark all read**. Every ID must name a
-saved notice. If any ID is missing, the endpoint returns 409 without changing
-the store and the Desk reloads. A notice that is already read keeps its first
-read time. The response field `read` maps each ID to the UTC time it was read.
+read**, or every shown ID when you select **Mark all read**. Each ID uses the
+saved uppercase form. If any ID is missing from the store, the endpoint returns
+409 without changing the store and the Desk reloads. A notice that is already read keeps its first
+read time in the store. The response field `read` lists the acknowledged IDs
+in request order.
 The request also removes notices that were read more than `catch_up_days` days ago.
 
 ### Workers endpoint

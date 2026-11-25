@@ -81,9 +81,12 @@ def strip_base_path(path: str, base: str) -> str | None:
 # --- Configuration and locations ---------------------------------------------------
 
 
+def config_home() -> Path:
+    return Path(os.environ.get("XDG_CONFIG_HOME") or "~/.config").expanduser().absolute()
+
+
 def default_config_path() -> Path:
-    config_home = Path(os.environ.get("XDG_CONFIG_HOME") or "~/.config").expanduser()
-    return (config_home / "quarterdeck.json").resolve()
+    return config_home() / "quarterdeck.json"
 
 
 def state_dir() -> Path:
@@ -153,7 +156,7 @@ def selected_config_path(args: argparse.Namespace | None = None) -> Path | None:
     if path is None:
         default_path = default_config_path()
         path = default_path if default_path.is_file() else None
-    return path.expanduser() if path else None
+    return path.expanduser().absolute() if path else None
 
 
 def selected_config(args: argparse.Namespace | None = None) -> dict[str, object]:
@@ -1580,8 +1583,6 @@ def unread_catch_ups(data: dict[str, object]) -> list[dict[str, object]]:
 
 def prune_catch_ups(data: dict[str, object], days: int) -> None:
     """Drop notices that were read more than `days` days ago. Unread notices stay."""
-    if "catch_ups" not in data:
-        return
     cutoff = datetime.now(timezone.utc).replace(tzinfo=None) - timedelta(days=days)
     data["catch_ups"] = [notice for notice in catch_ups(data)
                          if "read_at" not in notice or utc_stamp(notice["read_at"], "read_at") > cutoff]
@@ -1591,23 +1592,16 @@ class CatchUpConflict(ValueError):
     pass
 
 
-def mark_catch_ups_read(store: Path, payload: object, days: int) -> dict[str, object]:
+def mark_catch_ups_read(store: Path, ids: list[str], days: int) -> None:
     """Mark the named notices read. A notice that is already read keeps its first read time."""
-    if not isinstance(payload, dict) or set(payload) != {"ids"}:
-        raise ValueError("Invalid catch-up read.")
-    ids = payload["ids"]
-    if not isinstance(ids, list) or not ids or not all(isinstance(value, str) for value in ids):
-        raise ValueError("Invalid catch-up IDs.")
-    wanted = [parse_catch_up_id(value) for value in ids]
     with changing_store(store) as data:
         notices = {notice["id"]: notice for notice in catch_ups(data)}
-        if not notices.keys() >= set(wanted):
+        if not notices.keys() >= set(ids):
             raise CatchUpConflict("Unknown catch-up notice.")
         stamp = now_text()
-        for notice_id in wanted:
+        for notice_id in ids:
             notices[notice_id].setdefault("read_at", stamp)
         prune_catch_ups(data, days)
-        return {"read": {notice_id: notices[notice_id]["read_at"] for notice_id in wanted}}
 
 
 def add_catch_up(args: argparse.Namespace) -> int:
@@ -1656,11 +1650,11 @@ def read_catch_up(args: argparse.Namespace) -> int:
                 print("No unread catch-up notices.")
                 return 0
         elif args.ids:
-            ids = args.ids
+            ids = list(dict.fromkeys(parse_catch_up_id(value) for value in args.ids))
         else:
             raise ValueError("give a catch-up ID such as C4, or --all")
-        result = mark_catch_ups_read(store, {"ids": ids}, catch_up_days())
-        for notice_id in result["read"]:  # type: ignore[attr-defined]
+        mark_catch_ups_read(store, ids, catch_up_days())
+        for notice_id in ids:
             print(f"{notice_id} Read")
         return 0
     return run_item_command(action)
@@ -2530,6 +2524,11 @@ CATCH_UP_SCRIPT = r"""
     const left = section.querySelectorAll('.note').length;
     if (!left) {
       section.remove();
+      const empty = document.querySelector('[data-empty-desk]');
+      if (empty) {
+        empty.textContent = empty.dataset.emptyDesk;
+        empty.removeAttribute('data-empty-desk');
+      }
       const title = document.querySelector('main h1');
       title.tabIndex = -1;
       title.focus();
@@ -2548,13 +2547,17 @@ CATCH_UP_SCRIPT = r"""
     controls.forEach(button => { button.disabled = true; });
     status.textContent = '';
     try {
-      const response = await fetch('catch-ups/read', {method:'POST', headers:{'Content-Type':'application/json'},
+      const response = await fetch('catch-ups/read', {method:'POST', redirect:'error', headers:{'Content-Type':'application/json'},
                                                       body:JSON.stringify({ids})});
       if (response.status === 409) {
         window.location.reload();
         return;
       }
       if (!response.ok) throw new Error(response.status);
+      const {read} = await response.json();
+      if (!Array.isArray(read) || read.length !== ids.length || !ids.every((id, index) => read[index] === id)) {
+        throw new Error('Unconfirmed acknowledgment');
+      }
       finish(ids);
     } catch (error) {
       status.textContent = 'The notice could not be marked read. Try again.';
@@ -4068,8 +4071,9 @@ def desk_item(item: dict[str, object]) -> bool:
 
 def catch_up_note(data, notice):
     links = []
-    if "item" in notice and any(item["id"] == notice["item"] for item in data["items"]):
-        item = find_item(data, str(notice["item"]))
+    target = notice.get("item")
+    item = next((item for item in data["items"] if item["id"] == target), None) if target else None
+    if item is not None:
         links.append(f'<a href="{item_page_name(str(item["id"]))}">{esc(item["title"])}</a>')
     if "url" in notice:
         links.append(f'<a href="{esc(notice["url"])}" rel="noopener noreferrer">{esc(notice["link_text"])}</a>')
@@ -4144,7 +4148,12 @@ def list_page(data: dict[str, object], site_title: str, *, served: bool, saved_n
     if attention:
         body += desk()
     else:
-        body += '<p class="empty">No questions need your attention.</p>'
+        empty = ("Nothing is on your Desk. A question that needs an answer shows here." if items else
+                 "Nothing is saved yet. Ask Firstmate to send something to Quarterdeck, such as a link, a list or open questions.")
+        if notices:
+            body += f'<p class="empty" data-empty-desk="{esc(empty)}">No questions need your attention.</p>'
+        else:
+            body += f'<p class="empty">{esc(empty)}</p>'
     if served:
         body += '<p class="workers-link"><a href="workers.html">Workers</a></p>'
     library = ""
@@ -4704,12 +4713,20 @@ def make_handler(site_title: str, base_path: str = "", store: Path | None = None
                 elif endpoint == "/conversations":
                     record = start_conversation(active_store, ask_path, ask_binding, payload)
                 elif endpoint == "/catch-ups/read":
+                    if not isinstance(payload, dict) or set(payload) != {"ids"}:
+                        raise ValueError("Invalid catch-up read.")
+                    ids = payload["ids"]
+                    if not isinstance(ids, list) or not ids or not all(
+                        isinstance(value, str) and CATCH_UP_ID_RE.fullmatch(value) for value in ids
+                    ):
+                        raise ValueError("Invalid catch-up IDs.")
                     try:
                         days = catch_up_days()
                     except (OSError, ValueError):
                         self.send_text(500, "Could not read the Catch-up retention config.")
                         return
-                    record = mark_catch_ups_read(active_store, payload, days)
+                    mark_catch_ups_read(active_store, ids, days)
+                    record = {"read": ids}
                 else:
                     record = mark_replies_read(active_store, payload)
             except AskHomeUnavailable:
@@ -4836,15 +4853,15 @@ def service_unit(args: argparse.Namespace) -> str:
     if tls_cert and tls_key:
         command += ["--tls-cert", str(Path(tls_cert).expanduser().resolve()), "--tls-key", str(Path(tls_key).expanduser().resolve())]
     config_path, _ = serve_config(args)
-    if config_path is not None:
-        command += ["--config", str(config_path.resolve())]
+    if args.config:
+        command += ["--config", str(config_path)]
     exec_start = " ".join(systemd_quote(part, literal_dollars=True) for part in command)
     environment = []
-    for name in ("XDG_STATE_HOME", "XDG_CONFIG_HOME"):
-        if os.environ.get(name):
-            directory = Path(os.environ[name]).expanduser().resolve()
-            environment.append(systemd_quote(f"{name}={directory}"))
-    environment_line = f"Environment={' '.join(environment)}\n" if environment else ""
+    if os.environ.get("XDG_STATE_HOME"):
+        state_home = Path(os.environ["XDG_STATE_HOME"]).expanduser().resolve()
+        environment.append(systemd_quote(f"XDG_STATE_HOME={state_home}"))
+    environment.append(systemd_quote(f"XDG_CONFIG_HOME={config_home()}"))
+    environment_line = f"Environment={' '.join(environment)}\n"
     return (
         "[Unit]\nDescription=Quarterdeck page of saved items\nAfter=network.target\n\n"
         f"[Service]\n{environment_line}ExecStart={exec_start}\nRestart=on-failure\nRestartSec=5\n\n"
@@ -4858,8 +4875,7 @@ def service(args: argparse.Namespace) -> int:
         if not args.write:
             sys.stdout.write(unit)
             return 0
-        config_home = Path(os.environ.get("XDG_CONFIG_HOME") or "~/.config").expanduser()
-        unresolved_unit_path = config_home / "systemd" / "user" / "quarterdeck.service"
+        unresolved_unit_path = config_home() / "systemd" / "user" / "quarterdeck.service"
         if unresolved_unit_path.is_symlink():
             raise ValueError(f"refusing to replace symbolic-link unit: {unresolved_unit_path}")
         unit_path = unresolved_unit_path.parent.resolve() / unresolved_unit_path.name
@@ -4881,7 +4897,7 @@ def service(args: argparse.Namespace) -> int:
 
 def installed_unit_command() -> tuple[list[str], str] | None:
     """The installed service's serve arguments and the unit's path, or None when no unit is installed."""
-    unit_path = Path(os.environ.get("XDG_CONFIG_HOME") or "~/.config").expanduser() / "systemd/user/quarterdeck.service"
+    unit_path = config_home() / "systemd/user/quarterdeck.service"
     if not unit_path.is_file():
         return None
     match = re.search(r"(?m)^ExecStart=(.*)$", unit_path.read_text(encoding="utf-8"))
