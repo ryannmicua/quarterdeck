@@ -411,7 +411,7 @@ class CatchUpPageTests(CatchUpCase):
                 [chrome, "--headless", "--disable-background-networking", "--no-first-run", "--lang=en-US",
                  f"--user-data-dir={self.root / 'browser'}", "--dump-dom", "--virtual-time-budget=10000",
                  f"http://127.0.0.1:{port}/qd/"],
-                env={**os.environ, "TZ": "Asia/Manila", "LC_ALL": "en_US.UTF-8"},
+                env={**os.environ, "TZ": "Asia/Manila", "LC_ALL": "en_US.UTF" "-8"},
                 capture_output=True, text=True, timeout=30, check=True,
             )
         result = browser.stdout.partition('<output id="browser-result">')[2].partition("</output>")[0]
