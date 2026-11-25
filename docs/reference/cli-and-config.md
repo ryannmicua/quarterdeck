@@ -92,7 +92,8 @@ See the [image removal rules](item-store.md#store-layout).
 
 ### Ask endpoint
 
-`POST /asks` (under any `base_path`) requires the explicit `firstmate_home`
+`POST /asks` (under any `base_path`) requires an explicit `firstmate_home`
+that resolves to an existing directory
 and the same origin as `/answers`. Send
 `{"part": "Q7.1", "id": "<ask id>", "text": "...", "home": "<home binding>"}`
 to save and deliver an ask. Use `"part": "Q7"` for the whole question item or
@@ -116,8 +117,9 @@ followed by the ask text.
 
 ### Conversation endpoint
 
-`POST /conversations` (under any `base_path`) requires the explicit
-`firstmate_home` and the same origin as `/answers`. Send
+`POST /conversations` (under any `base_path`) requires an explicit
+`firstmate_home` that resolves to an existing directory and the same origin
+as `/answers`. Send
 `{"id": "<message id>", "title": "...", "text": "...", "home": "<home binding>"}`
 to save a new conversation item and deliver its first message. The title is the
 topic, up to 200 characters. The page generates the 32-character lowercase

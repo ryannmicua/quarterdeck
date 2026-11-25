@@ -4617,6 +4617,43 @@ class TalkToFirstmateTests(ImageCase):
         self.assertEqual(len((home / "notes").read_text().splitlines()), 2)
         self.assertEqual((home / "attempts").read_text().splitlines(), [first["request_id"]] * 3)
 
+    def test_conversations_wait_for_a_missing_home_alias_to_return(self) -> None:
+        home = self.root / "home"
+        home.mkdir()
+        alias = self.root / "current"
+        port = self.start("/qd", ask_home=alias)
+        self.assertNotIn('id="open-talk"', self.fetch(port, "/qd/")[1])
+        self.assertEqual(self.begin(port)[1][0], 403)
+        self.assertFalse(quarterdeck.store_path().exists())
+
+        alias.symlink_to(home, target_is_directory=True)
+        body, result = self.begin(port)
+        self.assertEqual(result, (200, {"href": "q1.html", "message": "Message saved. Not delivered."}))
+        (first,) = self.thread()
+        before = quarterdeck.store_path().read_bytes()
+        alias.unlink()
+        alias.symlink_to(self.root / "missing", target_is_directory=True)
+        self.assertNotIn('id="open-talk"', self.fetch(port, "/qd/")[1])
+        page = self.fetch(port, "/qd/q1.html")[1]
+        self.assertIn(body["text"], page)
+        self.assertNotIn('id="send-message"', page)
+        self.assertNotIn('data-retry-ask=', page)
+        follow_up = {"part": "Q1", "id": uuid.uuid4().hex, "text": "Which green?", "home": body["home"]}
+        retry = {"part": "Q1", "id": body["id"], "action": "retry"}
+        for endpoint, payload in (("conversations", body), ("asks", follow_up), ("asks", retry)):
+            with self.subTest(endpoint=endpoint, payload=payload):
+                self.assertEqual(self.post(port, f"/qd/{endpoint}", payload)[0], 403)
+        self.assertEqual(quarterdeck.store_path().read_bytes(), before)
+
+        self.inbox()
+        alias.unlink()
+        alias.symlink_to(home, target_is_directory=True)
+        self.assertIn('id="send-message"', self.fetch(port, "/qd/q1.html")[1])
+        self.assertEqual(self.post(port, "/qd/conversations", body),
+                         (200, {"href": "q1.html", "message": "Message sent."}))
+        self.assertEqual(self.thread(), [{**first, "delivery": "sent"}])
+        self.assertEqual((home / "attempts").read_text().splitlines(), [first["request_id"]])
+
     def test_bad_conversations_save_nothing(self) -> None:
         home = self.inbox()
         port = self.start("/qd", ask_home=home)

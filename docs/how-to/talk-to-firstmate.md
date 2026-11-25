@@ -3,8 +3,9 @@
 Start a conversation when you want to talk with Firstmate about any topic, not
 only a question card. Each conversation is its own saved item with a topic as its
 title, so you can find it again in the library. Use the served page with
-[`firstmate_home` configured](read-answers.md#connect-the-inbox). Without it, the
-Desk has no **Talk to Firstmate** button.
+[`firstmate_home` configured](read-answers.md#connect-the-inbox) to point to an
+existing directory. The Desk shows **Talk to Firstmate** once that directory
+is available.
 
 ## Start a conversation
 
@@ -26,8 +27,9 @@ original message and note IDs. The conversation stays with the Firstmate home
 where it started. Restore that home in `firstmate_home` to send more messages
 or retry delivery.
 
-If you start a conversation while the inbox is unavailable, Quarterdeck still
-saves it and opens it with the first message marked **Not delivered**.
+If the Firstmate home directory is available but its inbox cannot accept
+the message, Quarterdeck saves the conversation and opens it with the first
+message marked **Not delivered**.
 
 ## Read replies
 

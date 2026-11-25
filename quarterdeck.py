@@ -3679,7 +3679,9 @@ def make_handler(site_title: str, base_path: str = "", store: Path | None = None
     def ask_destination():
         if ask_home is not None:
             try:
-                resolved = ask_home.resolve()
+                resolved = ask_home.resolve(strict=True)
+                if not resolved.is_dir():
+                    return None, None
             except (OSError, RuntimeError):
                 return None, None
             return resolved, hashlib.sha256(os.fsencode(resolved)).hexdigest()
