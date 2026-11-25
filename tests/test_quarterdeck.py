@@ -4364,17 +4364,165 @@ check(calls[0][0] === 'replies/read' && calls[0][1].part === 'Q4' && calls[0][1]
       'Opening Messages acknowledged the wrong conversation');
 check(whole.querySelector('.badge').hidden && document.querySelector('.progress').textContent === '2 of 2 open',
       'The item-level badge did not clear after acknowledgment');
-whole.querySelector('.ask-button').click();
+document.getElementById('queue-add').click();
+const queued = [...document.querySelectorAll('#queue-list li')].map(li => li.textContent);
+check(queued.length === 2 && queued[0].includes('Answer \u00b7 Q4.1') && queued[0].includes('Hold') &&
+      queued[1].includes('Set message') && queued[1].includes('Explain the colors.'),
+      'The queue did not name the answer by question ID with its text beside the set message');
+[...document.querySelectorAll('#queue-list button')].find(b => b.textContent === 'Remove from send').click();
+check(field(1).value === 'Hold' && send.disabled && document.querySelectorAll('#queue-list li').length === 1,
+      'Removing the answer from the send lost its draft');
+document.getElementById('send-queue').click();
 await settled();
 check(calls[1][0] === 'asks' && calls[1][1].part === 'Q4' && calls[1][1].text === 'Explain the colors.',
-      'The toolbar ask did not target the whole item');
-check(fieldForItem.value === '' && whole.querySelector('.record').textContent === 'Explain the colors.',
-      'The whole-item ask was not shown in its thread');
+      'The queued set message did not target the whole item');
+check(fieldForItem.value === '' && whole.querySelector('.record').textContent === 'Explain the colors.' &&
+      field(1).value === 'Hold' && calls.length === 2,
+      'A message-only send changed the answer draft or was not shown in its thread');
+type(1, 'Hold');
 send.click();
 await settled();
 check(calls.length === 3 && calls[2][0] === 'answers' && calls[2][1].part === 'Q4.1',
       'The batch did not remain scoped to the numbered question');
 """, setup=f"const replyId = {json.dumps(reply['id'])};")
+
+    SET_STUB = r"""
+const calls = [];
+window.fetch = async (url, options) => {
+  const body = JSON.parse(options.body);
+  calls.push([url, body]);
+  const result = url === 'answers' ? {state: 'answered', revision: 'new', delivery: 'sent',
+                                      answer: body.answer, answered_at: '2026-11-25T01:00:00Z'} :
+    {thread: `<ol><li data-ask-id="${body.id}"><p class="record">${body.text}</p></li></ol>`, message: 'Ask sent.'};
+  return {ok: true, status: 200, json: async () => result};
+};
+const queueItems = () => [...document.querySelectorAll('#queue-list li')].map(li => li.textContent);
+const queueText = text => {
+  const box = document.getElementById('ask-Q4');
+  box.value = text;
+  box.dispatchEvent(new Event('input', {bubbles: true}));
+  document.getElementById('queue-add').click();
+};
+document.getElementById('open-item-ask').click();
+"""
+
+    def test_set_discussion_sends_the_cover_answer_with_the_request_and_leaves_quantity_open(self) -> None:
+        port = self.start("/qd", ask_home=self.inbox())
+        self.check_page(port, self.SET_STUB + r"""
+check(document.getElementById('queue-empty').textContent === 'Your queue is empty.' &&
+      document.getElementById('send-queue').disabled, 'An empty queue offered a send');
+const scope = document.getElementById('queue-scope');
+check([...scope.options].map(o => o.textContent).join('|') ===
+      'Message about this set|Answer \u00b7 Merge the tide tables now?|Answer \u00b7 Which colour for the quay?',
+      'The queue did not offer the set and each open question');
+scope.value = 'Q4.1';
+queueText('Hold');
+check(field(1).value === 'Hold', 'A queued answer did not fill its card');
+queueText('Please send me the proof before ordering the run.');
+const items = queueItems();
+check(items.length === 2 && items[0].includes('Answer \u00b7 Q4.1') && items[0].includes('Merge the tide tables now?') &&
+      items[0].includes('Hold') && items[1].includes('Set message') && items[1].includes('Please send me the proof'),
+      'Each queued entry did not name its question ID and show its text: ' + items.join(' / '));
+check(document.getElementById('send-queue').textContent === 'Send queued items (2)', 'The queue count was wrong');
+document.getElementById('send-queue').click();
+await settled();
+check(calls.length === 2 && calls[0][0] === 'answers' && calls[0][1].part === 'Q4.1' && calls[0][1].answer === 'Hold' &&
+      calls[1][0] === 'asks' && calls[1][1].part === 'Q4' && calls[1][1].text === 'Please send me the proof before ordering the run.',
+      'The answer and the request were not sent together: ' + JSON.stringify(calls));
+check(card(1).dataset.state === 'answered' && card(2).dataset.state === 'open' && field(2).value === '' &&
+      !calls.some(([, body]) => body.part === 'Q4.2'), 'The other question did not stay open');
+check(status().textContent === 'Queued items sent.' && queueItems().length === 0, 'The queue did not empty');
+""")
+
+    def test_set_discussion_sends_only_the_request_and_keeps_the_cover_draft(self) -> None:
+        port = self.start("/qd", ask_home=self.inbox())
+        self.check_page(port, self.SET_STUB + r"""
+type(1, 'Hold');
+queueText('Please send me the proof before ordering the run.');
+check(queueItems().length === 2 && document.getElementById('send').textContent === 'Send 1 answer', 'The draft was not queued');
+[...document.querySelectorAll('#queue-list button')].find(b => b.textContent === 'Remove from send').click();
+check(field(1).value === 'Hold' && queueItems().length === 1 && document.getElementById('send').disabled,
+      'Removing the answer from this send lost its draft');
+document.getElementById('send-queue').click();
+await settled();
+check(calls.length === 1 && calls[0][0] === 'asks' && calls[0][1].part === 'Q4', 'A message-only send also sent an answer');
+check(card(1).dataset.state === 'open' && card(2).dataset.state === 'open' && field(1).value === 'Hold',
+      'A message-only send closed a question or lost the cover draft');
+type(1, 'Hold ');
+check(!document.getElementById('send').disabled && queueItems().length === 1 && queueItems()[0].includes('Answer \u00b7 Q4.1'),
+      'Editing the kept draft did not put it back in the send');
+""")
+
+    def test_a_changed_option_holds_its_draft_for_review_and_the_card_shows_what_was_clarified(self) -> None:
+        port = self.start("/qd", ask_home=self.inbox())
+        whole = self.ask_body(port, "Q4", "Can the quantity wait?")
+        self.assertEqual(self.post(port, "/qd/asks", whole)[0], 200)
+        code, _, error = self.run_cli("reply", "Q4", "--ask", whole["id"], "--text", "Yes, a proof first.",
+                                      "--clarify", "Q4.1=This choice is for the cover proof.",
+                                      "--clarify", "Q4.2=The printer can make one sample first.", "--option-changed", "q4.1")
+        self.assertEqual((code, error), (0, ""))
+        reply = self.messages("item", 3)[1]
+        self.assertEqual(reply["clarify"], {"1": {"text": "This choice is for the cover proof.", "option_changed": True},
+                                            "2": {"text": "The printer can make one sample first.", "option_changed": False}})
+        page = self.fetch(port, "/qd/q4.html")[1]
+        first, second = page.split('id="Q4.2"', 1)
+        self.assertIn("Clarified after discussion", first)
+        self.assertIn("This choice is for the cover proof.", first)
+        self.assertIn("An option changed.", first)
+        self.assertIn("The printer can make one sample first.", second)
+        self.assertNotIn("An option changed.", second)
+        self.assertIn(" data-review", first)
+        self.check_page(port, self.SET_STUB + r"""
+field(1).value = 'Hold';
+type(2, 'Red');
+check(document.getElementById('send').textContent === 'Send 1 answer' && queueItems().length === 1 &&
+      queueItems()[0].includes('Q4.2') && field(1).value === 'Hold' && !card(1).querySelector('.review').hidden,
+      'A draft on a changed option was not held for review');
+card(1).querySelector('.keep-draft').click();
+check(document.getElementById('send').textContent === 'Send 2 answers' && card(1).querySelector('.review').hidden &&
+      queueItems().length === 2, 'Keeping the draft did not release it');
+""", page=page)
+        self.assertIn("This choice is for the cover proof.", self.fetch(port, "/qd/q4.html")[1])
+
+    def test_clarifications_belong_to_a_reply_to_the_whole_set(self) -> None:
+        port = self.start("/qd", ask_home=self.inbox())
+        whole = self.ask_body(port, "Q4", "Can the quantity wait?")
+        part = self.ask_body(port, "Q4.1", "Why?")
+        for body in (whole, part):
+            self.assertEqual(self.post(port, "/qd/asks", body)[0], 200)
+        before = self.store()
+        for target, ask, extra in (("Q4.1", part["id"], ["--clarify", "Q4.1=Context."]),
+                                   ("Q4", whole["id"], ["--clarify", "Q4.3=Context."]),
+                                   ("Q4", whole["id"], ["--clarify", "Q4.1"]),
+                                   ("Q4", whole["id"], ["--clarify", "Q1.1=Context."]),
+                                   ("Q4", whole["id"], ["--clarify", "Q4.1=A.", "--clarify", "Q4.1=B."]),
+                                   ("Q4", whole["id"], ["--option-changed", "Q4.1"]),
+                                   ("Q1", self.ask_body(port, "Q4", "x")["id"], ["--clarify", "Q1.1=Context."])):
+            with self.subTest(target=target, extra=extra):
+                self.assertEqual(self.run_cli("reply", target, "--ask", ask, "--text", "Reply.", *extra)[0], 2)
+                self.assertEqual(self.store(), before)
+        self.assertEqual(self.run_cli("reply", "Q4", "--ask", whole["id"], "--text", "Fine.", "--clarify", "Q4.1=Context.")[0], 0)
+        damaged = self.store()
+        damaged["items"][3]["conversation"]["item"][1]["clarify"]["9"] = {"text": "x", "option_changed": False}
+        quarterdeck.store_path().write_text(json.dumps(damaged))
+        self.assertEqual(self.fetch(port, "/qd/q4.html")[0], 500)
+
+    def test_the_set_discussion_stays_available_from_answered_with_each_question_traceable(self) -> None:
+        port = self.start("/qd", ask_home=self.inbox())
+        whole = self.ask_body(port, "Q4", "Can the quantity wait?")
+        self.assertEqual(self.post(port, "/qd/asks", whole)[0], 200)
+        self.assertEqual(self.run_cli("reply", "Q4", "--ask", whole["id"], "--text", "Yes.")[0], 0)
+        self.assertEqual(self.run_cli("mark", "Q4", "answered", "--via", "elsewhere")[0], 0)
+        index = self.fetch(port, "/qd/")[1]
+        self.assertIn('href="q4.html#Q4">Read set discussion</a>', index)
+        page = self.fetch(port, "/qd/q4.html")[1]
+        self.assertIn("Discuss this set", page)
+        self.assertIn("Can the quantity wait?", page)
+        self.assertIn('<span class="id">Q4.1</span>', page)
+        self.assertIn("Answered elsewhere", page)
+
+    def post_answer(self, port, part, answer, revision=""):
+        return self.post(port, "/qd/answers", {"part": part, "answer": answer, "revision": revision})
 
     def test_reply_images_fit_both_threads_on_a_phone(self) -> None:
         port = self.start("/qd", ask_home=self.inbox())
@@ -4419,7 +4567,8 @@ const editor = whole.querySelector('textarea');
 editor.value = 'Show another layout.';
 editor.dispatchEvent(new Event('input', {bubbles: true}));
 const initial = whole.querySelector('.thread img');
-whole.querySelector('.ask-button').click();
+document.getElementById('queue-add').click();
+document.getElementById('send-queue').click();
 await settled();
 check(!initial.isConnected, 'The thread did not refresh');
 await checkImage(whole);
@@ -4440,6 +4589,13 @@ window.fetch = async (url, options) => {
   return {status: 409, json: async () => ({message: conflict, saved: !body.text || body.text.startsWith("Saved ")})};
 };
 const whole = document.getElementById('Q4');
+const sendAsk = section => {
+  if (section !== whole) return section.querySelector('.ask-button').click();
+  for (const b of document.querySelectorAll('#queue-list button')) if (b.textContent === 'Remove message') b.click();
+  document.getElementById('queue-add').click();
+  document.getElementById('send-queue').click();
+};
+const queuedTexts = () => [...document.querySelectorAll('#queue-list .record')].map(r => r.textContent);
 document.getElementById('open-item-ask').click();
 for (const section of [whole, card(1)]) {
   const editor = section.querySelector('textarea');
@@ -4447,7 +4603,7 @@ for (const section of [whole, card(1)]) {
   editor.value = draft;
   editor.dispatchEvent(new Event('input', {bubbles: true}));
   const start = calls.length;
-  section.querySelector('.ask-button').click();
+  sendAsk(section);
   await settled();
   if (interrupted) {
     section.querySelector('.pending-asks button').click();
@@ -4457,14 +4613,15 @@ for (const section of [whole, card(1)]) {
     check(first.id === retry.id && first.home === retry.home, 'Retry changed the ask identity or home');
   }
   check(calls.length === start + (interrupted ? 2 : 1), 'Conflict automatically retried the ask');
-  check(editor.value === draft && editor.getAttribute('aria-invalid') === 'true',
+  check(section === whole ? queuedTexts().includes(draft) && editor.value === '' :
+        editor.value === draft && editor.getAttribute('aria-invalid') === 'true',
         'The confirmed conflict did not return the draft and its error');
   check(!section.querySelector('[data-local-ask]'), 'A rejected draft stayed pending');
   check(document.getElementById('send').disabled, 'A conflicted ask entered the answer batch');
   editor.value = 'Saved ' + draft;
   editor.dispatchEvent(new Event('input', {bubbles: true}));
   const first = calls.length;
-  section.querySelector('.ask-button').click();
+  sendAsk(section);
   await settled();
   const recovery = section.querySelector('[data-local-ask] button');
   recovery.click();
@@ -4503,13 +4660,20 @@ window.fetch = async (url, options) => {
   return {status: 403, ok: false, text: async () => refusal};
 };
 const whole = document.getElementById('Q4');
+const sendAsk = section => {
+  if (section !== whole) return section.querySelector('.ask-button').click();
+  for (const b of document.querySelectorAll('#queue-list button')) if (b.textContent === 'Remove message') b.click();
+  document.getElementById('queue-add').click();
+  document.getElementById('send-queue').click();
+};
+const queuedTexts = () => [...document.querySelectorAll('#queue-list .record')].map(r => r.textContent);
 document.getElementById('open-item-ask').click();
 for (const section of [whole, card(1)]) {
   const editor = section.querySelector('textarea');
   const draft = '  Show the layout.  ';
   editor.value = draft;
   editor.dispatchEvent(new Event('input', {bubbles: true}));
-  section.querySelector('.ask-button').click();
+  sendAsk(section);
   await settled();
   if (interrupted) {
     const first = calls.at(-1);
@@ -4521,7 +4685,8 @@ for (const section of [whole, card(1)]) {
           'The refused retry lost its original identity');
     check(retry.isConnected && editor.value === '', 'The refused retry discarded the pending ask');
   } else {
-    check(editor.value === draft && !editor.disabled && editor.getAttribute('aria-invalid') === 'true',
+    check(section === whole ? queuedTexts().includes('Show the layout.') :
+          editor.value === draft && !editor.disabled && editor.getAttribute('aria-invalid') === 'true',
           'A first-attempt refusal did not restore the editable draft');
     check(!section.querySelector('[data-local-ask]'), 'A first-attempt refusal stayed pending');
   }

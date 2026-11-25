@@ -5,13 +5,32 @@ the question's state and any saved answer intact. Open the served question
 page with [`firstmate_home` configured](read-answers.md#connect-the-inbox) to ask
 about the whole item or a particular question.
 
-## Ask about the whole item
+## Discuss the whole set
 
-Select **Ask Firstmate** in the page bar beside **Send answers**. Type in
-**Message about this item**, then select **Send ask**. Read replies in **Messages**
-under **Item conversation** above the questions. Opening that conversation
-acknowledges only its replies. When all questions on an item are closed,
-its conversations stay readable. Reopen a question to use the toolbar ask.
+Use **Discuss this set** when a premise affects several questions. Select it in
+the page bar beside **Send answers**. Read replies in **Messages** under
+**Discuss this set** above the questions. Opening that conversation acknowledges
+only its replies. Item and question IDs travel with every message, and
+Firstmate saves its reply on the same item.
+
+Under **Queued to send**, each queued answer names its question ID, such as
+**Answer · Q7.1**, and shows the text it will send. A set message shows as
+**Set message**. Use **Add to the queue** to queue either one: pick **Message
+about this set** or a question, write in **Your text**, and select **Queue item**.
+A question's draft on its card joins the queue too.
+
+Select **Send queued items** to send the queued answers, then the set messages.
+A message-only send leaves every question open. **Remove from send** keeps the
+draft on its card and takes it out of the queue; editing the draft puts it back.
+You can send more messages before answering anything.
+
+When Firstmate's reply clarifies a question, **Clarified after discussion**
+appears on that card. If the reply says an option changed, the card asks you to
+review your draft: it stays out of **Send answers** until you edit it, pick an
+option or select **Keep this draft**.
+
+When every question is answered, the discussion stays readable. Select **Read
+set discussion** under the item in **Answered** in the Library.
 
 ## Ask about one question
 

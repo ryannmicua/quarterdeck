@@ -837,7 +837,7 @@ def validate_conversation(item):
                 raise ValueError("invalid message")
             you = author == "you"
             required = {"id", "author", "text", "at"} | ({"delivery", "request_id", "home"} if you else {"read", "ask"})
-            if not required <= set(message) <= required | (set() if you else {"links", "images"}):
+            if not required <= set(message) <= required | (set() if you else {"links", "images", "clarify"}):
                 raise ValueError("invalid message")
             if (not isinstance(message["id"], str) or not re.fullmatch(r"[0-9a-f]{32}", message["id"])
                     or message["id"] in seen
@@ -855,11 +855,29 @@ def validate_conversation(item):
                 asks.add(message["id"])
                 continue
             links, images = message.get("links", []), message.get("images", [])
+            if "clarify" in message and (item["kind"] != "questions" or part != "item"
+                                         or not valid_clarifications(message["clarify"], parts)):
+                raise ValueError("invalid reply")
             if (not isinstance(message["ask"], str) or message["ask"] not in asks
                     or type(message["read"]) is not bool or question_links(links, "reply") != links
                     or not isinstance(images, list)
                     or [image_entry(image, "reply image", None) for image in images] != images):
                 raise ValueError("invalid reply")
+
+
+def valid_clarifications(clarify, parts):
+    """A reply to the whole item can clarify its questions: question number -> {text, option_changed}."""
+    return (isinstance(clarify, dict) and bool(clarify)
+            and all(re.fullmatch(r"[1-9][0-9]*", number) and int(number) in parts and isinstance(entry, dict)
+                    and set(entry) == {"text", "option_changed"} and type(entry["option_changed"]) is bool
+                    and clean_text(entry["text"], "clarification", TEXT_LIMIT, multiline=True) == entry["text"]
+                    for number, entry in clarify.items()))
+
+
+def clarifications(item, number):
+    """What Firstmate's replies in the set discussion clarified about one question, oldest first."""
+    return [reply["clarify"][str(number)] for reply in part_thread(item, None)
+            if reply["author"] == "firstmate" and str(number) in reply.get("clarify", {})]
 
 
 def thread_key(part):
@@ -1519,6 +1537,28 @@ def show_stats(args: argparse.Namespace) -> int:
     return run_item_command(action)
 
 
+def clarify_arguments(clarified, changed, item_id, part):
+    """--clarify Q7.1=TEXT and --option-changed Q7.1 become the clarify field of a reply to the whole item."""
+    if not clarified and not changed:
+        return {}
+    if part is not None:
+        raise ValueError(f"--clarify and --option-changed belong on a reply to the whole item, such as {item_id}")
+    result = {}
+    for entry in clarified:
+        name, equals, text = entry.partition("=")
+        question = parse_part(name.upper())
+        if not equals or question[0] != item_id or question[1] in map(int, result):
+            raise ValueError(f"--clarify takes each question of {item_id} once, as {item_id}.1=TEXT: {entry!r}")
+        result[str(question[1])] = {"text": clean_text(text, "clarification", TEXT_LIMIT, multiline=True),
+                                    "option_changed": False}
+    for name in changed:
+        question = parse_part(name.upper())
+        if question[0] != item_id or str(question[1]) not in result:
+            raise ValueError(f"--option-changed {name} needs a --clarify for the same question")
+        result[str(question[1])]["option_changed"] = True
+    return result
+
+
 def reply_item(args: argparse.Namespace) -> int:
     def action() -> int:
         target = args.id.upper()
@@ -1531,6 +1571,7 @@ def reply_item(args: argparse.Namespace) -> int:
         if len(link_texts) != len(urls):
             raise ValueError("each --link-text needs its own --url")
         links = question_links([{"text": t, "url": u} for t, u in zip(link_texts, urls)], "reply")
+        clarify = clarify_arguments(args.clarify or [], args.option_changed or [], item_id, part)
         paths, alts = args.image or [], args.alt or []
         if len(paths) != len(alts):
             raise ValueError("each --image needs its own --alt text that describes it")
@@ -1554,6 +1595,12 @@ def reply_item(args: argparse.Namespace) -> int:
                 raise ValueError(f"No {noun} {ask!r} on {target}.")
             message: dict[str, object] = {"id": uuid.uuid4().hex, "author": "firstmate", "text": text, "at": now_text(),
                                           "read": False, "ask": ask}
+            if clarify:
+                if item["kind"] != "questions":
+                    raise ValueError("--clarify needs a question item")
+                if not valid_clarifications(clarify, question_parts(item)):
+                    raise ValueError("--clarify names a question this item does not have")
+                message["clarify"] = clarify
             if links:
                 message["links"] = links
             if images:
@@ -2008,6 +2055,18 @@ body:has(dialog[open]) { overflow:hidden; }
 .talk .actions, .composer .actions { margin-top:.8rem; }
 .conversation .composer { margin:1rem 0 0; padding:1rem 0 0; background:none; border:0; border-top:1px solid var(--rule); border-radius:0; max-width:none; }
 .conversation .exchange { margin:0; }
+.queue { margin:1rem 0; }
+.queue h3 { font:700 var(--text-lg)/1.3 var(--sans); margin:0 0 .5rem; }
+.queue ul { list-style:none; margin:0 0 .75rem; padding:0; font-family:var(--sans); }
+.queue li { padding:.6rem 0; border-top:1px solid var(--rule); overflow-wrap:anywhere; }
+.queue li p { margin:.2rem 0; }
+.queue-form select { display:block; width:100%; max-width:100%; min-height:var(--tap); margin:.3rem 0 .6rem; padding:.4rem .5rem;
+  background:var(--ground); color:var(--ink); border:1px solid var(--rule); border-radius:5px; font:inherit; }
+#item-ask-editor { margin:0 0 1rem; }
+.clarified { border-left:3px solid var(--signal); padding:.1rem 0 .1rem .8rem; margin:.5rem 0 1rem; }
+.clarified p { margin:.3rem 0; }
+.clarified .who { font-family:var(--sans); }
+.review { font-family:var(--sans); }
 """
 
 
@@ -2600,12 +2659,26 @@ def conversation_toolbar(item, *, asking):
     controls = '<button id="send" class="primary" disabled>Send answers</button>'
     if asking:
         controls += ('<button type="button" id="open-item-ask" aria-controls="item-ask-editor" '
-                     'aria-expanded="false">Ask Firstmate</button>')
+                     'aria-expanded="false">Discuss this set</button>')
     if any(q.get("suggestion") and conversation_editable(item, n)
            for n, q in enumerate(item["body"]["questions"], 1)):
         controls += '<button id="suggest">Use all suggestions</button>'
     controls += '<button id="undo" hidden>Undo changes</button>'
     return f'<div class="sendbar"><div class="actions">{controls}</div><output role="status" tabindex="0"></output></div>'
+
+
+def queue_panel(target, ask_binding):
+    """The mixed send queue: answers drafted on the cards and messages about the set, sent together."""
+    return (f'<div id="item-ask-editor" data-home="{esc(ask_binding)}" hidden>'
+            '<section class="queue" aria-labelledby="queue-title"><h3 id="queue-title">Queued to send (<span id="queue-count">0</span>)</h3>'
+            '<ul id="queue-list"></ul><p id="queue-empty">Your queue is empty.</p>'
+            '<div class="actions"><button type="button" id="send-queue" class="primary" disabled>Send queued items</button></div></section>'
+            '<div class="queue-form"><label for="queue-scope">Add to the queue</label><select id="queue-scope">'
+            '<option value="">Message about this set</option></select>'
+            f'<label for="ask-{target}">Your text</label>'
+            f'<textarea id="ask-{target}" maxlength="{TEXT_LIMIT}" rows="2" aria-describedby="error-{target}"></textarea>'
+            f'<p id="error-{target}" hidden></p><div class="actions">'
+            '<button type="button" id="queue-add" disabled>Queue item</button></div></div></div>')
 
 
 def item_conversation(item, ask_binding):
@@ -2616,13 +2689,9 @@ def item_conversation(item, ask_binding):
         return ""
     unread = thread_unread(item, None)
     badge = '<span class="badge">Replied</span>' if unread else '<span class="badge" hidden></span>'
-    editor = (f'<div id="item-ask-editor" hidden><label for="ask-{target}">Message about this item</label>'
-              f'<textarea id="ask-{target}" maxlength="{TEXT_LIMIT}" rows="2" aria-describedby="error-{target}"></textarea>'
-              f'<p id="error-{target}" hidden></p><div class="actions ask-row">'
-              f'<button type="button" class="ask-button" data-home="{esc(ask_binding)}" disabled>Send ask</button></div></div>'
-              if asking else '')
+    editor = queue_panel(target, ask_binding) if asking else ''
     return (f'<section id="{target}" class="work item-conversation" data-conversation aria-labelledby="item-conversation-title">'
-            f'<div class="eyebrow">{badge}</div><h2 id="item-conversation-title">Item conversation</h2>'
+            f'<div class="eyebrow">{badge}</div><h2 id="item-conversation-title">Discuss this set</h2>'
             f'{editor}{thread}</section>')
 
 
@@ -2644,6 +2713,19 @@ def conversation_page(item, ask_binding):
         composer = '<p class="empty">Set firstmate_home to send Firstmate more messages.</p>'
     return (f'<section id="{target}" class="work item-conversation conversation" data-conversation>'
             f'<div class="eyebrow">{badge}</div><div class="thread-messages">{thread}</div>{composer}</section>')
+
+
+def clarified_html(item, number, editable):
+    """What the set discussion clarified, shown at the question it affects; a changed option holds the draft for review."""
+    notes = clarifications(item, number)
+    if not notes:
+        return ""
+    html = ''.join(f'<p class="record">{linked_text(note["text"])}</p>' for note in notes)
+    review = ""
+    if editable and any(note["option_changed"] for note in notes):
+        review = ('<p class="review" role="status"><strong>An option changed.</strong> Review your draft before sending. '
+                  '<button type="button" class="keep-draft">Keep this draft</button></p>')
+    return f'<div class="clarified"><p class="who"><strong>Clarified after discussion</strong></p>{html}{review}</div>'
 
 
 def question_form(item, served, *, ask_binding=None):
@@ -2674,7 +2756,8 @@ def question_form(item, served, *, ask_binding=None):
         editor = f' data-state="{status}" data-conversation' if served else ""
         if editable:
             editor += (f' tabindex="-1" data-revision="{esc(record.get("revision", ""))}"'
-                       f' data-pending="{int(delivery_pending(record))}"')
+                       f' data-pending="{int(delivery_pending(record))}"'
+                       f'{" data-review" if any(n["option_changed"] for n in clarifications(item, number)) else ""}')
             suggestions = question.get("suggestion")
             choices = list(question["options"])
             if suggestions and suggestions not in map(option_label, choices):
@@ -2696,12 +2779,13 @@ def question_form(item, served, *, ask_binding=None):
             if question.get("suggestion"):
                 controls += f'<p><strong>Suggested answer</strong><br>{linked_text(question["suggestion"])}</p>'
         thread = conversation_thread(item, number, part, editable=editable and asking) if served else ''
+        clarified = clarified_html(item, number, editable) if served else ""
         card = (f'<section class="decision" id="{part}" aria-labelledby="title-{part}"{editor}>'
                 f'<div class="eyebrow"><span class="id">{part}</span><span class="badge">{label}</span>'
                 f'{f"<span>{esc(question['kind'].capitalize())}</span>" if question.get("kind") else ""}</div>'
                 f'{tag_labels(question.get("tags", []))}'
                 f'<h2 id="title-{part}">{linked_text(question["question"])}</h2><p>{linked_text(question["context"])}</p>'
-                f'{shots_html(item, question)}{saved}{controls}{thread}</section>')
+                f'{clarified}{shots_html(item, question)}{saved}{controls}{thread}</section>')
         if label == "Answered" and record.get("delivery") == "sent":
             source_hidden = "" if elsewhere else " hidden"
             folded.append(f'<details class="done"><summary><span class="id">{part}</span>'
@@ -2959,6 +3043,13 @@ if (send) {
   const suggest = document.querySelector('#suggest');
   const undo = document.querySelector('#undo');
   const rejections = new Map();
+  const excluded = new Set();
+  const queue = [];
+  const queueList = document.querySelector('#queue-list');
+  const queueScope = document.querySelector('#queue-scope');
+  const queueAdd = document.querySelector('#queue-add');
+  const sendQueue = document.querySelector('#send-queue');
+  const freshId = () => Array.from(crypto.getRandomValues(new Uint8Array(16)), byte => byte.toString(16).padStart(2, '0')).join('');
   const draftOrigins = new Map(fields.filter(f => f.closest('section').querySelector('.ask-button'))
     .map(f => [f, 'filled']));
   let history = [];
@@ -2970,7 +3061,8 @@ if (send) {
   const changed = f => {
     const {pending} = f.closest('section').dataset;
     const answer = answerText(f.value);
-    return !rejectedAsk(draftOrigins.get(f)) && !rejections.has(f) && answer && (answer !== f.defaultValue || pending === '1');
+    return !rejectedAsk(draftOrigins.get(f)) && !rejections.has(f) && !excluded.has(f)
+      && !f.closest('section').hasAttribute('data-review') && answer && (answer !== f.defaultValue || pending === '1');
   };
   const suggestionFor = f => {
     const section = f.closest('section');
@@ -2978,6 +3070,48 @@ if (send) {
       return section.querySelector('[data-suggested]');
     }
   };
+  function renderQueue() {
+    if (!queueList) return;
+    const answers = fields.filter(changed);
+    const count = answers.length + queue.length;
+    const item = (title, text, remove, label) => {
+      const li = document.createElement('li');
+      const head = document.createElement('p');
+      head.append(Object.assign(document.createElement('strong'), {textContent: title}));
+      li.append(head);
+      for (const [className, value] of text) {
+        li.append(Object.assign(document.createElement('p'), {className, textContent: value}));
+      }
+      const button = Object.assign(document.createElement('button'), {type: 'button', textContent: label});
+      button.addEventListener('click', remove);
+      li.append(button);
+      return li;
+    };
+    queueList.replaceChildren(
+      ...answers.map(f => {
+        const section = f.closest('section');
+        return item('Answer \u00b7 ' + section.id, [['', section.querySelector('h2').textContent], ['record', answerText(f.value)]],
+          () => { excluded.add(f); refresh(); }, 'Remove from send');
+      }),
+      ...queue.map(message => item('Set message', [['record', message.text]],
+        () => { queue.splice(queue.indexOf(message), 1); refresh(); }, 'Remove message')));
+    document.querySelector('#queue-count').textContent = count;
+    document.querySelector('#queue-empty').hidden = count > 0;
+    sendQueue.disabled = !count;
+    sendQueue.textContent = count ? 'Send queued items (' + count + ')' : 'Send queued items';
+    queueAdd.disabled = !answerText(queueScope.closest('.queue-form').querySelector('textarea').value);
+    const chosen = queueScope.value;
+    queueScope.replaceChildren(queueScope.options[0], ...sections.filter(s => s.dataset.state === 'open' && s.querySelector('textarea'))
+      .map(s => Object.assign(document.createElement('option'), {value: s.id, textContent: 'Answer \u00b7 ' + s.querySelector('h2').textContent})));
+    queueScope.value = [...queueScope.options].some(o => o.value === chosen) ? chosen : '';
+    for (const section of sections) {
+      const review = section.querySelector('.review');
+      if (review) review.hidden = !section.hasAttribute('data-review');
+    }
+  }
+  function reviewed(section) {
+    section.removeAttribute('data-review');
+  }
   function forget(field) {
     for (const step of history) step.delete(field);
     history = history.filter(step => step.size);
@@ -2996,6 +3130,7 @@ if (send) {
       send.textContent = count ? 'Send ' + count + (count === 1 ? ' answer' : ' answers') : 'Send answers';
     }
     if (suggest) suggest.disabled = !fields.some(suggestionFor);
+    renderQueue();
     if (undo) undo.hidden = !history.length;
     for (const f of editors) {
       const section = f.closest('section');
@@ -3031,7 +3166,60 @@ if (send) {
       draftOrigins.set(field, 'manual');
     }
     forget(field);
+    excluded.delete(field);
+    const card = field.closest('.decision');
+    if (card) reviewed(card);
     refresh();
+  });
+  queueAdd?.addEventListener('click', () => {
+    const textField = queueScope.closest('.queue-form').querySelector('textarea');
+    const text = answerText(textField.value);
+    if (!text) return;
+    if (!queueScope.value) queue.push({id: freshId(), text});
+    else {
+      const f = document.getElementById('answer-' + queueScope.value);
+      f.value = text;
+      if (draftOrigins.has(f)) draftOrigins.set(f, 'manual');
+      forget(f);
+      excluded.delete(f);
+      reviewed(f.closest('section'));
+    }
+    textField.value = '';
+    queueScope.value = '';
+    refresh();
+    textField.focus();
+  });
+  sendQueue?.addEventListener('click', async () => {
+    const answers = fields.filter(changed);
+    const messages = queue.splice(0);
+    const home = document.querySelector('#item-ask-editor').dataset.home;
+    const whole = document.querySelector('.item-conversation');
+    const summary = answers.length ? await submitAnswers(answers) : '';
+    let sent = 0;
+    for (const message of messages) {
+      const body = {part: whole.id, id: message.id, text: message.text, home};
+      const pending = document.createElement('ol');
+      pending.className = 'exchange';
+      pending.dataset.localAsk = message.id;
+      pending.innerHTML = '<li class="msg you"><p class="who"><strong>You</strong> <span class="delivery">Pending</span></p>'
+        + '<p class="record"></p><div class="actions"><button type="button">Send ask again</button></div></li>';
+      pending.querySelector('.record').textContent = message.text;
+      pending.querySelector('button').addEventListener('click', () => askRequest(whole, {...body, action: 'retry'}, pending));
+      const thread = whole.querySelector('.thread');
+      thread.querySelector('.pending-asks').append(pending);
+      thread.hidden = false;
+      thread.open = true;
+      if (await askRequest(whole, body, pending)) sent += 1;
+    }
+    if (messages.length && sent === messages.length && (!summary || summary === 'Answers saved.')) {
+      output.textContent = 'Queued items sent.';
+    }
+  });
+  document.addEventListener('click', e => {
+    if (e.target.closest('.keep-draft')) {
+      reviewed(e.target.closest('section'));
+      refresh();
+    }
   });
   openItemAsk?.addEventListener('click', () => {
     const editor = document.getElementById('item-ask-editor');
@@ -3052,6 +3240,8 @@ if (send) {
           step.set(f, {value: f.value, origin, askError});
           if (askError) rejections.delete(f);
           f.value = option.dataset.choice;
+          excluded.delete(f);
+          reviewed(section);
           if (origin) draftOrigins.set(f, {choice: option, edited: false});
         }
       }
@@ -3138,6 +3328,7 @@ if (send) {
   }
   async function askRequest(section, body, pending) {
     let failedDraft;
+    let delivered = false;
     if (undo) undo.hidden = true;
     const controls = document.querySelectorAll('button,input,textarea');
     controls.forEach(c => c.disabled = true);
@@ -3150,7 +3341,12 @@ if (send) {
           {message: await response.text(), saved: false};
         output.textContent = message;
         const blockedRetry = response.status === 403 && body.action === 'retry';
-        if (pending && saved === false && !blockedRetry) {
+        if (pending && saved === false && !blockedRetry && section.matches('.item-conversation')) {
+          queue.unshift({id: freshId(), text: body.text});
+          pending.remove();
+          const thread = section.querySelector('.thread');
+          thread.hidden = !thread.querySelector('.thread-messages > *, .pending-asks > *');
+        } else if (pending && saved === false && !blockedRetry) {
           failedDraft = section.querySelector('textarea');
           failedDraft.value = pending.querySelector('.record').textContent;
           forget(failedDraft);
@@ -3173,6 +3369,7 @@ if (send) {
         localizeTimes(thread);
         reconcileReplies(section);
         output.textContent = result.message;
+        delivered = true;
       }
     } catch (err) {
       output.textContent = navigator.onLine ? 'Send interrupted. ' + err.message : 'Offline. Reconnect and send again.';
@@ -3180,6 +3377,7 @@ if (send) {
     controls.forEach(c => c.disabled = false);
     refresh();
     if (failedDraft) failedDraft.focus();
+    return delivered;
   }
   function showAnswer(section, field, record) {
     section.dataset.state = record.state;
@@ -3211,8 +3409,7 @@ if (send) {
     reconcileReplies(section);
     updateFold(section, record);
   }
-  send?.addEventListener('click', async () => {
-    const pending = fields.filter(changed);
+  async function submitAnswers(pending) {
     undo.hidden = true;
     const controls = document.querySelectorAll('button,input,textarea');
     controls.forEach(c => c.disabled = true);
@@ -3242,7 +3439,9 @@ if (send) {
     output.textContent = [summary, interrupted].filter(Boolean).join(' ') || 'Answers saved.';
     controls.forEach(c => c.disabled = false);
     refresh();
-  });
+    return output.textContent;
+  }
+  send?.addEventListener('click', () => submitAnswers(fields.filter(changed)));
   refresh();
 }
 """
@@ -3280,6 +3479,8 @@ def library_row(item, *, served):
         replied = '<span class="badge">Replied</span>' if unread else ""
         description = '' if kind == "conversation" else f'<p class="lib-desc">{linked_text(item["description"])}</p>'
         detail = description + f'<p class="meta"><span>{KIND_LABELS[kind]}</span>{replied}{day_time(item["saved_at"])}</p>'
+    if served and kind == "questions" and part_thread(item, None):
+        detail += f'<p class="meta"><a href="{item_page_name(item_id)}#{item_id}">Read set discussion</a></p>'
     return (f'<li class="lib-item"{attributes}>'
             f'<div class="lib-head"><span class="id">{item_id}</span>'
             f'{title}{project}</div>{detail}{tags}</li>')
@@ -4256,6 +4457,10 @@ def make_parser() -> argparse.ArgumentParser:
     reply.add_argument("--text", required=True, help="the reply")
     reply.add_argument("--link-text", action="append", metavar="TEXT", help="the words of a link; repeat for more links")
     reply.add_argument("--url", action="append", metavar="URL", help="the http(s) address for the matching --link-text")
+    reply.add_argument("--clarify", action="append", metavar="Q7.1=TEXT",
+                       help="on a reply to the whole item: context that now shows at that question; repeat for more questions")
+    reply.add_argument("--option-changed", action="append", metavar="Q7.1",
+                       help="with --clarify for the same question: an option really changed, so the owner reviews a draft before sending")
     reply.add_argument("--image", action="append", metavar="PATH", help="a PNG, JPEG or still WebP file (up to 5 MB) copied into the private store; repeat for more")
     reply.add_argument("--alt", action="append", metavar="TEXT", help="alt text that describes the matching --image")
 

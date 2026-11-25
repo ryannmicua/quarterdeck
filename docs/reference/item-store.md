@@ -175,7 +175,7 @@ text, up to 20,000 characters) and `at` (UTC).
 | `author` | Other fields |
 | --- | --- |
 | `you` | An ask or conversation message with a browser-generated ID. `delivery` (`pending` or `sent`), a stable `request_id` string for inbox retries, and `home`, a hexadecimal `sha256` digest of the resolved path of the configured Firstmate home. |
-| `firstmate` | A reply added by `quarterdeck reply`. `ask` (ID of an earlier message from `you` in the same thread), `read` (true once the page acknowledges this reply), and optional `links` (the same `text` and `url` objects as question links) and `images` (`file` and `alt`). |
+| `firstmate` | A reply added by `quarterdeck reply`. `ask` (ID of an earlier message from `you` in the same thread), `read` (true once the page acknowledges this reply), and optional `links` (the same `text` and `url` objects as question links), `images` (`file` and `alt`), and, on a reply to a question item as a whole, `clarify`: question numbers mapped to `text` and `option_changed` (true or false). |
 
 Reply images use the item's [private reply image folder](#store-layout).
 

@@ -9,6 +9,7 @@ quarterdeck add --kind resource|list|questions --title TEXT --description TEXT
 quarterdeck list
 quarterdeck show ID
 quarterdeck reply ID[.PART] --ask ID --text TEXT [--link-text TEXT --url URL]... [--image PATH --alt TEXT]...
+                   [--clarify ID.PART=TEXT]... [--option-changed ID.PART]...
 quarterdeck mark ID[.PART] answered --via WHERE
 quarterdeck mark ID[.PART] closed|open
 quarterdeck classify ID[.PART] [--project NAME] [--tag TAG ...] [--kind KIND]
