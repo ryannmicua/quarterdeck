@@ -352,7 +352,7 @@ class PageTests(StoreCase):
         quarterdeck.send_answer(quarterdeck.store_path(), None, {"part": "Q1.1", "answer": "Merge", "revision": ""})
         quarterdeck.send_answer(quarterdeck.store_path(), None, {"part": "Q1.2", "answer": "Blue", "revision": ""})
         page, _ = self.served_pages()
-        self.assertIn("Not delivered", page.split("<dialog", 1)[0])
+        self.assertIn('<td>None open</td><td>Answered <span>Not delivered</span></td>', page.split("<dialog", 1)[0])
         self.assertIn('<a class="card-link" href="q1.html">Pier lights</a>', page)
         for part in (1, 2):
             record = quarterdeck.read_store(quarterdeck.store_path())["items"][0]["answers"][str(part)]
@@ -1482,7 +1482,10 @@ for (const [row, destination] of [[first, 'q2.html#Q2.1'], [second, 'q1.html#Q1.
   const links = [...row.querySelectorAll('a')];
   const action = links[0];
   check(action && links.length === 1 && action.getAttribute('href') === destination, 'A row had several links or the wrong destination');
-  check(hit(row.querySelector('td')) === action && hit(action) === action, 'The row and its link had different hit targets');
+  check(hit(action) === action, 'The title link missed its hit target');
+  for (const cell of row.cells) {
+    check(hit(cell) === action, `Cell ${cell.cellIndex + 1} did not open ${destination}`);
+  }
   action.focus();
   check(document.activeElement === action && getComputedStyle(row).outlineStyle === 'solid', 'The row lost its keyboard focus ring');
 }

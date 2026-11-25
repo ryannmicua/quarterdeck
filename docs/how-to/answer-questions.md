@@ -1,12 +1,15 @@
 # Answer questions
 
 Each row on the served **Desk** shows the item's title, project, open question
-count, and status (**Asked**, **Replied** or **Not delivered**).
-Select the title or tap anywhere on the row to open the item at its first open
-question. The Desk does not repeat question wording, options or suggestions;
-those stay on the item page. When no question is open but an answer is still
-pending delivery, the row stays with **None open**. Each question has an ID you
-can cite later.
+count, and status. Select the title or tap anywhere on the row to open the
+item. If a question is open, the page jumps to the first one. Question wording,
+options, and suggestions are on the item page. Each question has an ID you can
+cite later.
+
+Items with open questions show **Asked**. When no questions are open and an
+answer still needs delivery, the row shows **None open** and **Answered** with
+**Not delivered**. An unread reply changes the status to **Replied**. The
+**Not delivered** notice stays visible while an answer needs delivery.
 
 An item page lists every question in one list. A question marked **Answered**
 with a **Sent** answer and no unread replies collapses to one line below the

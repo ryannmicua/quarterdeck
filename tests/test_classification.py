@@ -552,22 +552,35 @@ class PageTests(ClassificationCase):
     def pages(self):
         return quarterdeck.site_pages(quarterdeck.read_store(quarterdeck.store_path()), "Quarterdeck", "index.html")
 
-    def test_one_project_shows_once_per_row_without_group_headings(self) -> None:
+    def check_desk_projects(self, expected_rows: list[tuple[str, str]]) -> None:
+        script = r"""
+const tables = document.querySelectorAll('main table');
+check(tables.length === 1, 'All Desk items should be in one table');
+const rows = Array.from(tables[0].querySelectorAll('tbody tr'), row => [
+  row.cells[0].textContent.trim().replace(/\s+/g, ' '), row.cells[1].textContent.trim()
+]);
+check(JSON.stringify(rows) === JSON.stringify(""" + json.dumps(expected_rows) + """),
+      'The Desk table should pair each item with its saved project');
+"""
+        data = quarterdeck.read_store(quarterdeck.store_path())
+        for served in (True, False):
+            with self.subTest(served=served):
+                page = quarterdeck.list_page(data, "Quarterdeck", served=True) if served else self.pages()["index.html"]
+                self.check_browser(page, script)
+
+    def test_shared_project_shows_once_per_row_in_one_table(self) -> None:
         self.questions("Quay choices", "--project", "Harbor", "--tag", "process")
         self.questions("More choices", "--project", "Harbor", body=ASK[:1])
-        page = self.pages()["index.html"]
-        desk = page.split('<div class="desk">', 1)[1].split("</table>", 1)[0]
-        self.assertEqual(desk.count('<td class="project">Harbor</td>'), 2)
-        self.assertEqual(desk.count("Harbor"), 2)
-        self.assertNotIn('class="group-name"', page)
+        self.check_desk_projects([("Q2 More choices", "Harbor"), ("Q1 Quay choices", "Harbor")])
 
-    def test_several_projects_show_in_the_project_column_not_group_headings(self) -> None:
+    def test_mixed_projects_show_in_one_table(self) -> None:
         self.questions("Harbor choices", "--project", "Harbor")
         self.questions("Named project", "--project", "No project")
         self.questions("Loose ends")
+        self.check_desk_projects([
+            ("Q3 Loose ends", ""), ("Q2 Named project", "No project"), ("Q1 Harbor choices", "Harbor"),
+        ])
         page = self.pages()["index.html"]
-        self.assertNotIn('class="group-name"', page)
-        self.assertEqual(re.findall(r'<td class="project">(.*?)</td>', page), ["", "No project", "Harbor"])
         self.assertEqual(page.count('<tr class="work next"'), 1)
         self.assertLess(page.index("work next"), page.index("Named project"))
 

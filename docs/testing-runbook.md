@@ -36,12 +36,12 @@ questions. It verifies the bar at both ends of the page and after its status
 message grows, including that the last answer field can scroll clear of the bar.
 On the long phone page, it also checks that Undo and status messages leave the
 focused control visible. A long send error scrolls inside the bar. The browser
-checks also cover focus through delivery transitions and the hit targets for
-the Desk row link and its whole-row hit target. At 390, 641, and 1440 pixels,
-the Desk row check verifies that a 40-character unbroken project name stays
-visible in the Project column without horizontal scrolling. A 320-pixel sheet check covers
-both tabs and Close library. A zoomed viewport check verifies the sheet at
-640 CSS pixels and the drawer at a fractional width just above it.
+checks also cover focus through delivery transitions. At 390, 641, and 1440
+pixels, the Desk check confirms that every cell hits its row's item link and
+that a 40-character unbroken project name stays visible without horizontal
+scrolling. A 320-pixel sheet check covers both tabs and Close library. A zoomed
+viewport check verifies the sheet at 640 CSS pixels and the drawer at a
+fractional width just above it.
 At 140 pixels tall, browser checks cover the Send
 bar with Undo and a long error, and search and results in both library layouts.
 A 320 × 355 check switches tabs and reaches results past stacked library filters.
@@ -54,9 +54,10 @@ fresh Desk and archive, including filters whose values disappear from the
 refreshed results. After dismissal, returning from a Desk card and
 reloading the Desk both leave the library closed.
 
-The classification browser test uses headless `google-chrome` to select
-filters and check which reference rows, reviewed cards, and empty messages
-are visible in the narrow and desktop layouts.
+The classification browser tests use headless `google-chrome` to verify item
+and project pairs in a single Desk table on served and exported pages. They
+also select filters and check which reference rows, reviewed cards, and empty
+messages are visible in the narrow and desktop layouts.
 
 The workers browser test uses headless `google-chrome` to count actual snapshot
 requests on entry, during a virtual minute of idle time, and after a refresh click.
