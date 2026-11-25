@@ -1534,6 +1534,7 @@ table.items td.project { white-space:normal; }
 html:has(.sendbar) { scroll-padding-bottom:var(--sendbar-height, 0px); }
 main:has(> .sendbar) { padding-bottom:var(--sendbar-height, 0px); }
 .sendbar { position:fixed; inset:auto 0 0; z-index:2;
+  max-height:50vh; max-height:50dvh; overflow:auto;
   padding:.7rem max(var(--gutter), calc((100% - var(--page)) / 2 + var(--gutter))) calc(.7rem + env(safe-area-inset-bottom));
   background:var(--ground); border-top:1px solid var(--rule); box-shadow:0 -6px 14px -10px var(--ink); }
 .sendbar output { margin:.4rem 0 0; max-height:min(8rem,25vh); max-height:min(8rem,25dvh); overflow:auto; }
@@ -1581,6 +1582,10 @@ body:has(dialog[open]) { overflow:hidden; }
 .lib-status { margin:0; padding:0 var(--gutter); color:var(--soft); font-size:var(--text-sm); }
 .lib-panel > .empty { margin:1rem var(--gutter); }
 .lib-list { list-style:none; margin:0; padding:0 var(--gutter) 2rem; overflow-y:auto; flex:1; min-height:0; overscroll-behavior:contain; }
+@media (max-height: 22rem) {
+  .library[open] { display:block; overflow-y:auto; overscroll-behavior:contain; }
+  .lib-panel .lib-list { overflow:visible; }
+}
 .lib-item { padding:.9rem 0; border-bottom:1px solid var(--rule); }
 .lib-item p { margin:.2rem 0 0; }
 .lib-head { display:flex; gap:.2rem .8rem; align-items:baseline; }

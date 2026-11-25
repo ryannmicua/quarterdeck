@@ -1053,10 +1053,13 @@ checkPageEnd();
     def test_verbose_send_error_leaves_the_question_and_controls_reachable(self):
         self.add("questions", "Tide decisions", "Decide the launch plan.", "--body-file", "-",
                  stdin=json.dumps(QUESTIONS[:1]))
-        self.check_answer_page(self.start("/qd"), r"""
+        port = self.start("/qd")
+        for height in (844, 140):
+            with self.subTest(height=height):
+                self.check_answer_page(port, r"""
 const error = 'Gateway failure. '.repeat(1500) + 'End of response.';
 window.fetch = async () => ({ok: false, status: 502, text: async () => error});
-typeAnswer(1, 'Hold');
+card(1).querySelector('[data-choice="Hold"]').click();
 await sendBatch();
 const bar = button('send').closest('.sendbar');
 const status = bar.querySelector('output');
@@ -1065,9 +1068,15 @@ check(status.textContent.endsWith('End of response.') && status.scrollHeight > s
 status.focus();
 status.scrollTop = status.scrollHeight;
 check(document.activeElement === status && status.scrollTop > 0, 'The full error was not reachable');
-check(bar.getBoundingClientRect().top > innerHeight / 2, 'The error covered most of the question view');
+check(bar.getBoundingClientRect().top >= innerHeight / 2, 'The error covered most of the question view');
 check(!button('send').disabled && field(1).value === 'Hold', 'The error prevented retrying the draft');
-""", viewport=(390, 844))
+for (const control of [button('undo'), status, button('send'), field(1)]) {
+  control.scrollIntoView({block:'center'});
+  const bounds = control.getBoundingClientRect();
+  check(control.contains(document.elementFromPoint(bounds.x + bounds.width / 2, bounds.y + bounds.height / 2)),
+        'The short viewport hid ' + control.tagName + ' ' + control.id);
+}
+""", viewport=(390, height))
 
     def test_bulk_suggestions_skip_saved_answers_and_drafts(self):
         self.add("questions", "Tide decisions", "Decide the launch plan.", "--body-file", "-",
@@ -1205,6 +1214,43 @@ close.click();
 check(!dialog.open, 'Close library did not dismiss the sheet');
 """, path="/qd/", viewport=(320, 800))
 
+    def test_short_library_viewports_keep_search_results_and_header_reachable(self):
+        self.add("resource", "Harbor chart", "Review the route.", "--url", "https://example.org/chart",
+                 "--link-text", "Open chart")
+        self.add("questions", "Tide decisions", "Decide the launch plan.", "--body-file", "-",
+                 stdin=json.dumps(QUESTIONS[:1]))
+        self.assertEqual(self.run_cli("mark", "Q2", "closed")[0], 0)
+        port = self.start("/qd")
+        for width in (568, 900):
+            with self.subTest(width=width):
+                self.check_answer_page(port, r"""
+check(innerHeight === 140, 'Wrong fixture height');
+button('open-library').click();
+const dialog = button('library');
+const tabs = [...dialog.querySelectorAll('[role="tab"]')];
+const reach = control => {
+  control.scrollIntoView({block:'center'});
+  const bounds = control.getBoundingClientRect();
+  check(control.contains(document.elementFromPoint(bounds.x + bounds.width / 2, bounds.y + bounds.height / 2)),
+        'The short library hid ' + (control.textContent || control.id));
+};
+for (const [index, query, href] of [[0, 'harbor', 'q1.html'], [1, 'tide', 'q2.html']]) {
+  reach(tabs[index]);
+  tabs[index].click();
+  const panel = button(tabs[index].getAttribute('aria-controls'));
+  const search = panel.querySelector('input');
+  reach(search);
+  search.focus();
+  search.value = query;
+  search.dispatchEvent(new Event('input', {bubbles:true}));
+  reach(panel.querySelector('a[href="' + href + '"]'));
+}
+const close = dialog.querySelector('[data-close]');
+reach(close);
+close.click();
+check(!dialog.open, 'Close library did not dismiss the panel');
+""", path="/qd/", viewport=(width, 140))
+
     def test_desk_card_stretches_one_action_without_covering_its_links(self):
         question = {**QUESTIONS[1], "question": "Use https://example.org/options?",
                     "links": [{"text": "Review the chart", "url": "https://example.org/review"}]}
@@ -1300,7 +1346,7 @@ references.dispatchEvent(new Event('input', {bubbles: true}));
 check(![...document.querySelectorAll('#panel-references li')].some(row => !row.hidden), 'A reference matched a question ID');
 await new Promise(resolve => { dialog.addEventListener('close', resolve, {once: true}); dialog.close(); });
 check(document.activeElement === opener, 'Focus did not return to the library button');
-""", path="/qd/")
+""", path="/qd/", viewport=(900, 800))
 
     def test_undo_reverses_one_option_action_and_preserves_later_drafts(self):
         self.add("questions", "Tide decisions", "Decide the launch plan.", "--body-file", "-",

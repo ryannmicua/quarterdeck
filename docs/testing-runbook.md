@@ -34,7 +34,8 @@ On the long phone page, it also checks that Undo and status messages leave the
 focused control visible. A long send error scrolls inside the bar. The browser
 checks also cover focus through delivery transitions and the hit targets for
 the Desk card action and its independent links. A 320-pixel sheet check covers
-both tabs and Close library.
+both tabs and Close library. At 140 pixels tall, browser checks cover the Send
+bar with Undo and a long error, and search and results in both library layouts.
 
 The classification browser test uses headless `google-chrome` to select
 filters and check which reference rows, reviewed cards, and empty messages
