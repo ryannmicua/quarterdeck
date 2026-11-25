@@ -2513,7 +2513,8 @@ def thread_html(item, number, *, editable):
     if item["kind"] == "conversation":
         thread = part_thread(item, number)
         numbers = conversation_message_numbers(thread)
-        messages = ''.join(message_html(item, m, editable=editable, message_number=numbers[m.get("ask", m["id"])])
+        messages = ''.join(message_html(item, m, editable=editable and m.get("home") == thread[0]["home"],
+                                        message_number=numbers[m.get("ask", m["id"])])
                            for m in thread)
         return f'<ol class="exchange">{messages}</ol>' if messages else ''
     groups = {}
@@ -2570,14 +2571,17 @@ def item_conversation(item, ask_binding):
 def conversation_page(item, ask_binding):
     """A conversation: every message and reply in time order, and a box for the next message."""
     target = item["id"]
-    thread = thread_html(item, None, editable=bool(ask_binding))
+    editable = bool(ask_binding) and conversation_home_matches(item, ask_binding)
+    thread = thread_html(item, None, editable=editable)
     unread = thread_unread(item, None)
     badge = '<span class="badge">Replied</span>' if unread else '<span class="badge" hidden></span>'
-    if ask_binding:
+    if editable:
         composer = (f'<div class="composer"><label for="message-{target}">Your message</label>'
                     f'<textarea id="message-{target}" maxlength="{TEXT_LIMIT}" rows="3" aria-describedby="error-{target}"></textarea>'
                     f'<p id="error-{target}" hidden></p><div class="actions"><button type="button" class="primary" id="send-message" '
                     f'data-home="{esc(ask_binding)}" disabled>Send message</button><output role="status" tabindex="0"></output></div></div>')
+    elif ask_binding:
+        composer = '<p class="empty">Restore the original firstmate_home to send or retry messages.</p>'
     else:
         composer = '<p class="empty">Set firstmate_home to send Firstmate more messages.</p>'
     return (f'<section id="{target}" class="work item-conversation conversation" data-conversation>'
@@ -2762,7 +2766,7 @@ CONVERSATION_SCRIPT = talk_script(r"""
   const output = section.querySelector('output');
   const error = document.getElementById(field.getAttribute('aria-describedby'));
   const messages = section.querySelector('.thread-messages');
-  let draft = null;
+  const drafts = new Map();
   const refresh = () => {
     button.disabled = !trimmed(field.value);
   };
@@ -2777,19 +2781,20 @@ CONVERSATION_SCRIPT = talk_script(r"""
     show('');
     try {
       const outcome = await postJson('asks', body);
+      if (outcome.ok || outcome.saved === false) {
+        for (const [text, id] of drafts) {
+          if (id === body.id) drafts.delete(text);
+        }
+      }
       if (outcome.ok) {
         messages.innerHTML = outcome.result.thread;
         localizeTimes(messages);
         refreshReplies();
         output.textContent = outcome.result.message;
-        if (body.text !== undefined) {
-          field.value = '';
-          draft = null;
-        }
+        if (body.text !== undefined) field.value = '';
       } else {
         output.textContent = '';
         show(outcome.message);
-        if (body.text !== undefined && outcome.saved === false) draft = null;
       }
     } catch {
       output.textContent = SENDING_FAILED();
@@ -2801,10 +2806,11 @@ CONVERSATION_SCRIPT = talk_script(r"""
   button.addEventListener('click', () => {
     const text = trimmed(field.value);
     if (!text) return;
-    const retry = draft?.text === text;
-    if (!retry) draft = {id:messageId(), text};
-    const body = {part:section.id, id:draft.id, text, home:button.dataset.home};
-    send(retry ? {...body, action:'retry'} : body);
+    const retryId = drafts.get(text);
+    const id = retryId ?? messageId();
+    drafts.set(text, id);
+    const body = {part:section.id, id, text, home:button.dataset.home};
+    send(retryId ? {...body, action:'retry'} : body);
   });
   section.addEventListener('click', event => {
     const retry = event.target.closest('[data-retry-ask]');
@@ -2825,7 +2831,7 @@ START_SCRIPT = talk_script(r"""
   const button = form.querySelector('button[type="submit"]');
   const output = form.querySelector('output');
   const error = form.querySelector('#talk-error');
-  let draft = null;
+  const drafts = new Map();
   const refresh = () => {
     button.disabled = !(normalizeTopic(topic.value) && trimmed(message.value));
   };
@@ -2839,12 +2845,15 @@ START_SCRIPT = talk_script(r"""
     event.preventDefault();
     const title = normalizeTopic(topic.value), text = trimmed(message.value);
     if (!title || !text) return;
-    if (draft?.title !== title || draft.text !== text) draft = {id:messageId(), title, text};
+    const key = JSON.stringify([title, text]);
+    const id = drafts.get(key) ?? messageId();
+    drafts.set(key, id);
     const controls = form.querySelectorAll('button,input,textarea');
     controls.forEach(c => c.disabled = true);
     output.textContent = 'Starting conversation';
     try {
-      const outcome = await postJson('conversations', {id:draft.id, title, text, home:button.dataset.home});
+      const outcome = await postJson('conversations', {id, title, text, home:button.dataset.home});
+      if (outcome.ok || outcome.saved === false) drafts.delete(key);
       if (outcome.ok) {
         output.textContent = outcome.result.message;
         location.href = outcome.result.href;
@@ -2853,7 +2862,6 @@ START_SCRIPT = talk_script(r"""
       output.textContent = '';
       error.textContent = outcome.message;
       error.hidden = false;
-      if (outcome.saved === false) draft = null;
     } catch {
       output.textContent = SENDING_FAILED();
     }

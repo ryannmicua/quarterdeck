@@ -4682,12 +4682,23 @@ class TalkToFirstmateTests(ImageCase):
         self.inbox(accept=False)
         pending = {"part": "Q1", "id": uuid.uuid4().hex, "text": "Which green?", "home": first["home"]}
         self.assertEqual(self.post(original_port, "/qd/asks", pending)[1]["message"], "Message saved. Not delivered.")
+        original_page = self.fetch(original_port, "/qd/q1.html")[1]
+        self.assertIn('id="send-message"', original_page)
+        self.assertIn(f'data-retry-ask="{pending["id"]}"', original_page)
         before = quarterdeck.store_path().read_bytes()
         replacement = self.inbox(name="replacement")
         port = self.start("/qd", ask_home=replacement)
-        page = self.fetch(port, "/qd/q1.html")[1]
-        binding = re.search(r'data-home="([^"]+)"', page)[1]
+        binding = re.search(r'data-home="([^"]+)"', self.fetch(port, "/qd/")[1])[1]
         self.assertNotEqual(binding, first["home"])
+        for readonly_port, notice in ((port, "Restore the original firstmate_home"),
+                                      (self.start("/qd"), "Set firstmate_home")):
+            status, page, _ = self.fetch(readonly_port, "/qd/q1.html")
+            self.assertEqual(status, 200)
+            self.assertIn(notice, page)
+            self.assertIn(pending["text"], page)
+            self.assertIn("Not delivered", page)
+            self.assertNotIn('id="send-message"', page)
+            self.assertNotIn('data-retry-ask=', page)
         for endpoint, request, saved in (
             ("asks", {**pending, "id": uuid.uuid4().hex, "home": binding}, False),
             ("asks", {**pending, "home": binding}, True),
@@ -4857,6 +4868,7 @@ window.fetch = async (path, init) => {
   if (posts.length === 3) {
     return {ok:false, status:403, text:async () => 'Configure an available firstmate_home to ask Firstmate.'};
   }
+  if (posts.length === 4) throw new Error('Connection lost');
   return {ok:true, json:async () => ({thread:'<p>A follow-up</p>', message:'Message sent.'})};
 };
 const field = button('message-Q1');
@@ -4884,11 +4896,25 @@ check(posts.length === 3 && posts[2].id === first.id && posts[2].action === 'ret
       'The saved refusal discarded the original message ID');
 check(button('error-Q1').textContent.includes('firstmate_home') && field.value === 'A follow-up' && !send.disabled,
       'The unavailable home refusal lost the draft or hid the error');
-send.click();
-await new Promise(resolve => setTimeout(resolve, 50));
-check(posts.length === 4 && posts[3].id === first.id && posts[3].action === 'retry',
-      'The unavailable home refusal discarded the original message ID');
+const submit = async text => {
+  field.value = text;
+  field.dispatchEvent(new Event('input', {bubbles:true}));
+  send.click();
+  await new Promise(resolve => setTimeout(resolve, 50));
+};
+await submit('Different follow-up');
+check(posts.length === 4 && posts[3].id !== first.id && posts[3].action === undefined,
+      'A different draft reused the unresolved message ID');
+await submit('A follow-up');
+check(posts.length === 5 && posts[4].id === first.id && posts[4].action === 'retry',
+      'Submitting a different message discarded the original unresolved ID');
 check(field.value === '' && send.disabled, 'The confirmed draft stayed in the composer');
+await submit('Different follow-up');
+check(posts.length === 6 && posts[5].id === posts[3].id && posts[5].action === 'retry',
+      'Confirming the first message cleared a different unresolved ID');
+await submit('A follow-up');
+check(posts.length === 7 && posts[6].id !== first.id && posts[6].action === undefined,
+      'A new message reused a confirmed ID');
 """, path="/qd/q1.html", viewport=(390, 844))
 
     def test_desk_replay_keeps_its_id_after_undo_in_either_field(self) -> None:
@@ -4944,6 +4970,11 @@ message.dispatchEvent(new Event('input', {bubbles:true}));
 form.requestSubmit();
 await new Promise(resolve => setTimeout(resolve, 50));
 check(posts.length === 6 && posts[5].id !== posts[0].id, 'Different content reused the prior request ID');
+message.value = 'Navy or black?';
+message.dispatchEvent(new Event('input', {bubbles:true}));
+form.requestSubmit();
+await new Promise(resolve => setTimeout(resolve, 50));
+check(posts.length === 7 && posts[6].id === posts[0].id, 'Submitting a different topic or message discarded the unresolved ID');
 """, path="/qd/", viewport=(390, 844))
 
     def test_reply_attachments_are_on_the_card_and_in_cli_transcripts(self) -> None:
