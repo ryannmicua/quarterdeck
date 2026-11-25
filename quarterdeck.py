@@ -35,6 +35,7 @@ from contextlib import contextmanager
 from datetime import datetime, timedelta, timezone
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
+from typing import cast
 from urllib.parse import quote, unquote, urlparse
 
 
@@ -141,10 +142,9 @@ def load_config(path: Path | None) -> dict[str, object]:
     return config
 
 
-def catch_up_days(config: dict[str, object]) -> int:
-    """How many days a read catch-up notice stays before it is removed."""
-    days = config.get("catch_up_days", CATCH_UP_DAYS)
-    return days if type(days) is int else CATCH_UP_DAYS
+def catch_up_days() -> int:
+    """Read the current retention setting from the default config."""
+    return cast(int, selected_config().get("catch_up_days", CATCH_UP_DAYS))
 
 
 def selected_config_path(args: argparse.Namespace | None = None) -> Path | None:
@@ -1578,11 +1578,11 @@ def unread_catch_ups(data: dict[str, object]) -> list[dict[str, object]]:
     return sorted(unread, key=lambda notice: int(str(notice["id"])[1:]), reverse=True)
 
 
-def prune_catch_ups(data: dict[str, object], days: int, now: datetime | None = None) -> None:
+def prune_catch_ups(data: dict[str, object], days: int) -> None:
     """Drop notices that were read more than `days` days ago. Unread notices stay."""
     if "catch_ups" not in data:
         return
-    cutoff = (now or datetime.now(timezone.utc).replace(tzinfo=None)) - timedelta(days=days)
+    cutoff = datetime.now(timezone.utc).replace(tzinfo=None) - timedelta(days=days)
     data["catch_ups"] = [notice for notice in catch_ups(data)
                          if "read_at" not in notice or utc_stamp(notice["read_at"], "read_at") > cutoff]
 
@@ -1612,7 +1612,7 @@ def mark_catch_ups_read(store: Path, payload: object, days: int) -> dict[str, ob
 
 def add_catch_up(args: argparse.Namespace) -> int:
     def action() -> int:
-        days = catch_up_days(selected_config())
+        days = catch_up_days()
         notice: dict[str, object] = {
             "title": clean_text(args.title, "title", TITLE_LIMIT),
             "summary": clean_text(args.summary, "summary", CATCH_UP_SUMMARY_LIMIT),
@@ -1659,7 +1659,7 @@ def read_catch_up(args: argparse.Namespace) -> int:
             ids = args.ids
         else:
             raise ValueError("give a catch-up ID such as C4, or --all")
-        result = mark_catch_ups_read(store, {"ids": ids}, catch_up_days(selected_config()))
+        result = mark_catch_ups_read(store, {"ids": ids}, catch_up_days())
         for notice_id in result["read"]:  # type: ignore[attr-defined]
             print(f"{notice_id} Read")
         return 0
@@ -4119,7 +4119,7 @@ def talk_form(binding):
 
 
 def list_page(data: dict[str, object], site_title: str, *, served: bool, saved_name: str = "index.html",
-              ask_binding: str | None = None) -> str:
+              ask_binding: str | None = None, notices: str = "") -> str:
     items = newest_first(data["items"])  # type: ignore[arg-type]
     attention = []
     for item in items:
@@ -4129,7 +4129,6 @@ def list_page(data: dict[str, object], site_title: str, *, served: bool, saved_n
         elif served and item["kind"] == "conversation" and thread_unread(item, None):
             attention.append((item, ("Replied", [], False)))
     primary = next((item for item, summary in attention if summary[1]), None)
-    notices = catch_up_section(data) if served else ""
 
     def desk() -> str:
         rows = "".join(desk_row(item, summary, primary=item is primary) for item, summary in attention)
@@ -4411,12 +4410,14 @@ def base_path_option(value: str) -> str:
         raise argparse.ArgumentTypeError(str(exc)) from exc
 
 
-def effective_base_path(args: argparse.Namespace) -> str:
+def effective_base_path(args: argparse.Namespace, config: dict[str, object] | None = None) -> str:
     """--base-path when given (even as "" to switch a configured prefix off), else the config's base_path, else none."""
     given = getattr(args, "base_path", None)
     if given is not None:
         return normalize_base_path(given)
-    return normalize_base_path(selected_config(args).get("base_path"))
+    if config is None:
+        config = selected_config(args)
+    return normalize_base_path(config.get("base_path"))
 
 
 def is_loopback(host: str) -> bool:
@@ -4539,8 +4540,7 @@ def ask_destination(ask_home: Path | None, *, require_directory: bool) -> tuple[
 
 
 def make_handler(site_title: str, base_path: str = "", store: Path | None = None, home: Path | None = None,
-                 *, ask_home: Path | None = None, workers_home: Path | None = None,
-                 retention_days: int = CATCH_UP_DAYS) -> type[BaseHTTPRequestHandler]:
+                 *, ask_home: Path | None = None, workers_home: Path | None = None) -> type[BaseHTTPRequestHandler]:
     """Every page is built from the item store when it is requested."""
     visit_log = VisitLog(visits_path())
     saved_workers = SavedWorkers()
@@ -4639,9 +4639,10 @@ def make_handler(site_title: str, base_path: str = "", store: Path | None = None
                 except (OSError, ValueError) as exc:  # a visit that cannot be logged must never stop the page
                     print(f"quarterdeck: could not log the visit: {exc}", file=sys.stderr, flush=True)
                 _, ask_binding = ask_destination(ask_home, require_directory=True)
-                has_notices = any("read_at" not in notice for notice in catch_ups(data))
-                self.send_text(200, list_page(data, site_title, served=True, ask_binding=ask_binding), "text/html; charset=utf-8",
-                               prevent_framing=bool(ask_binding) or has_notices)
+                notices = catch_up_section(data)
+                self.send_text(200, list_page(data, site_title, served=True, ask_binding=ask_binding, notices=notices),
+                               "text/html; charset=utf-8",
+                               prevent_framing=bool(ask_binding) or bool(notices))
                 return
             try:
                 item = find_item(data, discussion[1] if discussion else name.removesuffix(".html"))
@@ -4703,7 +4704,12 @@ def make_handler(site_title: str, base_path: str = "", store: Path | None = None
                 elif endpoint == "/conversations":
                     record = start_conversation(active_store, ask_path, ask_binding, payload)
                 elif endpoint == "/catch-ups/read":
-                    record = mark_catch_ups_read(active_store, payload, retention_days)
+                    try:
+                        days = catch_up_days()
+                    except (OSError, ValueError):
+                        self.send_text(500, "Could not read the Catch-up retention config.")
+                        return
+                    record = mark_catch_ups_read(active_store, payload, days)
                 else:
                     record = mark_replies_read(active_store, payload)
             except AskHomeUnavailable:
@@ -4747,18 +4753,24 @@ def answer_home(config: dict[str, object], config_path: Path | None) -> Path | N
     return None
 
 
+def serve_config(args: argparse.Namespace) -> tuple[Path | None, dict[str, object]]:
+    default_path = selected_config_path()
+    config_path = selected_config_path(args) if args.config else default_path
+    config = load_config(config_path)
+    if config_path != default_path:
+        load_config(default_path)
+    return config_path, config
+
+
 def serve(args: argparse.Namespace) -> int:
     servers: list[ThreadingHTTPServer] = []
     try:
-        config_path = selected_config_path(args)
-        config = load_config(config_path)
-        retention_config = selected_config_path()
-        retention_days = catch_up_days(config if config_path == retention_config else load_config(retention_config))
+        config_path, config = serve_config(args)
         tls = tls_context(args)
-        base_path = effective_base_path(args)
+        base_path = effective_base_path(args, config)
         firstmate = configured_firstmate_home(config)
         handler = make_handler(page_title(args, config), base_path, home=answer_home(config, config_path),
-                               ask_home=firstmate, workers_home=firstmate, retention_days=retention_days)
+                               ask_home=firstmate, workers_home=firstmate)
         port = args.port
         for host in bind_hosts(args):
             server = make_server(host, port, handler, tls)
@@ -4823,10 +4835,9 @@ def service_unit(args: argparse.Namespace) -> str:
         raise ValueError("--tls-cert and --tls-key go together")
     if tls_cert and tls_key:
         command += ["--tls-cert", str(Path(tls_cert).expanduser().resolve()), "--tls-key", str(Path(tls_key).expanduser().resolve())]
-    config_path = args.config.expanduser().resolve() if args.config else default_config_path()
-    if args.config or config_path.is_file():
-        load_config(config_path)
-        command += ["--config", str(config_path)]
+    config_path, _ = serve_config(args)
+    if config_path is not None:
+        command += ["--config", str(config_path.resolve())]
     exec_start = " ".join(systemd_quote(part, literal_dollars=True) for part in command)
     environment = []
     for name in ("XDG_STATE_HOME", "XDG_CONFIG_HOME"):

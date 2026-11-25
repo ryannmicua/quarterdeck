@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import re
+import shlex
 import shutil
 import subprocess
 import sys
@@ -9,6 +10,7 @@ import threading
 import unittest
 import urllib.error
 import urllib.request
+from configparser import ConfigParser
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from unittest.mock import patch
@@ -244,19 +246,58 @@ class CatchUpPageTests(CatchUpCase):
         self.assertEqual(self.post_read(port, {"ids": ["C2"]})[0], 200)
         self.assertNotIn("Catch-up", self.get(port, "/qd/"))
 
-    def test_the_server_applies_the_retention_setting(self) -> None:
+    def test_the_running_server_uses_the_current_default_retention(self) -> None:
         default = self.root / "config" / "quarterdeck.json"
         default.parent.mkdir()
-        default.write_text(json.dumps({"catch_up_days": 3}), encoding="utf-8")
+        default.write_text(json.dumps({"catch_up_days": 7}), encoding="utf-8")
         alternate = self.root / "alternate.json"
         alternate.write_text(json.dumps({"catch_up_days": 7, "base_path": "/qd"}), encoding="utf-8")
         self.notice("A")
         self.notice("B")
+        self.notice("C")
         self.run_cli("catch-up", "read", "C1")
-        self.age_read("C1", 4)
+        self.age_read("C1", 8)
         with self.serve_cli("--config", str(alternate)) as port:
+            default.write_text(json.dumps({"catch_up_days": 30}), encoding="utf-8")
             self.assertEqual(self.post_read(port, {"ids": ["C2"]})[0], 200)
-        self.assertEqual([n["id"] for n in self.store()["catch_ups"]], ["C2"])
+            self.assertEqual([n["id"] for n in self.store()["catch_ups"]], ["C1", "C2", "C3"])
+            before = self.store()
+            default.write_text(json.dumps({"catch_up_days": 0}), encoding="utf-8")
+            self.assertEqual(self.post_read(port, {"ids": ["C3"]})[0], 500)
+            self.assertEqual(self.store(), before)
+            default.write_text(json.dumps({"catch_up_days": 3}), encoding="utf-8")
+            self.assertEqual(self.post_read(port, {"ids": ["C3"]})[0], 200)
+        self.assertEqual([n["id"] for n in self.store()["catch_ups"]], ["C2", "C3"])
+
+    def test_existing_service_unit_is_rewritten_only_after_config_preflight(self) -> None:
+        config_home = self.root / "config"
+        default = config_home / "quarterdeck.json"
+        alternate = self.root / "alternate.json"
+        alternate.write_text(json.dumps({"base_path": "/qd"}), encoding="utf-8")
+        unit_path = config_home / "systemd" / "user" / "quarterdeck.service"
+        unit_path.parent.mkdir(parents=True)
+        legacy_unit = f'[Service]\nExecStart=quarterdeck serve --port 9000 --config "{alternate}"\n'
+        unit_path.write_text(legacy_unit, encoding="utf-8")
+        default.write_text(json.dumps({"catch_up_days": 0}), encoding="utf-8")
+        options = ("--port", "9000", "--config", str(alternate))
+        for write in ((), ("--write",)):
+            code, _, error = self.run_cli("service", *options, *write)
+            self.assertEqual(code, 2)
+            self.assertIn("config catch_up_days", error)
+        self.assertEqual(unit_path.read_text(encoding="utf-8"), legacy_unit)
+        served = subprocess.run(
+            [sys.executable, str(base.ROOT / "quarterdeck.py"), "serve", *options],
+            capture_output=True, text=True, timeout=5,
+        )
+        self.assertEqual(served.returncode, 2)
+        self.assertIn("config catch_up_days", served.stderr)
+        default.write_text(json.dumps({"catch_up_days": 30}), encoding="utf-8")
+        self.assertEqual(self.run_cli("service", *options, "--write")[0], 0)
+        unit = ConfigParser(interpolation=None)
+        unit.read_string(unit_path.read_text(encoding="utf-8"))
+        service = unit["Service"]
+        self.assertIn(f"XDG_CONFIG_HOME={config_home}", shlex.split(service["Environment"]))
+        self.assertEqual(shlex.split(service["ExecStart"])[-4:], list(options))
 
     def test_acknowledgment_buttons_in_the_browser(self) -> None:
         chrome = shutil.which("google-chrome")
@@ -275,10 +316,11 @@ class CatchUpPageTests(CatchUpCase):
         self.assertEqual(status, 409)
         self.assertNotIn("read_at", self.store()["catch_ups"][0])
         list_page = quarterdeck.list_page
+        catch_up_section = quarterdeck.catch_up_section
         pages = iter([stale_store])
 
-        def instrumented_page(data, *args, **kwargs):
-            return list_page(next(pages, data), *args, **kwargs).replace("</body>", """
+        def instrumented_page(*args, **kwargs):
+            return list_page(*args, **kwargs).replace("</body>", """
 <output id="browser-result">Incomplete</output>
 <script>
 {
@@ -327,7 +369,9 @@ class CatchUpPageTests(CatchUpCase):
 </script>
 </body>""")
 
-        with patch.object(quarterdeck, "list_page", instrumented_page):
+        with patch.object(quarterdeck, "list_page", instrumented_page), patch.object(
+            quarterdeck, "catch_up_section", lambda data: catch_up_section(next(pages, data))
+        ):
             browser = subprocess.run(
                 [chrome, "--headless", "--disable-background-networking", "--no-first-run",
                  f"--user-data-dir={self.root / 'browser'}", "--dump-dom", "--virtual-time-budget=10000",

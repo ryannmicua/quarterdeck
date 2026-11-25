@@ -271,6 +271,8 @@ The config is optional. The default is
 `${XDG_CONFIG_HOME:-~/.config}/quarterdeck.json` when it exists.
 `converse`, `render`, `serve` and `service` accept `--config FILE`. The served Desk,
 `catch-up add` and `catch-up read` all take `catch_up_days` from the default file.
+Quarterdeck reads this setting before each notice change, including while the
+service is running.
 
 | Key | Type | Default | Meaning |
 | --- | --- | --- | --- |
