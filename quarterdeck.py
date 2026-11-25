@@ -2514,6 +2514,19 @@ def question_form(item, served, *, ask_binding=None):
 QUESTION_SCRIPT = """
 const sections = [...document.querySelectorAll('.decision')];
 const replyStates = new Map([...document.querySelectorAll('[data-conversation]')].map(section => [section, new Map()]));
+const questionNumber = section => Number(section.id.split('.')[1]);
+function expandAnswer(section) {
+  const box = section.closest('details.done');
+  if (!box) return;
+  const list = box.parentElement;
+  const number = questionNumber(section);
+  const focused = document.activeElement;
+  const restoreFocus = box.contains(focused);
+  const next = [...list.children].find(child => child.matches('details.done') || questionNumber(child) > number);
+  list.insertBefore(section, next);
+  box.remove();
+  if (restoreFocus) (section.contains(focused) ? focused : section.querySelector('a[href]') || section).focus();
+}
 function updateProgress() {
   const progress = document.querySelector('.progress');
   if (!progress) return;
@@ -2537,8 +2550,10 @@ function reconcileReplies(section, snapshot = {}) {
   }
   const state = section.dataset.state;
   const badge = section.querySelector('.badge');
-  badge.textContent = [...states.values()].includes(false) ? 'Replied' : state ? state[0].toUpperCase() + state.slice(1) : '';
+  const unread = [...states.values()].includes(false);
+  badge.textContent = unread ? 'Replied' : state ? state[0].toUpperCase() + state.slice(1) : '';
   badge.hidden = !badge.textContent;
+  if (unread) expandAnswer(section);
   updateProgress();
 }
 async function acknowledgeReplies(section) {
@@ -2740,22 +2755,14 @@ if (send) {
       }
     }
   });
-  const questionNumber = section => Number(section.id.split('.')[1]);
   function updateFold(section, record) {
-    const number = questionNumber(section);
-    const focused = document.activeElement;
-    const focusInSection = section.contains(focused);
-    let box = section.closest('details.done');
     if (record.state !== 'answered' || record.delivery !== 'sent' || section.querySelector('.badge').textContent === 'Replied') {
-      if (box) {
-        const restoreFocus = box.contains(focused);
-        const next = [...list.children].find(child => child.matches('details.done') || questionNumber(child) > number);
-        list.insertBefore(section, next);
-        box.remove();
-        if (restoreFocus) (focusInSection ? focused : section.querySelector('a[href]') || section).focus();
-      }
+      expandAnswer(section);
       return;
     }
+    const number = questionNumber(section);
+    const focusInSection = section.contains(document.activeElement);
+    let box = section.closest('details.done');
     if (!box) {
       const part = (tag, className, text) => {
         const node = document.createElement(tag);

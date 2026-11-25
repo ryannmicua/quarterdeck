@@ -4410,6 +4410,49 @@ check(answers.join() === expected + ',Merge tomorrow.', 'The answer batch kept s
                 self.assertEqual(self.post(port, "/qd/replies/read", {"part": part, "ids": [reply["id"]]})[0], 400)
         self.assertEqual(self.store(), before)
 
+    def test_live_unread_reply_expands_a_folded_answer_and_keeps_messages_open(self) -> None:
+        home = self.inbox()
+        port = self.start("/qd", home=home, ask_home=home)
+        self.assertEqual(self.ask(port, "Q4.1", "Show a preview.")[0], 200)
+        status, answer = self.post(port, "/qd/answers", {"part": "Q4.1", "answer": "Merge", "revision": ""})
+        self.assertEqual((status, answer["delivery"]), (200, "sent"))
+        page = self.fetch(port, "/qd/q4.html")[1]
+        (ask,) = self.messages("1", 3)
+        self.assertEqual(self.run_cli("reply", "Q4.1", "--ask", ask["id"], "--text", "The preview is ready.")[0], 0)
+        status, replacement = self.ask(port, "Q4.1", "Can you show another layout?")
+        self.assertEqual(status, 200)
+        replacement_id = self.messages("1", 3)[-1]["id"]
+        self.check_page(port, r"""
+const decision = card(1);
+const row = decision.closest('details.done');
+const messages = decision.querySelector('.thread');
+check(row && !row.open, 'The saved answer did not start folded');
+let respond;
+const calls = [];
+window.fetch = (url, options) => {
+  calls.push(url);
+  const {id} = JSON.parse(options.body);
+  return new Promise(resolve => {
+    respond = () => resolve({ok: true, status: 200, json: async () => ({...replacement,
+      thread: replacement.thread.replace(replacementId, id)})});
+  });
+};
+row.open = true;
+type(1, 'Can you show another layout?');
+decision.querySelector('.ask-button').click();
+check(respond && messages.open, 'Sending the follow-up did not open Messages');
+row.open = false;
+respond();
+await settled();
+const badge = decision.querySelector('.badge');
+const reply = messages.querySelector('[data-reply-id][data-unread] .record');
+check(!decision.closest('details.done') && badge.textContent === 'Replied' && badge.getClientRects().length,
+      'The new reply badge stayed inside the folded answer');
+check(messages.open && reply && reply.textContent === 'The preview is ready.' && reply.getClientRects().length,
+      'The new unread reply was not visible in the open Messages panel');
+check(calls.join() === 'asks', 'The live update acknowledged the reply without an explicit opening');
+""", page=page, setup=f"const [replacement, replacementId] = {json.dumps([replacement, replacement_id])};")
+
     def test_acknowledgment_reconciles_both_orders_of_live_thread_replacement(self) -> None:
         port = self.start("/qd", ask_home=self.inbox())
         self.ask(port, "Q4.1", "First ask.")

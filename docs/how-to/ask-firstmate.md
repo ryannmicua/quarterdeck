@@ -30,7 +30,9 @@ its conversations stay readable. Reopen a question to use the toolbar ask.
    local time, and **Sent** or **Not delivered**.
 
 Firstmate's reply appears under the ask in its own conversation. It can include text,
-links, and images. Reload the served page to see new replies. Select
+links, and images. Reload the served page to see new replies. Sending or
+retrying an ask also refreshes that conversation. An unread reply expands a
+folded answer and leaves its Messages panel open if it was already open. Select
 **Messages** on the question to open its conversation and acknowledge the
 replies shown there. If it is already open, close and reopen it to
 acknowledge any new replies. The item's listing shows **Replied** while any
