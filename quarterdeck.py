@@ -1089,6 +1089,7 @@ def send_answer(store, home, payload):
         if same:
             record = old
             if option_review_required(change, record):
+                record.setdefault("answer_marks", answer_marks(record))
                 record["answered_at"] = now_text(fractional=True)
                 write_store(store, data)
         else:
@@ -3141,7 +3142,7 @@ if (send) {
   };
   const suggestionFor = f => {
     const section = f.closest('section');
-    if (!rejections.has(f) && section.dataset.state === 'open' && !f.defaultValue && !f.value) {
+    if (!excluded.has(f) && !rejections.has(f) && section.dataset.state === 'open' && !f.defaultValue && !f.value) {
       return section.querySelector('[data-suggested]');
     }
   };
@@ -3149,26 +3150,27 @@ if (send) {
     if (!queueList) return;
     const answers = fields.filter(changed);
     const count = answers.length + Number(messageQueued);
-    const item = (key, title, text, remove, label) => {
+    const item = (key, title, text, remove) => {
       const li = document.createElement('li');
       li.dataset.queueKey = key;
       const head = document.createElement('p');
       head.append(Object.assign(document.createElement('strong'), {textContent: title}));
       li.append(head);
       li.append(Object.assign(document.createElement('p'), {className: 'record', textContent: text}));
-      const button = Object.assign(document.createElement('button'), {type: 'button', textContent: label});
-      button.addEventListener('click', remove);
-      li.append(button);
+      if (remove) {
+        const button = Object.assign(document.createElement('button'), {type: 'button', textContent: 'Remove from send'});
+        button.addEventListener('click', remove);
+        li.append(button);
+      }
       return li;
     };
     const rows = [
       ...answers.map(f => {
         const section = f.closest('section');
         return item(section.id, 'Answer \u00b7 ' + section.id, answerText(f.value),
-          () => { excluded.add(f); refresh(); }, 'Remove from send');
+          () => { excluded.add(f); refresh(); });
       }),
-      ...(messageQueued ? [item(whole.id, 'Set message', answerText(queueField.value),
-        () => { messageQueued = false; refresh(); queueField.focus(); }, 'Remove message')] : []),
+      ...(messageQueued ? [item(whole.id, 'Set message', answerText(queueField.value))] : []),
     ];
     const previous = [...queueList.children];
     const focused = document.activeElement.closest('[data-queue-key]');
@@ -3182,7 +3184,7 @@ if (send) {
     });
     if (previous.includes(focused) && !focused.contains(document.activeElement)) {
       const replacement = rows.find(row => row.dataset.queueKey === focused.dataset.queueKey)
-        || rows[Math.min(previous.indexOf(focused), rows.length - 1)];
+        || rows[Math.min(previous.indexOf(focused), answers.length - 1)];
       (replacement?.querySelector('button') || queueField).focus();
     }
     document.querySelector('#queue-count').textContent = count;
@@ -3323,8 +3325,6 @@ if (send) {
       draftOrigins.set(field, 'manual');
     }
     forget(field);
-    const card = field.closest('.decision');
-    if (card && answerText(field.value) && !needsReview(card)) excluded.delete(field);
     refresh();
   });
   queueAdd?.addEventListener('click', () => {
@@ -3392,12 +3392,12 @@ if (send) {
         const section = f.closest('section');
         const option = choice ? (section.contains(choice) && choice) : suggestionFor(f);
         const origin = draftOrigins.get(f);
-        if (option && (option.dataset.choice !== f.value || handEdited(origin) || excluded.has(f))) {
+        if (option && (option.dataset.choice !== f.value || handEdited(origin) || (choice && excluded.has(f)))) {
           const askError = rejectedAsk(origin) ? rejections.get(f) : undefined;
           step.set(f, {value: f.value, origin, askError, excluded: excluded.has(f)});
           if (askError) rejections.delete(f);
           f.value = option.dataset.choice;
-          excluded.delete(f);
+          if (choice) excluded.delete(f);
           if (origin) draftOrigins.set(f, {choice: option, edited: false});
         }
       }

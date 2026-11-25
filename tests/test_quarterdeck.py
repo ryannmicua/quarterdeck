@@ -4357,7 +4357,7 @@ check(calls[1][0] === 'asks' && calls[1][1].part === 'Q4' && calls[1][1].text ==
 check(fieldForItem.value === '' && whole.querySelector('.record').textContent === 'Explain the colors.' &&
       field(1).value === 'Hold' && calls.length === 2,
       'A message-only send changed the answer draft or was not shown in its thread');
-type(1, 'Hold');
+card(1).querySelector('[data-choice="Hold"]').click();
 send.click();
 await settled();
 check(calls.length === 3 && calls[2][0] === 'answers' && calls[2][1].part === 'Q4.1',
@@ -4413,6 +4413,9 @@ check(composer.value === '', 'The sent draft remained in the composer');
 """)
 
     def test_set_discussion_sends_only_the_request_and_keeps_the_cover_draft(self) -> None:
+        fixture = self.store()
+        fixture["items"][3]["body"]["questions"][1]["suggestion"] = "Red"
+        quarterdeck.store_path().write_text(json.dumps(fixture))
         port = self.start("/qd", ask_home=self.inbox())
         self.check_page(port, self.SET_STUB + r"""
 const hold = card(1).querySelector('[data-choice="Hold"]');
@@ -4426,6 +4429,12 @@ card(1).querySelector('[data-choice="Merge"]').click();
 document.getElementById('undo').click();
 check(field(1).value === 'Hold' && queueItems().length === 1 && document.getElementById('send').disabled,
       'Undo put the excluded answer back in both send paths');
+check(document.querySelectorAll('#queue-list button').length === 0,
+      'The set-message preview offered a separate removal action');
+queueText('   ');
+check(queueItems().length === 0 && document.getElementById('send-queue').disabled,
+      'Clearing the composer left the message queued');
+queueText('Please send me the proof before ordering the run.');
 document.getElementById('send-queue').click();
 await settled();
 check(calls.length === 1 && calls[0][0] === 'asks' && calls[0][1].part === 'Q4', 'A message-only send also sent an answer');
@@ -4438,8 +4447,16 @@ document.getElementById('undo').click();
 check(field(1).value === 'Hold' && document.getElementById('send').disabled &&
       document.getElementById('send-queue').disabled, 'Undo did not restore the exclusion');
 type(1, 'Hold ');
-check(!document.getElementById('send').disabled && queueItems().length === 1 && queueItems()[0].includes('Answer \u00b7 Q4.1'),
-      'Editing the kept draft did not put it back in the send');
+check(document.getElementById('send').disabled && document.getElementById('send-queue').disabled,
+      'Editing the kept draft silently put it back in the send');
+type(1, '');
+document.getElementById('suggest').click();
+check(field(1).value === '' && field(2).value === 'Red' && queueItems().length === 1 &&
+      queueItems()[0].includes('Q4.2') && document.getElementById('send').textContent === 'Send 1 answer',
+      'Bulk suggestions filled or requeued an excluded question');
+document.getElementById('undo').click();
+check(field(2).value === '' && document.getElementById('send').disabled &&
+      document.getElementById('send-queue').disabled, 'Undo did not restore the queue after bulk suggestions');
 """)
 
     def test_an_option_reply_waiting_for_the_store_lock_cannot_split_an_answer_send(self) -> None:
@@ -4486,14 +4503,20 @@ check(!document.getElementById('send').disabled && queueItems().length === 1 && 
         port = self.start("/qd", home=home, ask_home=home)
         page_before_reply = self.fetch(port, "/qd/q4.html")[1]
         answer = {"part": "Q4.1", "answer": "Hold", "revision": ""}
-        status, pending = self.post(port, "/qd/answers", answer)
+        original_at = "2026-11-24T01:00:00Z"
+        with patch.object(quarterdeck, "now_text", return_value=original_at):
+            status, pending = self.post(port, "/qd/answers", answer)
         self.assertEqual((status, pending["delivery"]), (200, "pending"))
+        legacy = self.store()
+        del legacy["items"][3]["answers"]["1"]["answer_marks"]
+        quarterdeck.store_path().write_text(json.dumps(legacy))
         whole = self.ask_body(port, "Q4", "Can the quantity wait?")
         status, saved_ask = self.post(port, "/qd/asks", whole)
         self.assertEqual((status, saved_ask["delivery"]), (200, "pending"))
-        code, _, error = self.run_cli("reply", "Q4", "--ask", whole["id"], "--text", "Yes, a proof first.",
-                                      "--clarify", "Q4.1=This choice is for the cover proof.",
-                                      "--clarify", "Q4.2=The printer can make one sample first.", "--option-changed", "q4.1")
+        with patch.object(quarterdeck, "now_text", return_value="2026-11-25T01:00:00.000001Z"):
+            code, _, error = self.run_cli("reply", "Q4", "--ask", whole["id"], "--text", "Yes, a proof first.",
+                                          "--clarify", "Q4.1=This choice is for the cover proof.",
+                                          "--clarify", "Q4.2=The printer can make one sample first.", "--option-changed", "q4.1")
         self.assertEqual((code, error), (0, ""))
         reply = self.messages("item", 3)[1]
         self.assertEqual(reply["clarify"], {"1": {"text": "This choice is for the cover proof.", "option_changed": True},
@@ -4513,8 +4536,16 @@ check(!document.getElementById('send').disabled && queueItems().length === 1 && 
             self.assertIn("This choice is for the cover proof.", conflict["clarification"])
         self.assertEqual((home / "attempts").read_text(), retries_before)
         reaffirmed_answer = {**answer, "option_revision": reply["id"]}
-        status, reaffirmed = self.post(port, "/qd/answers", reaffirmed_answer)
+        accepted_at = "2026-11-25T01:00:00.000002Z"
+        with patch.object(quarterdeck, "now_text", return_value=accepted_at):
+            status, reaffirmed = self.post(port, "/qd/answers", reaffirmed_answer)
         self.assertEqual((status, reaffirmed["delivery"], reaffirmed["revision"]), (200, "pending", pending["revision"]))
+        self.assertEqual(reaffirmed["answered_at"], accepted_at)
+        self.assertEqual(self.store()["items"][3]["answers"]["1"]["answer_marks"],
+                         [{"via": "desk", "answered_at": original_at}])
+        code, report, error = self.run_cli("stats", "--json", "--since", "2026-11-25")
+        self.assertEqual((code, error), (0, ""))
+        self.assertEqual(json.loads(report)["total"]["answered_desk"], 0)
         page_after_acceptance = self.fetch(port, "/qd/q4.html")[1]
         self.inbox()
         status, confirmed = self.post(port, "/qd/answers", reaffirmed_answer)
@@ -4581,7 +4612,7 @@ sendQueue.click();
 await settled();
 check(requests.length === 2 && requests[1][0] === 'asks' && field(1).value === ' Hold ' && send.disabled,
       'Following up sent or discarded the cover draft');
-type(1, 'Hold');
+card(1).querySelector('[data-choice="Hold"]').click();
 sendQueue.click();
 await settled();
 check(requests.length === 3 && requests[2][1].option_revision === revision &&
@@ -4933,7 +4964,6 @@ window.fetch = async (url, options) => {
 const whole = document.getElementById('Q4');
 const sendAsk = section => {
   if (section !== whole) return section.querySelector('.ask-button').click();
-  for (const b of document.querySelectorAll('#queue-list button')) if (b.textContent === 'Remove message') b.click();
   document.getElementById('queue-add').click();
   document.getElementById('send-queue').click();
 };
@@ -5003,7 +5033,6 @@ window.fetch = async (url, options) => {
 const whole = document.getElementById('Q4');
 const sendAsk = section => {
   if (section !== whole) return section.querySelector('.ask-button').click();
-  for (const b of document.querySelectorAll('#queue-list button')) if (b.textContent === 'Remove message') b.click();
   document.getElementById('queue-add').click();
   document.getElementById('send-queue').click();
 };

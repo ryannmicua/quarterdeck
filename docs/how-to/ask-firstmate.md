@@ -18,11 +18,12 @@ Under **Queued to send**, each queued answer names its question ID, such as
 **Answer · Q7.1**, and shows the text it will send. Answer drafts join the queue
 from their cards. To add one set message, write in **Message about this set**
 and select **Queue item**. You can edit the message in the same field while
-it is queued. **Remove message** takes it out of the queue and keeps the draft.
+it is queued. Clear the field to leave the message out of the send.
 
 Select **Send queued items** to send the queued answers, then the set message.
 A message-only send leaves every question open. **Remove from send** keeps the
-draft on its card and takes it out of the queue; editing the draft puts it back.
+draft on its card and takes it out of the queue. Select an option on that card
+to put the answer back in the queue.
 You can send more messages before answering anything.
 
 When Firstmate's reply clarifies a question, **Clarified after discussion**
