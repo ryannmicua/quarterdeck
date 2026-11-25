@@ -23,9 +23,10 @@ when enabled, the live Firstmate workers roster.
 - `service --write` writes the systemd unit. `url` reads it if it exists.
 - `install` and `update` invoke the [user-local installer](../how-to/install.md).
 
-Apart from that snapshot, Quarterdeck reads no backlog, board, topic, report,
-ledger or saved session from a Firstmate home, and it does not read terminal
-text. Quarterdeck stores no snapshot data or contact history on the server.
+Apart from explicitly supplied `add` inputs and the workers snapshot,
+Quarterdeck reads no backlog, board, topic, report, ledger or saved session
+from a Firstmate home, and it does not read terminal text. Quarterdeck stores
+no snapshot data or contact history on the server.
 Quarterdeck writes nothing to the home except through the configured home's
 `bin/fm-inbox.sh note` command on explicit answer submission. It passes the
 plain answer text prefixed with the part ID.

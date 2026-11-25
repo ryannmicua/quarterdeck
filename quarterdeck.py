@@ -197,7 +197,7 @@ def write_private_bytes(path: Path, data: bytes) -> None:
 
 
 # --- The item store -----------------------------------------------------------------
-# One JSON file Quarterdeck owns. Every item was saved by hand through `quarterdeck add`; its body is stored by value
+# Item records live in one JSON file. Every item was saved by hand through `quarterdeck add`; its body is stored by value
 # at save time and never read again from anywhere else. An ID is never reused, even after its item is removed.
 
 STORE_VERSION = 1
@@ -1483,7 +1483,7 @@ def question_shots(item, question):
 
 
 def choice_label(item, part, number, option, *, suggested):
-    """An answer choice. One with an image shows it above the words; tapping either picks the choice."""
+    """Render a choice with its mockup inside the radio label and a separate full-size link."""
     label = option_label(option)
     attributes = f'type="radio" name="choice-{part}" data-choice="{esc(label)}"' + (' data-suggested' if suggested else '')
     if not isinstance(option, dict):

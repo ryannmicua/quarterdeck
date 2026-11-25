@@ -82,10 +82,10 @@ marks. Enclose an address in angle brackets, as in
 
 ## Question images
 
-A question may carry `images`, and an option may be an object with a `label`
-and an `image`. Plain text options are strings. A pictured option's label
-must be distinct from all other option labels in its question after whitespace
-normalization.
+A question's optional `images` field is an array of attachments. An option
+may be an object with a `label` and a single `image` attachment. Plain text
+options are strings. After whitespace normalization, a pictured option's label
+must be distinct from all other option labels in its question.
 
 See the [example questions body](../how-to/save-items.md#questions-with-images).
 
@@ -93,6 +93,9 @@ See the [example questions body](../how-to/save-items.md#questions-with-images).
 | --- | --- |
 | `path` | A local regular file containing a PNG, JPEG or still WebP image, up to 5 MiB. Quarterdeck checks the file contents to identify its type. It rejects directories, named pipes and other nonregular files. |
 | `alt` | Required text that describes the image, up to 300 characters. |
+
+Relative paths are resolved from the directory where you run `quarterdeck add`.
+Paths beginning with `~/` are expanded from your home directory.
 
 An item can name up to 24 images across questions and options. `add` validates
 the whole body before opening any attachment. It resolves each distinct path
@@ -118,12 +121,12 @@ plus the type's extension.
 ${XDG_STATE_HOME:-~/.local/state}/quarterdeck/images/<id>/<file>
 ```
 
-The `images` folder has mode 0700 and each file mode 0600. `<id>` is the
-lowercase item ID, such as `q3`. `remove` deletes exactly the files the removed
-item's record names and leaves the item folder in place. `add` and `render`
-never delete saved image files.
+The store's `images` folder has mode 0700, and newly written image files have
+mode 0600. `<id>` is the lowercase item ID, such as `q3`. `remove` deletes the
+files named in the removed item's record and leaves the item folder in place.
+`add` and `render` never delete saved image files.
 
-Quarterdeck requires a umask that preserves the owner's read, write, and search permissions on directories it creates.
+See the [supported umask](../how-to/save-items.md#known-limits).
 
 A failed `add` or an interrupted `remove` can leave files that no item names.
 Retrying does not clean them up. Where the destination does not support hard

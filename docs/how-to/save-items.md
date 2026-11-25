@@ -83,8 +83,8 @@ On both surfaces, the links open in a new tab.
 
 ### Questions with images
 
-Attach an overview to the question and a mockup to each option you want to
-illustrate. You can mix pictured options with plain text options.
+You can attach an overview to the question, a mockup to individual options,
+or both. You can mix pictured options with plain text options.
 
 ```json
 [

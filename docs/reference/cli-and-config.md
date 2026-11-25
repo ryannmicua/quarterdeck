@@ -62,9 +62,9 @@ rendering elsewhere, Quarterdeck copies images beside the pages, reuses
 identical files already there, and refuses to overwrite other files at
 those paths. Keep the `images` folder with the exported pages.
 
-External exports keep image copies of removed items until you delete
-`<output>/images/<id>/` by hand. A refused render can leave new image copies
-in the output folder. Rendering into another store's state directory can
+Exports in a separate directory keep image copies of removed items until you
+delete `<output>/images/<id>/` by hand. A refused render can leave new image
+copies in the output folder. Rendering into another store's state directory can
 replace or retire that store's generated pages and add image files. Use a
 separate export directory to keep that store's `remove` command from
 deleting images the export reuses. See the [image removal rules](item-store.md#store-layout).
