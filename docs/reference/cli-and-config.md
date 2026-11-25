@@ -139,10 +139,12 @@ acknowledgment uses `"part": "Q12"`.
 `POST /replies/read` (under any `base_path`) uses the same origin check as
 `/answers`. The served page sends `{"part": "Q7.1", "ids": ["<reply id>"]}`
 when the user opens that question's **Messages**, or sends `"part": "Q7"`
-when the user opens the whole-item **Messages**. Every ID must belong to
-the named conversation. The response field `replies` maps each reply ID in
-that conversation to its current read status (`true` for read).
-Page loads leave these records intact.
+when the user opens the whole-item **Messages**. On a standalone conversation
+card, the browser sends `"part": "Q12"` and the displayed unread reply IDs
+on open and after a send or retry refresh. A GET alone leaves read records
+intact. Every ID must belong to the named conversation. The response field
+`replies` maps each reply ID in that conversation to its current read status
+(`true` for read).
 
 ### Workers endpoint
 

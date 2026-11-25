@@ -2704,7 +2704,7 @@ def talk_script(body):
     """Shared by the Desk form and a conversation's message box: one POST of a message with its own ID."""
     return r"""
 const messageId = () => Array.from(crypto.getRandomValues(new Uint8Array(16)), byte => byte.toString(16).padStart(2, '0')).join('');
-const trimmed = value => value.replace(/^\s+|\s+$/g, '');
+const trimmed = value => value.replace(/^[\p{White_Space}\u001c-\u001f]+|[\p{White_Space}\u001c-\u001f]+$/gu, '');
 const SENDING_FAILED = () => navigator.onLine ? 'Send interrupted. Send again.' : 'Offline. Reconnect and send again.';
 async function postJson(path, body) {
   const response = await fetch(path, {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify(body)});
@@ -2761,7 +2761,7 @@ CONVERSATION_SCRIPT = talk_script(r"""
       } else {
         output.textContent = '';
         show(outcome.message);
-        if (body.text !== undefined && !outcome.saved) draft = null;
+        if (body.text !== undefined && outcome.saved === false) draft = null;
       }
     } catch {
       output.textContent = SENDING_FAILED();
@@ -2797,9 +2797,10 @@ START_SCRIPT = talk_script(r"""
   const button = form.querySelector('button[type="submit"]');
   const output = form.querySelector('output');
   const error = form.querySelector('#talk-error');
+  const topicText = () => trimmed(topic.value.replace(/[\p{White_Space}\u001c-\u001f]+/gu, ' '));
   let draft = null;
   const refresh = () => {
-    button.disabled = !(trimmed(topic.value) && trimmed(message.value));
+    button.disabled = !(topicText() && trimmed(message.value));
   };
   open.addEventListener('click', () => {
     form.hidden = !form.hidden;
@@ -2809,7 +2810,7 @@ START_SCRIPT = talk_script(r"""
   form.addEventListener('input', () => { error.hidden = true; refresh(); });
   form.addEventListener('submit', async event => {
     event.preventDefault();
-    const title = trimmed(topic.value), text = trimmed(message.value);
+    const title = topicText(), text = trimmed(message.value);
     if (!title || !text) return;
     if (draft?.title !== title || draft.text !== text) draft = {id:messageId(), title, text};
     const controls = form.querySelectorAll('button,input,textarea');
@@ -2825,7 +2826,7 @@ START_SCRIPT = talk_script(r"""
       output.textContent = '';
       error.textContent = outcome.message;
       error.hidden = false;
-      if (!outcome.saved) draft = null;
+      if (outcome.saved === false) draft = null;
     } catch {
       output.textContent = SENDING_FAILED();
     }

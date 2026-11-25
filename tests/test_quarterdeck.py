@@ -4832,6 +4832,9 @@ window.fetch = async (path, init) => {
   if (posts.length === 2) {
     return {ok:false, status:409, json:async () => ({message:'Firstmate home changed.', saved:true})};
   }
+  if (posts.length === 3) {
+    return {ok:false, status:403, text:async () => 'Configure an available firstmate_home to ask Firstmate.'};
+  }
   return {ok:true, json:async () => ({thread:'<p>A follow-up</p>', message:'Message sent.'})};
 };
 const field = button('message-Q1');
@@ -4857,6 +4860,12 @@ send.click();
 await new Promise(resolve => setTimeout(resolve, 50));
 check(posts.length === 3 && posts[2].id === first.id && posts[2].action === 'retry',
       'The saved refusal discarded the original message ID');
+check(button('error-Q1').textContent.includes('firstmate_home') && field.value === 'A follow-up' && !send.disabled,
+      'The unavailable home refusal lost the draft or hid the error');
+send.click();
+await new Promise(resolve => setTimeout(resolve, 50));
+check(posts.length === 4 && posts[3].id === first.id && posts[3].action === 'retry',
+      'The unavailable home refusal discarded the original message ID');
 check(field.value === '' && send.disabled, 'The confirmed draft stayed in the composer');
 """, path="/qd/q1.html", viewport=(390, 844))
 
@@ -4869,6 +4878,9 @@ window.fetch = async (path, init) => {
   posts.push(JSON.parse(init.body));
   if (posts.length === 2) {
     return {ok:false, status:409, json:async () => ({message:'Firstmate home changed.', saved:true})};
+  }
+  if (posts.length === 3) {
+    return {ok:false, status:403, text:async () => 'Configure an available firstmate_home to ask Firstmate.'};
   }
   throw new Error('Connection lost');
 };
@@ -4895,11 +4907,21 @@ check(!button('talk-error').hidden, 'The saved refusal was not shown');
 form.requestSubmit();
 await new Promise(resolve => setTimeout(resolve, 50));
 check(posts.length === 3 && posts[2].id === posts[0].id, 'The saved refusal discarded the original creation ID');
+check(button('talk-error').textContent.includes('firstmate_home'), 'The unavailable home refusal was not shown');
+form.requestSubmit();
+await new Promise(resolve => setTimeout(resolve, 50));
+check(posts.length === 4 && posts[3].id === posts[0].id, 'The unavailable home refusal discarded the original creation ID');
+topic.value = 'Quay  \u0085 sign';
+topic.dispatchEvent(new Event('input', {bubbles:true}));
+form.requestSubmit();
+await new Promise(resolve => setTimeout(resolve, 50));
+check(posts.length === 5 && posts[4].id === posts[0].id && posts[4].title === 'Quay sign',
+      'Equivalent topic whitespace changed the creation request');
 message.value = 'Use navy.';
 message.dispatchEvent(new Event('input', {bubbles:true}));
 form.requestSubmit();
 await new Promise(resolve => setTimeout(resolve, 50));
-check(posts.length === 4 && posts[3].id !== posts[0].id, 'Different content reused the prior request ID');
+check(posts.length === 6 && posts[5].id !== posts[0].id, 'Different content reused the prior request ID');
 """, path="/qd/", viewport=(390, 844))
 
     def test_reply_attachments_are_on_the_card_and_in_cli_transcripts(self) -> None:
