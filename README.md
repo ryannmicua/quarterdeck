@@ -59,9 +59,11 @@ quarterdeck add --kind resource --title "Calls redesign" \
 quarterdeck serve
 ```
 
-`add` prints `Q1`. Open the address `serve` prints. For a read-first install,
-download `install.sh`, read it, then run it. Run `quarterdeck help` for command
-help or `quarterdeck help --json` for the command index.
+`add` prints `Q1`. Open the address `serve` prints, then select
+**Open library** and find **Calls redesign** under **References**. For a
+read-first install, download `install.sh`, read it, then run it. Run
+`quarterdeck help` for command help or `quarterdeck help --json` for the
+command index.
 
 To update an existing install, run `quarterdeck update`. See the
 [tutorial](docs/tutorials/first-render.md), the [how-to guides](docs/how-to/)

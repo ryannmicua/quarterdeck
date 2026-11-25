@@ -1,8 +1,9 @@
 # Find references and answered questions
 
-Select **Open library** in the served Desk header. On a phone it opens a bottom
-sheet. On a desktop it opens a drawer on the right. Select **Close library**,
-press Escape, or tap outside the library to return to the Desk.
+Select **Open library** in the served Desk header. It opens a bottom sheet
+at viewport widths up to `40rem` and a right-side drawer at wider widths.
+Select **Close library**, press Escape, or tap outside the library to return
+to the Desk.
 
 The pop-out has two tabs.
 
@@ -16,21 +17,24 @@ References, and End opens Answered.
 ## Search
 
 Use the search box in either tab to match text in the title or description.
-**Answered** also searches question and saved answer text. Search ignores case,
-and every term must match. Enter an exact ID on its own, such as `Q5` to find
-item Q5 or `Q5.3` to find Q5 if it has a third question.
+**Answered** also searches question and saved answer text. Search ignores case
+and matches every space-separated term literally. Enter an exact ID on its
+own, such as `Q5` to find item Q5 or `Q5.3` to find Q5 if it has a third
+question.
 
 Use the [project and tag filters](classify-items.md#see-it-on-the-page) when
 available to narrow either list, including on rendered pages.
 
 After opening an item from the library, use your browser’s Back button to
-return to the same tab, search and filters with fresh results. Closing the library
-clears the saved lookup, so reloading the Desk or returning from a Desk card
-leaves the library closed.
+return to the same tab, search and filters with fresh results. A restored
+filter remains selected and can be cleared even if no items match it.
+Closing the library clears the saved lookup, so reloading the Desk or
+returning from a Desk card leaves the library closed.
 
-When there’s enough room, results scroll beneath the search box. In a short
-window, such as when the phone keyboard is open, the whole sheet or drawer
-scrolls. Scroll back to the top to reach Search, the tabs, or **Close library**.
+When there’s enough room, results scroll beneath the search box. The whole
+sheet or drawer scrolls when the window is short or the controls leave too
+little room for results. Scroll back to the top to reach Search, the tabs,
+or **Close library**.
 
 ## When an item moves
 

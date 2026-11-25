@@ -24,10 +24,11 @@ suggestions, undo, and that conflicts and validation errors preserve drafts whil
 answers in the batch are sent. The browser checks also cover retrying a reopened
 answer, exact answer times in a fixed locale and time zone, and sending suggestions
 in place while preserving their text. They also cover one-line summaries,
-one-word answer visibility at 320, 390, and 1440 pixels, numeric order after
-out-of-order delivery, refolding a delivered correction,
-expanding a pending correction, and finding archived items by text and exact
-question IDs without revealing answer previews.
+visibility of one-word answers and Desk markers at 320, 390, and 1440 pixels,
+numeric order after out-of-order delivery, and refolding a delivered correction
+or expanding a pending one with the latest answer source. The library search
+check covers Unicode case folding, literal terms, and exact question IDs
+without revealing answer previews.
 The send bar check uses 390 × 844 and 1440 × 900 viewports with one and twelve
 questions. It verifies the bar at both ends of the page and after its status
 message grows, including that the last answer field can scroll clear of the bar.
@@ -35,7 +36,9 @@ On the long phone page, it also checks that Undo and status messages leave the
 focused control visible. A long send error scrolls inside the bar. The browser
 checks also cover focus through delivery transitions and the hit targets for
 the Desk card action and its independent links. A 320-pixel sheet check covers
-both tabs and Close library. At 140 pixels tall, browser checks cover the Send
+both tabs and Close library. A zoomed viewport check verifies the sheet at
+640 CSS pixels and the drawer at a fractional width just above it.
+At 140 pixels tall, browser checks cover the Send
 bar with Undo and a long error, and search and results in both library layouts.
 A 320 × 355 check switches tabs and reaches results past stacked library filters.
 The keyboard regression simulates visual-viewport resize and pan events while
