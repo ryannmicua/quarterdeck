@@ -2190,9 +2190,9 @@ LIBRARY_SCRIPT = r"""
     const none = panel.querySelector('[data-none]');
     const rows = [...panel.querySelectorAll('.lib-item')];
     const run = () => {
-      const query = search.value.trim();
+      const query = topics ? normalizeTopic(search.value) : search.value.trim();
       const id = idQuery.exec(query);
-      const terms = caseFold(query).split(/\s+/);
+      const terms = caseFold(query).split(topics ? ' ' : /\s+/);
       let hasMatch = false;
       for (const row of rows) {
         const idMatch = id && row.dataset.id.toLowerCase() === id[1].toLowerCase()
@@ -2333,6 +2333,12 @@ def item_page_name(item_id: str) -> str:
     return f"{item_id.lower()}.html"
 
 
+CONVERSATION_TEXT_SCRIPT = r"""
+const trimmed = value => value.replace(/^[\p{White_Space}\u001c-\u001f]+|[\p{White_Space}\u001c-\u001f]+$/gu, '');
+const normalizeTopic = value => trimmed(value.replace(/[\p{White_Space}\u001c-\u001f]+/gu, ' '));
+"""
+
+
 def page_shell(title: str, site_title: str, body: str, *, served: bool, saved_name: str, interactive: bool = False,
                workers: bool = False, library: str = "", conversations: bool = False, filters: bool = False,
                talking: bool = False, starting: bool = False) -> str:
@@ -2350,6 +2356,7 @@ def page_shell(title: str, site_title: str, body: str, *, served: bool, saved_na
         f'<header class="bar"><a class="mark" href="{saved_href}">{esc(site_title)}</a>'
         f'<nav><a href="{saved_href}">Desk</a>{opener}</nav></header>\n'
         f"<main>\n{body}\n</main>\n{library}<script>{TIME_SCRIPT}{VIEWPORT_SCRIPT if interactive or library else ''}{QUESTION_SCRIPT if conversations else ''}"
+        f"{CONVERSATION_TEXT_SCRIPT if library or talking or starting else ''}"
         f"{ANSWER_SCRIPT if interactive else ''}{CONVERSATION_SCRIPT if talking else ''}{START_SCRIPT if starting else ''}"
         f"{WORKERS_SCRIPT if workers else ''}{FILTER_SCRIPT if filters or library else ''}"
         f"{f'const libraryCaseFolds = {library_case_folds()};' + LIBRARY_SCRIPT if library else ''}</script>\n</body>\n</html>\n"
@@ -2704,7 +2711,6 @@ def talk_script(body):
     """Shared by the Desk form and a conversation's message box: one POST of a message with its own ID."""
     return r"""
 const messageId = () => Array.from(crypto.getRandomValues(new Uint8Array(16)), byte => byte.toString(16).padStart(2, '0')).join('');
-const trimmed = value => value.replace(/^[\p{White_Space}\u001c-\u001f]+|[\p{White_Space}\u001c-\u001f]+$/gu, '');
 const SENDING_FAILED = () => navigator.onLine ? 'Send interrupted. Send again.' : 'Offline. Reconnect and send again.';
 async function postJson(path, body) {
   const response = await fetch(path, {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify(body)});
@@ -2797,10 +2803,9 @@ START_SCRIPT = talk_script(r"""
   const button = form.querySelector('button[type="submit"]');
   const output = form.querySelector('output');
   const error = form.querySelector('#talk-error');
-  const topicText = () => trimmed(topic.value.replace(/[\p{White_Space}\u001c-\u001f]+/gu, ' '));
   let draft = null;
   const refresh = () => {
-    button.disabled = !(topicText() && trimmed(message.value));
+    button.disabled = !(normalizeTopic(topic.value) && trimmed(message.value));
   };
   open.addEventListener('click', () => {
     form.hidden = !form.hidden;
@@ -2810,7 +2815,7 @@ START_SCRIPT = talk_script(r"""
   form.addEventListener('input', () => { error.hidden = true; refresh(); });
   form.addEventListener('submit', async event => {
     event.preventDefault();
-    const title = topicText(), text = trimmed(message.value);
+    const title = normalizeTopic(topic.value), text = trimmed(message.value);
     if (!title || !text) return;
     if (draft?.title !== title || draft.text !== text) draft = {id:messageId(), title, text};
     const controls = form.querySelectorAll('button,input,textarea');
@@ -3303,7 +3308,7 @@ def list_page(data: dict[str, object], site_title: str, *, served: bool, saved_n
     elif not items:
         body = f'{heading}<p class="empty">{esc(empty)}</p>'
     else:
-        body = f'{heading}<p class="empty">Nothing is on your Desk. A question that needs an answer or a reply shows here.</p>'
+        body = f'{heading}<p class="empty">Nothing is on your Desk. A question that needs an answer shows here.</p>'
     if served:
         body += workers_section(workers)
     library = ""

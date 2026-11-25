@@ -4654,7 +4654,9 @@ class TalkToFirstmateTests(ImageCase):
         self.assertIn('<span class="badge">Replied</span>', self.fetch(port, "/qd/")[1])
         ids = [m["id"] for m in self.thread() if m["author"] == "firstmate"]
         self.assertEqual(self.post(port, "/qd/replies/read", {"part": "Q1", "ids": ids})[0], 200)
-        self.assertNotIn("Read reply", self.fetch(port, "/qd/")[1])
+        desk = self.fetch(port, "/qd/")[1]
+        self.assertNotIn("Read reply", desk)
+        self.assertIn("Nothing is on your Desk. A question that needs an answer shows here.", desk)
 
     def test_a_conversation_cannot_send_messages_to_a_replacement_home(self) -> None:
         home = self.inbox()
@@ -4709,6 +4711,7 @@ class TalkToFirstmateTests(ImageCase):
         (output.parent / "q1.html").write_text(page)
         self.assertEqual(self.run_cli("render", "--output", str(output))[0], 0)
         exported = output.read_text()
+        self.assertIn("Nothing is on your Desk. A question that needs an answer shows here.", exported)
         for private in ("<h2>Conversations</h2>", "Harbor lamp colours", "Quay sign colours", first["text"]):
             self.assertNotIn(private, exported)
         self.assertIn('href="q3.html"', exported)
@@ -4719,8 +4722,8 @@ class TalkToFirstmateTests(ImageCase):
     def test_conversation_search_matches_id_shaped_topics_and_exact_item_ids(self) -> None:
         port = self.start("/qd", ask_home=self.inbox())
         self.begin(port, "Q5.3", "Hidden message")
-        self.begin(port, "Other topic", "Q5.3")
-        self.check_answer_page(port, r"""
+        self.assertEqual(self.begin(port, "Other\u0085topic", "Q5.3")[1][0], 200)
+        self.check_answer_page(self.start("/qd"), r"""
 button('open-library').click();
 button('tab-conversations').click();
 const search = button('search-conversations');
@@ -4733,6 +4736,8 @@ check(find('q5.3') === 'Q1', 'The ID-shaped topic was missed or a message matche
 check(find('Q2') === 'Q2', 'An exact conversation item ID did not match');
 check(find('hidden message') === '', 'Message content matched a search');
 check(find('other topic') === 'Q2', 'A plain topic did not match');
+check(find('Other\u0085topic') === 'Q2', 'The pasted topic did not normalize like the saved topic');
+check(find('\u0085Q2\u0085') === 'Q2', 'Whitespace prevented an exact item ID match');
 """, path="/qd/", viewport=(390, 844))
 
     def test_the_pages_send_messages_and_start_conversations_in_a_browser(self) -> None:
