@@ -168,14 +168,26 @@ intact. Every ID must belong to the named conversation. The response field
 
 ### Workers endpoint
 
-`GET /workers.json` (under any `base_path`) returns a fresh fleet reading. The
+`GET /workers.html` is the Workers page. It reads `GET /workers-saved.json`
+and calls `GET /workers.json` only when the saved reading is stale or the owner
+presses **Check workers**. The Desk never calls either endpoint.
+
+`GET /workers-saved.json` returns `{"snapshot": ..., "stale": ...}` without
+reading the home. `snapshot` is the last reading from `workers.json` in the
+same format, or `null` when the server has none. It is held in memory only and
+is lost when `serve` stops. `stale` is `true` when there is no snapshot, or
+its `observed_at` is more than one hour old or in the future. It returns 404
+when `firstmate_home` is absent.
+
+`GET /workers.json` (under any `base_path`) returns a fresh fleet reading and
+saves it as the last reading. A failed read keeps the previous one. The
 [snapshot command](../explanation/privacy-and-architecture.md#what-quarterdeck-reads-and-writes)
 runs with `FM_HOME` set to the configured home. Other inherited `FM_` variables
 are removed. The endpoint returns 404 when `firstmate_home` is absent. It
 returns 502 immediately if the command is already running. It also returns 502
 if the command fails, exceeds 60 seconds, or returns invalid snapshot data.
 
-| Field in `workers.json` | Meaning |
+| Field in a snapshot | Meaning |
 | --- | --- |
 | `observed_at` | UTC time the snapshot was taken. |
 | `workers` | Ordinary tasks whose terminals are open, one row per ID. Each row has `name`, `project`, `activity`, `status`, `active_at` and `links`. |

@@ -1566,10 +1566,11 @@ def reply_item(args: argparse.Namespace) -> int:
 
 # --- Workers ------------------------------------------------------------------------------
 # Roster refresh runs only the home's read-only fleet snapshot, without a model.
-# Quarterdeck shows only what the snapshot states outright and keeps no copy.
+# Quarterdeck shows only what the snapshot states outright. The server holds the last reading in memory only.
 
 SNAPSHOT_COMMAND = ("bin/fm-fleet-snapshot.sh", "--local")
 SNAPSHOT_SECONDS = 60
+WORKERS_FRESH_SECONDS = 3600  # the Workers page reads the home on entry only when the saved reading is older
 UTC_RE = re.compile(r"[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z")
 WORKER_STATES = {"working": "Working", "done": "Finished", "blocked": "Stuck", "failed": "Stuck"}
 ACTIVITY_UNAVAILABLE = "Activity unavailable"
@@ -1724,6 +1725,25 @@ def workers_snapshot(home: Path) -> dict[str, object]:
     }
 
 
+class SavedWorkers:
+    """The last successful reading, in memory only, shared by every visitor until the server stops."""
+
+    def __init__(self) -> None:
+        self.snapshot: dict[str, object] | None = None
+
+    def save(self, snapshot: dict[str, object]) -> None:
+        self.snapshot = snapshot
+
+    def view(self, now: datetime | None = None) -> dict[str, object]:
+        """The saved reading and whether it is missing or older than WORKERS_FRESH_SECONDS."""
+        snapshot = self.snapshot
+        if snapshot is None:
+            return {"snapshot": None, "stale": True}
+        observed = datetime.strptime(str(snapshot["observed_at"]), "%Y-%m-%dT%H:%M:%SZ").replace(tzinfo=timezone.utc)
+        age = ((now or datetime.now(timezone.utc)) - observed).total_seconds()
+        return {"snapshot": snapshot, "stale": age > WORKERS_FRESH_SECONDS or age < 0}
+
+
 # --- Pages ------------------------------------------------------------------------------
 # The workers roster is fetched separately from the HTML. No page names a server path.
 
@@ -1845,7 +1865,9 @@ textarea { display:block; width:100%; resize:vertical; background:var(--ground);
   text-decoration:none; border:1px solid var(--soft); background:var(--raised); color:var(--ink); }
 .work-action { background:var(--ink); color:var(--raised); border-color:var(--ink); }
 .section-head { display:flex; flex-wrap:wrap; gap:.5rem 1rem; align-items:center; justify-content:space-between; margin-top:2rem; }
-.section-head h2 { margin:0; }
+.section-head h1 { margin:0; }
+.workers-link { margin:1.5rem 0 0; }
+#workers > .section-head:first-child { margin-top:0; }
 .roster { list-style:none; margin:.5rem 0 0; padding:0; border-top:1px solid var(--rule); font-family:var(--sans); }
 .roster > li { padding:.9rem 0; border-bottom:1px solid var(--rule); }
 .roster p { margin:.15rem 0 0; }
@@ -1978,7 +2000,7 @@ WORKERS_SCRIPT = r"""
   const section = document.querySelector('#workers');
   const button = section && section.querySelector('#refresh-workers');
   if (!button) return;
-  const heading = section.querySelector('h2');
+  const heading = section.querySelector('h1');
   const status = section.querySelector('#workers-status');
   const list = section.querySelector('#workers-list');
   const exceptions = new Set(['Question asked', 'Stuck', 'Unreachable']);
@@ -2032,7 +2054,7 @@ WORKERS_SCRIPT = r"""
     else list.append(make('p', 'empty', 'No workers are running. A worker with a terminal shows here.'));
     if (data.second_mates.length) list.append(group('Second mates', data.second_mates, true));
     status.className = 'meta';
-    status.textContent = 'Last refreshed ';
+    status.textContent = 'Last checked ';
     const time = make('time', '', localTime(data.observed_at));
     time.dateTime = data.observed_at;
     status.append(time);
@@ -2040,8 +2062,13 @@ WORKERS_SCRIPT = r"""
   const failed = () => {
     status.className = 'meta failed';
     status.textContent = lastObservedAt
-      ? 'Refresh failed. Showing the list from ' + localTime(lastObservedAt) + '.'
+      ? 'Check failed. Showing the list from ' + localTime(lastObservedAt) + '.'
       : 'Workers could not be loaded. Try again.';
+  };
+  const readSaved = async () => {
+    const response = await fetch('workers-saved.json', {cache: 'no-store', headers: {Accept: 'application/json'}});
+    if (!response.ok) throw new Error('saved read failed');
+    return response.json();
   };
   const load = async () => {
     if (button.getAttribute('aria-disabled') === 'true') return;
@@ -2063,7 +2090,20 @@ WORKERS_SCRIPT = r"""
     }
   };
   button.addEventListener('click', load);
-  load();
+  (async () => {
+    let saved = null;
+    try {
+      saved = await readSaved();
+    } catch (error) {
+      saved = null;
+    }
+    if (saved && saved.snapshot) {
+      show(saved.snapshot);
+      lastObservedAt = saved.snapshot.observed_at;
+    }
+    if (!saved || saved.stale) load();
+    else if (!saved.snapshot) failed();
+  })();
 })();
 """
 
@@ -3271,11 +3311,18 @@ def desk_item(item: dict[str, object]) -> bool:
 
 def workers_section(ready: bool) -> str:
     if not ready:
-        return ('<section id="workers"><h2>Workers</h2><p class="empty">Workers show here once firstmate_home '
+        return ('<section id="workers"><h1>Workers</h1><p class="empty">Workers show here once firstmate_home '
                 'names a Firstmate home.</p></section>')
-    return ('<section id="workers"><div class="section-head"><h2>Workers</h2>'
-            '<button type="button" id="refresh-workers">Refresh workers</button></div>'
+    return ('<section id="workers"><div class="section-head"><h1>Workers</h1>'
+            '<button type="button" id="refresh-workers">Check workers</button></div>'
             '<p class="meta" id="workers-status" role="status">Loading workers</p><div id="workers-list"></div></section>')
+
+
+def workers_page(site_title: str, *, ready: bool) -> str:
+    """The Workers page: it reads the saved reading and the home only from its own script."""
+    return page_shell(f"Workers · {site_title}", site_title,
+                      workers_section(ready),
+                      served=True, saved_name="index.html", workers=ready)
 
 
 def talk_form(binding):
@@ -3287,7 +3334,7 @@ def talk_form(binding):
 
 
 def list_page(data: dict[str, object], site_title: str, *, served: bool, saved_name: str = "index.html",
-              workers: bool = False, ask_binding: str | None = None) -> str:
+              ask_binding: str | None = None) -> str:
     items = newest_first(data["items"])  # type: ignore[arg-type]
     empty = "Nothing is saved yet. Ask Firstmate to send something to Quarterdeck, such as a link, a list or open questions."
     attention = []
@@ -3317,7 +3364,7 @@ def list_page(data: dict[str, object], site_title: str, *, served: bool, saved_n
     else:
         body = f'{heading}<p class="empty">Nothing is on your Desk. A question that needs an answer shows here.</p>'
     if served:
-        body += workers_section(workers)
+        body += '<p class="workers-link"><a href="workers.html">Workers</a></p>'
     library = ""
     if served:
         library = library_dialog(data)
@@ -3325,7 +3372,7 @@ def list_page(data: dict[str, object], site_title: str, *, served: bool, saved_n
         references, answered = library_lists(data, served=False)
         body += (f'<section class="page-section"><h2>References</h2>{references}</section>'
                  f'<section class="page-section"><h2>Answered</h2>{answered}</section>')
-    return page_shell(site_title, site_title, body, served=served, saved_name=saved_name, workers=served and workers,
+    return page_shell(site_title, site_title, body, served=served, saved_name=saved_name,
                       library=library, filters=bool(items) and not served,
                       starting=served and bool(ask_binding))
 
@@ -3700,6 +3747,7 @@ def make_handler(site_title: str, base_path: str = "", store: Path | None = None
                  *, ask_home: Path | None = None, workers_home: Path | None = None) -> type[BaseHTTPRequestHandler]:
     """Every page is built from the item store when it is requested."""
     visit_log = VisitLog(visits_path())
+    saved_workers = SavedWorkers()
 
     def ask_destination(*, require_directory):
         if ask_home is not None:
@@ -3778,7 +3826,14 @@ def make_handler(site_title: str, base_path: str = "", store: Path | None = None
                 except SnapshotError:
                     self.send_text(502, json.dumps({"error": "The workers could not be read."}), "application/json")
                 else:
+                    saved_workers.save(snapshot)
                     self.send_text(200, json.dumps(snapshot), "application/json")
+                return
+            if name == "workers-saved.json" and workers_home is not None:
+                self.send_text(200, json.dumps(saved_workers.view()), "application/json")
+                return
+            if name == "workers.html":
+                self.send_text(200, workers_page(site_title, ready=workers_home is not None), "text/html; charset=utf-8")
                 return
             picture = IMAGE_URL_RE.fullmatch(name)
             if name != "index.html" and not picture and not ITEM_PAGE_RE.fullmatch(name):
@@ -3798,8 +3853,7 @@ def make_handler(site_title: str, base_path: str = "", store: Path | None = None
                 except (OSError, ValueError) as exc:  # a visit that cannot be logged must never stop the page
                     print(f"quarterdeck: could not log the visit: {exc}", file=sys.stderr, flush=True)
                 _, ask_binding = ask_destination(require_directory=True)
-                self.send_text(200, list_page(data, site_title, served=True, workers=workers_home is not None,
-                                              ask_binding=ask_binding), "text/html; charset=utf-8",
+                self.send_text(200, list_page(data, site_title, served=True, ask_binding=ask_binding), "text/html; charset=utf-8",
                                prevent_framing=bool(ask_binding))
                 return
             try:
@@ -4218,7 +4272,7 @@ def make_parser() -> argparse.ArgumentParser:
                            "Anyone who can reach the service can read saved items, answers, conversations and reply images, "
                            "and can submit answers or acknowledge replies as the owner. With firstmate_home set, they can "
                            "also send asks, start conversations, send messages and read that home's running workers "
-                           "on entry or on Refresh workers. Browser "
+                           "when they open the Workers page or press Check workers. Browser "
                            "writes require the same origin as the served page.", serve)
     add_serve_options(serve_parser)
     serve_parser.add_argument("--title", help="override the page title")

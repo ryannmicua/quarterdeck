@@ -62,11 +62,14 @@ The classification browser tests use headless `google-chrome` to select
 filters and check which reference rows, reviewed cards, and empty messages
 are visible in the narrow and desktop layouts.
 
-The workers browser test uses headless `google-chrome` to count actual snapshot
-requests on entry, during a virtual minute of idle time, and after a refresh click.
-It also verifies that the click replaces the closed worker's row with the new live
-worker and updates the refresh time element's `datetime` attribute after the
-source clock moves backward.
+The workers browser tests use headless `google-chrome` on the Workers page.
+They count actual snapshot requests on entry with nothing saved, during a
+virtual minute of idle time, and after a check click. They verify that the click
+replaces the closed worker's row with the new live worker and updates the time
+element's `datetime` attribute after the source clock moves backward. A second
+test saves a reading first and verifies that entry shows it with no snapshot
+request until the click. The server tests verify that loading the Desk never
+runs the snapshot.
 The timeout test checks that the snapshot shell and its child both release a
 shared pipe when the endpoint returns 502.
 

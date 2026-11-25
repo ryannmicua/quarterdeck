@@ -33,8 +33,8 @@ own copy of the saved content.
 - **Open library** gives you searchable access to saved links, lists, and
   answered items and conversations on the served Desk. See
   [Find references and answered questions](docs/how-to/use-the-library.md).
-- **Workers** follows **Desk** on the served page. See
-  [how to enable and refresh the roster](docs/how-to/read-workers.md).
+- **Workers** is its own page, linked from **Desk**. The Desk never reads the
+  fleet. See [how to enable and check the roster](docs/how-to/read-workers.md).
 - The served Desk gives each item a page with its ID and title at the top.
   A resource's link opens the saved address. List entries and questions
   are numbered.
