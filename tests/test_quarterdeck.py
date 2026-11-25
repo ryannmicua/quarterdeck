@@ -1698,7 +1698,8 @@ class QuestionImageTests(ImageCase):
         folder = quarterdeck.store_path().parent / "images"
         self.assertEqual({path.name for path in folder.iterdir()}, {keep.lower(), gone.lower()})
         self.assertEqual(self.run_cli("remove", gone)[0], 0)
-        self.assertEqual({path.name for path in folder.iterdir()}, {keep.lower()})
+        self.assertEqual(list((folder / gone.lower()).iterdir()), [])
+        self.assertEqual(len(list((folder / keep.lower()).iterdir())), 3)
 
     def test_a_stored_image_record_that_is_not_canonical_is_reported_as_damage(self) -> None:
         self.add_pictured()
@@ -1944,6 +1945,7 @@ class QuestionImagePageTests(ImageCase):
         config.write_text(json.dumps({"output_dir": str(configured)}))
         chmod = os.chmod
         os_open = os.open
+        path_open = Path.open
 
         def deny_store_chmod(path, *args, **kwargs):
             if Path(path) == store.parent:
@@ -1955,21 +1957,63 @@ class QuestionImagePageTests(ImageCase):
                 raise OSError(errno.EROFS, "Read-only file system")
             return os_open(path, flags, *args, **kwargs)
 
+        def open_backup_file(path, *args, **kwargs):
+            if path == lock and lock_access == "denied":
+                raise PermissionError(errno.EACCES, "Permission denied", str(path))
+            return path_open(path, *args, **kwargs)
+
         with (patch.object(os, "chmod", side_effect=deny_store_chmod),
-              patch.object(os, "open", side_effect=deny_store_lock_writes)):
-            for directory, args, has_lock in (
-                (explicit, ("--output", str(explicit / "index.html")), True),
-                (configured, ("--config", str(config)), False),
+              patch.object(os, "open", side_effect=deny_store_lock_writes),
+              patch.object(Path, "open", autospec=True, side_effect=open_backup_file)):
+            for directory, args, lock_access in (
+                (explicit, ("--output", str(explicit / "index.html")), "readable"),
+                (explicit, ("--output", str(explicit / "index.html")), "denied"),
+                (configured, ("--config", str(config)), "denied"),
+                (configured, ("--config", str(config)), "absent"),
             ):
-                with self.subTest(directory=directory):
-                    if not has_lock:
+                with self.subTest(directory=directory, lock_access=lock_access):
+                    if lock_access == "absent":
                         lock.unlink()
                     code, _, err = self.run_cli("render", *args)
                     self.assertEqual(code, 0, err)
-                    self.assertEqual(lock.exists(), has_lock)
+                    self.assertEqual(lock.exists(), lock_access != "absent")
                     self.assertTrue((directory / "q1.html").is_file())
                     for name, data in originals.items():
                         self.assertEqual((directory / "images" / name).read_bytes(), data)
+
+    def test_add_and_render_write_images_without_hard_link_support(self) -> None:
+        expected = {self.red.read_bytes(), self.blue.read_bytes(), self.wide.read_bytes()}
+        output = self.root / "site" / "index.html"
+        unsupported = OSError(errno.EOPNOTSUPP, "Hard links are unsupported")
+        with patch.object(os, "link", side_effect=unsupported):
+            self.assertEqual(self.add_pictured(), "Q1")
+            code, _, err = self.run_cli("render", "--output", str(output))
+            self.assertEqual(code, 0, err)
+        for directory in (quarterdeck.store_path().parent, output.parent):
+            copies = list((directory / "images" / "q1").iterdir())
+            self.assertEqual({copy.read_bytes() for copy in copies}, expected)
+            self.assertEqual([stat.S_IMODE(copy.stat().st_mode) for copy in copies], [0o600] * 3)
+
+    def test_render_without_hard_links_preserves_an_image_created_during_export(self) -> None:
+        self.add_pictured()
+        png = self.red.read_bytes()
+        filename = hashlib.sha256(png).hexdigest()[:16] + ".png"
+        for occupant, expected_code in ((png, 0), (b"other bytes", 2)):
+            output = self.root / f"site-{expected_code}" / "index.html"
+            image = output.parent / "images" / "q1" / filename
+
+            def link_unsupported(_temporary, target):
+                if target == image:
+                    image.write_bytes(occupant)
+                raise OSError(errno.EOPNOTSUPP, "Hard links are unsupported")
+
+            with self.subTest(expected_code=expected_code), patch.object(os, "link", side_effect=link_unsupported):
+                code, _, err = self.run_cli("render", "--output", str(output))
+                self.assertEqual(code, expected_code, err)
+                self.assertEqual(image.read_bytes(), occupant)
+                self.assertEqual(output.exists(), expected_code == 0)
+                if expected_code:
+                    self.assertIn("refusing to overwrite an unrelated file", err)
 
     def test_remove_deletes_exactly_the_files_the_record_names(self) -> None:
         keep, gone = self.add_pictured(), self.add_pictured()
@@ -1983,7 +2027,7 @@ class QuestionImagePageTests(ImageCase):
         self.assertEqual(len(list((images / keep.lower()).iterdir())), 3)
         stray.unlink()
         self.assertEqual(self.run_cli("remove", keep)[0], 0)
-        self.assertFalse((images / keep.lower()).exists())
+        self.assertEqual(list((images / keep.lower()).iterdir()), [])
 
     def test_a_failed_add_deletes_nothing_and_the_retry_succeeds(self) -> None:
         images = quarterdeck.store_path().parent / "images" / "q1"

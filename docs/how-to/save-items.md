@@ -119,11 +119,16 @@ Only `remove` deletes an image, and only the files the removed item names.
 - A failed `add` or an interrupted `remove` can leave files in the store's
   `images/<id>/` folder that no item names. They are never served.
 - A refused render can leave new image copies in the output folder.
+- Where the destination does not support hard links, an interrupted image
+  write can leave a partial file. A later run refuses that file until you
+  delete it by hand.
 - Each distinct path spelling is resolved once per save. Two spellings can
   pick up different targets if a symlink is retargeted during the save.
 - Two paths to one file through hard links count as different files.
 - Another store that renders into this store's folder can replace or retire
   generated pages. It can add image files but never remove one.
+  Rendering into another store's state folder is unsupported because removing
+  an item from that store can break a picture in the export.
 
 On a phone the images fit the width and a tap on an image in a question opens
 it full size. On an option, a tap on the image or its label picks it and

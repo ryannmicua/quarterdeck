@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import argparse
 import contextlib
+import errno
 import fcntl
 import functools
 import gzip
@@ -177,7 +178,16 @@ def write_private_bytes(path: Path, data: bytes) -> None:
             stream.write(data)
             stream.flush()
             os.fsync(stream.fileno())
-        os.link(temporary, path)
+        try:
+            os.link(temporary, path)
+        except OSError as exc:
+            if exc.errno not in {errno.EOPNOTSUPP, errno.ENOTSUP, errno.ENOSYS, errno.EPERM}:
+                raise
+            descriptor = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+            with os.fdopen(descriptor, "wb") as stream:
+                stream.write(data)
+                stream.flush()
+                os.fsync(stream.fileno())
     finally:
         os.unlink(temporary)
 
@@ -581,7 +591,7 @@ def locked_store(path: Path, *, read_only: bool = False) -> Iterator[None]:
     if read_only:
         try:
             lock = lock_path.open("rb")
-        except FileNotFoundError:
+        except OSError:
             yield
         else:
             with lock:
@@ -843,17 +853,13 @@ def save_images(store: Path, item_id: str, images: dict[str, bytes]) -> None:
 
 
 def remove_images(store: Path, item: dict[str, object]) -> None:
-    """Delete exactly the files this item's record names, then its folder if that leaves it empty."""
+    """Delete exactly the files this item's record names."""
     files = item_image_files(item)
     if not files:
         return
     directory = image_directory(images_root(store), str(item["id"]))
     for name in files:
         (directory / name).unlink(missing_ok=True)
-    try:
-        directory.rmdir()
-    except OSError:
-        pass
 
 
 def add_item(args: argparse.Namespace) -> int:

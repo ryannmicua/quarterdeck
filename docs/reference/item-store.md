@@ -10,8 +10,9 @@ Item commands and submitted answers update the store. Both set the store
 directory to mode 0700, take an exclusive lock on `items.json.lock`, validate
 the existing records, and atomically replace `items.json` with mode 0600.
 An in-place `render` takes the same exclusive lock from its store read
-through publication. An external render takes a shared lock if the lock
-file exists and can read from a read-only store. Other readers validate
+through publication. An external render takes a shared lock if it can
+open the lock file and otherwise reads without coordinating with writers.
+External render can read from a read-only store. Other readers validate
 records without taking the lock.
 
 ## Format (version 1)
@@ -115,7 +116,7 @@ ${XDG_STATE_HOME:-~/.local/state}/quarterdeck/images/<id>/<file>
 
 The `images` folder has mode 0700 and each file mode 0600. `<id>` is the
 lowercase item ID, such as `q3`. `remove` deletes exactly the files the removed
-item's record names, then the folder if it is empty. `add` and `render` never delete an image. A page links to `images/<id>/<file>` relative to itself, so it works
+item's record names. Empty item folders can remain. `add` and `render` never delete an image. A page links to `images/<id>/<file>` relative to itself, so it works
 under a [base path](cli-and-config.md#pages). `serve` returns only a file the
 store lists for that item. `render` copies the files beside the pages, into
 `images/<id>/`.
