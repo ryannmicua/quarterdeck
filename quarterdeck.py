@@ -1574,6 +1574,7 @@ body:has(dialog[open]) { overflow:hidden; }
   .lib-top > button { padding:.5rem .7rem; flex:none; }
 }
 .lib-panel { display:flex; flex-direction:column; flex:1; min-height:0; }
+.lib-top, .lib-tools, .lib-status { flex-shrink:0; }
 .lib-tools { padding:.9rem var(--gutter) .4rem; }
 .lib-tools label { font-size:var(--text-sm); color:var(--soft); margin-bottom:.2rem; }
 .lib-tools input { width:100%; min-height:var(--tap); padding:.4rem .6rem; font:var(--text-md)/1.3 var(--sans); color:var(--ink); background:var(--ground);
@@ -1581,9 +1582,10 @@ body:has(dialog[open]) { overflow:hidden; }
 .lib-status { margin:0; padding:0 var(--gutter); color:var(--soft); font-size:var(--text-sm); }
 .lib-panel > .empty { margin:1rem var(--gutter); }
 .lib-list { list-style:none; margin:0; padding:0 var(--gutter) 2rem; overflow-y:auto; flex:1; min-height:0; overscroll-behavior:contain; }
-.library.short[open] { display:block; height:var(--visible-height, 100vh); overflow-y:auto; overscroll-behavior:contain; }
-.library.short .lib-list { overflow:visible; }
-.library.short button { scroll-margin-top:0; }
+.library.short[open] { height:var(--visible-height, 100vh); }
+.library:is(.short,.scroll-all)[open] { display:block; overflow-y:auto; overscroll-behavior:contain; }
+.library:is(.short,.scroll-all) .lib-list { overflow:visible; }
+.library:is(.short,.scroll-all) button { scroll-margin-top:0; }
 .lib-item { padding:.9rem 0; border-bottom:1px solid var(--rule); }
 .lib-item p { margin:.2rem 0 0; }
 .lib-head { display:flex; gap:.2rem .8rem; align-items:baseline; }
@@ -1729,14 +1731,7 @@ LIBRARY_SCRIPT = r"""
   const dialog = document.querySelector('#library');
   const opener = document.querySelector('#open-library');
   if (!dialog || !opener || !dialog.showModal) return;
-  trackVisibleViewport((height, previousHeight) => {
-    const shortHeight = 22 * parseFloat(getComputedStyle(document.documentElement).fontSize);
-    dialog.classList.toggle('short', height <= shortHeight);
-    const focused = document.activeElement;
-    if (height < previousHeight && dialog.open && dialog.contains(focused)) {
-      focused.scrollIntoView({block:'nearest', inline:'nearest'});
-    }
-  });
+  const header = dialog.querySelector('.lib-top');
   const tabs = [...dialog.querySelectorAll('[role="tab"]')];
   const panelOf = tab => document.getElementById(tab.getAttribute('aria-controls'));
   const searchOf = tab => panelOf(tab).querySelector('input[type="search"]');
@@ -1744,6 +1739,25 @@ LIBRARY_SCRIPT = r"""
   const selectedTab = () => tabs.find(tab => tab.getAttribute('aria-selected') === 'true');
   const libraryLookup = history.state?.libraryLookup;
   const restoredTab = tabs.find(tab => tab.id === libraryLookup?.tab);
+  const updateScrollMode = () => {
+    if (!dialog.open) return;
+    const panel = panelOf(selectedTab());
+    const controlsHeight = header.offsetHeight + panel.querySelector('.lib-tools').offsetHeight
+      + panel.querySelector('[data-status]').offsetHeight;
+    const list = panel.querySelector('.lib-list');
+    const resultSpace = parseFloat(getComputedStyle(dialog).getPropertyValue('--tap'))
+      + (list ? parseFloat(getComputedStyle(list).paddingBottom) : 0);
+    dialog.classList.toggle('scroll-all', dialog.clientHeight - controlsHeight < resultSpace);
+  };
+  trackVisibleViewport((height, previousHeight) => {
+    const shortHeight = 22 * parseFloat(getComputedStyle(document.documentElement).fontSize);
+    dialog.classList.toggle('short', height <= shortHeight);
+    updateScrollMode();
+    const focused = document.activeElement;
+    if (height < previousHeight && dialog.open && dialog.contains(focused)) {
+      focused.scrollIntoView({block:'nearest', inline:'nearest'});
+    }
+  });
   const select = (tab, focus) => {
     for (const other of tabs) {
       const on = other === tab;
@@ -1751,6 +1765,7 @@ LIBRARY_SCRIPT = r"""
       other.tabIndex = on ? 0 : -1;
       panelOf(other).hidden = !on;
     }
+    updateScrollMode();
     if (focus) tab.focus();
   };
   for (const tab of tabs) {
@@ -1765,6 +1780,7 @@ LIBRARY_SCRIPT = r"""
   }
   const openLibrary = () => {
     dialog.showModal();
+    updateScrollMode();
     selectedTab().focus();
   };
   opener.addEventListener('click', openLibrary);
@@ -1827,6 +1843,7 @@ LIBRARY_SCRIPT = r"""
       const active = query || filters.some(select => select.value);
       none.hidden = Boolean(active) || rows.length > 0;
       status.textContent = active && !hasMatch ? 'No results match your search.' : '';
+      if (!panel.hidden) updateScrollMode();
     };
     search.addEventListener('input', run);
     for (const select of filters) select.addEventListener('change', run);

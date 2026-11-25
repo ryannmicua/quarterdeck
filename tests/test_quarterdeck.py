@@ -1321,6 +1321,46 @@ close.click();
 check(!dialog.open, 'Close library did not dismiss the panel');
 """, path="/qd/", viewport=(width, 140))
 
+    def test_stacked_library_filters_leave_results_reachable(self):
+        self.add("resource", "Harbor chart", "Review the route.", "--url", "https://example.org/chart",
+                 "--link-text", "Open chart")
+        long_project = "Waterfront Maintenance and Lighting Plan"
+        for project in (long_project, "Harbor"):
+            item = self.add("questions", project, "Choose an option.", "--project", project, "--tag", "research",
+                            "--body-file", "-", stdin=json.dumps(QUESTIONS[:1]))
+            self.assertEqual(self.run_cli("mark", item, "closed")[0], 0)
+        self.check_answer_page(self.start("/qd"), r"""
+check(innerWidth === 320 && innerHeight === 355, 'Wrong fixture viewport');
+button('open-library').click();
+const dialog = button('library');
+for (const animation of dialog.getAnimations()) animation.finish();
+const reach = control => {
+  control.scrollIntoView({block:'center'});
+  const bounds = control.getBoundingClientRect();
+  check(control.contains(document.elementFromPoint(bounds.x + bounds.width / 2, bounds.y + bounds.height / 2)),
+        'The library hid ' + (control.textContent || control.id));
+};
+const answered = button('tab-answered');
+reach(answered);
+answered.click();
+const panel = button('panel-answered');
+const project = panel.querySelector('select[name="project"]');
+const tag = panel.querySelector('select[name="tag"]');
+check(project.getBoundingClientRect().bottom <= tag.getBoundingClientRect().top, 'The filter fixture did not stack');
+reach(project);
+reach(tag);
+project.selectedIndex = 1;
+project.dispatchEvent(new Event('change', {bubbles:true}));
+const links = [...panel.querySelectorAll('.lib-item:not([hidden]) .lib-title')];
+check(links.length === 1 && links[0].getAttribute('href') === 'q3.html', 'The project filter did not select the Harbor item');
+reach(links[0]);
+check(dialog.scrollTop > 0, 'The results were not reachable by scrolling the whole library');
+const references = button('tab-references');
+reach(references);
+references.click();
+reach(button('panel-references').querySelector('a[href="q1.html"]'));
+""", path="/qd/", viewport=(320, 355))
+
     def test_desk_card_stretches_one_action_without_covering_its_links(self):
         question = {**QUESTIONS[1], "question": "Use https://example.org/options?",
                     "links": [{"text": "Review the chart", "url": "https://example.org/review"}]}

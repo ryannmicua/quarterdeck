@@ -36,6 +36,7 @@ checks also cover focus through delivery transitions and the hit targets for
 the Desk card action and its independent links. A 320-pixel sheet check covers
 both tabs and Close library. At 140 pixels tall, browser checks cover the Send
 bar with Undo and a long error, and search and results in both library layouts.
+A 320 × 355 check switches tabs and reaches results past stacked library filters.
 The keyboard regression simulates visual-viewport resize and pan events while
 holding the layout viewport fixed. It checks Send clearance and library search
 in the sheet and drawer with 60 pixels visible, then restores the full height.
