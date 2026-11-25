@@ -8,8 +8,7 @@ Quarterdeck shows saved items, including topic-based conversations, and
 Catch-up notices saved by hand. The Workers page shows the Firstmate worker
 roster when enabled. When you tell Firstmate "send this to Quarterdeck" or
 "save this Lavish page to Quarterdeck", Firstmate runs `quarterdeck add`,
-and the item appears on the page. If nothing has been saved, the page says
-so.
+and the item appears on the page.
 
 Each item gets an ID that is never reused: Q1, Q2, Q3 and so on. The numbered
 parts of a list or a set of questions are cited as Q7.1, Q7.2, so you can say

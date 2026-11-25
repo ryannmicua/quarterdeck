@@ -205,7 +205,8 @@ thread to its current read status (`true` for read).
 ### Catch-up endpoint
 
 `POST /catch-ups/read` (under any `base_path`) uses the same origin check as
-`/answers`. Send JSON such as `{"ids": ["C4"]}` with a nonempty array of
+`/answers`. Send a JSON object with a single `ids` field, such as
+`{"ids": ["C4"]}`. The field must contain a nonempty array of
 [canonical notice IDs](item-store.md#catch-up-notices). If any ID is missing
 from the store, the endpoint returns 409 without changing the store. The
 response field `read` lists the acknowledged IDs in request order. See
