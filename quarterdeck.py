@@ -1449,7 +1449,6 @@ h3 { margin: .3rem 0; font-size: 1.55rem; line-height: 1.25; }
 .progress { margin-bottom:.4rem; }
 button { cursor:pointer; background:var(--raised); color:var(--ink); border:1px solid var(--soft);
   border-radius:5px; padding:.5rem .85rem; min-height:44px; font-size:1rem; max-width:100%; overflow-wrap:anywhere; }
-button[hidden], table.items tr[hidden], .desk .work[hidden] { display:none; }
 button.primary { color:var(--raised); background:var(--ink); }
 button:disabled, button[aria-disabled="true"] { opacity:.55; cursor:default; }
 :focus-visible { outline:3px solid var(--focus); outline-offset:2px; }
@@ -1509,13 +1508,11 @@ textarea { display:block; width:100%; resize:vertical; background:var(--ground);
 .project-name { color:var(--soft); font-size:var(--text-sm); font-weight:400; }
 .group-name { font:700 var(--text-md)/1.3 var(--sans); margin:1.4rem 0 .3rem; color:var(--soft); }
 .filters { display:flex; flex-wrap:wrap; gap:.6rem 1.2rem; align-items:end; margin:.6rem 0; font-family:var(--sans); }
-.filters label { display:flex; flex-direction:column; gap:.2rem; font-size:var(--text-sm); color:var(--soft); }
+.filters label { display:flex; flex-direction:column; gap:.2rem; min-width:0; max-width:100%; font-size:var(--text-sm); color:var(--soft); }
 .filters select { min-height:var(--tap); min-width:min(100%,12rem); max-width:100%; font:var(--text-md)/1.3 var(--sans); padding:.4rem .6rem;
   background:var(--raised); color:var(--ink); border:1px solid var(--soft); border-radius:5px; }
 .saved-answer .record:empty { display:none; }
-table.items td.project { white-space:normal; }
 @media (max-width: 40rem) {
-  table.items td.project { display:inline; color:var(--soft); margin-right:.6rem; }
   .desk .work { grid-template-columns:minmax(0,1fr); }
   .desk .work > .actions { grid-column:1; grid-row:auto; justify-content:flex-start; margin-top:.6rem; }
 }
@@ -1743,6 +1740,7 @@ LIBRARY_SCRIPT = r"""
   const tabs = [...dialog.querySelectorAll('[role="tab"]')];
   const panelOf = tab => document.getElementById(tab.getAttribute('aria-controls'));
   const searchOf = tab => panelOf(tab).querySelector('input[type="search"]');
+  const filtersOf = tab => [...panelOf(tab).querySelectorAll('.filters select')];
   const selectedTab = () => tabs.find(tab => tab.getAttribute('aria-selected') === 'true');
   const libraryLookup = history.state?.libraryLookup;
   const restoredTab = tabs.find(tab => tab.id === libraryLookup?.tab);
@@ -1781,7 +1779,8 @@ LIBRARY_SCRIPT = r"""
     } else if (!e.defaultPrevented && e.button === 0 && !e.altKey && !e.ctrlKey && !e.metaKey && !e.shiftKey
                && e.target.closest('a.lib-title')) {
       const tab = selectedTab();
-      history.replaceState({...history.state, libraryLookup:{tab:tab.id, query:searchOf(tab).value}}, '');
+      const filters = Object.fromEntries(filtersOf(tab).map(select => [select.name, select.value]));
+      history.replaceState({...history.state, libraryLookup:{tab:tab.id, query:searchOf(tab).value, filters}}, '');
     }
   });
 
@@ -1789,7 +1788,14 @@ LIBRARY_SCRIPT = r"""
   for (const tab of tabs) {
     const panel = panelOf(tab);
     const search = searchOf(tab);
-    if (tab === restoredTab) search.value = libraryLookup.query;
+    const filters = filtersOf(tab);
+    if (tab === restoredTab) {
+      search.value = libraryLookup.query;
+      for (const select of filters) {
+        const value = libraryLookup.filters?.[select.name];
+        if ([...select.options].some(option => option.value === value)) select.value = value;
+      }
+    }
     const status = panel.querySelector('[data-status]');
     const none = panel.querySelector('[data-none]');
     const rows = [...panel.querySelectorAll('.lib-item')];
@@ -1799,17 +1805,20 @@ LIBRARY_SCRIPT = r"""
       const words = query ? query.split(/\s+/) : [];
       let hasMatch = false;
       for (const row of rows) {
-        const ok = id
+        const searchMatch = id
           ? row.dataset.id.toLowerCase() === id[1]
             && (id[2] === undefined || (/^[1-9]\d*$/.test(id[2]) && Number(id[2]) <= Number(row.dataset.questions)))
           : words.every(word => row.dataset.search.toLowerCase().includes(word));
+        const ok = searchMatch && matchesClassification(row, filters);
         row.hidden = !ok;
         hasMatch ||= ok;
       }
       none.hidden = Boolean(query) || rows.length > 0;
-      status.textContent = query && !hasMatch ? 'No results match your search.' : '';
+      const active = query || filters.some(select => select.value);
+      status.textContent = active && !hasMatch ? 'No results match your search.' : '';
     };
     search.addEventListener('input', run);
+    for (const select of filters) select.addEventListener('change', run);
     run();
   }
   if (restoredTab) {
@@ -1867,23 +1876,23 @@ def linked_text(value: object) -> str:
 
 
 FILTER_SCRIPT = """
-for (const bar of document.querySelectorAll('.filters')) {
+const matchesClassification = (entry, filters) => filters.every(select =>
+  !select.value || (select.name === 'project' ? entry.dataset.project === select.value
+    : entry.dataset.tags.split('|').includes(select.value)));
+for (const bar of document.querySelectorAll('main .filters')) {
   const list = document.getElementById(bar.dataset.list);
-  const projectSelect = bar.querySelector('[name="project"]');
-  const tagSelect = bar.querySelector('[name="tag"]');
+  const filters = [...bar.querySelectorAll('select')];
   const none = document.getElementById(bar.dataset.list + '-empty');
   const apply = () => {
-    const project = projectSelect?.value;
-    const tag = tagSelect?.value;
-    let shown = 0;
-    for (const entry of list.querySelectorAll('[data-project]')) {
-      const ok = (!project || entry.dataset.project === project) && (!tag || entry.dataset.tags.split('|').includes(tag));
-      entry.hidden = !ok;
-      if (ok) shown += 1;
+    let hasMatch = false;
+    for (const entry of list.children) {
+      entry.hidden = !matchesClassification(entry, filters);
+      hasMatch ||= !entry.hidden;
     }
-    none.hidden = shown > 0;
+    none.hidden = hasMatch;
   };
   bar.addEventListener('change', apply);
+  apply();
 }
 """
 
@@ -1933,7 +1942,7 @@ def item_page_name(item_id: str) -> str:
 
 
 def page_shell(title: str, site_title: str, body: str, *, served: bool, saved_name: str, interactive: bool = False,
-               workers: bool = False, library: str = "") -> str:
+               workers: bool = False, library: str = "", filters: bool = False) -> str:
     saved_href = quote(saved_name, safe="")
     opener = ('<button type="button" id="open-library" aria-haspopup="dialog" aria-controls="library">Open library</button>'
               if library else "")
@@ -1949,7 +1958,8 @@ def page_shell(title: str, site_title: str, body: str, *, served: bool, saved_na
         f'<nav><a href="{saved_href}">Desk</a>{opener}</nav></header>\n'
         f"<main>\n{body}\n</main>\n{library}<script>{TIME_SCRIPT}{VIEWPORT_SCRIPT if interactive or library else ''}"
         f"{ANSWER_SCRIPT if interactive else ''}"
-        f"{WORKERS_SCRIPT if workers else ''}{LIBRARY_SCRIPT if library else ''}</script>\n</body>\n</html>\n"
+        f"{WORKERS_SCRIPT if workers else ''}{FILTER_SCRIPT if filters or library else ''}"
+        f"{LIBRARY_SCRIPT if library else ''}</script>\n</body>\n</html>\n"
     )
 
 
@@ -1981,7 +1991,7 @@ def question_card(item, summary, *, served, primary, show_project=True):
                        for n in open_parts if questions[n - 1].get("links")), '')
     visual = f'<p class="visual">{first_link}</p>' if first_link else ''
     project = f' <span class="project-name">{esc(item["project"])}</span>' if show_project and item.get("project") else ""
-    return (f'<article class="work{' next' if primary else ''}"{filter_data(item)}><div class="eyebrow"><span class="id">{item["id"]}</span> Questions{project}</div>'
+    return (f'<article class="work{' next' if primary else ''}"><div class="eyebrow"><span class="id">{item["id"]}</span> Questions{project}</div>'
             f'<h3>{title}</h3><p>{linked_text(item["description"])}</p>'
             + (f'<ul>{prompts}</ul>' if prompts else '')
             + tag_labels(all_tags(item))
@@ -2319,17 +2329,19 @@ def day_time(moment: object) -> str:
 def library_row(item, *, served):
     item_id, kind = item["id"], item["kind"]
     title = f'<a class="lib-title" href="{item_page_name(item_id)}">{esc(item["title"])}</a>'
+    project = f'<span class="project-name">{esc(item["project"])}</span>' if item.get("project") else ""
+    tags = tag_labels(all_tags(item))
+    attributes = filter_data(item)
     if kind == "questions" and not served:
-        return f'<li class="lib-item">{title}</li>'
+        return f'<li class="lib-item"{attributes}>{title}{f" {project}" if project else ""}{tags}</li>'
 
-    attributes = ""
     if served:
         search = [item["title"], item["description"]]
         if kind == "questions":
             parts = question_parts(item)
             search.extend(q["question"] for q in item["body"]["questions"])
             search.extend(part_record(item, n).get("answer", "") for n in parts)
-            attributes = f' data-questions="{len(parts)}"'
+            attributes += f' data-questions="{len(parts)}"'
         attributes += f' data-id="{item_id}" data-search="{esc(" ".join(search))}"'
     if kind == "questions":
         detail = f'<p class="meta">{question_summary(item)[0]}</p>'
@@ -2338,15 +2350,18 @@ def library_row(item, *, served):
                   f'<p class="meta"><span>{KIND_LABELS[kind]}</span>{day_time(item["saved_at"])}</p>')
     return (f'<li class="lib-item"{attributes}>'
             f'<div class="lib-head"><span class="id">{item_id}</span>'
-            f'{title}</div>{detail}</li>')
+            f'{title}{project}</div>{detail}{tags}</li>')
 
 
-def library_panel(name: str, rows: list[str], empty: str, *, served: bool) -> str:
-    listing = f'<ul class="lib-list">{"".join(rows)}</ul>' if rows else ""
+def library_panel(name: str, items: list[dict[str, object]], empty: str, *, served: bool) -> str:
+    list_id = f"{name}-list"
+    filters = filter_bar(list_id, items)
+    rows = "".join(library_row(item, served=served) for item in items)
+    listing = f'<ul class="lib-list" id="{list_id}">{rows}</ul>' if rows else ""
     if not served:
-        return listing or f'<p class="empty">{esc(empty)}</p>'
+        return (filters + listing + (no_match(list_id) if filters else "")) if rows else f'<p class="empty">{esc(empty)}</p>'
     return (f'<div class="lib-tools"><label for="search-{name}">Search</label>'
-            f'<input type="search" id="search-{name}" placeholder="Words or an ID" autocomplete="off"></div>'
+            f'<input type="search" id="search-{name}" placeholder="Words or an ID" autocomplete="off">{filters}</div>'
             f'<p class="lib-status" role="status" data-status></p>{listing}'
             f'<p class="empty" data-none{" hidden" if rows else ""}>{esc(empty)}</p>')
 
@@ -2355,9 +2370,9 @@ def library_lists(data: dict[str, object], *, served: bool) -> tuple[str, str]:
     references, answered = [], []
     for item in newest_first(data["items"]):  # type: ignore[arg-type]
         if item["kind"] != "questions":
-            references.append(library_row(item, served=served))
+            references.append(item)
         elif not desk_item(item):
-            answered.append(library_row(item, served=served))
+            answered.append(item)
     return (library_panel("references", references, "No references are saved yet.", served=served),
             library_panel("answered", answered, "Nothing is answered yet.", served=served))
 
@@ -2433,7 +2448,7 @@ def list_page(data: dict[str, object], site_title: str, *, served: bool, saved_n
         body += (f'<section class="page-section"><h2>References</h2>{references}</section>'
                  f'<section class="page-section"><h2>Answered</h2>{answered}</section>')
     return page_shell(site_title, site_title, body, served=served, saved_name=saved_name, workers=served and workers,
-                      library=library)
+                      library=library, filters=bool(items) and not served)
 
 
 def item_body_html(item: dict[str, object]) -> str:

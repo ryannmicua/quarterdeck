@@ -332,18 +332,19 @@ class PageTests(StoreCase):
         self.add("questions", "Pier lights", "Pick the lamp colour.", "--body-file", "-", stdin=json.dumps(QUESTIONS))
         for state in ("answered", "closed"):
             with self.subTest(state=state):
-                self.assertEqual(self.run_cli("mark", "Q4", state)[0], 0)
+                source = ["--via", "chat"] if state == "answered" else []
+                self.assertEqual(self.run_cli("mark", "Q4", state, *source)[0], 0)
                 page, _ = self.served_pages()
                 desk, library = page.split("<dialog", 1)
                 self.assertNotIn("Pier lights", desk)
                 self.assertIn('data-id="Q4"', library.split('id="panel-answered"')[1])
                 self.assertIn("Tide launch decisions", desk)
-        self.assertEqual(self.run_cli("mark", "Q4.2", "open")[0], 0)
-        page, data = self.served_pages()
-        desk, library = page.split("<dialog", 1)
-        self.assertIn("Pier lights", desk)
-        self.assertNotIn('data-id="Q4"', library)
-        self.assertEqual([item["id"] for item in data["items"]], ["Q1", "Q2", "Q3", "Q4"])
+                self.assertEqual(self.run_cli("mark", "Q4.2", "open")[0], 0)
+                page, data = self.served_pages()
+                desk, library = page.split("<dialog", 1)
+                self.assertIn("Pier lights", desk)
+                self.assertNotIn('data-id="Q4"', library)
+                self.assertEqual([item["id"] for item in data["items"]], ["Q1", "Q2", "Q3", "Q4"])
 
     def test_answering_every_question_moves_the_item_and_a_pending_delivery_keeps_it_on_the_desk(self) -> None:
         self.add("questions", "Pier lights", "Pick the lamp colour.", "--body-file", "-", stdin=json.dumps(QUESTIONS))
@@ -391,8 +392,8 @@ class PageTests(StoreCase):
         self.assertLess(index.index("<h2>References</h2>"), index.index("<h2>Answered</h2>"))
         self.assertIn('href="q1.html">Calls redesign</a>', index.split("<h2>References</h2>")[1].split("</section>")[0])
         answered = index.split("<h2>Answered</h2>")[1].split("</section>")[0]
-        self.assertEqual(answered, '<ul class="lib-list"><li class="lib-item">'
-                         '<a class="lib-title" href="q4.html">Pier lights</a></li></ul>')
+        self.assertEqual(re.findall(r'<a class="lib-title" href="([^"]+)">([^<]+)</a>', answered),
+                         [("q4.html", "Pier lights")])
         self.assertIn("Answer 1", pages["q4.html"])
         for page in pages.values():
             self.assert_no_library_controls(page)
@@ -1355,7 +1356,8 @@ for (const [item, destination, expectedLinks] of [[first, 'q2.html#Q2.1', []], [
         if not chrome:
             self.skipTest("google-chrome is required for the Desk history browser test")
         for title in ("Pier lights", "Tide tables", "Harbor chart"):
-            self.add("questions", title, "Choose an option.", "--body-file", "-", stdin=json.dumps(QUESTIONS[:1]))
+            tags = ["--tag", "bug"] if title == "Tide tables" else []
+            self.add("questions", title, "Choose an option.", *tags, "--body-file", "-", stdin=json.dumps(QUESTIONS[:1]))
         home = self.root / "home"
         inbox = home / "bin" / "fm-inbox.sh"
         inbox.parent.mkdir(parents=True)
@@ -1391,7 +1393,8 @@ const dialog = document.getElementById('library');
 const tab = document.getElementById('tab-answered');
 const panel = document.getElementById('panel-answered');
 const search = panel.querySelector('input');
-const shown = () => [...panel.querySelectorAll('li:not([hidden]) a')].map(link => link.getAttribute('href')).join();
+const tag = panel.querySelector('select[name="tag"]');
+const shown = () => [...panel.querySelectorAll('.lib-item:not([hidden]) .lib-title')].map(link => link.getAttribute('href')).join();
 const find = text => {
   search.value = text;
   search.dispatchEvent(new Event('input', {bubbles:true}));
@@ -1404,12 +1407,15 @@ try {
     check(desk.textContent.includes('Pier lights'), 'The open item did not start on the Desk');
     document.getElementById('open-library').click();
     tab.click();
+    tag.value = 'bug';
+    tag.dispatchEvent(new Event('change', {bubbles:true}));
     check(find('saffron') === 'q2.html', 'The original answer did not match its search');
     panel.querySelector('a[href="q2.html"]').click();
   } else if (visits <= 2) {
     check(!desk.textContent.includes('Pier lights'), 'The restored Desk still showed the completed item');
     check(dialog.open && tab.getAttribute('aria-selected') === 'true' && !panel.hidden,
           'The library did not reopen on Answered after item visit ' + visits);
+    check(tag.value === 'bug', 'The library did not restore its tag filter');
     check(search.value === 'saffron' && shown() === '', 'The saved search was lost or still used the old answer');
     check(panel.querySelector('a[href="q1.html"]'), 'The completed item was missing from Answered');
     check(find('ultramarine') === 'q2.html', 'The restored search did not find the corrected answer');
@@ -1480,7 +1486,7 @@ window.addEventListener('pageshow', async () => {
         port = self.start("/qd", home=home)
         with patch.object(quarterdeck, "now_text", return_value="2026-01-10T16:25:00Z"):
             self.assertEqual(self.post_answer(port, "Q2.1", "Use amber")[1]["delivery"], "sent")
-        self.assertEqual(self.run_cli("mark", "Q2.2", "answered")[0], 0)
+        self.assertEqual(self.run_cli("mark", "Q2.2", "answered", "--via", "chat")[0], 0)
         for name in ("q1.html", "q2.html", "q3.html", "q4.html"):
             status, page, _ = self.fetch(port, f"/qd/{name}")
             self.assertEqual(status, 200)

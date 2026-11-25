@@ -20,8 +20,11 @@ Use the search box in either tab to match text in the title or description.
 and every term must match. Enter an exact ID on its own, such as `Q5` to find
 item Q5 or `Q5.3` to find Q5 if it has a third question.
 
+Use the [project and tag filters](classify-items.md#see-it-on-the-page) when
+available to narrow either list, including on rendered pages.
+
 After opening an item from the library, use your browser’s Back button to
-return to the same tab and search with fresh results. Closing the library
+return to the same tab, search and filters with fresh results. Closing the library
 clears the saved lookup, so reloading the Desk or returning from a Desk card
 leaves the library closed.
 
