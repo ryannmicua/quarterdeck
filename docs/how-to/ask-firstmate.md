@@ -52,8 +52,10 @@ a conflict.
 If an ask never reaches Quarterdeck, reloading the page clears the draft and
 you’ll need to type it again.
 
-A validation error or confirmed conflict puts an unsaved draft back in the
-field. If the Firstmate home changed, copy the draft before reloading.
+A confirmed rejection before saving puts the draft back in the field.
+If the inbox becomes unavailable during a retry, the ask keeps its original
+ID because the first attempt may have saved it.
+If the Firstmate home changed, copy the draft before reloading.
 For a validation error, correct the draft and send it again. A numbered draft
 stays out of **Send answers** while
 you correct it, including through editor undo and redo. To answer instead,

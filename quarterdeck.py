@@ -2787,11 +2787,12 @@ if (send) {
     try {
       const response = await fetch('asks', {method:'POST', headers:{'Content-Type':'application/json'},
         body:JSON.stringify(body)});
-      if (response.status === 400 || response.status === 409) {
+      if ([400, 403, 409].includes(response.status)) {
         const {message, saved} = response.status === 409 ? await response.json() :
           {message: await response.text(), saved: false};
         output.textContent = message;
-        if (pending && saved === false) {
+        const blockedRetry = response.status === 403 && body.action === 'retry';
+        if (pending && saved === false && !blockedRetry) {
           failedDraft = section.querySelector('textarea');
           failedDraft.value = pending.querySelector('.record').textContent;
           if (draftOrigins.has(failedDraft)) draftOrigins.set(failedDraft, 'ask');

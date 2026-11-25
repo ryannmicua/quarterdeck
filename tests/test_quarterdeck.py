@@ -4044,6 +4044,57 @@ check(calls.at(-1)[1].action === 'retry' && !('text' in calls.at(-1)[1]) &&
       'A saved ask conflict changed the thread or copied the ask into the editor');
 """, setup=f"const interrupted = {json.dumps(interrupted)};")
 
+    def test_forbidden_ask_restores_new_drafts_but_keeps_interrupted_ids(self) -> None:
+        port = self.start("/qd", ask_home=self.inbox(accept=False))
+        without_home = self.start("/qd")
+        self.assertEqual(self.ask(port, "Q4.2", "Show the saved preview.")[0], 200)
+        draft = self.ask_body(port, "Q4", "Show the layout.")
+        self.assertEqual(self.post(without_home, "/qd/asks", draft),
+                         (403, "Configure an available firstmate_home to ask Firstmate."))
+        for interrupted in (False, True):
+            with self.subTest(interrupted=interrupted):
+                self.check_page(port, r"""
+const calls = [];
+const refusal = 'Configure an available firstmate_home to ask Firstmate.';
+window.fetch = async (url, options) => {
+  const body = JSON.parse(options.body);
+  calls.push(body);
+  if (interrupted && !body.action) throw new Error('Connection lost');
+  return {status: 403, ok: false, text: async () => refusal};
+};
+const whole = document.getElementById('Q4');
+document.getElementById('open-item-ask').click();
+for (const section of [whole, card(1)]) {
+  const editor = section.querySelector('textarea');
+  const draft = '  Show the layout.  ';
+  editor.value = draft;
+  editor.dispatchEvent(new Event('input', {bubbles: true}));
+  section.querySelector('.ask-button').click();
+  await settled();
+  if (interrupted) {
+    const first = calls.at(-1);
+    const retry = section.querySelector('[data-local-ask] button');
+    retry.click();
+    await settled();
+    const second = calls.at(-1);
+    check(second.action === 'retry' && second.id === first.id && second.home === first.home,
+          'The refused retry lost its original identity');
+    check(retry.isConnected && editor.value === '', 'The refused retry discarded the pending ask');
+  } else {
+    check(editor.value === draft && !editor.disabled && editor.getAttribute('aria-invalid') === 'true',
+          'A first-attempt refusal did not restore the editable draft');
+    check(!section.querySelector('[data-local-ask]'), 'A first-attempt refusal stayed pending');
+  }
+  check(status().textContent === refusal, 'A definite response was reported as an interruption');
+  check(document.getElementById('send').disabled, 'The refused ask was queued as an answer');
+}
+const savedRetry = card(2).querySelector('[data-retry-ask]');
+savedRetry.click();
+await settled();
+check(savedRetry.isConnected && calls.at(-1).id === savedRetry.dataset.retryAsk && field(2).value === '',
+      'The refused saved retry changed its original entry');
+""", setup=f"const interrupted = {json.dumps(interrupted)};")
+
     def test_rejected_ask_can_be_corrected_without_entering_answer_batch(self) -> None:
         port = self.start("/qd", ask_home=self.inbox())
         for interrupted in (False, True):
