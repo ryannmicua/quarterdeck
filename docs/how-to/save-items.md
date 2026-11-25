@@ -103,6 +103,13 @@ above. Choose images you can share with everyone who can view the item.
 See the [image requirements and storage rules](../reference/item-store.md#question-images)
 and [how to view and pick pictured options](answer-questions.md#view-mockups).
 
+#### Known limits
+
+- On a case-insensitive filesystem, Quarterdeck treats path spellings that
+  differ only by case as separate paths.
+- Quarterdeck requires a umask that preserves the owner's read, write, and
+  search permissions.
+
 ## Find, read and remove items
 
 ```sh
