@@ -3,8 +3,10 @@
 Use an ask when you need something explained before you decide. An ask leaves
 the question's state and any saved answer intact.
 
-1. Open the served question page and type a new draft in **Your answer or
-   question**. The **Ask Firstmate** button is available when
+1. Open the served question page and type or edit a draft by hand in
+   **Your answer or question**. Selecting an option or using **Use all
+   suggestions** fills an answer. **Ask Firstmate** is available for a
+   new hand-edited draft when
    [`firstmate_home` is configured](read-answers.md#connect-the-inbox).
 2. Select **Ask Firstmate** below that field. The draft moves to **Messages**
    as a pending ask. The inbox note starts with `ASK`, the question ID and
@@ -33,6 +35,7 @@ retrying an ask. If the configured Firstmate home has changed, Quarterdeck
 refuses the retry.
 
 A validation error puts the draft back in the field. Correct it and select
-**Ask Firstmate** again. The field stays out of **Send answers** while you
-correct it. Clear the field before starting an answer or retrying a
-different pending draft.
+**Ask Firstmate** again. The draft stays out of **Send answers** while
+you correct it, including through editor undo and redo. To answer instead,
+choose an answer option or reload the page to start a fresh draft. Clear the
+field before retrying a different pending draft.

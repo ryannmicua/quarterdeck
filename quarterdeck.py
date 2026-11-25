@@ -2536,17 +2536,23 @@ if (send) {
   const suggest = document.querySelector('#suggest');
   const undo = document.querySelector('#undo');
   const rejections = new Map();
+  const draftSources = new Map(fields.map(f => [f, {manual: false, filled: f.value}]));
   let history = [];
   const answerText = value => value.replace(/^[\p{White_Space}\x1c-\x1f]+|[\p{White_Space}\x1c-\x1f]+$/gu, '');
-  const askDraft = f => answerText(f.value) && answerText(f.value) !== answerText(f.defaultValue);
+  const newDraft = f => answerText(f.value) && answerText(f.value) !== answerText(f.defaultValue);
+  const askDraft = f => draftSources.get(f).manual && newDraft(f);
   const changed = f => {
     const {pending} = f.closest('section').dataset;
     const answer = answerText(f.value);
-    return !rejections.has(f) && answer && (answer !== f.defaultValue || pending === '1');
+    const rejection = rejections.get(f);
+    const source = draftSources.get(f);
+    const filledAnswer = !source.manual && f.value === source.filled;
+    return (!rejection || (rejection.ask && filledAnswer)) && answer && (answer !== f.defaultValue || pending === '1');
   };
   const suggestionFor = f => {
     const section = f.closest('section');
-    if (!rejections.has(f) && section.dataset.state === 'open' && !f.defaultValue && !f.value) {
+    const rejection = rejections.get(f);
+    if ((!rejection || rejection.ask) && section.dataset.state === 'open' && !f.defaultValue && !f.value) {
       return section.querySelector('[data-suggested]');
     }
   };
@@ -2557,10 +2563,7 @@ if (send) {
   function refresh() {
     for (const [field, rejection] of rejections) {
       const draft = answerText(field.value);
-      if (rejection.ask && !draft) {
-        rejections.delete(field);
-        output.textContent = '';
-      } else if (rejection.draft !== undefined && draft !== rejection.draft) {
+      if (rejection.draft !== undefined && draft !== rejection.draft) {
         if (rejection.ask) {
           rejection.message = '';
           delete rejection.draft;
@@ -2580,7 +2583,7 @@ if (send) {
       const ask = section.querySelector('.ask-button');
       if (ask) ask.disabled = !askDraft(f);
       for (const retry of section.querySelectorAll('.pending-asks button')) {
-        retry.disabled = Boolean(askDraft(f));
+        retry.disabled = Boolean(newDraft(f));
       }
       const error = document.getElementById(f.getAttribute('aria-describedby'));
       const message = rejections.get(f)?.message || '';
@@ -2594,8 +2597,12 @@ if (send) {
     }
   }
   document.addEventListener('input', e => {
-    if (!e.target.matches('textarea')) return;
-    forget(e.target);
+    const field = e.target;
+    const source = draftSources.get(field);
+    if (!source) return;
+    const nativeHistory = e.inputType === 'historyUndo' || e.inputType === 'historyRedo';
+    source.manual = !nativeHistory || field.value !== source.filled;
+    forget(field);
     refresh();
   });
   document.addEventListener('click', e => {
@@ -2605,9 +2612,11 @@ if (send) {
       for (const f of fields) {
         const section = f.closest('section');
         const option = choice ? (section.contains(choice) && choice) : suggestionFor(f);
-        if (option && option.dataset.choice !== f.value) {
-          step.set(f, f.value);
+        const source = draftSources.get(f);
+        if (option && (option.dataset.choice !== f.value || source.manual)) {
+          step.set(f, {value: f.value, source});
           f.value = option.dataset.choice;
+          draftSources.set(f, {manual: false, filled: f.value});
         }
       }
       if (step.size) history.push(step);
@@ -2630,6 +2639,7 @@ if (send) {
         pending.querySelector('button').addEventListener('click', () => askRequest(section, {...body, action: 'retry'}, pending));
         thread.querySelector('.pending-asks').append(pending);
         field.value = field.defaultValue;
+        draftSources.set(field, {manual: false, filled: field.value});
         if (rejections.get(field)?.ask) rejections.delete(field);
         forget(field);
         thread.hidden = false;
@@ -2644,7 +2654,10 @@ if (send) {
     }
     if (e.target === undo && history.length) {
       const step = history.pop();
-      for (const [f, value] of step) f.value = value;
+      for (const [f, {value, source}] of step) {
+        f.value = value;
+        draftSources.set(f, source);
+      }
       refresh();
       if (history.length) undo.focus();
       else if (!send.disabled) send.focus();
@@ -2709,6 +2722,7 @@ if (send) {
         if (response.status === 400 && pending) {
           failedDraft = section.querySelector('textarea');
           failedDraft.value = pending.querySelector('.record').textContent;
+          draftSources.get(failedDraft).manual = true;
           rejections.set(failedDraft, {ask: true, message, draft: body.text});
           pending.remove();
           const thread = section.querySelector('.thread');
@@ -2740,6 +2754,7 @@ if (send) {
     section.dataset.revision = record.revision;
     section.dataset.pending = record.delivery === 'pending' ? '1' : '0';
     field.defaultValue = field.value = record.answer;
+    draftSources.set(field, {manual: false, filled: field.value});
     forget(field);
 
     const saved = section.querySelector('.saved-answer');

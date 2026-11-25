@@ -3760,6 +3760,18 @@ check(field(1).value === draft && !pending.firstElementChild, 'The failed draft 
 check(field(1).getAttribute('aria-invalid') === 'true' && !askButton.disabled && send.disabled,
       'A rejected ask entered the answer batch or its error was lost');
 type(1, corrected);
+field(1).focus();
+field(1).select();
+check(document.execCommand('delete') && field(1).value === '', 'Native clear did not run');
+check(document.execCommand('undo') && field(1).value === corrected, 'Native Undo did not restore the ask');
+check(send.disabled && !askButton.disabled, 'Native Undo queued the rejected ask as an answer');
+check(document.execCommand('redo') && field(1).value === '', 'Native Redo did not clear the ask');
+check(document.execCommand('undo') && field(1).value === corrected, 'Second native Undo did not restore the ask');
+const priorAsk = field(1).value;
+card(1).querySelector('[data-choice="Hold"]').click();
+check(send.textContent === 'Send 1 answer' && askButton.disabled, 'Choosing an answer did not replace the ask draft');
+document.getElementById('undo').click();
+check(field(1).value === priorAsk && send.disabled && !askButton.disabled, 'Undo changes lost the ask-only draft');
 type(2, 'Blue');
 check(send.textContent === 'Send 1 answer', 'Correcting an ask queued it as an answer');
 send.click();
@@ -3774,6 +3786,33 @@ check(calls.at(-1)[0] === 'asks' && body.text === corrected && body.id !== calls
       'The corrected ask reused the rejected request');
 check(field(1).value === '' && !pending.firstElementChild && send.disabled, 'The corrected ask remained a draft');
 """, setup=setup)
+
+    def test_options_and_suggestions_fill_answers_until_edited_by_hand(self) -> None:
+        port = self.start("/qd", ask_home=self.inbox())
+        self.check_page(port, r"""
+const ask = n => card(n).querySelector('.ask-button');
+const send = document.getElementById('send');
+const undo = document.getElementById('undo');
+document.getElementById('suggest').click();
+check(field(1).value === 'Merge' && ask(1).disabled, 'A bulk suggestion became an ask');
+check(send.textContent === 'Send 1 answer', 'A bulk suggestion was not queued as an answer');
+undo.click();
+check(field(1).value === '' && ask(1).disabled && send.disabled, 'Undo did not clear the suggestion');
+card(1).querySelector('[data-choice="Hold"]').click();
+check(field(1).value === 'Hold' && ask(1).disabled, 'Selecting an option enabled Ask Firstmate');
+field(1).focus();
+field(1).setSelectionRange(4, 4);
+check(document.execCommand('insertText', false, '?') && field(1).value === 'Hold?', 'Hand editing failed');
+check(!ask(1).disabled, 'Hand editing did not enable Ask Firstmate');
+check(document.execCommand('undo') && field(1).value === 'Hold' && ask(1).disabled,
+      'Native Undo made the selected answer askable');
+check(document.execCommand('redo') && field(1).value === 'Hold?' && !ask(1).disabled,
+      'Native Redo lost the hand edit');
+card(1).querySelector('[data-choice="Merge"]').click();
+check(field(1).value === 'Merge' && ask(1).disabled, 'A replacement option remained askable');
+undo.click();
+check(field(1).value === 'Hold?' && !ask(1).disabled, 'Undo changes lost the draft’s hand-edited origin');
+""")
 
     def test_acknowledgment_reconciles_both_orders_of_live_thread_replacement(self) -> None:
         port = self.start("/qd", ask_home=self.inbox())
