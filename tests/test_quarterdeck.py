@@ -2324,6 +2324,20 @@ const check = (condition, message) => { if (!condition) throw new Error(message)
 
 
 class ServiceAndHelpTests(StoreCase):
+    def test_serve_warns_that_reachable_clients_can_start_conversations(self) -> None:
+        for host in ("127.0.0.1", "192.0.2.10"):
+            with self.subTest(host=host), patch.object(quarterdeck, "make_server") as make_server:
+                make_server.return_value.server_address = (host, 8765)
+                code, _, warning = self.run_cli("serve", "--host", host)
+                self.assertEqual(code, 0, warning)
+                self.assertEqual("start conversations" in warning, host == "192.0.2.10")
+        help_output = io.StringIO()
+        with redirect_stdout(help_output), self.assertRaises(SystemExit) as exit_info:
+            quarterdeck.main(["serve", "--help"])
+        self.assertEqual(exit_info.exception.code, 0)
+        self.assertIn("With firstmate_home set, they can also send asks, start conversations",
+                      " ".join(help_output.getvalue().split()))
+
     def test_service_unit_runs_serve_without_old_flags(self) -> None:
         args = quarterdeck.make_parser().parse_args(["service", "--host", "127.0.0.1", "--port", "9000", "--base-path", "/qd"])
         unit = ConfigParser(interpolation=None)
@@ -4493,7 +4507,7 @@ check(unread.join() === later && decision.querySelector('.badge').textContent ==
       'Stale snapshot overwrote the acknowledgment or hid a newer reply');
 """, page=page, setup=setup)
 
-    def test_late_acknowledgment_cannot_restore_a_reply_read_in_another_tab(self) -> None:
+    def test_acknowledgment_does_not_show_a_badge_for_an_unrendered_reply(self) -> None:
         port = self.start("/qd", ask_home=self.inbox())
         self.assertEqual(self.ask(port, "Q4.1", "Show me.")[0], 200)
         (ask,) = self.messages("1", 3)
@@ -4524,8 +4538,8 @@ check(requests.length === 2 && requests.every(request => JSON.stringify(request)
       'Reopening messages acknowledged a reply outside this tab');
 if (oldFirst) complete[0](old); else complete[1](newer);
 await settled();
-check(card(1).querySelector('.badge').textContent === (oldFirst ? 'Replied' : 'Open'),
-      'The first response reported the wrong reply status');
+check(card(1).querySelector('.badge').textContent === 'Open',
+      'An unrendered reply kept the badge visible after acknowledgment');
 if (oldFirst) complete[1](newer); else complete[0](old);
 await settled();
 check(card(1).querySelector('.badge').textContent === 'Open', 'The badge did not settle on the read state');
@@ -4584,18 +4598,22 @@ class TalkToFirstmateTests(ImageCase):
         port = self.start("/qd", ask_home=home)
         body, (status, result) = self.begin(port)
         self.assertEqual((status, result), (200, {"item": "Q1", "href": "q1.html", "message": "Message saved. Not delivered."}))
+        (first,) = self.thread()
         self.assertIn("Send message again", self.fetch(port, "/qd/q1.html")[1])
         self.assertEqual(self.post(port, "/qd/conversations", body)[1]["item"], "Q1")
         self.assertEqual(len(self.store()["items"]), 1)
         self.assertEqual(self.post(port, "/qd/conversations", {**body, "text": "Another."})[0], 409)
         self.assertEqual(self.post(port, "/qd/conversations", {**body, "title": "Another"})[0], 409)
         self.inbox()
+        self.assertEqual(self.post(port, "/qd/conversations", body),
+                         (200, {"item": "Q1", "href": "q1.html", "message": "Message sent."}))
+        self.assertEqual(self.thread(), [{**first, "delivery": "sent"}])
+        self.assertEqual((home / "notes").read_text(), f"CONVERSATION Q1 {body['id']} Topic: {body['title']}\n{body['text']}\n")
         retry = {"part": "Q1", "id": body["id"], "action": "retry"}
         self.assertEqual(self.post(port, "/qd/asks", retry)[1]["message"], "Message sent.")
-        self.assertEqual(self.post(port, "/qd/conversations", body)[1]["message"], "Message sent.")
         self.assertEqual(len(self.store()["items"]), 1)
         self.assertEqual(len((home / "notes").read_text().splitlines()), 2)
-        self.assertEqual(len(set((home / "attempts").read_text().splitlines())), 1)
+        self.assertEqual((home / "attempts").read_text().splitlines(), [first["request_id"]] * 3)
 
     def test_bad_conversations_save_nothing(self) -> None:
         home = self.inbox()
@@ -4749,7 +4767,8 @@ window.fetch = async (path, init) => {
     check(payload.part === 'Q1', 'The reply acknowledgment targeted the wrong conversation');
     check(document.querySelector('.badge').textContent === 'Replied', 'The badge missed a newly visible reply');
     seen.push(...payload.ids);
-    return {ok:true, json:async () => ({replies:Object.fromEntries(seen.map(id => [id, true]))})};
+    const unseen = seen.length === 1 ? 'reply-two' : 'reply-three';
+    return {ok:true, json:async () => ({replies:{[unseen]:false, ...Object.fromEntries(seen.map(id => [id, true]))}})};
   }
   check(path === 'asks', 'Unexpected conversation request');
   posts.push(payload);
@@ -4771,10 +4790,12 @@ check(posts[1].action === 'retry' && posts[1].id === 'saved-message', 'The saved
 check(seen.join(',') === 'reply-one,reply-two', 'Retry did not acknowledge only the newly displayed reply');
 check(document.querySelector('.badge').hidden, 'The badge stayed visible after retry acknowledgment');
 """, path="/qd/q1.html", viewport=(390, 844))
-        refusal = stub.replace("ok:true, status:200, json: async () => ({thread:'<ol class=\"exchange\"><li>stub</li></ol>', message:'Message sent.', href:'q9.html'})",
-                               "ok:false, status:409, json: async () => ({message:'Firstmate home changed.'})")
-        self.assertNotEqual(refusal, stub)
-        self.check_answer_page(port, refusal + r"""
+        self.check_answer_page(port, r"""
+const sent = [];
+window.fetch = async (path, init) => {
+  sent.push([path, JSON.parse(init.body)]);
+  return {ok:false, status:409, json:async () => ({message:'Firstmate home changed.'})};
+};
 const form = document.getElementById('talk-form');
 check(form.hidden, 'The form showed before it was asked for');
 button('open-talk').click();
@@ -4813,6 +4834,10 @@ send.click();
 await new Promise(resolve => setTimeout(resolve, 50));
 check(posts.length === 1 && posts[0].action === undefined, 'The first send should be a new message');
 check(field.value === 'A follow-up' && !send.disabled, 'Interruption lost the draft');
+field.focus();
+field.setSelectionRange(field.value.length, field.value.length);
+check(document.execCommand('insertText', false, '?') && field.value === 'A follow-up?', 'Editing the draft failed');
+check(document.execCommand('undo') && field.value === 'A follow-up', 'Undo did not restore the draft');
 send.click();
 await new Promise(resolve => setTimeout(resolve, 50));
 const [first, retry] = posts;
@@ -4821,6 +4846,41 @@ check(retry.id === first.id && retry.part === 'Q1' && retry.text === 'A follow-u
       'The retry changed the original message');
 check(field.value === '' && send.disabled, 'The confirmed draft stayed in the composer');
 """, path="/qd/q1.html", viewport=(390, 844))
+
+    def test_desk_replay_keeps_its_id_after_undo_in_either_field(self) -> None:
+        port = self.start("/qd", ask_home=self.inbox())
+        self.check_answer_page(port, r"""
+const posts = [];
+window.fetch = async (path, init) => {
+  check(path === 'conversations', 'The Desk posted to the wrong endpoint');
+  posts.push(JSON.parse(init.body));
+  throw new Error('Connection lost');
+};
+button('open-talk').click();
+const form = button('talk-form');
+const topic = button('talk-topic');
+const message = button('talk-message');
+topic.value = 'Quay sign';
+message.value = 'Navy or black?';
+form.dispatchEvent(new Event('input', {bubbles:true}));
+form.requestSubmit();
+await new Promise(resolve => setTimeout(resolve, 50));
+for (const field of [topic, message]) {
+  const original = field.value;
+  field.focus();
+  field.setSelectionRange(original.length, original.length);
+  check(document.execCommand('insertText', false, '!') && field.value === original + '!', 'Editing the draft failed');
+  check(document.execCommand('undo') && field.value === original, 'Undo did not restore the draft');
+}
+form.requestSubmit();
+await new Promise(resolve => setTimeout(resolve, 50));
+check(posts.length === 2 && posts[1].id === posts[0].id, 'Undo discarded the interrupted creation ID');
+message.value = 'Use navy.';
+message.dispatchEvent(new Event('input', {bubbles:true}));
+form.requestSubmit();
+await new Promise(resolve => setTimeout(resolve, 50));
+check(posts.length === 3 && posts[2].id !== posts[0].id, 'Different content reused the prior request ID');
+""", path="/qd/", viewport=(390, 844))
 
     def test_reply_attachments_are_on_the_card_and_in_cli_transcripts(self) -> None:
         port = self.start("/qd", ask_home=self.inbox())
