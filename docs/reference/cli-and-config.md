@@ -98,12 +98,15 @@ and the same origin as `/answers`. Send
 to save and deliver an ask. Use `"part": "Q7"` for the whole question item or
 `"part": "Q7.1"` for one question. The page generates the 32-character lowercase
 hexadecimal ID and takes the resolved home binding from the served form.
-Repeating the same create request returns the existing ask. Add
+Repeating the same create request with the same home and text reuses the
+existing ask without attempting delivery again. Add
 `"action": "retry"` to the original request to recover from an interrupted
 send. Quarterdeck saves the ask if that request never arrived. For a
 saved ask, the page can also send
-`{"part": "Q7.1", "id": "<ask id>", "action": "retry"}`. Both forms
-reuse the saved ask and note IDs. Sending or retrying a whole-item ask
+`{"part": "Q7.1", "id": "<ask id>", "action": "retry"}`. Both retry forms
+reuse the ask and note IDs when the ask is already saved. A successful response
+contains `thread` (rendered conversation HTML) and `message` (delivery status).
+Sending or retrying delivery of a whole-item ask
 requires at least one question whose state is not Closed. A changed home,
 closed question, or removed item can return 409 with a JSON `message`
 and a `saved` flag indicating whether the matching ask remains in the store.

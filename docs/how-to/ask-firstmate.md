@@ -50,8 +50,9 @@ original ask and note IDs. Reopen a closed question before sending or
 retrying an ask. If the configured Firstmate home has changed, Quarterdeck
 refuses the retry. A saved ask keeps its original identity and home after
 a conflict.
-If an ask never reaches Quarterdeck, reloading the page clears the draft and
-you’ll need to type it again.
+If a new draft blocks **Send ask again** for an interrupted ask, clear the
+field before retrying. If the ask never reaches Quarterdeck, reloading the
+page clears it and you’ll need to type it again.
 
 A confirmed rejection before saving puts the draft back in the field.
 **Undo changes** can still undo option selections on other questions.
@@ -62,4 +63,4 @@ After changing the text of a rejected draft on a numbered question, choose
 **Ask Firstmate** to send it again or **Send answers** to submit it as a decision.
 Leading and trailing whitespace do not count as a change. The original
 rejected text stays out of the answer batch, including when restored by editor
-Undo or **Undo changes**. Clear the field before retrying a different pending draft.
+Undo or **Undo changes**.
