@@ -24,7 +24,8 @@ suggestions, undo, and that conflicts and validation errors preserve drafts whil
 answers in the batch are sent. The browser checks also cover retrying a reopened
 answer, exact answer times in a fixed locale and time zone, and sending suggestions
 in place while preserving their text. They also cover one-line summaries,
-numeric order after out-of-order delivery, refolding a delivered correction,
+one-word answer visibility at 320, 390, and 1440 pixels, numeric order after
+out-of-order delivery, refolding a delivered correction,
 expanding a pending correction, and finding archived items by text and exact
 question IDs without revealing answer previews.
 The send bar check uses 390 × 844 and 1440 × 900 viewports with one and twelve

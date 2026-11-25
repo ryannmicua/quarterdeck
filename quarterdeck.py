@@ -949,7 +949,8 @@ def send_answer(store, home, payload):
                         record["delivery"] = "sent"
                 except (OSError, subprocess.TimeoutExpired):
                     pass
-    return {k: record[k] for k in ("state", "revision", "answer", "answered_at", "delivery")}
+    return {**{k: record[k] for k in ("state", "revision", "answer", "answered_at", "delivery")},
+            "has_off_desk_answer": latest_off_desk_mark(record) is not None}
 
 
 def item_text(item: dict[str, object]) -> str:
@@ -1800,7 +1801,7 @@ LIBRARY_SCRIPT = r"""
     }
   });
 
-  const idQuery = /^(q\d+)(?:\.(\d+))?$/;
+  const idQuery = /^(q\d+)(?:\.(\d+))?$/i;
   for (const tab of tabs) {
     const panel = panelOf(tab);
     const search = searchOf(tab);
@@ -1827,15 +1828,16 @@ LIBRARY_SCRIPT = r"""
     const none = panel.querySelector('[data-none]');
     const rows = [...panel.querySelectorAll('.lib-item')];
     const run = () => {
-      const query = search.value.trim().toLowerCase();
+      const query = search.value.trim();
       const id = idQuery.exec(query);
-      const words = query ? query.split(/\s+/) : [];
+      const terms = query && !id ? query.split(/\s+/).map(word =>
+        new RegExp(word.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), 'iu')) : [];
       let hasMatch = false;
       for (const row of rows) {
         const searchMatch = id
-          ? row.dataset.id.toLowerCase() === id[1]
+          ? row.dataset.id.toLowerCase() === id[1].toLowerCase()
             && (id[2] === undefined || (/^[1-9]\d*$/.test(id[2]) && Number(id[2]) <= Number(row.dataset.questions)))
-          : words.every(word => row.dataset.search.toLowerCase().includes(word));
+          : terms.every(term => term.test(row.dataset.search));
         const ok = searchMatch && matchesClassification(row, filters);
         row.hidden = !ok;
         hasMatch ||= ok;
@@ -2142,9 +2144,10 @@ def question_form(item, served):
                 f'<h2 id="title-{part}">{linked_text(question["question"])}</h2><p>{linked_text(question["context"])}</p>'
                 f'{question_shots(item, question)}{saved}{controls}</section>')
         if status == "answered" and record.get("delivery") == "sent":
+            suffix = " (Desk)" if elsewhere else ""
             folded.append(f'<details class="done"><summary><span class="id">{part}</span>'
                           f'<span class="sum-q">{esc(question["question"])}</span>'
-                          f'<span class="sum-a">Saved Desk answer: {esc(answer)}</span></summary>{card}</details>')
+                          f'<span class="sum-a">{esc(answer)}{suffix}</span></summary>{card}</details>')
         else:
             cards.append(card)
     progress = f"{remaining} of {len(cards) + len(folded)} open" if remaining else state
@@ -2291,7 +2294,7 @@ if (send) {
         .find(child => questionNumber(child.lastElementChild) > number);
       list.insertBefore(box, next ?? null);
     }
-    box.querySelector('.sum-a').textContent = 'Saved Desk answer: ' + record.answer;
+    box.querySelector('.sum-a').textContent = record.answer + (record.has_off_desk_answer ? ' (Desk)' : '');
     box.open = false;
     if (focusInSection) box.querySelector('summary').focus();
   }

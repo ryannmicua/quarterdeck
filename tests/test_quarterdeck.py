@@ -408,7 +408,7 @@ class PageTests(StoreCase):
                 body = page.split('<div id="questions">')[1].split("</main>")[0]
                 self.assertLess(body.index('id="Q1.2"'), body.index('<details class="done">'))
                 self.assertIn('<summary><span class="id">Q1.1</span><span class="sum-q">Merge the tide tables now?</span>'
-                              '<span class="sum-a">Saved Desk answer: Answer 1</span></summary>', body)
+                              '<span class="sum-a">Answer 1</span></summary>', body)
                 self.assertIn("1 of 2 open", page)
                 self.assertEqual(page.count('class="sendbar"'), 1 if served else 0)
                 if served:
@@ -416,12 +416,15 @@ class PageTests(StoreCase):
                 self.assertNotIn("Return to Desk</a>", page)
         self.assertEqual(self.run_cli("mark", "Q1.1", "open")[0], 0)
         self.assertEqual(self.run_cli("mark", "Q1.1", "answered", "--via", "chat")[0], 0)
+        repeat = quarterdeck.send_answer(quarterdeck.store_path(), None,
+                                         {"part": "Q1.1", "answer": "Answer 1", "revision": ""})
+        self.assertEqual((repeat["answer"], repeat["delivery"], repeat["has_off_desk_answer"]), ("Answer 1", "sent", True))
         item = quarterdeck.read_store(quarterdeck.store_path())["items"][0]
         for served in (True, False):
             with self.subTest(served=served, via="chat"):
                 page = quarterdeck.item_page(item, "Quarterdeck", served=served)
                 summary, expanded = page.split('<details class="done">', 1)[1].split("</summary>", 1)
-                self.assertIn("Saved Desk answer: Answer 1", summary)
+                self.assertIn('<span class="sum-a">Answer 1 (Desk)</span>', summary)
                 self.assertIn("Answered elsewhere · chat", expanded)
         for state in ("closed", "open", "answered"):
             with self.subTest(state=state):
@@ -1191,9 +1194,23 @@ check(button('suggest').disabled, 'Bulk suggestions remained available with noth
         script.chmod(0o700)
         port = self.start("/qd", home=home)
         self.assertEqual(self.post_answer(port, "Q1.3", "Wait for the harbourmaster. " * 8)[1]["delivery"], "sent")
-        self.check_answer_page(port, r"""
+        for width in (320, 390, 1440):
+            with self.subTest(width=width):
+                self.check_answer_page(port, r"""
 const list = document.querySelector('#questions');
 const order = () => [...list.children].map(row => row.id || row.lastElementChild.id).join();
+const checkVisibleWord = (summary, word, text) => {
+  const answer = summary.querySelector('.sum-a');
+  check(answer.textContent === text, 'The folded answer had the wrong label');
+  const range = document.createRange();
+  range.setStart(answer.firstChild, 0);
+  range.setEnd(answer.firstChild, word.length);
+  const wordBounds = range.getBoundingClientRect();
+  const style = getComputedStyle(answer);
+  const ellipsisSpace = answer.scrollWidth > answer.clientWidth ? parseFloat(style.fontSize) : 0;
+  check(wordBounds.width > 0 && wordBounds.right + ellipsisSpace <= answer.getBoundingClientRect().right + 1,
+        'The one-word answer was clipped at ' + innerWidth + ' pixels');
+};
 const checkSummary = summary => {
   const question = summary.querySelector('.sum-q');
   const answer = summary.querySelector('.sum-a');
@@ -1215,6 +1232,7 @@ const initiallyFolded = card(3).closest('details');
 check(initiallyFolded && !initiallyFolded.open, 'A previously delivered question did not start folded');
 checkSummary(initiallyFolded.querySelector('summary'));
 let delivery = 'sent';
+let hasOffDeskAnswer = false;
 let focusDuringSend;
 window.fetch = async (url, options) => {
   const {answer} = JSON.parse(options.body);
@@ -1223,13 +1241,13 @@ window.fetch = async (url, options) => {
     check(document.activeElement === focusDuringSend, 'The focus fixture did not reach the row during delivery');
   }
   return {ok: true, json: async () => ({answer, state: 'answered', revision: 'saved-revision',
-    answered_at: '2026-01-12T15:00:00Z', delivery})};
+    answered_at: '2026-01-12T15:00:00Z', delivery, has_off_desk_answer:hasOffDeskAnswer})};
 };
 typeAnswer(2, 'Blue');
 focusDuringSend = card(2).querySelector('a');
 await sendBatch();
 const secondSummary = card(2).closest('details').querySelector('summary');
-check(secondSummary.querySelector('.sum-a').textContent === 'Saved Desk answer: Blue', 'First delivery left the saved answer unlabeled');
+checkVisibleWord(secondSummary, 'Blue', 'Blue');
 check(document.activeElement === secondSummary, 'First delivery dropped focus from the row');
 focusDuringSend = null;
 check(order() === 'Q1.1,Q1.2,Q1.3', 'The later question was not inserted before a higher-numbered folded question');
@@ -1251,11 +1269,12 @@ summary.click();
 check(folded.open && field(1).value === longAnswer &&
       card(1).querySelector('h2').textContent === 'Merge the tide tables now? '.repeat(8).trim(),
       'Opening the folded row did not reveal the full question and answer');
-typeAnswer(1, 'Hold for the pilot');
+typeAnswer(1, 'Hold');
+hasOffDeskAnswer = true;
 focusDuringSend = card(1).querySelector('a');
 await sendBatch();
-check(!folded.open && folded.querySelector('.sum-a').textContent === 'Saved Desk answer: Hold for the pilot',
-      'The delivered correction did not close the row with the corrected answer');
+check(!folded.open, 'The delivered correction did not close the row');
+checkVisibleWord(summary, 'Hold', 'Hold (Desk)');
 check(document.activeElement === summary, 'Refolding a correction dropped focus from the row');
 summary.click();
 typeAnswer(1, 'Use the next tide');
@@ -1271,7 +1290,7 @@ typeAnswer(2, 'Red');
 focusDuringSend = card(2).querySelector('a');
 await sendBatch();
 check(document.activeElement === focusDuringSend, 'Expanding a pending correction dropped focus from its existing link');
-""")
+""", viewport=(width, 844))
 
     def test_narrow_library_header_keeps_both_tabs_and_close_visible(self):
         self.check_answer_page(self.start("/qd"), r"""
@@ -1547,7 +1566,7 @@ window.addEventListener('pageshow', async () => {
         self.add("questions", "Tide decisions", "Decide the launch plan.", "--body-file", "-", stdin=json.dumps(QUESTIONS))
         self.add("questions", "Pier lights", "Pick the lamp colour.", "--body-file", "-", stdin=json.dumps(QUESTIONS))
         description = "A chart of the quay, showing slips and moorings. " * 8 + "See https://example.org/notes"
-        self.add("resource", "Harbour map", description, "--url", "https://example.org/map", "--link-text", "Open the map")
+        self.add("resource", "Harbour map ΧΑΡΤΗΣ [A+B]", description, "--url", "https://example.org/map", "--link-text", "Open the map")
         self.add("list", "Harbour supplies", "Tools for the pilot.", "--body-file", "-", stdin="Rope")
         home = self.root / "home"
         script = home / "bin" / "fm-inbox.sh"
@@ -1556,7 +1575,7 @@ window.addEventListener('pageshow', async () => {
         script.chmod(0o700)
         port = self.start("/qd", home=home)
         with patch.object(quarterdeck, "now_text", return_value="2026-01-10T16:25:00Z"):
-            self.assertEqual(self.post_answer(port, "Q2.1", "Use amber")[1]["delivery"], "sent")
+            self.assertEqual(self.post_answer(port, "Q2.1", "Use amber ΔΡΟΜΟΣ")[1]["delivery"], "sent")
         self.assertEqual(self.run_cli("mark", "Q2.2", "answered", "--via", "chat")[0], 0)
         for name in ("q1.html", "q2.html", "q3.html", "q4.html"):
             status, page, _ = self.fetch(port, f"/qd/{name}")
@@ -1583,7 +1602,7 @@ const type = text => { search.value = text; search.dispatchEvent(new Event('inpu
 check(shown().join() === 'q2.html', 'The answered list was wrong');
 check(dialog.querySelectorAll('input[type="search"]').length === 2 && !dialog.querySelector('input[type="date"]'),
       'The library does not have exactly one search per tab');
-for (const query of ['pier lamp merge amber', 'Q2', 'q2.1', 'q2.2']) {
+for (const query of ['pier lamp merge amber', 'Σ amber', 'Q2', 'q2.1', 'q2.2']) {
   type(query);
   check(shown().join() === 'q2.html', 'Failed to match ' + query);
   check(!panel.querySelector('[role="status"]').textContent, 'A successful search reported a match count');
@@ -1595,10 +1614,16 @@ for (const query of ['q2.0', 'q2.9', 'q2.01', 'q20']) {
 }
 tabs[0].click();
 const references = document.getElementById('search-references');
-references.value = 'chart';
+references.value = 'Σ [a+b] chart';
 references.dispatchEvent(new Event('input', {bubbles: true}));
 check([...document.querySelectorAll('#panel-references .lib-item')].filter(row => !row.hidden).length === 1, 'References search failed');
 check(!references.closest('[role="tabpanel"]').querySelector('[role="status"]').textContent, 'References search reported a match count');
+references.value = '.*';
+references.dispatchEvent(new Event('input', {bubbles: true}));
+check(![...document.querySelectorAll('#panel-references .lib-item')].some(row => !row.hidden),
+      'A regular expression metacharacter matched as a pattern');
+references.value = 'chart';
+references.dispatchEvent(new Event('input', {bubbles: true}));
 const notes = dialog.querySelector('a[href="https://example.org/notes"]');
 notes.scrollIntoView({block: 'nearest'});
 const rect = notes.getClientRects()[0];

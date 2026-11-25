@@ -7,8 +7,8 @@ action reads **Review answers**. Each question has an ID you can cite later.
 
 An item page lists every question in one list. A question marked **Answered**
 with a **Sent** answer collapses to one line below the expanded questions.
-The line labels the saved Desk answer. Open it to see the context and whether
-the question was later marked answered elsewhere. On the served page you can edit
+The line shows the saved answer, followed by **(Desk)** if the question was
+also marked answered elsewhere. Open it to see the context. On the served page you can edit
 the answer there. A correction that is saved but still awaiting delivery
 returns to the expanded questions. The **Send answers** bar stays at the
 bottom of the screen while you scroll, so you can compare answers and send
