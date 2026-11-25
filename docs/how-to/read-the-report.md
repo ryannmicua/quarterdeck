@@ -27,21 +27,22 @@ no kind, tag or project counts under `(unclassified)`.
 | --- | --- |
 | Saved | Questions saved. |
 | Desk | Answered on the Desk. |
-| Chat, Review page, Elsewhere, Superseded | Questions marked answered somewhere else, one column per recorded source. |
+| Chat, Review page, Elsewhere, Superseded | Questions marked answered through each of the four supported off-Desk sources. |
 | Open | Still waiting for an answer. |
 | Closed | Currently closed. |
-| Median Desk wait | Median time from save to a Desk submission. `none` when there are no Desk submissions to measure. |
+| Median Desk wait | Median time from save to a Desk submission, shown in whole minutes or larger units. `none` when there are no Desk submissions to measure. |
 
 Each question counts once per recorded source, even if it was marked through
 that source more than once. A question can count in multiple source columns
-and can also be Open or Closed. Reports include any legacy source names found
-in the selected period. For answers marked elsewhere, the timestamp
+and can also be Open or Closed. Legacy source names outside the fixed list
+contribute to the JSON off-Desk total. For answers marked elsewhere, the timestamp
 records when Quarterdeck learned of the answer. Only Desk submissions
 contribute to the median wait.
 
 ## The JSON
 
-`--json` prints the same numbers. The top level holds `since` (a date or
+`--json` includes the table's counts, the distinct off-Desk question count,
+and the median Desk wait in seconds. The top level holds `since` (a date or
 `null`), `via_values` (the answered-via columns, in order), `total`, and
 `by_kind`, `by_tag` and `by_project`, each an object keyed by name. Every group
 and the total have the same fields:
@@ -50,8 +51,8 @@ and the total have the same fields:
 | --- | --- |
 | `saved` | Questions saved. |
 | `answered_desk` | Answered on the Desk. |
-| `answered_elsewhere` | Answered somewhere else, all sources together. |
-| `via` | The question count for each off-Desk source. |
+| `answered_elsewhere` | Distinct questions answered off the Desk, including legacy sources. |
+| `via` | The question count for each of the four supported off-Desk sources. |
 | `open`, `closed` | Questions still open, and closed. |
 | `median_wait_desk_seconds` | Median seconds from save to a Desk submission, including fractional seconds, or `null`. |
 

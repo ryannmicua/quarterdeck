@@ -6,8 +6,8 @@ including its UTC timestamp and delivery status.
 If a decision came through another channel, mark the open question answered
 and use `--via` to record its source. Choose `chat`, `review-page`, `elsewhere`
 or `superseded`, using the exact lowercase spelling. The question shows the
-source and the time it was marked. Any saved Desk answer and its delivery
-status stay on the question.
+source and the time it was marked. Any saved Desk answer stays visible.
+A pending Desk answer leaves the delivery queue and shows as **Not sent**.
 Use the item ID to mark every open question in the item. Both forms report
 any answered or closed question they skip.
 
@@ -20,6 +20,8 @@ quarterdeck mark Q7.3 open
 Reopen a question before recording another off-Desk answer. Each mark retains
 its own source and time. Answers given on the Desk are recorded as `desk`.
 See [Read the report](read-the-report.md) for counts by source.
+If a question is reopened between reading it and marking it by hand, use
+`quarterdeck mark Q7.3 open` to restore its Open state.
 
 Closed questions show their saved answers but have no editor. Reopen a closed
 question before editing its answer. See the [CLI reference](../reference/cli-and-config.md#items)

@@ -289,45 +289,70 @@ class AnsweredViaTests(ClassificationCase):
         record = self.store()["items"][0]["answers"]["1"]
         self.assertEqual(record["answer_marks"], [{"via": via, "answered_at": at} for via, at in events])
         self.assertEqual((record["answer"], record["answered_at"], record["delivery"]),
-                         ("Hold", "2026-11-03T00:00:00Z", "pending"))
+                         ("Hold", "2026-11-03T00:00:00Z", "cancelled"))
         total = json.loads(self.run_cli("stats", "--json")[1])["total"]
         self.assertEqual((total["answered_desk"], total["answered_elsewhere"], total["via"]["chat"]), (1, 1, 1))
 
-    def test_reconciliation_keeps_desk_delivery_and_displays_both_answers(self) -> None:
+    def test_reconciliation_cancels_pending_desk_delivery_and_displays_both_answers(self) -> None:
         self.questions()
         desk_at = "2026-11-03T00:00:00Z"
         chat_at = "2026-11-04T00:00:00Z"
         with patch.object(quarterdeck, "now_text", return_value=desk_at):
             self.answer("Q1.1", "Hold")
             self.answer("Q1.2", "Red")
+            self.answer("Q1.3", "Yes")
+            with patch.object(quarterdeck.subprocess, "run") as inbox:
+                inbox.return_value.returncode = 0
+                record = self.store()["items"][0]["answers"]["3"]
+                quarterdeck.send_answer(quarterdeck.store_path(), self.root,
+                                        {"part": "Q1.3", "answer": "Yes", "revision": record["revision"]})
         before = self.store()["items"][0]["answers"]
         self.assertEqual(self.run_cli("mark", "Q1", "open")[0], 0)
+        opened = self.store()["items"][0]["answers"]["1"]
         with patch.object(quarterdeck, "now_text", return_value=chat_at):
             self.assertEqual(self.run_cli("mark", "Q1.1", "answered", "--via", "chat")[0], 0)
             self.assertEqual(self.run_cli("mark", "Q1", "answered", "--via", "chat")[0], 0)
         item = quarterdeck.read_store(quarterdeck.store_path())["items"][0]
         for number in ("1", "2"):
             record = item["answers"][number]
-            for field in ("answer", "answered_at", "delivery", "request_id"):
+            for field in ("answer", "answered_at", "request_id"):
                 self.assertEqual(record[field], before[number][field])
+            self.assertEqual(record["delivery"], "cancelled")
             self.assertEqual(record["answer_marks"], [{"via": "desk", "answered_at": desk_at},
                                                       {"via": "chat", "answered_at": chat_at}])
+        self.assertEqual(item["answers"]["3"]["delivery"], "sent")
+        saved_page = self.saved_page()
+        self.assertIn("Reviewed questions", saved_page)
+        self.assertNotIn("My desk</h1>", saved_page)
         shown = self.run_cli("show", "Q1")[1]
-        self.assertIn(f"Answer: Hold ({desk_at}, Not delivered)", shown)
+        self.assertIn(f"Answer: Hold ({desk_at}, Not sent)", shown)
         self.assertIn(f"Answered elsewhere: chat ({chat_at})", shown)
         for served in (True, False):
             page = quarterdeck.item_page(item, "Quarterdeck", served=served)
-            for value in ("Hold", "Not delivered", "Answered elsewhere · chat", desk_at, chat_at):
+            for value in ("Hold", "Not sent", "Answered elsewhere · chat", desk_at, chat_at):
                 self.assertIn(value, page)
 
+        old = item["answers"]["1"]
+        payload = {"part": "Q1.1", "answer": "Hold", "revision": opened["revision"]}
         with patch.object(quarterdeck.subprocess, "run") as inbox:
+            with self.assertRaises(quarterdeck.AnswerConflict):
+                quarterdeck.send_answer(quarterdeck.store_path(), self.root, payload)
+            payload["revision"] = old["revision"]
+            retry = quarterdeck.send_answer(quarterdeck.store_path(), self.root, payload)
+            self.assertEqual(retry["delivery"], "cancelled")
+            self.assertEqual(self.run_cli("mark", "Q1.1", "open")[0], 0)
+            payload["revision"] = self.store()["items"][0]["answers"]["1"]["revision"]
+            retry = quarterdeck.send_answer(quarterdeck.store_path(), self.root, payload)
+            self.assertEqual((retry["state"], retry["delivery"]), ("open", "cancelled"))
+            inbox.assert_not_called()
+            self.assertEqual(self.store()["items"][0]["answers"]["1"]["answer_marks"], old["answer_marks"])
+
             inbox.return_value.returncode = 0
-            old = item["answers"]["1"]
-            retry = quarterdeck.send_answer(quarterdeck.store_path(), self.root,
-                                            {"part": "Q1.1", "answer": "Hold", "revision": old["revision"]})
-        self.assertEqual(inbox.call_args.args[0][3], old["request_id"])
+            retry = quarterdeck.send_answer(quarterdeck.store_path(), self.root, {**payload, "answer": "Merge"})
+        inbox.assert_called_once()
+        self.assertNotEqual(inbox.call_args.args[0][3], old["request_id"])
+        self.assertEqual(inbox.call_args.args[0][-1], "Q1.1 Merge")
         self.assertEqual(retry["delivery"], "sent")
-        self.assertEqual(self.store()["items"][0]["answers"]["1"]["answer_marks"], old["answer_marks"])
 
     def test_undated_legacy_marks_survive_state_changes_and_desk_answers(self) -> None:
         with patch.object(quarterdeck, "now_text", return_value="2026-11-01T00:00:00Z"):
@@ -470,6 +495,24 @@ class StatsTests(ClassificationCase):
         self.assertEqual(sum(line.split()[0] == "unclassified" for line in lines if line), 3)
         self.assertEqual(sum(line.split()[0] == "(unclassified)" for line in lines if line), 3)
 
+    def test_legacy_sources_count_off_desk_without_becoming_report_columns(self) -> None:
+        self.questions("Harbor choices", "--project", "Harbor", body=ASK[:1])
+        self.edit_store(lambda d: d["items"][0].update(answers={
+            "1": {"state": "closed", "revision": "a" * 32, "via": "closed", "answered_at": "2026-11-02T00:00:00Z"}
+        }))
+        report = self.report()
+        columns = ["chat", "review-page", "elsewhere", "superseded"]
+        self.assertEqual(report["via_values"], columns)
+        for row in (report["total"], report["by_kind"]["approve"], report["by_tag"]["release"],
+                    report["by_project"]["Harbor"]):
+            self.assertEqual((row["answered_elsewhere"], row["closed"]), (1, 1))
+            self.assertEqual(row["via"], dict.fromkeys(columns, 0))
+        code, output, err = self.run_cli("stats")
+        self.assertEqual(code, 0, err)
+        for title in ("All", "Kind", "Tag", "Project"):
+            heading = next(line for line in output.splitlines() if line.split()[:2] == [title, "Saved"])
+            self.assertEqual(heading.split().count("Closed"), 1)
+
     def test_text_report_is_an_aligned_table(self) -> None:
         self.seed()
         code, out, _ = self.run_cli("stats")
@@ -566,6 +609,21 @@ choose(references, 'Tag', '');
 check(visibleIds('table .id') === 'Q2,Q1', 'Clearing the reference filter should restore both rows');
 check(!filterError, filterError);
 """, widths=(390, 1024))
+
+    def test_reconciled_answer_stays_out_of_the_browser_send_queue(self) -> None:
+        self.questions()
+        self.answer("Q1.1", "Hold")
+        self.assertEqual(self.run_cli("mark", "Q1.1", "open")[0], 0)
+        self.assertEqual(self.run_cli("mark", "Q1.1", "answered", "--via", "chat")[0], 0)
+        item = quarterdeck.read_store(quarterdeck.store_path())["items"][0]
+        self.check_browser(quarterdeck.item_page(item, "Quarterdeck", served=True), """
+const send = document.getElementById('send');
+check(send.disabled, 'A reconciled Desk answer should not enable sending');
+const field = document.getElementById('answer-Q1.2');
+field.value = 'Red';
+field.dispatchEvent(new Event('input', {bubbles: true}));
+check(!send.disabled && send.textContent === 'Send 1 answer', 'Only the new draft should be queued');
+""")
 
     def test_primary_card_and_anchor_follow_newest_open_item_across_groups(self) -> None:
         self.questions("Old Harbor", "--project", "Harbor", body=ASK[:1])

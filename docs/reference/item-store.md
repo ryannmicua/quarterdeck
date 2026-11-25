@@ -155,11 +155,12 @@ Questions items may contain an `answers` object keyed by the one-based part numb
 Each answer adds an entry to `answer_marks`, in recording order. An entry
 contains `via` and `answered_at` (UTC). The list survives closing, reopening,
 and later answers. A reconciliation mark records only the source and the
-time it was made. It keeps any existing Desk answer and delivery record.
+time it was made. It keeps any existing Desk answer and sets a pending
+delivery to `cancelled`.
 Removing the item removes its answer records.
 
 A Desk answer also stores the current `answer` (plain text, up to 20,000
-characters), `answered_at` (UTC), `delivery` (pending or sent), and a stable
+characters), `answered_at` (UTC), `delivery` (pending, sent, or cancelled), and a stable
 `request_id` for inbox retries. A correction gets a new request ID and adds
 a mark. Retrying delivery reuses the same ID and mark.
 

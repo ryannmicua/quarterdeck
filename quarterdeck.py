@@ -777,7 +777,7 @@ def validate_records(item):
                 if any(k in record for k in ("answer", "delivery", "request_id")):
                     raise ValueError("invalid saved answer")
             elif (clean_text(record.get("answer"), "answer", TEXT_LIMIT, multiline=True) != record["answer"]
-                    or record.get("delivery") not in ("pending", "sent")
+                    or record.get("delivery") not in ("pending", "sent", "cancelled")
                     or not re.fullmatch(r"quarterdeck-[0-9a-f]{32}", str(record.get("request_id")))):
                 raise ValueError("invalid saved answer")
             parse_utc(record.get("answered_at"))
@@ -842,7 +842,9 @@ def mark_item(args):
                     if state != "open":
                         messages.append(f"{item['id']}.{number} skipped (already {state})")
                         continue
-                    put_record(item, number, "answered", mark={"via": via, "answered_at": now_text()})
+                    record = put_record(item, number, "answered", mark={"via": via, "answered_at": now_text()})
+                    if delivery_pending(record):
+                        record["delivery"] = "cancelled"
                     messages.append(f"{item['id']}.{number} Answered via {via}")
                 else:
                     put_record(item, number, args.state)
@@ -917,7 +919,8 @@ def send_answer(store, home, payload):
         if state == "closed":
             raise AnswerConflict("Question closed. Reopen it before sending.")
         same = old.get("answer") == answer
-        if not (same and state == "answered") and payload["revision"] != old.get("revision", ""):
+        repeat = same and state == "answered" and old.get("delivery") != "cancelled"
+        if not repeat and payload["revision"] != old.get("revision", ""):
             raise AnswerConflict("Question changed. Reload before sending.")
         if same:
             record = old
@@ -1145,13 +1148,13 @@ def question_facts(data: dict[str, object], since: str | None) -> list[dict[str,
     return facts
 
 
-def summarize(facts: list[dict[str, object]], via_values: list[str]) -> dict[str, object]:
+def summarize(facts: list[dict[str, object]]) -> dict[str, object]:
     desk_waits = [wait for fact in facts for wait in fact["desk_waits"]]
     return {
         "saved": sum(1 for fact in facts if fact["saved"]),
         "answered_desk": sum(1 for fact in facts if DESK in fact["sources"]),
         "answered_elsewhere": sum(1 for fact in facts if fact["sources"] - {DESK}),
-        "via": {value: sum(1 for fact in facts if value in fact["sources"]) for value in via_values},
+        "via": {value: sum(1 for fact in facts if value in fact["sources"]) for value in CLASSIFICATION["via"]},
         "open": sum(1 for fact in facts if fact["state"] == "open"),
         "closed": sum(1 for fact in facts if fact["state"] == "closed"),
         "median_wait_desk_seconds": statistics.median(desk_waits) if desk_waits else None,
@@ -1160,18 +1163,15 @@ def summarize(facts: list[dict[str, object]], via_values: list[str]) -> dict[str
 
 def build_report(data: dict[str, object], since: str | None) -> dict[str, object]:
     facts = question_facts(data, since)
-    found = {via for fact in facts for via in fact["sources"] if via != DESK}
-    allowed = CLASSIFICATION["via"]
-    via_values = [*allowed, *sorted(found - set(allowed))]
     groups: dict[str, dict[str, list[dict[str, object]]]] = {"by_kind": {}, "by_tag": {}, "by_project": {}}
     for fact in facts:
         groups["by_kind"].setdefault(fact["kind"] or UNCLASSIFIED, []).append(fact)
         groups["by_project"].setdefault(fact["project"] or UNCLASSIFIED, []).append(fact)
         for tag in fact["tags"] or [UNCLASSIFIED]:  # type: ignore[union-attr]
             groups["by_tag"].setdefault(tag, []).append(fact)
-    report: dict[str, object] = {"since": since, "via_values": via_values, "total": summarize(facts, via_values)}
+    report: dict[str, object] = {"since": since, "via_values": list(CLASSIFICATION["via"]), "total": summarize(facts)}
     for name, group in groups.items():
-        report[name] = {key: summarize(group[key], via_values) for key in sorted(group, key=lambda k: (k == UNCLASSIFIED, k))}
+        report[name] = {key: summarize(group[key]) for key in sorted(group, key=lambda k: (k == UNCLASSIFIED, k))}
     return report
 
 
@@ -1186,8 +1186,8 @@ def wait_text(seconds: object) -> str:
     return f"{hours}h {minutes}m" if hours else f"{minutes}m"
 
 
-def report_table(title: str, rows: dict[str, dict[str, object]], via_values: list[str]) -> list[str]:
-    heads = [title, "Saved", "Desk", *(value.replace("-", " ").capitalize() for value in via_values),
+def report_table(title: str, rows: dict[str, dict[str, object]]) -> list[str]:
+    heads = [title, "Saved", "Desk", *(value.replace("-", " ").capitalize() for value in CLASSIFICATION["via"]),
              "Open", "Closed", "Median Desk wait"]
     table = [heads] + [[label, *(str(v) for v in (r["saved"], r["answered_desk"], *r["via"].values(),  # type: ignore[union-attr]
                                                   r["open"], r["closed"])), wait_text(r["median_wait_desk_seconds"])] for label, r in rows.items()]
@@ -1199,12 +1199,11 @@ def report_table(title: str, rows: dict[str, dict[str, object]], via_values: lis
 def report_text(report: dict[str, object]) -> str:
     since = report["since"]
     lines = [f"Question activity since {since}" if since else "All saved questions"]
-    via_values = report["via_values"]  # type: ignore[assignment]
     if not report["by_kind"]:
         return lines[0] + "\nNo questions saved.\n"
     for title, key in (("All", "total"), ("Kind", "by_kind"), ("Tag", "by_tag"), ("Project", "by_project")):
         rows = {"All questions": report[key]} if key == "total" else report[key]  # type: ignore[dict-item]
-        lines += ["", *report_table(title, rows, via_values)]  # type: ignore[arg-type]
+        lines += ["", *report_table(title, rows)]  # type: ignore[arg-type]
     return "\n".join(lines) + "\n"
 
 
@@ -1785,7 +1784,7 @@ def items_table(items: list[dict[str, object]]) -> str:
 
 
 def delivery_label(record):
-    return "Sent" if record["delivery"] == "sent" else "Not delivered"
+    return {"sent": "Sent", "pending": "Not delivered", "cancelled": "Not sent"}[record["delivery"]]
 
 
 def question_summary(item) -> tuple[str, list[int], bool]:
@@ -2029,7 +2028,7 @@ if (send) {
 
     const saved = section.querySelector('.saved-answer');
     saved.querySelector('.record').textContent = record.answer;
-    saved.querySelector('.delivery').textContent = record.delivery === 'sent' ? 'Sent' : 'Not delivered';
+    saved.querySelector('.delivery').textContent = {sent: 'Sent', pending: 'Not delivered', cancelled: 'Not sent'}[record.delivery];
     const time = saved.querySelector('time');
     time.dateTime = record.answered_at;
     time.textContent = localTime(record.answered_at);
@@ -2885,7 +2884,8 @@ def make_parser() -> argparse.ArgumentParser:
                     "Print, by kind, by tag and by project: questions saved, answered on the Desk, answered elsewhere "
                     "(by source), still open, closed, and the median wait for answers given on the Desk.", show_stats)
     stats.add_argument("--since", metavar="DATE", help="include saves and dated answers on or after this UTC date, such as 2026-11-01")
-    stats.add_argument("--json", dest="as_json", action="store_true", help="print the same numbers as JSON")
+    stats.add_argument("--json", dest="as_json", action="store_true",
+                       help="print structured counts, including the off-Desk total, and median waits in seconds")
 
     remove = command("remove", "delete an item", "Delete an item. Its ID is never given to another item.", remove_item)
     remove.add_argument("id", help="item ID, such as Q7")
