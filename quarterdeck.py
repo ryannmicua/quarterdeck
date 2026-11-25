@@ -1787,10 +1787,10 @@ def copy_images(items: list[dict[str, object]], store: Path, root: Path, *, live
         if not files:
             continue
         item_id = str(item["id"])
-        directory = image_directory(root, item_id)
+        directory = None if live else image_directory(root, item_id)
         for file in sorted(files):
             with stored_image(store, item_id, file).open("rb") as stream:
-                if not live:
+                if directory is not None:
                     directory.mkdir(parents=True, exist_ok=True)
                     place_image(directory / file, stream.read())
 

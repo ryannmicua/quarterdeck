@@ -123,6 +123,8 @@ lowercase item ID, such as `q3`. `remove` deletes exactly the files the removed
 item's record names and leaves the item folder in place. `add` and `render`
 never delete saved image files.
 
+Quarterdeck requires a umask that preserves the owner's read, write, and search permissions on directories it creates.
+
 A failed `add` or an interrupted `remove` can leave files that no item names.
 Retrying does not clean them up. Where the destination does not support hard
 links, an interrupted image write during `add` or `render` can leave a partial
