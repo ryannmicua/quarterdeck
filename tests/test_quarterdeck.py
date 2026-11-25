@@ -1026,9 +1026,9 @@ for (const animation of dialog.getAnimations()) animation.finish();
 const normalHeight = dialog.getBoundingClientRect().height;
 const search = button('search-references');
 search.focus();
-adjust(140, 60, 'resize');
+adjust(60, 60, 'resize');
 let bounds = dialog.getBoundingClientRect();
-check(near(bounds.bottom, 200) && bounds.top >= 60 && bounds.height <= 140,
+check(near(bounds.bottom, 120) && near(bounds.top, 60),
       'The library did not fit above the keyboard');
 const searchBounds = search.getBoundingClientRect();
 check(document.activeElement === search && searchBounds.top >= bounds.top && searchBounds.bottom <= bounds.bottom + 1,
@@ -1040,8 +1040,14 @@ resultLink.scrollIntoView({block:'center'});
 bounds = dialog.getBoundingClientRect();
 const linkBounds = resultLink.getBoundingClientRect();
 check(linkBounds.top >= bounds.top && linkBounds.bottom <= bounds.bottom, 'The result could not scroll into view');
-adjust(140, 90, 'scroll');
-check(near(dialog.getBoundingClientRect().bottom, 230), 'The library did not follow viewport panning');
+for (const control of dialog.querySelectorAll('[role="tab"], [data-close]')) {
+  control.scrollIntoView({block:'center'});
+  const controlBounds = control.getBoundingClientRect();
+  check(controlBounds.top >= bounds.top - 1 && controlBounds.bottom <= bounds.bottom + 1,
+        'The short library clipped ' + control.textContent);
+}
+adjust(60, 90, 'scroll');
+check(near(dialog.getBoundingClientRect().bottom, 150), 'The library did not follow viewport panning');
 adjust(844, 0, 'resize');
 bounds = dialog.getBoundingClientRect();
 check(near(bounds.bottom, 844) && near(bounds.height, normalHeight), 'The library did not return to its original size');

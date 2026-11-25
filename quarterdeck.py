@@ -1584,8 +1584,9 @@ body:has(dialog[open]) { overflow:hidden; }
 .lib-status { margin:0; padding:0 var(--gutter); color:var(--soft); font-size:var(--text-sm); }
 .lib-panel > .empty { margin:1rem var(--gutter); }
 .lib-list { list-style:none; margin:0; padding:0 var(--gutter) 2rem; overflow-y:auto; flex:1; min-height:0; overscroll-behavior:contain; }
-.library.short[open] { display:block; overflow-y:auto; overscroll-behavior:contain; }
+.library.short[open] { display:block; height:var(--visible-height, 100vh); overflow-y:auto; overscroll-behavior:contain; }
 .library.short .lib-list { overflow:visible; }
+.library.short button { scroll-margin-top:0; }
 .lib-item { padding:.9rem 0; border-bottom:1px solid var(--rule); }
 .lib-item p { margin:.2rem 0 0; }
 .lib-head { display:flex; gap:.2rem .8rem; align-items:baseline; }
