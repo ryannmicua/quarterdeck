@@ -28,8 +28,10 @@ Quarterdeck reads no backlog, board, topic, report, ledger or saved session
 from a Firstmate home, and it does not read terminal text. Quarterdeck stores
 no snapshot data or contact history on the server.
 Quarterdeck writes nothing to the home except through the configured home's
-`bin/fm-inbox.sh note` command on explicit answer submission. It passes the
-plain answer text prefixed with the part ID.
+`bin/fm-inbox.sh note` command on explicit answer or ask submission. It passes
+the plain text prefixed with the part ID; an ask is also prefixed with `ASK`.
+Replies come back only through `quarterdeck reply`, which Firstmate runs on
+the same machine. Quarterdeck never calls a model.
 
 Firstmate handles any periodic checks for decisions made in chat or on review
 pages. Quarterdeck records the [source supplied with `mark`](../how-to/read-answers.md)

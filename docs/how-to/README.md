@@ -7,6 +7,8 @@
 - [Serve the page](serve-the-page.md)
 - [Read the workers section](read-workers.md)
 - [Answer questions](answer-questions.md)
+- [Ask Firstmate from a card](ask-firstmate.md)
+- [Reply from the command line](reply-from-the-command-line.md)
 - [Find references and answered questions](use-the-library.md)
 - [Read and mark answers](read-answers.md)
 - [Classify items](classify-items.md)

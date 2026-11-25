@@ -150,6 +150,32 @@ file. Delete that partial file by hand before retrying the write. See the
 [serving boundary](../explanation/privacy-and-architecture.md#what-quarterdeck-reads-and-writes)
 and [export behavior](cli-and-config.md#rendered-images).
 
+## Question conversation
+
+A questions item may contain a `conversation` object keyed by the one-based part
+number as a string, holding that question's messages oldest first (up to 100).
+It is kept apart from `answers`, so a message never changes what was decided.
+Older items need no migration.
+
+Every message has `id` (32 hexadecimal characters), `author`, `text` (plain
+text, up to 20,000 characters) and `at` (UTC).
+
+| `author` | Other fields |
+| --- | --- |
+| `you` | An ask sent from the page. `delivery` (`pending` or `sent`) and a stable `request_id` for inbox retries. |
+| `firstmate` | A reply added by `quarterdeck reply`. `read` (true once the question page was opened), and optional `links` (the same `text` and `url` objects as question links) and `images` (`file` and `alt`, up to 6 each). |
+
+Reply images are copied into the item's [image folder](#store-layout) and
+removed with the item.
+
+## Question states
+
+A question is Open, Answered, Closed or Replied. The first three are the
+stored `state`. Replied is not stored: a question that is not closed shows
+Replied while the newest message in its conversation is a Firstmate reply with
+`read` false. Opening the question page sets `read` on the replies it showed,
+and the question shows its stored state again.
+
 ## Question answers
 
 Questions items may contain an `answers` object keyed by the one-based part number as a string. Missing entries mean Open. Records carry `state` (open, answered or closed) and an opaque `revision` for detecting concurrent edits. Older items need no migration.
