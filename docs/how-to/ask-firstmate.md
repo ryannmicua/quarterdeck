@@ -28,12 +28,14 @@ You can send more messages before answering anything.
 When Firstmate's reply clarifies a question, **Clarified after discussion**
 appears on that card. If the reply says an option changed, the card asks you to
 review your draft. Both send buttons hold it until you change the answer text,
-pick an option, or select **Keep this draft**. Adding or removing surrounding
-whitespace keeps the review hold. The open page refreshes the set discussion
-and its clarifications without replacing your drafts.
+pick an option, or select **Keep this draft**. Returning to the original
+answer text brings back the review hold, even if surrounding whitespace
+changed. The open page refreshes the set discussion and its clarifications
+without replacing your drafts.
 
 When every question is answered, the discussion stays readable. Select **Read
-set discussion** under the item in **Answered** in the Library.
+set discussion** under the item in **Answered** in the Library. Open
+**Earlier answers** on a corrected question to see its previous submissions.
 
 ## Ask about one question
 

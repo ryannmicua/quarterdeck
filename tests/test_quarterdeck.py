@@ -4396,8 +4396,9 @@ const composer = document.getElementById('ask-Q4');
 composer.value = 'Please send me the proof before ordering the run.';
 composer.dispatchEvent(new Event('input', {bubbles: true}));
 const items = queueItems();
-check(items.length === 2 && items[0].includes('Answer \u00b7 Q4.1') && items[0].includes('Merge the tide tables now?') &&
-      items[0].includes('Hold') && items[1].includes('Set message') && items[1].includes('Please send me the proof'),
+const preview = [...document.querySelectorAll('#queue-list li:first-child p')].map(p => p.textContent);
+check(items.length === 2 && preview.join('|') === 'Answer \u00b7 Q4.1|Hold' &&
+      items[1].includes('Set message') && items[1].includes('Please send me the proof'),
       'Each queued entry did not name its question ID and show its text: ' + items.join(' / '));
 check(document.getElementById('send-queue').textContent === 'Send queued items (2)', 'The queue count was wrong');
 document.getElementById('send-queue').click();
@@ -4593,13 +4594,22 @@ window.setInterval = callback => {{ refreshDiscussion = callback; }};
         self.check_page(port, r"""
 window.fetch = async () => ({ok: true, json: async () => snapshot});
 document.getElementById('open-item-ask').click();
-type(1, 'Hold');
+type(1, 'Merge');
 type(2, 'Red');
 const [coverRemove, quantityRemove] = document.querySelectorAll('#queue-list button');
 coverRemove.focus();
 await refreshDiscussion();
-check(!coverRemove.isConnected && document.activeElement === quantityRemove && field(1).value === 'Hold',
+check(!coverRemove.isConnected && document.activeElement === quantityRemove && field(1).value === 'Merge',
       'When review held the cover draft, focus did not move to the remaining queue control');
+type(1, '');
+document.getElementById('suggest').click();
+check(field(1).value === 'Merge' && !card(1).querySelector('.review').hidden &&
+      document.querySelectorAll('#queue-list li').length === 1,
+      'A bulk suggestion released the original draft without confirmation');
+document.getElementById('undo').click();
+type(1, 'Merge');
+check(!card(1).querySelector('.review').hidden && document.querySelectorAll('#queue-list li').length === 1,
+      'Restoring a draft after Undo lost its review baseline');
 """, page=page_before_reply, setup=f"""
 const snapshot = {json.dumps(snapshot)};
 let refreshDiscussion;
@@ -4655,6 +4665,15 @@ const review = card(1).querySelector('.review');
 check(fold.open && review.getClientRects().length > 0 && field(1).value === 'Hold' &&
       document.getElementById('send').disabled && document.getElementById('send-queue').disabled,
       'The correction stayed folded, lost its text, or entered a send without review');
+const editor = field(1);
+editor.focus();
+editor.setSelectionRange(editor.value.length, editor.value.length);
+check(document.execCommand('insertText', false, '.') && editor.value === 'Hold.' &&
+      review.hidden && !document.getElementById('send').disabled,
+      'The changed draft was not available to send');
+check(document.execCommand('delete') && editor.value === 'Hold' && !review.hidden &&
+      document.getElementById('send').disabled && document.getElementById('send-queue').disabled,
+      'Typing and deleting a character released the original draft without confirmation');
 type(1, 'Wait for the proof.');
 check(review.hidden && !document.getElementById('send').disabled && !document.getElementById('send-queue').disabled,
       'A change to the submitted answer text did not release the review hold');
@@ -4716,17 +4735,25 @@ check(calls[2][1].id === calls[1][1].id && calls[2][1].action === 'retry',
         part = self.ask_body(port, "Q4.1", "Why?")
         for body in (whole, part):
             self.assertEqual(self.post(port, "/qd/asks", body)[0], 200)
+        starter = {"id": uuid.uuid4().hex, "title": "Lamp colours", "text": "Can we see the amber?",
+                   "home": whole["home"]}
+        self.assertEqual(self.post(port, "/qd/conversations", starter)[0], 200)
         before = self.store()
         for target, ask, extra in (("Q4.1", part["id"], ["--clarify", "Q4.1=Context."]),
                                    ("Q4", whole["id"], ["--clarify", "Q4.3=Context."]),
                                    ("Q4", whole["id"], ["--clarify", "Q4.1"]),
                                    ("Q4", whole["id"], ["--clarify", "Q1.1=Context."]),
                                    ("Q4", whole["id"], ["--clarify", "Q4.1=A.", "--clarify", "Q4.1=B."]),
-                                   ("Q4", whole["id"], ["--option-changed", "Q4.1"]),
-                                   ("Q1", self.ask_body(port, "Q4", "x")["id"], ["--clarify", "Q1.1=Context."])):
+                                   ("Q4", whole["id"], ["--option-changed", "Q4.1"])):
             with self.subTest(target=target, extra=extra):
                 self.assertEqual(self.run_cli("reply", target, "--ask", ask, "--text", "Reply.", *extra)[0], 2)
                 self.assertEqual(self.store(), before)
+        standalone_reply = ("reply", "Q5", "--ask", starter["id"], "--text", "Reply.")
+        code, _, error = self.run_cli(*standalone_reply, "--clarify", "Q5.1=Context.")
+        self.assertEqual(code, 2)
+        self.assertIn("--clarify needs a question item", error)
+        self.assertEqual(self.store(), before)
+        self.assertEqual(self.run_cli(*standalone_reply)[0], 0)
         self.assertEqual(self.run_cli("reply", "Q4", "--ask", whole["id"], "--text", "Fine.", "--clarify", "Q4.1=Context.")[0], 0)
         damaged = self.store()
         damaged["items"][3]["conversation"]["item"][1]["clarify"]["9"] = {"text": "x", "option_changed": False}
@@ -4746,6 +4773,58 @@ check(calls[2][1].id === calls[1][1].id && calls[2][1].action === 'retry',
         self.assertIn("Can the quantity wait?", page)
         self.assertIn('<span class="id">Q4.1</span>', page)
         self.assertIn("Answered elsewhere", page)
+
+    def test_a_correction_keeps_the_previous_answer_traceable_on_the_card(self) -> None:
+        home = self.inbox()
+        port = self.start("/qd", home=home, ask_home=home)
+        endpoint = "/qd/answers"
+        original = {"part": "Q4.1", "answer": "Hold <for proof>", "revision": ""}
+        status, first = self.post(port, endpoint, original)
+        self.assertEqual((status, first["delivery"]), (200, "sent"))
+        saved = self.store()["items"][3]["answers"]["1"]
+        old_entry = {"answer": original["answer"], "answered_at": first["answered_at"], "request_id": saved["request_id"]}
+        status, posted = self.ask(port, "Q4", "Can we see the proof?")
+        self.assertEqual((status, posted["delivery"]), (200, "sent"))
+        ask, = self.messages("item", 3)
+        self.assertEqual(self.run_cli("reply", "Q4", "--ask", ask["id"], "--text", "The proof is ready.",
+                                      "--clarify", "Q4.1=The cover changed.", "--option-changed", "Q4.1")[0], 0)
+        option_revision = self.messages("item", 3)[1]["id"]
+        live_page = self.fetch(port, "/qd/q4.html")[1]
+        correction = {**original, "answer": "Merge", "revision": first["revision"], "option_revision": option_revision}
+        status, corrected = self.post(port, endpoint, correction)
+        self.assertEqual((status, corrected["delivery"]), (200, "sent"))
+        self.assertEqual(self.post(port, endpoint, correction), (200, corrected))
+        for action in ("open", "closed", "open"):
+            self.assertEqual(self.run_cli("mark", "Q4.1", action)[0], 0)
+        self.assertEqual(self.run_cli("mark", "Q4", "answered", "--via", "elsewhere")[0], 0)
+        self.assertEqual(self.store()["items"][3]["answers"]["1"]["earlier_answers"], [old_entry])
+        self.assertIn('href="q4.html#Q4">Read set discussion</a>', self.fetch(port, "/qd/")[1])
+
+        check_history = r"""
+const outer = card(1).closest('details.done');
+if (outer) outer.open = true;
+const history = [...card(1).querySelectorAll('details')].find(box => box.querySelector('summary').textContent === 'Earlier answers');
+check(history && !history.open && card(1).querySelector('.saved-answer .record').textContent === 'Merge',
+      'The card did not show the correction with a collapsed history');
+history.querySelector('summary').click();
+const entries = history.querySelectorAll('li');
+check(history.open && entries.length === 1 && entries[0].querySelector('.record').textContent === predecessor.answer &&
+      entries[0].querySelector('time').dateTime === predecessor.answered_at &&
+      entries[0].textContent.includes(predecessor.request_id),
+      'The previous submitted text, time, or request ID was lost');
+"""
+        setup = f"const predecessor = {json.dumps(old_entry)};"
+        self.check_page(port, r"""
+window.fetch = async (url, options) => {
+  check(url === 'answers' && JSON.parse(options.body).part === 'Q4.1', 'The correction targeted another question');
+  return {ok: true, status: 200, json: async () => corrected};
+};
+card(1).closest('details.done').open = true;
+type(1, 'Merge');
+document.getElementById('send').click();
+await settled();
+""" + check_history, page=live_page, setup=setup + f"const corrected = {json.dumps(corrected)};")
+        self.check_page(port, check_history, setup=setup)
 
     def test_reply_images_fit_both_threads_on_a_phone(self) -> None:
         port = self.start("/qd", ask_home=self.inbox())

@@ -759,6 +759,7 @@ def part_record(item, part):
 
 
 DESK_FIELDS = ("answer", "answered_at", "delivery", "request_id")
+EARLIER_ANSWER_FIELDS = ("answer", "answered_at", "request_id")
 
 
 def answer_marks(record):
@@ -801,6 +802,16 @@ def validate_records(item):
                     or not re.fullmatch(r"quarterdeck-[0-9a-f]{32}", str(record.get("request_id")))):
                 raise ValueError("invalid saved answer")
             parse_utc(record.get("answered_at"))
+        if "earlier_answers" in record:
+            earlier = record["earlier_answers"]
+            if "answer" not in record or not isinstance(earlier, list) or not earlier:
+                raise ValueError("invalid earlier answers")
+            for entry in earlier:
+                if (not isinstance(entry, dict) or entry.keys() != set(EARLIER_ANSWER_FIELDS)
+                        or clean_text(entry["answer"], "answer", TEXT_LIMIT, multiline=True) != entry["answer"]
+                        or not re.fullmatch(r"quarterdeck-[0-9a-f]{32}", str(entry["request_id"]))):
+                    raise ValueError("invalid earlier answer")
+                parse_utc(entry["answered_at"])
         if "answer_marks" in record:
             marks = record["answer_marks"]
             if not isinstance(marks, list) or not marks:
@@ -907,14 +918,20 @@ def part_state(item, part, *, replies=True):
 
 def put_record(item, part, state, *, mark=None, **desk_fields):
     previous = part_record(item, part)
-    if "answer" in previous and not desk_fields:
-        desk_fields = {k: previous[k] for k in DESK_FIELDS}
+    earlier = previous.get("earlier_answers", [])
+    if "answer" in previous:
+        if desk_fields:
+            earlier = [*earlier, {k: previous[k] for k in EARLIER_ANSWER_FIELDS}]
+        else:
+            desk_fields = {k: previous[k] for k in DESK_FIELDS}
     marks = answer_marks(previous)
     if mark is not None:
         marks = [*marks, mark]
     record = {**desk_fields, "state": state, "revision": uuid.uuid4().hex}
     if marks:
         record["answer_marks"] = marks
+    if earlier:
+        record["earlier_answers"] = earlier
     item.setdefault("answers", {})[str(part)] = record
     return record
 
@@ -1075,6 +1092,7 @@ def send_answer(store, home, payload):
             record["delivery"] = "sent"
             write_store(store, data)
     return {**{k: record[k] for k in ("state", "revision", "answer", "answered_at", "delivery")},
+            "earlier_answers_html": earlier_answers_html(record),
             "off_desk_answer": latest_off_desk_mark(record)}
 
 
@@ -1982,6 +2000,8 @@ textarea { display:block; width:100%; resize:vertical; background:var(--ground);
 .filters select { min-height:var(--tap); min-width:min(100%,12rem); max-width:100%; font:var(--text-md)/1.3 var(--sans); padding:.4rem .6rem;
   background:var(--raised); color:var(--ink); border:1px solid var(--soft); border-radius:5px; }
 .saved-answer .record:empty { display:none; }
+.earlier-answers { margin:.5rem 0; overflow-wrap:anywhere; }
+.earlier-answers summary { cursor:pointer; }
 @media (max-width: 40rem) {
   .desk th, .desk td { padding:.6rem .3rem; }
 }
@@ -2088,7 +2108,7 @@ body:has(dialog[open]) { overflow:hidden; }
 TIME_SCRIPT = """
 const localTime = dateTime => new Date(dateTime).toLocaleString(undefined, {dateStyle:'medium', timeStyle:'short'});
 const localizeTimes = root => {
-  for (const time of root.querySelectorAll('.saved-answer time[datetime]:not([datetime=""]), .answer-source time, .thread time[datetime], .conversation time[datetime]')) {
+  for (const time of root.querySelectorAll('.saved-answer time[datetime]:not([datetime=""]), .earlier-answers time, .answer-source time, .thread time[datetime], .conversation time[datetime]')) {
     time.textContent = localTime(time.dateTime);
   }
 };
@@ -2747,6 +2767,19 @@ def set_discussion(item, *, editable):
                                for number in question_parts(item)}}
 
 
+def earlier_answers_html(record):
+    earlier = record.get("earlier_answers", [])
+    if not earlier:
+        return ""
+    entries = []
+    for entry in reversed(earlier):
+        at = esc(entry["answered_at"])
+        entries.append(f'<li><p class="record">{esc(entry["answer"])}</p>'
+                       f'<p class="meta"><time datetime="{at}">{at}</time> · {esc(entry["request_id"])}</p></li>')
+    return ('<details class="earlier-answers meta"><summary>Earlier answers</summary><ol>'
+            + ''.join(entries) + '</ol></details>')
+
+
 def question_form(item, served, *, ask_binding=None):
     cards, folded = [], []
     asking = ask_binding is not None
@@ -2766,6 +2799,7 @@ def question_form(item, served, *, ask_binding=None):
             saved = (f'<div class="saved-answer"{hidden}><p class="record">{esc(answer)}</p>'
                      f'<p class="meta"><span class="delivery">{delivery}</span> '
                      f'<time datetime="{at}">{at}</time></p></div>')
+            saved += f'<div class="answer-history">{earlier_answers_html(record)}</div>'
         elsewhere = latest_off_desk_mark(record)
         if elsewhere:
             at = esc(elsewhere["answered_at"]) if elsewhere["answered_at"] else ""
@@ -3087,9 +3121,14 @@ if (send) {
     const answer = answerText(f.value);
     return answer && (answer !== f.defaultValue || f.closest('section').dataset.pending === '1');
   };
+  const needsReview = f => {
+    const {review, pending} = f.closest('section').dataset;
+    const answer = answerText(f.value);
+    return review !== undefined && (answer === review || (pending === '1' && answer === f.defaultValue));
+  };
   const changed = f => {
     return !rejectedAsk(draftOrigins.get(f)) && !rejections.has(f) && !excluded.has(f)
-      && !f.closest('section').hasAttribute('data-review') && answerDraft(f);
+      && !needsReview(f) && answerDraft(f);
   };
   const suggestionFor = f => {
     const section = f.closest('section');
@@ -3107,9 +3146,7 @@ if (send) {
       const head = document.createElement('p');
       head.append(Object.assign(document.createElement('strong'), {textContent: title}));
       li.append(head);
-      for (const [className, value] of text) {
-        li.append(Object.assign(document.createElement('p'), {className, textContent: value}));
-      }
+      li.append(Object.assign(document.createElement('p'), {className: 'record', textContent: text}));
       const button = Object.assign(document.createElement('button'), {type: 'button', textContent: label});
       button.addEventListener('click', remove);
       li.append(button);
@@ -3118,10 +3155,10 @@ if (send) {
     const rows = [
       ...answers.map(f => {
         const section = f.closest('section');
-        return item(section.id, 'Answer \u00b7 ' + section.id, [['', section.querySelector('h2').textContent], ['record', answerText(f.value)]],
+        return item(section.id, 'Answer \u00b7 ' + section.id, answerText(f.value),
           () => { excluded.add(f); refresh(); }, 'Remove from send');
       }),
-      ...(messageQueued ? [item(whole.id, 'Set message', [['record', answerText(queueField.value)]],
+      ...(messageQueued ? [item(whole.id, 'Set message', answerText(queueField.value),
         () => { messageQueued = false; refresh(); queueField.focus(); }, 'Remove message')] : []),
     ];
     const previous = [...queueList.children];
@@ -3153,19 +3190,19 @@ if (send) {
   }
   function updateClarification(section, html) {
     const current = section.querySelector('.clarified');
+    const field = section.querySelector('textarea');
     const template = document.createElement('template');
     template.innerHTML = html;
     const next = template.content.firstElementChild;
     if (Number(next.dataset.notes) <= Number(current.dataset.notes)) return;
-    if (section.hasAttribute('data-revision') && next.dataset.optionRevision !== current.dataset.optionRevision) {
-      const field = section.querySelector('textarea');
+    if (field && next.dataset.optionRevision !== current.dataset.optionRevision) {
       holdForReview(field);
       const folded = section.closest('details.done');
       if (folded && answerDraft(field)) folded.open = true;
     }
     const restoreFocus = current.contains(document.activeElement);
     const review = next.querySelector('.review');
-    if (review) review.hidden = !section.hasAttribute('data-review');
+    if (review) review.hidden = !field || !needsReview(field);
     current.replaceWith(next);
     if (restoreFocus) (next.querySelector('.review:not([hidden]) .keep-draft') || section).focus();
     return true;
@@ -3247,7 +3284,7 @@ if (send) {
         retry.disabled = Boolean(newDraft(f));
       }
       const review = section.querySelector('.review');
-      if (review) review.hidden = !section.hasAttribute('data-review');
+      if (review) review.hidden = !needsReview(f);
       const error = document.getElementById(f.getAttribute('aria-describedby'));
       const message = rejections.get(f)?.message || '';
       error.textContent = message;
@@ -3282,12 +3319,10 @@ if (send) {
     forget(field);
     const card = field.closest('.decision');
     if (card) {
-      const answer = answerText(field.value);
       if (restoring && optionRevision(card)) {
-        holdForReview(field);
-      } else if (!card.hasAttribute('data-review') || (answer && answer !== card.dataset.review)) {
+        if (!card.hasAttribute('data-review')) holdForReview(field);
+      } else if (answerText(field.value) && !needsReview(field)) {
         excluded.delete(field);
-        reviewed(card);
       }
     }
     refresh();
@@ -3364,8 +3399,8 @@ if (send) {
             review: section.getAttribute('data-review'), revision: optionRevision(section)});
           if (askError) rejections.delete(f);
           f.value = option.dataset.choice;
-          excluded.delete(f);
-          reviewed(section);
+          if (choice) reviewed(section);
+          if (!needsReview(f)) excluded.delete(f);
           if (origin) draftOrigins.set(f, {choice: option, edited: false});
         }
       }
@@ -3389,7 +3424,7 @@ if (send) {
         pending.querySelector('button').addEventListener('click', () => askRequest(section, {...body, action: 'retry'}, pending));
         thread.querySelector('.pending-asks').append(pending);
         field.value = field.defaultValue;
-        if (section.hasAttribute('data-review') || (section.dataset.pending === '1' && optionRevision(section))) {
+        if (!section.hasAttribute('data-review') && section.dataset.pending === '1' && optionRevision(section)) {
           holdForReview(field);
         }
         if (rejectedAsk(draftOrigins.get(field))) rejections.delete(field);
@@ -3415,8 +3450,9 @@ if (send) {
         if (askError) rejections.set(f, askError);
         if (draft.excluded) excluded.add(f);
         else excluded.delete(f);
-        if (revision !== optionRevision(section)) holdForReview(f);
-        else if (review !== null) section.dataset.review = review;
+        if (revision !== optionRevision(section)) {
+          if (!section.hasAttribute('data-review')) holdForReview(f);
+        } else if (review !== null) section.dataset.review = review;
         else reviewed(section);
       }
       refresh();
@@ -3480,7 +3516,6 @@ if (send) {
         if (pending && saved === false && !blockedRetry) {
           failedDraft = section.querySelector('textarea');
           failedDraft.value = pending.querySelector('.record').textContent;
-          if (section.hasAttribute('data-review')) holdForReview(failedDraft);
           forget(failedDraft);
           if (draftOrigins.has(failedDraft)) draftOrigins.set(failedDraft, {rejected: body.text});
           rejections.set(failedDraft, {message, draft: body.text});
@@ -3522,6 +3557,12 @@ if (send) {
     time.dateTime = record.answered_at;
     time.textContent = localTime(record.answered_at);
     saved.hidden = false;
+
+    if (record.earlier_answers_html !== undefined) {
+      const history = section.querySelector('.answer-history');
+      history.innerHTML = record.earlier_answers_html;
+      localizeTimes(history);
+    }
 
     const source = section.querySelector('.answer-source');
     const elsewhere = record.off_desk_answer;
