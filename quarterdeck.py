@@ -1058,7 +1058,7 @@ def linked_text(value: object) -> str:
         except ValueError:
             continue
         parts.append(esc(text[last:start]))
-        parts.append(f'<a href="{esc(url)}" rel="noopener noreferrer">{esc(url)}</a>')
+        parts.append(f'<a href="{esc(url)}" target="_blank" rel="noopener noreferrer">{esc(url)}</a>')
         last = position
     return "".join(parts) + esc(text[last:])
 

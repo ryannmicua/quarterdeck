@@ -14,7 +14,8 @@ recognises it later. `add` prints the new ID.
 See [description links](../reference/item-store.md#format-version-1) for ways
 to include web addresses in a description. A web address in a question, its
 context, an option or a suggested answer is also shown as a link with the address
-visible; the answer saved for an option is still the plain text.
+visible. Inline links open in a new tab so you can return to a draft answer.
+Choosing an option still uses its plain text as the answer.
 
 ### A resource (a link)
 

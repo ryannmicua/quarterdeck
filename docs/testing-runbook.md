@@ -7,6 +7,7 @@ Run one group while changing it, then the whole suite before a pull request
 | --- | --- |
 | Item commands and the store | `PYTHONPATH=tests python3 -m unittest -v test_quarterdeck.ItemCommandTests` |
 | Page content | `PYTHONPATH=tests python3 -m unittest -v test_quarterdeck.PageTests` |
+| Inline question addresses and plain-text choice values | `PYTHONPATH=tests python3 -m unittest -v test_quarterdeck.QuestionAddressTests` |
 | Question link validation and Saved card previews | `PYTHONPATH=tests python3 -m unittest -v test_quarterdeck.QuestionLinkTests` |
 | `render` | `PYTHONPATH=tests python3 -m unittest -v test_quarterdeck.RenderTests` |
 | `serve`, base path and host checks | `PYTHONPATH=tests python3 -m unittest -v test_quarterdeck.ServeTests` |
