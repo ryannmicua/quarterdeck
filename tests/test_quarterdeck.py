@@ -4448,9 +4448,6 @@ check(!document.getElementById('send').disabled && queueItems().length === 1 && 
 document.getElementById('undo').click();
 check(field(1).value === 'Hold' && document.getElementById('send').disabled &&
       document.getElementById('send-queue').disabled, 'Undo did not restore the exclusion');
-type(1, 'Hold ');
-check(document.getElementById('send').disabled && document.getElementById('send-queue').disabled,
-      'Editing the kept draft silently put it back in the send');
 type(1, '');
 document.getElementById('suggest').click();
 check(field(1).value === '' && field(2).value === 'Red' && queueItems().length === 1 &&
@@ -4459,6 +4456,34 @@ check(field(1).value === '' && field(2).value === 'Red' && queueItems().length =
 document.getElementById('undo').click();
 check(field(2).value === '' && document.getElementById('send').disabled &&
       document.getElementById('send-queue').disabled, 'Undo did not restore the queue after bulk suggestions');
+""")
+
+    def test_typing_in_a_removed_custom_answer_requeues_it(self) -> None:
+        port = self.start("/qd", ask_home=self.inbox())
+        self.check_page(port, self.SET_STUB + r"""
+const original = 'Wait for the first proof';
+type(1, original);
+document.querySelector('#queue-list button').click();
+queueText('Can we see the proof?');
+const send = document.getElementById('send');
+const sendQueue = document.getElementById('send-queue');
+sendQueue.click();
+await settled();
+check(calls.length === 1 && calls[0][0] === 'asks' && field(1).value === original && send.disabled,
+      'The message-only send included or discarded the removed custom draft');
+const editor = field(1);
+editor.focus();
+editor.setSelectionRange(original.length, original.length);
+check(document.execCommand('insertText', false, ' before printing'), 'The draft could not be edited');
+const revised = 'Wait for the first proof before printing';
+check(!send.disabled && !sendQueue.disabled && queueItems().length === 1 &&
+      queueItems()[0].includes('Q4.1') && queueItems()[0].includes(revised),
+      'Typing did not put the custom answer back in both send paths');
+sendQueue.click();
+await settled();
+check(calls.length === 2 && calls[1][0] === 'answers' &&
+      calls[1][1].part === 'Q4.1' && calls[1][1].answer === revised,
+      'The send did not use the edited custom answer');
 """)
 
     def test_an_option_reply_waiting_for_the_store_lock_cannot_split_an_answer_send(self) -> None:
@@ -4606,7 +4631,8 @@ document.getElementById('undo').click();
 check(field(1).value === ' Hold ' && !card(1).querySelector('.review').hidden && send.disabled,
       'Undo released the review-held draft');
 card(1).querySelector('.keep-draft').click();
-check(send.disabled && sendQueue.disabled, 'Confirming the draft cleared its send exclusion');
+check(!send.disabled && !sendQueue.disabled, 'The edited draft did not enter the queue after confirmation');
+document.querySelector('#queue-list button').click();
 composer.value = 'Please include the cover in the proof.';
 composer.dispatchEvent(new Event('input', {bubbles: true}));
 document.getElementById('queue-add').click();
@@ -4864,19 +4890,29 @@ check(calls[2][1].id === calls[1][1].id && calls[2][1].action === 'retry',
         port = self.start("/qd", home=home, ask_home=home)
         endpoint = "/qd/answers"
         original = {"part": "Q4.1", "answer": "Hold <for proof>", "revision": ""}
-        status, first = self.post(port, endpoint, original)
+        original_at = "2026-11-23T01:00:00Z"
+        with patch.object(quarterdeck, "now_text", return_value=original_at):
+            status, first = self.post(port, endpoint, original)
         self.assertEqual((status, first["delivery"]), (200, "sent"))
         saved = self.store()["items"][3]["answers"]["1"]
-        old_entry = {"answer": original["answer"], "answered_at": first["answered_at"], "request_id": saved["request_id"]}
+        old_entry = {"answer": original["answer"], "answered_at": original_at, "request_id": saved["request_id"]}
         status, posted = self.ask(port, "Q4", "Can we see the proof?")
         self.assertEqual((status, posted["delivery"]), (200, "sent"))
         ask, = self.messages("item", 3)
-        self.assertEqual(self.run_cli("reply", "Q4", "--ask", ask["id"], "--text", "The proof is ready.",
-                                      "--clarify", "Q4.1=The cover changed.", "--option-changed", "Q4.1")[0], 0)
+        with patch.object(quarterdeck, "now_text", return_value="2026-11-24T01:00:00.000001Z"):
+            self.assertEqual(self.run_cli("reply", "Q4", "--ask", ask["id"], "--text", "The proof is ready.",
+                                          "--clarify", "Q4.1=The cover changed.", "--option-changed", "Q4.1")[0], 0)
         option_revision = self.messages("item", 3)[1]["id"]
         live_page = self.fetch(port, "/qd/q4.html")[1]
-        correction = {**original, "answer": "Merge", "revision": first["revision"], "option_revision": option_revision}
-        status, corrected = self.post(port, endpoint, correction)
+        reaffirmation = {**original, "revision": first["revision"], "option_revision": option_revision}
+        accepted_at = "2026-11-24T01:00:00.000002Z"
+        with patch.object(quarterdeck, "now_text", return_value=accepted_at):
+            status, reaffirmed = self.post(port, endpoint, reaffirmation)
+        self.assertEqual((status, reaffirmed["answered_at"], reaffirmed["revision"]),
+                         (200, accepted_at, first["revision"]))
+        correction = {**reaffirmation, "answer": "Merge"}
+        with patch.object(quarterdeck, "now_text", return_value="2026-11-25T01:00:00.000001Z"):
+            status, corrected = self.post(port, endpoint, correction)
         self.assertEqual((status, corrected["delivery"]), (200, "sent"))
         self.assertEqual(self.post(port, endpoint, correction), (200, corrected))
         for action in ("open", "closed", "open"):

@@ -205,9 +205,9 @@ delivery reuses the same ID and mark. Reconfirming the same answer after a
 newer option change updates its acceptance time and keeps its original mark.
 Answers and option-change replies can carry fractional UTC seconds.
 
-Corrections keep the superseded text, UTC timestamp and request ID in
-`earlier_answers`, in recording order. Closing, reopening and reconciling
-the question preserve those entries. The served Desk shows earlier answers.
+Corrections keep the superseded text, original submission timestamp (UTC)
+and request ID in `earlier_answers`, in recording order. Closing, reopening
+and reconciling the question preserve those entries. The served Desk shows earlier answers.
 Static exports include the current answer only. Older records may omit the list.
 
 Reports can read dated answers saved before `answer_marks` existed. An old

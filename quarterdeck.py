@@ -922,13 +922,16 @@ def part_state(item, part, *, replies=True):
 
 def put_record(item, part, state, *, mark=None, **desk_fields):
     previous = part_record(item, part)
+    marks = answer_marks(previous)
     earlier = previous.get("earlier_answers", [])
     if "answer" in previous:
         if desk_fields:
-            earlier = [*earlier, {k: previous[k] for k in EARLIER_ANSWER_FIELDS}]
+            archived = {k: previous[k] for k in EARLIER_ANSWER_FIELDS}
+            archived["answered_at"] = next((m["answered_at"] for m in reversed(marks) if m["via"] == DESK),
+                                           archived["answered_at"])
+            earlier = [*earlier, archived]
         else:
             desk_fields = {k: previous[k] for k in DESK_FIELDS}
-    marks = answer_marks(previous)
     if mark is not None:
         marks = [*marks, mark]
     record = {**desk_fields, "state": state, "revision": uuid.uuid4().hex}
@@ -3331,6 +3334,7 @@ if (send) {
     } else if (origin === 'filled') {
       draftOrigins.set(field, 'manual');
     }
+    if (!restoring && answerText(field.value)) excluded.delete(field);
     forget(field);
     refresh();
   });

@@ -22,8 +22,8 @@ it is queued. Clear the field to leave the message out of the send.
 
 Select **Send queued items** to send the queued answers, then the set message.
 A message-only send leaves every question open. **Remove from send** keeps the
-draft on its card and takes it out of the queue. Select an option on that card
-to put the answer back in the queue.
+draft on its card and takes it out of the queue. Edit the draft or select an
+option on its card to put the answer back in the queue.
 You can send more messages before answering anything.
 
 When Firstmate's reply clarifies a question, **Clarified after discussion**
