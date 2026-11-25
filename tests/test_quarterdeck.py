@@ -888,37 +888,24 @@ class ServeTests(StoreCase):
             self.assertEqual(self.post_answer(port, "Q3.1", "Hold", origin=origin)[0], 403)
         self.assertEqual(self.store(), before)
 
-    def test_answer_retries_after_either_store_read_fails(self):
+    def test_answer_retries_after_a_store_read_fails(self):
         self.add_all_kinds()
         port = self.start("/qd", home=self.root / "home")
         path = quarterdeck.store_path()
         read_text = type(path).read_text
-        for failed_read, part, answer in ((1, "Q3.1", "Hold"), (2, "Q3.2", "Blue")):
-            with self.subTest(failed_read=failed_read):
-                reads = 0
+        def read_with_failure(file, *args, **kwargs):
+            if file == path:
+                raise PermissionError("store read failed")
+            return read_text(file, *args, **kwargs)
 
-                def read_with_failure(file, *args, **kwargs):
-                    nonlocal reads
-                    if file == path:
-                        reads += 1
-                        if reads == failed_read:
-                            raise PermissionError(f"could not read {file}")
-                    return read_text(file, *args, **kwargs)
+        before = self.store()
+        with patch.object(type(path), "read_text", read_with_failure):
+            self.assertEqual(self.post_answer(port, "Q3.1", "Hold"), (500, b"Could not save the answer."))
+        self.assertEqual(self.store(), before)
+        status, record = self.post_answer(port, "Q3.1", "Hold")
+        self.assertEqual((status, record["answer"]), (200, "Hold"))
 
-                with patch.object(type(path), "read_text", read_with_failure):
-                    status, body = self.post_answer(port, part, answer)
-                self.assertEqual((status, body), (500, b"Could not save the answer."))
-                first_save = self.store()["items"][2].get("answers", {}).get(part[-1])
-                if failed_read == 1:
-                    self.assertIsNone(first_save)
-                else:
-                    self.assertEqual(first_save["answer"], answer)
-                status, record = self.post_answer(port, part, answer)
-                self.assertEqual((status, record["answer"]), (200, answer))
-                if first_save:
-                    self.assertEqual(record["revision"], first_save["revision"])
-
-    def test_answer_without_delivery_work_survives_a_failing_second_read(self):
+    def test_answer_uses_one_store_read_with_or_without_delivery(self):
         self.add_all_kinds()
         path = quarterdeck.store_path()
         read_text = type(path).read_text
@@ -931,7 +918,11 @@ class ServeTests(StoreCase):
         unbound = self.start("/qd")
         status, sent = self.post_answer(bound, "Q3.2", "Blue")
         self.assertEqual((status, sent["delivery"]), (200, "sent"))
-        for port, part, answer, delivery in ((unbound, "Q3.1", "Hold", "pending"), (bound, "Q3.2", "Blue", "sent")):
+        for port, part, answer, revision, delivery in (
+            (unbound, "Q3.1", "Hold", "", "pending"),
+            (bound, "Q3.2", "Blue", sent["revision"], "sent"),
+            (bound, "Q3.2", "Red", sent["revision"], "sent"),
+        ):
             with self.subTest(delivery=delivery):
                 reads = 0
 
@@ -944,31 +935,17 @@ class ServeTests(StoreCase):
                     return read_text(file, *args, **kwargs)
 
                 with patch.object(type(path), "read_text", read_once):
-                    status, record = self.post_answer(port, part, answer)
+                    status, record = self.post_answer(port, part, answer, revision)
                 self.assertEqual(status, 200)
                 self.assertEqual((record["answer"], record["delivery"]), (answer, delivery))
 
-    def test_removed_item_conflicts_before_save_and_before_delivery(self):
+    def test_removed_item_conflicts_before_save(self):
         self.add_all_kinds()
         home = self.root / "home"
         port = self.start("/qd", home=home)
         self.assertEqual(self.fetch(port, "/qd/q3.html")[0], 200)
-        changing_store = quarterdeck.changing_store
-        removed = []
-
-        @contextmanager
-        def remove_after_save(path):
-            with changing_store(path) as data:
-                yield data
-            if not removed:
-                with patch.object(quarterdeck, "changing_store", changing_store):
-                    removed.append(self.run_cli("remove", "Q3")[0])
-
-        with patch.object(quarterdeck, "changing_store", remove_after_save):
-            self.assertEqual(self.post_answer(port, "Q3.1", "Hold"),
-                             (409, b"Item removed. Reload before sending."))
-        self.assertEqual(removed, [0])
-        self.assertEqual(self.post_answer(port, "Q3.2", "Blue"), (409, b"Item removed. Reload before sending."))
+        self.assertEqual(self.run_cli("remove", "Q3")[0], 0)
+        self.assertEqual(self.post_answer(port, "Q3.1", "Hold"), (409, b"Item removed. Reload before sending."))
         self.assertEqual(self.fetch(port, "/qd/q3.html")[0], 404)
 
     def test_answer_origin_through_tls_terminating_proxy(self):
@@ -4340,7 +4317,8 @@ window.fetch = async (url, options) => {
   const result = url === 'replies/read' ? {replies: {[replyId]: true}} :
     url === 'answers' ? {state: 'answered', revision: 'new', delivery: 'sent',
                         answer: 'Hold', answered_at: '2026-11-25T01:00:00Z'} :
-    {thread: `<ol><li data-ask-id="${body.id}"><p class="record">Explain the colors.</p></li></ol>`, message: 'Ask sent.'};
+    {thread: `<ol><li data-ask-id="${body.id}"><p class="record">Explain the colors.</p></li></ol>`,
+     message: 'Ask sent.', delivery: 'sent'};
   return {ok: true, status: 200, json: async () => result};
 };
 const whole = document.getElementById('Q4');
@@ -4364,17 +4342,684 @@ check(calls[0][0] === 'replies/read' && calls[0][1].part === 'Q4' && calls[0][1]
       'Opening Messages acknowledged the wrong conversation');
 check(whole.querySelector('.badge').hidden && document.querySelector('.progress').textContent === '2 of 2 open',
       'The item-level badge did not clear after acknowledgment');
-whole.querySelector('.ask-button').click();
+document.getElementById('queue-add').click();
+const queued = [...document.querySelectorAll('#queue-list li')].map(li => li.textContent);
+check(queued.length === 2 && queued[0].includes('Answer \u00b7 Q4.1') && queued[0].includes('Hold') &&
+      queued[1].includes('Set message') && queued[1].includes('Explain the colors.'),
+      'The queue did not name the answer by question ID with its text beside the set message');
+[...document.querySelectorAll('#queue-list button')].find(b => b.textContent === 'Remove from send').click();
+check(field(1).value === 'Hold' && send.disabled && document.querySelectorAll('#queue-list li').length === 1,
+      'Removing the answer from the send lost its draft');
+document.getElementById('send-queue').click();
 await settled();
 check(calls[1][0] === 'asks' && calls[1][1].part === 'Q4' && calls[1][1].text === 'Explain the colors.',
-      'The toolbar ask did not target the whole item');
-check(fieldForItem.value === '' && whole.querySelector('.record').textContent === 'Explain the colors.',
-      'The whole-item ask was not shown in its thread');
+      'The queued set message did not target the whole item');
+check(fieldForItem.value === '' && whole.querySelector('.record').textContent === 'Explain the colors.' &&
+      field(1).value === 'Hold' && calls.length === 2,
+      'A message-only send changed the answer draft or was not shown in its thread');
+card(1).querySelector('[data-choice="Hold"]').click();
 send.click();
 await settled();
 check(calls.length === 3 && calls[2][0] === 'answers' && calls[2][1].part === 'Q4.1',
       'The batch did not remain scoped to the numbered question');
 """, setup=f"const replyId = {json.dumps(reply['id'])};")
+
+    SET_STUB = r"""
+const calls = [];
+window.fetch = async (url, options) => {
+  const body = JSON.parse(options.body);
+  calls.push([url, body]);
+  const result = url === 'answers' ? {state: 'answered', revision: 'new', delivery: 'sent',
+                                      answer: body.answer, answered_at: '2026-11-25T01:00:00Z'} :
+    {thread: `<ol><li data-ask-id="${body.id}"><p class="record">${body.text}</p></li></ol>`,
+     message: 'Ask sent.', delivery: 'sent'};
+  return {ok: true, status: 200, json: async () => result};
+};
+const queueItems = () => [...document.querySelectorAll('#queue-list li')].map(li => li.textContent);
+const queueText = text => {
+  const box = document.getElementById('ask-Q4');
+  box.value = text;
+  box.dispatchEvent(new Event('input', {bubbles: true}));
+  document.getElementById('queue-add').click();
+};
+document.getElementById('open-item-ask').click();
+"""
+
+    def test_set_discussion_sends_the_cover_answer_with_the_request_and_leaves_quantity_open(self) -> None:
+        port = self.start("/qd", ask_home=self.inbox())
+        self.check_page(port, self.SET_STUB + r"""
+check(document.getElementById('queue-empty').textContent === 'Your queue is empty.' &&
+      document.getElementById('send-queue').disabled, 'An empty queue offered a send');
+type(1, 'Hold');
+queueText('Please send me the proof.');
+const composer = document.getElementById('ask-Q4');
+composer.value = 'Please send me the proof before ordering the run.';
+composer.dispatchEvent(new Event('input', {bubbles: true}));
+const items = queueItems();
+const preview = [...document.querySelectorAll('#queue-list li:first-child p')].map(p => p.textContent);
+check(items.length === 2 && preview.join('|') === 'Answer \u00b7 Q4.1|Hold' &&
+      items[1].includes('Set message') && items[1].includes('Please send me the proof'),
+      'Each queued entry did not name its question ID and show its text: ' + items.join(' / '));
+check(document.getElementById('send-queue').textContent === 'Send queued items (2)', 'The queue count was wrong');
+document.getElementById('send-queue').click();
+await settled();
+check(calls.length === 2 && calls[0][0] === 'answers' && calls[0][1].part === 'Q4.1' && calls[0][1].answer === 'Hold' &&
+      calls[1][0] === 'asks' && calls[1][1].part === 'Q4' && calls[1][1].text === 'Please send me the proof before ordering the run.',
+      'The answer and the request were not sent together: ' + JSON.stringify(calls));
+check(card(1).dataset.state === 'answered' && card(2).dataset.state === 'open' && field(2).value === '' &&
+      !calls.some(([, body]) => body.part === 'Q4.2'), 'The other question did not stay open');
+check(status().textContent === 'Queued items sent.' && queueItems().length === 0, 'The queue did not empty');
+check(composer.value === '', 'The sent draft remained in the composer');
+""")
+
+    def test_set_discussion_sends_only_the_request_and_keeps_the_cover_draft(self) -> None:
+        fixture = self.store()
+        fixture["items"][3]["body"]["questions"][1]["suggestion"] = "Red"
+        quarterdeck.store_path().write_text(json.dumps(fixture))
+        port = self.start("/qd", ask_home=self.inbox())
+        self.check_page(port, self.SET_STUB + r"""
+const hold = card(1).querySelector('[data-choice="Hold"]');
+type(1, 'Hold');
+card(1).querySelector('[data-choice="Merge"]').click();
+queueText('Please send me the proof before ordering the run.');
+check(queueItems().length === 2 && document.getElementById('send').textContent === 'Send 1 answer', 'The draft was not queued');
+[...document.querySelectorAll('#queue-list button')].find(b => b.textContent === 'Remove from send').click();
+document.getElementById('undo').click();
+check(field(1).value === 'Hold' && queueItems().length === 1 && document.getElementById('send').disabled,
+      'Undo lost the draft or reversed a later removal');
+card(1).querySelector('[data-choice="Merge"]').click();
+document.getElementById('undo').click();
+check(field(1).value === 'Hold' && queueItems().length === 1 && document.getElementById('send').disabled,
+      'Undo put the excluded answer back in both send paths');
+type(1, 'Hold ');
+check(queueItems().length === 1 && document.getElementById('send').disabled,
+      'A whitespace-only edit requeued the removed answer');
+type(1, 'Hold');
+check(document.querySelectorAll('#queue-list button').length === 0,
+      'The set-message preview offered a separate removal action');
+queueText('   ');
+check(queueItems().length === 0 && document.getElementById('send-queue').disabled,
+      'Clearing the composer left the message queued');
+queueText('Please send me the proof before ordering the run.');
+document.getElementById('send-queue').click();
+await settled();
+check(calls.length === 1 && calls[0][0] === 'asks' && calls[0][1].part === 'Q4', 'A message-only send also sent an answer');
+check(card(1).dataset.state === 'open' && card(2).dataset.state === 'open' && field(1).value === 'Hold',
+      'A message-only send closed a question or lost the cover draft');
+hold.click();
+check(!document.getElementById('send').disabled && queueItems().length === 1 && queueItems()[0].includes('Q4.1'),
+      'Reselecting the checked option did not return it to the send');
+document.getElementById('undo').click();
+check(field(1).value === 'Hold' && document.getElementById('send').disabled &&
+      document.getElementById('send-queue').disabled, 'Undo did not restore the exclusion');
+type(1, '');
+field(1).focus();
+check(document.execCommand('insertText', false, 'Wait until we see the proof') &&
+      !document.getElementById('send').disabled, 'A replacement answer was not queued');
+check(document.execCommand('undo') && field(1).value === '' &&
+      document.getElementById('send').disabled && document.getElementById('send-queue').disabled,
+      'Undo did not restore the excluded blank field');
+document.getElementById('suggest').click();
+check(field(1).value === '' && field(2).value === 'Red' && queueItems().length === 1 &&
+      queueItems()[0].includes('Q4.2') && document.getElementById('send').textContent === 'Send 1 answer',
+      'Bulk suggestions filled or requeued an excluded question');
+document.getElementById('undo').click();
+check(field(2).value === '' && document.getElementById('send').disabled &&
+      document.getElementById('send-queue').disabled, 'Undo did not restore the queue after bulk suggestions');
+""")
+
+    def test_typing_in_a_removed_custom_answer_requeues_it(self) -> None:
+        port = self.start("/qd", ask_home=self.inbox())
+        self.check_page(port, self.SET_STUB + r"""
+const original = 'Wait for the first proof';
+type(1, original);
+document.querySelector('#queue-list button').click();
+queueText('Can we see the proof?');
+const send = document.getElementById('send');
+const sendQueue = document.getElementById('send-queue');
+sendQueue.click();
+await settled();
+check(calls.length === 1 && calls[0][0] === 'asks' && field(1).value === original && send.disabled,
+      'The message-only send included or discarded the removed custom draft');
+const editor = field(1);
+editor.focus();
+editor.setSelectionRange(original.length, original.length);
+check(document.execCommand('insertText', false, ' before printing'), 'The draft could not be edited');
+const revised = 'Wait for the first proof before printing';
+check(!send.disabled && !sendQueue.disabled && queueItems().length === 1 &&
+      queueItems()[0].includes('Q4.1') && queueItems()[0].includes(revised),
+      'Typing did not put the custom answer back in both send paths');
+check(document.execCommand('undo') && editor.value === original &&
+      send.disabled && sendQueue.disabled && queueItems().length === 0,
+      'Native Undo restored the removed answer to the send queue');
+queueText('Please include the cover.');
+sendQueue.click();
+await settled();
+check(calls.length === 2 && calls[1][0] === 'asks' && field(1).value === original && send.disabled,
+      'The follow-up sent the removed answer after native Undo');
+editor.focus();
+check(document.execCommand('redo') && editor.value === revised && !send.disabled && !sendQueue.disabled,
+      'Native Redo did not requeue the revised answer');
+sendQueue.click();
+await settled();
+check(calls.length === 3 && calls[2][0] === 'answers' &&
+      calls[2][1].part === 'Q4.1' && calls[2][1].answer === revised,
+      'The send did not use the edited custom answer');
+""")
+
+    def test_an_option_reply_waiting_for_the_store_lock_cannot_split_an_answer_send(self) -> None:
+        home = self.inbox()
+        port = self.start("/qd", home=home, ask_home=home)
+        endpoint = "/qd/answers"
+        answer = {"part": "Q4.1", "answer": "Hold", "revision": ""}
+        status, original = self.post(port, endpoint, answer)
+        self.assertEqual((status, original["delivery"]), (200, "sent"))
+        whole = self.ask_body(port, "Q4", "Can the quantity wait?")
+        self.assertEqual(self.post(port, "/qd/asks", whole)[0], 200)
+
+        lock = quarterdeck.locked_store
+        replies, attempts = [], []
+
+        @contextmanager
+        def reply_at_unlock(path):
+            with lock(path):
+                yield
+            if not replies:
+                with patch.object(quarterdeck, "locked_store", lock):
+                    replies.append(self.run_cli("reply", "Q4", "--ask", whole["id"], "--text", "New cover option.",
+                                                "--clarify", "Q4.1=Wait for a proof.", "--option-changed", "Q4.1")[0])
+
+        def accept_saved_note(_home, request_id, text):
+            saved = self.store()["items"][3]["answers"]["1"]
+            attempts.append((request_id, text, saved["request_id"], saved["delivery"], replies.copy()))
+            return True
+
+        with patch.object(quarterdeck, "locked_store", reply_at_unlock), patch.object(
+            quarterdeck, "deliver_note", accept_saved_note
+        ):
+            status, result = self.post(port, endpoint, {**answer, "answer": "Merge", "revision": original["revision"]})
+
+        self.assertEqual((status, result["answer"], result["delivery"]), (200, "Merge", "sent"))
+        self.assertEqual(replies, [0])
+        saved = self.store()["items"][3]["answers"]["1"]
+        self.assertEqual(attempts, [(saved["request_id"], "Q4.1 Merge", saved["request_id"], "pending", [])])
+        self.assertEqual(self.post(port, endpoint, {**answer, "revision": saved["revision"]})[0], 409)
+        self.assertEqual(self.store()["items"][3]["answers"]["1"], saved)
+
+    def test_a_changed_option_holds_its_draft_for_review_and_the_card_shows_what_was_clarified(self) -> None:
+        home = self.inbox(accept=False)
+        port = self.start("/qd", home=home, ask_home=home)
+        page_before_reply = self.fetch(port, "/qd/q4.html")[1]
+        answer = {"part": "Q4.1", "answer": "Hold", "revision": ""}
+        original_at = "2026-11-24T01:00:00Z"
+        with patch.object(quarterdeck, "now_text", return_value=original_at):
+            status, pending = self.post(port, "/qd/answers", answer)
+        self.assertEqual((status, pending["delivery"]), (200, "pending"))
+        legacy = self.store()
+        del legacy["items"][3]["answers"]["1"]["answer_marks"]
+        quarterdeck.store_path().write_text(json.dumps(legacy))
+        whole = self.ask_body(port, "Q4", "Can the quantity wait?")
+        status, saved_ask = self.post(port, "/qd/asks", whole)
+        self.assertEqual((status, saved_ask["delivery"]), (200, "pending"))
+        with patch.object(quarterdeck, "now_text", return_value="2026-11-25T01:00:00.000001Z"):
+            code, _, error = self.run_cli("reply", "Q4", "--ask", whole["id"], "--text", "Yes, a proof first.",
+                                          "--clarify", "Q4.1=This choice is for the cover proof.",
+                                          "--clarify", "Q4.2=The printer can make one sample first.", "--option-changed", "q4.1")
+        self.assertEqual((code, error), (0, ""))
+        reply = self.messages("item", 3)[1]
+        self.assertEqual(reply["clarify"], {"1": {"text": "This choice is for the cover proof.", "option_changed": True},
+                                            "2": {"text": "The printer can make one sample first.", "option_changed": False}})
+        page = self.fetch(port, "/qd/q4.html")[1]
+        first, second = page.split('id="Q4.2"', 1)
+        self.assertIn("Clarified after discussion", first)
+        self.assertIn("This choice is for the cover proof.", first)
+        self.assertIn("An option changed.", first)
+        self.assertIn("The printer can make one sample first.", second)
+        self.assertNotIn("An option changed.", second)
+        retries_before = (home / "attempts").read_text()
+        for stale in (answer, {**answer, "revision": pending["revision"]},
+                      {**answer, "answer": "Merge", "revision": pending["revision"]}):
+            status, conflict = self.post(port, "/qd/answers", stale)
+            self.assertEqual(status, 409)
+            self.assertIn("This choice is for the cover proof.", conflict["clarification"])
+        self.assertEqual((home / "attempts").read_text(), retries_before)
+        reaffirmed_answer = {**answer, "option_revision": reply["id"]}
+        accepted_at = "2026-11-25T01:00:00.000002Z"
+        with patch.object(quarterdeck, "now_text", return_value=accepted_at):
+            status, reaffirmed = self.post(port, "/qd/answers", reaffirmed_answer)
+        self.assertEqual((status, reaffirmed["delivery"], reaffirmed["revision"]), (200, "pending", pending["revision"]))
+        self.assertEqual(reaffirmed["answered_at"], accepted_at)
+        self.assertEqual(self.store()["items"][3]["answers"]["1"]["answer_marks"],
+                         [{"via": "desk", "answered_at": original_at}])
+        code, report, error = self.run_cli("stats", "--json", "--since", "2026-11-25")
+        self.assertEqual((code, error), (0, ""))
+        self.assertEqual(json.loads(report)["total"]["answered_desk"], 0)
+        page_after_acceptance = self.fetch(port, "/qd/q4.html")[1]
+        self.inbox()
+        status, confirmed = self.post(port, "/qd/answers", reaffirmed_answer)
+        self.assertEqual((status, confirmed["delivery"]), (200, "sent"))
+        self.assertEqual(confirmed["revision"], pending["revision"])
+        self.assertEqual((home / "notes").read_text(), "Q4.1 Hold\n")
+        snapshot = json.loads(self.fetch(port, "/qd/q4.discussion.json")[1])
+        self.check_page(port, r"""
+const requests = [];
+window.fetch = async (url, options) => {
+  if (url === 'q4.discussion.json') return {ok: true, json: async () => snapshot};
+  const body = JSON.parse(options.body);
+  requests.push([url, body]);
+  if (url === 'asks') return {ok: true, status: 200, json: async () => ({
+    delivery: 'sent', message: 'Ask sent.',
+    thread: `<ol><li data-ask-id="${body.id}"></li></ol>`,
+  })};
+  return {ok: true, status: 200, json: async () => confirmed};
+};
+const send = document.getElementById('send');
+const sendQueue = document.getElementById('send-queue');
+const opener = document.getElementById('open-item-ask');
+opener.click();
+type(1, 'Hold');
+[...document.querySelectorAll('#queue-list button')].find(b => b.textContent === 'Remove from send').click();
+const composer = document.getElementById('ask-Q4');
+composer.value = 'Can the quantity wait?';
+composer.dispatchEvent(new Event('input', {bubbles: true}));
+document.getElementById('queue-add').click();
+sendQueue.click();
+await settled();
+check(requests.length === 1 && requests[0][0] === 'asks' && requests[0][1].part === 'Q4',
+      'The request sent an answer or went to the wrong item');
+type(2, 'Red');
+const remove = document.querySelector('#queue-list button');
+remove.focus();
+await refreshDiscussion();
+await refreshDiscussion();
+const discussion = document.getElementById('Q4');
+check(discussion.querySelector('.thread').open &&
+      discussion.querySelector('[data-reply-id] .record').textContent === 'Yes, a proof first.' &&
+      discussion.querySelector('.badge').textContent === 'Replied',
+      'The owner could not read the set reply in the open thread before following up');
+check(document.activeElement === remove, 'The poll replaced a focused queue control');
+type(2, '');
+check(field(1).value === 'Hold' && !card(1).querySelector('.review').hidden &&
+      card(2).querySelector('.clarified').textContent.includes('The printer can make one sample first.'),
+      'The open page lost the draft or missed the clarification');
+type(1, ' Hold ');
+send.click();
+sendQueue.click();
+check(requests.length === 1 && send.disabled && sendQueue.disabled && !card(1).querySelector('.review').hidden,
+      'A whitespace-only edit cleared the review hold or let a send button accept a stale draft');
+card(1).querySelector('[data-choice="Merge"]').click();
+document.getElementById('undo').click();
+check(field(1).value === ' Hold ' && !card(1).querySelector('.review').hidden && send.disabled,
+      'Undo released the review-held draft');
+card(1).querySelector('.keep-draft').click();
+check(send.disabled && sendQueue.disabled, 'Confirming the draft cleared its send exclusion');
+composer.value = 'Please include the cover in the proof.';
+composer.dispatchEvent(new Event('input', {bubbles: true}));
+document.getElementById('queue-add').click();
+sendQueue.click();
+await settled();
+check(requests.length === 2 && requests[1][0] === 'asks' && field(1).value === ' Hold ' && send.disabled,
+      'Following up sent or discarded the cover draft');
+card(1).querySelector('[data-choice="Hold"]').click();
+sendQueue.click();
+await settled();
+check(requests.length === 3 && requests[2][1].option_revision === revision &&
+      requests[2][1].answer === 'Hold' && card(2).dataset.state === 'open',
+      'The confirmed answer did not carry the current option revision');
+""", page=page_before_reply, setup=f"""
+const snapshot = {json.dumps(snapshot)};
+const revision = {json.dumps(reply["id"])};
+const confirmed = {json.dumps(confirmed)};
+let refreshDiscussion;
+window.setInterval = callback => {{ refreshDiscussion = callback; }};
+""")
+        self.check_page(port, r"""
+window.fetch = async () => ({ok: true, json: async () => snapshot});
+document.getElementById('open-item-ask').click();
+type(1, 'Hold');
+card(1).querySelector('[data-choice="Merge"]').click();
+type(2, 'Red');
+const [coverRemove, quantityRemove] = document.querySelectorAll('#queue-list button');
+coverRemove.focus();
+await refreshDiscussion();
+check(!coverRemove.isConnected && document.activeElement === quantityRemove && field(1).value === 'Merge',
+      'When review held the cover draft, focus did not move to the remaining queue control');
+document.getElementById('undo').click();
+check(field(1).value === 'Hold' && !card(1).querySelector('.review').hidden &&
+      document.querySelectorAll('#queue-list li').length === 1,
+      'Undo across an option change released a previous draft');
+type(1, '');
+document.getElementById('suggest').click();
+check(field(1).value === 'Merge' && !card(1).querySelector('.review').hidden &&
+      document.querySelectorAll('#queue-list li').length === 1,
+      'A bulk suggestion released the original draft without confirmation');
+document.getElementById('undo').click();
+type(1, 'Merge');
+check(!card(1).querySelector('.review').hidden && document.querySelectorAll('#queue-list li').length === 1,
+      'Restoring a draft after Undo released the review hold');
+""", page=page_before_reply, setup=f"""
+const snapshot = {json.dumps(snapshot)};
+let refreshDiscussion;
+window.setInterval = callback => {{ refreshDiscussion = callback; }};
+""")
+        self.check_page(port, self.SET_STUB + r"""
+field(1).value = 'Hold';
+type(2, 'Red');
+check(document.getElementById('send').textContent === 'Send 1 answer' && queueItems().length === 1 &&
+      queueItems()[0].includes('Q4.2') && field(1).value === 'Hold' && !card(1).querySelector('.review').hidden,
+      'A draft on a changed option was not held for review');
+card(1).querySelector('.keep-draft').click();
+check(document.getElementById('send').textContent === 'Send 2 answers' && card(1).querySelector('.review').hidden &&
+      queueItems().length === 2, 'Keeping the draft did not release it');
+""", page=page)
+        self.check_page(port, r"""
+document.getElementById('open-item-ask').click();
+check(card(1).querySelector('.review').hidden && field(1).value === 'Hold' &&
+      !document.getElementById('send').disabled && !document.getElementById('send-queue').disabled,
+      'Reload put a confirmed pending answer back on hold');
+""", page=page_after_acceptance)
+
+    def test_live_option_review_reveals_a_folded_correction(self) -> None:
+        home = self.inbox()
+        port = self.start("/qd", home=home, ask_home=home)
+        status, saved = self.post(port, "/qd/answers", {"part": "Q4.1", "answer": "Merge", "revision": ""})
+        self.assertEqual((status, saved["delivery"]), (200, "sent"))
+        before_reply = self.fetch(port, "/qd/q4.html")[1]
+        ask = self.ask_body(port, "Q4", "Can we see the proof?")
+        self.assertEqual(self.post(port, "/qd/asks", ask)[0], 200)
+        self.assertEqual(self.run_cli("reply", "Q4", "--ask", ask["id"], "--text", "Check the revised proof.",
+                                      "--clarify", "Q4.1=The cover option changed.", "--option-changed", "Q4.1")[0], 0)
+        snapshot = json.loads(self.fetch(port, "/qd/q4.discussion.json")[1])
+        self.assertEqual(self.run_cli("reply", "Q4", "--ask", ask["id"], "--text", "Use the new proof.",
+                                      "--clarify", "Q4.1=The printer revised it again.", "--option-changed", "Q4.1")[0], 0)
+        newer_snapshot = json.loads(self.fetch(port, "/qd/q4.discussion.json")[1])
+        for via_poll in (True, False):
+            with self.subTest(via_poll=via_poll):
+                self.check_page(port, r"""
+const calls = [];
+let discussion = snapshot;
+window.fetch = async (url, options) => {
+  calls.push(url);
+  const result = url === 'q4.discussion.json' || !viaPoll ? discussion : {thread: ''};
+  return {ok: true, status: 200, json: async () => ({...result, delivery: 'sent', message: 'Ask sent.'})};
+};
+const fold = card(1).closest('details.done');
+fold.open = true;
+type(1, 'Hold');
+fold.open = false;
+document.getElementById('open-item-ask').click();
+document.querySelector('#queue-list button').click();
+const composer = document.getElementById('ask-Q4');
+composer.value = 'Can we see the proof?';
+composer.dispatchEvent(new Event('input', {bubbles: true}));
+document.getElementById('queue-add').click();
+document.getElementById('send-queue').click();
+await settled();
+if (viaPoll) await refreshDiscussion();
+check(calls.join() === (viaPoll ? 'asks,q4.discussion.json' : 'asks'), 'The excluded correction was sent');
+const review = card(1).querySelector('.review');
+check(fold.open && review.getClientRects().length > 0 && field(1).value === 'Hold' &&
+      document.getElementById('send').disabled && document.getElementById('send-queue').disabled,
+      'The correction stayed folded, lost its text, or entered a send without review');
+const editor = field(1);
+editor.focus();
+editor.setSelectionRange(editor.value.length, editor.value.length);
+check(document.execCommand('insertText', false, '.') && editor.value === 'Hold.' &&
+      !review.hidden && document.getElementById('send').disabled,
+      'A changed draft bypassed explicit confirmation');
+check(document.execCommand('undo') && editor.value === 'Hold' && document.getElementById('send').disabled &&
+      document.execCommand('redo') && editor.value === 'Hold.' && document.getElementById('send').disabled,
+      'Native Undo or Redo released the review hold');
+check(document.execCommand('delete') && editor.value === 'Hold' && !review.hidden &&
+      document.getElementById('send').disabled && document.getElementById('send-queue').disabled,
+      'Typing and deleting a character released the original draft without confirmation');
+type(1, 'Wait for the proof.');
+check(!review.hidden && document.getElementById('send').disabled && document.getElementById('send-queue').disabled,
+      'Changing the answer text released the review hold');
+card(1).querySelector('[data-choice="Hold"]').click();
+check(!review.hidden && document.getElementById('send').disabled && document.getElementById('send-queue').disabled,
+      'Selecting an option released the review hold');
+card(1).querySelector('.keep-draft').click();
+check(review.hidden && !document.getElementById('send').disabled && !document.getElementById('send-queue').disabled,
+      'Explicit confirmation did not release the held draft');
+discussion = newerSnapshot;
+await refreshDiscussion();
+check(!card(1).querySelector('.review').hidden && field(1).value === 'Hold' &&
+      document.getElementById('send').disabled && document.getElementById('send-queue').disabled,
+      'A later option change did not require a fresh confirmation');
+""", page=before_reply, setup=f"""
+const snapshot = {json.dumps(snapshot)};
+const newerSnapshot = {json.dumps(newer_snapshot)};
+const viaPoll = {json.dumps(via_poll)};
+let refreshDiscussion;
+window.setInterval = callback => {{ refreshDiscussion = callback; }};
+""")
+
+    def test_mixed_queue_reports_delivered_pending_and_rejected_entries(self) -> None:
+        port = self.start("/qd", ask_home=self.inbox())
+        self.check_page(port, self.SET_STUB + r"""
+const sent = window.fetch;
+let refusal = 403;
+const quantityAttempts = [];
+window.fetch = async (url, options) => {
+  const body = JSON.parse(options.body);
+  if (body.part === 'Q4.2') {
+    quantityAttempts.push(body);
+    if (refusal) return {ok: false, status: refusal, text: async () => 'Request refused.'};
+  }
+  const response = await sent(url, options);
+  if (body.part === 'Q4.1') {
+    return {...response, json: async () => ({...(await response.json()), delivery: 'pending'})};
+  }
+  return response;
+};
+type(1, 'Hold');
+type(2, 'Red');
+queueText('Can we see the proof first?');
+document.getElementById('send-queue').click();
+await settled();
+check(status().textContent.startsWith('1 sent. 1 saved for retry. 1 failed.') &&
+      card(1).querySelector('.delivery').textContent === 'Not delivered' && field(2).value === 'Red',
+      'The successful set message hid an undelivered or rejected answer');
+document.querySelector('#queue-list li button').click();
+const send = document.getElementById('send');
+const sendQueue = document.getElementById('send-queue');
+for (const [code, button] of [[405, send], [415, sendQueue], [0, send]]) {
+  check(!send.disabled && !sendQueue.disabled && field(2).value === 'Red',
+        'A request-level refusal blocked the unchanged draft');
+  refusal = code;
+  button.click();
+  await settled();
+  if (code) check(status().textContent.includes('1 answer rejected.') && status().textContent.includes('Request refused.'),
+                  'The retry did not report the definite refusal');
+}
+check(quantityAttempts.length === 4 && quantityAttempts.every(body => JSON.stringify(body) === JSON.stringify(quantityAttempts[0])) &&
+      card(2).querySelector('.saved-answer .record').textContent === 'Red',
+      'The corrected endpoint could not accept the preserved draft without another edit');
+""")
+
+    def test_mixed_queue_keeps_lost_answer_and_message_responses_unconfirmed(self) -> None:
+        port = self.start("/qd", ask_home=self.inbox())
+        self.check_page(port, self.SET_STUB + r"""
+window.fetch = async (url, {body}) => {
+  calls.push([url, JSON.parse(body)]);
+  throw new Error('Connection lost');
+};
+type(1, 'Hold');
+type(2, 'Red');
+queueText('Can we see the proof first?');
+document.getElementById('send-queue').click();
+await settled();
+check(status().textContent.startsWith('0 sent. 0 saved for retry. 0 failed. 2 unconfirmed. 1 skipped.'),
+      'A lost response was reported as a rejection or a confirmed save');
+check(calls.map(([, body]) => body.part).join() === 'Q4.1,Q4' && field(1).value === 'Hold' && field(2).value === 'Red',
+      'The interrupted request lost drafts or attempted the skipped answer');
+document.querySelector('#Q4 .pending-asks button').click();
+await settled();
+check(calls[2][1].id === calls[1][1].id && calls[2][1].action === 'retry',
+      'The unconfirmed set message lost its original retry ID');
+""")
+
+    def test_clarifications_belong_to_a_reply_to_the_whole_set(self) -> None:
+        port = self.start("/qd", ask_home=self.inbox())
+        whole = self.ask_body(port, "Q4", "Can the quantity wait?")
+        part = self.ask_body(port, "Q4.1", "Why?")
+        for body in (whole, part):
+            self.assertEqual(self.post(port, "/qd/asks", body)[0], 200)
+        starter = {"id": uuid.uuid4().hex, "title": "Lamp colours", "text": "Can we see the amber?",
+                   "home": whole["home"]}
+        self.assertEqual(self.post(port, "/qd/conversations", starter)[0], 200)
+        before = self.store()
+        for target, ask, extra in (("Q4.1", part["id"], ["--clarify", "Q4.1=Context."]),
+                                   ("Q4", whole["id"], ["--clarify", "Q4.3=Context."]),
+                                   ("Q4", whole["id"], ["--clarify", "Q4.1"]),
+                                   ("Q4", whole["id"], ["--clarify", "Q1.1=Context."]),
+                                   ("Q4", whole["id"], ["--clarify", "Q4.1=A.", "--clarify", "Q4.1=B."]),
+                                   ("Q4", whole["id"], ["--option-changed", "Q4.1"])):
+            with self.subTest(target=target, extra=extra):
+                self.assertEqual(self.run_cli("reply", target, "--ask", ask, "--text", "Reply.", *extra)[0], 2)
+                self.assertEqual(self.store(), before)
+        standalone_reply = ("reply", "Q5", "--ask", starter["id"], "--text", "Reply.")
+        code, _, error = self.run_cli(*standalone_reply, "--clarify", "Q5.1=Context.")
+        self.assertEqual(code, 2)
+        self.assertIn("--clarify needs a question item", error)
+        self.assertEqual(self.store(), before)
+        self.assertEqual(self.run_cli(*standalone_reply)[0], 0)
+        self.assertEqual(self.run_cli("reply", "Q4", "--ask", whole["id"], "--text", "Fine.", "--clarify", "Q4.1=Context.")[0], 0)
+        damaged = self.store()
+        damaged["items"][3]["conversation"]["item"][1]["clarify"]["9"] = {"text": "x", "option_changed": False}
+        quarterdeck.store_path().write_text(json.dumps(damaged))
+        self.assertEqual(self.fetch(port, "/qd/q4.html")[0], 500)
+
+    def test_the_set_discussion_stays_available_from_answered_with_each_question_traceable(self) -> None:
+        port = self.start("/qd", ask_home=self.inbox())
+        whole = self.ask_body(port, "Q4", "Can the quantity wait?")
+        self.assertEqual(self.post(port, "/qd/asks", whole)[0], 200)
+        self.assertEqual(self.run_cli("reply", "Q4", "--ask", whole["id"], "--text", "Yes.")[0], 0)
+        self.assertEqual(self.run_cli("mark", "Q4", "answered", "--via", "elsewhere")[0], 0)
+        index = self.fetch(port, "/qd/")[1]
+        answered = index.split('id="panel-answered"', 1)[1].split("</section>", 1)[0]
+        self.assertEqual(re.findall(r'<a [^>]*href="(q4\.html[^"]*)"[^>]*>([^<]*)</a>', answered),
+                         [("q4.html", "Two decisions")])
+        page = self.fetch(port, "/qd/q4.html")[1]
+        self.assertIn("Discuss this set", page)
+        self.assertIn("Can the quantity wait?", page)
+        self.assertIn('<span class="id">Q4.1</span>', page)
+        self.assertIn("Answered elsewhere", page)
+
+    def test_a_closed_set_discussion_refreshes_on_an_open_page(self) -> None:
+        port = self.start("/qd", ask_home=self.inbox(accept=False))
+        status, result = self.ask(port, "Q4", "Can we see the proof?")
+        self.assertEqual((status, result["delivery"], result["clarifications"]), (200, "pending", {}))
+        self.assertEqual(self.run_cli("mark", "Q4", "closed")[0], 0)
+        status, before_reply, headers = self.fetch(port, "/qd/q4.html")
+        self.assertEqual(status, 200)
+        self.assertEqual(headers.get("Content-Security-Policy"), "frame-ancestors 'none'")
+        self.assertEqual(self.run_cli("mark", "Q4.2", "open")[0], 0)
+        ask, = self.messages("item", 3)
+        self.assertEqual(self.run_cli("reply", "Q4", "--ask", ask["id"], "--text", "Here is the proof.",
+                                      "--clarify", "Q4.1=The cover proof is ready.")[0], 0)
+        status, body, _ = self.fetch(port, "/qd/q4.discussion.json")
+        self.assertEqual(status, 200)
+        snapshot = json.loads(body)
+        self.assertEqual(set(snapshot["clarifications"]), {"Q4.1"})
+        self.assertIn("data-retry-ask=", snapshot["thread"])
+        status, follow_up = self.ask(port, "Q4", "Can we see the revised proof?")
+        self.assertEqual(status, 200)
+        self.assertEqual(follow_up["clarifications"], snapshot["clarifications"])
+        self.check_page(port, r"""
+const discussion = document.getElementById('Q4');
+const summary = discussion.querySelector('summary');
+summary.click();
+check(!document.getElementById('send') && !discussion.querySelector('[data-reply-id]'),
+      'The closed discussion unexpectedly had answer controls or an initial reply');
+window.fetch = async url => {
+  check(url === 'q4.discussion.json', 'The closed discussion refreshed another item');
+  return {ok: true, json: async () => snapshot};
+};
+await refreshDiscussion();
+check(summary.parentElement.open && discussion.querySelector('[data-reply-id] .record').textContent === 'Here is the proof.' &&
+      discussion.querySelector('.badge').textContent === 'Replied' &&
+      card(1).querySelector('.clarified .record').textContent === 'The cover proof is ready.',
+      'The open read-only discussion did not display the reply and clarification');
+check(discussion.querySelector('[data-ask-id] .delivery').textContent === 'Not delivered' &&
+      !discussion.querySelector('[data-retry-ask]'),
+      'The read-only tab showed a retry control it could not use');
+""", page=before_reply, setup=f"""
+const snapshot = {json.dumps(snapshot)};
+let refreshDiscussion;
+window.setInterval = callback => {{ refreshDiscussion = callback; }};
+""")
+
+    def test_a_correction_keeps_the_previous_answer_traceable_on_the_card(self) -> None:
+        home = self.inbox()
+        port = self.start("/qd", home=home, ask_home=home)
+        endpoint = "/qd/answers"
+        original = {"part": "Q4.1", "answer": "Hold <for proof>", "revision": ""}
+        original_at = "2026-11-23T01:00:00Z"
+        with patch.object(quarterdeck, "now_text", return_value=original_at):
+            status, first = self.post(port, endpoint, original)
+        self.assertEqual((status, first["delivery"]), (200, "sent"))
+        saved = self.store()["items"][3]["answers"]["1"]
+        old_entry = {"answer": original["answer"], "answered_at": original_at, "request_id": saved["request_id"]}
+        status, posted = self.ask(port, "Q4", "Can we see the proof?")
+        self.assertEqual((status, posted["delivery"]), (200, "sent"))
+        ask, = self.messages("item", 3)
+        with patch.object(quarterdeck, "now_text", return_value="2026-11-24T01:00:00.000001Z"):
+            self.assertEqual(self.run_cli("reply", "Q4", "--ask", ask["id"], "--text", "The proof is ready.",
+                                          "--clarify", "Q4.1=The cover changed.", "--option-changed", "Q4.1")[0], 0)
+        option_revision = self.messages("item", 3)[1]["id"]
+        live_page = self.fetch(port, "/qd/q4.html")[1]
+        reaffirmation = {**original, "revision": first["revision"], "option_revision": option_revision}
+        accepted_at = "2026-11-24T01:00:00.000002Z"
+        with patch.object(quarterdeck, "now_text", return_value=accepted_at):
+            status, reaffirmed = self.post(port, endpoint, reaffirmation)
+        self.assertEqual((status, reaffirmed["answered_at"], reaffirmed["revision"]),
+                         (200, accepted_at, first["revision"]))
+        correction = {**reaffirmation, "answer": "Merge"}
+        with patch.object(quarterdeck, "now_text", return_value="2026-11-25T01:00:00.000001Z"):
+            status, corrected = self.post(port, endpoint, correction)
+        self.assertEqual((status, corrected["delivery"]), (200, "sent"))
+        self.assertEqual(self.post(port, endpoint, correction), (200, corrected))
+        for action in ("open", "closed", "open"):
+            self.assertEqual(self.run_cli("mark", "Q4.1", action)[0], 0)
+        self.assertEqual(self.run_cli("mark", "Q4", "answered", "--via", "elsewhere")[0], 0)
+        self.assertEqual(self.store()["items"][3]["answers"]["1"]["earlier_answers"], [old_entry])
+        self.assertNotIn(old_entry["request_id"], corrected["earlier_answers_html"])
+        self.assertIn('<a class="lib-title" href="q4.html">Two decisions</a>', self.fetch(port, "/qd/")[1])
+
+        check_history = r"""
+const outer = card(1).closest('details.done');
+if (outer) outer.open = true;
+const history = [...card(1).querySelectorAll('details')].find(box => box.querySelector('summary').textContent === 'Earlier answers');
+check(history && !history.open && card(1).querySelector('.saved-answer .record').textContent === 'Merge',
+      'The card did not show the correction with a collapsed history');
+history.querySelector('summary').click();
+const entries = history.querySelectorAll('li');
+check(history.open && entries.length === 1 && entries[0].querySelector('.record').textContent === predecessor.answer &&
+      entries[0].querySelector('time').dateTime === predecessor.answered_at &&
+      !entries[0].textContent.includes(predecessor.request_id),
+      'Earlier answers did not show just the previous text and time');
+"""
+        setup = f"const predecessor = {json.dumps(old_entry)};"
+        self.check_page(port, r"""
+window.fetch = async (url, options) => {
+  check(url === 'answers' && JSON.parse(options.body).part === 'Q4.1', 'The correction targeted another question');
+  return {ok: true, status: 200, json: async () => corrected};
+};
+card(1).closest('details.done').open = true;
+type(1, 'Merge');
+card(1).querySelector('.keep-draft').click();
+document.getElementById('send').click();
+await settled();
+""" + check_history, page=live_page, setup=setup + f"const corrected = {json.dumps(corrected)};")
+        self.check_page(port, check_history, setup=setup)
+        export = self.root / "export"
+        self.assertEqual(self.run_cli("render", "--output", str(export / "index.html"))[0], 0)
+        exported = (export / "q4.html").read_text()
+        self.assertIn('<p class="record">Merge</p>', exported)
+        self.assertNotIn(escape(original["answer"]), exported)
+        self.assertNotIn(old_entry["request_id"], exported)
 
     def test_reply_images_fit_both_threads_on_a_phone(self) -> None:
         port = self.start("/qd", ask_home=self.inbox())
@@ -4385,6 +5030,7 @@ check(calls.length === 3 && calls[2][0] === 'answers' && calls[2][1].part === 'Q
             self.assertEqual(self.post(port, "/qd/asks", ask)[0], 200)
             self.assertEqual(self.run_cli("reply", target, "--ask", ask["id"], "--text", "Here it is.",
                                           "--image", str(image), "--alt", "Layout mockup")[0], 0)
+        initial_page = self.fetch(port, "/qd/q4.html")[1]
         status, replacement = self.ask(port, "Q4", "Show another layout.")
         self.assertEqual(status, 200)
         url = "data:image/png;base64," + base64.b64encode(png).decode("ascii")
@@ -4393,7 +5039,7 @@ check(calls.length === 3 && calls[2][0] === 'answers' && calls[2][1].part === 'Q
             return re.sub(r'(?<=src=")reply-images/q4/[^"]+', url, html).replace('loading="lazy"', 'loading="eager"')
 
         replacement["thread"] = embed_picture(replacement["thread"])
-        page = embed_picture(self.fetch(port, "/qd/q4.html")[1])
+        page = embed_picture(initial_page)
         self.check_page(port, r"""
 check(matchMedia('(width: 390px)').matches, 'Expected a 390px browser viewport, got ' + innerWidth);
 const whole = document.getElementById('Q4');
@@ -4418,10 +5064,11 @@ document.getElementById('open-item-ask').click();
 const editor = whole.querySelector('textarea');
 editor.value = 'Show another layout.';
 editor.dispatchEvent(new Event('input', {bubbles: true}));
-const initial = whole.querySelector('.thread img');
-whole.querySelector('.ask-button').click();
+document.getElementById('queue-add').click();
+document.getElementById('send-queue').click();
 await settled();
-check(!initial.isConnected, 'The thread did not refresh');
+check(whole.querySelector('.thread-messages').textContent.includes('Show another layout.'),
+      'The new message did not appear in the set thread');
 await checkImage(whole);
 """, setup=f"const replacement = {json.dumps(replacement)};", page=page, viewport_width=390)
 
@@ -4440,6 +5087,11 @@ window.fetch = async (url, options) => {
   return {status: 409, json: async () => ({message: conflict, saved: !body.text || body.text.startsWith("Saved ")})};
 };
 const whole = document.getElementById('Q4');
+const sendAsk = section => {
+  if (section !== whole) return section.querySelector('.ask-button').click();
+  document.getElementById('queue-add').click();
+  document.getElementById('send-queue').click();
+};
 document.getElementById('open-item-ask').click();
 for (const section of [whole, card(1)]) {
   const editor = section.querySelector('textarea');
@@ -4447,7 +5099,7 @@ for (const section of [whole, card(1)]) {
   editor.value = draft;
   editor.dispatchEvent(new Event('input', {bubbles: true}));
   const start = calls.length;
-  section.querySelector('.ask-button').click();
+  sendAsk(section);
   await settled();
   if (interrupted) {
     section.querySelector('.pending-asks button').click();
@@ -4457,15 +5109,20 @@ for (const section of [whole, card(1)]) {
     check(first.id === retry.id && first.home === retry.home, 'Retry changed the ask identity or home');
   }
   check(calls.length === start + (interrupted ? 2 : 1), 'Conflict automatically retried the ask');
-  check(editor.value === draft && editor.getAttribute('aria-invalid') === 'true',
+  check(editor.value === draft && editor.getAttribute('aria-invalid') === 'true' &&
+        (section !== whole || document.getElementById('send-queue').disabled),
         'The confirmed conflict did not return the draft and its error');
   check(!section.querySelector('[data-local-ask]'), 'A rejected draft stayed pending');
   check(document.getElementById('send').disabled, 'A conflicted ask entered the answer batch');
   editor.value = 'Saved ' + draft;
   editor.dispatchEvent(new Event('input', {bubbles: true}));
   const first = calls.length;
-  section.querySelector('.ask-button').click();
+  sendAsk(section);
   await settled();
+  if (section === whole && !interrupted) {
+    check(status().textContent === '0 sent. 1 saved for retry. 0 failed. ' + conflict,
+          'The saved conflict did not count as pending with the reason delivery was blocked');
+  }
   const recovery = section.querySelector('[data-local-ask] button');
   recovery.click();
   await settled();
@@ -4503,13 +5160,18 @@ window.fetch = async (url, options) => {
   return {status: 403, ok: false, text: async () => refusal};
 };
 const whole = document.getElementById('Q4');
+const sendAsk = section => {
+  if (section !== whole) return section.querySelector('.ask-button').click();
+  document.getElementById('queue-add').click();
+  document.getElementById('send-queue').click();
+};
 document.getElementById('open-item-ask').click();
 for (const section of [whole, card(1)]) {
   const editor = section.querySelector('textarea');
   const draft = '  Show the layout.  ';
   editor.value = draft;
   editor.dispatchEvent(new Event('input', {bubbles: true}));
-  section.querySelector('.ask-button').click();
+  sendAsk(section);
   await settled();
   if (interrupted) {
     const first = calls.at(-1);
@@ -4521,11 +5183,14 @@ for (const section of [whole, card(1)]) {
           'The refused retry lost its original identity');
     check(retry.isConnected && editor.value === '', 'The refused retry discarded the pending ask');
   } else {
-    check(editor.value === draft && !editor.disabled && editor.getAttribute('aria-invalid') === 'true',
+    check(editor.value === (section === whole ? draft.trim() : draft) &&
+          !editor.disabled && editor.getAttribute('aria-invalid') === 'true',
           'A first-attempt refusal did not restore the editable draft');
     check(!section.querySelector('[data-local-ask]'), 'A first-attempt refusal stayed pending');
   }
-  check(status().textContent === refusal, 'A definite response was reported as an interruption');
+  check(status().textContent === (section === whole && !interrupted ?
+        '0 sent. 0 saved for retry. 1 failed. ' + refusal : refusal),
+        'A definite response was reported as an interruption');
   check(document.getElementById('send').disabled, 'The refused ask was queued as an answer');
 }
 const savedRetry = card(2).querySelector('[data-retry-ask]');

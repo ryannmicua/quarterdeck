@@ -91,15 +91,17 @@ The tests also verify that an owner
 can edit and save an answer after replacing a rejected ask. Tests open
 **Messages** explicitly and exercise both response orders for overlapping
 acknowledgments and live updates.
-The whole-item checks cover the toolbar editor, the inbox target and retry ID,
-separate reply acknowledgment for the item and each question, and private
-reply images. The browser checks a 1200-pixel reply image in both conversations
-inside an iframe with a 390 CSS-pixel viewport and checks the whole-item image
+The set discussion checks cover mixed and message-only sends, the inbox target
+and retry ID, separate reply acknowledgment for the item and each question,
+and private reply images. The browser checks a 1200-pixel reply image in both
+threads inside an iframe with a 390 CSS-pixel viewport and checks the set image
 again after a thread refresh. The conversation group also checks that confirmed
 conflicts return local drafts to their editors, preserve saved asks, and keep
 reference items outside the conversation workflow. The closed-item check closes
 the questions between saving an ask and delivering it, then verifies that the
-saved ask survives the conflict and the conversation stays readable.
+saved ask survives the conflict and the discussion stays readable. The closed
+discussion refresh check covers framing protection and a reply arriving in a
+read-only tab after a question reopens.
 
 For a screen change, also save one item of each kind, run `quarterdeck serve`,
 and check the Desk, each tab of the library pop-out (try 3, 30 and 200 saved items) and each item page at phone width (about 390 px) and

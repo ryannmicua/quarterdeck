@@ -32,7 +32,8 @@ open them for context before choosing an answer.
 3. Select **Send answers**. The button counts the answers ready to send. You can send a few now and return for the rest.
 
 When you need more information before deciding, see how to
-[ask Firstmate and read replies](ask-firstmate.md).
+[ask Firstmate](ask-firstmate.md), or
+[send answers together with a set message](ask-firstmate.md#discuss-the-whole-set).
 
 To find an item after it leaves the Desk, open
 [**Answered** in the library](use-the-library.md#when-an-item-moves).
@@ -43,12 +44,15 @@ inbox command accepted the note. If you see **Not delivered**, your answer
 remains saved. Once the [inbox is available](read-answers.md#connect-the-inbox),
 send the unchanged answer again to retry with the same note ID. To correct a
 sent answer, edit it and send again. Firstmate receives the correction as a
-new note.
+new note. Open **Earlier answers** on the served question card to see the
+previous answer text and submission times, newest first.
 
 Edit the answer to submit a new decision on a reopened question. If a question
-changed or its item was removed while you were drafting, the page keeps the
-draft and continues with the other queued answers. Copy the conflicting draft
-before reloading. If a draft is rejected as invalid, edit it before retrying.
+was closed or its saved record changed while you were drafting, the page keeps
+the draft and continues with the other queued answers. Copy the conflicting
+draft before reloading. For an option change
+from Firstmate, [review the draft on the card](ask-firstmate.md#discuss-the-whole-set).
+If a draft is rejected as invalid, edit it before retrying.
 
 The page shows answer times in your local time zone. If you're viewing a
 [rendered snapshot](../reference/cli-and-config.md#pages), open the served page
