@@ -183,17 +183,15 @@ and falls back to `time.monotonic()` elsewhere. The page displays the fleet's
 `observed_at` timestamp. The endpoint returns 404 when `firstmate_home` is absent.
 
 `GET /workers.json` (under any `base_path`) runs and saves a new reading.
-With the exact query `?reuse=1`, it returns a fresh saved reading when one
-is available. The server locks refreshes through the freshness check,
-the fleet command, and saving the result. A failed read keeps the previous one. The
+With the exact query `?reuse=1`, it shares the result of a check already in
+progress or reuses a fresh saved reading. Otherwise it starts a new check.
+A failed read keeps the previous reading. The
 [snapshot command](../explanation/privacy-and-architecture.md#what-quarterdeck-reads-and-writes)
 runs with `FM_HOME` set to the configured home. Other inherited `FM_` variables
-are removed. The endpoint returns 404 when `firstmate_home` is absent. It
-returns 502 immediately if a refresh is already in progress. For `?reuse=1`,
-that response also includes `"code": "snapshot_busy"`. The Workers page then
-reports the active check and leaves **Check workers** available. The endpoint
-also returns 502 if the command fails, exceeds 60 seconds, or returns invalid
-snapshot data.
+are removed. The endpoint returns 404 when `firstmate_home` is absent.
+Requests without the exact reuse query return 502 immediately if a check is
+already in progress. The endpoint also returns 502 if the command fails,
+exceeds 60 seconds, or returns invalid snapshot data.
 
 | Field in a snapshot | Meaning |
 | --- | --- |

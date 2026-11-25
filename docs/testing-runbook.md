@@ -66,8 +66,9 @@ The workers browser tests use headless `google-chrome` on the Desk and the
 Workers page. They check for zero Workers requests on the Desk and count
 requests on entry, during a virtual minute of idle time, and after a manual
 check. They cover a click during entry, reuse of fresh saved readings,
-replacement of expired readings on entry, a busy entry that keeps the saved
-roster visible, and manual recovery after a failed saved lookup. A successful
+replacement of expired readings on entry, two overlapping views that receive
+the same roster and timestamp from one fleet check, and manual recovery after
+a failed saved lookup. A successful
 manual check replaces the closed worker's row with the new live worker and
 updates the time element's `datetime` attribute even when the source clock
 moves backward. The server tests cover the elapsed-time expiry boundary,

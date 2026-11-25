@@ -30,6 +30,7 @@ import unicodedata
 import uuid
 import zlib
 from collections.abc import Iterator
+from concurrent.futures import Future
 from contextlib import contextmanager
 from datetime import datetime, timedelta, timezone
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -1575,14 +1576,9 @@ WORKERS_FRESH_SECONDS = 3600  # the Workers page reads the home on entry only wh
 UTC_RE = re.compile(r"[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z")
 WORKER_STATES = {"working": "Working", "done": "Finished", "blocked": "Stuck", "failed": "Stuck"}
 ACTIVITY_UNAVAILABLE = "Activity unavailable"
-snapshot_lock = threading.Lock()
 
 
 class SnapshotError(Exception):
-    pass
-
-
-class SnapshotBusy(SnapshotError):
     pass
 
 
@@ -1734,6 +1730,8 @@ class SavedWorkers:
     """The last successful reading, in memory only, shared by every visitor until the server stops."""
 
     def __init__(self) -> None:
+        self._lock = threading.Lock()
+        self._active: Future[dict[str, object]] | None = None
         self._reading: tuple[float, dict[str, object]] | None = None
 
     @staticmethod
@@ -1741,19 +1739,31 @@ class SavedWorkers:
         return workers_clock() - checked_at > WORKERS_FRESH_SECONDS
 
     def refresh(self, home: Path, *, reuse: bool) -> dict[str, object]:
-        if not snapshot_lock.acquire(blocking=False):
-            raise SnapshotBusy("the fleet snapshot is already running")
+        with self._lock:
+            active = self._active
+            if active is not None:
+                if not reuse:
+                    raise SnapshotError("the fleet snapshot is already running")
+            else:
+                if reuse and self._reading is not None:
+                    checked_at, snapshot = self._reading
+                    if not self._stale(checked_at):
+                        return snapshot
+                self._active = pending = Future()
+        if active is not None:
+            return active.result()
         try:
-            reading = self._reading
-            if reuse and reading is not None:
-                checked_at, snapshot = reading
-                if not self._stale(checked_at):
-                    return snapshot
             snapshot = workers_snapshot(home)
             self._reading = (workers_clock(), snapshot)
+        except BaseException as exc:
+            pending.set_exception(exc)
+            raise
+        else:
+            pending.set_result(snapshot)
             return snapshot
         finally:
-            snapshot_lock.release()
+            with self._lock:
+                self._active = None
 
     def view(self) -> dict[str, object]:
         """The saved reading and whether it is missing or older than WORKERS_FRESH_SECONDS."""
@@ -2089,10 +2099,8 @@ WORKERS_SCRIPT = r"""
       ? 'Check failed. Showing the list from ' + localTime(lastObservedAt) + '.'
       : 'Workers could not be loaded. Try again.';
   };
-  const busy = new Error('worker check already running');
-  const read = async (path, automatic = false) => {
+  const read = async path => {
     const response = await fetch(path, {cache: 'no-store', headers: {Accept: 'application/json'}});
-    if (automatic && response.status === 502 && (await response.json()).code === 'snapshot_busy') throw busy;
     if (!response.ok) throw new Error('worker read failed');
     return response.json();
   };
@@ -2108,16 +2116,10 @@ WORKERS_SCRIPT = r"""
       } else {
         const saved = await read('workers-saved.json');
         if (saved.snapshot) show(saved.snapshot, saved.stale ? 'Refreshing workers. ' : '');
-        if (saved.stale) show(await read('workers.json?reuse=1', true));
+        if (saved.stale) show(await read('workers.json?reuse=1'));
       }
-    } catch (error) {
-      if (error === busy) {
-        const message = 'A check is already running.';
-        if (lastObservedAt) lastChecked(message + ' ');
-        else status.textContent = message;
-      } else {
-        failed();
-      }
+    } catch {
+      failed();
     } finally {
       button.removeAttribute('aria-disabled');
       list.removeAttribute('aria-busy');
@@ -3845,11 +3847,8 @@ def make_handler(site_title: str, base_path: str = "", store: Path | None = None
                 reuse = request.query == "reuse=1"
                 try:
                     snapshot = saved_workers.refresh(workers_home, reuse=reuse)
-                except SnapshotError as exc:
-                    body = {"error": "The workers could not be read."}
-                    if reuse and isinstance(exc, SnapshotBusy):
-                        body["code"] = "snapshot_busy"
-                    self.send_text(502, json.dumps(body), "application/json")
+                except SnapshotError:
+                    self.send_text(502, json.dumps({"error": "The workers could not be read."}), "application/json")
                 else:
                     self.send_text(200, json.dumps(snapshot), "application/json")
                 return

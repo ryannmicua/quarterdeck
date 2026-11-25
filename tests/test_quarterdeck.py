@@ -2341,8 +2341,6 @@ class WorkersTests(StoreCase):
                 self.assertTrue(entered.wait(timeout=5))
                 error = {"error": "The workers could not be read."}
                 self.assertEqual(self.workers(port), (502, error))
-                self.assertEqual(self.workers(port, "/qd/workers.json?reuse=1"),
-                                 (502, {**error, "code": "snapshot_busy"}))
                 self.assertIsNone(self.workers(port, "/qd/workers-saved.json")[1]["snapshot"])
             finally:
                 release.set()
@@ -2604,32 +2602,68 @@ const quiet = () => new Promise(resolve => setTimeout(resolve, 1500));
             outcome, stderr = self.browser_page(port)
         self.assertEqual(outcome, "PASS", stderr)
 
-    def test_busy_entry_preserves_the_saved_roster_and_leaves_manual_check_available(self) -> None:
+    def test_overlapping_workers_pages_receive_the_same_refresh(self) -> None:
         if not shutil.which("google-chrome"):
             self.skipTest("google-chrome is required for the workers browser test")
-        port = self.start("/qd", workers_home=self.make_home([snapshot_task("Wren")]))
+        home = self.make_home([snapshot_task("Wren")])
+        port = self.start("/qd", workers_home=home)
+        first_started, second_entered, second_returned = (threading.Event() for _ in range(3))
+        run_snapshot = quarterdeck.run_snapshot
+        refresh = quarterdeck.SavedWorkers.refresh
+
+        def hold_snapshot(home):
+            first_started.set()
+            self.assertTrue(second_entered.wait(timeout=5), "the second page never requested a refresh")
+            # Keep the first check active until a rejecting handler returns or a waiting handler can join.
+            second_returned.wait(timeout=0.5)
+            return run_snapshot(home)
+
+        def observe_refresh(saved, home, *, reuse):
+            overlapping = first_started.is_set()
+            if overlapping:
+                second_entered.set()
+            try:
+                return refresh(saved, home, reuse=reuse)
+            finally:
+                if overlapping:
+                    second_returned.set()
+
         steps = """
-  await settled();
-  check(statusLine.textContent.startsWith('A check is already running. Last checked ') && !statusLine.classList.contains('failed'),
-        'A busy entry was shown as a failed check');
-  check(roster.textContent.includes('Wren') && statusLine.querySelector('time')?.dateTime === '2026-03-02T13:40:00Z',
-        'The saved roster or its time was lost');
-  const checked = settled();
-  button.click();
-  await checked;
-  check(statusLine.textContent.includes('Check failed'), 'Manual Check did not keep its ordinary busy behavior');
-  await quiet();
+  if (window !== window.top) return;
+  const other = document.createElement('iframe');
+  const otherSettled = new Promise(resolve => {
+    other.addEventListener('load', () => {
+      const otherButton = other.contentDocument.getElementById('refresh-workers');
+      if (!otherButton.hasAttribute('aria-disabled')) { resolve(); return; }
+      const watcher = new MutationObserver(() => {
+        if (!otherButton.hasAttribute('aria-disabled')) { watcher.disconnect(); resolve(); }
+      });
+      watcher.observe(otherButton, {attributes: true});
+    }, {once: true});
+  });
+  other.src = location.href;
+  document.body.append(other);
+  await Promise.all([settled(), otherSettled]);
+  for (const [label, page] of [['first', document], ['second', other.contentDocument]]) {
+    const list = page.getElementById('workers-list');
+    const status = page.getElementById('workers-status');
+    check(list.textContent.includes('Bracken') && !list.textContent.includes('Wren') &&
+          status.querySelector('time')?.dateTime === '2026-03-02T14:45:00Z',
+          'Expected the refreshed roster and time in the ' + label + ' view. ' + status.textContent);
+  }
 """
         with patch.object(quarterdeck, "workers_clock", return_value=100) as clock:
             self.assertEqual(self.workers(port)[0], 200)
             clock.return_value += 3601
-            with quarterdeck.snapshot_lock, \
-                    patch.object(quarterdeck, "workers_page", self.instrumented_page(quarterdeck.workers_page, steps)), \
-                    patch.object(quarterdeck.SavedWorkers, "refresh", autospec=True,
-                                 side_effect=quarterdeck.SavedWorkers.refresh) as refresh:
+            (home / "snapshot.json").write_text(json.dumps({
+                "generated": "2026-03-02T14:45:00Z", "tasks": [snapshot_task("Bracken")],
+            }))
+            with patch.object(quarterdeck, "workers_page", self.instrumented_page(quarterdeck.workers_page, steps)), \
+                    patch.object(quarterdeck.SavedWorkers, "refresh", observe_refresh), \
+                    patch.object(quarterdeck, "run_snapshot", side_effect=hold_snapshot) as snapshot:
                 outcome, stderr = self.browser_page(port)
-                self.assertEqual([request.kwargs["reuse"] for request in refresh.call_args_list], [True, False])
-        self.assertEqual(outcome, "PASS", stderr)
+                self.assertEqual(outcome, "PASS", stderr)
+                snapshot.assert_called_once()
 
     def test_failed_saved_lookup_waits_for_a_manual_check(self) -> None:
         if not shutil.which("google-chrome"):
