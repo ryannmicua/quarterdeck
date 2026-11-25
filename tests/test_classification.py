@@ -41,10 +41,41 @@ class ClassificationCase(base.StoreCase):
         change(data)
         quarterdeck.write_store(quarterdeck.store_path(), data)
 
+    def saved_page(self) -> str:
+        data = quarterdeck.read_store(quarterdeck.store_path())
+        return quarterdeck.site_pages(data, "Quarterdeck", "index.html")["index.html"]
+
+    def check_browser(self, page, script, *, widths=(1024,)) -> None:
+        chrome = shutil.which("google-chrome")
+        if not chrome:
+            self.skipTest("google-chrome is required for the classification filter browser tests")
+        fixture = self.root / "filters.html"
+        fixture.write_text(page.replace("</body>", """
+<output id="browser-result">Incomplete</output>
+<script>
+const result = document.getElementById('browser-result');
+const check = (condition, message) => { if (!condition) throw new Error(message); };
+try {
+""" + script + """
+  result.textContent = 'PASS';
+} catch (error) {
+  result.textContent = error.message;
+}
+</script>
+</body>"""), encoding="utf-8")
+        for width in widths:
+            with self.subTest(width=width):
+                result = subprocess.run(
+                    [chrome, "--headless", "--disable-background-networking", "--no-first-run",
+                     f"--user-data-dir={self.root / 'browser'}", f"--window-size={width},800", "--dump-dom", fixture.as_uri()],
+                    capture_output=True, text=True, timeout=30, check=True)
+                marker = result.stdout.partition('<output id="browser-result">')[2].partition("</output>")[0]
+                self.assertEqual(marker, "PASS", result.stderr)
+
 
 class FieldTests(ClassificationCase):
     def test_items_and_questions_keep_their_classification(self) -> None:
-        item_id = self.questions("Harbor choices", "--project", "Harbor", "--tag", "process", "--tag", "UI")
+        item_id = self.questions("Harbor choices", "--project", "Harbor", "--tag", "process", "--tag", "ui")
         item = self.store()["items"][0]
         self.assertEqual((item["project"], item["tags"]), ("Harbor", ["process", "ui"]))
         first, second, third = item["body"]["questions"]
@@ -63,12 +94,15 @@ class FieldTests(ClassificationCase):
             self.assertNotIn("project", item)
             self.assertNotIn("tags", item)
         self.assertEqual(self.run_cli("list")[0], 0)
-        page = quarterdeck.site_pages(quarterdeck.read_store(quarterdeck.store_path()), "Quarterdeck", "index.html")["index.html"]
-        self.assertNotIn('class="tags"', page)
-        self.assertNotIn("filters", page.split("</style>")[1])
+        self.check_browser(self.saved_page(), """
+check(document.querySelectorAll('main select').length === 0, 'Unclassified items should have no selectors');
+check(document.querySelectorAll('main .tags').length === 0, 'Unclassified items should have no tag labels');
+""")
 
     def test_unknown_and_malformed_values_are_refused_with_the_allowed_list(self) -> None:
         cases = [
+            (("--tag", "UI"), "item tag must be one lowercase word"),
+            (("--tag", " ui "), "item tag must be one lowercase word"),
             (("--tag", "gossip"), "unknown item tag 'gossip'; allowed: product-design, ui, architecture"),
             (("--tag", "ui", "--tag", "bug", "--tag", "release", "--tag", "process"), "at most 3 tags"),
             (("--project", "a/b"), "project must be a short word or name"),
@@ -81,6 +115,8 @@ class FieldTests(ClassificationCase):
                 self.assertEqual(code, 2)
                 self.assertIn(message, err)
         bad_bodies = [
+            ([{**ASK[0], "kind": "PICK"}], "question 1 kind must be one lowercase word"),
+            ([{**ASK[0], "tags": ["UI"]}], "question 1 tag must be one lowercase word"),
             ([{**ASK[0], "kind": "gossip"}], "unknown question 1 kind 'gossip'; allowed: pick, confirm, rule"),
             ([{**ASK[0], "tags": ["nope"]}], "unknown question 1 tag 'nope'"),
             ([{**ASK[0], "tags": "ui"}], "question 1 tags must be a list"),
@@ -94,7 +130,7 @@ class FieldTests(ClassificationCase):
         self.assertFalse(quarterdeck.store_path().exists())
 
     def test_tags_are_deduplicated(self) -> None:
-        self.questions("Dupes", "--tag", "ui", "--tag", "UI")
+        self.questions("Dupes", "--tag", "ui", "--tag", "ui")
         self.assertEqual(self.store()["items"][0]["tags"], ["ui"])
 
     def test_saved_classification_can_still_be_read_after_vocabulary_changes(self) -> None:
@@ -155,6 +191,9 @@ class ClassifyTests(ClassificationCase):
         self.add("resource", "Link", "A link.", "--url", "https://example.com/x", "--link-text", "Link")
         before = self.store()
         cases = [(("Q1",), "give at least one of"),
+                 (("Q1", "--tag", "UI"), "item tag must be one lowercase word"),
+                 (("Q1.1", "--tag", "UI"), "question tag must be one lowercase word"),
+                 (("Q1.1", "--kind", "PICK"), "kind must be one lowercase word"),
                  (("Q1", "--kind", "pick"), "kind belongs to one question"),
                  (("Q1.1", "--project", "Harbor"), "project belongs to the whole item"),
                  (("Q1.9", "--kind", "pick"), "Unknown question"),
@@ -184,6 +223,8 @@ class AnsweredViaTests(ClassificationCase):
         self.questions()
         code, _, err = self.run_cli("mark", "Q1.1", "answered")
         self.assertEqual((code, "needs --via" in err, "chat, review-page, elsewhere, superseded" in err), (2, True, True))
+        code, _, err = self.run_cli("mark", "Q1.1", "answered", "--via", "CHAT")
+        self.assertEqual((code, "via must be one lowercase word" in err), (2, True))
         code, _, err = self.run_cli("mark", "Q1.1", "answered", "--via", "desk")
         self.assertEqual((code, "unknown via 'desk'" in err), (2, True))
         code, _, err = self.run_cli("mark", "Q1.1", "closed", "--via", "chat")
@@ -247,9 +288,65 @@ class AnsweredViaTests(ClassificationCase):
             self.assertEqual(self.run_cli("mark", "Q1.1", "open")[0], 0)
         record = self.store()["items"][0]["answers"]["1"]
         self.assertEqual(record["answer_marks"], [{"via": via, "answered_at": at} for via, at in events])
-        self.assertNotIn("answer", record)
+        self.assertEqual((record["answer"], record["answered_at"], record["delivery"]),
+                         ("Hold", "2026-11-03T00:00:00Z", "pending"))
         total = json.loads(self.run_cli("stats", "--json")[1])["total"]
         self.assertEqual((total["answered_desk"], total["answered_elsewhere"], total["via"]["chat"]), (1, 1, 1))
+
+    def test_reconciliation_keeps_desk_delivery_and_displays_both_answers(self) -> None:
+        self.questions()
+        desk_at = "2026-11-03T00:00:00Z"
+        chat_at = "2026-11-04T00:00:00Z"
+        with patch.object(quarterdeck, "now_text", return_value=desk_at):
+            self.answer("Q1.1", "Hold")
+            self.answer("Q1.2", "Red")
+        before = self.store()["items"][0]["answers"]
+        self.assertEqual(self.run_cli("mark", "Q1", "open")[0], 0)
+        with patch.object(quarterdeck, "now_text", return_value=chat_at):
+            self.assertEqual(self.run_cli("mark", "Q1.1", "answered", "--via", "chat")[0], 0)
+            self.assertEqual(self.run_cli("mark", "Q1", "answered", "--via", "chat")[0], 0)
+        item = quarterdeck.read_store(quarterdeck.store_path())["items"][0]
+        for number in ("1", "2"):
+            record = item["answers"][number]
+            for field in ("answer", "answered_at", "delivery", "request_id"):
+                self.assertEqual(record[field], before[number][field])
+            self.assertEqual(record["answer_marks"], [{"via": "desk", "answered_at": desk_at},
+                                                      {"via": "chat", "answered_at": chat_at}])
+        shown = self.run_cli("show", "Q1")[1]
+        self.assertIn(f"Answer: Hold ({desk_at}, Not delivered)", shown)
+        self.assertIn(f"Answered elsewhere: chat ({chat_at})", shown)
+        for served in (True, False):
+            page = quarterdeck.item_page(item, "Quarterdeck", served=served)
+            for value in ("Hold", "Not delivered", "Answered elsewhere · chat", desk_at, chat_at):
+                self.assertIn(value, page)
+
+        with patch.object(quarterdeck.subprocess, "run") as inbox:
+            inbox.return_value.returncode = 0
+            old = item["answers"]["1"]
+            retry = quarterdeck.send_answer(quarterdeck.store_path(), self.root,
+                                            {"part": "Q1.1", "answer": "Hold", "revision": old["revision"]})
+        self.assertEqual(inbox.call_args.args[0][3], old["request_id"])
+        self.assertEqual(retry["delivery"], "sent")
+        self.assertEqual(self.store()["items"][0]["answers"]["1"]["answer_marks"], old["answer_marks"])
+
+    def test_undated_legacy_marks_survive_state_changes_and_desk_answers(self) -> None:
+        with patch.object(quarterdeck, "now_text", return_value="2026-11-01T00:00:00Z"):
+            self.questions()
+        self.edit_store(lambda d: d["items"][0].update(answers={
+            str(number): {"state": "answered", "revision": "a" * 32} for number in range(1, 4)
+        }))
+        self.assertEqual(self.run_cli("mark", "Q1.1", "closed")[0], 0)
+        self.assertEqual(self.run_cli("mark", "Q1.2", "open")[0], 0)
+        with patch.object(quarterdeck, "now_text", return_value="2026-11-02T00:00:00Z"):
+            self.answer("Q1.3", "Yes")
+            self.assertEqual(self.run_cli("mark", "Q1.2", "answered", "--via", "chat")[0], 0)
+        answers = self.store()["items"][0]["answers"]
+        for record in answers.values():
+            self.assertEqual(record["answer_marks"][0], {"via": "elsewhere", "answered_at": None})
+        all_time = json.loads(self.run_cli("stats", "--json")[1])["total"]
+        recent = json.loads(self.run_cli("stats", "--json", "--since", "2026-11-01")[1])["total"]
+        self.assertEqual((all_time["via"]["elsewhere"], recent["via"]["elsewhere"]), (3, 0))
+        self.assertEqual((recent["via"]["chat"], recent["answered_desk"]), (1, 1))
 
     def test_legacy_marks_remain_readable_and_notes_stay_private(self) -> None:
         self.questions()
@@ -315,6 +412,18 @@ class StatsTests(ClassificationCase):
             "via": {"chat": 1, "review-page": 0, "elsewhere": 0, "superseded": 1},
             "median_wait_desk_seconds": 13 * 3600,
         })
+
+    def test_desk_median_keeps_half_seconds_in_json(self) -> None:
+        with patch.object(quarterdeck, "now_text", side_effect=[
+            "2026-11-01T00:00:00Z", "2026-11-01T00:00:01Z", "2026-11-01T00:00:02Z",
+        ]):
+            self.questions("Harbor choices", "--project", "Harbor", body=[ASK[0], ASK[0]])
+            self.answer("Q1.1", "Merge")
+            self.answer("Q1.2", "Hold")
+        report = self.report()
+        for row in (report["total"], report["by_kind"]["approve"], report["by_tag"]["release"],
+                    report["by_project"]["Harbor"]):
+            self.assertEqual(row["median_wait_desk_seconds"], 1.5)
 
     def test_groups_by_kind_tag_and_project(self) -> None:
         self.seed()
@@ -396,14 +505,14 @@ class PageTests(ClassificationCase):
 
     def test_several_projects_group_the_desk_with_plain_headings(self) -> None:
         self.questions("Harbor choices", "--project", "Harbor")
-        self.questions("Quay choices", "--project", "Quay")
+        self.questions("Named project", "--project", "No project")
         self.questions("Loose ends")
         page = self.pages()["index.html"]
         headings = re.findall(r'<h2 class="group-name">(.*?)</h2>', page)
-        self.assertEqual(headings, ["No project", "Quay", "Harbor"])
+        self.assertEqual(headings, ["(No project)", "No project", "Harbor"])
         self.assertNotIn('class="project-name"', page)
         self.assertEqual(page.count('<article class="work next"'), 1)
-        self.assertLess(page.index("work next"), page.index("Quay choices"))
+        self.assertLess(page.index("work next"), page.index("Named project"))
 
     def test_tags_show_as_quiet_labels_on_cards_and_reference_rows(self) -> None:
         self.questions("Harbor choices", "--project", "Harbor", "--tag", "process")
@@ -417,20 +526,13 @@ class PageTests(ClassificationCase):
         self.assertIn('<td class="project">Harbor</td>', page)
 
     def test_filters_apply_to_rendered_references_and_reviewed_questions(self) -> None:
-        chrome = shutil.which("google-chrome")
-        if not chrome:
-            self.skipTest("google-chrome is required for the classification filter browser test")
         for number, tag in enumerate(("research", "bug"), 1):
             self.add("resource", f"Chart {number}", "A chart.", "--url", "https://example.com/t", "--link-text", "Chart",
                      "--project", "Harbor", "--tag", tag)
-        for project, tag in (("Harbor", "research"), ("Quay", "bug")):
+        for project, tag in (("All projects", "research"), ("Quay", "bug")):
             item_id = self.questions(project, "--project", project, "--tag", tag, body=ASK[2:])
             self.assertEqual(self.run_cli("mark", item_id, "answered", "--via", "chat")[0], 0)
-        fixture = self.root / "filters.html"
-        fixture.write_text(self.pages()["index.html"].replace("</body>", """
-<output id="browser-result">Incomplete</output>
-<script>
-const result = document.getElementById('browser-result');
+        self.check_browser(self.saved_page(), """
 let filterError;
 window.addEventListener('error', event => { filterError = event.message; });
 const [reviewed, references] = document.querySelectorAll('main .filters');
@@ -442,39 +544,28 @@ const choose = (bar, label, value) => {
   select.dispatchEvent(new Event('change', {bubbles: true}));
 };
 const visible = selector => [...document.querySelectorAll(selector)].filter(element => element.checkVisibility());
-const check = (condition, message) => { if (!condition) throw new Error(message); };
 const visibleIds = selector => visible(selector).map(element => element.textContent.trim()).join(',');
-try {
-  check(!control(references, 'Project'), 'References should only offer a tag filter');
-  choose(references, 'Tag', 'bug');
-  check(visibleIds('table .id') === 'Q2', 'Reference tag filter should show only Q2');
-  check(visibleIds('article .id') === 'Q4,Q3', 'Reference filter affected reviewed cards');
-  choose(reviewed, 'Project', 'Harbor');
-  check(visibleIds('article .id') === 'Q3', 'Reviewed project filter should show only Q3');
-  choose(reviewed, 'Tag', 'bug');
-  check(!visibleIds('article .id'), 'Incompatible reviewed filters should hide both cards');
-  check(visible('.no-match').length === 1 && visible('.no-match')[0].previousElementSibling.contains(
-    document.querySelector('article')), 'Only Reviewed should show an empty state');
-  check(visibleIds('table .id') === 'Q2', 'Reviewed filters affected references');
-  choose(reviewed, 'Tag', '');
-  check(visibleIds('article .id') === 'Q3' && visible('.no-match').length === 0, 'Clearing the tag should restore Q3');
-  choose(references, 'Tag', '');
-  check(visibleIds('table .id') === 'Q2,Q1', 'Clearing the reference filter should restore both rows');
-  check(!filterError, filterError);
-  result.textContent = 'PASS';
-} catch (error) {
-  result.textContent = error.message;
-}
-</script>
-</body>"""), encoding="utf-8")
-        for width in (390, 1024):
-            with self.subTest(width=width):
-                result = subprocess.run(
-                    [chrome, "--headless", "--disable-background-networking", "--no-first-run",
-                     f"--user-data-dir={self.root / 'browser'}", f"--window-size={width},800", "--dump-dom", fixture.as_uri()],
-                    capture_output=True, text=True, timeout=30, check=True)
-                marker = result.stdout.partition('<output id="browser-result">')[2].partition("</output>")[0]
-                self.assertEqual(marker, "PASS", result.stderr)
+check(!control(references, 'Project'), 'References should only offer a tag filter');
+choose(references, 'Tag', 'bug');
+check(visibleIds('table .id') === 'Q2', 'Reference tag filter should show only Q2');
+check(visibleIds('article .id') === 'Q4,Q3', 'Reference filter affected reviewed cards');
+check([...control(reviewed, 'Project').options].map(option => option.textContent).join(',') ===
+  '(All projects),All projects,Quay', 'The reset choice and literal project should have distinct labels');
+choose(reviewed, 'Project', 'All projects');
+check(visibleIds('article .id') === 'Q3', 'Reviewed project filter should show only Q3');
+choose(reviewed, 'Tag', 'bug');
+check(!visibleIds('article .id'), 'Incompatible reviewed filters should hide both cards');
+check(visible('.no-match').length === 1 && visible('.no-match')[0].previousElementSibling.contains(
+  document.querySelector('article')), 'Only Reviewed should show an empty state');
+check(visibleIds('table .id') === 'Q2', 'Reviewed filters affected references');
+choose(reviewed, 'Tag', '');
+check(visibleIds('article .id') === 'Q3' && visible('.no-match').length === 0, 'Clearing the tag should restore Q3');
+choose(reviewed, 'Project', '');
+check(visibleIds('article .id') === 'Q4,Q3', 'Resetting the project should restore both reviewed cards');
+choose(references, 'Tag', '');
+check(visibleIds('table .id') === 'Q2,Q1', 'Clearing the reference filter should restore both rows');
+check(!filterError, filterError);
+""", widths=(390, 1024))
 
     def test_primary_card_and_anchor_follow_newest_open_item_across_groups(self) -> None:
         self.questions("Old Harbor", "--project", "Harbor", body=ASK[:1])

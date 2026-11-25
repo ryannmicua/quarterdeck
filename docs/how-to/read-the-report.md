@@ -12,7 +12,9 @@ quarterdeck stats --json
 
 With `--since`, the report includes questions saved or marked answered on or
 after that UTC date. Each answer source counts by its recorded date, so an
-older question can count under Chat without adding to Saved.
+older question can count under Chat without adding to Saved. The all-time
+report includes undated legacy answers under Elsewhere. A `--since` report
+excludes undated answers because their dates are unknown.
 
 ## The table
 
@@ -51,6 +53,6 @@ and the total have the same fields:
 | `answered_elsewhere` | Answered somewhere else, all sources together. |
 | `via` | The question count for each off-Desk source. |
 | `open`, `closed` | Questions still open, and closed. |
-| `median_wait_desk_seconds` | Median seconds from save to a Desk submission, or `null`. |
+| `median_wait_desk_seconds` | Median seconds from save to a Desk submission, including fractional seconds, or `null`. |
 
 To follow a trend, run the report with a later `--since` each time and compare.

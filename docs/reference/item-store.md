@@ -155,7 +155,8 @@ Questions items may contain an `answers` object keyed by the one-based part numb
 Each answer adds an entry to `answer_marks`, in recording order. An entry
 contains `via` and `answered_at` (UTC). The list survives closing, reopening,
 and later answers. A reconciliation mark records only the source and the
-time it was made. Removing the item removes its answer records.
+time it was made. It keeps any existing Desk answer and delivery record.
+Removing the item removes its answer records.
 
 A Desk answer also stores the current `answer` (plain text, up to 20,000
 characters), `answered_at` (UTC), `delivery` (pending or sent), and a stable
@@ -164,5 +165,6 @@ a mark. Retrying delivery reuses the same ID and mark.
 
 Reports can read dated answers saved before `answer_marks` existed. An old
 answered record with no source or timestamp counts as Elsewhere in the
-all-time report. The report measures wait from the item's `saved_at` to
+all-time report. When that record changes, Quarterdeck keeps the prior mark
+with `via` set to `elsewhere` and `answered_at` set to `null`. The report measures wait from the item's `saved_at` to
 each included Desk answer's `answered_at`.

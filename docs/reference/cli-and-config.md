@@ -32,7 +32,7 @@ Item commands report validation errors on stderr and exit with status 2.
 | `add` | Saves a new item and prints its ID. A `resource` needs `--url` and `--link-text`. A `list` or `questions` item needs `--body-file`. `--project` and `--tag` (repeatable, up to three) classify the item; a question may carry its own `kind` and `tags` in the body. See [the input formats and examples](../how-to/save-items.md#add-an-item) and [Classify items](../how-to/classify-items.md). |
 | `list` | Prints saved items, newest first, with ID, kind, saved date and title. |
 | `show` | Prints the item's text, numbering list entries and questions as `Q7.1`, `Q7.2`. Each question link is printed with its text and URL. |
-| `mark` | Sets the state of one question or every question in a questions item. `answered` records an off-Desk answer with one of the [`--via` sources](#classification). It updates open questions, reports skipped answered or closed questions, and exits with status 0 for skips. `closed` and `open` keep any saved answer and answer history. See [Read answers](../how-to/read-answers.md) for examples. |
+| `mark` | Sets the state of one question or every question in a questions item. `answered` records an off-Desk answer with one of the [`--via` sources](#classification). It updates open questions, reports skipped answered or closed questions, and exits with status 0 for skips. All state changes keep any saved Desk answer, its delivery record, and answer history. See [Read answers](../how-to/read-answers.md) for examples. |
 | `classify` | Sets or replaces the project and tags of an item (`Q7`), or the kind and tags of one question (`Q7.3`), without touching its content or answers. Options you leave out stay as they are; `--tag` replaces every tag already there. A kind is for a question and a project is for an item, so each is refused on the other. See [Classify items](../how-to/classify-items.md). |
 | `stats` | Counts questions by kind, tag and project. `--since DATE` includes saves and dated answers on or after that UTC date. `--json` prints the numbers as JSON. See [Read the report](../how-to/read-the-report.md) for the columns and the JSON fields. |
 | `remove` | Deletes an item. Its ID is never used again. See [image removal](item-store.md#store-layout). |
@@ -139,6 +139,6 @@ Any other key is an error. See
 | `tags` | `product-design`, `ui`, `architecture`, `business-rule`, `terminology`, `process`, `bug`, `security-privacy`, `release`, `research` | an item's or a question's `tags` |
 | `answered_via` | `chat`, `review-page`, `elsewhere`, `superseded` | `mark --via` |
 
-New classification values must come from these lists. A validation error
+Use the exact lowercase spelling shown in these lists. A validation error
 names the allowed values. Quarterdeck records answers submitted from the page
 with the source `desk`.

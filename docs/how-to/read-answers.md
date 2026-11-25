@@ -5,7 +5,9 @@ including its UTC timestamp and delivery status.
 
 If a decision came through another channel, mark the open question answered
 and use `--via` to record its source. Choose `chat`, `review-page`, `elsewhere`
-or `superseded`. The question shows the source and the time it was marked.
+or `superseded`, using the exact lowercase spelling. The question shows the
+source and the time it was marked. Any saved Desk answer and its delivery
+status stay on the question.
 Use the item ID to mark every open question in the item. Both forms report
 any answered or closed question they skip.
 

@@ -29,8 +29,8 @@ The kinds are `pick` (choose between options), `confirm`
 (choose the words), `scope` (what is in or out), `approve` (permission to go
 ahead) and `inform` (nothing to decide, only to read).
 
-An unknown kind or tag is refused and nothing is saved. The message lists the
-allowed values.
+Use the exact lowercase spelling for each kind and tag. For an unknown word,
+the error lists the allowed values.
 
 ## Change it later
 
