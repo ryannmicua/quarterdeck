@@ -21,10 +21,14 @@ and select **Queue item**. You can edit the message in the same field while
 it is queued. Clear the field to leave the message out of the send.
 
 Select **Send queued items** to send the queued answers, then the set message.
-A message-only send leaves every question open. **Remove from send** keeps the
-draft on its card and takes it out of the queue. Edit the draft or select an
-option on its card to put the answer back in the queue.
-You can send more messages before answering anything.
+A message-only send leaves each question in its current state. **Remove from
+send** keeps the draft on its card and leaves it out of both send buttons.
+Edit the draft or select an option on its card to put the answer back in the
+queue. You can send more messages before answering anything.
+
+When delivery is incomplete, the send bar counts sent items, items saved
+for retry, failed requests, and interrupted sends whose outcome is
+unconfirmed. It also counts any answers it skipped after an interruption.
 
 When Firstmate's reply clarifies a question, **Clarified after discussion**
 appears on that card. If the reply says an option changed, the card asks you to
@@ -33,9 +37,8 @@ the hold for both send buttons. A newer option change asks for confirmation
 again. The open page refreshes the set discussion and its clarifications
 without replacing your drafts.
 
-When every question is answered, the discussion stays readable. Select **Read
-set discussion** under the item in **Answered** in the Library. Open
-**Earlier answers** on a corrected question to see its previous submissions.
+After the item moves to **Answered** in the Library, select **Read set
+discussion** to return to its thread.
 
 ## Ask about one question
 

@@ -85,7 +85,7 @@ fields if they pass the same validation as resource URLs.
 | --- | --- |
 | References | Item descriptions on served and rendered pages |
 | Item page | Item descriptions, question prompts, context, options and suggested answers |
-| Served item page | Ask and reply text in whole-item and numbered-question conversations |
+| Served item page | Ask and reply text in whole-item and numbered-question conversations, and clarification text on question cards |
 
 Quarterdeck uses the address as the link text. Inline links open in a new tab
 so you can keep a draft answer open while following a link. Selecting an option
@@ -177,7 +177,9 @@ text, up to 20,000 characters) and `at` (UTC).
 | `you` | An ask or conversation message with a browser-generated ID. `delivery` (`pending` or `sent`), a stable `request_id` string for inbox retries, and `home`, a hexadecimal `sha256` digest of the resolved path of the configured Firstmate home. |
 | `firstmate` | A reply added by `quarterdeck reply`. `ask` (ID of an earlier message from `you` in the same thread), `read` (true once the page acknowledges this reply), and optional `links` (the same `text` and `url` objects as question links), `images` (`file` and `alt`), and, on a reply to a question item as a whole, `clarify`: question numbers mapped to `text` and `option_changed` (true or false). |
 
-Reply images use the item's [private reply image folder](#store-layout).
+Clarification keys are one-based question numbers as strings. The clarification
+text is plain text, up to 20,000 characters. Reply images use the item's
+[private reply image folder](#store-layout).
 
 ## Question states
 
@@ -205,10 +207,10 @@ delivery reuses the same ID and mark. Reconfirming the same answer after a
 newer option change updates its acceptance time and keeps its original mark.
 Answers and option-change replies can carry fractional UTC seconds.
 
-Corrections keep the superseded text, original submission timestamp (UTC)
-and request ID in `earlier_answers`, in recording order. Closing, reopening
-and reconciling the question preserve those entries. The served Desk shows earlier answers.
-Static exports include the current answer only. Older records may omit the list.
+Corrections keep the superseded `answer`, original submission timestamp
+(`answered_at`, UTC) and `request_id` in `earlier_answers`, in recording order.
+Closing, reopening and reconciling the question preserve those entries.
+Older records may omit the list.
 
 Reports can read dated answers saved before `answer_marks` existed. An old
 answered record with no source or timestamp counts as Elsewhere in the

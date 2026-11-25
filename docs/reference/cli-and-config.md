@@ -55,10 +55,10 @@ uppercase form.
 See [how to find references and answered questions](../how-to/use-the-library.md)
 on served and rendered pages.
 
-Rendered item pages include any saved answers and their timestamps and
-delivery status. Conversation text, reply links, reply images and Replied
-badges are exclusive to the served site. Answer controls are available on
-served pages.
+Rendered item pages include current saved answers with their timestamps and
+delivery status. Earlier answers, conversation text, clarifications, reply
+links, reply images, and Replied badges are exclusive to the served site.
+Answer controls are available on served pages.
 
 If `XDG_STATE_HOME` is set when you run `service`, the generated unit includes
 that setting so it uses the same [item store](item-store.md) and
@@ -80,8 +80,9 @@ serves the Desk (`/` or `/index.html` under the base path). Each JSON line
 holds the UTC time with milliseconds (`ts`), the `page` value `main`, and
 `device`, set to `phone` for a phone browser or `desktop` otherwise, judged
 from the `User-Agent`. The record holds no address, item or content. Item
-pages, images, the Workers page and its JSON endpoints are not logged.
-Quarterdeck has no login, so every Desk load counts, whoever makes it.
+pages, images, the discussion endpoint, and the Workers page and its JSON
+endpoints are outside the visit log. Quarterdeck has no login, so every Desk
+load counts, whoever makes it.
 Logging needs no flag.
 Quarterdeck keeps existing records without automatic pruning. It rejects
 symbolic links, requires a regular file and sets the file permissions to
@@ -108,6 +109,15 @@ or retire that store's generated pages and add image files. If the export
 reuses that store's images, the store's `remove` command can break the export.
 See the [image removal rules](item-store.md#store-layout).
 
+### Answer endpoint
+
+`POST /answers` (under any `base_path`) takes a numbered `part`, `answer`
+text and the card's `revision`. Once the question has an option-change
+reply, the request also needs the latest such reply ID as `option_revision`.
+A missing or stale option revision returns 409 with a JSON `clarification`
+field containing the card's updated clarification HTML. A successful response
+includes `earlier_answers_html` for the card's answer history.
+
 ### Ask endpoint
 
 `POST /asks` (under any `base_path`) requires an explicit `firstmate_home`
@@ -125,6 +135,8 @@ saved ask, the page can also send
 `{"part": "Q7.1", "id": "<ask id>", "action": "retry"}`. Both retry forms
 reuse the ask and note IDs when the ask is already saved. A successful response
 contains `thread` (rendered conversation HTML) and `message` (delivery status).
+For a whole-set ask it also includes `delivery` (`pending` or `sent`) and the
+`clarifications` map from the [discussion endpoint](#discussion-endpoint).
 Sending or retrying delivery of a whole-item ask
 requires at least one question whose state is not Closed. A changed home,
 closed question, or removed item can return 409 with a JSON `message`
@@ -132,6 +144,13 @@ and a `saved` flag indicating whether the matching ask remains in the store.
 The inbox note starts with
 `ASK Q7 <ask id>` for the whole item or `ASK Q7.1 <ask id>` for one question,
 followed by the ask text.
+
+### Discussion endpoint
+
+`GET /q<N>.discussion.json` (under any `base_path`) returns `thread`
+(rendered set discussion HTML) and `clarifications` (a map from full
+question IDs to clarification HTML). It serves question items and leaves
+reply read status intact.
 
 ### Conversation endpoint
 
