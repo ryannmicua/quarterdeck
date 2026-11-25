@@ -370,16 +370,16 @@ def read_images(named: list[tuple[dict[str, str], str]], pending: dict[str, byte
         value = image["file"]
         if value not in real:
             try:
-                real[value] = os.path.realpath(os.path.expanduser(value), strict=True)
+                real[value] = os.path.realpath(os.path.expanduser(value))
             except (OSError, ValueError) as exc:
                 raise ValueError(f"{where} could not be read: {value!r} ({exc})") from exc
     files: dict[str, str] = {}
     for image, where in named:
         value = image["file"]
         if real[value] not in files:
-            if not os.path.isfile(real[value]):
-                raise ValueError(f"{where} must be a regular file: {value!r}")
             try:
+                if not stat.S_ISREG(os.stat(real[value]).st_mode):
+                    raise ValueError(f"{where} must be a regular file: {value!r}")
                 with open(real[value], "rb", opener=open_nonblocking) as stream:
                     if not stat.S_ISREG(os.fstat(stream.fileno()).st_mode):
                         raise ValueError(f"{where} must be a regular file: {value!r}")
