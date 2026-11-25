@@ -44,8 +44,9 @@ quarterdeck reply Q12 --ask "$message_id" --text "Use the 2200 K amber."
 Links, images and follow-ups work as they do for a card ask. Reply to each
 message by its own ID and the reply shows in time order. A conversation has no
 numbered parts, so `Q12.1` is refused. Run `quarterdeck show Q12` to read the
-whole conversation, and `quarterdeck classify Q12 --project NAME --tag TAG` to set its
-project and tags.
+whole conversation, including reply links and image references. Image
+references are paths relative to the served site or the item store directory.
+Run `quarterdeck classify Q12 --project NAME --tag TAG` to set its project and tags.
 
 Quarterdeck prints the target and `Replied`, for example `Q7.1 Replied`.
 See [how to read replies on the card](ask-firstmate.md).

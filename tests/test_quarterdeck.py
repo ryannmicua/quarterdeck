@@ -4554,7 +4554,7 @@ class TalkToFirstmateTests(ImageCase):
         port = self.start("/qd", ask_home=home)
         body, (status, result) = self.begin(port)
         self.assertEqual(status, 200)
-        self.assertEqual((result["item"], result["href"], result["message"]), ("Q1", "q1.html", "Message sent."))
+        self.assertEqual(result, {"item": "Q1", "href": "q1.html", "message": "Message sent."})
         (item,) = self.store()["items"]
         self.assertEqual((item["kind"], item["title"], item["body"]), ("conversation", "Harbor lamp colours", {}))
         self.assertNotIn(body["text"], item["description"])
@@ -4583,8 +4583,8 @@ class TalkToFirstmateTests(ImageCase):
         home = self.inbox(accept=False)
         port = self.start("/qd", ask_home=home)
         body, (status, result) = self.begin(port)
-        self.assertEqual((status, result["message"]), (200, "Message saved. Not delivered."))
-        self.assertIn("Send message again", result["thread"])
+        self.assertEqual((status, result), (200, {"item": "Q1", "href": "q1.html", "message": "Message saved. Not delivered."}))
+        self.assertIn("Send message again", self.fetch(port, "/qd/q1.html")[1])
         self.assertEqual(self.post(port, "/qd/conversations", body)[1]["item"], "Q1")
         self.assertEqual(len(self.store()["items"]), 1)
         self.assertEqual(self.post(port, "/qd/conversations", {**body, "text": "Another."})[0], 409)
@@ -4794,15 +4794,53 @@ check(!error.hidden && error.textContent === 'Firstmate home changed.', 'The ref
 check(!submit.disabled && !button('talk-topic').disabled, 'The form stayed locked after a refusal');
 """, path="/qd/", viewport=(390, 844))
 
-    def test_a_reply_image_on_a_conversation_is_served_privately(self) -> None:
+    def test_retrying_an_interrupted_follow_up_reuses_the_draft_and_requests_delivery(self) -> None:
+        port = self.start("/qd", ask_home=self.inbox())
+        self.begin(port)
+        self.check_answer_page(port, r"""
+const posts = [];
+window.fetch = async (path, init) => {
+  check(path === 'asks', 'The composer posted to the wrong endpoint');
+  posts.push(JSON.parse(init.body));
+  if (posts.length === 1) throw new Error('Connection lost');
+  return {ok:true, json:async () => ({thread:'<p>A follow-up</p>', message:'Message sent.'})};
+};
+const field = button('message-Q1');
+const send = button('send-message');
+field.value = 'A follow-up';
+field.dispatchEvent(new Event('input', {bubbles:true}));
+send.click();
+await new Promise(resolve => setTimeout(resolve, 50));
+check(posts.length === 1 && posts[0].action === undefined, 'The first send should be a new message');
+check(field.value === 'A follow-up' && !send.disabled, 'Interruption lost the draft');
+send.click();
+await new Promise(resolve => setTimeout(resolve, 50));
+const [first, retry] = posts;
+check(posts.length === 2 && retry.action === 'retry', 'The second send did not request redelivery');
+check(retry.id === first.id && retry.part === 'Q1' && retry.text === 'A follow-up' && retry.home === first.home,
+      'The retry changed the original message');
+check(field.value === '' && send.disabled, 'The confirmed draft stayed in the composer');
+""", path="/qd/q1.html", viewport=(390, 844))
+
+    def test_reply_attachments_are_on_the_card_and_in_cli_transcripts(self) -> None:
         port = self.start("/qd", ask_home=self.inbox())
         body, _ = self.begin(port)
-        code, _, err = self.run_cli("reply", "Q1", "--ask", body["id"], "--text", "See this.", "--image", str(self.red), "--alt", "A red lamp")
+        chart = "https://example.org/lamp-chart"
+        code, _, err = self.run_cli("reply", "Q1", "--ask", body["id"], "--text", "See this.",
+                                    "--link-text", "Lamp chart", "--url", chart,
+                                    "--image", str(self.red), "--alt", "A red lamp")
         self.assertEqual(code, 0, err)
         (reply,) = [m for m in self.thread() if m["author"] == "firstmate"]
-        url = f"/qd/reply-images/q1/{reply['images'][0]['file']}"
-        self.assertEqual(urllib.request.urlopen(f"http://127.0.0.1:{port}{url}", timeout=5).status, 200)
-        self.assertIn("A red lamp", self.fetch(port, "/qd/q1.html")[1])
+        image = f"reply-images/q1/{reply['images'][0]['file']}"
+        self.assertEqual(urllib.request.urlopen(f"http://127.0.0.1:{port}/qd/{image}", timeout=5).status, 200)
+        card = self.fetch(port, "/qd/q1.html")[1]
+        self.assertIn("A red lamp", card)
+        self.assertIn(chart, card)
+        status, transcript, err = self.run_cli("show", "Q1")
+        self.assertEqual(status, 0, err)
+        self.assertIn(f"  See this.\n  Link: Lamp chart: {chart}\n  Image: A red lamp: {image}", transcript)
+        status, replay = self.post(port, "/qd/conversations", body)
+        self.assertEqual((status, replay), (200, {"item": "Q1", "href": "q1.html", "message": "Message sent."}))
 
     def test_add_cannot_save_a_conversation_and_help_names_the_conversation_note(self) -> None:
         with redirect_stderr(io.StringIO()), self.assertRaises(SystemExit):

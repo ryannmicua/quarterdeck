@@ -1071,10 +1071,12 @@ def conversation_editable(item, part):
     return part_record(item, part).get("state") != "closed"
 
 
-def ask_result(item, part, message):
+def ask_result(item, part, message, *, include_thread):
     noun = "Message" if item["kind"] == "conversation" else "Ask"
-    return {"thread": thread_html(item, part, editable=conversation_editable(item, part)),
-            "message": f"{noun} sent." if message["delivery"] == "sent" else f"{noun} saved. Not delivered."}
+    result = {"message": f"{noun} sent." if message["delivery"] == "sent" else f"{noun} saved. Not delivered."}
+    if include_thread:
+        result["thread"] = thread_html(item, part, editable=conversation_editable(item, part))
+    return result
 
 
 def new_ask(message_id, text, binding):
@@ -1093,7 +1095,7 @@ def conversation_home_matches(item, binding):
     return item["kind"] != "conversation" or part_thread(item, None)[0]["home"] == binding
 
 
-def ask_message(store, home, binding, payload):
+def ask_message(store, home, binding, payload, *, include_thread=True):
     if not isinstance(payload, dict):
         raise ValueError("Invalid ask fields.")
     fields = set(payload)
@@ -1122,7 +1124,7 @@ def ask_message(store, home, binding, payload):
                 if home_changed or (message["delivery"] == "pending" and message["home"] != binding):
                     raise SavedAskConflict(changed_home)
                 if not retry:
-                    return ask_result(item, part, message)
+                    return ask_result(item, part, message, include_thread=include_thread)
                 break
             else:
                 if home_changed:
@@ -1150,7 +1152,7 @@ def ask_message(store, home, binding, payload):
                 raise SavedAskConflict("Question closed. Reopen it before sending the ask.")
             if deliver_note(home, message["request_id"], ask_note(item, target, message)):
                 message["delivery"] = "sent"
-        return ask_result(item, part, message)
+        return ask_result(item, part, message, include_thread=include_thread)
 
 
 def start_conversation(store, home, binding, payload):
@@ -1182,7 +1184,8 @@ def start_conversation(store, home, binding, payload):
                                   "description": "Conversation with Firstmate.", "saved_at": now_text(), "body": {},
                                   "conversation": {"item": [new_ask(message_id, text, binding)]}})
             write_store(store, data)
-    result = ask_message(store, home, binding, {"part": item_id, "id": message_id, "action": "retry"})
+    result = ask_message(store, home, binding, {"part": item_id, "id": message_id, "action": "retry"},
+                         include_thread=False)
     return {**result, "item": item_id, "href": item_page_name(item_id)}
 
 
@@ -1223,7 +1226,12 @@ def item_text(item: dict[str, object]) -> str:
         for message in part_thread(item, None):
             who = AUTHOR_LABELS[message["author"]]
             label = f"{who} ({delivery_label(message).lower()})" if message["author"] == "you" else who
-            lines.extend([f"{message['at']}  {label}  {message['id']}", *("  " + line for line in message["text"].splitlines()), ""])
+            lines.append(f"{message['at']}  {label}  {message['id']}")
+            lines.extend("  " + line for line in message["text"].splitlines())
+            lines.extend(f"  Link: {link['text']}: {link['url']}" for link in message.get("links", []))
+            lines.extend(f"  Image: {image['alt']}: {image_url(item, image, REPLY_IMAGES)}"
+                         for image in message.get("images", []))
+            lines.append("")
     else:
         state, open_parts, _ = question_summary(item, replies=False)
         remaining = len(open_parts)
@@ -2759,8 +2767,10 @@ CONVERSATION_SCRIPT = talk_script(r"""
   button.addEventListener('click', () => {
     const text = trimmed(field.value);
     if (!text) return;
+    const retry = draft !== null;
     if (!draft) draft = {id:messageId(), text};
-    send({part:section.id, id:draft.id, text, home:button.dataset.home});
+    const body = {part:section.id, id:draft.id, text, home:button.dataset.home};
+    send(retry ? {...body, action:'retry'} : body);
   });
   section.addEventListener('click', event => {
     const retry = event.target.closest('[data-retry-ask]');

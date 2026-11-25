@@ -124,8 +124,8 @@ topic, up to 200 characters. The page generates the 32-character lowercase
 hexadecimal ID. Repeating the same request reuses the saved conversation
 instead of creating another, and retries delivery of the first message while it
 is pending. The same ID with a different topic or text returns 409. A successful
-response has the fields of `/asks` plus `item` (the new ID, such as `Q12`) and
-`href` (its page).
+response contains `message` (delivery status), `item` (the ID, such as `Q12`),
+and `href` (the conversation card).
 
 Later messages use `POST /asks` with `"part": "Q12"`. A conversation has no
 questions, so nothing closes it. Sending or retrying with a different
