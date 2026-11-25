@@ -4144,6 +4144,41 @@ check(document.execCommand('redo') && field(1).value === 'Merge?' && !ask.disabl
       'Native Redo did not restore the edited suggestion');
 """)
 
+    def test_native_undo_keeps_a_manual_edit_that_matches_its_fill(self) -> None:
+        port = self.start("/qd", ask_home=self.inbox())
+        for suggested in (False, True):
+            with self.subTest(suggested=suggested):
+                self.check_page(port, r"""
+const editor = field(1);
+const ask = card(1).querySelector('.ask-button');
+const option = card(1).querySelector('[data-choice="Hold"]');
+const fill = suggested ? 'Merge' : 'Hold';
+(suggested ? document.getElementById('suggest') : option).click();
+check(editor.value === fill && ask.disabled, 'The original fill was askable');
+editor.focus();
+editor.setSelectionRange(fill.length, fill.length);
+check(document.execCommand('insertText', false, '?'), 'The first manual edit failed');
+editor.setSelectionRange(fill.length, fill.length + 1);
+check(document.execCommand('delete') && editor.value === fill && !ask.disabled,
+      'Deleting the punctuation did not preserve the manual draft');
+editor.setSelectionRange(0, 0);
+check(document.execCommand('insertText', false, '!'), 'The separate manual edit failed');
+check(document.execCommand('undo') && editor.value === fill && !ask.disabled,
+      'Native Undo mistook matching manual text for the original fill');
+check(document.execCommand('undo') && editor.value === fill + '?' && !ask.disabled,
+      'Native Undo lost the first manual edit');
+check(document.execCommand('undo') && editor.value === fill && ask.disabled,
+      'Native Undo made the actual fill askable');
+check(document.execCommand('redo') && editor.value === fill + '?' && !ask.disabled,
+      'Native Redo lost the first manual edit');
+check(document.execCommand('redo') && editor.value === fill && !ask.disabled,
+      'Native Redo mistook matching manual text for the original fill');
+(suggested ? card(1).querySelector('[data-choice="Merge"]') : option).click();
+check(editor.value === fill && ask.disabled, 'Selecting the option did not replace the manual origin');
+document.getElementById('undo').click();
+check(editor.value === fill && !ask.disabled, 'Undo changes lost the matching manual draft');
+""", setup=f"const suggested = {json.dumps(suggested)};")
+
     def test_replacing_a_rejected_ask_allows_answer_edits_before_and_after_saving(self) -> None:
         port = self.start("/qd", ask_home=self.inbox())
         for edit_option in (False, True):

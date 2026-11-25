@@ -2599,7 +2599,8 @@ if (send) {
   let history = [];
   const answerText = value => value.replace(/^[\p{White_Space}\x1c-\x1f]+|[\p{White_Space}\x1c-\x1f]+$/gu, '');
   const newDraft = f => answerText(f.value) && answerText(f.value) !== answerText(f.defaultValue);
-  const handEdited = origin => origin === 'manual' || origin === 'ask' || origin?.edited;
+  const handEdited = origin => origin === 'manual' || origin === 'ask' ||
+    (origin?.choice && (!origin.matchesFill || origin.matchingEdits > 0));
   const askDraft = f => (f.closest('.item-conversation') || handEdited(draftOrigins.get(f))) && newDraft(f);
   const changed = f => {
     const {pending} = f.closest('section').dataset;
@@ -2654,8 +2655,14 @@ if (send) {
     if (!field.matches('[data-conversation] textarea')) return;
     const origin = draftOrigins.get(field);
     if (origin?.choice) {
-      const restoredFill = e.inputType === 'historyUndo' && field.value === origin.choice.dataset.choice;
-      draftOrigins.set(field, {choice: origin.choice, edited: !restoredFill});
+      const matchesFill = field.value === origin.choice.dataset.choice;
+      let matchingEdits = origin.matchingEdits;
+      if (e.inputType === 'historyUndo') {
+        if (origin.matchesFill && matchingEdits > 0) matchingEdits--;
+      } else if (matchesFill) {
+        matchingEdits++;
+      }
+      draftOrigins.set(field, {choice: origin.choice, matchesFill, matchingEdits});
     } else if (origin === 'filled') {
       draftOrigins.set(field, 'manual');
     }
@@ -2681,7 +2688,7 @@ if (send) {
           step.set(f, {value: f.value, origin, askError});
           if (origin === 'ask') rejections.delete(f);
           f.value = option.dataset.choice;
-          if (origin) draftOrigins.set(f, {choice: option, edited: false});
+          if (origin) draftOrigins.set(f, {choice: option, matchesFill: true, matchingEdits: 0});
         }
       }
       if (step.size) history.push(step);
@@ -2721,7 +2728,7 @@ if (send) {
       const step = history.pop();
       for (const [f, {value, origin, askError}] of step) {
         f.value = value;
-        if (origin) draftOrigins.set(f, origin.edited ? 'manual' : origin);
+        if (origin) draftOrigins.set(f, origin.choice && handEdited(origin) ? 'manual' : origin);
         if (askError) rejections.set(f, askError);
       }
       refresh();
