@@ -16,6 +16,9 @@ quarterdeck mark ID[.PART] answered --via WHERE
 quarterdeck mark ID[.PART] closed|open
 quarterdeck classify ID[.PART] [--project NAME] [--tag TAG ...] [--kind KIND]
 quarterdeck stats [--since DATE] [--json]
+quarterdeck catch-up add --title TEXT --summary TEXT [--url URL --link-text TEXT] [--item ID] [--project NAME] [--config FILE]
+quarterdeck catch-up list
+quarterdeck catch-up read ID... | --all [--config FILE]
 quarterdeck remove ID
 quarterdeck render [--output PATH] [--config FILE] [--title TEXT]
 quarterdeck serve [--host ADDRESS ...] [--port N] [--base-path PATH] [--tls-cert FILE --tls-key FILE] [--config FILE] [--title TEXT]
@@ -50,6 +53,7 @@ as `reply`.
 | `mark` | Sets question state, optionally for a whole questions item. `--via` is required with `answered` and accepted only with that state. Skips exit with status 0. See [Read answers](../how-to/read-answers.md) for which questions are marked. |
 | `classify` | Requires at least one classification option. Use `--project` for an item ID, `--kind` for a question ID, and `--tag` for either. See [how to change classification](../how-to/classify-items.md#change-it-later). |
 | `stats` | Prints a question activity table by default or JSON with `--json`. See [Read the report](../how-to/read-the-report.md) for date filtering and field definitions. |
+| `catch-up` | Saves and reads Catch-up notices. `catch-up add` prints the new ID, such as `C4`. `catch-up list` prints unread notices, newest first. `catch-up read` marks the named notices, or every unread one with `--all`, as read. See [Catch up on finished work](../how-to/catch-up.md). |
 | `remove` | Deletes an item. Its ID is never used again. See [image removal](item-store.md#store-layout). |
 
 ### Pages
@@ -198,6 +202,15 @@ read records intact. Every ID must identify a Firstmate message in the named
 thread. The response field `replies` maps each Firstmate message ID in that
 thread to its current read status (`true` for read).
 
+### Catch-up endpoint
+
+`POST /catch-ups/read` (under any `base_path`) uses the same origin check as
+`/answers`. The served page sends `{"ids": ["C4"]}` when you select **Mark
+read**, or every shown ID when you select **Mark all read**. Every ID must name a
+saved notice. A notice that is already read keeps its first read time. The
+response field `read` maps each ID to the UTC time it was read. The request also
+removes notices that were read more than `catch_up_days` days ago.
+
 ### Workers endpoint
 
 All Workers routes follow the configured `base_path`. `GET /workers.html`
@@ -253,7 +266,8 @@ the documentation to read; `help --json` prints a machine-readable index.
 
 ## JSON configuration
 
-The config is optional. `converse`, `render`, `serve` and `service` read `--config FILE`,
+The config is optional. `converse`, `render`, `serve`, `service`, `catch-up add`
+and `catch-up read` read `--config FILE`,
 or `${XDG_CONFIG_HOME:-~/.config}/quarterdeck.json` when it exists.
 
 | Key | Type | Default | Meaning |
@@ -261,6 +275,7 @@ or `${XDG_CONFIG_HOME:-~/.config}/quarterdeck.json` when it exists.
 | `page_title` | string | `Quarterdeck` | The site name in the navigation bar and browser title. `--title` overrides it for `render` and `serve`. |
 | `output_dir` | string path | `${XDG_STATE_HOME:-~/.local/state}/quarterdeck` | Where `render` writes the pages. |
 | `base_path` | string | none | The URL prefix described above. |
+| `catch_up_days` | whole number from 1 to 3650 | `7` | How many days a read Catch-up notice is kept before it is removed. Unread notices are kept until they are read. |
 | `firstmate_home` | absolute path after expanding `~` | unset | Local destination for answers, asks and conversation messages submitted to `serve`, and the home whose workers the page lists. When set, `converse` requires it to resolve to an existing directory. See [how the store records the binding](item-store.md#conversations). |
 
 `serve` reads `firstmate_home` at startup. `converse` reads it each time it runs.

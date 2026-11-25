@@ -68,6 +68,44 @@ Question link `text` must be nonempty and is limited to 200 characters after
 whitespace is collapsed to single spaces. Quarterdeck omits an empty `links`
 array when saving.
 
+## Catch-up notices
+
+A store that holds Catch-up notices also has `next_catch_up` and a `catch_ups`
+list. Both keys are absent until the first notice is saved. Notice IDs are `C`
+followed by a positive integer, and a removed notice's ID is never reused.
+
+```json
+{
+  "next_catch_up": 5,
+  "catch_ups": [
+    {
+      "id": "C4",
+      "title": "Tide review is ready",
+      "summary": "The tide chart review is published and saved as a reference.",
+      "saved_at": "2026-11-24T10:00:00Z",
+      "read_at": "2026-11-24T18:30:00Z",
+      "url": "https://example.com/review",
+      "link_text": "Open the review",
+      "item": "Q3",
+      "project": "harbour"
+    }
+  ]
+}
+```
+
+| Field | Meaning |
+| --- | --- |
+| `title` | Up to 200 characters. |
+| `summary` | Up to 300 characters, one sentence. |
+| `saved_at` | UTC time the notice was saved. |
+| `read_at` | Optional. UTC time the notice was first marked read. A notice without it is unread. |
+| `url` and `link_text` | Optional pair. An `http` or `https` address and the words of its link. |
+| `item` | Optional ID of a saved item. The notice links to the item while it exists. |
+| `project` | Optional, with the same rules as an item's project. |
+
+Saving or reading a notice removes notices whose `read_at` is older than
+`catch_up_days` days. Unread notices stay until they are read.
+
 ## Classification
 
 Kinds and tags are lowercase words. Project names preserve case. The store

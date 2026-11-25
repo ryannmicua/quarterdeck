@@ -33,6 +33,8 @@ own copy of the saved content.
 - **Open library** gives you searchable access to saved links, lists, and
   answered items and conversations on the served Desk. See
   [Find references and answered questions](docs/how-to/use-the-library.md).
+- **Catch-up** shows short notices about finished work above the questions on
+  the served Desk. See [Catch up on finished work](docs/how-to/catch-up.md).
 - **Workers** is its own page, linked from **Desk**. See
   [how to enable and check the roster](docs/how-to/read-workers.md).
 - The served Desk gives each item a page with its ID and title at the top.

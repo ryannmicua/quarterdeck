@@ -18,8 +18,9 @@ for who can start conversations and use the other browser controls.
   them. See the [render reference](../reference/cli-and-config.md#pages) for
   which items are exported.
 - `serve` reads the item store to build pages and writes to it when users
-  submit answers, send asks, start conversations, send messages or acknowledge
-  Firstmate messages. It also writes the [local visit log](../reference/cli-and-config.md#visit-log).
+  submit answers, send asks, start conversations, send messages, acknowledge
+  Firstmate messages, or mark Catch-up notices read. It never saves a notice itself. It also
+  writes the [local visit log](../reference/cli-and-config.md#visit-log).
   It serves only files listed for the requested item from
   the corresponding [private image folder](../reference/item-store.md#store-layout).
   It reads the TLS certificate and key if you supply them.
