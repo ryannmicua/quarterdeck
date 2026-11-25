@@ -2,7 +2,8 @@
 
 Firstmate answers an ask in the conversation it came from. The note starts
 with `ASK`, the target ID, and the ask ID, followed by the ask text. Use the
-item ID for a whole-card ask or the numbered ID for an ask about one question.
+question item's ID for a whole-card ask or the numbered ID for an ask about
+one question.
 Pass the ask ID from that note with `--ask`.
 
 ```sh

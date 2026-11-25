@@ -155,8 +155,8 @@ and [export behavior](cli-and-config.md#rendered-images).
 
 ## Conversations
 
-An item may contain a `conversation` object. The key `item` holds the whole
-item's messages, oldest first. A questions item can also use one-based part
+A questions item may contain a `conversation` object. The key `item` holds the
+whole item's messages, oldest first. The object can also use one-based part
 numbers as string keys for its numbered questions. The conversation is kept
 apart from `answers`. Existing numbered threads keep their keys.
 

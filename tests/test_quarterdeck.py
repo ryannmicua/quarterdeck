@@ -3484,22 +3484,45 @@ class ConversationTests(ImageCase):
         quarterdeck.store_path().write_text(json.dumps(damaged))
         self.assertEqual(self.fetch(port, "/qd/q4.html")[0], 500)
 
+    def test_reference_items_cannot_have_conversations(self) -> None:
+        home = self.inbox()
+        port = self.start("/qd", ask_home=home)
+        question_ask = self.ask_body(port, "Q4", "Show the whole layout.")
+        before = self.store()
+        for target in ("Q1", "Q2", "Q1.1", "Q2.1"):
+            with self.subTest(target=target):
+                _, page, headers = self.fetch(port, f"/qd/{target.split('.')[0].lower()}.html")
+                self.assertNotIn('id="open-item-ask"', page)
+                self.assertNotIn("Content-Security-Policy", headers)
+                ask = {**question_ask, "part": target}
+                for payload in (ask, {**ask, "action": "retry"},
+                                {"part": target, "id": ask["id"], "action": "retry"}):
+                    self.assertEqual(self.post(port, "/qd/asks", payload)[0], 400)
+                self.assertEqual(self.post(port, "/qd/replies/read", {"part": target, "ids": [ask["id"]]})[0], 400)
+                code, _, error = self.run_cli("reply", target, "--ask", ask["id"], "--text", "Here it is.")
+                self.assertEqual(code, 2)
+                self.assertIn("Choose a questions item.", error)
+        self.assertEqual(self.store(), before)
+        self.assertFalse((home / "attempts").exists())
+
+        self.assertEqual(self.post(port, "/qd/asks", question_ask)[0], 200)
+        valid = self.store()
+        for index in (0, 1):
+            with self.subTest(damaged_item=index):
+                data = json.loads(json.dumps(valid))
+                data["items"][index]["conversation"] = data["items"][3].pop("conversation")
+                quarterdeck.store_path().write_text(json.dumps(data))
+                self.assertEqual(self.fetch(port, "/qd/")[0], 500)
+
     def test_whole_item_asks_work_without_answer_controls(self) -> None:
-        with self.subTest(kind="reference"):
-            port = self.start("/qd", ask_home=self.inbox())
-            self.assertEqual(self.ask(port, "Q1", "Explain this link.")[0], 200)
-            ask = self.messages("item", 0)[0]
-            self.assertEqual(self.run_cli("reply", "Q1", "--ask", ask["id"], "--text", "An overview.")[0], 0)
-            self.assertIn('q1.html">Calls redesign</a> <span class="badge">Replied', self.fetch(port, "/qd/")[1])
-            self.assertIn("An overview.", self.fetch(port, "/qd/q1.html")[1])
-        with self.subTest(kind="closed questions"):
-            self.assertEqual(self.run_cli("mark", "Q4", "closed")[0], 0)
-            self.assertEqual(self.ask(port, "Q4", "Explain the whole decision.")[0], 200)
-            status, page, headers = self.fetch(port, "/qd/q4.html")
-            self.assertEqual(status, 200)
-            self.assertIn('id="open-item-ask"', page)
-            self.assertNotIn('<button id="send"', page)
-            self.assertEqual(headers.get("Content-Security-Policy"), "frame-ancestors 'none'")
+        port = self.start("/qd", ask_home=self.inbox())
+        self.assertEqual(self.run_cli("mark", "Q4", "closed")[0], 0)
+        self.assertEqual(self.ask(port, "Q4", "Explain the whole decision.")[0], 200)
+        status, page, headers = self.fetch(port, "/qd/q4.html")
+        self.assertEqual(status, 200)
+        self.assertIn('id="open-item-ask"', page)
+        self.assertNotIn('<button id="send"', page)
+        self.assertEqual(headers.get("Content-Security-Policy"), "frame-ancestors 'none'")
 
     def test_static_exports_exclude_conversation_and_reply_images(self) -> None:
         port = self.start("/qd", ask_home=self.inbox(accept=False))
@@ -3857,6 +3880,51 @@ await settled();
 check(calls.length === 3 && calls[2][0] === 'answers' && calls[2][1].part === 'Q4.1',
       'The batch did not remain scoped to the numbered question');
 """, setup=f"const replyId = {json.dumps(reply['id'])};")
+
+    def test_confirmed_ask_conflicts_restore_local_drafts_and_keep_saved_asks(self) -> None:
+        port = self.start("/qd", ask_home=self.inbox(accept=False))
+        self.assertEqual(self.ask(port, "Q4.2", "A saved preview request.")[0], 200)
+        for interrupted in (False, True):
+            with self.subTest(interrupted=interrupted):
+                self.check_page(port, r"""
+const calls = [];
+const conflict = 'Firstmate home changed. This ask belongs to the original home.';
+window.fetch = async (url, options) => {
+  const body = JSON.parse(options.body);
+  calls.push([url, body]);
+  if (interrupted && body.text && !body.action) throw new Error('Connection lost');
+  return {status: 409, text: async () => conflict};
+};
+const whole = document.getElementById('Q4');
+document.getElementById('open-item-ask').click();
+for (const section of [whole, card(1)]) {
+  const editor = section.querySelector('textarea');
+  const draft = 'Show the new preview for ' + section.id;
+  editor.value = draft;
+  editor.dispatchEvent(new Event('input', {bubbles: true}));
+  const start = calls.length;
+  section.querySelector('.ask-button').click();
+  await settled();
+  if (interrupted) {
+    section.querySelector('.pending-asks button').click();
+    await settled();
+    const first = calls[start][1];
+    const retry = calls[start + 1][1];
+    check(first.id === retry.id && first.home === retry.home, 'Retry changed the ask identity or home');
+  }
+  check(calls.length === start + (interrupted ? 2 : 1), 'Conflict automatically retried the ask');
+  check(editor.value === draft && editor.getAttribute('aria-invalid') === 'true',
+        'The confirmed conflict did not return the draft and its error');
+  check(!section.querySelector('[data-local-ask]'), 'A rejected draft stayed pending');
+  check(document.getElementById('send').disabled, 'A conflicted ask entered the answer batch');
+}
+const savedRetry = card(2).querySelector('[data-retry-ask]');
+savedRetry.click();
+await settled();
+check(calls.at(-1)[1].action === 'retry' && !('text' in calls.at(-1)[1]) &&
+      savedRetry.isConnected && field(2).value === '',
+      'A saved ask conflict changed the thread or copied the ask into the editor');
+""", setup=f"const interrupted = {json.dumps(interrupted)};")
 
     def test_rejected_ask_can_be_corrected_without_entering_answer_batch(self) -> None:
         port = self.start("/qd", ask_home=self.inbox())

@@ -36,7 +36,7 @@ uppercase form.
 | `add` | Saves a new item and prints its ID. A `resource` needs `--url` and `--link-text`. A `list` or `questions` item needs `--body-file`. See [the input formats and examples](../how-to/save-items.md#add-an-item) and [how to classify items and questions when saving](../how-to/classify-items.md#classify-when-you-save). |
 | `list` | Prints saved items, newest first, with ID, kind, saved date and title. |
 | `show` | Prints the item's text, numbering list entries and questions as `Q7.1`, `Q7.2`. Includes question links, stored states, and saved answers with their timestamps and delivery status. |
-| `reply` | Adds Firstmate's reply to an existing ask on a whole item (`Q7`) or one question (`Q7.1`). Supply the required `--ask ID` from the inbox note and the reply in `--text`. Pair `--link-text` with `--url` and `--image` with `--alt` in the order given. See [Reply from the command line](../how-to/reply-from-the-command-line.md). |
+| `reply` | Adds Firstmate's reply to an existing ask on a whole question item (`Q7`) or one question (`Q7.1`). Supply the required `--ask ID` from the inbox note and the reply in `--text`. Pair `--link-text` with `--url` and `--image` with `--alt` in the order given. See [Reply from the command line](../how-to/reply-from-the-command-line.md). |
 | `mark` | Sets question state, optionally for a whole questions item. `--via` is required with `answered` and accepted only with that state. Skips exit with status 0. See [Read answers](../how-to/read-answers.md) for which questions are marked. |
 | `classify` | Requires at least one classification option. Use `--project` for an item ID, `--kind` for a question ID, and `--tag` for either. See [how to change classification](../how-to/classify-items.md#change-it-later). |
 | `stats` | Prints a question activity table by default or JSON with `--json`. See [Read the report](../how-to/read-the-report.md) for date filtering and field definitions. |
@@ -94,7 +94,7 @@ See the [image removal rules](item-store.md#store-layout).
 `POST /asks` (under any `base_path`) requires the explicit `firstmate_home`
 and the same origin as `/answers`. Send
 `{"part": "Q7.1", "id": "<ask id>", "text": "...", "home": "<home binding>"}`
-to save and deliver an ask. Use `"part": "Q7"` for the whole item or
+to save and deliver an ask. Use `"part": "Q7"` for the whole question item or
 `"part": "Q7.1"` for one question. The page generates the 32-character lowercase
 hexadecimal ID and takes the resolved home binding from the served form.
 Repeating the same create request returns the existing ask. Add

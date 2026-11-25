@@ -9,8 +9,8 @@ Select **Ask Firstmate** in the page bar beside **Send answers**. Type in
 **Message about this item**, then select **Send ask**. The inbox note names
 the item, for example `ASK Q7 <ask id>`. Read replies in **Messages**
 under **Item conversation** above the questions. Opening that conversation
-acknowledges only its replies. Whole-item asks are also available on saved
-links, lists, and items whose questions are all closed.
+acknowledges only its replies. The toolbar ask is available on question
+items, including when all their questions are closed.
 
 ## Ask about one question
 
@@ -47,8 +47,10 @@ refuses the retry.
 If an ask never reaches Quarterdeck, reloading the page clears the draft and
 you’ll need to type it again.
 
-A validation error puts the draft back in the field. Correct it and select
-**Ask Firstmate** again. The draft stays out of **Send answers** while
+A validation error or confirmed conflict puts an unsaved draft back in the
+field. If the Firstmate home changed, copy the draft before reloading.
+For a validation error, correct the draft and send it again. A numbered draft
+stays out of **Send answers** while
 you correct it, including through editor undo and redo. To answer instead,
 choose an answer option, then edit that answer if needed. **Undo changes**
 brings back the preceding ask as an ask draft. You can also reload the page

@@ -74,7 +74,9 @@ can edit and save an answer after replacing a rejected ask. Tests open
 acknowledgments and live updates.
 The whole-item checks cover the toolbar editor, the inbox target and retry ID,
 separate reply acknowledgment for the item and each question, and private
-reply images.
+reply images. The conversation group also checks that confirmed conflicts
+return local drafts to their editors, preserve saved asks, and keep reference
+items outside the conversation workflow.
 
 For a screen change, also save one item of each kind, run `quarterdeck serve`,
 and check the Desk, each tab of the library pop-out (try 3, 30 and 200 saved items) and each item page at phone width (about 390 px) and

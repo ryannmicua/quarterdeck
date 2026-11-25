@@ -490,11 +490,13 @@ def option_label(option: object) -> str:
 
 def item_image_files(item: dict[str, object], tree: str = "images") -> set[str]:
     files: set[str] = set()
+    if item["kind"] != "questions":
+        return files
     if tree == REPLY_IMAGES:
         for messages in item.get("conversation", {}).values():  # type: ignore[attr-defined]
             for message in messages:
                 files.update(image["file"] for image in message.get("images", []))
-    elif item["kind"] == "questions":
+    else:
         for question in item["body"]["questions"]:  # type: ignore[index]
             files.update(image["file"] for image in question.get("images", []))
             files.update(option["image"]["file"] for option in question["options"] if isinstance(option, dict))
@@ -810,7 +812,7 @@ AUTHOR_LABELS = {"you": "You", "firstmate": "Firstmate"}
 
 
 def validate_conversation(item):
-    parts = question_parts(item) if item["kind"] == "questions" else ()
+    parts = question_parts(item)
     conversation = item["conversation"]
     if not isinstance(conversation, dict) or not conversation:
         raise ValueError("invalid conversation")
@@ -1041,6 +1043,12 @@ def parse_thread_target(value):
     return parse_part(value)
 
 
+def check_conversation_target(item, part, target):
+    parts = question_parts(item)
+    if part is not None and part not in parts:
+        raise ValueError(f"no question {target}")
+
+
 def conversation_editable(item, part):
     return part is None or part_record(item, part).get("state") != "closed"
 
@@ -1070,8 +1078,7 @@ def ask_message(store, home, binding, payload):
         with locked_store(store):
             data = read_store(store)
             item = find_answer_item(data, item_id)
-            if part is not None and part not in question_parts(item):
-                raise ValueError("Unknown question.")
+            check_conversation_target(item, part, target)
             for number, messages in item.get("conversation", {}).items():
                 message = next((m for m in messages if m["id"] == message_id), None)
                 if message is None:
@@ -1095,8 +1102,7 @@ def ask_message(store, home, binding, payload):
     # The ask is saved before the external call, and delivery runs under the lock so a retry reuses the same note ID.
     with changing_store(store) as data:
         item = find_answer_item(data, item_id)
-        if part is not None and part not in question_parts(item):
-            raise ValueError("Unknown question.")
+        check_conversation_target(item, part, target)
         message = next((m for m in part_thread(item, part) if m["id"] == message_id and m["author"] == "you"), None)
         if message is None:
             raise AnswerConflict("Ask not found. Reload the question.")
@@ -1120,6 +1126,7 @@ def mark_replies_read(store, payload):
         raise ValueError("Invalid reply IDs.")
     with changing_store(store) as data:
         item = find_answer_item(data, item_id)
+        check_conversation_target(item, part, payload["part"])
         replies = {m["id"]: m for m in part_thread(item, part) if m["author"] == "firstmate"}
         if not replies.keys() >= set(ids):
             raise ValueError("Unknown reply on this question.")
@@ -1409,7 +1416,7 @@ def reply_item(args: argparse.Namespace) -> int:
         try:
             item_id, part = parse_thread_target(target)
         except ValueError as exc:
-            raise ValueError(f"reply to an item or question, such as Q7 or Q7.1: {args.id!r}") from exc
+            raise ValueError(f"reply to a question item or one of its questions, such as Q7 or Q7.1: {args.id!r}") from exc
         text = clean_text(args.text, "reply text", TEXT_LIMIT, multiline=True)
         link_texts, urls = args.link_text or [], args.url or []
         if len(link_texts) != len(urls):
@@ -1427,8 +1434,7 @@ def reply_item(args: argparse.Namespace) -> int:
         with locked_store(store):
             data = read_store(store)
             item = find_item(data, item_id)
-            if part is not None and part not in question_parts(item):
-                raise ValueError(f"no question {target}")
+            check_conversation_target(item, part, target)
             thread = part_thread(item, part)
             asks = {m["id"] for m in thread if m["author"] == "you"}
             if not asks:
@@ -2584,29 +2590,17 @@ if (send || openItemAsk) {
   const suggest = document.querySelector('#suggest');
   const undo = document.querySelector('#undo');
   const rejections = new Map();
-  function fingerprint(value) {
-    let first = 2166136261;
-    let second = 5381;
-    for (let n = 0; n < value.length; n++) {
-      const unit = value.charCodeAt(n);
-      first = Math.imul(first ^ unit, 16777619);
-      second = Math.imul(second, 33) ^ unit;
-    }
-    return value.length + ':' + first + ':' + second;
-  }
-  const draftSource = (field, askOnly = false, manual = false) =>
-    ({askOnly, manual, keys: [fingerprint(field.value)], index: 0});
-  const draftSources = new Map(fields.filter(f => f.closest('section').querySelector('.ask-button'))
-    .map(f => [f, draftSource(f)]));
+  const draftOrigins = new Map(fields.filter(f => f.closest('section').querySelector('.ask-button'))
+    .map(f => [f, 'filled']));
   let history = [];
   const answerText = value => value.replace(/^[\p{White_Space}\x1c-\x1f]+|[\p{White_Space}\x1c-\x1f]+$/gu, '');
   const newDraft = f => answerText(f.value) && answerText(f.value) !== answerText(f.defaultValue);
-  const handEdited = source => source && (source.askOnly || source.manual || source.index > 0);
-  const askDraft = f => (f.closest('.item-conversation') || handEdited(draftSources.get(f))) && newDraft(f);
+  const handEdited = origin => origin === 'manual' || origin === 'ask';
+  const askDraft = f => (f.closest('.item-conversation') || handEdited(draftOrigins.get(f))) && newDraft(f);
   const changed = f => {
     const {pending} = f.closest('section').dataset;
     const answer = answerText(f.value);
-    return !draftSources.get(f)?.askOnly && !rejections.has(f) && answer && (answer !== f.defaultValue || pending === '1');
+    return draftOrigins.get(f) !== 'ask' && !rejections.has(f) && answer && (answer !== f.defaultValue || pending === '1');
   };
   const suggestionFor = f => {
     const section = f.closest('section');
@@ -2654,26 +2648,11 @@ if (send || openItemAsk) {
   document.addEventListener('input', e => {
     const field = e.target;
     if (!field.matches('[data-conversation] textarea')) return;
-    const source = draftSources.get(field);
-    if (source) {
-      const key = fingerprint(field.value);
-      if (e.inputType === 'historyUndo' || e.inputType === 'historyRedo') {
-        const direction = e.inputType === 'historyUndo' ? -1 : 1;
-        for (let index = source.index + direction; index >= 0 && index < source.keys.length; index += direction) {
-          if (source.keys[index] === key) {
-            source.index = index;
-            break;
-          }
-        }
-      } else {
-        source.index += 1;
-        source.keys.length = source.index;
-        source.keys.push(key);
-        if (source.keys.length > 1024) {
-          source.keys.splice(1, 1);
-          source.index -= 1;
-        }
-      }
+    if (draftOrigins.has(field) && draftOrigins.get(field) !== 'ask') {
+      const restoredChoice = e.inputType === 'historyUndo' &&
+        [...field.closest('section').querySelectorAll('[data-choice]')]
+          .some(option => option.dataset.choice === field.value);
+      draftOrigins.set(field, restoredChoice ? 'filled' : 'manual');
     }
     forget(field);
     refresh();
@@ -2691,13 +2670,13 @@ if (send || openItemAsk) {
       for (const f of fields) {
         const section = f.closest('section');
         const option = choice ? (section.contains(choice) && choice) : suggestionFor(f);
-        const source = draftSources.get(f);
-        if (option && (option.dataset.choice !== f.value || handEdited(source))) {
-          const askError = source?.askOnly ? rejections.get(f) : undefined;
-          step.set(f, {value: f.value, askOnly: source?.askOnly, manual: handEdited(source), askError});
-          if (source?.askOnly) rejections.delete(f);
+        const origin = draftOrigins.get(f);
+        if (option && (option.dataset.choice !== f.value || handEdited(origin))) {
+          const askError = origin === 'ask' ? rejections.get(f) : undefined;
+          step.set(f, {value: f.value, origin, askError});
+          if (origin === 'ask') rejections.delete(f);
           f.value = option.dataset.choice;
-          if (source) draftSources.set(f, draftSource(f));
+          if (origin) draftOrigins.set(f, 'filled');
         }
       }
       if (step.size) history.push(step);
@@ -2720,8 +2699,8 @@ if (send || openItemAsk) {
         pending.querySelector('button').addEventListener('click', () => askRequest(section, {...body, action: 'retry'}, pending));
         thread.querySelector('.pending-asks').append(pending);
         field.value = field.defaultValue;
-        if (draftSources.get(field)?.askOnly) rejections.delete(field);
-        if (draftSources.has(field)) draftSources.set(field, draftSource(field));
+        if (section.matches('.item-conversation') || draftOrigins.get(field) === 'ask') rejections.delete(field);
+        if (draftOrigins.has(field)) draftOrigins.set(field, 'filled');
         forget(field);
         thread.hidden = false;
         thread.open = true;
@@ -2735,9 +2714,9 @@ if (send || openItemAsk) {
     }
     if (e.target === undo && history.length) {
       const step = history.pop();
-      for (const [f, {value, askOnly, manual, askError}] of step) {
+      for (const [f, {value, origin, askError}] of step) {
         f.value = value;
-        if (draftSources.has(f)) draftSources.set(f, draftSource(f, askOnly, manual));
+        if (origin) draftOrigins.set(f, origin);
         if (askError) rejections.set(f, askError);
       }
       refresh();
@@ -2801,10 +2780,10 @@ if (send || openItemAsk) {
       if (response.status === 400 || response.status === 409) {
         const message = await response.text();
         output.textContent = message;
-        if (response.status === 400 && pending) {
+        if (pending) {
           failedDraft = section.querySelector('textarea');
           failedDraft.value = pending.querySelector('.record').textContent;
-          if (draftSources.has(failedDraft)) draftSources.set(failedDraft, draftSource(failedDraft, true));
+          if (draftOrigins.has(failedDraft)) draftOrigins.set(failedDraft, 'ask');
           rejections.set(failedDraft, {message, draft: body.text});
           pending.remove();
           const thread = section.querySelector('.thread');
@@ -2836,7 +2815,7 @@ if (send || openItemAsk) {
     section.dataset.revision = record.revision;
     section.dataset.pending = record.delivery === 'pending' ? '1' : '0';
     field.defaultValue = field.value = record.answer;
-    if (draftSources.has(field)) draftSources.set(field, draftSource(field));
+    if (draftOrigins.has(field)) draftOrigins.set(field, 'filled');
     forget(field);
 
     const saved = section.querySelector('.saved-answer');
@@ -2905,8 +2884,6 @@ def day_time(moment: object) -> str:
 def library_row(item, *, served):
     item_id, kind = item["id"], item["kind"]
     title = f'<a class="lib-title" href="{item_page_name(item_id)}">{esc(item["title"])}</a>'
-    if served and kind != "questions" and thread_unread(item, None):
-        title += ' <span class="badge">Replied</span>'
     project = f'<span class="project-name">{esc(item["project"])}</span>' if item.get("project") else ""
     tags = tag_labels(all_tags(item))
     attributes = filter_data(item)
@@ -3046,9 +3023,6 @@ def item_page(item: dict[str, object], site_title: str, *, served: bool, saved_n
     item_id = str(item["id"])
     questions = item["kind"] == "questions"
     content = question_form(item, served, ask_binding=ask_binding) if questions else item_body_html(item)
-    if served and not questions:
-        content += conversation_toolbar(item, answers=False, asking=ask_binding is not None)
-        content += item_conversation(item, ask_binding)
     body = (
         f'<p class="id">{esc(item_id)}</p><h1>{esc(item["title"])}</h1>'
         f'<p class="meta">{esc(KIND_LABELS[str(item["kind"])])}{" · " + esc(item["project"]) if item.get("project") else ""}'
@@ -3058,8 +3032,8 @@ def item_page(item: dict[str, object], site_title: str, *, served: bool, saved_n
     )
     return page_shell(f"{item_id} {item['title']} · {site_title}", site_title, body,
                       served=served, saved_name=saved_name,
-                      interactive=served and (has_answer_controls(item) or ask_binding is not None),
-                      conversations=served)
+                      interactive=served and questions and (has_answer_controls(item) or ask_binding is not None),
+                      conversations=served and questions)
 
 
 def site_pages(data: dict[str, object], site_title: str, saved_name: str) -> dict[str, str]:
@@ -3449,9 +3423,9 @@ def make_handler(site_title: str, base_path: str = "", store: Path | None = None
             except ValueError:
                 self.send_text(404, "Not found\n")
                 return
-            _, ask_binding = ask_destination()
+            _, ask_binding = ask_destination() if item["kind"] == "questions" else (None, None)
             content = item_page(item, site_title, served=True, ask_binding=ask_binding)
-            prevent_framing = ask_binding is not None or has_answer_controls(item) or thread_unread(item, None) or (
+            prevent_framing = ask_binding is not None or has_answer_controls(item) or (
                 item["kind"] == "questions" and question_summary(item)[0] == "Replied")
             self.send_text(200, content, "text/html; charset=utf-8", prevent_framing=prevent_framing)
 
@@ -3796,8 +3770,8 @@ def make_parser() -> argparse.ArgumentParser:
     show = command("show", "show one item in full", "Show one item in full, with its parts numbered (Q7.1, Q7.2, ...).", show_item)
     show.add_argument("id", help="item ID, such as Q7")
 
-    reply = command("reply", "add Firstmate's reply to an item or question",
-                    "Add Firstmate's reply under an ask on an item (Q7) or a question (Q7.1). The reply shows as Replied "
+    reply = command("reply", "add Firstmate's reply to a question conversation",
+                    "Add Firstmate's reply under an ask on a question item (Q7) or one question (Q7.1). The reply shows as Replied "
                     "until acknowledged in Messages. A reply leaves answers and states intact. Pair each "
                     "--link-text with a --url and each --image with an --alt, in the order given.", reply_item)
     reply.add_argument("id", help="item or question ID, such as Q7 or Q7.1")
