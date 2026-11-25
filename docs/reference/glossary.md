@@ -13,4 +13,4 @@ These are terms Quarterdeck uses on its pages.
 | Read | An acknowledged notice. |
 | item | A saved resource, list, questions item, or conversation. |
 | question | A numbered part of a questions item that waits for an answer. |
-| Workers | The section that lists who is running in the Firstmate home. |
+| Workers | The [roster page](../how-to/read-workers.md) linked from the Desk. |

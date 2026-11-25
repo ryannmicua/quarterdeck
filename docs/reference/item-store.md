@@ -77,6 +77,8 @@ list. Both keys remain even when the list is empty. A notice ID is uppercase
 unique and less than `next_catch_up`, the number assigned to the next notice.
 Quarterdeck never reuses a removed notice's ID.
 
+These are the fields added to the version 1 store shown above:
+
 ```json
 {
   "next_catch_up": 5,
