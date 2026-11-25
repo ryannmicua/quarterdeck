@@ -2600,12 +2600,13 @@ if (send) {
   let history = [];
   const answerText = value => value.replace(/^[\p{White_Space}\x1c-\x1f]+|[\p{White_Space}\x1c-\x1f]+$/gu, '');
   const newDraft = f => answerText(f.value) && answerText(f.value) !== answerText(f.defaultValue);
-  const handEdited = origin => origin === 'manual' || origin === 'ask' || origin?.edited;
+  const rejectedAsk = origin => origin?.rejected && !origin.edited;
+  const handEdited = origin => origin === 'manual' || origin?.rejected || origin?.edited;
   const askDraft = f => (f.closest('.item-conversation') || handEdited(draftOrigins.get(f))) && newDraft(f);
   const changed = f => {
     const {pending} = f.closest('section').dataset;
     const answer = answerText(f.value);
-    return draftOrigins.get(f) !== 'ask' && !rejections.has(f) && answer && (answer !== f.defaultValue || pending === '1');
+    return !rejectedAsk(draftOrigins.get(f)) && !rejections.has(f) && answer && (answer !== f.defaultValue || pending === '1');
   };
   const suggestionFor = f => {
     const section = f.closest('section');
@@ -2654,11 +2655,15 @@ if (send) {
     const field = e.target;
     if (!field.matches('[data-conversation] textarea')) return;
     const origin = draftOrigins.get(field);
+    const restoring = e.inputType === 'historyUndo' || e.inputType === 'historyRedo';
     if (origin?.choice) {
-      const restoring = e.inputType === 'historyUndo' || e.inputType === 'historyRedo';
       // Native undo and redo treat matching hand-edited text as the fill. Retype it to ask.
       const edited = !restoring || answerText(field.value) !== answerText(origin.choice.dataset.choice);
       draftOrigins.set(field, {choice: origin.choice, edited});
+    } else if (origin?.rejected && (!restoring || origin.edited !== undefined)) {
+      if (!restoring && origin.edited === undefined && rejections.delete(field)) output.textContent = '';
+      const edited = !restoring || answerText(field.value) !== origin.rejected;
+      draftOrigins.set(field, {rejected: origin.rejected, edited});
     } else if (origin === 'filled') {
       draftOrigins.set(field, 'manual');
     }
@@ -2680,9 +2685,9 @@ if (send) {
         const option = choice ? (section.contains(choice) && choice) : suggestionFor(f);
         const origin = draftOrigins.get(f);
         if (option && (option.dataset.choice !== f.value || handEdited(origin))) {
-          const askError = origin === 'ask' ? rejections.get(f) : undefined;
+          const askError = rejectedAsk(origin) ? rejections.get(f) : undefined;
           step.set(f, {value: f.value, origin, askError});
-          if (origin === 'ask') rejections.delete(f);
+          if (askError) rejections.delete(f);
           f.value = option.dataset.choice;
           if (origin) draftOrigins.set(f, {choice: option, edited: false});
         }
@@ -2707,7 +2712,7 @@ if (send) {
         pending.querySelector('button').addEventListener('click', () => askRequest(section, {...body, action: 'retry'}, pending));
         thread.querySelector('.pending-asks').append(pending);
         field.value = field.defaultValue;
-        if (section.matches('.item-conversation') || draftOrigins.get(field) === 'ask') rejections.delete(field);
+        if (section.matches('.item-conversation') || rejectedAsk(draftOrigins.get(field))) rejections.delete(field);
         if (draftOrigins.has(field)) draftOrigins.set(field, 'filled');
         forget(field);
         thread.hidden = false;
@@ -2794,7 +2799,7 @@ if (send) {
           failedDraft = section.querySelector('textarea');
           failedDraft.value = pending.querySelector('.record').textContent;
           forget(failedDraft);
-          if (draftOrigins.has(failedDraft)) draftOrigins.set(failedDraft, 'ask');
+          if (draftOrigins.has(failedDraft)) draftOrigins.set(failedDraft, {rejected: body.text});
           rejections.set(failedDraft, {message, draft: body.text});
           pending.remove();
           const thread = section.querySelector('.thread');

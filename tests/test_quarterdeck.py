@@ -4137,7 +4137,7 @@ check(!card(1).querySelector('.ask-button').disabled && document.getElementById(
       'Undo changed the restored draft from an ask into an answer');
 """)
 
-    def test_rejected_ask_can_be_corrected_without_entering_answer_batch(self) -> None:
+    def test_undo_restores_rejected_ask_without_entering_answer_batch(self) -> None:
         port = self.start("/qd", ask_home=self.inbox())
         for interrupted in (False, True):
             with self.subTest(interrupted=interrupted):
@@ -4170,26 +4170,28 @@ if (interrupted) {
 check(field(1).value === draft && !pending.firstElementChild, 'The failed draft was not restored to the editor');
 check(field(1).getAttribute('aria-invalid') === 'true' && !askButton.disabled && send.disabled,
       'A rejected ask entered the answer batch or its error was lost');
-type(1, corrected);
 field(1).focus();
 field(1).select();
-check(document.execCommand('delete') && field(1).value === '', 'Native clear did not run');
-check(document.execCommand('undo') && field(1).value === corrected, 'Native Undo did not restore the ask');
+check(document.execCommand('insertText', false, corrected) && field(1).value === corrected,
+      'Native replacement did not run');
+check(!send.disabled && !askButton.disabled, 'A manual replacement was not eligible for both actions');
+check(document.execCommand('undo') && field(1).value === draft, 'Native Undo did not restore the ask');
 check(send.disabled && !askButton.disabled, 'Native Undo queued the rejected ask as an answer');
-check(document.execCommand('redo') && field(1).value === '', 'Native Redo did not clear the ask');
-check(document.execCommand('undo') && field(1).value === corrected, 'Second native Undo did not restore the ask');
-const priorAsk = field(1).value;
+check(document.execCommand('redo') && field(1).value === corrected && !send.disabled,
+      'Native Redo did not restore the replacement draft');
+check(document.execCommand('undo') && field(1).value === draft, 'Second native Undo did not restore the ask');
 card(1).querySelector('[data-choice="Hold"]').click();
 check(send.textContent === 'Send 1 answer' && askButton.disabled, 'Choosing an answer did not replace the ask draft');
 document.getElementById('undo').click();
-check(field(1).value === priorAsk && send.disabled && !askButton.disabled, 'Undo changes lost the ask-only draft');
+check(field(1).value === draft && send.disabled && !askButton.disabled, 'Undo changes lost the ask-only draft');
 type(2, 'Blue');
-check(send.textContent === 'Send 1 answer', 'Correcting an ask queued it as an answer');
+check(send.textContent === 'Send 1 answer', 'Restoring a rejected ask queued it as an answer');
 send.click();
 await settled();
 check(calls.filter(([url]) => url === 'answers').map(([, body]) => body.part).join() === 'Q4.2',
-      'Sending a sibling answer also submitted the corrected ask');
+      'Sending a sibling answer also submitted the rejected ask');
 reject = false;
+type(1, corrected);
 askButton.click();
 await settled();
 const body = calls.at(-1)[1];
@@ -4366,12 +4368,12 @@ type(1, 'Show the preview.');
 card(1).querySelector('.ask-button').click();
 await settled();
 check(send.disabled, 'The failed ask was queued as an answer');
-card(1).querySelector('[data-choice="Hold"]').click();
-if (editOption) type(1, 'Hold for the pilot.');
+if (editOption) card(1).querySelector('[data-choice="Hold"]').click();
+const expected = editOption ? 'Hold for the pilot.' : 'Proceed with the pilot.';
+type(1, expected);
 check(!send.disabled, 'The rejected ask blocked a replacement answer');
 send.click();
 await settled();
-const expected = editOption ? 'Hold for the pilot.' : 'Hold';
 check(answers.join() === expected && field(1).defaultValue === expected, 'The replacement answer was not saved');
 type(1, 'Merge tomorrow.');
 check(!send.disabled, 'The rejected ask blocked a new decision after saving');
