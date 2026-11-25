@@ -36,7 +36,7 @@ uppercase form.
 | `add` | Saves a new item and prints its ID. A `resource` needs `--url` and `--link-text`. A `list` or `questions` item needs `--body-file`. See [the input formats and examples](../how-to/save-items.md#add-an-item) and [how to classify items and questions when saving](../how-to/classify-items.md#classify-when-you-save). |
 | `list` | Prints saved items, newest first, with ID, kind, saved date and title. |
 | `show` | Prints the item's text, numbering list entries and questions as `Q7.1`, `Q7.2`. Includes question links, stored states, and saved answers with their timestamps and delivery status. |
-| `reply` | Adds Firstmate's reply to an existing ask on a whole question item (`Q7`) or one question (`Q7.1`). Supply the required `--ask ID` from the inbox note and the reply in `--text`. Pair `--link-text` with `--url` and `--image` with `--alt` in the order given. See [Reply from the command line](../how-to/reply-from-the-command-line.md). |
+| `reply` | Adds Firstmate's reply to an existing ask on a whole question item (`Q7`) or one question (`Q7.1`). It preserves saved answers and question states. Supply the required `--ask ID` from the inbox note and the reply in `--text`. Pair `--link-text` with `--url` and `--image` with `--alt` in the order given. See [Reply from the command line](../how-to/reply-from-the-command-line.md). |
 | `mark` | Sets question state, optionally for a whole questions item. `--via` is required with `answered` and accepted only with that state. Skips exit with status 0. See [Read answers](../how-to/read-answers.md) for which questions are marked. |
 | `classify` | Requires at least one classification option. Use `--project` for an item ID, `--kind` for a question ID, and `--tag` for either. See [how to change classification](../how-to/classify-items.md#change-it-later). |
 | `stats` | Prints a question activity table by default or JSON with `--json`. See [Read the report](../how-to/read-the-report.md) for date filtering and field definitions. |
@@ -76,9 +76,10 @@ Pages link to `images/<id>/<file>` relative to themselves. When rendering
 into the current store's state directory, pages use its saved images. When
 rendering elsewhere, Quarterdeck copies images beside the pages, reuses
 identical files already there, and refuses to overwrite other files at
-those paths. A missing or unreadable saved image stops the render before it
-writes pages. Keep the `images` folder with the exported pages.
-The state directory's `reply-images` folder belongs to the live site.
+those paths. A missing or unreadable question or option image stops the
+render before it writes pages. Keep the `images` folder with the exported
+pages. The state directory's `reply-images` tree is reserved for the live
+site, and `render` refuses output inside it.
 
 Exports in a separate directory keep image copies of removed items until you
 delete `<output>/images/<id>/` by hand. A refused render can leave new image

@@ -21,8 +21,8 @@ open them for context before choosing an answer.
 2. Review the answers. **Undo changes** reverses one option choice or bulk suggestion action at a time and keeps any drafts you typed afterward.
 3. Select **Send answers**. The button counts the answers ready to send. You can send a few now and return for the rest.
 
-**Replied** indicates at least one unread Firstmate reply. You can
-[ask Firstmate](ask-firstmate.md) when you need more information before deciding.
+When you need more information before deciding, see how to
+[ask Firstmate and read replies](ask-firstmate.md).
 
 To find an item after it leaves the Desk, open
 [**Answered** in the library](use-the-library.md#when-an-item-moves).

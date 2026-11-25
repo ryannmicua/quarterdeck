@@ -3370,7 +3370,7 @@ def make_handler(site_title: str, base_path: str = "", store: Path | None = None
             self.wfile.write(data)
 
         def send_image(self, data: dict[str, object], tree: str, item_id: str, file: str) -> None:
-            """Only a file the store lists for that item is served, and only from the private images folder."""
+            """Require the item to list the file for the requested private image tree."""
             try:
                 item = find_item(data, item_id)
                 if file not in item_image_files(item, tree):

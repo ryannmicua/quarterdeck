@@ -3450,8 +3450,8 @@ class ConversationTests(ImageCase):
 
     def test_reply_and_pending_ask_leave_answered_items_in_reviewed(self) -> None:
         port = self.start("/qd", ask_home=self.inbox(accept=False))
-        self.run_cli("mark", "Q3", "answered")
-        self.run_cli("mark", "Q4", "answered")
+        self.assertEqual(self.run_cli("mark", "Q3", "answered", "--via", "chat")[0], 0)
+        self.assertEqual(self.run_cli("mark", "Q4", "answered", "--via", "chat")[0], 0)
         self.ask(port, "Q4.2", "Anything else?")
         self.assertEqual(self.run_cli("reply", "Q4.2", "--ask", self.messages("2", 3)[0]["id"], "--text", "One more thing.")[0], 0)
         self.ask(port, "Q3.2", "Do you have a preview?")
@@ -4390,7 +4390,7 @@ check(answers.join() === expected + ',Merge tomorrow.', 'The answer batch kept s
         before = self.store()
         for part in ("Q4.01", "Q4.0", "Q4.1.2"):
             with self.subTest(part=part):
-                self.assertEqual(self.run_cli("mark", part, "answered")[0], 2)
+                self.assertEqual(self.run_cli("mark", part, "answered", "--via", "chat")[0], 2)
                 self.assertEqual(self.run_cli("reply", part, "--ask", ask["id"], "--text", "Wrong part.")[0], 2)
         for part in ("Q4.01", "Q4.0", "Q4.1.2", "q4.1"):
             with self.subTest(browser_part=part):

@@ -35,9 +35,5 @@ If a file named `reply-images` occupies that location in the state
 directory, move it before attaching reply images.
 
 Quarterdeck prints the target and `Replied`, for example `Q7.1 Replied`.
-The live page shows **Replied** while a reply is unread, and the item's
-listing shows the badge as well.
-
-A reply preserves answers and question states. Open **Messages** in
-**Item conversation** or on the numbered question to read the reply.
+See [how to read replies on the card](ask-firstmate.md).
 See the [CLI reference](../reference/cli-and-config.md#items) for the command.

@@ -10,17 +10,17 @@ when enabled, the live Firstmate workers roster.
   `add` copies body text from the named file or standard input into the store.
   A questions body can also name [local image attachments](../reference/item-store.md#question-images).
   `quarterdeck reply --image` reads the explicitly named image files and copies
-  them into the store's `reply-images` directory.
+  them into the [private reply image folder](../reference/item-store.md#store-layout).
 - `render`, `serve`, `service` and `url` can read the
   [optional config](../reference/cli-and-config.md#json-configuration).
-- `render` reads the item store and saved images. It inspects existing output
-  files before replacing or retiring them. See the [render reference](../reference/cli-and-config.md#pages).
+- `render` reads the item store and the images attached to questions and
+  options. It inspects existing output files before replacing or retiring
+  them. See the [render reference](../reference/cli-and-config.md#pages).
 - `serve` reads the item store to build pages and writes to it when users
-  submit answers, send asks or acknowledge replies to an opened question.
-  Page reads leave the store intact. It serves question and option images
-  from `images` and reply images from `reply-images`, using the files
-  listed for that item in the store. It reads the TLS certificate and key
-  if you supply them.
+  submit answers, send asks or acknowledge replies in an item or question
+  conversation. It serves only files listed for the requested item from
+  the corresponding [private image folder](../reference/item-store.md#store-layout).
+  It reads the TLS certificate and key if you supply them.
 - The [workers endpoint](../reference/cli-and-config.md#workers-endpoint) runs
   the configured home's read-only `bin/fm-fleet-snapshot.sh --local`. This
   command uses no model.
@@ -36,7 +36,7 @@ with their timestamps in the [item store](../reference/item-store.md#conversatio
 Quarterdeck writes nothing to the home except through the configured home's
 `bin/fm-inbox.sh note` command on explicit answer or ask submission. It passes
 an answer as the part ID followed by the text. Asks go to the explicit
-`firstmate_home` with `ASK`, the item or question ID and the ask ID before the text.
+`firstmate_home` using the [ask note format](../reference/cli-and-config.md#ask-endpoint).
 Replies come back only through `quarterdeck reply`, which Firstmate runs on
 the same machine. Quarterdeck never calls a model.
 
