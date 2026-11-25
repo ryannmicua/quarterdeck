@@ -2316,8 +2316,8 @@ def link_html(link, *, prefix=""):
             f'{esc(prefix + link["text"])}</a>')
 
 
-def links_html(question):
-    links = question.get("links")
+def links_html(record):
+    links = record.get("links")
     return '<ul class="ref-links">' + ''.join(f'<li>{link_html(l)}</li>' for l in links) + '</ul>' if links else ''
 
 
@@ -2341,11 +2341,11 @@ def image_link(item, image, *, tree="images"):
             f'{image_tag(item, image, tree=tree)}</a>')
 
 
-def question_shots(item, question):
-    if not question.get("images"):
+def shots_html(item, record, *, tree="images"):
+    if not record.get("images"):
         return ""
     return '<ul class="shots">' + "".join(
-        f'<li>{image_link(item, image)}</li>' for image in question["images"]) + '</ul>'
+        f'<li>{image_link(item, image, tree=tree)}</li>' for image in record["images"]) + '</ul>'
 
 
 def choice_label(item, part, number, option, *, suggested):
@@ -2376,10 +2376,6 @@ def message_html(item, message, *, editable):
     you = message["author"] == "you"
     when = esc(message["at"])
     delivery = f' <span class="delivery">{delivery_label(message)}</span>' if you else ''
-    links = ('<ul class="ref-links">' + ''.join(f'<li>{link_html(link)}</li>' for link in message["links"]) + '</ul>'
-             if message.get("links") else '')
-    shots = ('<ul class="shots">' + ''.join(f'<li>{image_link(item, image, tree=REPLY_IMAGES)}</li>' for image in message["images"]) + '</ul>'
-             if message.get("images") else '')
     controls = ''
     if editable and you and message["delivery"] == "pending":
         controls = ('<div class="actions">'
@@ -2388,7 +2384,7 @@ def message_html(item, message, *, editable):
     unread = " data-unread" if unread_reply(message) else ""
     return (f'<li class="msg {message["author"]}"{identity}{unread}><p class="who"><strong>{AUTHOR_LABELS[message["author"]]}</strong> '
             f'<time datetime="{when}">{when}</time>{delivery}</p><p class="record">{linked_text(message["text"])}</p>'
-            f'{links}{shots}{controls}</li>')
+            f'{links_html(message)}{shots_html(item, message, tree=REPLY_IMAGES)}{controls}</li>')
 
 
 def thread_html(item, number, *, editable):
@@ -2498,7 +2494,7 @@ def question_form(item, served, *, ask_binding=None):
                 f'{f"<span>{esc(question['kind'].capitalize())}</span>" if question.get("kind") else ""}</div>'
                 f'{tag_labels(question.get("tags", []))}'
                 f'<h2 id="title-{part}">{linked_text(question["question"])}</h2><p>{linked_text(question["context"])}</p>'
-                f'{question_shots(item, question)}{saved}{controls}{thread}</section>')
+                f'{shots_html(item, question)}{saved}{controls}{thread}</section>')
         if status == "answered" and record.get("delivery") == "sent":
             source_hidden = "" if elsewhere else " hidden"
             folded.append(f'<details class="done"><summary><span class="id">{part}</span>'

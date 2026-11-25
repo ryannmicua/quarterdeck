@@ -6,6 +6,10 @@ question item's ID for a whole-card ask or the numbered ID for an ask about
 one question.
 Pass the ask ID from that note with `--ask`.
 
+For both targets, `quarterdeck reply` must use the live server's
+[item store](../reference/item-store.md). If the server uses a custom
+`XDG_STATE_HOME`, run the reply command with the same setting.
+
 ```sh
 quarterdeck reply Q7 --ask "$ask_id" --text "The whole layout is ready for review."
 quarterdeck reply Q7.1 --ask "$ask_id" --text "The preview uses the tide tables from Friday."

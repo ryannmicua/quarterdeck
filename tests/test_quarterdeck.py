@@ -3644,8 +3644,12 @@ class ConversationTests(ImageCase):
                      "--url", "https://example.com/preview", "--image", str(self.red), "--alt", "A red quay")
         page = self.fetch(port, "/qd/q4.html")[1]
         file = self.messages("1", 3)[1]["images"][0]["file"]
-        self.assertIn(f'<img src="reply-images/q4/{file}" alt="A red quay"', page)
-        self.assertIn('<a class="ref-link" href="https://example.com/preview" target="_blank" rel="noopener noreferrer">The preview</a>', page)
+        status, refreshed = self.ask(port, "Q4.1", "Can you show another layout?")
+        self.assertEqual(status, 200)
+        for markup in (page, refreshed["thread"]):
+            self.assertIn(f'<a class="shot" href="reply-images/q4/{file}" target="_blank" rel="noopener">'
+                          f'<img src="reply-images/q4/{file}" alt="A red quay"', markup)
+            self.assertIn('<a class="ref-link" href="https://example.com/preview" target="_blank" rel="noopener noreferrer">The preview</a>', markup)
         self.assertIn('<a href="https://example.com/a" target="_blank"', page)
         with urllib.request.urlopen(f"http://127.0.0.1:{port}/qd/reply-images/q4/{file}", timeout=5) as response:
             self.assertEqual((response.status, response.headers["Content-Type"]), (200, "image/png"))

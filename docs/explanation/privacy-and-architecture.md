@@ -27,8 +27,9 @@ when enabled, the live Firstmate workers roster.
 
 Apart from explicitly supplied `add` inputs and the workers snapshot,
 Quarterdeck reads no backlog, board, topic, report, ledger or saved session
-from a Firstmate home, and it does not read terminal text. Quarterdeck stores
-no snapshot data or contact history on the server.
+from a Firstmate home, and it does not read terminal text. Quarterdeck keeps the
+workers snapshot only for the current request. It saves card asks and replies
+with their timestamps in the [item store](../reference/item-store.md#conversations).
 Quarterdeck writes nothing to the home except through the configured home's
 `bin/fm-inbox.sh note` command on explicit answer or ask submission. It passes
 an answer as the part ID followed by the text. Asks go to the explicit
