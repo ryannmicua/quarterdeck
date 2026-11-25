@@ -63,6 +63,11 @@ source clock moves backward.
 The timeout test checks that the snapshot shell and its child both release a
 shared pipe when the endpoint returns 502.
 
+The conversation group uses a fake inbox to check that ask replays and
+retries keep their original IDs and destination. Its headless Chrome checks
+open **Messages** explicitly and exercise both response orders when an ask
+and a reply acknowledgment overlap.
+
 For a screen change, also save one item of each kind, run `quarterdeck serve`,
 and check the Desk, each tab of the library pop-out (try 3, 30 and 200 saved items) and each item page at phone width (about 390 px) and
 desktop width: the page scrolls to its last element and back, and nothing

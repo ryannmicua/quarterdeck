@@ -88,18 +88,23 @@ See the [image removal rules](item-store.md#store-layout).
 ### Ask endpoint
 
 `POST /asks` (under any `base_path`) requires the explicit `firstmate_home`
-and the same origin as `/answers`. Send `{"part": "Q7.1", "text": "..."}` to
-save and deliver an ask, or `{"part": "Q7.1", "id": "<ask id>", "action": "retry"}`
-to retry a saved ask. A new ask on a closed question or removed item returns
-409. The inbox note starts with `ASK Q7.1 <ask id>`, followed by the ask text.
+and the same origin as `/answers`. Send
+`{"part": "Q7.1", "id": "<ask id>", "text": "...", "home": "<home binding>"}`
+to save and deliver an ask. The page generates the 32-character lowercase
+hexadecimal ID and takes the home binding from the served form. Repeating the
+same create request returns the existing ask. Send
+`{"part": "Q7.1", "id": "<ask id>", "action": "retry"}` to retry delivery
+of a saved ask using its original note ID. A changed home, closed question,
+or removed item can return 409. The inbox note starts with
+`ASK Q7.1 <ask id>`, followed by the ask text.
 
 ### Reply acknowledgment endpoint
 
 `POST /replies/read` (under any `base_path`) uses the same origin check as
 `/answers`. The served page sends `{"part": "Q7.1", "ids": ["<reply id>"]}`
-for replies it displayed on the opened question. Every ID must belong to
-a reply on that question. The response field `unread` indicates whether any
-replies on that question are still unread. Page GETs leave these records intact.
+when the user opens that question's **Messages**. Every ID must belong to
+a reply on that question. The response field `unread` lists the reply IDs
+that are still unread on that question. Page loads leave these records intact.
 
 ### Workers endpoint
 
