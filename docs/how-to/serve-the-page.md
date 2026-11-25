@@ -79,7 +79,8 @@ the browser-facing `Host` and the `/qd/` prefix.
 
 The default bind is `127.0.0.1`. A loopback listener refuses requests whose
 `Host` is outside loopback. Quarterdeck has no login. Anyone who can reach the
-service can read saved items, answers, and the enabled workers roster.
+service can read saved items, including their attached images, as well as answers
+and the enabled workers roster.
 They can also send answers as the owner.
 Quarterdeck prints a warning when you bind a non-loopback address. Keep the
 listener and proxy on the trusted network, or protect both with an owner access

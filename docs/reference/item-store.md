@@ -9,7 +9,11 @@ ${XDG_STATE_HOME:-~/.local/state}/quarterdeck/items.json
 Item commands and submitted answers update the store. Both set the store
 directory to mode 0700, take an exclusive lock on `items.json.lock`, validate
 the existing records, and atomically replace `items.json` with mode 0600.
-Readers validate the records without taking the lock.
+An in-place `render` takes the same exclusive lock from its store read
+through publication. An external render takes a shared lock if it can
+open the lock file and otherwise reads without coordinating with writers.
+External render can read from a read-only store. Other readers validate
+records without taking the lock.
 
 ## Format (version 1)
 
@@ -47,7 +51,7 @@ Readers validate the records without taking the lock.
 | --- | --- |
 | `resource` | A `url` and `link_text`. |
 | `list` | `{"entries": ["...", "..."]}`, at least one. |
-| `questions` | A nonempty `questions` array of objects. `question` and `context` are required text fields. `options` is an array of text and can be empty when the object has a `suggestion`. Each question may include `links`, an array of objects with exactly two fields, `text` and `url`. |
+| `questions` | A nonempty `questions` array of objects. `question` and `context` are required text fields. `options` can be empty when the object has a `suggestion`. Each question may include `links`, an array of objects with exactly two fields, `text` and `url`. See [question images](#question-images) for option and attachment fields. |
 
 Resource and question link URLs must use `http` or `https`, include a hostname,
 and pass port validation. After trimming, a URL may contain at most 2,000
@@ -75,6 +79,61 @@ Separate multiple addresses with spaces so they are recognized individually.
 Bare addresses lose trailing punctuation such as periods and exclamation
 marks. Enclose an address in angle brackets, as in
 `<https://example.com/?q=go!>`, to keep that punctuation in the destination.
+
+## Question images
+
+A question's optional `images` field is an array of attachments. An option
+may be an object with a `label` and a single `image` attachment. Plain text
+options are strings. After whitespace normalization, a pictured option's label
+must be distinct from all other option labels in its question.
+
+See the [example questions body](../how-to/save-items.md#questions-with-images).
+
+| Field | Meaning |
+| --- | --- |
+| `path` | A path of up to 4,000 characters to a local regular file containing a PNG, JPEG or still WebP image, up to 5 MB (5,000,000 bytes). Quarterdeck checks the file contents to identify its type. It rejects directories, named pipes and other nonregular files. |
+| `alt` | Required text that describes the image, up to 300 characters. |
+
+Relative paths are resolved from the directory where you run `quarterdeck add`.
+Paths beginning with `~/` are expanded from your home directory.
+
+An item can name up to 24 images across questions and options. `add` validates
+the whole body before opening any attachment. It resolves each distinct path
+spelling once per save and reads each resolved file once. Two spellings can
+resolve to different targets if a symlink is retargeted during the save.
+Quarterdeck uses the standard library's resolved path even when the operating
+system would reject the original spelling, such as a parent step through a
+regular file. Different paths to a hard-linked file count as separate reads.
+
+Quarterdeck copies the original bytes into the store. The original can move
+or go away after saving. The stored image entry replaces `path` with `file`:
+
+```json
+{"file": "3f9a0c2d41b7e6a8.png", "alt": "A card with a frame"}
+```
+
+`file` is the first 16 hexadecimal characters of the content's `sha256` digest
+plus the type's extension.
+
+### Store layout
+
+```text
+${XDG_STATE_HOME:-~/.local/state}/quarterdeck/images/<id>/<file>
+```
+
+The store's `images` folder has mode 0700, and newly written image files have
+mode 0600. `<id>` is the lowercase item ID, such as `q3`. `remove` deletes the
+files named in the removed item's record and leaves the item folder in place.
+`add` and `render` never delete saved image files.
+
+See the [supported umask](../how-to/save-items.md#known-limits).
+
+A failed `add` or an interrupted `remove` can leave files that no item names.
+Retrying does not clean them up. Where the destination does not support hard
+links, an interrupted image write during `add` or `render` can leave a partial
+file. Delete that partial file by hand before retrying the write. See the
+[serving boundary](../explanation/privacy-and-architecture.md#what-quarterdeck-reads-and-writes)
+and [export behavior](cli-and-config.md#rendered-images).
 
 ## Question answers
 

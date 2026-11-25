@@ -5,9 +5,11 @@ from __future__ import annotations
 
 import argparse
 import contextlib
+import errno
 import fcntl
 import functools
 import gzip
+import hashlib
 import html
 import ipaddress
 import json
@@ -17,6 +19,7 @@ import shlex
 import signal
 import socket
 import ssl
+import stat
 import subprocess
 import sys
 import tempfile
@@ -168,8 +171,33 @@ def write_private(path: Path, content: str) -> None:
         raise
 
 
+def write_private_bytes(path: Path, data: bytes) -> None:
+    """Write a new file with mode 0600; a name already taken is an error, never overwritten."""
+    descriptor, temporary = tempfile.mkstemp(prefix=f".{path.name}.", dir=path.parent)
+    try:
+        with os.fdopen(descriptor, "wb") as stream:
+            os.fchmod(stream.fileno(), 0o600)
+            stream.write(data)
+            stream.flush()
+            os.fsync(stream.fileno())
+        try:
+            os.link(temporary, path)
+            return
+        except OSError as exc:
+            if exc.errno not in {errno.EOPNOTSUPP, errno.ENOTSUP, errno.ENOSYS, errno.EPERM}:
+                raise
+    finally:
+        os.unlink(temporary)
+    descriptor = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+    with os.fdopen(descriptor, "wb") as stream:
+        os.fchmod(stream.fileno(), 0o600)
+        stream.write(data)
+        stream.flush()
+        os.fsync(stream.fileno())
+
+
 # --- The item store -----------------------------------------------------------------
-# One JSON file Quarterdeck owns. Every item was saved by hand through `quarterdeck add`; its body is stored by value
+# Item records live in one JSON file. Every item was saved by hand through `quarterdeck add`; its body is stored by value
 # at save time and never read again from anywhere else. An ID is never reused, even after its item is removed.
 
 STORE_VERSION = 1
@@ -253,25 +281,218 @@ def question_links(raw: object, where: str) -> list[dict[str, str]]:
     return links
 
 
-def question_entries(raw: object) -> list[dict[str, object]]:
+# Question images. A file named in a questions body is copied into the store's own images folder when the item is
+# saved, under the item's ID, and is never read from its original path again.
+IMAGE_BYTES_LIMIT = 5_000_000
+IMAGE_COUNT_LIMIT = 24
+IMAGE_TEXT_LIMIT = 300
+IMAGE_TYPES = {"png": "image/png", "jpg": "image/jpeg", "webp": "image/webp"}
+IMAGE_FILE_RE = re.compile(r"[0-9a-f]{16}[.](?:" + "|".join(map(re.escape, IMAGE_TYPES)) + r")")
+IMAGE_URL_RE = re.compile(r"images/(q[1-9][0-9]*)/(" + IMAGE_FILE_RE.pattern + r")")
+
+
+def images_root(store: Path) -> Path:
+    return store.with_name("images")
+
+
+def image_chunks(data: bytes, *, webp: bool) -> Iterator[tuple[bytes, bytes]]:
+    offset = 12 if webp else 8
+    while offset + 8 <= len(data):
+        header = data[offset:offset + 8]
+        kind = header[:4] if webp else header[4:]
+        size = int.from_bytes(header[4:] if webp else header[:4], "little" if webp else "big")
+        end = offset + 8 + size
+        next_offset = end + (size % 2 if webp else 4)
+        if next_offset > len(data):
+            break
+        content = data[offset + 8:end]
+        if not webp and zlib.crc32(content, zlib.crc32(kind)) != int.from_bytes(data[end:next_offset], "big"):
+            raise ValueError("invalid PNG checksum")
+        yield kind, content
+        offset = next_offset
+    if offset != len(data):
+        raise ValueError("incomplete image chunk")
+
+
+def jpeg_has_scan(data: bytes) -> bool:
+    offset = 2
+    frame = False
+    while offset + 4 <= len(data) and data[offset] == 0xff:
+        while offset + 1 < len(data) and data[offset + 1] == 0xff:
+            offset += 1
+        if offset + 4 > len(data):
+            break
+        marker = data[offset + 1]
+        size = int.from_bytes(data[offset + 2:offset + 4], "big")
+        end = offset + 2 + size
+        if size < 2 or end > len(data) - 2:
+            break
+        if marker in {0xc0, 0xc1, 0xc2, 0xc3, 0xc5, 0xc6, 0xc7, 0xc9, 0xca, 0xcb, 0xcd, 0xce, 0xcf}:
+            frame = size >= 11 and any(data[offset + 5:offset + 7]) and any(data[offset + 7:offset + 9])
+        if marker == 0xda:
+            return frame and size >= 8 and end < len(data) - 2
+        offset = end
+    return False
+
+
+def image_kind(data: bytes) -> str | None:
+    if data.startswith(b"\x89PNG\r\n\x1a\n"):
+        chunks = image_chunks(data, webp=False)
+        kind, header = next(chunks, (b"", b""))
+        if kind != b"IHDR" or len(header) != 13 or not any(header[:4]) or not any(header[4:8]):
+            return None
+        has_pixels = False
+        for kind, content in chunks:
+            has_pixels |= kind == b"IDAT" and bool(content)
+            if kind == b"IEND":
+                return "png" if not content and has_pixels and next(chunks, None) is None else None
+    if data.startswith(b"\xff\xd8\xff") and data.endswith(b"\xff\xd9") and jpeg_has_scan(data):
+        return "jpg"
+    if (data[:4] == b"RIFF" and data[8:12] == b"WEBP"
+            and int.from_bytes(data[4:8], "little") == len(data) - 8):
+        has_pixels = False
+        for kind, content in image_chunks(data, webp=True):
+            has_pixels |= (
+                (kind == b"VP8 " and len(content) > 10 and content[3:6] == b"\x9d\x01\x2a")
+                or (kind == b"VP8L" and len(content) > 5 and content[0] == 0x2f)
+            )
+        if has_pixels:
+            return "webp"
+    return None
+
+
+def open_nonblocking(path: str, flags: int) -> int:
+    return os.open(path, flags | os.O_NONBLOCK)
+
+
+def read_images(named: list[tuple[dict[str, str], str]], pending: dict[str, bytes]) -> None:
+    """Snapshot the files a body names: resolve each path text once, then read each real file once."""
+    real: dict[str, str] = {}
+    for image, where in named:  # image["file"] holds the path text until it is read
+        value = image["file"]
+        if value not in real:
+            try:
+                real[value] = os.path.realpath(os.path.expanduser(value))
+            except (OSError, ValueError) as exc:
+                raise ValueError(f"{where} could not be read: {value!r} ({exc})") from exc
+    files: dict[str, str] = {}
+    for image, where in named:
+        value = image["file"]
+        if real[value] not in files:
+            try:
+                if not stat.S_ISREG(os.stat(real[value]).st_mode):
+                    raise ValueError(f"{where} must be a regular file: {value!r}")
+                with open(real[value], "rb", opener=open_nonblocking) as stream:
+                    if not stat.S_ISREG(os.fstat(stream.fileno()).st_mode):
+                        raise ValueError(f"{where} must be a regular file: {value!r}")
+                    data = stream.read(IMAGE_BYTES_LIMIT + 1)
+            except OSError as exc:
+                raise ValueError(f"{where} could not be read: {value!r} ({exc})") from exc
+            if len(data) > IMAGE_BYTES_LIMIT:
+                raise ValueError(f"{where} is larger than {IMAGE_BYTES_LIMIT // 1_000_000} MB: {value!r}")
+            try:
+                kind = image_kind(data)
+            except ValueError:
+                kind = None
+            if kind is None:
+                raise ValueError(f"{where} must be a PNG, JPEG or still WebP image: {value!r}")
+            filename = hashlib.sha256(data).hexdigest()[:16] + "." + kind
+            files[real[value]] = filename
+            pending[filename] = data
+        image["file"] = files[real[value]]
+
+
+def image_entry(raw: object, where: str, named: list[tuple[dict[str, str], str]] | None) -> dict[str, str]:
+    """Check one image. With `named`, it is a body being saved (a `path`); without, it is stored (a `file`)."""
+    if not isinstance(raw, dict):
+        raise ValueError(f"{where} must be an object with a path and alt text")
+    source = "path" if named is not None else "file"
+    unknown = sorted(set(raw) - {source, "alt"})
+    if unknown:
+        raise ValueError(f"{where} has unsupported field(s): {', '.join(unknown)}")
+    if "alt" not in raw:
+        raise ValueError(f"{where} needs alt text that describes the image")
+    cleaned: dict[str, str] = {}
+    if named is not None:
+        path = raw.get("path")
+        if not isinstance(path, str):
+            raise ValueError(f"{where} path must be text")
+        if not path or "\0" in path or len(path) > 4000:
+            raise ValueError(f"{where} has an invalid path")
+        cleaned["file"] = path
+        named.append((cleaned, where))
+    else:
+        if not isinstance(raw.get("file"), str) or not IMAGE_FILE_RE.fullmatch(raw["file"]):
+            raise ValueError(f"{where} has an invalid file")
+        cleaned["file"] = raw["file"]
+    cleaned["alt"] = clean_text(raw["alt"], f"{where} alt text", IMAGE_TEXT_LIMIT)
+    return cleaned
+
+
+def option_label(option: object) -> str:
+    return str(option["label"] if isinstance(option, dict) else option)  # type: ignore[index]
+
+
+def item_image_files(item: dict[str, object]) -> set[str]:
+    files: set[str] = set()
+    if item["kind"] == "questions":
+        for question in item["body"]["questions"]:  # type: ignore[index]
+            files.update(image["file"] for image in question.get("images", []))
+            files.update(option["image"]["file"] for option in question["options"] if isinstance(option, dict))
+    return files
+
+
+def question_entries(raw: object, pending: dict[str, bytes] | None = None) -> list[dict[str, object]]:
     if not isinstance(raw, list) or not raw:
         raise ValueError("questions body must be a non-empty JSON array")
+    image_count = 0
     questions = []
+    named: list[tuple[dict[str, str], str]] = []
     for number, entry in enumerate(raw, 1):
         where = f"question {number}"
         if not isinstance(entry, dict):
             raise ValueError(f"{where} must be an object")
-        unknown = sorted(set(entry) - {"question", "context", "options", "suggestion", "links"})
+        options, images = entry.get("options", []), entry.get("images", [])
+        if not isinstance(options, list):
+            raise ValueError(f"{where} options must be a list of text or objects with a label and image")
+        if not isinstance(images, list):
+            raise ValueError(f"{where} images must be a list")
+        image_count += len(images)
+        unknown = sorted(set(entry) - {"question", "context", "options", "suggestion", "links", "images"})
         if unknown:
             raise ValueError(f"{where} has unsupported field(s): {', '.join(unknown)}")
-        options = entry.get("options", [])
-        if not isinstance(options, list):
-            raise ValueError(f"{where} options must be a list of text")
+        choices: list[object] = []
+        seen: set[str] = set()
+        pictured: set[str] = set()
+        for position, option in enumerate(options, 1):
+            name = f"{where} option {position}"
+            if not isinstance(option, dict):
+                label = clean_text(option, name, TEXT_LIMIT)
+                if label in pictured:
+                    raise ValueError(f"{name} duplicates a pictured option label")
+                seen.add(label)
+                choices.append(label)
+                continue
+            unknown = sorted(set(option) - {"label", "image"})
+            if unknown:
+                raise ValueError(f"{name} has unsupported field(s): {', '.join(unknown)}")
+            label = clean_text(option.get("label"), f"{name} label", TEXT_LIMIT)
+            if label in seen:
+                raise ValueError(f"{name} duplicates an option label")
+            seen.add(label)
+            pictured.add(label)
+            choices.append({"label": label, "image": image_entry(option.get("image"), f"{name} image", named if pending is not None else None)})
+            image_count += 1
+        if image_count > IMAGE_COUNT_LIMIT:
+            raise ValueError(f"an item can hold at most {IMAGE_COUNT_LIMIT} images")
         cleaned: dict[str, object] = {
             "question": clean_text(entry.get("question"), f"{where} question", TEXT_LIMIT, multiline=True),
             "context": clean_text(entry.get("context"), f"{where} context", TEXT_LIMIT, multiline=True),
-            "options": [clean_text(option, f"{where} option", TEXT_LIMIT) for option in options],
+            "options": choices,
         }
+        if images:
+            cleaned["images"] = [image_entry(image, f"{where} image {position}", named if pending is not None else None)
+                                 for position, image in enumerate(images, 1)]
         if entry.get("suggestion") not in (None, ""):
             cleaned["suggestion"] = clean_text(entry["suggestion"], f"{where} suggestion", TEXT_LIMIT, multiline=True)
         links = question_links(entry.get("links", []), where)
@@ -280,20 +501,23 @@ def question_entries(raw: object) -> list[dict[str, object]]:
         if not cleaned["options"] and "suggestion" not in cleaned:
             raise ValueError(f"{where} needs options or a suggestion to decide from")
         questions.append(cleaned)
+    if pending is not None:
+        read_images(named, pending)
     return questions
 
 
-def validated_body(kind: str, body: object) -> dict[str, object]:
+def validated_body(kind: str, body: object, pending: dict[str, bytes] | None = None) -> dict[str, object]:
     if not isinstance(body, dict):
         raise ValueError("body must be an object")
     if kind == "resource":
         return {"url": clean_url(body.get("url")), "link_text": clean_text(body.get("link_text"), "link text", TITLE_LIMIT)}
     if kind == "list":
         return {"entries": list_entries(body.get("entries"))}
-    return {"questions": question_entries(body.get("questions"))}
+    return {"questions": question_entries(body.get("questions"), pending)}
 
 
-def make_body(kind: str, *, url: str | None, link_text: str | None, body: str | None) -> dict[str, object]:
+def make_body(kind: str, *, url: str | None, link_text: str | None, body: str | None,
+              images: dict[str, bytes]) -> dict[str, object]:
     if kind == "resource":
         if url is None or link_text is None:
             raise ValueError("a resource needs --url and --link-text")
@@ -310,7 +534,7 @@ def make_body(kind: str, *, url: str | None, link_text: str | None, body: str | 
         questions = json.loads(body)
     except json.JSONDecodeError as exc:
         raise ValueError(f"questions body is not valid JSON: {exc}") from exc
-    return validated_body(kind, {"questions": questions})
+    return validated_body(kind, {"questions": questions}, images)
 
 
 def check_store(data: object) -> dict[str, object]:
@@ -374,16 +598,37 @@ def read_store(path: Path) -> dict[str, object]:
 
 
 @contextmanager
-def changing_store(path: Path) -> Iterator[dict[str, object]]:
-    """Read the store under an exclusive lock, let the caller change it, then write it back atomically."""
+def locked_store(path: Path, *, read_only: bool = False) -> Iterator[None]:
+    lock_path = path.with_name(path.name + ".lock")
+    if read_only:
+        try:
+            lock = lock_path.open("rb")
+        except OSError:
+            yield
+        else:
+            with lock:
+                fcntl.flock(lock, fcntl.LOCK_SH)
+                yield
+        return
     path.parent.mkdir(parents=True, exist_ok=True)
     os.chmod(path.parent, 0o700)
-    descriptor = os.open(path.with_name(path.name + ".lock"), os.O_CREAT | os.O_RDWR, 0o600)
+    descriptor = os.open(lock_path, os.O_CREAT | os.O_RDWR, 0o600)
     with os.fdopen(descriptor, "r+", encoding="utf-8") as lock:
         fcntl.flock(lock, fcntl.LOCK_EX)
+        yield
+
+
+def write_store(path: Path, data: dict[str, object]) -> None:
+    write_private(path, json.dumps(data, indent=2, ensure_ascii=False) + "\n")
+
+
+@contextmanager
+def changing_store(path: Path) -> Iterator[dict[str, object]]:
+    """Read the store under an exclusive lock, let the caller change it, then write it back atomically."""
+    with locked_store(path):
         data = read_store(path)
         yield data
-        write_private(path, json.dumps(data, indent=2, ensure_ascii=False) + "\n")
+        write_store(path, data)
 
 
 def find_item(data: dict[str, object], item_id: str) -> dict[str, object]:
@@ -559,7 +804,7 @@ def item_text(item: dict[str, object]) -> str:
             for link in question.get("links", []):
                 lines.append(f"      Link: {link['text']}: {link['url']}")
             if question["options"]:
-                lines.append("      Options: " + " | ".join(question["options"]))
+                lines.append("      Options: " + " | ".join(option_label(option) for option in question["options"]))
             if question.get("suggestion"):
                 lines.append(f"      Suggestion: {question['suggestion']}")
             record = part_record(item, number)
@@ -580,19 +825,73 @@ def run_item_command(action) -> int:  # noqa: ANN001 - a callable returning the 
         return 2
 
 
+def image_directory(root: Path, item_id: str) -> Path:
+    directory = root / item_id.lower()
+    for path in (root, directory):
+        if path.is_symlink() or (path.exists() and not path.is_dir()):
+            raise ValueError(f"refusing to use an unrelated image path: {path}")
+    return directory
+
+
+def stored_image(store: Path, item_id: str, file: str) -> Path:
+    path = image_directory(images_root(store), item_id) / file
+    if path.is_symlink() or not path.is_file():
+        raise ValueError(f"the image {file} of {item_id} is missing from the store")
+    return path
+
+
+def place_image(target: Path, data: bytes) -> None:
+    """Create an image file. An identical file already there is kept; any other occupant is an error."""
+    if not target.is_symlink() and not target.exists():
+        try:
+            write_private_bytes(target, data)
+            return
+        except FileExistsError:
+            pass
+    if (target.is_symlink() or not target.is_file() or target.stat().st_size != len(data)
+            or target.read_bytes() != data):
+        raise ValueError(f"refusing to overwrite an unrelated file: {target}")
+
+
+def save_images(store: Path, item_id: str, images: dict[str, bytes]) -> None:
+    if not images:
+        return
+    directory = image_directory(images_root(store), item_id)
+    directory.parent.mkdir(mode=0o700, exist_ok=True)
+    os.chmod(directory.parent, 0o700)
+    directory.mkdir(mode=0o700, exist_ok=True)
+    for name, data in images.items():
+        place_image(directory / name, data)
+
+
+def remove_images(store: Path, item: dict[str, object]) -> None:
+    """Delete exactly the files this item's record names."""
+    files = item_image_files(item)
+    if not files:
+        return
+    directory = image_directory(images_root(store), str(item["id"]))
+    for name in files:
+        (directory / name).unlink(missing_ok=True)
+
+
 def add_item(args: argparse.Namespace) -> int:
     def action() -> int:
-        body = make_body(args.kind, url=args.url, link_text=args.link_text, body=read_body(args.body_file))
+        images: dict[str, bytes] = {}
+        body = make_body(args.kind, url=args.url, link_text=args.link_text, body=read_body(args.body_file), images=images)
         item: dict[str, object] = {
             "kind": args.kind, "title": clean_text(args.title, "title", TITLE_LIMIT),
             "description": clean_text(args.description, "description", DESCRIPTION_LIMIT, multiline=True),
             "saved_at": now_text(), "body": body,
         }
-        with changing_store(store_path()) as data:
-            item = {"id": f"Q{data['next_id']}", **item}
+        store = store_path()
+        with locked_store(store):
+            data = read_store(store)
+            item_id = f"Q{data['next_id']}"
             data["next_id"] = int(data["next_id"]) + 1  # type: ignore[call-overload]
-            data["items"].append(item)  # type: ignore[union-attr]
-        print(item["id"])
+            data["items"].append({"id": item_id, **item})  # type: ignore[union-attr]
+            save_images(store, item_id, images)
+            write_store(store, data)
+        print(item_id)
         return 0
     return run_item_command(action)
 
@@ -618,17 +917,22 @@ def show_item(args: argparse.Namespace) -> int:
 
 def remove_item(args: argparse.Namespace) -> int:
     def action() -> int:
-        with changing_store(store_path()) as data:
+        store = store_path()
+        with changing_store(store) as data:
             item = find_item(data, args.id)
             data["items"] = [other for other in data["items"] if other is not item]  # type: ignore[union-attr]
+        try:
+            remove_images(store, item)
+        except (OSError, ValueError) as exc:
+            raise ValueError(f"removed {item['id']} from the store but could not delete its images: {exc}") from exc
         print(f"Removed {item['id']}; its ID is not reused")
         return 0
     return run_item_command(action)
 
 
 # --- Workers ------------------------------------------------------------------------------
-# The one deliberate read of a Firstmate home: its own read-only fleet snapshot, run without a model.
-# Quarterdeck keeps nothing from it, shows only what the snapshot states outright, and never writes to the home.
+# Roster refresh runs only the home's read-only fleet snapshot, without a model.
+# Quarterdeck shows only what the snapshot states outright and keeps no copy.
 
 SNAPSHOT_COMMAND = ("bin/fm-fleet-snapshot.sh", "--local")
 SNAPSHOT_SECONDS = 60
@@ -881,6 +1185,16 @@ textarea { display:block; width:100%; resize:vertical; background:var(--ground);
 .ref-links li { margin:0; }
 .ref-link { display:inline-block; padding:.6rem 0; min-height:44px; box-sizing:border-box; font-size:1.1rem; font-weight:600; text-decoration:underline; color:var(--ink); }
 .visual { margin:.2rem 0 1rem; font-family:var(--sans); }
+.decision img { display:block; width:100%; height:auto; max-height:30rem; object-fit:contain; background:var(--faint);
+  border:1px solid var(--rule); border-radius:4px; }
+.shots,.has-images { list-style:none; margin:.2rem 0 1rem; padding:0; display:grid; gap:1rem;
+  grid-template-columns:repeat(auto-fit,minmax(min(100%,13rem),1fr)); align-items:start; }
+.shots li,.option { margin:0; min-width:0; }
+.shot { display:block; }
+.option { display:flex; flex-direction:column; gap:.4rem; }
+.choice.has-image { display:flex; flex-direction:column; align-items:stretch; gap:.6rem; flex:1; }
+.choice .pick { display:flex; gap:.4em; align-items:baseline; flex-wrap:wrap; }
+.open-image { align-self:flex-start; display:inline-flex; align-items:center; min-height:44px; font:var(--text-sm)/1.3 var(--sans); }
 table.items td.when { white-space:normal; }
 .desk { margin:0 0 1rem; }
 .desk .work { max-width:none; margin:0; padding:1rem; border-width:0 0 1px; border-left:5px solid var(--rule); border-radius:0; background:transparent;
@@ -1146,6 +1460,52 @@ def has_answer_controls(item):
         part_record(item, n).get("state") != "closed" for n in question_parts(item))
 
 
+def image_url(item, image):
+    return f'images/{str(item["id"]).lower()}/{image["file"]}'
+
+
+def image_tag(item, image, *, element_id=None):
+    identifier = f' id="{element_id}"' if element_id else ''
+    return f'<img src="{esc(image_url(item, image))}" alt="{esc(image["alt"])}" loading="lazy" decoding="async"{identifier}>'
+
+
+def image_link(item, image):
+    """The image as a link to the full image."""
+    return (f'<a class="shot" href="{esc(image_url(item, image))}" target="_blank" rel="noopener">'
+            f'{image_tag(item, image)}</a>')
+
+
+def question_shots(item, question):
+    if not question.get("images"):
+        return ""
+    return '<ul class="shots">' + "".join(
+        f'<li>{image_link(item, image)}</li>' for image in question["images"]) + '</ul>'
+
+
+def choice_label(item, part, number, option, *, suggested):
+    """Render a choice with its mockup inside the radio label and a separate full-size link."""
+    label = option_label(option)
+    attributes = f'type="radio" name="choice-{part}" data-choice="{esc(label)}"' + (' data-suggested' if suggested else '')
+    if not isinstance(option, dict):
+        badge = ' <small>Suggested</small>' if suggested else ''
+        return f'<label class="choice"><input {attributes}> {linked_text(label)}{badge}</label>'
+    image, words = option["image"], f"words-{part}-{number}"
+    mockup, suggestion = f"mockup-{part}-{number}", f"suggestion-{part}-{number}"
+    description = f"{mockup} {suggestion}" if suggested else mockup
+    badge = f' <small id="{suggestion}">Suggested</small>' if suggested else ''
+    return (f'<div class="option"><label class="choice has-image">{image_tag(item, image, element_id=mockup)}'
+            f'<span class="pick"><input {attributes} aria-labelledby="{words}" aria-describedby="{description}"> '
+            f'<span id="{words}">{linked_text(label)}</span>{badge}</span></label>'
+            f'<a class="open-image" href="{esc(image_url(item, image))}" target="_blank" rel="noopener" '
+            f'aria-label="Open image for {esc(label)}">Open image</a></div>')
+
+
+def read_only_option(item, option):
+    if not isinstance(option, dict):
+        return f'<li>{linked_text(option)}</li>'
+    return f'<li class="option">{image_link(item, option["image"])}<span>{linked_text(option["label"])}</span></li>'
+
+
 def question_form(item, served):
     cards = []
     state, open_parts, _ = question_summary(item)
@@ -1170,25 +1530,25 @@ def question_form(item, served):
                       f' data-state="{status}" data-pending="{int(delivery_pending(record))}"')
             suggestions = question.get("suggestion")
             choices = list(question["options"])
-            if suggestions and suggestions not in choices:
+            if suggestions and suggestions not in map(option_label, choices):
                 choices.append(suggestions)
-            labels = []
-            for choice in choices:
-                suggested = choice == suggestions
-                labels.append(f'<label class="choice"><input type="radio" name="choice-{part}" data-choice="{esc(choice)}"'
-                              + (' data-suggested' if suggested else '') + f'> {linked_text(choice)}'
-                              + (' <small>Suggested</small>' if suggested else '') + '</label>')
-            controls = (links_html(question) + '<div class="choices">' + ''.join(labels) + '</div>'
+            labels = [choice_label(item, part, n, choice, suggested=option_label(choice) == suggestions)
+                      for n, choice in enumerate(choices, 1)]
+            pictured = any(isinstance(choice, dict) for choice in choices)
+            controls = (links_html(question) + f'<div class="choices{" has-images" if pictured else ""}">' + ''.join(labels) + '</div>'
                         + f'<label for="answer-{part}">Your answer</label><textarea id="answer-{part}" '
                         + f'maxlength="{TEXT_LIMIT}" rows="2" aria-describedby="error-{part}">{esc(answer)}</textarea>'
                         + f'<p id="error-{part}" hidden></p>')
         else:
-            controls = links_html(question) + '<ul>' + ''.join(f'<li>{linked_text(v)}</li>' for v in question["options"]) + '</ul>'
+            pictured = any(isinstance(v, dict) for v in question["options"])
+            controls = (links_html(question) + ('<ul class="has-images">' if pictured else '<ul>')
+                        + ''.join(read_only_option(item, v) for v in question["options"]) + '</ul>')
             if question.get("suggestion"):
                 controls += f'<p><strong>Suggested answer</strong><br>{linked_text(question["suggestion"])}</p>'
         cards.append(f'<section class="decision" id="{part}" aria-labelledby="title-{part}"{editor}>'
                      f'<div class="eyebrow"><span class="id">{part}</span><span class="badge">{status.capitalize()}</span></div>'
-                     f'<h2 id="title-{part}">{linked_text(question["question"])}</h2><p>{linked_text(question["context"])}</p>{saved}{controls}</section>')
+                     f'<h2 id="title-{part}">{linked_text(question["question"])}</h2><p>{linked_text(question["context"])}</p>'
+                     f'{question_shots(item, question)}{saved}{controls}</section>')
     total = len(cards)
     progress = f"{remaining} of {total} open" if remaining else state
     toolbar = ""
@@ -1405,9 +1765,10 @@ def item_page(item: dict[str, object], site_title: str, *, served: bool, saved_n
 
 
 def site_pages(data: dict[str, object], site_title: str, saved_name: str) -> dict[str, str]:
-    pages = {saved_name: list_page(data, site_title, served=False, saved_name=saved_name)}
+    pages = {}
     for item in data["items"]:  # type: ignore[union-attr]
         pages[item_page_name(str(item["id"]))] = item_page(item, site_title, served=False, saved_name=saved_name)
+    pages[saved_name] = list_page(data, site_title, served=False, saved_name=saved_name)
     return pages
 
 
@@ -1417,6 +1778,21 @@ def site_pages(data: dict[str, object], site_title: str, saved_name: str) -> dic
 def default_output_dir(config: dict[str, object]) -> Path:
     configured = config.get("output_dir")
     return Path(configured).expanduser() if isinstance(configured, str) else state_dir()
+
+
+def copy_images(items: list[dict[str, object]], store: Path, root: Path, *, live: bool) -> None:
+    """Check every stored image opens; outside the state folder, also create the copies the pages link to."""
+    for item in items:
+        files = item_image_files(item)
+        if not files:
+            continue
+        item_id = str(item["id"])
+        directory = None if live else image_directory(root, item_id)
+        for file in sorted(files):
+            with stored_image(store, item_id, file).open("rb") as stream:
+                if directory is not None:
+                    directory.mkdir(parents=True, exist_ok=True)
+                    place_image(directory / file, stream.read())
 
 
 def generated_page(path: Path) -> bool:
@@ -1444,19 +1820,26 @@ def render(args: argparse.Namespace) -> int:
         if output.parent == checkout or checkout in output.parents:
             raise ValueError("the rendered page must be outside the Quarterdeck checkout")
         store = store_path()
+        root = output.parent / "images"
+        live = output.parent == store.parent.resolve()
         protected = {store.resolve(), store.with_name(store.name + ".lock").resolve()}
         if ITEM_PAGE_RE.fullmatch(output.name.lower()):
             raise ValueError("the Saved filename is reserved for item pages")
-        pages = site_pages(read_store(store), page_title(args, config), output.name)
-        for name in pages:
-            destination = output.parent / name
-            if destination in protected:
-                raise ValueError("the rendered page would overwrite the item store or its lock")
-            if (destination.exists() or destination.is_symlink()) and not generated_page(destination):
-                raise ValueError(f"refusing to overwrite an unrelated file: {destination}")
-        for name, content in pages.items():
-            write_private(output.parent / name, content)
-        retire_stale_pages(output.parent, set(pages))
+        if output.name.lower() == "images":
+            raise ValueError("the Saved filename is reserved for images")
+        with locked_store(store, read_only=not live):
+            data = read_store(store)
+            pages = site_pages(data, page_title(args, config), output.name)
+            for name in pages:
+                destination = output.parent / name
+                if destination in protected:
+                    raise ValueError("the rendered page would overwrite the item store or its lock")
+                if (destination.exists() or destination.is_symlink()) and not generated_page(destination):
+                    raise ValueError(f"refusing to overwrite an unrelated file: {destination}")
+            copy_images(data["items"], store, root, live=live)  # type: ignore[arg-type]
+            for name, content in pages.items():
+                write_private(output.parent / name, content)
+            retire_stale_pages(output.parent, set(pages))
     except (OSError, ValueError) as exc:
         print(f"quarterdeck: {exc}", file=sys.stderr)
         return 2
@@ -1691,6 +2074,18 @@ def make_handler(site_title: str, base_path: str = "", store: Path | None = None
             self.end_headers()
             self.wfile.write(data)
 
+        def send_image(self, data: dict[str, object], item_id: str, file: str) -> None:
+            """Only a file the store lists for that item is served, and only from the private images folder."""
+            try:
+                item = find_item(data, item_id)
+                if file not in item_image_files(item):
+                    raise ValueError("not an image of this item")
+                content = stored_image(store or store_path(), item_id, file).read_bytes()
+            except (OSError, ValueError):
+                self.send_text(404, "Not found\n")
+                return
+            self.send_text(200, content, IMAGE_TYPES[file.rsplit(".", 1)[1]])
+
         def do_GET(self) -> None:  # noqa: N802 - http.server naming
             if is_loopback(str(self.server.server_address[0])) and not request_host_is_loopback(self.headers.get("Host")):
                 self.send_text(403, "Host is not allowed\n")
@@ -1723,13 +2118,17 @@ def make_handler(site_title: str, base_path: str = "", store: Path | None = None
                 else:
                     self.send_text(200, json.dumps(snapshot), "application/json")
                 return
-            if name != "index.html" and not ITEM_PAGE_RE.fullmatch(name):
+            picture = IMAGE_URL_RE.fullmatch(name)
+            if name != "index.html" and not picture and not ITEM_PAGE_RE.fullmatch(name):
                 self.send_text(404, "Not found\n")
                 return
             try:
                 data = read_store(store or store_path())
             except ValueError:
                 self.send_text(500, "Quarterdeck could not read its item store\n")
+                return
+            if picture:
+                self.send_image(data, picture[1], picture[2])
                 return
             if name == "index.html":
                 self.send_text(200, list_page(data, site_title, served=True, workers=workers_home is not None),
@@ -2018,8 +2417,9 @@ def show_help(args: argparse.Namespace) -> int:
 # --- command line -------------------------------------------------------------------------
 
 KIND_HELP = ("resource (a link: --url and --link-text), list (one entry per non-blank line), "
-             "questions (a JSON array of {question, context, options, suggestion, links}; "
-             "links is a list of {text, url} shown above the options)")
+             "questions (a JSON array of {question, context, options, suggestion, links, images}; "
+             "links is a list of {text, url} shown above the options; an option may be "
+             "{label, image}, and an image is {path, alt}, copied into the private store when saved)")
 
 
 def add_serve_options(parser: argparse.ArgumentParser) -> None:
@@ -2053,7 +2453,8 @@ def make_parser() -> argparse.ArgumentParser:
     add.add_argument("--description", required=True, help="one or two sentences: what it is and why it was saved")
     add.add_argument("--url", help="a resource's http(s) address")
     add.add_argument("--link-text", help="a resource's link text")
-    add.add_argument("--body-file", metavar="PATH", help="the body of a list or questions; - reads standard input")
+    add.add_argument("--body-file", metavar="PATH", help="the body of a list or questions; - reads standard input. Questions may carry PNG, JPEG or still WebP images "
+                                                          "(up to 5 MB each) that are copied in when saved")
 
     command("list", "list saved items, newest first", "List saved items, newest first.", list_items)
 

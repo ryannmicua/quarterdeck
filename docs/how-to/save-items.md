@@ -61,9 +61,10 @@ See [Answer questions](answer-questions.md) to send decisions.
 
 ### A question that points to a review page
 
-When a question is easier to decide with a picture or a mock-up, add `links` to
-that question. Use descriptive link text so the reader knows what they will
-see. For field requirements, see the
+To send readers to an external review page, add `links` to the question. Use
+descriptive link text so the reader knows what they will see. To show local
+mockups on the item page, see [Questions with images](#questions-with-images).
+For link field requirements, see the
 [item store reference](../reference/item-store.md#format-version-1).
 
 ```json
@@ -81,11 +82,41 @@ the first such question, prefixed with that question's ID, as in
 `Q6.2 See the mock-ups`.
 On both surfaces, the links open in a new tab.
 
+### Questions with images
+
+You can attach an overview to the question, a mockup to individual options,
+or both. You can mix pictured options with plain text options.
+
+```json
+[
+  {"question": "Which card style?",
+   "context": "Both fit a phone.",
+   "images": [{"path": "~/shots/overview.png", "alt": "Both card styles side by side"}],
+   "options": [
+     {"label": "Plain", "image": {"path": "~/shots/plain.png", "alt": "A card with no frame"}},
+     {"label": "Framed", "image": {"path": "~/shots/framed.png", "alt": "A card with a thin frame"}}
+   ]}
+]
+```
+
+Save the JSON with the same `quarterdeck add --kind questions` command as
+above. Check [who can view saved images](serve-the-page.md#security-loopback-by-default)
+before attaching them.
+See the [image requirements and storage rules](../reference/item-store.md#question-images)
+and [how to view and pick pictured options](answer-questions.md#view-mockups).
+
+#### Known limits
+
+- On a case-insensitive filesystem, Quarterdeck treats path spellings that
+  differ only by case as separate paths.
+- Quarterdeck requires a umask that preserves the owner's read, write, and
+  search permissions.
+
 ## Find, read and remove items
 
 ```sh
 quarterdeck list         # saved items, newest first
-quarterdeck show Q3      # one item in full, numbered as on the page
+quarterdeck show Q3      # read Q3
 quarterdeck remove Q3    # delete Q3 and retire its ID
 ```
 
