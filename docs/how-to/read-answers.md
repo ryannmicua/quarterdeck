@@ -35,4 +35,5 @@ Set [`firstmate_home`](../reference/cli-and-config.md#json-configuration) in the
 Quarterdeck config and restart the serving process.
 
 If delivery fails, check the binding and the home's [inbox command](../explanation/privacy-and-architecture.md#what-quarterdeck-reads-and-writes).
-Then [retry the saved answer](answer-questions.md) from the card.
+Then retry the [saved answer](answer-questions.md) or
+[ask](ask-firstmate.md#retry-a-missed-delivery) from the card.

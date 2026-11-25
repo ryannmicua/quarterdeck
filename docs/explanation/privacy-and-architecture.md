@@ -9,27 +9,36 @@ when enabled, the live Firstmate workers roster.
 - Item commands use the [item store and its lock](../reference/item-store.md).
   `add` copies body text from the named file or standard input into the store.
   A questions body can also name [local image attachments](../reference/item-store.md#question-images).
+  `quarterdeck reply --image` reads the explicitly named image files and copies
+  them into the [private reply image folder](../reference/item-store.md#store-layout).
 - `render`, `serve`, `service` and `url` can read the
   [optional config](../reference/cli-and-config.md#json-configuration).
-- `render` reads the item store and saved images. It inspects existing output
-  files before replacing or retiring them. See the [render reference](../reference/cli-and-config.md#pages).
+- `render` reads the item store and the images attached to questions and
+  options. It inspects existing output files before replacing or retiring
+  them. See the [render reference](../reference/cli-and-config.md#pages).
 - `serve` reads the item store to build pages and writes to it when users
-  submit answers. It serves images only from the private `images` folder and
-  only when the store lists the file for that item. It reads the TLS certificate
-  and key if you supply them.
+  submit answers, send asks or acknowledge replies in an item or question
+  conversation. It serves only files listed for the requested item from
+  the corresponding [private image folder](../reference/item-store.md#store-layout).
+  It reads the TLS certificate and key if you supply them.
 - The [workers endpoint](../reference/cli-and-config.md#workers-endpoint) runs
   the configured home's read-only `bin/fm-fleet-snapshot.sh --local`. This
   command uses no model.
 - `service --write` writes the systemd unit. `url` reads it if it exists.
 - `install` and `update` invoke the [user-local installer](../how-to/install.md).
 
-Apart from explicitly supplied `add` inputs and the workers snapshot,
+Apart from explicitly supplied `add` inputs, images named with `reply --image`,
+and the workers snapshot,
 Quarterdeck reads no backlog, board, topic, report, ledger or saved session
-from a Firstmate home, and it does not read terminal text. Quarterdeck stores
-no snapshot data or contact history on the server.
+from a Firstmate home, and it does not read terminal text. Quarterdeck keeps the
+workers snapshot only for the current request. It saves card asks and replies
+with their timestamps in the [item store](../reference/item-store.md#conversations).
 Quarterdeck writes nothing to the home except through the configured home's
-`bin/fm-inbox.sh note` command on explicit answer submission. It passes the
-plain answer text prefixed with the part ID.
+`bin/fm-inbox.sh note` command on explicit answer or ask submission. It passes
+an answer as the part ID followed by the text. Asks go to the explicit
+`firstmate_home` using the [ask note format](../reference/cli-and-config.md#ask-endpoint).
+Replies come back only through `quarterdeck reply`, which Firstmate runs on
+the same machine. Quarterdeck never calls a model.
 
 Firstmate handles any periodic checks for decisions made in chat or on review
 pages. Quarterdeck records the [source supplied with `mark`](../how-to/read-answers.md)
@@ -47,7 +56,7 @@ To change its classification, use [`classify`](../how-to/classify-items.md#chang
 
 See [serving security](../how-to/serve-the-page.md#security-loopback-by-default)
 for the browser interface and who can reach it. Saving, rendering
-and serving items make no outbound requests or model calls. The installer
+and serving pages make no outbound requests or model calls. The installer
 uses Git to clone or update the checkout.
 
 The served Desk includes archived question and answer text in its HTML so the

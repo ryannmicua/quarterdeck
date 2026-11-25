@@ -78,10 +78,12 @@ the browser-facing `Host` and the `/qd/` prefix.
 
 The default bind is `127.0.0.1`. A loopback listener refuses requests whose
 `Host` is outside loopback. Quarterdeck has no login. Anyone who can reach the
-service can read saved items, including their attached images, as well as answers
-and the enabled workers roster.
-They can also send answers as the owner.
+service can read saved items, their images, answers, conversations, reply
+images, and the enabled workers roster. They can also send answers and
+acknowledge replies as the owner. When `firstmate_home` is set, they can
+send asks to that home's inbox.
 Quarterdeck prints a warning when you bind a non-loopback address. Keep the
 listener and proxy on the trusted network, or protect both with an owner access
 gate. Browser submissions require an `Origin` that matches the public host and
-scheme. Question pages with answer controls cannot be embedded in frames.
+scheme. Asks and reply acknowledgments use the same check. Question pages
+with answer controls or unread replies cannot be embedded in frames.

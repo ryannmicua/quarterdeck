@@ -40,7 +40,11 @@ or **Close library**.
 
 An item stays on the Desk while it has an open question or a non-closed
 question with an answer awaiting delivery. Otherwise it appears under
-**Answered**. Reopen a question with `quarterdeck mark Q5.2 open` to return
+**Answered**. Pending asks and unread replies leave the item in its current
+listing. Both the Desk and the library’s **Answered** tab show **Replied** while
+an item has unread replies. See [how to read and acknowledge replies](ask-firstmate.md#read-replies).
+
+Reopen a question with `quarterdeck mark Q5.2 open` to return
 its item to the Desk. The item stays saved until you remove it with
 `quarterdeck remove`.
 

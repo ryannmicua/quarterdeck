@@ -6,7 +6,8 @@ When no question is open but an answer is still pending delivery, the card
 action reads **Review answers**. Each question has an ID you can cite later.
 
 An item page lists every question in one list. A question marked **Answered**
-with a **Sent** answer collapses to one line below the expanded questions.
+with a **Sent** answer and no unread replies collapses to one line below the
+expanded questions when you open the page.
 The line shows the saved answer, followed by **(Desk)** if the question also
 has an off-Desk mark. Open the row to see the question and any recorded
 answer source. On the served page you can edit the answer there. A saved
@@ -17,9 +18,12 @@ so you can compare answers and send them together.
 If the question has [review links](save-items.md#a-question-that-points-to-a-review-page),
 open them for context before choosing an answer.
 
-1. Pick an option or type in **Your answer**. Select **Use all suggestions** to fill open questions that have a suggestion and have neither a saved answer nor a draft.
+1. Pick an option or type in the answer field. Select **Use all suggestions** to fill open questions that have a suggestion and have neither a saved answer nor a draft.
 2. Review the answers. **Undo changes** reverses one option choice or bulk suggestion action at a time and keeps any drafts you typed afterward.
 3. Select **Send answers**. The button counts the answers ready to send. You can send a few now and return for the rest.
+
+When you need more information before deciding, see how to
+[ask Firstmate and read replies](ask-firstmate.md).
 
 To find an item after it leaves the Desk, open
 [**Answered** in the library](use-the-library.md#when-an-item-moves).

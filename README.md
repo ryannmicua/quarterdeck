@@ -46,7 +46,8 @@ the saved content.
   item shows on the next load. HTTPS, a reverse-proxy path prefix and a systemd
   user service are supported. See [Serve the page](docs/how-to/serve-the-page.md).
 - `quarterdeck render` writes the pages as HTML files instead.
-- [Answer questions](docs/how-to/answer-questions.md) in the browser.
+- [Answer questions](docs/how-to/answer-questions.md) or
+  [ask Firstmate from a card](docs/how-to/ask-firstmate.md) in the browser.
 - Python 3 standard library only.
 
 ## Quick start
@@ -72,8 +73,9 @@ and the [CLI reference](docs/reference/cli-and-config.md).
 ## How it relates to Firstmate
 
 Firstmate runs the crew. Quarterdeck is a separate shelf: Firstmate puts
-things on it only when you ask, with the `quarterdeck` command. Quarterdeck
-sends submitted answers to the configured Firstmate inbox.
+things on it only when you ask, with the `quarterdeck` command. When you ask
+from a card, Firstmate can reply there with text, links and images.
+See [Reply from the command line](docs/how-to/reply-from-the-command-line.md).
 
 ## Privacy model
 

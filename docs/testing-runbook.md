@@ -13,6 +13,7 @@ Run one group while changing it, then the whole suite before a pull request
 | `render` | `PYTHONPATH=tests python3 -m unittest -v test_quarterdeck.RenderTests` |
 | Question image import, serving, and export | `PYTHONPATH=tests python3 -m unittest -v test_quarterdeck.QuestionImageTests test_quarterdeck.QuestionImagePageTests` |
 | `serve`, base path and host checks | `PYTHONPATH=tests python3 -m unittest -v test_quarterdeck.ServeTests` |
+| Card asks, replies, and acknowledgment | `PYTHONPATH=tests python3 -m unittest -v test_quarterdeck.ConversationTests` |
 | Workers snapshot and refresh | `PYTHONPATH=tests python3 -m unittest -v test_quarterdeck.WorkersTests` |
 | `service`, `url` and `help` | `PYTHONPATH=tests python3 -m unittest -v test_quarterdeck.ServiceAndHelpTests` |
 | Saved item commit guard | `PYTHONPATH=tests python3 -m unittest -v test_quarterdeck.PrivacyGuardTests.test_item_store_is_ignored_and_force_staging_is_rejected` |
@@ -61,6 +62,29 @@ worker and updates the refresh time element's `datetime` attribute after the
 source clock moves backward.
 The timeout test checks that the snapshot shell and its child both release a
 shared pipe when the endpoint returns 502.
+
+The conversation group uses a fake inbox to check that ask replays and
+retries keep their original IDs and reject a repointed home symlink. It
+checks recovery when an ask is already saved and when the first request
+never arrived, and checks assets from plain and external renders. Its
+headless Chrome checks cover native undo and redo of rejected asks,
+option and suggestion fills, and edits with history in a sibling editor.
+They check matching text, including surrounding whitespace, after native
+Undo and Redo, and verify that grouped Backspaces cannot make a restored
+fill askable. **Undo changes** preserves the prior draft's edit origin.
+The tests also verify that an owner
+can edit and save an answer after replacing a rejected ask. Tests open
+**Messages** explicitly and exercise both response orders for overlapping
+acknowledgments and live updates.
+The whole-item checks cover the toolbar editor, the inbox target and retry ID,
+separate reply acknowledgment for the item and each question, and private
+reply images. The browser checks a 1200-pixel reply image in both conversations
+inside an iframe with a 390 CSS-pixel viewport and checks the whole-item image
+again after a thread refresh. The conversation group also checks that confirmed
+conflicts return local drafts to their editors, preserve saved asks, and keep
+reference items outside the conversation workflow. The closed-item check closes
+the questions between saving an ask and delivering it, then verifies that the
+saved ask survives the conflict and the conversation stays readable.
 
 For a screen change, also save one item of each kind, run `quarterdeck serve`,
 and check the Desk, each tab of the library pop-out (try 3, 30 and 200 saved items) and each item page at phone width (about 390 px) and

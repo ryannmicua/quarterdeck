@@ -342,11 +342,12 @@ IMAGE_COUNT_LIMIT = 24
 IMAGE_TEXT_LIMIT = 300
 IMAGE_TYPES = {"png": "image/png", "jpg": "image/jpeg", "webp": "image/webp"}
 IMAGE_FILE_RE = re.compile(r"[0-9a-f]{16}[.](?:" + "|".join(map(re.escape, IMAGE_TYPES)) + r")")
-IMAGE_URL_RE = re.compile(r"images/(q[1-9][0-9]*)/(" + IMAGE_FILE_RE.pattern + r")")
+REPLY_IMAGES = "reply-images"
+IMAGE_URL_RE = re.compile(rf"(images|{REPLY_IMAGES})/(q[1-9][0-9]*)/({IMAGE_FILE_RE.pattern})")
 
 
-def images_root(store: Path) -> Path:
-    return store.with_name("images")
+def images_root(store: Path, tree: str = "images") -> Path:
+    return store.with_name(tree)
 
 
 def image_chunks(data: bytes, *, webp: bool) -> Iterator[tuple[bytes, bytes]]:
@@ -487,9 +488,15 @@ def option_label(option: object) -> str:
     return str(option["label"] if isinstance(option, dict) else option)  # type: ignore[index]
 
 
-def item_image_files(item: dict[str, object]) -> set[str]:
+def item_image_files(item: dict[str, object], tree: str = "images") -> set[str]:
     files: set[str] = set()
-    if item["kind"] == "questions":
+    if item["kind"] != "questions":
+        return files
+    if tree == REPLY_IMAGES:
+        for messages in item.get("conversation", {}).values():  # type: ignore[attr-defined]
+            for message in messages:
+                files.update(image["file"] for image in message.get("images", []))
+    else:
         for question in item["body"]["questions"]:  # type: ignore[index]
             files.update(image["file"] for image in question.get("images", []))
             files.update(option["image"]["file"] for option in question["options"] if isinstance(option, dict))
@@ -635,6 +642,8 @@ def check_store(data: object) -> dict[str, object]:
                 raise ValueError("item project or tags are not in the saved format")
             if "answers" in item:
                 validate_records(item)
+            if "conversation" in item:
+                validate_conversation(item)
         except ValueError as exc:
             raise ValueError(f"the item store is damaged: {item_id}: {exc}") from exc
     return data
@@ -796,6 +805,76 @@ def validate_records(item):
                     parse_utc(mark["answered_at"])
 
 
+# A question's conversation: the asks the owner sent and the replies Firstmate wrote, oldest first, kept apart from the
+# answer so that a reply never changes what was decided.
+AUTHOR_LABELS = {"you": "You", "firstmate": "Firstmate"}
+
+
+def validate_conversation(item):
+    parts = question_parts(item)
+    conversation = item["conversation"]
+    if not isinstance(conversation, dict) or not conversation:
+        raise ValueError("invalid conversation")
+    seen = set()
+    for part, messages in conversation.items():
+        if ((part != "item" and (not re.fullmatch(r"[1-9][0-9]*", part) or int(part) not in parts))
+                or not isinstance(messages, list) or not messages):
+            raise ValueError("invalid conversation")
+        asks = set()
+        for message in messages:
+            if not isinstance(message, dict):
+                raise ValueError("invalid message")
+            author = message.get("author")
+            if not isinstance(author, str) or author not in AUTHOR_LABELS:
+                raise ValueError("invalid message")
+            you = author == "you"
+            required = {"id", "author", "text", "at"} | ({"delivery", "request_id", "home"} if you else {"read", "ask"})
+            if not required <= set(message) <= required | (set() if you else {"links", "images"}):
+                raise ValueError("invalid message")
+            if (not isinstance(message["id"], str) or not re.fullmatch(r"[0-9a-f]{32}", message["id"])
+                    or message["id"] in seen
+                    or clean_text(message["text"], "message", TEXT_LIMIT, multiline=True) != message["text"]):
+                raise ValueError("invalid message")
+            seen.add(message["id"])
+            datetime.strptime(str(message["at"]), "%Y-%m-%dT%H:%M:%SZ")
+            if you:
+                if (message["delivery"] not in ("pending", "sent")
+                        or not isinstance(message["request_id"], str)
+                        or not re.fullmatch(r"quarterdeck-[0-9a-f]{32}", message["request_id"])
+                        or not isinstance(message["home"], str)
+                        or not re.fullmatch(r"[0-9a-f]{64}", message["home"])):
+                    raise ValueError("invalid ask")
+                asks.add(message["id"])
+                continue
+            links, images = message.get("links", []), message.get("images", [])
+            if (not isinstance(message["ask"], str) or message["ask"] not in asks
+                    or type(message["read"]) is not bool or question_links(links, "reply") != links
+                    or not isinstance(images, list)
+                    or [image_entry(image, "reply image", None) for image in images] != images):
+                raise ValueError("invalid reply")
+
+
+def thread_key(part):
+    return "item" if part is None else str(part)
+
+
+def part_thread(item, part):
+    return item.get("conversation", {}).get(thread_key(part), [])
+
+
+def unread_reply(message):
+    return message["author"] == "firstmate" and not message["read"]
+
+
+def thread_unread(item, part):
+    return any(map(unread_reply, part_thread(item, part)))
+
+
+def part_state(item, part, *, replies=True):
+    state = part_record(item, part).get("state", "open")
+    return "replied" if replies and thread_unread(item, part) else state
+
+
 def put_record(item, part, state, *, mark=None, **desk_fields):
     previous = part_record(item, part)
     if "answer" in previous and not desk_fields:
@@ -813,12 +892,12 @@ def put_record(item, part, state, *, mark=None, **desk_fields):
 def part_numbers(item, target):
     """The question numbers a command names: one question (Q7.3) or all of an item (Q7)."""
     parts = question_parts(item)
-    _, dot, part = target.partition(".")
-    if not dot:
+    if "." not in target:
         return list(parts)
-    if not re.fullmatch(r"[1-9][0-9]*", part) or int(part) not in parts:
+    _, part = parse_part(target.upper())
+    if part not in parts:
         raise ValueError("Unknown question.")
-    return [int(part)]
+    return [part]
 
 
 def mark_item(args):
@@ -894,6 +973,10 @@ class AnswerConflict(ValueError):
     pass
 
 
+class SavedAskConflict(AnswerConflict):
+    pass
+
+
 def find_answer_item(data, item_id):
     try:
         return find_item(data, item_id)
@@ -903,15 +986,24 @@ def find_answer_item(data, item_id):
         raise
 
 
+def deliver_note(home, request_id, text):
+    """Hand one note to the home's inbox command; True when it accepted the note."""
+    try:
+        env = {k: v for k, v in os.environ.items() if not k.startswith("FM_")}
+        result = subprocess.run([home / "bin/fm-inbox.sh", "note", "--request-id", request_id, "--json", "--", text],
+                                cwd=home, stdin=subprocess.DEVNULL, timeout=10,
+                                stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, env={**env, "FM_HOME": str(home)})
+    except (OSError, subprocess.TimeoutExpired):
+        return False
+    return result.returncode == 0
+
+
 def send_answer(store, home, payload):
     if not isinstance(payload, dict) or set(payload) != {"part", "answer", "revision"}:
         raise ValueError("Invalid answer fields.")
     if not isinstance(payload["revision"], str) or not re.fullmatch(r"(?:[0-9a-f]{32})?", payload["revision"]):
         raise ValueError("Invalid question revision.")
-    match = re.fullmatch(r"(Q[1-9][0-9]*)[.]([1-9][0-9]*)", str(payload["part"]))
-    if not match:
-        raise ValueError("Unknown question.")
-    item_id, part = match[1], int(match[2])
+    item_id, part = parse_part(payload["part"])
     answer = clean_text(payload["answer"], "Answer", TEXT_LIMIT, multiline=True)
     with changing_store(store) as data:
         item = find_answer_item(data, item_id)
@@ -938,19 +1030,117 @@ def send_answer(store, home, payload):
             if record_now["revision"] != record["revision"]:
                 raise AnswerConflict("Question changed. Reload before sending.")
             record = record_now
-            if delivery_pending(record):
-                try:
-                    env = {k: v for k, v in os.environ.items() if not k.startswith("FM_")}
-                    result = subprocess.run([home / "bin/fm-inbox.sh", "note", "--request-id", record["request_id"],
-                                             "--json", "--", f"{item_id}.{part} {record['answer']}"],
-                                            cwd=home, stdin=subprocess.DEVNULL, timeout=10,
-                                            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, env={**env, "FM_HOME": str(home)})
-                    if result.returncode == 0:
-                        record["delivery"] = "sent"
-                except (OSError, subprocess.TimeoutExpired):
-                    pass
+            if delivery_pending(record) and deliver_note(home, record["request_id"], f"{item_id}.{part} {record['answer']}"):
+                record["delivery"] = "sent"
     return {**{k: record[k] for k in ("state", "revision", "answer", "answered_at", "delivery")},
             "off_desk_answer": latest_off_desk_mark(record)}
+
+
+def parse_part(value):
+    match = re.fullmatch(r"(Q[1-9][0-9]*)[.]([1-9][0-9]*)", str(value))
+    if not match:
+        raise ValueError("Unknown question.")
+    return match[1], int(match[2])
+
+
+def parse_thread_target(value):
+    if isinstance(value, str) and value == value.upper() and ID_RE.fullmatch(value):
+        return value, None
+    return parse_part(value)
+
+
+def check_conversation_target(item, part, target):
+    parts = question_parts(item)
+    if part is not None and part not in parts:
+        raise ValueError(f"no question {target}")
+
+
+def conversation_editable(item, part):
+    if part is None:
+        return has_answer_controls(item)
+    return part_record(item, part).get("state") != "closed"
+
+
+def ask_result(item, part, message):
+    return {"thread": thread_html(item, part, editable=conversation_editable(item, part)),
+            "message": "Ask sent." if message["delivery"] == "sent" else "Ask saved. Not delivered."}
+
+
+def ask_message(store, home, binding, payload):
+    if not isinstance(payload, dict):
+        raise ValueError("Invalid ask fields.")
+    fields = set(payload)
+    target = payload.get("part")
+    item_id, part = parse_thread_target(target)
+    key = thread_key(part)
+    message_id = payload.get("id")
+    if not isinstance(message_id, str) or not re.fullmatch(r"[0-9a-f]{32}", message_id):
+        raise ValueError("Invalid ask ID.")
+    changed_home = "Firstmate home changed. This ask belongs to the original home."
+    create_fields = {"part", "id", "text", "home"}
+    retry = payload.get("action") == "retry"
+    if fields == create_fields or (retry and fields == create_fields | {"action"}):
+        text = clean_text(payload["text"], "Ask", TEXT_LIMIT, multiline=True)
+        with locked_store(store):
+            data = read_store(store)
+            item = find_answer_item(data, item_id)
+            check_conversation_target(item, part, target)
+            for number, messages in item.get("conversation", {}).items():
+                message = next((m for m in messages if m["id"] == message_id), None)
+                if message is None:
+                    continue
+                if number != key or message["author"] != "you" or message["text"] != text:
+                    raise AnswerConflict("Ask ID already in use. Reload the question.")
+                if payload["home"] != binding or (message["delivery"] == "pending" and message["home"] != binding):
+                    raise SavedAskConflict(changed_home)
+                if not retry:
+                    return ask_result(item, part, message)
+                break
+            else:
+                if payload["home"] != binding:
+                    raise AnswerConflict(changed_home)
+                if not conversation_editable(item, part):
+                    raise AnswerConflict("Question closed. Reopen it before asking.")
+                thread = item.setdefault("conversation", {}).setdefault(key, [])
+                thread.append({"id": message_id, "author": "you", "text": text, "at": now_text(), "delivery": "pending",
+                               "request_id": "quarterdeck-" + uuid.uuid4().hex, "home": binding})
+                write_store(store, data)
+    elif not retry or fields != {"part", "id", "action"}:
+        raise ValueError("Invalid ask fields.")
+    # The ask is saved before the external call, and delivery runs under the lock so a retry reuses the same note ID.
+    with changing_store(store) as data:
+        item = find_answer_item(data, item_id)
+        check_conversation_target(item, part, target)
+        message = next((m for m in part_thread(item, part) if m["id"] == message_id and m["author"] == "you"), None)
+        if message is None:
+            raise AnswerConflict("Ask not found. Reload the question.")
+        if message["delivery"] == "pending":
+            if message["home"] != binding:
+                raise SavedAskConflict(changed_home)
+            if not conversation_editable(item, part):
+                raise SavedAskConflict("Question closed. Reopen it before sending the ask.")
+            if deliver_note(home, message["request_id"], f"ASK {target} {message_id} {message['text']}"):
+                message["delivery"] = "sent"
+        return ask_result(item, part, message)
+
+
+def mark_replies_read(store, payload):
+    if not isinstance(payload, dict) or set(payload) != {"part", "ids"}:
+        raise ValueError("Invalid reply acknowledgment.")
+    item_id, part = parse_thread_target(payload["part"])
+    ids = payload["ids"]
+    if not isinstance(ids, list) or not ids or not all(isinstance(value, str) and re.fullmatch(r"[0-9a-f]{32}", value)
+                                                     for value in ids):
+        raise ValueError("Invalid reply IDs.")
+    with changing_store(store) as data:
+        item = find_answer_item(data, item_id)
+        check_conversation_target(item, part, payload["part"])
+        replies = {m["id"]: m for m in part_thread(item, part) if m["author"] == "firstmate"}
+        if not replies.keys() >= set(ids):
+            raise ValueError("Unknown reply on this question.")
+        for message_id in ids:
+            replies[message_id]["read"] = True
+        return {"replies": {message_id: reply["read"] for message_id, reply in replies.items()}}
 
 
 def item_text(item: dict[str, object]) -> str:
@@ -967,7 +1157,7 @@ def item_text(item: dict[str, object]) -> str:
     elif item["kind"] == "list":
         lines.extend(f"{item_id}.{number}  {entry}" for number, entry in enumerate(body["entries"], 1))  # type: ignore[index]
     else:
-        state, open_parts, _ = question_summary(item)
+        state, open_parts, _ = question_summary(item, replies=False)
         remaining = len(open_parts)
         lines.extend([f"{state} ({remaining} of {len(question_parts(item))} open)" if remaining else state, ""])
         for number, question in enumerate(body["questions"], 1):  # type: ignore[index]
@@ -1012,8 +1202,8 @@ def image_directory(root: Path, item_id: str) -> Path:
     return directory
 
 
-def stored_image(store: Path, item_id: str, file: str) -> Path:
-    path = image_directory(images_root(store), item_id) / file
+def stored_image(store: Path, item_id: str, file: str, tree: str = "images") -> Path:
+    path = image_directory(images_root(store, tree), item_id) / file
     if path.is_symlink() or not path.is_file():
         raise ValueError(f"the image {file} of {item_id} is missing from the store")
     return path
@@ -1032,10 +1222,13 @@ def place_image(target: Path, data: bytes) -> None:
         raise ValueError(f"refusing to overwrite an unrelated file: {target}")
 
 
-def save_images(store: Path, item_id: str, images: dict[str, bytes]) -> None:
+def save_images(store: Path, item_id: str, images: dict[str, bytes], *, tree: str = "images") -> None:
     if not images:
         return
-    directory = image_directory(images_root(store), item_id)
+    root = images_root(store, tree)
+    if tree == REPLY_IMAGES and root.is_file():
+        raise ValueError(f"Move the file {root} before attaching reply images.")
+    directory = image_directory(root, item_id)
     directory.parent.mkdir(mode=0o700, exist_ok=True)
     os.chmod(directory.parent, 0o700)
     directory.mkdir(mode=0o700, exist_ok=True)
@@ -1045,12 +1238,12 @@ def save_images(store: Path, item_id: str, images: dict[str, bytes]) -> None:
 
 def remove_images(store: Path, item: dict[str, object]) -> None:
     """Delete exactly the files this item's record names."""
-    files = item_image_files(item)
-    if not files:
-        return
-    directory = image_directory(images_root(store), str(item["id"]))
-    for name in files:
-        (directory / name).unlink(missing_ok=True)
+    for tree in ("images", REPLY_IMAGES):
+        files = item_image_files(item, tree)
+        if files:
+            directory = image_directory(images_root(store, tree), str(item["id"]))
+            for name in files:
+                (directory / name).unlink(missing_ok=True)
 
 
 def add_item(args: argparse.Namespace) -> int:
@@ -1224,6 +1417,52 @@ def show_stats(args: argparse.Namespace) -> int:
             data = read_store(store)
         report = build_report(data, since)
         print(json.dumps(report, indent=2) if args.as_json else report_text(report), end="" if not args.as_json else "\n")
+        return 0
+    return run_item_command(action)
+
+
+def reply_item(args: argparse.Namespace) -> int:
+    def action() -> int:
+        target = args.id.upper()
+        try:
+            item_id, part = parse_thread_target(target)
+        except ValueError as exc:
+            raise ValueError(f"reply to a question item or one of its questions, such as Q7 or Q7.1: {args.id!r}") from exc
+        text = clean_text(args.text, "reply text", TEXT_LIMIT, multiline=True)
+        link_texts, urls = args.link_text or [], args.url or []
+        if len(link_texts) != len(urls):
+            raise ValueError("each --link-text needs its own --url")
+        links = question_links([{"text": t, "url": u} for t, u in zip(link_texts, urls)], "reply")
+        paths, alts = args.image or [], args.alt or []
+        if len(paths) != len(alts):
+            raise ValueError("each --image needs its own --alt text that describes it")
+        named: list[tuple[dict[str, str], str]] = []
+        images = [image_entry({"path": path, "alt": alt}, f"reply image {number}", named)
+                  for number, (path, alt) in enumerate(zip(paths, alts), 1)]
+        pending: dict[str, bytes] = {}
+        read_images(named, pending)
+        store = store_path()
+        with locked_store(store):
+            data = read_store(store)
+            item = find_item(data, item_id)
+            check_conversation_target(item, part, target)
+            thread = part_thread(item, part)
+            asks = {m["id"] for m in thread if m["author"] == "you"}
+            if not asks:
+                raise ValueError(f"{target} has no asks")
+            ask = args.ask
+            if ask not in asks:
+                raise ValueError(f"No ask {ask!r} on {target}.")
+            message: dict[str, object] = {"id": uuid.uuid4().hex, "author": "firstmate", "text": text, "at": now_text(),
+                                          "read": False, "ask": ask}
+            if links:
+                message["links"] = links
+            if images:
+                message["images"] = images
+            thread.append(message)
+            save_images(store, item_id, pending, tree=REPLY_IMAGES)
+            write_store(store, data)
+        print(f"{target} Replied")
         return 0
     return run_item_command(action)
 
@@ -1468,7 +1707,7 @@ textarea { display:block; width:100%; resize:vertical; background:var(--ground);
 .ref-links li { margin:0; }
 .ref-link { display:inline-block; padding:.6rem 0; min-height:44px; box-sizing:border-box; font-size:1.1rem; font-weight:600; text-decoration:underline; color:var(--ink); }
 .visual { margin:.2rem 0 1rem; font-family:var(--sans); }
-.decision img { display:block; width:100%; height:auto; max-height:30rem; object-fit:contain; background:var(--faint);
+.decision img,.thread img { display:block; width:100%; height:auto; max-height:30rem; object-fit:contain; background:var(--faint);
   border:1px solid var(--rule); border-radius:4px; }
 .shots,.has-images { list-style:none; margin:.2rem 0 1rem; padding:0; display:grid; gap:1rem;
   grid-template-columns:repeat(auto-fit,minmax(min(100%,13rem),1fr)); align-items:start; }
@@ -1478,6 +1717,18 @@ textarea { display:block; width:100%; resize:vertical; background:var(--ground);
 .choice.has-image { display:flex; flex-direction:column; align-items:stretch; gap:.6rem; flex:1; }
 .choice .pick { display:flex; gap:.4em; align-items:baseline; flex-wrap:wrap; }
 .open-image { align-self:flex-start; display:inline-flex; align-items:center; min-height:44px; font:var(--text-sm)/1.3 var(--sans); }
+.ask-row { margin:.6rem 0 0; }
+.thread { margin:1.2rem 0 0; font-family:var(--sans); }
+.thread summary { font:700 var(--text-md)/1.3 var(--sans); margin:0 0 .5rem; min-height:var(--tap); padding:.5rem 0; cursor:pointer; }
+.exchange { list-style:none; margin:0 0 .8rem; padding:0; }
+.msg { margin:0 0 .6rem; padding:.7rem .9rem; border:1px solid var(--rule); border-left:4px solid var(--soft); border-radius:6px;
+  background:var(--ground); max-width:46rem; }
+.msg.firstmate { background:var(--raised); border-left-color:var(--focus); }
+.msg .who { display:flex; flex-wrap:wrap; gap:.2rem .8rem; align-items:baseline; margin:0 0 .3rem; color:var(--soft); font-size:var(--text-md); }
+.msg .who strong { color:var(--ink); }
+.msg .record { margin:0; font-family:var(--serif); }
+.msg .ref-links, .msg .shots { margin-top:.5rem; }
+.msg .actions { margin-top:.5rem; }
 .desk { margin:0 0 1rem; }
 .desk .work { max-width:none; margin:0; padding:1rem; border-width:0 0 1px; border-left:5px solid var(--rule); border-radius:0; background:transparent;
   display:grid; grid-template-columns:minmax(0,1fr) auto; gap:0 1.5rem; align-items:center; }
@@ -1601,9 +1852,12 @@ body:has(dialog[open]) { overflow:hidden; }
 
 TIME_SCRIPT = """
 const localTime = dateTime => new Date(dateTime).toLocaleString(undefined, {dateStyle:'medium', timeStyle:'short'});
-for (const time of document.querySelectorAll('.saved-answer time[datetime]:not([datetime=""]), .answer-source time')) {
-  time.textContent = localTime(time.dateTime);
-}
+const localizeTimes = root => {
+  for (const time of root.querySelectorAll('.saved-answer time[datetime]:not([datetime=""]), .answer-source time, .thread time[datetime]')) {
+    time.textContent = localTime(time.dateTime);
+  }
+};
+localizeTimes(document);
 for (const time of document.querySelectorAll('time.day[datetime]:not([datetime=""])')) {
   time.textContent = new Date(time.dateTime).toLocaleDateString(undefined, {dateStyle:'medium'});
 }
@@ -1987,7 +2241,7 @@ def item_page_name(item_id: str) -> str:
 
 
 def page_shell(title: str, site_title: str, body: str, *, served: bool, saved_name: str, interactive: bool = False,
-               workers: bool = False, library: str = "", filters: bool = False) -> str:
+               workers: bool = False, library: str = "", conversations: bool = False, filters: bool = False) -> str:
     saved_href = quote(saved_name, safe="")
     opener = ('<button type="button" id="open-library" aria-haspopup="dialog" aria-controls="library">Open library</button>'
               if library else "")
@@ -2001,7 +2255,7 @@ def page_shell(title: str, site_title: str, body: str, *, served: bool, saved_na
         f"  {GENERATED_MARKER}\n  <title>{esc(title)}</title>\n  {links}<style>{PAGE_CSS}</style>\n</head>\n<body>\n"
         f'<header class="bar"><a class="mark" href="{saved_href}">{esc(site_title)}</a>'
         f'<nav><a href="{saved_href}">Desk</a>{opener}</nav></header>\n'
-        f"<main>\n{body}\n</main>\n{library}<script>{TIME_SCRIPT}{VIEWPORT_SCRIPT if interactive or library else ''}"
+        f"<main>\n{body}\n</main>\n{library}<script>{TIME_SCRIPT}{VIEWPORT_SCRIPT if interactive or library else ''}{QUESTION_SCRIPT if conversations else ''}"
         f"{ANSWER_SCRIPT if interactive else ''}"
         f"{WORKERS_SCRIPT if workers else ''}{FILTER_SCRIPT if filters or library else ''}"
         f"{f'const libraryCaseFolds = {library_case_folds()};' + LIBRARY_SCRIPT if library else ''}</script>\n</body>\n</html>\n"
@@ -2012,12 +2266,23 @@ def delivery_label(record):
     return {"sent": "Sent", "pending": "Not delivered", "cancelled": "Sending stopped"}[record["delivery"]]
 
 
-def question_summary(item) -> tuple[str, list[int], bool]:
+def question_summary(item, *, replies=True) -> tuple[str, list[int], bool]:
     states = [part_record(item, n).get("state", "open") for n in question_parts(item)]
     open_parts = [n for n, state in enumerate(states, 1) if state == "open"]
     state = "Open" if open_parts else ("Closed" if all(s == "closed" for s in states) else "Answered")
+    if replies and (thread_unread(item, None) or any(thread_unread(item, n) for n in question_parts(item))):
+        state = "Replied"
     pending = any(delivery_pending(r) for r in item.get("answers", {}).values())
     return state, open_parts, pending
+
+
+def progress_text(item, summary):
+    """The one line of progress: replied first, then how many questions are still open."""
+    state, open_parts, _ = summary
+    remaining = f"{len(open_parts)} of {len(question_parts(item))} open" if open_parts else ""
+    if state == "Replied":
+        return f"Replied, {remaining}" if remaining else "Replied"
+    return remaining or state
 
 
 def question_card(item, summary, *, served, primary, show_project=True):
@@ -2026,7 +2291,7 @@ def question_card(item, summary, *, served, primary, show_project=True):
     href = item_page_name(item["id"])
     if open_parts:
         href += f'#{item["id"]}.{open_parts[0]}'
-    progress = f'{remaining} of {len(question_parts(item))} open' if remaining else state
+    progress = progress_text(item, summary)
     action = "Read questions" if not served else ("Answer questions" if remaining else "Review answers")
     link_style = "work-action" if primary else "button-link"
     title = esc(item["title"])
@@ -2041,7 +2306,8 @@ def question_card(item, summary, *, served, primary, show_project=True):
             + (f'<ul>{prompts}</ul>' if prompts else '')
             + tag_labels(all_tags(item))
             + visual
-            + f'<div class="actions"><span class="badge">{progress}</span>'
+            + (f'<div class="actions"><span class="badge">Replied</span>' + (f'<span>{remaining} of {len(question_parts(item))} open</span>' if remaining else '')
+               if state == "Replied" else f'<div class="actions"><span class="badge">{progress}</span>')
             + ('<span>Not delivered</span>' if pending else '')
             + f'<a class="card-link {link_style}" href="{href}" aria-label="{action} for {title}">{action}</a></div></article>')
 
@@ -2051,8 +2317,8 @@ def link_html(link, *, prefix=""):
             f'{esc(prefix + link["text"])}</a>')
 
 
-def links_html(question):
-    links = question.get("links")
+def links_html(record):
+    links = record.get("links")
     return '<ul class="ref-links">' + ''.join(f'<li>{link_html(l)}</li>' for l in links) + '</ul>' if links else ''
 
 
@@ -2061,26 +2327,26 @@ def has_answer_controls(item):
         part_record(item, n).get("state") != "closed" for n in question_parts(item))
 
 
-def image_url(item, image):
-    return f'images/{str(item["id"]).lower()}/{image["file"]}'
+def image_url(item, image, tree="images"):
+    return f'{tree}/{str(item["id"]).lower()}/{image["file"]}'
 
 
-def image_tag(item, image, *, element_id=None):
+def image_tag(item, image, *, element_id=None, tree="images"):
     identifier = f' id="{element_id}"' if element_id else ''
-    return f'<img src="{esc(image_url(item, image))}" alt="{esc(image["alt"])}" loading="lazy" decoding="async"{identifier}>'
+    return f'<img src="{esc(image_url(item, image, tree))}" alt="{esc(image["alt"])}" loading="lazy" decoding="async"{identifier}>'
 
 
-def image_link(item, image):
+def image_link(item, image, *, tree="images"):
     """The image as a link to the full image."""
-    return (f'<a class="shot" href="{esc(image_url(item, image))}" target="_blank" rel="noopener">'
-            f'{image_tag(item, image)}</a>')
+    return (f'<a class="shot" href="{esc(image_url(item, image, tree))}" target="_blank" rel="noopener">'
+            f'{image_tag(item, image, tree=tree)}</a>')
 
 
-def question_shots(item, question):
-    if not question.get("images"):
+def shots_html(item, record, *, tree="images"):
+    if not record.get("images"):
         return ""
     return '<ul class="shots">' + "".join(
-        f'<li>{image_link(item, image)}</li>' for image in question["images"]) + '</ul>'
+        f'<li>{image_link(item, image, tree=tree)}</li>' for image in record["images"]) + '</ul>'
 
 
 def choice_label(item, part, number, option, *, suggested):
@@ -2107,14 +2373,81 @@ def read_only_option(item, option):
     return f'<li class="option">{image_link(item, option["image"])}<span>{linked_text(option["label"])}</span></li>'
 
 
-def question_form(item, served):
+def message_html(item, message, *, editable):
+    you = message["author"] == "you"
+    when = esc(message["at"])
+    delivery = f' <span class="delivery">{delivery_label(message)}</span>' if you else ''
+    controls = ''
+    if editable and you and message["delivery"] == "pending":
+        controls = ('<div class="actions">'
+                    f'<button type="button" data-retry-ask="{message["id"]}">Send ask again</button></div>')
+    identity = f' data-ask-id="{message["id"]}"' if you else f' data-reply-id="{message["id"]}"'
+    unread = " data-unread" if unread_reply(message) else ""
+    return (f'<li class="msg {message["author"]}"{identity}{unread}><p class="who"><strong>{AUTHOR_LABELS[message["author"]]}</strong> '
+            f'<time datetime="{when}">{when}</time>{delivery}</p><p class="record">{linked_text(message["text"])}</p>'
+            f'{links_html(message)}{shots_html(item, message, tree=REPLY_IMAGES)}{controls}</li>')
+
+
+def thread_html(item, number, *, editable):
+    groups = {}
+    for message in part_thread(item, number):
+        if message["author"] == "you":
+            groups[message["id"]] = [message]
+        else:
+            groups[message["ask"]].append(message)
+    return "".join(
+        '<ol class="exchange">' + ''.join(message_html(item, m, editable=editable) for m in group) + '</ol>'
+        for group in groups.values())
+
+
+def conversation_thread(item, number, target, *, editable):
+    thread = thread_html(item, number, editable=editable)
+    if not (editable or thread):
+        return ""
+    hidden = "" if thread else " hidden"
+    pending = '<div class="pending-asks"></div>' if editable else ''
+    return (f'<details class="thread" id="thread-{target}"{hidden}><summary>Messages</summary>'
+            f'<div class="thread-messages">{thread}</div>{pending}</details>')
+
+
+def conversation_toolbar(item, *, asking):
+    controls = '<button id="send" class="primary" disabled>Send answers</button>'
+    if asking:
+        controls += ('<button type="button" id="open-item-ask" aria-controls="item-ask-editor" '
+                     'aria-expanded="false">Ask Firstmate</button>')
+    if any(q.get("suggestion") and conversation_editable(item, n)
+           for n, q in enumerate(item["body"]["questions"], 1)):
+        controls += '<button id="suggest">Use all suggestions</button>'
+    controls += '<button id="undo" hidden>Undo changes</button>'
+    return f'<div class="sendbar"><div class="actions">{controls}</div><output role="status" tabindex="0"></output></div>'
+
+
+def item_conversation(item, ask_binding):
+    asking = ask_binding is not None
+    target = item["id"]
+    thread = conversation_thread(item, None, target, editable=asking)
+    if not thread:
+        return ""
+    unread = thread_unread(item, None)
+    badge = '<span class="badge">Replied</span>' if unread else '<span class="badge" hidden></span>'
+    editor = (f'<div id="item-ask-editor" hidden><label for="ask-{target}">Message about this item</label>'
+              f'<textarea id="ask-{target}" maxlength="{TEXT_LIMIT}" rows="2" aria-describedby="error-{target}"></textarea>'
+              f'<p id="error-{target}" hidden></p><div class="actions ask-row">'
+              f'<button type="button" class="ask-button" data-home="{esc(ask_binding)}" disabled>Send ask</button></div></div>'
+              if asking else '')
+    return (f'<section id="{target}" class="work item-conversation" data-conversation aria-labelledby="item-conversation-title">'
+            f'<div class="eyebrow">{badge}</div><h2 id="item-conversation-title">Item conversation</h2>'
+            f'{editor}{thread}</section>')
+
+
+def question_form(item, served, *, ask_binding=None):
     cards, folded = [], []
-    state, open_parts, _ = question_summary(item)
-    remaining = len(open_parts)
+    asking = ask_binding is not None
     for number, question in enumerate(item["body"]["questions"], 1):
         part = f'{item["id"]}.{number}'
         record = part_record(item, number)
         status = record.get("state", "open")
+        label = part_state(item, number, replies=served).capitalize()
         answer = record.get("answer", "")
         editable = served and status != "closed"
         saved = ""
@@ -2132,10 +2465,10 @@ def question_form(item, served):
             saved += f'<p class="meta answer-source">Answered elsewhere · {esc(elsewhere["via"])}{time}</p>'
         elif editable:
             saved += '<p class="meta answer-source" hidden></p>'
-        editor = ""
+        editor = f' data-state="{status}" data-conversation' if served else ""
         if editable:
-            editor = (f' tabindex="-1" data-revision="{esc(record.get("revision", ""))}"'
-                      f' data-state="{status}" data-pending="{int(delivery_pending(record))}"')
+            editor += (f' tabindex="-1" data-revision="{esc(record.get("revision", ""))}"'
+                       f' data-pending="{int(delivery_pending(record))}"')
             suggestions = question.get("suggestion")
             choices = list(question["options"])
             if suggestions and suggestions not in map(option_label, choices):
@@ -2144,22 +2477,26 @@ def question_form(item, served):
                       for n, choice in enumerate(choices, 1)]
             pictured = any(isinstance(choice, dict) for choice in choices)
             controls = (links_html(question) + f'<div class="choices{" has-images" if pictured else ""}">' + ''.join(labels) + '</div>'
-                        + f'<label for="answer-{part}">Your answer</label><textarea id="answer-{part}" '
+                        + f'<label for="answer-{part}">Your answer{" or question" if asking else ""}</label><textarea id="answer-{part}" '
                         + f'maxlength="{TEXT_LIMIT}" rows="2" aria-describedby="error-{part}">{esc(answer)}</textarea>'
                         + f'<p id="error-{part}" hidden></p>')
+            if asking:
+                controls += (f'<div class="actions ask-row"><button type="button" class="ask-button" data-home="{esc(ask_binding)}" '
+                             'disabled>Ask Firstmate</button></div>')
         else:
             pictured = any(isinstance(v, dict) for v in question["options"])
             controls = (links_html(question) + ('<ul class="has-images">' if pictured else '<ul>')
                         + ''.join(read_only_option(item, v) for v in question["options"]) + '</ul>')
             if question.get("suggestion"):
                 controls += f'<p><strong>Suggested answer</strong><br>{linked_text(question["suggestion"])}</p>'
+        thread = conversation_thread(item, number, part, editable=editable and asking) if served else ''
         card = (f'<section class="decision" id="{part}" aria-labelledby="title-{part}"{editor}>'
-                f'<div class="eyebrow"><span class="id">{part}</span><span class="badge">{status.capitalize()}</span>'
+                f'<div class="eyebrow"><span class="id">{part}</span><span class="badge">{label}</span>'
                 f'{f"<span>{esc(question['kind'].capitalize())}</span>" if question.get("kind") else ""}</div>'
                 f'{tag_labels(question.get("tags", []))}'
                 f'<h2 id="title-{part}">{linked_text(question["question"])}</h2><p>{linked_text(question["context"])}</p>'
-                f'{question_shots(item, question)}{saved}{controls}</section>')
-        if status == "answered" and record.get("delivery") == "sent":
+                f'{shots_html(item, question)}{saved}{controls}{thread}</section>')
+        if label == "Answered" and record.get("delivery") == "sent":
             source_hidden = "" if elsewhere else " hidden"
             folded.append(f'<details class="done"><summary><span class="id">{part}</span>'
                           f'<span class="sum-q">{esc(question["question"])}</span>'
@@ -2167,22 +2504,89 @@ def question_form(item, served):
                           f'<span class="sum-source"{source_hidden}> (Desk)</span></span></summary>{card}</details>')
         else:
             cards.append(card)
-    progress = f"{remaining} of {len(cards) + len(folded)} open" if remaining else state
-    bar = ""
-    if served and has_answer_controls(item):
-        bar = ('<div class="sendbar"><div class="actions"><button id="send" class="primary" disabled>Send answers</button>'
-               + ('<button id="suggest">Use all suggestions</button>' if any(
-                   q.get("suggestion") and part_record(item, n).get("state") != "closed"
-                   for n, q in enumerate(item["body"]["questions"], 1)) else '')
-               + '<button id="undo" hidden>Undo changes</button></div><output role="status" tabindex="0"></output></div>')
-    return f'<p class="progress">{progress}</p><div id="questions">' + ''.join(cards) + ''.join(folded) + '</div>' + bar
+    progress = progress_text(item, question_summary(item, replies=served))
+    editable = served and conversation_editable(item, None)
+    toolbar = conversation_toolbar(item, asking=asking) if editable else ""
+    whole_item = item_conversation(item, ask_binding if editable else None) if served else ""
+    return f'<p class="progress">{progress}</p>' + whole_item + '<div id="questions">' + ''.join(cards) + ''.join(folded) + '</div>' + toolbar
+
+
+QUESTION_SCRIPT = """
+const sections = [...document.querySelectorAll('.decision')];
+const replyStates = new Map([...document.querySelectorAll('[data-conversation]')].map(section => [section, new Map()]));
+const questionNumber = section => Number(section.id.split('.')[1]);
+function expandAnswer(section) {
+  const box = section.closest('details.done');
+  if (!box) return;
+  const list = box.parentElement;
+  const number = questionNumber(section);
+  const focused = document.activeElement;
+  const restoreFocus = box.contains(focused);
+  const next = [...list.children].find(child => child.matches('details.done') || questionNumber(child) > number);
+  list.insertBefore(section, next);
+  box.remove();
+  if (restoreFocus) (section.contains(focused) ? focused : section.querySelector('a[href]') || section).focus();
+}
+function updateProgress() {
+  const progress = document.querySelector('.progress');
+  if (!progress) return;
+  const replied = [...replyStates.keys()].some(s => s.querySelector('.badge').textContent === 'Replied');
+  const remaining = sections.filter(s => s.dataset.state === 'open').length;
+  const open = remaining ? remaining + ' of ' + sections.length + ' open' : '';
+  const state = sections.every(s => s.dataset.state === 'closed') ? 'Closed' : 'Answered';
+  progress.textContent = replied ? ['Replied', open].filter(Boolean).join(', ') : (open || state);
+}
+function reconcileReplies(section, snapshot = {}) {
+  const states = replyStates.get(section);
+  const replies = section.querySelectorAll('[data-reply-id]');
+  for (const [id, read] of Object.entries(snapshot)) {
+    if (read || !states.has(id)) states.set(id, read);
+  }
+  for (const reply of replies) {
+    const id = reply.dataset.replyId;
+    if (!reply.hasAttribute('data-unread')) states.set(id, true);
+    else if (states.get(id)) reply.removeAttribute('data-unread');
+    else states.set(id, false);
+  }
+  const state = section.dataset.state;
+  const badge = section.querySelector('.badge');
+  const unread = [...states.values()].includes(false);
+  badge.textContent = unread ? 'Replied' : state ? state[0].toUpperCase() + state.slice(1) : '';
+  badge.hidden = !badge.textContent;
+  if (unread) expandAnswer(section);
+  updateProgress();
+}
+async function acknowledgeReplies(section) {
+  const shown = [...section.querySelectorAll('[data-reply-id][data-unread]')].map(reply => reply.dataset.replyId);
+  for (let start = 0; start < shown.length; start += 1000) {
+    const ids = shown.slice(start, start + 1000);
+    try {
+      const response = await fetch('replies/read', {method:'POST', headers:{'Content-Type':'application/json'},
+        body:JSON.stringify({part:section.id, ids})});
+      if (!response.ok) return;
+      const result = await response.json();
+      reconcileReplies(section, result.replies);
+    } catch {
+      return;
+    }
+  }
+}
+document.addEventListener('click', event => {
+  const summary = event.target.closest('.thread > summary');
+  if (!summary || summary.parentElement.open || event.defaultPrevented) return;
+  event.preventDefault();
+  summary.parentElement.open = true;
+  acknowledgeReplies(summary.closest('[data-conversation]'));
+});
+"""
 
 
 ANSWER_SCRIPT = r"""
 const send = document.querySelector('#send');
+const openItemAsk = document.querySelector('#open-item-ask');
 if (send) {
-  const fields = [...document.querySelectorAll('textarea')];
-  const sections = [...document.querySelectorAll('.decision')];
+  const fields = [...document.querySelectorAll('.decision textarea')];
+  const editors = [...document.querySelectorAll('[data-conversation] textarea')];
   const bar = send.closest('.sendbar');
   const output = bar.querySelector('output');
   let previousBarTop;
@@ -2205,12 +2609,18 @@ if (send) {
   const suggest = document.querySelector('#suggest');
   const undo = document.querySelector('#undo');
   const rejections = new Map();
+  const draftOrigins = new Map(fields.filter(f => f.closest('section').querySelector('.ask-button'))
+    .map(f => [f, 'filled']));
   let history = [];
   const answerText = value => value.replace(/^[\p{White_Space}\x1c-\x1f]+|[\p{White_Space}\x1c-\x1f]+$/gu, '');
+  const newDraft = f => answerText(f.value) && answerText(f.value) !== answerText(f.defaultValue);
+  const rejectedAsk = origin => origin?.rejected && !origin.edited;
+  const handEdited = origin => origin === 'manual' || origin?.rejected || origin?.edited;
+  const askDraft = f => (f.closest('.item-conversation') || handEdited(draftOrigins.get(f))) && newDraft(f);
   const changed = f => {
     const {pending} = f.closest('section').dataset;
     const answer = answerText(f.value);
-    return !rejections.has(f) && answer && (answer !== f.defaultValue || pending === '1');
+    return !rejectedAsk(draftOrigins.get(f)) && !rejections.has(f) && answer && (answer !== f.defaultValue || pending === '1');
   };
   const suggestionFor = f => {
     const section = f.closest('section');
@@ -2224,32 +2634,60 @@ if (send) {
   }
   function refresh() {
     for (const [field, rejection] of rejections) {
-      if (rejection.draft !== undefined && answerText(field.value) !== rejection.draft) {
+      const draft = answerText(field.value);
+      if (rejection.draft !== undefined && draft !== rejection.draft) {
         rejections.delete(field);
         output.textContent = '';
       }
     }
-    const count = fields.filter(changed).length;
-    send.disabled = !count;
-    send.textContent = count ? 'Send ' + count + (count === 1 ? ' answer' : ' answers') : 'Send answers';
+    if (send) {
+      const count = fields.filter(changed).length;
+      send.disabled = !count;
+      send.textContent = count ? 'Send ' + count + (count === 1 ? ' answer' : ' answers') : 'Send answers';
+    }
     if (suggest) suggest.disabled = !fields.some(suggestionFor);
-    undo.hidden = !history.length;
-    for (const f of fields) {
+    if (undo) undo.hidden = !history.length;
+    for (const f of editors) {
+      const section = f.closest('section');
+      const ask = section.querySelector('.ask-button');
+      if (ask) ask.disabled = !askDraft(f);
+      for (const retry of section.querySelectorAll('.pending-asks button')) {
+        retry.disabled = Boolean(newDraft(f));
+      }
       const error = document.getElementById(f.getAttribute('aria-describedby'));
-      const rejection = rejections.get(f);
-      error.textContent = rejection ? rejection.message : '';
-      error.hidden = !rejection;
-      if (rejection) f.setAttribute('aria-invalid', 'true');
+      const message = rejections.get(f)?.message || '';
+      error.textContent = message;
+      error.hidden = !message;
+      if (message) f.setAttribute('aria-invalid', 'true');
       else f.removeAttribute('aria-invalid');
-      for (const b of f.closest('section').querySelectorAll('[data-choice]')) {
+      for (const b of section.querySelectorAll('[data-choice]')) {
         b.checked = b.dataset.choice === f.value;
       }
     }
   }
   document.addEventListener('input', e => {
-    if (!e.target.matches('textarea')) return;
-    forget(e.target);
+    const field = e.target;
+    if (!field.matches('[data-conversation] textarea')) return;
+    const origin = draftOrigins.get(field);
+    const restoring = e.inputType === 'historyUndo' || e.inputType === 'historyRedo';
+    if (origin?.choice) {
+      // Native undo and redo treat matching hand-edited text as the fill. Retype it to ask.
+      const edited = answerText(field.value) !== answerText(origin.choice.dataset.choice) || (!restoring && origin.edited);
+      draftOrigins.set(field, {choice: origin.choice, edited});
+    } else if (origin?.rejected && (!restoring || origin.edited !== undefined)) {
+      const edited = answerText(field.value) !== origin.rejected;
+      if (edited || origin.edited !== undefined) draftOrigins.set(field, {rejected: origin.rejected, edited});
+    } else if (origin === 'filled') {
+      draftOrigins.set(field, 'manual');
+    }
+    forget(field);
     refresh();
+  });
+  openItemAsk?.addEventListener('click', () => {
+    const editor = document.getElementById('item-ask-editor');
+    editor.hidden = !editor.hidden;
+    openItemAsk.setAttribute('aria-expanded', String(!editor.hidden));
+    if (!editor.hidden) editor.querySelector('textarea').focus();
   });
   document.addEventListener('click', e => {
     const choice = e.target.closest('[data-choice]');
@@ -2258,17 +2696,55 @@ if (send) {
       for (const f of fields) {
         const section = f.closest('section');
         const option = choice ? (section.contains(choice) && choice) : suggestionFor(f);
-        if (option && option.dataset.choice !== f.value) {
-          step.set(f, f.value);
+        const origin = draftOrigins.get(f);
+        if (option && (option.dataset.choice !== f.value || handEdited(origin))) {
+          const askError = rejectedAsk(origin) ? rejections.get(f) : undefined;
+          step.set(f, {value: f.value, origin, askError});
+          if (askError) rejections.delete(f);
           f.value = option.dataset.choice;
+          if (origin) draftOrigins.set(f, {choice: option, edited: false});
         }
       }
       if (step.size) history.push(step);
       refresh();
     }
+    const askButton = e.target.closest('.ask-button');
+    if (askButton) {
+      const section = askButton.closest('section');
+      const field = section.querySelector('textarea');
+      if (askDraft(field)) {
+        const id = Array.from(crypto.getRandomValues(new Uint8Array(16)), byte => byte.toString(16).padStart(2, '0')).join('');
+        const body = {part: section.id, id, text: answerText(field.value), home: askButton.dataset.home};
+        const thread = section.querySelector('.thread');
+        const pending = document.createElement('ol');
+        pending.className = 'exchange';
+        pending.dataset.localAsk = id;
+        pending.innerHTML = '<li class="msg you"><p class="who"><strong>You</strong> <span class="delivery">Pending</span></p>'
+          + '<p class="record"></p><div class="actions"><button type="button">Send ask again</button></div></li>';
+        pending.querySelector('.record').textContent = field.value;
+        pending.querySelector('button').addEventListener('click', () => askRequest(section, {...body, action: 'retry'}, pending));
+        thread.querySelector('.pending-asks').append(pending);
+        field.value = field.defaultValue;
+        if (section.matches('.item-conversation') || rejectedAsk(draftOrigins.get(field))) rejections.delete(field);
+        if (draftOrigins.has(field)) draftOrigins.set(field, 'filled');
+        forget(field);
+        thread.hidden = false;
+        thread.open = true;
+        askRequest(section, body, pending);
+      }
+    }
+    const threadButton = e.target.closest('[data-retry-ask]');
+    if (threadButton) {
+      const section = threadButton.closest('section');
+      askRequest(section, {part: section.id, id: threadButton.dataset.retryAsk, action: 'retry'});
+    }
     if (e.target === undo && history.length) {
       const step = history.pop();
-      for (const [f, value] of step) f.value = value;
+      for (const [f, {value, origin, askError}] of step) {
+        f.value = value;
+        if (origin) draftOrigins.set(f, origin);
+        if (askError) rejections.set(f, askError);
+      }
       refresh();
       if (history.length) undo.focus();
       else if (!send.disabled) send.focus();
@@ -2279,22 +2755,14 @@ if (send) {
       }
     }
   });
-  const questionNumber = section => Number(section.id.split('.')[1]);
   function updateFold(section, record) {
-    const number = questionNumber(section);
-    const focused = document.activeElement;
-    const focusInSection = section.contains(focused);
-    let box = section.closest('details.done');
-    if (record.state !== 'answered' || record.delivery !== 'sent') {
-      if (box) {
-        const restoreFocus = box.contains(focused);
-        const next = [...list.children].find(child => child.matches('details.done') || questionNumber(child) > number);
-        list.insertBefore(section, next);
-        box.remove();
-        if (restoreFocus) (focusInSection ? focused : section.querySelector('a[href]') || section).focus();
-      }
+    if (record.state !== 'answered' || record.delivery !== 'sent' || section.querySelector('.badge').textContent === 'Replied') {
+      expandAnswer(section);
       return;
     }
+    const number = questionNumber(section);
+    const focusInSection = section.contains(document.activeElement);
+    let box = section.closest('details.done');
     if (!box) {
       const part = (tag, className, text) => {
         const node = document.createElement(tag);
@@ -2318,12 +2786,57 @@ if (send) {
     box.open = false;
     if (focusInSection) box.querySelector('summary').focus();
   }
+  async function askRequest(section, body, pending) {
+    let failedDraft;
+    if (undo) undo.hidden = true;
+    const controls = document.querySelectorAll('button,input,textarea');
+    controls.forEach(c => c.disabled = true);
+    output.textContent = 'Sending ask';
+    try {
+      const response = await fetch('asks', {method:'POST', headers:{'Content-Type':'application/json'},
+        body:JSON.stringify(body)});
+      if ([400, 403, 409].includes(response.status)) {
+        const {message, saved} = response.status === 409 ? await response.json() :
+          {message: await response.text(), saved: false};
+        output.textContent = message;
+        const blockedRetry = response.status === 403 && body.action === 'retry';
+        if (pending && saved === false && !blockedRetry) {
+          failedDraft = section.querySelector('textarea');
+          failedDraft.value = pending.querySelector('.record').textContent;
+          forget(failedDraft);
+          if (draftOrigins.has(failedDraft)) draftOrigins.set(failedDraft, {rejected: body.text});
+          rejections.set(failedDraft, {message, draft: body.text});
+          pending.remove();
+          const thread = section.querySelector('.thread');
+          thread.hidden = !thread.querySelector('.thread-messages > *, .pending-asks > *');
+        }
+      } else if (!response.ok) {
+        throw new Error(await response.text());
+      } else {
+        const result = await response.json();
+        const thread = section.querySelector('.thread');
+        thread.querySelector('.thread-messages').innerHTML = result.thread;
+        const saved = new Set([...thread.querySelectorAll('[data-ask-id]')].map(ask => ask.dataset.askId));
+        for (const pending of thread.querySelectorAll('[data-local-ask]')) {
+          if (saved.has(pending.dataset.localAsk)) pending.remove();
+        }
+        localizeTimes(thread);
+        reconcileReplies(section);
+        output.textContent = result.message;
+      }
+    } catch (err) {
+      output.textContent = navigator.onLine ? 'Send interrupted. ' + err.message : 'Offline. Reconnect and send again.';
+    }
+    controls.forEach(c => c.disabled = false);
+    refresh();
+    if (failedDraft) failedDraft.focus();
+  }
   function showAnswer(section, field, record) {
     section.dataset.state = record.state;
     section.dataset.revision = record.revision;
     section.dataset.pending = record.delivery === 'pending' ? '1' : '0';
-    section.querySelector('.badge').textContent = record.state === 'open' ? 'Open' : 'Answered';
     field.defaultValue = field.value = record.answer;
+    if (draftOrigins.has(field)) draftOrigins.set(field, 'filled');
     forget(field);
 
     const saved = section.querySelector('.saved-answer');
@@ -2345,11 +2858,10 @@ if (send) {
       source.append(' ', markedAt);
     }
 
+    reconcileReplies(section);
     updateFold(section, record);
-    const remaining = sections.filter(s => s.dataset.state === 'open').length;
-    document.querySelector('.progress').textContent = remaining ? remaining + ' of ' + sections.length + ' open' : 'Answered';
   }
-  send.addEventListener('click', async () => {
+  send?.addEventListener('click', async () => {
     const pending = fields.filter(changed);
     undo.hidden = true;
     const controls = document.querySelectorAll('button,input,textarea');
@@ -2365,7 +2877,7 @@ if (send) {
           body:JSON.stringify({part:section.id, revision:section.dataset.revision, answer})});
         if (response.status === 400 || response.status === 409) {
           rejections.set(f, {message: await response.text(), draft: response.status === 400 ? answer : undefined});
-          const box = f.closest('details');
+          const box = f.closest('details.done');
           if (box) box.open = true;
           rejected += 1;
           continue;
@@ -2408,7 +2920,9 @@ def library_row(item, *, served):
             attributes += f' data-questions="{len(parts)}"'
         attributes += f' data-id="{item_id}" data-search="{esc(" ".join(search).casefold())}"'
     if kind == "questions":
-        detail = f'<p class="meta">{question_summary(item)[0]}</p>'
+        state, _, _ = question_summary(item, replies=served)
+        label = '<span class="badge">Replied</span>' if state == "Replied" else state
+        detail = f'<p class="meta">{label}</p>'
     else:
         detail = (f'<p class="lib-desc">{linked_text(item["description"])}</p>'
                   f'<p class="meta"><span>{KIND_LABELS[kind]}</span>{day_time(item["saved_at"])}</p>')
@@ -2477,7 +2991,7 @@ def list_page(data: dict[str, object], site_title: str, *, served: bool, saved_n
     attention = []
     for item in items:
         if item["kind"] == "questions" and desk_item(item):
-            summary = question_summary(item)
+            summary = question_summary(item, replies=served)
             attention.append((item, summary))
     # With more than one project on the Desk, its cards group by project, the group holding the newest item first.
     projects = list(dict.fromkeys(item.get("project", "") for item, _ in attention))
@@ -2527,9 +3041,11 @@ def item_body_html(item: dict[str, object]) -> str:
             for number, entry in enumerate(entries, 1)) + "</ol>"
 
 
-def item_page(item: dict[str, object], site_title: str, *, served: bool, saved_name: str = "index.html") -> str:
+def item_page(item: dict[str, object], site_title: str, *, served: bool, saved_name: str = "index.html",
+              ask_binding: str | None = None) -> str:
     item_id = str(item["id"])
-    content = question_form(item, served) if item["kind"] == "questions" else item_body_html(item)
+    questions = item["kind"] == "questions"
+    content = question_form(item, served, ask_binding=ask_binding) if questions else item_body_html(item)
     body = (
         f'<p class="id">{esc(item_id)}</p><h1>{esc(item["title"])}</h1>'
         f'<p class="meta">{esc(KIND_LABELS[str(item["kind"])])}{" · " + esc(item["project"]) if item.get("project") else ""}'
@@ -2538,7 +3054,9 @@ def item_page(item: dict[str, object], site_title: str, *, served: bool, saved_n
         f'<p class="lead">{linked_text(item["description"])}</p>{content}'
     )
     return page_shell(f"{item_id} {item['title']} · {site_title}", site_title, body,
-                      served=served, saved_name=saved_name, interactive=served and has_answer_controls(item))
+                      served=served, saved_name=saved_name,
+                      interactive=served and has_answer_controls(item),
+                      conversations=served and questions)
 
 
 def site_pages(data: dict[str, object], site_title: str, saved_name: str) -> dict[str, str]:
@@ -2558,7 +3076,7 @@ def default_output_dir(config: dict[str, object]) -> Path:
 
 
 def copy_images(items: list[dict[str, object]], store: Path, root: Path, *, live: bool) -> None:
-    """Check every stored image opens; outside the state folder, also create the copies the pages link to."""
+    """Check images the exported pages use and copy them when rendering outside the state folder."""
     for item in items:
         files = item_image_files(item)
         if not files:
@@ -2598,12 +3116,15 @@ def render(args: argparse.Namespace) -> int:
             raise ValueError("the rendered page must be outside the Quarterdeck checkout")
         store = store_path()
         root = output.parent / "images"
+        private_images = store.parent.resolve() / REPLY_IMAGES
+        if private_images in output.parents:
+            raise ValueError("the rendered page must be outside the private reply image tree")
         live = output.parent == store.parent.resolve()
         protected = {store.resolve(), store.with_name(store.name + ".lock").resolve()}
         if ITEM_PAGE_RE.fullmatch(output.name.lower()):
             raise ValueError("the Saved filename is reserved for item pages")
-        if output.name.lower() == "images":
-            raise ValueError("the Saved filename is reserved for images")
+        if output.name.lower() == "images" or (live and output.name.lower() == REPLY_IMAGES):
+            raise ValueError(f"the Saved filename is reserved for {output.name.lower()}")
         with locked_store(store, read_only=not live):
             data = read_store(store)
             pages = site_pages(data, page_title(args, config), output.name)
@@ -2825,8 +3346,17 @@ def make_server(host: str, port: int, handler: type[BaseHTTPRequestHandler],
 
 
 def make_handler(site_title: str, base_path: str = "", store: Path | None = None, home: Path | None = None,
-                 *, workers_home: Path | None = None) -> type[BaseHTTPRequestHandler]:
+                 *, ask_home: Path | None = None, workers_home: Path | None = None) -> type[BaseHTTPRequestHandler]:
     """Every page is built from the item store when it is requested."""
+    def ask_destination():
+        if ask_home is not None:
+            try:
+                resolved = ask_home.resolve()
+            except (OSError, RuntimeError):
+                return None, None
+            return resolved, hashlib.sha256(os.fsencode(resolved)).hexdigest()
+        return None, None
+
     class Handler(BaseHTTPRequestHandler):
         server_version = "Quarterdeck"
 
@@ -2851,13 +3381,13 @@ def make_handler(site_title: str, base_path: str = "", store: Path | None = None
             self.end_headers()
             self.wfile.write(data)
 
-        def send_image(self, data: dict[str, object], item_id: str, file: str) -> None:
-            """Only a file the store lists for that item is served, and only from the private images folder."""
+        def send_image(self, data: dict[str, object], tree: str, item_id: str, file: str) -> None:
+            """Require the item to list the file for the requested private image tree."""
             try:
                 item = find_item(data, item_id)
-                if file not in item_image_files(item):
+                if file not in item_image_files(item, tree):
                     raise ValueError("not an image of this item")
-                content = stored_image(store or store_path(), item_id, file).read_bytes()
+                content = stored_image(store or store_path(), item_id, file, tree).read_bytes()
             except (OSError, ValueError):
                 self.send_text(404, "Not found\n")
                 return
@@ -2905,7 +3435,7 @@ def make_handler(site_title: str, base_path: str = "", store: Path | None = None
                 self.send_text(500, "Quarterdeck could not read its item store\n")
                 return
             if picture:
-                self.send_image(data, picture[1], picture[2])
+                self.send_image(data, *picture.groups())
                 return
             if name == "index.html":
                 self.send_text(200, list_page(data, site_title, served=True, workers=workers_home is not None),
@@ -2916,35 +3446,56 @@ def make_handler(site_title: str, base_path: str = "", store: Path | None = None
             except ValueError:
                 self.send_text(404, "Not found\n")
                 return
-            self.send_text(200, item_page(item, site_title, served=True), "text/html; charset=utf-8",
-                           prevent_framing=has_answer_controls(item))
+            _, ask_binding = ask_destination() if item["kind"] == "questions" else (None, None)
+            content = item_page(item, site_title, served=True, ask_binding=ask_binding)
+            prevent_framing = has_answer_controls(item) or (
+                item["kind"] == "questions" and question_summary(item)[0] == "Replied")
+            self.send_text(200, content, "text/html; charset=utf-8", prevent_framing=prevent_framing)
 
         def do_POST(self) -> None:  # noqa: N802 - http.server naming
-            if self.path != base_path + "/answers":
-                self.send_text(405, "Use the question page to send answers.")
+            endpoint = self.path.removeprefix(base_path)
+            subjects = {"/answers": "answer", "/asks": "ask", "/replies/read": "reply acknowledgment"}
+            if not self.path.startswith(base_path) or endpoint not in subjects:
+                self.send_text(405, "Use the question page.")
                 return
+            subject = subjects[endpoint]
             host = self.headers.get("Host", "")
             https = isinstance(self.connection, ssl.SSLSocket) or self.headers.get_all("X-Forwarded-Proto") == ["https"]
             scheme = "https" if https else "http"
             if (not host or self.headers.get("Origin") != f"{scheme}://{host}"
                     or (is_loopback(str(self.server.server_address[0])) and not request_host_is_loopback(host))):
-                self.send_text(403, "Open the question on Quarterdeck to send an answer.")
+                self.send_text(403, "Open the question on Quarterdeck.")
                 return
+            if endpoint == "/asks":
+                ask_path, ask_binding = ask_destination()
+                if ask_path is None:
+                    self.send_text(403, "Configure an available firstmate_home to ask Firstmate.")
+                    return
             if self.headers.get_content_type() != "application/json":
-                self.send_text(415, "Expected an answer in JSON.")
+                self.send_text(415, f"Expected {subject} data in JSON.")
                 return
             try:
                 length = int(self.headers.get("Content-Length", "0"))
                 if not 0 < length <= 256000 or "Transfer-Encoding" in self.headers:
-                    raise ValueError("Invalid answer size.")
+                    raise ValueError("Invalid request size.")
                 payload = json.loads(self.rfile.read(length))
-                record = send_answer(store or store_path(), home, payload)
+                active_store = store or store_path()
+                if endpoint == "/answers":
+                    record = send_answer(active_store, home, payload)
+                elif endpoint == "/asks":
+                    record = ask_message(active_store, ask_path, ask_binding, payload)
+                else:
+                    record = mark_replies_read(active_store, payload)
             except AnswerConflict as exc:
-                self.send_text(409, str(exc))
+                if endpoint == "/asks":
+                    record = {"message": str(exc), "saved": isinstance(exc, SavedAskConflict)}
+                    self.send_text(409, json.dumps(record), "application/json")
+                else:
+                    self.send_text(409, str(exc))
             except (OSError, StoreReadError):
-                self.send_text(500, "Could not save the answer.")
+                self.send_text(500, f"Could not save the {subject}.")
             except (ValueError, RecursionError):
-                self.send_text(400, "Check the question and answer.")
+                self.send_text(400, f"Check the question and {subject}.")
             else:
                 self.send_text(200, json.dumps(record), "application/json")
 
@@ -2978,8 +3529,9 @@ def serve(args: argparse.Namespace) -> int:
         tls = tls_context(args)
         base_path = effective_base_path(args)
         explicit_home = config.get("firstmate_home")
+        firstmate = Path(explicit_home) if isinstance(explicit_home, str) else None
         handler = make_handler(page_title(args, config), base_path, home=answer_home(config, config_path),
-                               workers_home=Path(explicit_home) if isinstance(explicit_home, str) else None)
+                               ask_home=firstmate, workers_home=firstmate)
         port = args.port
         for host in bind_hosts(args):
             server = make_server(host, port, handler, tls)
@@ -3002,7 +3554,8 @@ def serve(args: argparse.Namespace) -> int:
     exposed = [host for host in bind_hosts(args) if not is_loopback(host)]
     if exposed:
         print(f"quarterdeck: warning: {', '.join(exposed)} is not a loopback address; anyone who can reach this port can "
-              "read your saved items and send answers as the owner.", file=sys.stderr, flush=True)
+              "read saved items, answers, conversations and images, submit answers, acknowledge replies, and send asks "
+              "when firstmate_home is set.", file=sys.stderr, flush=True)
     for server in servers[1:]:
         threading.Thread(target=server.serve_forever, daemon=True).start()
     try:
@@ -3144,9 +3697,10 @@ COMMAND_DOCS = {
     "add": ["how-to/save-items.md", "how-to/classify-items.md", "reference/cli-and-config.md", "reference/item-store.md"],
     "list": ["how-to/save-items.md", "reference/cli-and-config.md"],
     "show": ["how-to/read-answers.md", "how-to/save-items.md", "reference/cli-and-config.md"],
+    "reply": ["how-to/reply-from-the-command-line.md", "reference/cli-and-config.md", "reference/item-store.md"],
     "remove": ["how-to/save-items.md", "reference/cli-and-config.md"],
     "render": ["how-to/serve-the-page.md", "reference/cli-and-config.md", "explanation/privacy-and-architecture.md"],
-    "serve": ["how-to/answer-questions.md", "how-to/use-the-library.md", "how-to/read-workers.md", "how-to/serve-the-page.md", "reference/cli-and-config.md", "explanation/privacy-and-architecture.md"],
+    "serve": ["how-to/answer-questions.md", "how-to/use-the-library.md", "how-to/ask-firstmate.md", "how-to/read-workers.md", "how-to/serve-the-page.md", "reference/cli-and-config.md", "explanation/privacy-and-architecture.md"],
     "service": ["how-to/serve-the-page.md", "reference/cli-and-config.md"],
     "url": ["how-to/serve-the-page.md", "reference/cli-and-config.md"],
     "install": ["how-to/install.md", "how-to/update.md", "how-to/uninstall.md"],
@@ -3243,6 +3797,18 @@ def make_parser() -> argparse.ArgumentParser:
     show = command("show", "show one item in full", "Show one item in full, with its parts numbered (Q7.1, Q7.2, ...).", show_item)
     show.add_argument("id", help="item ID, such as Q7")
 
+    reply = command("reply", "add Firstmate's reply to a question conversation",
+                    "Add Firstmate's reply under an ask on a question item (Q7) or one question (Q7.1). The reply shows as Replied "
+                    "until acknowledged in Messages. A reply leaves answers and states intact. Pair each "
+                    "--link-text with a --url and each --image with an --alt, in the order given.", reply_item)
+    reply.add_argument("id", help="item or question ID, such as Q7 or Q7.1")
+    reply.add_argument("--ask", required=True, metavar="ID", help="ask ID from the inbox note")
+    reply.add_argument("--text", required=True, help="the reply")
+    reply.add_argument("--link-text", action="append", metavar="TEXT", help="the words of a link; repeat for more links")
+    reply.add_argument("--url", action="append", metavar="URL", help="the http(s) address for the matching --link-text")
+    reply.add_argument("--image", action="append", metavar="PATH", help="a PNG, JPEG or still WebP file (up to 5 MB) copied into the private store; repeat for more")
+    reply.add_argument("--alt", action="append", metavar="TEXT", help="alt text that describes the matching --image")
+
     mark = command("mark", "mark questions answered, closed or open",
                    "Set the state of a question (Q7.3) or every question in an item (Q7). Marking answered records an "
                    "answer given somewhere other than the page, requires --via, and skips questions that are already "
@@ -3277,7 +3843,10 @@ def make_parser() -> argparse.ArgumentParser:
     render_parser.add_argument("--title", help="override the page title")
 
     serve_parser = command("serve", "serve the page over HTTP",
-                           "Serve the Desk, References and Answered, and accept same-origin answers. With firstmate_home set, the page also lists that home's running workers, read on entry and on Refresh workers. Anyone who can reach the service can answer as the owner.", serve)
+                           "Anyone who can reach the service can read saved items, answers, conversations and reply images, "
+                           "and can submit answers or acknowledge replies as the owner. With firstmate_home set, they can "
+                           "also send asks and read that home's running workers on entry or on Refresh workers. Browser "
+                           "writes require the same origin as the served page.", serve)
     add_serve_options(serve_parser)
     serve_parser.add_argument("--title", help="override the page title")
     for flag in LEGACY_SERVE_FLAGS:  # accepted so an existing service unit keeps starting; they do nothing now

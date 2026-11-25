@@ -6,8 +6,8 @@ Quarterdeck keeps every saved item in one JSON file it owns:
 ${XDG_STATE_HOME:-~/.local/state}/quarterdeck/items.json
 ```
 
-Item commands and submitted answers update the store. Both set the store
-directory to mode 0700, take an exclusive lock on `items.json.lock`, validate
+Store writers, including item commands and browser submission handlers, set
+the directory to mode 0700, take an exclusive lock on `items.json.lock`, validate
 the existing records, and atomically replace `items.json` with mode 0600.
 An in-place `render` takes the same exclusive lock from its store read
 through publication. An external render takes a shared lock if it can
@@ -85,6 +85,7 @@ fields if they pass the same validation as resource URLs.
 | --- | --- |
 | Desk and References | Item descriptions and open question prompts on Desk cards, plus item descriptions in References on served and rendered pages |
 | Item page | Item descriptions, question prompts, context, options and suggested answers |
+| Served item page | Ask and reply text in whole-item and numbered-question conversations |
 
 Quarterdeck uses the address as the link text. Inline links open in a new tab
 so you can keep a draft answer open while following a link. Selecting an option
@@ -134,21 +135,48 @@ plus the type's extension.
 
 ```text
 ${XDG_STATE_HOME:-~/.local/state}/quarterdeck/images/<id>/<file>
+${XDG_STATE_HOME:-~/.local/state}/quarterdeck/reply-images/<id>/<file>
 ```
 
-The store's `images` folder has mode 0700, and newly written image files have
-mode 0600. `<id>` is the lowercase item ID, such as `q3`. `remove` deletes the
-files named in the removed item's record and leaves the item folder in place.
-`add` and `render` never delete saved image files.
+Both image folders have mode 0700. Newly written image files have mode
+0600. `<id>` is the lowercase item ID, such as `q3`. `images` holds
+question and option images for live pages and exports. `reply-images`
+holds conversation images for live pages only. `remove` deletes files named
+in the removed item's record from their respective folders and leaves the
+item folders in place. `add` and `render` preserve saved image files.
 
 See the [supported umask](../how-to/save-items.md#known-limits).
 
-A failed `add` or an interrupted `remove` can leave files that no item names.
+A failed `add` or `reply`, or an interrupted `remove`, can leave files that no item names.
 Retrying does not clean them up. Where the destination does not support hard
-links, an interrupted image write during `add` or `render` can leave a partial
+links, an interrupted image write during `add`, `reply`, or `render` can leave a partial
 file. Delete that partial file by hand before retrying the write. See the
 [serving boundary](../explanation/privacy-and-architecture.md#what-quarterdeck-reads-and-writes)
 and [export behavior](cli-and-config.md#rendered-images).
+
+## Conversations
+
+A questions item may contain a `conversation` object. The key `item` holds the
+whole item's messages, oldest first. The object can also use one-based part
+numbers as string keys for its numbered questions. The conversation is kept
+apart from `answers`. Existing numbered threads keep their keys.
+
+Every message has `id` (a string of 32 hexadecimal characters), `author`, `text` (plain
+text, up to 20,000 characters) and `at` (UTC).
+
+| `author` | Other fields |
+| --- | --- |
+| `you` | An ask with a browser-generated ID. `delivery` (`pending` or `sent`), a stable `request_id` string for inbox retries, and `home`, a hexadecimal `sha256` digest of the resolved path of the configured Firstmate home. |
+| `firstmate` | A reply added by `quarterdeck reply`. `ask` (ID of an earlier ask in the same conversation), `read` (true once the page acknowledges this reply), and optional `links` (the same `text` and `url` objects as question links) and `images` (`file` and `alt`). |
+
+Reply images use the item's [private reply image folder](#store-layout).
+
+## Question states
+
+The stored `state` is Open, Answered or Closed. The served page derives
+**Replied** from unread replies without changing the stored state. See
+[how to read replies](../how-to/ask-firstmate.md) and
+[what static exports include](cli-and-config.md#pages).
 
 ## Question answers
 
