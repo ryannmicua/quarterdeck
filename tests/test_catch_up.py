@@ -3,8 +3,10 @@ from __future__ import annotations
 import json
 import os
 import re
+import select
 import shlex
 import shutil
+import socket
 import subprocess
 import sys
 import threading
@@ -12,6 +14,7 @@ import unittest
 import urllib.error
 import urllib.request
 from configparser import ConfigParser
+from contextlib import contextmanager
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from unittest.mock import patch
@@ -253,16 +256,16 @@ class CatchUpPageTests(CatchUpCase):
     def test_the_running_server_uses_the_current_default_retention(self) -> None:
         default = self.root / "config" / "quarterdeck.json"
         default.parent.mkdir()
-        default.write_text(json.dumps({"catch_up_days": 7}), encoding="utf-8")
+        default.write_text(json.dumps({"catch_up_days": 7, "base_path": 123}), encoding="utf-8")
         alternate = self.root / "alternate.json"
         alternate.write_text(json.dumps({"catch_up_days": 7, "base_path": "/qd"}), encoding="utf-8")
         self.notice("A")
         self.notice("B")
         self.notice("C")
-        self.run_cli("catch-up", "read", "C1")
+        self.assertEqual(self.run_cli("catch-up", "read", "C1")[0], 0)
         self.age_read("C1", 8)
         with self.serve_cli("--config", str(alternate)) as port:
-            default.write_text(json.dumps({"catch_up_days": 30}), encoding="utf-8")
+            default.write_text(json.dumps({"catch_up_days": 30, "base_path": 123}), encoding="utf-8")
             self.assertEqual(self.post_read(port, {"ids": ["C2"]})[0], 200)
             self.assertEqual([n["id"] for n in self.store()["catch_ups"]], ["C1", "C2", "C3"])
             before = self.store()
@@ -273,7 +276,7 @@ class CatchUpPageTests(CatchUpCase):
             self.assertEqual(self.post_read(port, {"ids": ["C3"]})[0], 200)
         self.assertEqual([n["id"] for n in self.store()["catch_ups"]], ["C2", "C3"])
 
-    def test_existing_service_unit_is_rewritten_only_after_config_preflight(self) -> None:
+    def test_service_write_replaces_a_unit_only_after_config_preflight(self) -> None:
         config_home = self.root / "config"
         default = config_home / "quarterdeck.json"
         alternate = self.root / "alternate.json"
@@ -295,13 +298,43 @@ class CatchUpPageTests(CatchUpCase):
         )
         self.assertEqual(served.returncode, 2)
         self.assertIn("config catch_up_days", served.stderr)
-        default.write_text(json.dumps({"catch_up_days": 30}), encoding="utf-8")
+        default.write_text(json.dumps({"catch_up_days": 30, "base_path": 123}), encoding="utf-8")
+        self.assertEqual(self.run_cli("service")[0], 2)
         self.assertEqual(self.run_cli("service", *options, "--write")[0], 0)
         unit = ConfigParser(interpolation=None)
         unit.read_string(unit_path.read_text(encoding="utf-8"))
         service = unit["Service"]
         self.assertIn(f"XDG_CONFIG_HOME={config_home}", shlex.split(service["Environment"]))
         self.assertEqual(shlex.split(service["ExecStart"])[-4:], list(options))
+
+    def test_each_notice_write_reads_retention_with_the_store_locked(self) -> None:
+        default = self.root / "config" / "quarterdeck.json"
+        default.parent.mkdir()
+        self.notice("A")
+        self.notice("B")
+        self.notice("C")
+        self.assertEqual(self.run_cli("catch-up", "read", "C1")[0], 0)
+        self.age_read("C1", 8)
+        port = self.start()
+        locked_store = quarterdeck.locked_store
+
+        @contextmanager
+        def update_retention_at_lock(path, **options):
+            with locked_store(path, **options):
+                default.write_text('{"catch_up_days": 30}', encoding="utf-8")
+                yield
+
+        for name in ("add", "CLI read", "HTTP read"):
+            with self.subTest(operation=name):
+                default.write_text('{"catch_up_days": 7}', encoding="utf-8")
+                with patch.object(quarterdeck, "locked_store", update_retention_at_lock):
+                    if name == "add":
+                        self.assertEqual(self.notice("D"), "C4")
+                    elif name == "CLI read":
+                        self.assertEqual(self.run_cli("catch-up", "read", "C2")[0], 0)
+                    else:
+                        self.assertEqual(self.post_read(port, {"ids": ["C3"]})[0], 200)
+                self.assertIn("C1", [notice["id"] for notice in self.store()["catch_ups"]])
 
     def test_generated_service_follows_a_retargeted_config_home(self) -> None:
         short, long = self.root / "short", self.root / "long"
@@ -315,18 +348,28 @@ class CatchUpPageTests(CatchUpCase):
             self.notice("B")
             self.run_cli("catch-up", "read", "C1")
             self.age_read("C1", 8)
-            code, out, error = self.run_cli("service", "--base-path", "/qd")
+            with socket.socket() as probe:
+                probe.bind(("127.0.0.1", 0))
+                port = probe.getsockname()[1]
+            code, out, error = self.run_cli("service", "--base-path", "/qd", "--port", str(port))
             self.assertEqual(code, 0, error)
             unit = ConfigParser(interpolation=None)
             unit.read_string(out)
             service = unit["Service"]
             environment = dict(entry.split("=", 1) for entry in shlex.split(service["Environment"]))
-            options = shlex.split(service["ExecStart"])[3:]
-            self.assertNotIn("--config", options)
-            with patch.dict(os.environ, environment), self.serve_cli("--base-path", "/qd") as port:
-                config_home.unlink()
-                config_home.symlink_to(long, target_is_directory=True)
-                self.assertEqual(self.post_read(port, {"ids": ["C2"]})[0], 200)
+            command = shlex.split(service["ExecStart"])
+            self.assertEqual(command[-2:], ["--config", str(short / "quarterdeck.json")])
+            with subprocess.Popen(command, env={**os.environ, **environment}, stdout=subprocess.PIPE,
+                                  stderr=subprocess.PIPE, text=True) as process:
+                try:
+                    self.assertTrue(select.select([process.stdout], [], [], 10)[0], "server did not start")
+                    self.assertTrue(process.stdout.readline().startswith("Serving Quarterdeck"))
+                    config_home.unlink()
+                    config_home.symlink_to(long, target_is_directory=True)
+                    self.assertEqual(self.post_read(port, {"ids": ["C2"]})[0], 200)
+                finally:
+                    process.terminate()
+                    process.communicate(timeout=10)
             self.notice("C")
             self.assertEqual([n["id"] for n in self.store()["catch_ups"]], ["C1", "C2", "C3"])
 

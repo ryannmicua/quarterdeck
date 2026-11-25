@@ -35,7 +35,6 @@ from contextlib import contextmanager
 from datetime import datetime, timedelta, timezone
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
-from typing import cast
 from urllib.parse import quote, unquote, urlparse
 
 
@@ -109,15 +108,31 @@ def inbox_path(value: object) -> Path:
     return path
 
 
-def load_config(path: Path | None) -> dict[str, object]:
+class CatchUpConfigError(ValueError):
+    pass
+
+
+def read_config(path: Path | None) -> dict[str, object]:
     if path is None:
         return {}
     try:
         config = json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError) as exc:
+    except (OSError, ValueError, RecursionError) as exc:
         raise ValueError(f"could not read config {path}: {exc}") from exc
     if not isinstance(config, dict):
         raise ValueError("config must be a JSON object")
+    return config
+
+
+def retention_days(config: dict[str, object]) -> int:
+    days = config.get("catch_up_days", CATCH_UP_DAYS)
+    if type(days) is not int or not 1 <= days <= 3650:
+        raise ValueError("config catch_up_days must be a whole number of days from 1 to 3650")
+    return days
+
+
+def load_config(path: Path | None) -> dict[str, object]:
+    config = read_config(path)
     unknown = sorted(set(config) - ALLOWED_CONFIG_KEYS - LEGACY_CONFIG_KEYS)
     if unknown:
         raise ValueError(f"unsupported config key(s): {', '.join(unknown)}")
@@ -138,16 +153,16 @@ def load_config(path: Path | None) -> dict[str, object]:
             raise ValueError(f"config {exc}") from exc
     if "output_dir" in config and not isinstance(config["output_dir"], str):
         raise ValueError("config output_dir must be a path string")
-    if "catch_up_days" in config:
-        days = config["catch_up_days"]
-        if type(days) is not int or not 1 <= days <= 3650:
-            raise ValueError("config catch_up_days must be a whole number of days from 1 to 3650")
+    retention_days(config)
     return config
 
 
 def catch_up_days() -> int:
     """Read the current retention setting from the default config."""
-    return cast(int, selected_config().get("catch_up_days", CATCH_UP_DAYS))
+    try:
+        return retention_days(read_config(selected_config_path()))
+    except (OSError, ValueError) as exc:
+        raise CatchUpConfigError(str(exc)) from exc
 
 
 def selected_config_path(args: argparse.Namespace | None = None) -> Path | None:
@@ -159,7 +174,7 @@ def selected_config_path(args: argparse.Namespace | None = None) -> Path | None:
     return path.expanduser().absolute() if path else None
 
 
-def selected_config(args: argparse.Namespace | None = None) -> dict[str, object]:
+def selected_config(args: argparse.Namespace) -> dict[str, object]:
     return load_config(selected_config_path(args))
 
 
@@ -1592,12 +1607,13 @@ class CatchUpConflict(ValueError):
     pass
 
 
-def mark_catch_ups_read(store: Path, ids: list[str], days: int) -> None:
+def mark_catch_ups_read(store: Path, ids: list[str]) -> None:
     """Mark the named notices read. A notice that is already read keeps its first read time."""
     with changing_store(store) as data:
         notices = {notice["id"]: notice for notice in catch_ups(data)}
         if not notices.keys() >= set(ids):
             raise CatchUpConflict("Unknown catch-up notice.")
+        days = catch_up_days()
         stamp = now_text()
         for notice_id in ids:
             notices[notice_id].setdefault("read_at", stamp)
@@ -1606,7 +1622,6 @@ def mark_catch_ups_read(store: Path, ids: list[str], days: int) -> None:
 
 def add_catch_up(args: argparse.Namespace) -> int:
     def action() -> int:
-        days = catch_up_days()
         notice: dict[str, object] = {
             "title": clean_text(args.title, "title", TITLE_LIMIT),
             "summary": clean_text(args.summary, "summary", CATCH_UP_SUMMARY_LIMIT),
@@ -1616,6 +1631,7 @@ def add_catch_up(args: argparse.Namespace) -> int:
             notice["project"] = clean_project(args.project)
         store = store_path()
         with changing_store(store) as data:
+            days = catch_up_days()
             if args.item is not None:
                 notice["item"] = find_item(data, args.item)["id"]
             notice_id = f"C{data.get('next_catch_up', 1)}"
@@ -1653,7 +1669,7 @@ def read_catch_up(args: argparse.Namespace) -> int:
             ids = list(dict.fromkeys(parse_catch_up_id(value) for value in args.ids))
         else:
             raise ValueError("give a catch-up ID such as C4, or --all")
-        mark_catch_ups_read(store, ids, catch_up_days())
+        mark_catch_ups_read(store, ids)
         for notice_id in ids:
             print(f"{notice_id} Read")
         return 0
@@ -4720,12 +4736,7 @@ def make_handler(site_title: str, base_path: str = "", store: Path | None = None
                         isinstance(value, str) and CATCH_UP_ID_RE.fullmatch(value) for value in ids
                     ):
                         raise ValueError("Invalid catch-up IDs.")
-                    try:
-                        days = catch_up_days()
-                    except (OSError, ValueError):
-                        self.send_text(500, "Could not read the Catch-up retention config.")
-                        return
-                    mark_catch_ups_read(active_store, ids, days)
+                    mark_catch_ups_read(active_store, ids)
                     record = {"read": ids}
                 else:
                     record = mark_replies_read(active_store, payload)
@@ -4733,6 +4744,8 @@ def make_handler(site_title: str, base_path: str = "", store: Path | None = None
                 self.send_text(403, "Configure an available firstmate_home to ask Firstmate.")
             except OptionChanged as exc:
                 self.send_text(409, json.dumps({"clarification": clarified_html(exc.notes, True)}), "application/json")
+            except CatchUpConfigError:
+                self.send_text(500, "Could not read the Catch-up retention config.")
             except CatchUpConflict as exc:
                 self.send_text(409, str(exc))
             except AnswerConflict as exc:
@@ -4775,7 +4788,7 @@ def serve_config(args: argparse.Namespace) -> tuple[Path | None, dict[str, objec
     config_path = selected_config_path(args) if args.config else default_path
     config = load_config(config_path)
     if config_path != default_path:
-        load_config(default_path)
+        retention_days(read_config(default_path))
     return config_path, config
 
 
@@ -4853,8 +4866,8 @@ def service_unit(args: argparse.Namespace) -> str:
     if tls_cert and tls_key:
         command += ["--tls-cert", str(Path(tls_cert).expanduser().resolve()), "--tls-key", str(Path(tls_key).expanduser().resolve())]
     config_path, _ = serve_config(args)
-    if args.config:
-        command += ["--config", str(config_path)]
+    if config_path is not None:
+        command += ["--config", str(config_path.resolve())]
     exec_start = " ".join(systemd_quote(part, literal_dollars=True) for part in command)
     environment = []
     if os.environ.get("XDG_STATE_HOME"):
