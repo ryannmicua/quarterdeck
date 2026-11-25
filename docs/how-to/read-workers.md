@@ -1,6 +1,6 @@
 # Read the workers section
 
-Open **Workers** on the served Saved page to see who is running in your
+Open **Workers** on the served Desk to see who is running in your
 Firstmate home.
 
 ## Before you start

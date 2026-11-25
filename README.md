@@ -27,10 +27,11 @@ the saved content.
 
 ## Features
 
-- **My desk** shows open question prompts grouped by set. It also keeps sets
-  with pending answer deliveries on editable questions in view. Other question sets
-  appear under **Reviewed questions**. Links and lists appear under **References**.
-- **Workers** follows **My desk** on the served page. See
+- **Desk** shows questions that need attention. Tap a card to open its item.
+- **Open library** gives you searchable access to saved links, lists, and
+  answered items on the served Desk. See
+  [Find references and answered questions](docs/how-to/use-the-library.md).
+- **Workers** follows **Desk** on the served page. See
   [how to enable and refresh the roster](docs/how-to/read-workers.md).
 - One page per item, with its ID and title at the top. A resource's link opens
   the saved address; list entries and questions are numbered.
@@ -58,9 +59,11 @@ quarterdeck add --kind resource --title "Calls redesign" \
 quarterdeck serve
 ```
 
-`add` prints `Q1`. Open the address `serve` prints. For a read-first install,
-download `install.sh`, read it, then run it. Run `quarterdeck help` for command
-help or `quarterdeck help --json` for the command index.
+`add` prints `Q1`. Open the address `serve` prints, then select
+**Open library** and find **Calls redesign** under **References**. For a
+read-first install, download `install.sh`, read it, then run it. Run
+`quarterdeck help` for command help or `quarterdeck help --json` for the
+command index.
 
 To update an existing install, run `quarterdeck update`. See the
 [tutorial](docs/tutorials/first-render.md), the [how-to guides](docs/how-to/)
@@ -83,7 +86,7 @@ for where saved items live and who can see a served page. See
 ### What happened to the old page?
 
 Earlier versions built the page from Firstmate's backlogs, boards, topics and
-reports. There is no migration to the Saved page. See the
+reports. There is no migration to the Desk. See the
 [CLI and configuration reference](docs/reference/cli-and-config.md) for older
 config keys and service flags that are still accepted.
 

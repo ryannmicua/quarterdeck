@@ -7,6 +7,7 @@
 - [Serve the page](serve-the-page.md)
 - [Read the workers section](read-workers.md)
 - [Answer questions](answer-questions.md)
+- [Find references and answered questions](use-the-library.md)
 - [Read and mark answers](read-answers.md)
 - [Classify items](classify-items.md)
 - [Read the report](read-the-report.md)

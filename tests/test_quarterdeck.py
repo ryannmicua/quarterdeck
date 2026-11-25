@@ -26,6 +26,8 @@ import zlib
 from concurrent.futures import ThreadPoolExecutor
 from configparser import ConfigParser
 from contextlib import contextmanager, redirect_stderr, redirect_stdout, suppress
+from html import escape
+from html.parser import HTMLParser
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 from urllib.parse import urljoin
@@ -253,27 +255,193 @@ class PageTests(StoreCase):
     def pages(self) -> dict[str, str]:
         return quarterdeck.site_pages(quarterdeck.read_store(quarterdeck.store_path()), "Quarterdeck", "index.html")
 
+    def assert_no_library_controls(self, page: str) -> None:
+        class Controls(HTMLParser):
+            def handle_starttag(parser, tag, attrs):
+                attributes = dict(attrs)
+                self.assertNotEqual(tag, "dialog")
+                self.assertNotEqual(attributes.get("id"), "open-library")
+                if tag == "input":
+                    self.assertNotEqual(attributes.get("type"), "search")
+
+        parser = Controls()
+        parser.feed(page)
+        parser.close()
+
     def test_empty_quarterdeck_shows_a_plain_empty_state(self) -> None:
         pages = self.pages()
         self.assertEqual(set(pages), {"index.html"})
         self.assertIn("Nothing is saved yet.", pages["index.html"])
         self.assertNotIn("<table", pages["index.html"])
 
+    def served_pages(self) -> tuple[str, dict]:
+        data = quarterdeck.read_store(quarterdeck.store_path())
+        return quarterdeck.list_page(data, "Quarterdeck", served=True), data
+
+    def inbox_home(self) -> Path:
+        home = self.root / "home"
+        script = home / "bin" / "fm-inbox.sh"
+        script.parent.mkdir(parents=True, exist_ok=True)
+        script.write_text("#!/bin/sh\nexit 0\n")
+        script.chmod(0o700)
+        return home
+
+    def answer_all(self, item_id: str, count: int = 2) -> None:
+        home = self.inbox_home()
+        for part in range(1, count + 1):
+            quarterdeck.send_answer(quarterdeck.store_path(), home,
+                                    {"part": f"{item_id}.{part}", "answer": f"Answer {part}", "revision": ""})
+
     def test_saved_page_lists_items_newest_first_with_their_fields(self) -> None:
         self.add_all_kinds()
         index = self.pages()["index.html"]
-        rows = index
-        self.assertLess(rows.index("My desk"), rows.index("References"))
-        self.assertLess(rows.index(">Q3<"), rows.index(">Q2<"))
-        self.assertLess(rows.index(">Q2<"), rows.index(">Q1<"))
+        for gone in ("My desk", "Needs attention", "Reviewed questions", "<table"):
+            self.assertNotIn(gone, index)
+        self.assertLess(index.index("<h1>Desk</h1>"), index.index("<h2>References</h2>"))
+        self.assertLess(index.index(">Q2<"), index.index(">Q1<"))
         self.assertIn("Harbor chores", index)
-        self.assertIn("<h3>Tide launch decisions</h3>", index)
-        self.assertIn('<a class="work-action" href="q3.html#Q3.1">Read questions</a>', index)
+        self.assertIn('<h3>Tide launch decisions</h3>', index)
+        self.assertIn('href="q3.html#Q3.1" aria-label="Read questions for Tide launch decisions">Read questions</a>', index)
+        self.assertNotIn('href="q3.html"', index)
         self.assertEqual(index.count('href="q3.html#Q3.1"'), 1)
         self.assertIn("Two open questions, saved to decide later.", index)
         self.assertIn("<li>Merge the tide tables now?</li><li>Which colour for the quay?</li>", index)
-        for heading in ("ID", "Kind", "Title", "Description", "Saved"):
-            self.assertIn(f'<th scope="col">{heading}</th>', index)
+        self.assert_no_library_controls(index)
+        self.assertIn("<h2>Answered</h2>", index)
+        self.assertIn("Nothing is answered yet.", index)
+
+    def test_served_desk_opens_references_and_answered_in_one_pop_out(self) -> None:
+        self.add_all_kinds()
+        page, _ = self.served_pages()
+        self.assertEqual(page.count('id="open-library"'), 1)
+        self.assertEqual(page.count("<dialog"), 1)
+        for text in ('role="tab" id="tab-references"', 'role="tab" id="tab-answered"', ">Close library<",
+                     'id="search-references"', 'id="search-answered"'):
+            self.assertIn(text, page)
+        self.assertIn("Nothing is answered yet.", page.split('id="panel-answered"')[1])
+        self.assertNotIn("<table", page)
+        self.assertNotIn("<h2>References</h2>", page)
+        self.assertNotIn("<h2>Answered</h2>", page)
+        references = page.split('id="panel-references"')[1].split('id="panel-answered"')[0]
+        self.assertLess(references.index('data-id="Q2"'), references.index('data-id="Q1"'))
+        self.assertIn('href="q1.html">Calls redesign</a>', references)
+        self.assertNotIn('href="https://example.com/lavish/calls"', references)
+
+    def test_a_question_item_moves_between_desk_and_answered_by_itself(self) -> None:
+        self.add_all_kinds()
+        self.add("questions", "Pier lights", "Pick the lamp colour.", "--body-file", "-", stdin=json.dumps(QUESTIONS))
+        for state in ("answered", "closed"):
+            with self.subTest(state=state):
+                source = ["--via", "chat"] if state == "answered" else []
+                self.assertEqual(self.run_cli("mark", "Q4", state, *source)[0], 0)
+                page, _ = self.served_pages()
+                desk, library = page.split("<dialog", 1)
+                self.assertNotIn("Pier lights", desk)
+                self.assertIn('data-id="Q4"', library.split('id="panel-answered"')[1])
+                self.assertIn("Tide launch decisions", desk)
+                self.assertEqual(self.run_cli("mark", "Q4.2", "open")[0], 0)
+                page, data = self.served_pages()
+                desk, library = page.split("<dialog", 1)
+                self.assertIn("Pier lights", desk)
+                self.assertNotIn('data-id="Q4"', library)
+                self.assertEqual([item["id"] for item in data["items"]], ["Q1", "Q2", "Q3", "Q4"])
+
+    def test_answering_every_question_moves_the_item_and_a_pending_delivery_keeps_it_on_the_desk(self) -> None:
+        self.add("questions", "Pier lights", "Pick the lamp colour.", "--body-file", "-", stdin=json.dumps(QUESTIONS))
+        quarterdeck.send_answer(quarterdeck.store_path(), None, {"part": "Q1.1", "answer": "Merge", "revision": ""})
+        quarterdeck.send_answer(quarterdeck.store_path(), None, {"part": "Q1.2", "answer": "Blue", "revision": ""})
+        page, _ = self.served_pages()
+        self.assertIn("Not delivered", page.split("<dialog", 1)[0])
+        self.assertIn('href="q1.html" aria-label="Review answers for Pier lights">Review answers</a>', page)
+        for part in (1, 2):
+            record = quarterdeck.read_store(quarterdeck.store_path())["items"][0]["answers"][str(part)]
+            quarterdeck.send_answer(quarterdeck.store_path(), self.inbox_home(),
+                                    {"part": f"Q1.{part}", "answer": record["answer"], "revision": record["revision"]})
+        page, _ = self.served_pages()
+        desk, library = page.split("<dialog", 1)
+        self.assertNotIn("Pier lights", desk)
+        self.assertIn("Nothing is on your Desk.", desk)
+        answered = library.split('id="panel-answered"')[1]
+        self.assertIn('href="q1.html">Pier lights</a></div><p class="meta">Answered</p></li>', answered)
+        self.assertNotIn('>Which colour for the quay?', answered)
+        self.assertNotIn('>Blue<', answered)
+        self.assertEqual(quarterdeck.read_store(quarterdeck.store_path())["items"][0]["answers"]["2"]["answer"], "Blue")
+
+    def test_answered_rows_keep_newest_saved_items_first(self) -> None:
+        for number in range(3):
+            self.add("questions", f"Set {number}", "Pick.", "--body-file", "-", stdin=json.dumps(QUESTIONS[:1]))
+        with patch.object(quarterdeck, "now_text", side_effect=["2026-03-01T10:00:00Z", "2026-05-01T10:00:00Z", "2026-04-01T10:00:00Z"] * 2):
+            for number in (1, 2, 3):
+                self.answer_all(f"Q{number}", 1)
+        page, _ = self.served_pages()
+        answered = page.split('id="panel-answered"')[1]
+        self.assertEqual(re.findall(r'<a class="lib-title" href="(q\d.html)"', answered), ["q3.html", "q2.html", "q1.html"])
+        self.assertNotIn("<time", answered)
+        static_answered = self.pages()["index.html"].split("<h2>Answered</h2>")[1]
+        self.assertEqual(re.findall(r'<a class="lib-title" href="(q\d.html)"', static_answered), ["q3.html", "q2.html", "q1.html"])
+
+    def test_static_pages_keep_references_and_answered_as_plain_sections(self) -> None:
+        self.add_all_kinds()
+        self.add("questions", "Pier lights", "Pick the lamp colour.", "--body-file", "-", stdin=json.dumps(QUESTIONS[:1]))
+        with patch.object(quarterdeck, "now_text", return_value="2026-05-01T10:00:00Z"):
+            self.answer_all("Q4", 1)
+        pages = self.pages()
+        index = pages["index.html"]
+        self.assertIn('<section class="page-section"><h2>References</h2>', index)
+        self.assertIn('<section class="page-section"><h2>Answered</h2>', index)
+        self.assertLess(index.index("<h2>References</h2>"), index.index("<h2>Answered</h2>"))
+        self.assertIn('href="q1.html">Calls redesign</a>', index.split("<h2>References</h2>")[1].split("</section>")[0])
+        answered = index.split("<h2>Answered</h2>")[1].split("</section>")[0]
+        self.assertEqual(re.findall(r'<a class="lib-title" href="([^"]+)">([^<]+)</a>', answered),
+                         [("q4.html", "Pier lights")])
+        self.assertIn("Answer 1", pages["q4.html"])
+        for page in pages.values():
+            self.assert_no_library_controls(page)
+
+    def test_item_page_lists_open_questions_first_and_folds_answered_ones(self) -> None:
+        self.add("questions", "Pier lights", "Pick the lamp colour.", "--body-file", "-", stdin=json.dumps(QUESTIONS))
+        self.answer_all("Q1", 1)
+        data = quarterdeck.read_store(quarterdeck.store_path())
+        for served in (True, False):
+            with self.subTest(served=served):
+                page = quarterdeck.item_page(data["items"][0], "Quarterdeck", served=served)
+                body = page.split('<div id="questions">')[1].split("</main>")[0]
+                self.assertLess(body.index('id="Q1.2"'), body.index('<details class="done">'))
+                self.assertIn('<summary><span class="id">Q1.1</span><span class="sum-q">Merge the tide tables now?</span>'
+                              '<span class="sum-a"><span class="sum-text">Answer 1</span>'
+                              '<span class="sum-source" hidden> (Desk)</span></span></summary>', body)
+                self.assertIn("1 of 2 open", page)
+                self.assertEqual(page.count('class="sendbar"'), 1 if served else 0)
+                if served:
+                    self.assertGreater(body.index('class="sendbar"'), body.index("</details>"))
+                self.assertNotIn("Return to Desk</a>", page)
+        self.assertEqual(self.run_cli("mark", "Q1.1", "open")[0], 0)
+        self.assertEqual(self.run_cli("mark", "Q1.1", "answered", "--via", "chat")[0], 0)
+        repeat = quarterdeck.send_answer(quarterdeck.store_path(), None,
+                                         {"part": "Q1.1", "answer": "Answer 1", "revision": ""})
+        self.assertEqual((repeat["answer"], repeat["delivery"]), ("Answer 1", "sent"))
+        self.assertEqual(repeat["off_desk_answer"]["via"], "chat")
+        item = quarterdeck.read_store(quarterdeck.store_path())["items"][0]
+        for served in (True, False):
+            with self.subTest(served=served, via="chat"):
+                page = quarterdeck.item_page(item, "Quarterdeck", served=served)
+                summary, expanded = page.split('<details class="done">', 1)[1].split("</summary>", 1)
+                self.assertIn('<span class="sum-text">Answer 1</span><span class="sum-source"> (Desk)</span>', summary)
+                self.assertIn("Answered elsewhere · chat", expanded)
+        for state in ("closed", "open", "answered"):
+            with self.subTest(state=state):
+                if state == "answered":
+                    revision = self.store()["items"][0]["answers"]["1"]["revision"]
+                    quarterdeck.send_answer(quarterdeck.store_path(), None,
+                                            {"part": "Q1.1", "answer": "Correction", "revision": revision})
+                else:
+                    self.assertEqual(self.run_cli("mark", "Q1.1", state)[0], 0)
+                data = quarterdeck.read_store(quarterdeck.store_path())
+                for served in (True, False):
+                    page = quarterdeck.item_page(data["items"][0], "Quarterdeck", served=served)
+                    self.assertNotIn('<details class="done">', page)
+                    self.assertLess(page.index('id="Q1.1"'), page.index('id="Q1.2"'))
+                    self.assertIn("Not delivered" if state == "answered" else "Sent", page)
 
     def test_web_addresses_in_descriptions_become_links(self) -> None:
         self.add("resource", "Notes", "See https://example.com/notes/1, then <b> https://example.org/a?x=1&y=2 </b>. Not javascript:alert(1).",
@@ -325,7 +493,7 @@ class PageTests(StoreCase):
             'Install from git+https://example.org/tools.git@v2.'
         )
         pages = self.pages()
-        self.assertIn(f'<td class="description">{expected}</td>', pages["index.html"])
+        self.assertIn(f'<p class="lib-desc">{expected}</p>', pages["index.html"])
         self.assertIn(f'<h3>Decisions</h3><p>{expected}</p>', pages["index.html"])
         for name in ("q1.html", "q2.html"):
             self.assertIn(f'<p class="lead">{expected}</p>', pages[name])
@@ -471,7 +639,8 @@ class RenderTests(StoreCase):
         code, out, err = self.run_cli("render", "--output", str(output))
         self.assertEqual(code, 0, err)
         self.assertEqual(out.strip(), str(output.resolve()))
-        self.assertIn('<a class="work-action" href="q3.html#Q3.1">Read questions</a>', output.read_text())
+        self.assertIn('href="q3.html#Q3.1" aria-label="Read questions for Tide launch decisions">Read questions</a>',
+                      output.read_text())
         self.assertIn('<section class="decision" id="Q3.1"', (output.parent / "q3.html").read_text())
         self.assertEqual({path.name for path in output.parent.iterdir()},
                          {"index.html", "q1.html", "q2.html", "q3.html", "q8.html", "snapshot.html"})
@@ -643,20 +812,20 @@ class ServeTests(StoreCase):
         self.assertEqual(0, self.run_cli("mark", "Q3", "closed")[0])
         self.assertEqual(self.post_answer(port, "Q3.1", "New", correction["revision"])[0], 409)
         index = self.fetch(port, "/qd/")[1]
-        self.assertIn("Nothing is waiting for you", index)
-        self.assertRegex(index, r'<a[^>]* href="q3.html">Review answers</a>')
-        self.assertEqual(index.count('href="q3.html"'), 1)
+        self.assertIn("Nothing is on your Desk", index)
+        self.assertNotIn("Review answers", index)
+        self.assertIn('data-id="Q3"', index.split('id="panel-answered"')[1])
         closed = self.fetch(port, "/qd/q3.html")[1]
         self.assertIn("<li>Hold</li>", closed)
         self.assertIn('<strong>Suggested answer</strong><br>Merge', closed)
         self.assertNotIn("<textarea", closed)
         self.assertEqual(0, self.run_cli("mark", "Q3.2", "open")[0])
         self.assertEqual(set(self.store()["items"][2]["answers"]["2"]), {"state", "revision"})
-        desk = self.fetch(port, "/qd/")[1].split("<h1>My desk</h1>", 1)[1].split('<section id="workers">', 1)[0]
+        desk = self.fetch(port, "/qd/")[1].split("<h1>Desk</h1>", 1)[1].split('<section id="workers">', 1)[0]
         self.assertIn("<li>Which colour for the quay?</li>", desk)
         self.assertNotIn("Merge the tide tables now?", desk)
         self.assertIn('<span class="badge">1 of 2 open</span>', desk)
-        self.assertIn('<a class="work-action" href="q3.html#Q3.2">Answer questions</a>', desk)
+        self.assertIn('href="q3.html#Q3.2" aria-label="Answer questions for Tide launch decisions">Answer questions</a>', desk)
         question_page = self.fetch(port, "/qd/q3.html")[1]
         self.assertIn('<section class="decision" id="Q3.2"', question_page)
         self.assertIn('<p class="progress">1 of 2 open</p>', question_page)
@@ -668,9 +837,9 @@ class ServeTests(StoreCase):
         self.add("questions", "Delivery to retry", "A choice already made.", "--body-file", "-", stdin=json.dumps(delivery))
         port = self.start("/qd")
         self.assertEqual(self.post_answer(port, "Q2.1", "Yes")[0], 200)
-        desk = self.fetch(port, "/qd/")[1].split("<h1>My desk</h1>", 1)[1].split('<section id="workers">', 1)[0]
-        self.assertIn('<a class="button-link" href="q2.html">Review answers</a>', desk)
-        self.assertIn('<a class="work-action" href="q1.html#Q1.1">Answer questions</a>', desk)
+        desk = self.fetch(port, "/qd/")[1].split("<h1>Desk</h1>", 1)[1].split('<section id="workers">', 1)[0]
+        self.assertIn('class="card-link button-link" href="q2.html"', desk)
+        self.assertIn('class="card-link work-action" href="q1.html#Q1.1"', desk)
         self.assertIn("<li>Merge the tide tables now?</li><li>Which colour for the quay?</li>", desk)
         self.assertNotIn("Deliver the harbour chart?", desk)
 
@@ -780,16 +949,18 @@ class ServeTests(StoreCase):
         status, record = self.post_answer(port, "Q3.1", "Hold", origin=public_origin, forwarded_proto="https")
         self.assertEqual((status, record["answer"]), (200, "Hold"))
 
-    def check_answer_page(self, port, script):
+    def check_answer_page(self, port, script, path="/qd/q1.html", *, viewport=None, device_scale_factor=None):
         chrome = shutil.which("google-chrome")
         if not chrome:
             self.skipTest("google-chrome is required for the answer-card browser tests")
-        status, page, _ = self.fetch(port, "/qd/q1.html")
+        status, page, _ = self.fetch(port, path)
         self.assertEqual(status, 200)
         fixture = self.root / "question.html"
-        fixture.write_text(page.replace("</body>", """
+        page = page.replace("</body>", """
+<style>#browser-result { display:none }</style>
 <output id="browser-result">Incomplete</output>
 <script>
+const result = (window.frameElement ? parent.document : document).getElementById('browser-result');
 const check = (condition, message) => { if (!condition) throw new Error(message); };
 const field = n => document.getElementById('answer-Q1.' + n);
 const card = n => document.getElementById('Q1.' + n);
@@ -811,16 +982,186 @@ const sendBatch = () => new Promise(resolve => {
 });
 (async () => {
 """ + script + """
-  button('browser-result').textContent = 'PASS';
-})().catch(error => { button('browser-result').textContent = error.message; });
+  result.textContent = 'PASS';
+})().catch(error => { result.textContent = error.message; });
 </script>
-</body>"""), encoding="utf-8")
+</body>""")
+        timing = []
+        if viewport:
+            width, height = viewport
+            page = (f'<iframe style="width:{width}px;height:{height}px;border:0" srcdoc="{escape(page)}"></iframe>'
+                    '<output id="browser-result">Incomplete</output>')
+            # Give resize observers a rendered frame before headless Chrome dumps the fixture.
+            timing = ["--run-all-compositor-stages-before-draw", "--virtual-time-budget=1000"]
+        fixture.write_text(page, encoding="utf-8")
+        scale = [] if device_scale_factor is None else [f"--force-device-scale-factor={device_scale_factor}"]
         result = subprocess.run([chrome, "--headless", "--disable-background-networking", "--no-first-run", "--lang=en-US",
-                                 f"--user-data-dir={self.root / 'browser'}", "--dump-dom", fixture.as_uri()],
+                                 f"--user-data-dir={self.root / 'browser'}", *scale, *timing, "--dump-dom", fixture.as_uri()],
                                 env={**os.environ, "TZ": "Asia/Tokyo", "LC_ALL": "en_US.utf-8"},
                                 capture_output=True, text=True, timeout=30, check=True)
         browser_result = result.stdout.partition('<output id="browser-result">')[2].partition("</output>")[0]
         self.assertEqual(browser_result, "PASS", result.stderr)
+
+    def test_keyboard_visual_viewport_repositions_send_and_library(self):
+        self.add("questions", "Tide decisions", "Decide the launch plan.", "--body-file", "-",
+                 stdin=json.dumps(QUESTIONS * 3))
+        self.add("resource", "Harbor chart", "Review the route.", "--url", "https://example.org/chart",
+                 "--link-text", "Open chart")
+        port = self.start("/qd")
+        viewport_events = r"""
+const adjust = (height, offsetTop, event) => {
+  Object.defineProperties(visualViewport, {
+    height: {value:height, configurable:true},
+    offsetTop: {value:offsetTop, configurable:true}
+  });
+  visualViewport.dispatchEvent(new Event(event));
+  check(innerHeight === 844, 'The keyboard fixture resized the layout viewport');
+};
+const near = (actual, expected) => Math.abs(actual - expected) < 1;
+"""
+        self.check_answer_page(port, viewport_events + r"""
+const bar = button('send').closest('.sendbar');
+field(6).focus();
+adjust(240, 60, 'resize');
+check(near(bar.getBoundingClientRect().bottom, 300), 'The Send bar stayed behind the keyboard');
+adjust(240, 100, 'scroll');
+check(near(bar.getBoundingClientRect().bottom, 340), 'The Send bar did not follow viewport panning');
+scrollTo(0, document.documentElement.scrollHeight);
+check(field(6).getBoundingClientRect().bottom <= bar.getBoundingClientRect().top,
+      'The last field could not scroll clear of the keyboard and bar');
+adjust(844, 0, 'resize');
+check(near(bar.getBoundingClientRect().bottom, 844), 'The Send bar did not return after closing the keyboard');
+check(near(parseFloat(getComputedStyle(document.querySelector('main')).paddingBottom), bar.getBoundingClientRect().height),
+      'The page kept extra clearance after closing the keyboard');
+""", viewport=(390, 844))
+        for width in (390, 900):
+            with self.subTest(width=width):
+                self.check_answer_page(port, viewport_events + r"""
+button('open-library').click();
+const dialog = button('library');
+for (const animation of dialog.getAnimations()) animation.finish();
+const normalHeight = dialog.getBoundingClientRect().height;
+const search = button('search-references');
+search.focus();
+adjust(60, 60, 'resize');
+let bounds = dialog.getBoundingClientRect();
+check(near(bounds.bottom, 120) && near(bounds.top, 60),
+      'The library did not fit above the keyboard');
+const searchBounds = search.getBoundingClientRect();
+check(document.activeElement === search && searchBounds.top >= bounds.top && searchBounds.bottom <= bounds.bottom + 1,
+      'The focused search was clipped when the keyboard opened');
+search.value = 'harbor';
+search.dispatchEvent(new Event('input', {bubbles:true}));
+const resultLink = dialog.querySelector('a[href="q2.html"]');
+resultLink.scrollIntoView({block:'center'});
+bounds = dialog.getBoundingClientRect();
+const linkBounds = resultLink.getBoundingClientRect();
+check(linkBounds.top >= bounds.top && linkBounds.bottom <= bounds.bottom, 'The result could not scroll into view');
+for (const control of dialog.querySelectorAll('[role="tab"], [data-close]')) {
+  control.scrollIntoView({block:'center'});
+  const controlBounds = control.getBoundingClientRect();
+  check(controlBounds.top >= bounds.top - 1 && controlBounds.bottom <= bounds.bottom + 1,
+        'The short library clipped ' + control.textContent);
+}
+adjust(60, 90, 'scroll');
+check(near(dialog.getBoundingClientRect().bottom, 150), 'The library did not follow viewport panning');
+adjust(844, 0, 'resize');
+bounds = dialog.getBoundingClientRect();
+check(near(bounds.bottom, 844) && near(bounds.height, normalHeight), 'The library did not return to its original size');
+""", path="/qd/", viewport=(width, 844))
+
+    def test_send_bar_stays_at_viewport_bottom_and_reserves_its_height(self):
+        for count in (1, 12):
+            self.add("questions", "Tide decisions", "Decide the launch plan.", "--body-file", "-",
+                     stdin=json.dumps(QUESTIONS[:1] * count))
+        port = self.start("/qd")
+        for width, height in ((390, 844), (1440, 900)):
+            for item, count in ((1, 1), (2, 12)):
+                with self.subTest(viewport=(width, height), questions=count):
+                    self.check_answer_page(port, f"""
+check(innerWidth === {width} && innerHeight === {height}, 'Wrong fixture viewport');
+check(document.querySelectorAll('textarea').length === {count}, 'Wrong fixture question count');
+""" + r"""
+const main = document.querySelector('main');
+const bar = button('send').closest('.sendbar');
+const lastField = [...document.querySelectorAll('textarea')].pop();
+const checkPosition = () => {
+  const bounds = bar.getBoundingClientRect();
+  check(Math.abs(bounds.bottom - innerHeight) < 1, 'The send bar moved away from the viewport bottom');
+  check(Math.abs(parseFloat(getComputedStyle(main).paddingBottom) - bounds.height) < 1,
+        'The page did not reserve exactly one send bar height');
+};
+const checkPageEnd = () => {
+  scrollTo(0, document.documentElement.scrollHeight);
+  checkPosition();
+  check(lastField.getBoundingClientRect().bottom <= bar.getBoundingClientRect().top, 'The bar covered the last field');
+  if (document.documentElement.scrollHeight > innerHeight) {
+    check(Math.abs(main.getBoundingClientRect().bottom - innerHeight) < 1, 'Extra space remained below the page end');
+  }
+};
+checkPosition();
+checkPageEnd();
+const waitForBarResize = () => new Promise(resolve => {
+  const observer = new ResizeObserver(() => { observer.disconnect(); resolve(); });
+  observer.observe(bar);
+});
+const focusAboveBar = control => {
+  control.focus({preventScroll:true});
+  scrollBy(0, control.getBoundingClientRect().bottom - bar.getBoundingClientRect().top + 4);
+  check(document.activeElement === control && control.getBoundingClientRect().bottom <= bar.getBoundingClientRect().top,
+        'The focused control was not visible before the bar grew');
+};
+let statusFocus;
+if (innerWidth === 390 && document.querySelectorAll('textarea').length > 1) {
+  const question = document.querySelectorAll('.decision')[2];
+  const choice = question.querySelector('[data-choice]');
+  focusAboveBar(choice);
+  choice.click();
+  check(choice.getBoundingClientRect().bottom > bar.getBoundingClientRect().top, 'Undo did not grow the bar over the choice');
+  await waitForBarResize();
+  check(document.activeElement === choice && choice.getBoundingClientRect().bottom <= bar.getBoundingClientRect().top,
+        'Showing Undo covered the focused choice');
+  statusFocus = question.querySelector('textarea');
+  focusAboveBar(statusFocus);
+}
+const originalHeight = bar.getBoundingClientRect().height;
+bar.querySelector('output').textContent = 'An answer was rejected. '.repeat(12);
+await waitForBarResize();
+check(bar.getBoundingClientRect().height > originalHeight, 'The status fixture did not grow the bar');
+if (statusFocus) {
+  check(document.activeElement === statusFocus && statusFocus.getBoundingClientRect().bottom <= bar.getBoundingClientRect().top,
+        'The status message covered the focused answer');
+}
+checkPageEnd();
+""", path=f"/qd/q{item}.html", viewport=(width, height))
+
+    def test_verbose_send_error_leaves_the_question_and_controls_reachable(self):
+        self.add("questions", "Tide decisions", "Decide the launch plan.", "--body-file", "-",
+                 stdin=json.dumps(QUESTIONS[:1]))
+        port = self.start("/qd")
+        for height in (844, 140):
+            with self.subTest(height=height):
+                self.check_answer_page(port, r"""
+const error = 'Gateway failure. '.repeat(1500) + 'End of response.';
+window.fetch = async () => ({ok: false, status: 502, text: async () => error});
+card(1).querySelector('[data-choice="Hold"]').click();
+await sendBatch();
+const bar = button('send').closest('.sendbar');
+const status = bar.querySelector('output');
+check(status.textContent.endsWith('End of response.') && status.scrollHeight > status.clientHeight,
+      'A long error was lost or did not fit in its own scroll area');
+status.focus();
+status.scrollTop = status.scrollHeight;
+check(document.activeElement === status && status.scrollTop > 0, 'The full error was not reachable');
+check(bar.getBoundingClientRect().top >= innerHeight / 2, 'The error covered most of the question view');
+check(!button('send').disabled && field(1).value === 'Hold', 'The error prevented retrying the draft');
+for (const control of [button('undo'), status, button('send'), field(1)]) {
+  control.scrollIntoView({block:'center'});
+  const bounds = control.getBoundingClientRect();
+  check(control.contains(document.elementFromPoint(bounds.x + bounds.width / 2, bounds.y + bounds.height / 2)),
+        'The short viewport hid ' + control.tagName + ' ' + control.id);
+}
+""", viewport=(390, height))
 
     def test_bulk_suggestions_skip_saved_answers_and_drafts(self):
         self.add("questions", "Tide decisions", "Decide the launch plan.", "--body-file", "-",
@@ -844,6 +1185,511 @@ check(field(7) === null, 'A closed question had an editable field');
 check(button('suggest').disabled, 'Bulk suggestions remained available with nothing to fill');
 """)
 
+    def test_an_answered_question_folds_to_one_line_below_the_open_ones(self):
+        review = [{"text": "Review the plan", "url": "https://example.org/review"}]
+        question = {**QUESTIONS[0], "question": "Merge the tide tables now? " * 8, "links": review}
+        self.add("questions", "Tide decisions", "Decide the launch plan.", "--body-file", "-",
+                 stdin=json.dumps([question, {**QUESTIONS[1], "links": review}, question]))
+        home = self.root / "home"
+        script = home / "bin" / "fm-inbox.sh"
+        script.parent.mkdir(parents=True)
+        script.write_text("#!/bin/sh\nexit 0\n")
+        script.chmod(0o700)
+        port = self.start("/qd", home=home)
+        self.assertEqual(self.post_answer(port, "Q1.3", "Wait for the harbourmaster. " * 8)[1]["delivery"], "sent")
+        self.assertEqual(self.run_cli("mark", "Q1.3", "open")[0], 0)
+        self.assertEqual(self.run_cli("mark", "Q1.3", "answered", "--via", "chat")[0], 0)
+        for width in (320, 390, 1440):
+            with self.subTest(width=width):
+                self.check_answer_page(port, r"""
+const list = document.querySelector('#questions');
+const order = () => [...list.children].map(row => row.id || row.lastElementChild.id).join();
+const checkDeskMarker = summary => {
+  const source = summary.querySelector('.sum-source');
+  check(source && source.textContent === ' (Desk)', 'The folded answer lacked a trailing Desk marker');
+  const range = document.createRange();
+  range.selectNodeContents(source);
+  const marker = range.getBoundingClientRect();
+  const answer = source.closest('.sum-a').getBoundingClientRect();
+  check(marker.width > 0 && marker.left >= answer.left && marker.right <= answer.right + 1,
+        'The Desk marker was clipped at ' + innerWidth + ' pixels');
+};
+const checkVisibleWord = (summary, word) => {
+  const answer = summary.querySelector('.sum-text');
+  check(answer.textContent === word, 'The folded answer had the wrong text');
+  const range = document.createRange();
+  range.setStart(answer.firstChild, 0);
+  range.setEnd(answer.firstChild, word.length);
+  const wordBounds = range.getBoundingClientRect();
+  const style = getComputedStyle(answer);
+  const ellipsisSpace = answer.scrollWidth > answer.clientWidth ? parseFloat(style.fontSize) : 0;
+  check(wordBounds.width > 0 && wordBounds.right + ellipsisSpace <= answer.getBoundingClientRect().right + 1,
+        'The one-word answer was clipped at ' + innerWidth + ' pixels');
+};
+const checkSummary = summary => {
+  const question = summary.querySelector('.sum-q');
+  const answer = summary.querySelector('.sum-text');
+  for (const width of [300, 650]) {
+    list.style.maxWidth = width + 'px';
+    check(question.offsetTop === answer.offsetTop && summary.scrollWidth === summary.clientWidth,
+          'Summary text did not fit on one row at width ' + width);
+    for (const text of [question, answer]) {
+      const style = getComputedStyle(text);
+      check(style.whiteSpace === 'nowrap' && style.textOverflow === 'ellipsis' &&
+            style.overflowX === 'hidden' && text.scrollWidth > text.clientWidth,
+            'Long summary text was not shortened with an ellipsis at width ' + width);
+    }
+  }
+  list.style.maxWidth = '';
+};
+check(card(1).parentElement === list && card(2).parentElement === list, 'Open questions should not be folded');
+const initiallyFolded = card(3).closest('details');
+check(initiallyFolded && !initiallyFolded.open, 'A previously delivered question did not start folded');
+checkSummary(initiallyFolded.querySelector('summary'));
+checkDeskMarker(initiallyFolded.querySelector('summary'));
+let delivery = 'sent';
+let offDeskAnswer = null;
+let focusDuringSend;
+window.fetch = async (url, options) => {
+  const {answer} = JSON.parse(options.body);
+  if (focusDuringSend) {
+    focusDuringSend.focus();
+    check(document.activeElement === focusDuringSend, 'The focus fixture did not reach the row during delivery');
+  }
+  return {ok: true, json: async () => ({answer, state: 'answered', revision: 'saved-revision',
+    answered_at: '2026-01-12T15:00:00Z', delivery, off_desk_answer:offDeskAnswer})};
+};
+typeAnswer(2, 'Blue');
+focusDuringSend = card(2).querySelector('a');
+await sendBatch();
+const secondSummary = card(2).closest('details').querySelector('summary');
+checkVisibleWord(secondSummary, 'Blue');
+check(secondSummary.querySelector('.sum-source').getClientRects().length === 0,
+      'A Desk-only answer displayed a provenance marker');
+check(document.activeElement === secondSummary, 'First delivery dropped focus from the row');
+focusDuringSend = null;
+check(order() === 'Q1.1,Q1.2,Q1.3', 'The later question was not inserted before a higher-numbered folded question');
+check(document.querySelector('.progress').textContent === '1 of 3 open', 'Progress was stale');
+const longAnswer = 'Wait for confirmation from the harbourmaster. '.repeat(8).trim();
+typeAnswer(1, longAnswer);
+delivery = 'pending';
+await sendBatch();
+check(list.children[0] === card(1) && card(1).querySelector('.delivery').textContent === 'Not delivered',
+      'The pending answer moved or hid its delivery status');
+delivery = 'sent';
+await sendBatch();
+check(order() === 'Q1.1,Q1.2,Q1.3', 'Delivery order changed the order of the folded questions');
+const folded = list.children[0];
+check(folded.matches('details.done') && !folded.open, 'The answered question was not folded');
+const summary = folded.querySelector('summary');
+checkSummary(summary);
+summary.click();
+check(folded.open && field(1).value === longAnswer &&
+      card(1).querySelector('h2').textContent === 'Merge the tide tables now? '.repeat(8).trim(),
+      'Opening the folded row did not reveal the full question and answer');
+typeAnswer(1, 'Hold');
+offDeskAnswer = {via: 'chat', answered_at: '2026-01-11T12:00:00Z'};
+focusDuringSend = card(1).querySelector('a');
+await sendBatch();
+check(!folded.open, 'The delivered correction did not close the row');
+checkVisibleWord(summary, 'Hold');
+checkDeskMarker(summary);
+check(document.activeElement === summary, 'Refolding a correction dropped focus from the row');
+summary.click();
+const source = card(1).querySelector('.answer-source');
+const sourceTime = source.querySelector('time');
+check(source.innerText.includes('Answered elsewhere · chat') &&
+      sourceTime?.dateTime === '2026-01-11T12:00:00Z' && sourceTime.innerText.includes('Jan 11, 2026'),
+      'The expanded correction lost the latest answer source or its timestamp');
+typeAnswer(1, 'Use the next tide');
+delivery = 'pending';
+offDeskAnswer = {via: 'email', answered_at: '2026-01-12T05:00:00Z'};
+focusDuringSend = summary;
+await sendBatch();
+check(order() === 'Q1.1,Q1.2,Q1.3' && card(1).parentElement === list,
+      'The pending correction did not return to its place among expanded questions');
+check(card(1).querySelector('.delivery').textContent === 'Not delivered', 'The pending correction lost its delivery status');
+check(source.innerText.includes('Answered elsewhere · email') &&
+      source.querySelector('time')?.dateTime === '2026-01-12T05:00:00Z',
+      'The pending correction retained the previous answer source or timestamp');
+check(document.activeElement === card(1).querySelector('a'), 'Expanding a pending correction lost focus from its removed summary');
+secondSummary.click();
+typeAnswer(2, 'Red');
+focusDuringSend = card(2).querySelector('a');
+await sendBatch();
+check(document.activeElement === focusDuringSend, 'Expanding a pending correction dropped focus from its existing link');
+""", viewport=(width, 844))
+
+    def test_narrow_library_header_keeps_both_tabs_and_close_visible(self):
+        self.check_answer_page(self.start("/qd"), r"""
+check(innerWidth === 320, 'Wrong fixture viewport');
+button('open-library').click();
+const dialog = button('library');
+const tabs = [...dialog.querySelectorAll('[role="tab"]')];
+const close = dialog.querySelector('button[data-close]');
+const sheet = dialog.getBoundingClientRect();
+for (const control of [...tabs, close]) {
+  const bounds = control.getBoundingClientRect();
+  check(bounds.width > 0 && bounds.left >= sheet.left && bounds.right <= sheet.right,
+        control.textContent + ' was clipped by the sheet');
+  check(control.contains(document.elementFromPoint(bounds.x + bounds.width / 2, bounds.y + bounds.height / 2)),
+        control.textContent + ' was covered');
+}
+tabs[1].click();
+check(tabs[1].getAttribute('aria-selected') === 'true', 'Answered did not open');
+close.click();
+check(!dialog.open, 'Close library did not dismiss the sheet');
+""", path="/qd/", viewport=(320, 800))
+
+    def test_library_layout_covers_fractional_breakpoint_widths(self):
+        port = self.start("/qd")
+        for drawer in (False, True):
+            with self.subTest(drawer=drawer):
+                self.check_answer_page(port, f"const drawer = {json.dumps(drawer)};\n" + r"""
+const widthQuery = drawer ? '(640px < width < 640.16px)' : '(width: 640px)';
+check(matchMedia(widthQuery).matches, 'The fixture did not reach ' + widthQuery);
+const width = visualViewport.width;
+button('open-library').click();
+const dialog = button('library');
+for (const animation of dialog.getAnimations()) animation.finish();
+const bounds = dialog.getBoundingClientRect();
+const near = (actual, expected) => Math.abs(actual - expected) < 1;
+check(near(bounds.right, width) && near(bounds.bottom, innerHeight), 'The library lost its viewport anchoring');
+check(drawer ? near(bounds.top, 0) && bounds.left > 0 : bounds.top > 0 && near(bounds.left, 0),
+      'The library used the wrong layout at ' + width + 'px');
+for (const tab of dialog.querySelectorAll('[role="tab"]')) {
+  tab.click();
+  const search = button(tab.getAttribute('aria-controls')).querySelector('input[type="search"]');
+  const target = search.getBoundingClientRect();
+  check(search === document.elementFromPoint(target.left + target.width / 2, target.top + target.height / 2),
+        'The search field was hidden at ' + width + 'px');
+}
+""", path="/qd/", viewport=(640.125 if drawer else 640, 800),
+                                       device_scale_factor=1.24975 if drawer else None)
+
+    def test_short_library_viewports_keep_search_results_and_header_reachable(self):
+        self.add("resource", "Harbor chart", "Review the route.", "--url", "https://example.org/chart",
+                 "--link-text", "Open chart")
+        self.add("questions", "Tide decisions", "Decide the launch plan.", "--body-file", "-",
+                 stdin=json.dumps(QUESTIONS[:1]))
+        self.assertEqual(self.run_cli("mark", "Q2", "closed")[0], 0)
+        port = self.start("/qd")
+        for width in (568, 900):
+            with self.subTest(width=width):
+                self.check_answer_page(port, r"""
+check(innerHeight === 140, 'Wrong fixture height');
+button('open-library').click();
+const dialog = button('library');
+const tabs = [...dialog.querySelectorAll('[role="tab"]')];
+const reach = control => {
+  control.scrollIntoView({block:'center'});
+  const bounds = control.getBoundingClientRect();
+  check(control.contains(document.elementFromPoint(bounds.x + bounds.width / 2, bounds.y + bounds.height / 2)),
+        'The short library hid ' + (control.textContent || control.id));
+};
+for (const [index, query, href] of [[0, 'harbor', 'q1.html'], [1, 'tide', 'q2.html']]) {
+  reach(tabs[index]);
+  tabs[index].click();
+  const panel = button(tabs[index].getAttribute('aria-controls'));
+  const search = panel.querySelector('input');
+  reach(search);
+  search.focus();
+  search.value = query;
+  search.dispatchEvent(new Event('input', {bubbles:true}));
+  reach(panel.querySelector('a[href="' + href + '"]'));
+}
+const close = dialog.querySelector('[data-close]');
+reach(close);
+close.click();
+check(!dialog.open, 'Close library did not dismiss the panel');
+""", path="/qd/", viewport=(width, 140))
+
+    def test_stacked_library_filters_leave_results_reachable(self):
+        self.add("resource", "Harbor chart", "Review the route.", "--url", "https://example.org/chart",
+                 "--link-text", "Open chart")
+        long_project = "Waterfront Maintenance and Lighting Plan"
+        for project in (long_project, "Harbor"):
+            item = self.add("questions", project, "Choose an option.", "--project", project, "--tag", "research",
+                            "--body-file", "-", stdin=json.dumps(QUESTIONS[:1]))
+            self.assertEqual(self.run_cli("mark", item, "closed")[0], 0)
+        self.check_answer_page(self.start("/qd"), r"""
+check(innerWidth === 320 && innerHeight === 355, 'Wrong fixture viewport');
+button('open-library').click();
+const dialog = button('library');
+for (const animation of dialog.getAnimations()) animation.finish();
+const reach = control => {
+  control.scrollIntoView({block:'center'});
+  const bounds = control.getBoundingClientRect();
+  check(control.contains(document.elementFromPoint(bounds.x + bounds.width / 2, bounds.y + bounds.height / 2)),
+        'The library hid ' + (control.textContent || control.id));
+};
+const answered = button('tab-answered');
+reach(answered);
+answered.click();
+const panel = button('panel-answered');
+const project = panel.querySelector('select[name="project"]');
+const tag = panel.querySelector('select[name="tag"]');
+check(project.getBoundingClientRect().bottom <= tag.getBoundingClientRect().top, 'The filter fixture did not stack');
+reach(project);
+reach(tag);
+project.selectedIndex = 1;
+project.dispatchEvent(new Event('change', {bubbles:true}));
+const links = [...panel.querySelectorAll('.lib-item:not([hidden]) .lib-title')];
+check(links.length === 1 && links[0].getAttribute('href') === 'q3.html', 'The project filter did not select the Harbor item');
+reach(links[0]);
+check(dialog.scrollTop > 0, 'The results were not reachable by scrolling the whole library');
+const references = button('tab-references');
+reach(references);
+references.click();
+reach(button('panel-references').querySelector('a[href="q1.html"]'));
+""", path="/qd/", viewport=(320, 355))
+
+    def test_desk_card_stretches_one_action_without_covering_its_links(self):
+        question = {**QUESTIONS[1], "question": "Use https://example.org/options?",
+                    "links": [{"text": "Review the chart", "url": "https://example.org/review"}]}
+        self.add("questions", "Pier lights", "See https://example.org/notes", "--body-file", "-",
+                 stdin=json.dumps([QUESTIONS[0], question]))
+        self.add("questions", "Tide tables", "Check the latest plan.", "--body-file", "-",
+                 stdin=json.dumps(QUESTIONS))
+        self.assertEqual(self.run_cli("mark", "Q1.1", "closed")[0], 0)
+        self.check_answer_page(self.start("/qd"), r"""
+const [first, second] = document.querySelectorAll('.desk article');
+const hit = node => {
+  node.scrollIntoView({block:'center'});
+  const rect = node.getClientRects()[0];
+  return document.elementFromPoint(rect.left + rect.width / 2, rect.top + rect.height / 2)?.closest('a');
+};
+for (const [item, destination, expectedLinks] of [[first, 'q2.html#Q2.1', []], [second, 'q1.html#Q1.2',
+    ['https://example.org/notes', 'https://example.org/options', 'https://example.org/review']]]) {
+  const links = [...item.querySelectorAll('a')];
+  const action = links.find(link => link.getAttribute('href') === destination);
+  check(action && links.length === expectedLinks.length + 1, 'A card had multiple actions or jumped to the wrong question');
+  check(hit(item.querySelector('h3')) === action && hit(action) === action, 'The card and its action had different hit targets');
+  action.focus();
+  check(document.activeElement === action && getComputedStyle(item).outlineStyle === 'solid', 'The card lost its keyboard focus ring');
+  for (const url of expectedLinks) {
+    const link = links.find(anchor => anchor.getAttribute('href') === url);
+    check(link && hit(link) === link, 'The stretched action covered an independent link');
+  }
+}
+""", path="/qd/")
+
+    def test_restored_desk_reloads_archive_membership_and_search(self):
+        chrome = shutil.which("google-chrome")
+        if not chrome:
+            self.skipTest("google-chrome is required for the Desk history browser test")
+        for title, project, tag in (("Pier lights", "Beta", "research"), ("Tide tables", "Alpha", "product-design"),
+                                    ("Harbor chart", "Beta", "research"), ("Berth markers", "Beta", "research")):
+            self.add("questions", title, "Choose an option.", "--project", project, "--tag", tag,
+                     "--body-file", "-", stdin=json.dumps(QUESTIONS[:1]))
+        self.assertEqual(self.run_cli("mark", "Q4", "answered", "--via", "chat")[0], 0)
+        home = self.root / "home"
+        inbox = home / "bin" / "fm-inbox.sh"
+        inbox.parent.mkdir(parents=True)
+        inbox.write_text("#!/bin/sh\nexit 0\n")
+        inbox.chmod(0o700)
+        finished = threading.Event()
+        results = []
+        handler = quarterdeck.make_handler("Quarterdeck", "/qd", home=home)
+        run_cli = self.run_cli
+
+        class HistoryTestHandler(handler):
+            def do_POST(self):
+                if self.path == "/qd/history-test-result":
+                    results.append(self.rfile.read(int(self.headers["Content-Length"])).decode())
+                    self.send_text(200, "")
+                    finished.set()
+                elif self.path == "/qd/history-test-reclassify":
+                    code, _, error = run_cli("classify", "Q2", "--project", "Beta", "--tag", "research")
+                    self.send_text(200 if code == 0 else 500, error)
+                else:
+                    super().do_POST()
+
+        with patch.object(quarterdeck, "make_handler", return_value=HistoryTestHandler):
+            port = self.start("/qd")
+        status, old_answer = self.post_answer(port, "Q2.1", "Saffron")
+        self.assertEqual((status, old_answer["delivery"]), (200, "sent"))
+
+        list_page = quarterdeck.list_page
+        item_page = quarterdeck.item_page
+
+        def instrumented_page(*args, **kwargs):
+            return list_page(*args, **kwargs).replace("</body>", """
+<script>
+const report = message => fetch('history-test-result', {method:'POST', body:message});
+const check = (condition, message) => { if (!condition) throw new Error(message); };
+const dialog = document.getElementById('library');
+const tab = document.getElementById('tab-answered');
+const panel = document.getElementById('panel-answered');
+const search = panel.querySelector('input');
+const project = panel.querySelector('select[name="project"]');
+const tag = panel.querySelector('select[name="tag"]');
+const choose = (filter, value) => {
+  filter.value = value;
+  filter.dispatchEvent(new Event('change', {bubbles:true}));
+};
+const shown = () => [...panel.querySelectorAll('.lib-item:not([hidden]) .lib-title')].map(link => link.getAttribute('href')).join();
+const find = text => {
+  search.value = text;
+  search.dispatchEvent(new Event('input', {bubbles:true}));
+  return shown();
+};
+try {
+  const desk = document.querySelector('main');
+  const visits = Number(sessionStorage.getItem('item-visits'));
+  if (!visits) {
+    check(desk.textContent.includes('Pier lights'), 'The open item did not start on the Desk');
+    document.getElementById('open-library').click();
+    tab.click();
+    choose(project, 'Alpha');
+    choose(tag, 'product-design');
+    check(find('saffron') === 'q2.html', 'The original answer did not match its search');
+    panel.querySelector('a[href="q2.html"]').click();
+  } else if (visits <= 2) {
+    check(!desk.textContent.includes('Pier lights'), 'The restored Desk still showed the completed item');
+    check(dialog.open && tab.getAttribute('aria-selected') === 'true' && !panel.hidden,
+          'The library did not reopen on Answered after item visit ' + visits);
+    check(project?.value === 'Alpha' && project.checkVisibility(), 'The missing project filter was not restored');
+    check(tag?.value === 'product-design' && tag.checkVisibility() && tag.selectedOptions[0].text === 'product design',
+          'The missing tag choice was not restored');
+    check(search.value === 'saffron' && shown() === '', 'The saved search was lost or still used the old answer');
+    check(panel.querySelector('a[href="q1.html"]'), 'The completed item was missing from Answered');
+    check(find('') === '' && panel.querySelector('[role="status"]').textContent.includes('No results'),
+          'The unavailable filters admitted unrelated results');
+    choose(project, '');
+    check(shown() === '', 'Clearing the project also cleared the tag');
+    choose(tag, '');
+    check(find('saffron') === '' && find('ultramarine') === 'q2.html',
+          'Clearing the filters did not restore search against fresh answers');
+    if (visits === 1) window.addEventListener('pageshow', () => setTimeout(() => history.forward(), 0), {once:true});
+    else window.addEventListener('pageshow', () => {
+      dialog.addEventListener('close', () => {
+        desk.querySelector('a[href="q3.html#Q3.1"]').click();
+      }, {once:true});
+      dialog.querySelector('[data-close]').click();
+    }, {once:true});
+  } else {
+    check(visits === 3 && !dialog.open, 'Back from a Desk card reopened the dismissed lookup');
+    if (sessionStorage.getItem('reloading-desk')) report('PASS');
+    else window.addEventListener('pageshow', () => {
+      sessionStorage.setItem('reloading-desk', 'yes');
+      location.reload();
+    }, {once:true});
+  }
+} catch (error) { report(error.message); }
+</script>
+</body>""")
+
+        def instrumented_item(*args, **kwargs):
+            return item_page(*args, **kwargs).replace("</body>", """
+<script>
+window.addEventListener('pageshow', async () => {
+  const visits = Number(sessionStorage.getItem('item-visits')) + 1;
+  sessionStorage.setItem('item-visits', visits);
+  try {
+    if (visits === 3 && !location.pathname.endsWith('/q3.html')) throw new Error('The Desk card did not open');
+    if (visits === 1) {
+      for (const payload of [
+        {part:'Q1.1', answer:'Keep the lights', revision:''},
+        {part:'Q2.1', answer:'Ultramarine', revision:""" + json.dumps(old_answer["revision"]) + """}
+      ]) {
+        const response = await fetch('answers', {method:'POST', headers:{'Content-Type':'application/json'},
+          body:JSON.stringify(payload)});
+        if (!response.ok || (await response.json()).delivery !== 'sent') throw new Error('The fixture answer was not delivered');
+      }
+      const response = await fetch('history-test-reclassify', {method:'POST'});
+      if (!response.ok) throw new Error('The fixture item was not reclassified');
+    }
+    history.back();
+  } catch (error) { fetch('history-test-result', {method:'POST', body:error.message}); }
+});
+</script>
+</body>""")
+
+        with patch.object(quarterdeck, "list_page", instrumented_page), patch.object(quarterdeck, "item_page", instrumented_item):
+            with subprocess.Popen([chrome, "--headless", "--disable-background-networking", "--no-first-run",
+                                   f"--user-data-dir={self.root / 'browser'}", f"http://127.0.0.1:{port}/qd/"],
+                                  stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL) as browser:
+                try:
+                    self.assertTrue(finished.wait(10), "The browser did not complete the Desk history checks")
+                finally:
+                    browser.terminate()
+        self.assertEqual(results, ["PASS"])
+
+    def test_the_library_pop_out_searches_and_returns_focus(self):
+        self.add("questions", "Tide decisions", "Decide the launch plan.", "--body-file", "-", stdin=json.dumps(QUESTIONS))
+        self.add("questions", "Pier lights", "Pick the lamp colour.", "--body-file", "-", stdin=json.dumps(QUESTIONS))
+        description = "A chart of the quay, showing slips and moorings. " * 8 + "See https://example.org/notes"
+        self.add("resource", "Harbour map Straße ΧΑΡΤΗΣ [A+B]", description,
+                 "--url", "https://example.org/map", "--link-text", "Open the map")
+        self.add("list", "Harbour supplies", "Tools for the pilot.", "--body-file", "-", stdin="Rope")
+        home = self.root / "home"
+        script = home / "bin" / "fm-inbox.sh"
+        script.parent.mkdir(parents=True)
+        script.write_text("#!/bin/sh\nexit 0\n")
+        script.chmod(0o700)
+        port = self.start("/qd", home=home)
+        with patch.object(quarterdeck, "now_text", return_value="2026-01-10T16:25:00Z"):
+            self.assertEqual(self.post_answer(port, "Q2.1", "Use amber ΔΡΟΜΟΣ at the office")[1]["delivery"], "sent")
+        self.assertEqual(self.run_cli("mark", "Q2.2", "answered", "--via", "chat")[0], 0)
+        for name in ("q1.html", "q2.html", "q3.html", "q4.html"):
+            status, page, _ = self.fetch(port, f"/qd/{name}")
+            self.assertEqual(status, 200)
+            self.assertNotIn("<dialog", page)
+            self.assertNotIn("Open library</button>", page)
+            self.assertEqual(page.count('href="index.html"'), 2)
+        self.check_answer_page(port, r"""
+const opener = document.getElementById('open-library');
+const dialog = document.getElementById('library');
+const desk = [...document.querySelectorAll('.desk .work')];
+check(desk.length === 1 && desk[0].textContent.includes('Tide decisions'), 'Only the unanswered item belongs on the Desk');
+opener.click();
+check(dialog.open, 'The library did not open');
+const tabs = [...dialog.querySelectorAll('[role="tab"]')];
+check(document.activeElement === tabs[0], 'Focus did not move to the first tab');
+tabs[0].dispatchEvent(new KeyboardEvent('keydown', {key: 'ArrowRight', bubbles: true}));
+check(tabs[1].getAttribute('aria-selected') === 'true' && document.activeElement === tabs[1], 'Arrow keys did not change tab');
+const panel = document.getElementById('panel-answered');
+check(!panel.hidden && document.getElementById('panel-references').hidden, 'The tab did not switch panels');
+const search = document.getElementById('search-answered');
+const shown = () => [...panel.querySelectorAll('li:not([hidden]) a')].map(link => link.getAttribute('href'));
+const type = text => { search.value = text; search.dispatchEvent(new Event('input', {bubbles: true})); };
+check(shown().join() === 'q2.html', 'The answered list was wrong');
+check(dialog.querySelectorAll('input[type="search"]').length === 2 && !dialog.querySelector('input[type="date"]'),
+      'The library does not have exactly one search per tab');
+for (const query of ['pier lamp merge amber', 'Σ amber', 'oﬃce amber', 'Q2', 'q2.1', 'q2.2']) {
+  type(query);
+  check(shown().join() === 'q2.html', 'Failed to match ' + query);
+  check(!panel.querySelector('[role="status"]').textContent, 'A successful search reported a match count');
+  check(!/amber|Merge the tide tables/.test(panel.innerText), 'Search revealed private previews');
+}
+for (const query of ['q2.0', 'q2.9', 'q2.01', 'q20']) {
+  type(query);
+  check(shown().length === 0 && panel.innerText.includes('No results'), 'Matched a missing ID ' + query);
+}
+tabs[0].click();
+const references = document.getElementById('search-references');
+references.value = 'STRASSE Σ [a+b] chart';
+references.dispatchEvent(new Event('input', {bubbles: true}));
+check([...document.querySelectorAll('#panel-references .lib-item')].filter(row => !row.hidden).length === 1, 'References search failed');
+check(!references.closest('[role="tabpanel"]').querySelector('[role="status"]').textContent, 'References search reported a match count');
+references.value = '.*';
+references.dispatchEvent(new Event('input', {bubbles: true}));
+check(![...document.querySelectorAll('#panel-references .lib-item')].some(row => !row.hidden),
+      'A regular expression metacharacter matched as a pattern');
+references.value = 'chart';
+references.dispatchEvent(new Event('input', {bubbles: true}));
+const notes = dialog.querySelector('a[href="https://example.org/notes"]');
+notes.scrollIntoView({block: 'nearest'});
+const rect = notes.getClientRects()[0];
+check(notes.contains(document.elementFromPoint(rect.left + 2, rect.top + 2)), 'A long description clipped its link');
+references.value = 'q3.1';
+references.dispatchEvent(new Event('input', {bubbles: true}));
+check(![...document.querySelectorAll('#panel-references li')].some(row => !row.hidden), 'A reference matched a question ID');
+await new Promise(resolve => { dialog.addEventListener('close', resolve, {once: true}); dialog.close(); });
+check(document.activeElement === opener, 'Focus did not return to the library button');
+""", path="/qd/", viewport=(900, 800))
+
     def test_undo_reverses_one_option_action_and_preserves_later_drafts(self):
         self.add("questions", "Tide decisions", "Decide the launch plan.", "--body-file", "-",
                  stdin=json.dumps([QUESTIONS[0]] * 4))
@@ -864,6 +1710,51 @@ check(field(2).value === 'Use the next tide' && field(4).value === 'Consult the 
 check(button('undo').hidden, 'Undo history was not empty');
 """)
 
+    def test_folded_correction_undo_focus_and_rejection_respect_the_row(self):
+        self.add("questions", "Tide decisions", "Decide the launch plan.", "--body-file", "-",
+                 stdin=json.dumps([*QUESTIONS, QUESTIONS[0]]))
+        self.check_answer_page(self.start("/qd"), r"""
+window.fetch = async (url, options) => {
+  const {answer} = JSON.parse(options.body);
+  return {ok: true, json: async () => ({answer, state: 'answered', revision: 'saved-revision',
+    answered_at: '2026-01-12T15:00:00Z', delivery: 'sent'})};
+};
+typeAnswer(1, 'Hold');
+typeAnswer(2, 'Blue');
+await sendBatch();
+const first = card(1).closest('details');
+const second = card(2).closest('details');
+const summary = second.querySelector('summary');
+check(!first.open && !second.open, 'The delivered questions should start folded');
+summary.click();
+const red = card(2).querySelector('[data-choice="Red"]');
+const undo = button('undo');
+red.click();
+undo.focus();
+undo.click();
+check(document.activeElement === field(2) && field(2).value === 'Blue', 'Undo lost focus instead of returning to the affected field');
+red.click();
+summary.click();
+undo.focus();
+undo.click();
+check(document.activeElement === summary && !second.open, 'Undo did not focus the collapsed row summary');
+summary.click();
+red.click();
+window.fetch = async () => {
+  summary.click();
+  return {ok: false, status: 409, text: async () => 'Question changed. Reload before sending.'};
+};
+await sendBatch();
+const error = document.getElementById(field(2).getAttribute('aria-describedby'));
+check(second.open && !error.hidden && error.textContent === 'Question changed. Reload before sending.',
+      'The rejected correction did not reveal its inline error');
+summary.click();
+typeAnswer(3, 'Merge');
+check(!second.open && !first.open, 'An unrelated edit reopened a folded question');
+summary.click();
+check(!error.hidden && field(2).value === 'Red', 'Closing the row discarded its rejected draft or error');
+""")
+
     def test_batch_conflict_keeps_its_draft_and_sends_independent_answers(self):
         with patch.object(quarterdeck, "now_text", return_value="2026-01-10T16:25:00Z"):
             self.add("questions", "Tide decisions", "Decide the launch plan.", "--body-file", "-",
@@ -881,7 +1772,7 @@ check(button('undo').hidden, 'Undo history was not empty');
         self.assertEqual(self.run_cli("mark", "Q1.4", "open")[0], 0)
         self.check_answer_page(port, r"""
 const savedDay = document.querySelector('main > .meta time');
-check(savedDay.textContent === '2026-01-10', 'The saved date changed');
+check(savedDay.textContent === 'Jan 11, 2026', 'The saved date was not shown in local time');
 const originalAnswerTime = card(4).querySelector('.saved-answer time');
 check(originalAnswerTime.textContent.replace(/\s+/g, ' ') === 'Jan 11, 2026, 1:25 AM',
       'Wrong local time for the saved answer');
@@ -914,6 +1805,7 @@ check(saved.querySelector('time').textContent.replace(/\s+/g, ' ') === 'Jan 13, 
       'Wrong local time after sending');
 check(card(5).querySelector('.badge').textContent === 'Open' &&
       card(5).querySelector('.delivery').textContent === 'Sent', 'The retry did not preserve the reopened state');
+check(card(5).parentElement.id === 'questions', 'The open retry was folded');
 check(document.querySelector('.progress').textContent === '3 of 5 open', 'Progress was stale');
 check(field(2).value === 'Blue', 'The conflicting draft was lost');
 check(button('send').disabled, 'A saved, conflicting or unchanged reopened answer was still queued');
@@ -1339,7 +2231,7 @@ class WorkersTests(StoreCase):
         port = self.start("/qd", workers_home=self.make_home([]))
         page = self.fetch(port, "/qd/")[1]
         self.assertEqual(page.count("<h1>"), 1)
-        self.assertLess(page.index("My desk"), page.index("Workers"))
+        self.assertLess(page.index("<h1>Desk</h1>"), page.index("Workers"))
         self.assertIn('id="refresh-workers">Refresh workers</button>', page)
         self.assertEqual(self.fetch(port, "/qd/workers.json", host="intruder.example")[0], 403)
 

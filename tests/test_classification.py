@@ -340,8 +340,8 @@ class AnsweredViaTests(ClassificationCase):
                                                       {"via": "chat", "answered_at": chat_at}])
         self.assertEqual(item["answers"]["3"]["delivery"], "sent")
         saved_page = self.saved_page()
-        self.assertIn("Reviewed questions", saved_page)
-        self.assertNotIn("My desk</h1>", saved_page)
+        self.assertIn('href="q1.html"', saved_page.split("<h2>Answered</h2>")[1])
+        self.assertNotIn('class="card-link', saved_page)
         shown = self.run_cli("show", "Q1")[1]
         self.assertIn(f"Answer: Hold ({desk_at}, Sending stopped)", shown)
         self.assertIn(f"Answered elsewhere: chat ({chat_at})", shown)
@@ -578,52 +578,68 @@ class PageTests(ClassificationCase):
         self.assertIn("<li>process</li>", page)
         self.assertIn("<li>product design</li>", page)
         self.assertIn("<li>security privacy</li>", page)
-        self.assertIn('<th scope="col">Project</th>', page)
-        self.assertIn('<td class="project">Harbor</td>', page)
+        self.assertIn('<span class="project-name">Harbor</span>',
+                      page.split("<h2>References</h2>")[1].split("</section>")[0])
 
-    def test_filters_apply_to_rendered_references_and_reviewed_questions(self) -> None:
+    def test_filters_apply_to_references_and_answered(self) -> None:
         for number, tag in enumerate(("research", "bug"), 1):
             self.add("resource", f"Chart {number}", "A chart.", "--url", "https://example.com/t", "--link-text", "Chart",
                      "--project", "Harbor", "--tag", tag)
         for project, tag in (("All projects", "research"), ("QuayWorks/Dock.tools", "bug")):
             item_id = self.questions(project, "--project", project, "--tag", tag, body=ASK[2:])
             self.assertEqual(self.run_cli("mark", item_id, "answered", "--via", "chat")[0], 0)
-        self.check_browser(self.saved_page(), """
-let filterError;
-window.addEventListener('error', event => { filterError = event.message; });
-const [reviewed, references] = document.querySelectorAll('main .filters');
-const control = (bar, label) => [...bar.querySelectorAll('label')]
-  .find(element => element.firstChild.textContent === label)?.querySelector('select');
-const choose = (bar, label, value) => {
-  const select = control(bar, label);
+        script = """
+const dialog = document.querySelector('#library');
+if (dialog) document.querySelector('#open-library').click();
+const references = document.querySelector('[data-list="references-list"]');
+const answered = document.querySelector('[data-list="answered-list"]');
+const choose = (bar, name, value) => {
+  const select = bar.querySelector('select[name="' + name + '"]');
   select.value = value;
   select.dispatchEvent(new Event('change', {bubbles: true}));
 };
-const visible = selector => [...document.querySelectorAll(selector)].filter(element => element.checkVisibility());
-const visibleIds = selector => visible(selector).map(element => element.textContent.trim()).join(',');
-check(!control(references, 'Project'), 'References should only offer a tag filter');
-choose(references, 'Tag', 'bug');
-check(visibleIds('table .id') === 'Q2', 'Reference tag filter should show only Q2');
-check(visibleIds('article .id') === 'Q4,Q3', 'Reference filter affected reviewed cards');
-check([...control(reviewed, 'Project').options].map(option => option.textContent).join(',') ===
+const links = list => [...document.querySelectorAll('#' + list + ' > li:not([hidden]) .lib-title')]
+  .map(element => element.getAttribute('href')).join(',');
+const referenceLinks = () => links('references-list');
+const answeredLinks = () => links('answered-list');
+check(!references.querySelector('[name="project"]'), 'References should only offer a tag filter');
+choose(references, 'tag', 'bug');
+check(referenceLinks() === 'q2.html', 'Reference tag filter should show only Q2');
+check(answeredLinks() === 'q4.html,q3.html', 'Reference filter affected Answered');
+if (dialog) document.querySelector('#tab-answered').click();
+check([...answered.querySelector('[name="project"]').options].map(option => option.textContent).join(',') ===
   '(All projects),All projects,QuayWorks/Dock.tools', 'The reset choice and literal project should have distinct labels');
-choose(reviewed, 'Project', 'QuayWorks/Dock.tools');
-check(visibleIds('article .id') === 'Q4', 'The repository filter should show only Q4');
-choose(reviewed, 'Project', 'All projects');
-check(visibleIds('article .id') === 'Q3', 'Reviewed project filter should show only Q3');
-choose(reviewed, 'Tag', 'bug');
-check(!visibleIds('article .id'), 'Incompatible reviewed filters should hide both cards');
-check(visible('.no-match').length === 1 && visible('.no-match')[0].previousElementSibling.contains(
-  document.querySelector('article')), 'Only Reviewed should show an empty state');
-check(visibleIds('table .id') === 'Q2', 'Reviewed filters affected references');
-choose(reviewed, 'Tag', '');
-check(visibleIds('article .id') === 'Q3' && visible('.no-match').length === 0, 'Clearing the tag should restore Q3');
-choose(reviewed, 'Project', '');
-check(visibleIds('article .id') === 'Q4,Q3', 'Resetting the project should restore both reviewed cards');
-choose(references, 'Tag', '');
-check(visibleIds('table .id') === 'Q2,Q1', 'Clearing the reference filter should restore both rows');
-check(!filterError, filterError);
-""", widths=(390, 1024))
+choose(answered, 'project', 'QuayWorks/Dock.tools');
+check(answeredLinks() === 'q4.html', 'The repository filter should show only Q4');
+choose(answered, 'project', 'All projects');
+check(answeredLinks() === 'q3.html', 'Answered project filter should show only Q3');
+choose(answered, 'tag', 'bug');
+check(!answeredLinks(), 'Incompatible Answered filters should hide both items');
+const status = document.querySelector(dialog ? '#panel-answered [role="status"]' : '#answered-list-empty');
+check(status.checkVisibility() && status.textContent, 'Answered should show an empty state');
+check(referenceLinks() === 'q2.html', 'Answered filters affected References');
+choose(answered, 'tag', '');
+check(answeredLinks() === 'q3.html', 'Clearing the tag should restore Q3');
+choose(answered, 'project', '');
+check(answeredLinks() === 'q4.html,q3.html', 'Resetting the project should restore both answered items');
+if (dialog) {
+  choose(answered, 'tag', 'bug');
+  const search = document.querySelector('#search-answered');
+  search.value = 'Q3';
+  search.dispatchEvent(new Event('input', {bubbles: true}));
+  check(!answeredLinks(), 'ID search ignored the tag filter');
+  choose(answered, 'tag', '');
+  check(answeredLinks() === 'q3.html', 'Changing the tag reset the ID search');
+  document.querySelector('#tab-references').click();
+}
+choose(references, 'tag', '');
+check(referenceLinks() === 'q2.html,q1.html', 'Clearing the reference filter should restore both items');
+"""
+        data = quarterdeck.read_store(quarterdeck.store_path())
+        for served in (True, False):
+            with self.subTest(served=served):
+                page = quarterdeck.list_page(data, "Quarterdeck", served=served)
+                self.check_browser(page, script, widths=(390, 1024))
 
     def test_uniformly_tagged_lists_keep_the_tag_selector(self) -> None:
         for title in ("Tide chart", "Harbor chart"):
@@ -634,17 +650,17 @@ check(!filterError, filterError);
             self.assertEqual(self.run_cli("mark", item_id, "answered", "--via", "chat")[0], 0)
         self.check_browser(self.saved_page(), """
 const cases = [
-  ['references-list', 'tr .id', 'Q2,Q1'],
-  ['reviewed-list', 'article .id', 'Q4,Q3']
+  ['references-list', 'q2.html,q1.html'],
+  ['answered-list', 'q4.html,q3.html']
 ];
-for (const [id, entries, expected] of cases) {
+for (const [id, expected] of cases) {
   const select = document.querySelector(`[data-list="${id}"] select`);
   check(select?.checkVisibility(), `${id} should offer its shared tag`);
   check([...select.options].map(option => option.value).join(',') === ',bug', `${id} should offer only bug and reset`);
   select.value = 'bug';
   select.dispatchEvent(new Event('change', {bubbles: true}));
-  const visible = [...document.getElementById(id).querySelectorAll(entries)].filter(entry => entry.checkVisibility());
-  check(visible.map(entry => entry.innerText.trim()).join(',') === expected, `Both ${id} entries should remain visible`);
+  const visible = [...document.getElementById(id).querySelectorAll('.lib-title')].filter(entry => entry.checkVisibility());
+  check(visible.map(entry => entry.getAttribute('href')).join(',') === expected, `Both ${id} entries should remain visible`);
 }
 """)
 
@@ -687,7 +703,7 @@ check(!send.disabled && send.textContent === 'Send 1 answer', 'Only the new draf
         self.questions("New Harbor", "--project", "Harbor", body=ASK[:1])
         self.answer("Q3.1", "Merge")
         page = self.pages()["index.html"]
-        self.assertEqual(re.findall(r'<a class="work-action" href="([^"]+)">', page), ["q2.html#Q2.1"])
+        self.assertEqual(re.findall(r'<a class="card-link work-action" href="([^"]+)"', page), ["q2.html#Q2.1"])
         self.assertLess(page.index("New Harbor"), page.index("Open Quay"))
 
     def test_item_page_shows_project_tags_kind_and_question_tags(self) -> None:

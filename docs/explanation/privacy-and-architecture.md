@@ -50,6 +50,9 @@ for the browser interface and who can reach it. Saving, rendering
 and serving items make no outbound requests or model calls. The installer
 uses Git to clone or update the checkout.
 
+The served Desk includes archived question and answer text in its HTML so the
+Answered tab can search it in the browser.
+
 Opening a link takes the browser to the saved destination. Pages do not embed
 the server's config or store paths. See [inline web addresses](../reference/item-store.md#inline-web-addresses)
 for how pages escape saved text and display links.

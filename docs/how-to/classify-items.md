@@ -50,7 +50,7 @@ Projects appear on reference rows and question set cards. When the Desk has
 different project assignments, it groups cards under project headings,
 including **(No project)** for unassigned cards. Question set cards show
 tags from the set and its questions. On an item page, each question shows
-its own kind and tags. In References and Reviewed questions, the project
+its own kind and tags. In References and Answered, the project
 filter appears when project assignments differ, including when some entries
 have no project.
 Each list with at least one tag shows a tag filter. It offers every tag in that

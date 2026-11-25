@@ -23,6 +23,8 @@ See [Read the report](read-the-report.md) for counts that include earlier marks.
 If a question is reopened between reading it and marking it by hand, use
 `quarterdeck mark Q7.3 open` to restore its Open state.
 
+See [when an item moves between the Desk and Answered](use-the-library.md#when-an-item-moves).
+
 Closed questions show their saved answers but have no editor. Reopen a closed
 question before editing its answer. See the [CLI reference](../reference/cli-and-config.md#items)
 for the `mark` command.

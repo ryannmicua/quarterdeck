@@ -949,7 +949,8 @@ def send_answer(store, home, payload):
                         record["delivery"] = "sent"
                 except (OSError, subprocess.TimeoutExpired):
                     pass
-    return {k: record[k] for k in ("state", "revision", "answer", "answered_at", "delivery")}
+    return {**{k: record[k] for k in ("state", "revision", "answer", "answered_at", "delivery")},
+            "off_desk_answer": latest_off_desk_mark(record)}
 
 
 def item_text(item: dict[str, object]) -> str:
@@ -1406,7 +1407,7 @@ PAGE_CSS = """
     --signal: #ff8c6e; --signal-ground: #3a211b; --focus: #8ec5ec; }
 }
 @media (max-width: 30rem) { :root { --text-body: 17px; } }
-@media (min-width: 40.01rem) { :root { --gutter: 2rem; --page: 64rem; } }
+@media (width > 40rem) { :root { --gutter: 2rem; --page: 64rem; } }
 @media (min-width: 90rem) { :root { --gutter: 3rem; --page: 150rem; --side: 20rem; } }
 
 * { box-sizing: border-box; }
@@ -1425,19 +1426,6 @@ h2 { font: 700 var(--text-lg)/1.3 var(--sans); margin: 2rem 0 .6rem; }
 .empty { font-size: var(--text-md); margin: 2rem 0; }
 .lead { font-size: var(--text-lead); max-width: var(--measure); margin: .8rem 0 1.4rem; }
 .id { font: 700 var(--text-sm)/1.4 var(--mono); white-space: nowrap; }
-table.items { width: 100%; border-collapse: collapse; font-family: var(--sans); font-size: var(--text-sm); }
-table.items th { text-align: left; color: var(--soft); font-weight: 600; border-bottom: 2px solid var(--ink); padding: .5rem .6rem .5rem 0; }
-table.items td { border-bottom: 1px solid var(--rule); padding: .7rem .6rem .7rem 0; vertical-align: top; }
-table.items td.title a { font: 700 var(--text-md)/1.35 var(--serif); }
-table.items td.when { white-space: nowrap; }
-@media (max-width: 40rem) {
-  table.items thead { display: none; }
-  table.items, table.items tbody, table.items tr, table.items td { display: block; width: 100%; }
-  table.items tr { border-bottom: 1px solid var(--rule); padding: .8rem 0; }
-  table.items td { border: 0; padding: .1rem 0; }
-  table.items td.kind, table.items td.when { display: inline; color: var(--soft); margin-right: .6rem; }
-  table.items td.id { display: inline; margin-right: .6rem; }
-}
 .open-link { display: inline-block; min-height: var(--tap); padding: .7rem 1.1rem; border: 2px solid var(--ink); border-radius: 6px;
   font: 700 var(--text-md)/1.3 var(--sans); text-decoration: none; }
 ol.numbered { list-style: none; padding: 0; margin: 0; max-width: var(--measure); }
@@ -1449,7 +1437,7 @@ ol.numbered > li > .id { padding-top: .2rem; }
 .question ul { margin: .1rem 0 .5rem; padding-left: 1.2rem; }
 main { max-width: 68rem; }
 h3 { margin: .3rem 0; font-size: 1.55rem; line-height: 1.25; }
-.eyebrow,.actions,.toolbar,label,button,output,.progress { font-family: var(--sans); }
+.eyebrow,.actions,.sendbar,label,button,output,.progress { font-family: var(--sans); }
 .eyebrow,.actions { display:flex; flex-wrap:wrap; gap:.6rem 1rem; align-items:center; }
 .eyebrow { color:var(--soft); }
 .work,.decision { background:var(--raised); padding:clamp(1rem,3vw,2rem); border:1px solid var(--rule);
@@ -1462,12 +1450,10 @@ h3 { margin: .3rem 0; font-size: 1.55rem; line-height: 1.25; }
 .progress { margin-bottom:.4rem; }
 button { cursor:pointer; background:var(--raised); color:var(--ink); border:1px solid var(--soft);
   border-radius:5px; padding:.5rem .85rem; min-height:44px; font-size:1rem; max-width:100%; overflow-wrap:anywhere; }
-button[hidden], table.items tr[hidden], .desk .work[hidden] { display:none; }
 button.primary { color:var(--raised); background:var(--ink); }
 button:disabled, button[aria-disabled="true"] { opacity:.55; cursor:default; }
 :focus-visible { outline:3px solid var(--focus); outline-offset:2px; }
-.toolbar { position:sticky; top:0; z-index:1; background:var(--ground); padding:.6rem 0; border-bottom:1px solid var(--rule); }
-.decision,button,textarea { scroll-margin-top:10rem; }
+.decision,button,textarea { scroll-margin-top:2rem; }
 output { display:block; margin:.4rem 0; }
 .choices { display:flex; flex-wrap:wrap; gap:.5rem; margin-bottom:.8rem; }
 .choice { display:inline-flex; gap:.4em; align-items:baseline; flex-wrap:wrap; padding:.5rem .75rem; min-height:44px; border:1px solid var(--soft); border-radius:5px; cursor:pointer; font:1rem/1.5 var(--sans); }
@@ -1492,7 +1478,6 @@ textarea { display:block; width:100%; resize:vertical; background:var(--ground);
 .choice.has-image { display:flex; flex-direction:column; align-items:stretch; gap:.6rem; flex:1; }
 .choice .pick { display:flex; gap:.4em; align-items:baseline; flex-wrap:wrap; }
 .open-image { align-self:flex-start; display:inline-flex; align-items:center; min-height:44px; font:var(--text-sm)/1.3 var(--sans); }
-table.items td.when { white-space:normal; }
 .desk { margin:0 0 1rem; }
 .desk .work { max-width:none; margin:0; padding:1rem; border-width:0 0 1px; border-left:5px solid var(--rule); border-radius:0; background:transparent;
   display:grid; grid-template-columns:minmax(0,1fr) auto; gap:0 1.5rem; align-items:center; }
@@ -1524,16 +1509,93 @@ table.items td.when { white-space:normal; }
 .project-name { color:var(--soft); font-size:var(--text-sm); font-weight:400; }
 .group-name { font:700 var(--text-md)/1.3 var(--sans); margin:1.4rem 0 .3rem; color:var(--soft); }
 .filters { display:flex; flex-wrap:wrap; gap:.6rem 1.2rem; align-items:end; margin:.6rem 0; font-family:var(--sans); }
-.filters label { display:flex; flex-direction:column; gap:.2rem; font-size:var(--text-sm); color:var(--soft); }
+.filters label { display:flex; flex-direction:column; gap:.2rem; min-width:0; max-width:100%; font-size:var(--text-sm); color:var(--soft); }
 .filters select { min-height:var(--tap); min-width:min(100%,12rem); max-width:100%; font:var(--text-md)/1.3 var(--sans); padding:.4rem .6rem;
   background:var(--raised); color:var(--ink); border:1px solid var(--soft); border-radius:5px; }
 .saved-answer .record:empty { display:none; }
-table.items td.project { white-space:normal; }
 @media (max-width: 40rem) {
-  table.items td.project { display:inline; color:var(--soft); margin-right:.6rem; }
   .desk .work { grid-template-columns:minmax(0,1fr); }
   .desk .work > .actions { grid-column:1; grid-row:auto; justify-content:flex-start; margin-top:.6rem; }
 }
+[hidden] { display:none !important; }
+.bar nav { display:flex; flex-wrap:wrap; gap:.4rem 1rem; align-items:center; }
+.bar nav a { margin-left:0; }
+.bar button { min-height:40px; font-size:var(--text-sm); }
+.desk .work { position:relative; cursor:pointer; }
+.desk .work:hover { background:var(--faint); }
+.desk .work.next:hover { background:var(--signal-ground); box-shadow:inset 0 0 0 2px var(--signal); }
+.desk .work h3 { margin:.3rem 0; }
+.card-link::after { content:""; position:absolute; inset:0; z-index:0; }
+.card-link:focus { outline:none; }
+.desk .work:has(.card-link:focus) { outline:3px solid var(--focus); outline-offset:-3px; }
+.desk .work a:not(.card-link), .desk .work button { position:relative; z-index:1; }
+html:has(.sendbar) { --sendbar-space:calc(var(--sendbar-height, 0px) + var(--visible-bottom, 0px)); scroll-padding-bottom:var(--sendbar-space); }
+main:has(> .sendbar) { padding-bottom:var(--sendbar-space); }
+.sendbar { position:fixed; inset:auto 0 var(--visible-bottom, 0px); z-index:2;
+  max-height:calc(var(--visible-height, 100vh) / 2); overflow:auto;
+  padding:.7rem max(var(--gutter), calc((100% - var(--page)) / 2 + var(--gutter))) calc(.7rem + env(safe-area-inset-bottom));
+  background:var(--ground); border-top:1px solid var(--rule); box-shadow:0 -6px 14px -10px var(--ink); }
+.sendbar output { margin:.4rem 0 0; max-height:min(8rem, calc(var(--visible-height, 100vh) / 4)); overflow:auto; }
+.sendbar output:empty { display:none; }
+details.done { margin:.6rem 0; max-width:52rem; border:1px solid var(--rule); border-radius:8px; background:var(--raised); }
+details.done > summary { display:grid; grid-template-columns:auto minmax(0, 7fr) minmax(0, 5fr); gap:.8rem; align-items:baseline;
+  padding:.7rem 1rem; min-height:var(--tap); cursor:pointer; font-family:var(--sans); }
+details.done > summary:focus-visible { outline:3px solid var(--focus); outline-offset:-3px; }
+details.done > summary:has(.sum-source:not([hidden])) {
+  grid-template-columns:auto minmax(0, 7fr) minmax(min(50%, 7em), 5fr); }
+details.done .sum-q, details.done .sum-text { white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+details.done .sum-q { font-weight:700; }
+details.done .sum-a { display:flex; color:var(--soft); }
+details.done .sum-source { flex:none; white-space:pre; }
+details.done > .decision { margin:0; border:0; border-top:1px solid var(--rule); border-radius:0 0 8px 8px; max-width:none; }
+.library { position:fixed; inset-block:auto var(--visible-bottom, 0px); padding:0; border:0; background:var(--raised); color:var(--ink);
+  font-family:var(--sans); max-width:none; max-height:none; overflow:hidden;
+  width:100%; height:min(calc(var(--visible-height, 100vh) * .88), calc(var(--visible-height, 100vh) - 2.5rem));
+  margin:0; border-radius:14px 14px 0 0; border-top:1px solid var(--rule); }
+.library::backdrop { background:color-mix(in srgb, var(--ink) 55%, transparent); }
+.library[open] { display:flex; flex-direction:column; }
+@media (width > 40rem) {
+  .library { width:min(36rem, 100vw); height:var(--visible-height, 100vh); margin:0 0 0 auto;
+    border-radius:0; border-top:0; border-left:1px solid var(--rule); }
+}
+@media (prefers-reduced-motion: no-preference) {
+  .library[open] { animation:lib-in .18s ease-out; }
+  @keyframes lib-in { from { transform:translateY(1.5rem); opacity:0; } }
+  @media (width > 40rem) { @keyframes lib-in { from { transform:translateX(2rem); opacity:0; } } }
+}
+body:has(dialog[open]) { overflow:hidden; }
+.lib-top { display:flex; flex-wrap:wrap; gap:.4rem 1rem; align-items:center; justify-content:space-between; padding:.7rem var(--gutter) 0; border-bottom:1px solid var(--rule); }
+[role="tablist"] { display:flex; gap:.2rem; }
+[role="tab"] { background:transparent; border:0; border-bottom:4px solid transparent; border-radius:0; padding:.5rem .9rem; min-height:var(--tap);
+  font:600 var(--text-lg)/1.2 var(--sans); color:var(--soft); }
+[role="tab"][aria-selected="true"] { color:var(--ink); border-bottom-color:var(--signal); }
+.lib-top > button { margin-bottom:.4rem; }
+@media (max-width: 40rem) {
+  .lib-top { gap:.4rem; }
+  [role="tab"] { padding:.5rem .55rem; font-size:var(--text-md); }
+  [role="tablist"] { gap:0; }
+  .lib-top > button { padding:.5rem .7rem; flex:none; }
+}
+.lib-panel { display:flex; flex-direction:column; flex:1; min-height:0; }
+.lib-top, .lib-tools, .lib-status { flex-shrink:0; }
+.lib-tools { padding:.9rem var(--gutter) .4rem; }
+.lib-tools label { font-size:var(--text-sm); color:var(--soft); margin-bottom:.2rem; }
+.lib-tools input { width:100%; min-height:var(--tap); padding:.4rem .6rem; font:var(--text-md)/1.3 var(--sans); color:var(--ink); background:var(--ground);
+  border:1px solid var(--soft); border-radius:5px; }
+.lib-status { margin:0; padding:0 var(--gutter); color:var(--soft); font-size:var(--text-sm); }
+.lib-panel > .empty { margin:1rem var(--gutter); }
+.lib-list { list-style:none; margin:0; padding:0 var(--gutter) 2rem; overflow-y:auto; flex:1; min-height:0; overscroll-behavior:contain; }
+.library.short[open] { height:var(--visible-height, 100vh); }
+.library:is(.short,.scroll-all)[open] { display:block; overflow-y:auto; overscroll-behavior:contain; }
+.library:is(.short,.scroll-all) .lib-list { overflow:visible; }
+.library:is(.short,.scroll-all) button { scroll-margin-top:0; }
+.lib-item { padding:.9rem 0; border-bottom:1px solid var(--rule); }
+.lib-item p { margin:.2rem 0 0; }
+.lib-head { display:flex; gap:.2rem .8rem; align-items:baseline; }
+.lib-title { font:700 var(--text-lg)/1.3 var(--sans); }
+.lib-desc { font-size:var(--text-md); color:var(--soft); }
+.lib-item .meta { display:flex; flex-wrap:wrap; gap:0 1rem; font-size:var(--text-md); }
+.page-section { margin:2rem 0 0; }
 """
 
 
@@ -1541,6 +1603,9 @@ TIME_SCRIPT = """
 const localTime = dateTime => new Date(dateTime).toLocaleString(undefined, {dateStyle:'medium', timeStyle:'short'});
 for (const time of document.querySelectorAll('.saved-answer time[datetime]:not([datetime=""]), .answer-source time')) {
   time.textContent = localTime(time.dateTime);
+}
+for (const time of document.querySelectorAll('time.day[datetime]:not([datetime=""])')) {
+  time.textContent = new Date(time.dateTime).toLocaleDateString(undefined, {dateStyle:'medium'});
 }
 """
 
@@ -1640,6 +1705,173 @@ WORKERS_SCRIPT = r"""
 """
 
 
+VIEWPORT_SCRIPT = """
+function trackVisibleViewport(onChange) {
+  const viewport = window.visualViewport;
+  const style = document.documentElement.style;
+  let previousHeight;
+  const update = () => {
+    const height = viewport?.height ?? innerHeight;
+    const bottom = Math.max(0, innerHeight - height - (viewport?.offsetTop ?? 0));
+    style.setProperty('--visible-height', height + 'px');
+    style.setProperty('--visible-bottom', bottom + 'px');
+    onChange(height, previousHeight);
+    previousHeight = height;
+  };
+  viewport?.addEventListener('resize', update);
+  viewport?.addEventListener('scroll', update);
+  window.addEventListener('resize', update);
+  update();
+}
+"""
+
+
+@functools.cache
+def library_case_folds() -> str:
+    folds = {}
+    for codepoint in range(sys.maxunicode + 1):
+        character = chr(codepoint)
+        folded = character.casefold()
+        if folded != character:
+            folds[character] = folded
+    return json.dumps(folds, ensure_ascii=False, separators=(",", ":"))
+
+
+LIBRARY_SCRIPT = r"""
+(() => {
+  window.addEventListener('pageshow', event => {
+    if (event.persisted) location.reload();
+  });
+  const dialog = document.querySelector('#library');
+  const opener = document.querySelector('#open-library');
+  if (!dialog || !opener || !dialog.showModal) return;
+  const header = dialog.querySelector('.lib-top');
+  const tabs = [...dialog.querySelectorAll('[role="tab"]')];
+  const panelOf = tab => document.getElementById(tab.getAttribute('aria-controls'));
+  const searchOf = tab => panelOf(tab).querySelector('input[type="search"]');
+  const filtersOf = tab => [...panelOf(tab).querySelectorAll('.filters select')];
+  const selectedTab = () => tabs.find(tab => tab.getAttribute('aria-selected') === 'true');
+  const libraryLookup = history.state?.libraryLookup;
+  const restoredTab = tabs.find(tab => tab.id === libraryLookup?.tab);
+  const updateScrollMode = () => {
+    if (!dialog.open) return;
+    const panel = panelOf(selectedTab());
+    const controlsHeight = header.offsetHeight + panel.querySelector('.lib-tools').offsetHeight
+      + panel.querySelector('[data-status]').offsetHeight;
+    const list = panel.querySelector('.lib-list');
+    const resultSpace = parseFloat(getComputedStyle(dialog).getPropertyValue('--tap'))
+      + (list ? parseFloat(getComputedStyle(list).paddingBottom) : 0);
+    dialog.classList.toggle('scroll-all', dialog.clientHeight - controlsHeight < resultSpace);
+  };
+  trackVisibleViewport((height, previousHeight) => {
+    const shortHeight = 22 * parseFloat(getComputedStyle(document.documentElement).fontSize);
+    dialog.classList.toggle('short', height <= shortHeight);
+    updateScrollMode();
+    const focused = document.activeElement;
+    if (height < previousHeight && dialog.open && dialog.contains(focused)) {
+      focused.scrollIntoView({block:'nearest', inline:'nearest'});
+    }
+  });
+  const select = (tab, focus) => {
+    for (const other of tabs) {
+      const on = other === tab;
+      other.setAttribute('aria-selected', String(on));
+      other.tabIndex = on ? 0 : -1;
+      panelOf(other).hidden = !on;
+    }
+    updateScrollMode();
+    if (focus) tab.focus();
+  };
+  for (const tab of tabs) {
+    tab.addEventListener('click', () => select(tab, false));
+    tab.addEventListener('keydown', e => {
+      const keys = {ArrowRight: 1, ArrowLeft: -1};
+      const at = tabs.indexOf(tab);
+      const next = e.key === 'Home' ? tabs[0] : e.key === 'End' ? tabs[tabs.length - 1]
+        : e.key in keys ? tabs[(at + keys[e.key] + tabs.length) % tabs.length] : null;
+      if (next) { e.preventDefault(); select(next, true); }
+    });
+  }
+  const openLibrary = () => {
+    dialog.showModal();
+    updateScrollMode();
+    selectedTab().focus();
+  };
+  opener.addEventListener('click', openLibrary);
+  dialog.addEventListener('close', () => {
+    const {libraryLookup, ...otherState} = history.state ?? {};
+    if (libraryLookup) history.replaceState(otherState, '');
+    opener.focus();
+  });
+  dialog.addEventListener('click', e => {
+    if (e.target === dialog || e.target.closest('[data-close]')) {
+      dialog.close();
+    } else if (!e.defaultPrevented && e.button === 0 && !e.altKey && !e.ctrlKey && !e.metaKey && !e.shiftKey
+               && e.target.closest('a.lib-title')) {
+      const tab = selectedTab();
+      const filters = Object.fromEntries(filtersOf(tab).map(select => [select.name, select.value]));
+      history.replaceState({...history.state, libraryLookup:{tab:tab.id, query:searchOf(tab).value, filters}}, '');
+    }
+  });
+
+  const idQuery = /^(q\d+)(?:\.(\d+))?$/i;
+  const caseFold = text => Array.from(text, character => libraryCaseFolds[character] ?? character).join('');
+  for (const tab of tabs) {
+    const panel = panelOf(tab);
+    const search = searchOf(tab);
+    const savedFilters = tab === restoredTab ? libraryLookup.filters ?? {} : {};
+    if (tab === restoredTab) {
+      search.value = libraryLookup.query;
+      for (const template of panel.querySelectorAll('template[data-filter]')) {
+        if (savedFilters[template.dataset.filter]) {
+          template.parentElement.hidden = false;
+          template.replaceWith(template.content);
+        }
+      }
+    }
+    const filters = filtersOf(tab);
+    for (const select of filters) {
+      const value = savedFilters[select.name];
+      if (!value) continue;
+      if (![...select.options].some(option => option.value === value)) {
+        select.add(new Option(select.name === 'tag' ? value.replaceAll('-', ' ') : value, value));
+      }
+      select.value = value;
+    }
+    const status = panel.querySelector('[data-status]');
+    const none = panel.querySelector('[data-none]');
+    const rows = [...panel.querySelectorAll('.lib-item')];
+    const run = () => {
+      const query = search.value.trim();
+      const id = idQuery.exec(query);
+      const terms = query && !id ? caseFold(query).split(/\s+/) : [];
+      let hasMatch = false;
+      for (const row of rows) {
+        const searchMatch = id
+          ? row.dataset.id.toLowerCase() === id[1].toLowerCase()
+            && (id[2] === undefined || (/^[1-9]\d*$/.test(id[2]) && Number(id[2]) <= Number(row.dataset.questions)))
+          : terms.every(term => row.dataset.search.includes(term));
+        const ok = searchMatch && matchesClassification(row, filters);
+        row.hidden = !ok;
+        hasMatch ||= ok;
+      }
+      const active = query || filters.some(select => select.value);
+      none.hidden = Boolean(active) || rows.length > 0;
+      status.textContent = active && !hasMatch ? 'No results match your search.' : '';
+      if (!panel.hidden) updateScrollMode();
+    };
+    search.addEventListener('input', run);
+    for (const select of filters) select.addEventListener('change', run);
+    run();
+  }
+  if (restoredTab) {
+    select(restoredTab, false);
+    openLibrary();
+  }
+})();
+"""
+
+
 def esc(value: object) -> str:
     return html.escape(str(value), quote=True)
 
@@ -1687,23 +1919,23 @@ def linked_text(value: object) -> str:
 
 
 FILTER_SCRIPT = """
-for (const bar of document.querySelectorAll('.filters')) {
+const matchesClassification = (entry, filters) => filters.every(select =>
+  !select.value || (select.name === 'project' ? entry.dataset.project === select.value
+    : entry.dataset.tags.split('|').includes(select.value)));
+for (const bar of document.querySelectorAll('main .filters')) {
   const list = document.getElementById(bar.dataset.list);
-  const projectSelect = bar.querySelector('[name="project"]');
-  const tagSelect = bar.querySelector('[name="tag"]');
+  const filters = [...bar.querySelectorAll('select')];
   const none = document.getElementById(bar.dataset.list + '-empty');
   const apply = () => {
-    const project = projectSelect?.value;
-    const tag = tagSelect?.value;
-    let shown = 0;
-    for (const entry of list.querySelectorAll('[data-project]')) {
-      const ok = (!project || entry.dataset.project === project) && (!tag || entry.dataset.tags.split('|').includes(tag));
-      entry.hidden = !ok;
-      if (ok) shown += 1;
+    let hasMatch = false;
+    for (const entry of list.children) {
+      entry.hidden = !matchesClassification(entry, filters);
+      hasMatch ||= !entry.hidden;
     }
-    none.hidden = shown > 0;
+    none.hidden = hasMatch;
   };
   bar.addEventListener('change', apply);
+  apply();
 }
 """
 
@@ -1729,19 +1961,21 @@ def filter_data(item) -> str:
     return f' data-project="{esc(item.get("project", ""))}" data-tags="{esc("|".join(all_tags(item)))}"'
 
 
-def filter_bar(list_id: str, items) -> str:
+def filter_bar(list_id: str, items, *, restorable: bool = False) -> str:
     """Show distinct project choices and every tag in use."""
     project_values = {item.get("project", "") for item in items}
     projects = sorted(project_values - {""}, key=str.casefold) if len(project_values) > 1 else []
     tags = sorted({tag for item in items for tag in all_tags(item)})
     fields = ""
     for label, name, values in (("Project", "projects", projects), ("Tag", "tags", tags)):
-        if values:
+        if values or restorable:
             options = "".join(f'<option value="{esc(v)}">{esc(tag_text(v) if name == "tags" else v)}</option>' for v in values)
-            fields += f'<label>{label}<select name="{label.lower()}"><option value="">(All {name})</option>{options}</select></label>'
+            field = f'<label>{label}<select name="{label.lower()}"><option value="">(All {name})</option>{options}</select></label>'
+            fields += field if values else f'<template data-filter="{label.lower()}">{field}</template>'
     if not fields:
         return ""
-    return (f'<div class="filters" data-list="{list_id}">{fields}</div>')
+    hidden = "" if projects or tags else " hidden"
+    return f'<div class="filters" data-list="{list_id}"{hidden}>{fields}</div>'
 
 
 def no_match(list_id: str) -> str:
@@ -1753,8 +1987,10 @@ def item_page_name(item_id: str) -> str:
 
 
 def page_shell(title: str, site_title: str, body: str, *, served: bool, saved_name: str, interactive: bool = False,
-               workers: bool = False, filters: bool = False) -> str:
+               workers: bool = False, library: str = "", filters: bool = False) -> str:
     saved_href = quote(saved_name, safe="")
+    opener = ('<button type="button" id="open-library" aria-haspopup="dialog" aria-controls="library">Open library</button>'
+              if library else "")
     links = (
         '<link rel="manifest" href="manifest.webmanifest">\n  <link rel="icon" href="icon.svg" type="image/svg+xml">\n'
         f'  <link rel="apple-touch-icon" href="icon-180.png">\n  <meta name="theme-color" content="{APP_NAVY}">\n  '
@@ -1764,25 +2000,12 @@ def page_shell(title: str, site_title: str, body: str, *, served: bool, saved_na
         "  <meta name=\"viewport\" content=\"width=device-width, initial-scale=1\">\n"
         f"  {GENERATED_MARKER}\n  <title>{esc(title)}</title>\n  {links}<style>{PAGE_CSS}</style>\n</head>\n<body>\n"
         f'<header class="bar"><a class="mark" href="{saved_href}">{esc(site_title)}</a>'
-        f'<nav><a href="{saved_href}">Saved</a></nav></header>\n'
-        f"<main>\n{body}\n</main><script>{TIME_SCRIPT}{ANSWER_SCRIPT if interactive else ''}{WORKERS_SCRIPT if workers else ''}{FILTER_SCRIPT if filters else ''}</script>\n</body>\n</html>\n"
+        f'<nav><a href="{saved_href}">Desk</a>{opener}</nav></header>\n'
+        f"<main>\n{body}\n</main>\n{library}<script>{TIME_SCRIPT}{VIEWPORT_SCRIPT if interactive or library else ''}"
+        f"{ANSWER_SCRIPT if interactive else ''}"
+        f"{WORKERS_SCRIPT if workers else ''}{FILTER_SCRIPT if filters or library else ''}"
+        f"{f'const libraryCaseFolds = {library_case_folds()};' + LIBRARY_SCRIPT if library else ''}</script>\n</body>\n</html>\n"
     )
-
-
-def items_table(items: list[dict[str, object]]) -> str:
-    projects = any(item.get("project") for item in items)
-    rows = "".join(
-        f'<tr{filter_data(item)}><td class="id">{esc(item["id"])}</td><td class="kind">{esc(KIND_LABELS[str(item["kind"])])}</td>'
-        + (f'<td class="project">{esc(item.get("project", ""))}</td>' if projects else '')
-        + f'<td class="title"><a href="{item_page_name(str(item["id"]))}">{esc(item["title"])}</a>{tag_labels(all_tags(item))}</td>'
-        f'<td class="description">{linked_text(item["description"])}</td>'
-        f'<td class="when"><time datetime="{esc(item["saved_at"])}">{esc(saved_day(item))}</time></td></tr>'
-        for item in items
-    )
-    return ('<table class="items"><thead><tr><th scope="col">ID</th><th scope="col">Kind</th>'
-            + ('<th scope="col">Project</th>' if projects else '')
-            + '<th scope="col">Title</th>'
-            f'<th scope="col">Description</th><th scope="col">Saved</th></tr></thead><tbody id="references-list">{rows}</tbody></table>')
 
 
 def delivery_label(record):
@@ -1801,25 +2024,26 @@ def question_card(item, summary, *, served, primary, show_project=True):
     state, open_parts, pending = summary
     remaining = len(open_parts)
     href = item_page_name(item["id"])
-    if primary:
+    if open_parts:
         href += f'#{item["id"]}.{open_parts[0]}'
     progress = f'{remaining} of {len(question_parts(item))} open' if remaining else state
     action = "Read questions" if not served else ("Answer questions" if remaining else "Review answers")
-    link_class = ' class="work-action"' if primary else ' class="button-link"'
+    link_style = "work-action" if primary else "button-link"
+    title = esc(item["title"])
     questions = item["body"]["questions"]
     prompts = "".join(f'<li>{linked_text(questions[n - 1]["question"])}</li>' for n in open_parts)
     first_link = next((link_html(questions[n - 1]["links"][0], prefix=f'{item["id"]}.{n} ')
                        for n in open_parts if questions[n - 1].get("links")), '')
     visual = f'<p class="visual">{first_link}</p>' if first_link else ''
     project = f' <span class="project-name">{esc(item["project"])}</span>' if show_project and item.get("project") else ""
-    return (f'<article class="work{' next' if primary else ''}"{filter_data(item)}><div class="eyebrow"><span class="id">{item["id"]}</span> Questions{project}</div>'
-            f'<h3>{esc(item["title"])}</h3><p>{linked_text(item["description"])}</p>'
+    return (f'<article class="work{' next' if primary else ''}"><div class="eyebrow"><span class="id">{item["id"]}</span> Questions{project}</div>'
+            f'<h3>{title}</h3><p>{linked_text(item["description"])}</p>'
             + (f'<ul>{prompts}</ul>' if prompts else '')
             + tag_labels(all_tags(item))
             + visual
             + f'<div class="actions"><span class="badge">{progress}</span>'
             + ('<span>Not delivered</span>' if pending else '')
-            + f'<a{link_class} href="{href}">{action}</a></div></article>')
+            + f'<a class="card-link {link_style}" href="{href}" aria-label="{action} for {title}">{action}</a></div></article>')
 
 
 def link_html(link, *, prefix=""):
@@ -1884,7 +2108,7 @@ def read_only_option(item, option):
 
 
 def question_form(item, served):
-    cards = []
+    cards, folded = [], []
     state, open_parts, _ = question_summary(item)
     remaining = len(open_parts)
     for number, question in enumerate(item["body"]["questions"], 1):
@@ -1901,13 +2125,16 @@ def question_form(item, served):
             saved = (f'<div class="saved-answer"{hidden}><p class="record">{esc(answer)}</p>'
                      f'<p class="meta"><span class="delivery">{delivery}</span> '
                      f'<time datetime="{at}">{at}</time></p></div>')
-        if elsewhere := latest_off_desk_mark(record):
+        elsewhere = latest_off_desk_mark(record)
+        if elsewhere:
             at = esc(elsewhere["answered_at"]) if elsewhere["answered_at"] else ""
             time = f' <time datetime="{at}">{at}</time>' if at else ""
             saved += f'<p class="meta answer-source">Answered elsewhere · {esc(elsewhere["via"])}{time}</p>'
+        elif editable:
+            saved += '<p class="meta answer-source" hidden></p>'
         editor = ""
         if editable:
-            editor = (f' data-revision="{esc(record.get("revision", ""))}"'
+            editor = (f' tabindex="-1" data-revision="{esc(record.get("revision", ""))}"'
                       f' data-state="{status}" data-pending="{int(delivery_pending(record))}"')
             suggestions = question.get("suggestion")
             choices = list(question["options"])
@@ -1926,22 +2153,29 @@ def question_form(item, served):
                         + ''.join(read_only_option(item, v) for v in question["options"]) + '</ul>')
             if question.get("suggestion"):
                 controls += f'<p><strong>Suggested answer</strong><br>{linked_text(question["suggestion"])}</p>'
-        cards.append(f'<section class="decision" id="{part}" aria-labelledby="title-{part}"{editor}>'
-                     f'<div class="eyebrow"><span class="id">{part}</span><span class="badge">{status.capitalize()}</span>'
-                     f'{f"<span>{esc(question['kind'].capitalize())}</span>" if question.get("kind") else ""}</div>'
-                     f'{tag_labels(question.get("tags", []))}'
-                     f'<h2 id="title-{part}">{linked_text(question["question"])}</h2><p>{linked_text(question["context"])}</p>'
-                     f'{question_shots(item, question)}{saved}{controls}</section>')
-    total = len(cards)
-    progress = f"{remaining} of {total} open" if remaining else state
-    toolbar = ""
+        card = (f'<section class="decision" id="{part}" aria-labelledby="title-{part}"{editor}>'
+                f'<div class="eyebrow"><span class="id">{part}</span><span class="badge">{status.capitalize()}</span>'
+                f'{f"<span>{esc(question['kind'].capitalize())}</span>" if question.get("kind") else ""}</div>'
+                f'{tag_labels(question.get("tags", []))}'
+                f'<h2 id="title-{part}">{linked_text(question["question"])}</h2><p>{linked_text(question["context"])}</p>'
+                f'{question_shots(item, question)}{saved}{controls}</section>')
+        if status == "answered" and record.get("delivery") == "sent":
+            source_hidden = "" if elsewhere else " hidden"
+            folded.append(f'<details class="done"><summary><span class="id">{part}</span>'
+                          f'<span class="sum-q">{esc(question["question"])}</span>'
+                          f'<span class="sum-a"><span class="sum-text">{esc(answer)}</span>'
+                          f'<span class="sum-source"{source_hidden}> (Desk)</span></span></summary>{card}</details>')
+        else:
+            cards.append(card)
+    progress = f"{remaining} of {len(cards) + len(folded)} open" if remaining else state
+    bar = ""
     if served and has_answer_controls(item):
-        toolbar = ('<div class="toolbar"><div class="actions"><button id="send" class="primary" disabled>Send answers</button>'
-                   + ('<button id="suggest">Use all suggestions</button>' if any(
-                       q.get("suggestion") and part_record(item, n).get("state") != "closed"
-                       for n, q in enumerate(item["body"]["questions"], 1)) else '')
-                   + '<button id="undo" hidden>Undo changes</button></div><output role="status"></output></div>')
-    return f'<p class="progress">{progress}</p>' + toolbar + ''.join(cards)
+        bar = ('<div class="sendbar"><div class="actions"><button id="send" class="primary" disabled>Send answers</button>'
+               + ('<button id="suggest">Use all suggestions</button>' if any(
+                   q.get("suggestion") and part_record(item, n).get("state") != "closed"
+                   for n, q in enumerate(item["body"]["questions"], 1)) else '')
+               + '<button id="undo" hidden>Undo changes</button></div><output role="status" tabindex="0"></output></div>')
+    return f'<p class="progress">{progress}</p><div id="questions">' + ''.join(cards) + ''.join(folded) + '</div>' + bar
 
 
 ANSWER_SCRIPT = r"""
@@ -1949,7 +2183,25 @@ const send = document.querySelector('#send');
 if (send) {
   const fields = [...document.querySelectorAll('textarea')];
   const sections = [...document.querySelectorAll('.decision')];
-  const output = document.querySelector('output');
+  const bar = send.closest('.sendbar');
+  const output = bar.querySelector('output');
+  let previousBarTop;
+  const reserveBarSpace = () => {
+    const bounds = bar.getBoundingClientRect();
+    document.documentElement.style.setProperty('--sendbar-height', bounds.height + 'px');
+    const coveredTop = previousBarTop;
+    previousBarTop = bounds.top;
+    const focused = document.activeElement;
+    if (bounds.top < coveredTop && focused && focused !== document.body && !bar.contains(focused)) {
+      const control = focused.getBoundingClientRect();
+      if (control.top < coveredTop && control.bottom > bounds.top) {
+        focused.scrollIntoView({block:'nearest', inline:'nearest'});
+      }
+    }
+  };
+  trackVisibleViewport(reserveBarSpace);
+  new ResizeObserver(reserveBarSpace).observe(bar, {box:'border-box'});
+  const list = document.querySelector('#questions');
   const suggest = document.querySelector('#suggest');
   const undo = document.querySelector('#undo');
   const rejections = new Map();
@@ -2015,11 +2267,57 @@ if (send) {
       refresh();
     }
     if (e.target === undo && history.length) {
-      for (const [f, value] of history.pop()) f.value = value;
+      const step = history.pop();
+      for (const [f, value] of step) f.value = value;
       refresh();
-      (history.length ? undo : send.disabled ? fields[0] : send).focus();
+      if (history.length) undo.focus();
+      else if (!send.disabled) send.focus();
+      else {
+        const field = step.keys().next().value;
+        const folded = field.closest('details:not([open])');
+        (folded ? folded.querySelector('summary') : field).focus();
+      }
     }
   });
+  const questionNumber = section => Number(section.id.split('.')[1]);
+  function updateFold(section, record) {
+    const number = questionNumber(section);
+    const focused = document.activeElement;
+    const focusInSection = section.contains(focused);
+    let box = section.closest('details.done');
+    if (record.state !== 'answered' || record.delivery !== 'sent') {
+      if (box) {
+        const restoreFocus = box.contains(focused);
+        const next = [...list.children].find(child => child.matches('details.done') || questionNumber(child) > number);
+        list.insertBefore(section, next);
+        box.remove();
+        if (restoreFocus) (focusInSection ? focused : section.querySelector('a[href]') || section).focus();
+      }
+      return;
+    }
+    if (!box) {
+      const part = (tag, className, text) => {
+        const node = document.createElement(tag);
+        node.className = className;
+        node.textContent = text;
+        return node;
+      };
+      box = document.createElement('details');
+      box.className = 'done';
+      const summary = document.createElement('summary');
+      const answer = part('span', 'sum-a', '');
+      answer.append(part('span', 'sum-text', ''), part('span', 'sum-source', ' (Desk)'));
+      summary.append(part('span', 'id', section.id), part('span', 'sum-q', section.querySelector('h2').textContent), answer);
+      box.append(summary, section);
+      const next = [...list.querySelectorAll(':scope > details.done')]
+        .find(child => questionNumber(child.lastElementChild) > number);
+      list.insertBefore(box, next ?? null);
+    }
+    box.querySelector('.sum-text').textContent = record.answer;
+    box.querySelector('.sum-source').hidden = !record.off_desk_answer;
+    box.open = false;
+    if (focusInSection) box.querySelector('summary').focus();
+  }
   function showAnswer(section, field, record) {
     section.dataset.state = record.state;
     section.dataset.revision = record.revision;
@@ -2036,6 +2334,18 @@ if (send) {
     time.textContent = localTime(record.answered_at);
     saved.hidden = false;
 
+    const source = section.querySelector('.answer-source');
+    const elsewhere = record.off_desk_answer;
+    source.hidden = !elsewhere;
+    source.textContent = elsewhere ? 'Answered elsewhere · ' + elsewhere.via : '';
+    if (elsewhere?.answered_at) {
+      const markedAt = document.createElement('time');
+      markedAt.dateTime = elsewhere.answered_at;
+      markedAt.textContent = localTime(markedAt.dateTime);
+      source.append(' ', markedAt);
+    }
+
+    updateFold(section, record);
     const remaining = sections.filter(s => s.dataset.state === 'open').length;
     document.querySelector('.progress').textContent = remaining ? remaining + ' of ' + sections.length + ' open' : 'Answered';
   }
@@ -2055,6 +2365,8 @@ if (send) {
           body:JSON.stringify({part:section.id, revision:section.dataset.revision, answer})});
         if (response.status === 400 || response.status === 409) {
           rejections.set(f, {message: await response.text(), draft: response.status === 400 ? answer : undefined});
+          const box = f.closest('details');
+          if (box) box.open = true;
           rejected += 1;
           continue;
         }
@@ -2074,6 +2386,81 @@ if (send) {
 """
 
 
+def day_time(moment: object) -> str:
+    return f'<time class="day" datetime="{esc(moment)}">{esc(str(moment)[:10])}</time>'
+
+
+def library_row(item, *, served):
+    item_id, kind = item["id"], item["kind"]
+    title = f'<a class="lib-title" href="{item_page_name(item_id)}">{esc(item["title"])}</a>'
+    project = f'<span class="project-name">{esc(item["project"])}</span>' if item.get("project") else ""
+    tags = tag_labels(all_tags(item))
+    attributes = filter_data(item)
+    if kind == "questions" and not served:
+        return f'<li class="lib-item"{attributes}>{title}{f" {project}" if project else ""}{tags}</li>'
+
+    if served:
+        search = [item["title"], item["description"]]
+        if kind == "questions":
+            parts = question_parts(item)
+            search.extend(q["question"] for q in item["body"]["questions"])
+            search.extend(part_record(item, n).get("answer", "") for n in parts)
+            attributes += f' data-questions="{len(parts)}"'
+        attributes += f' data-id="{item_id}" data-search="{esc(" ".join(search).casefold())}"'
+    if kind == "questions":
+        detail = f'<p class="meta">{question_summary(item)[0]}</p>'
+    else:
+        detail = (f'<p class="lib-desc">{linked_text(item["description"])}</p>'
+                  f'<p class="meta"><span>{KIND_LABELS[kind]}</span>{day_time(item["saved_at"])}</p>')
+    return (f'<li class="lib-item"{attributes}>'
+            f'<div class="lib-head"><span class="id">{item_id}</span>'
+            f'{title}{project}</div>{detail}{tags}</li>')
+
+
+def library_panel(name: str, items: list[dict[str, object]], empty: str, *, served: bool) -> str:
+    list_id = f"{name}-list"
+    filters = filter_bar(list_id, items, restorable=served)
+    rows = "".join(library_row(item, served=served) for item in items)
+    listing = f'<ul class="lib-list" id="{list_id}">{rows}</ul>' if rows else ""
+    if not served:
+        return (filters + listing + (no_match(list_id) if filters else "")) if rows else f'<p class="empty">{esc(empty)}</p>'
+    return (f'<div class="lib-tools"><label for="search-{name}">Search</label>'
+            f'<input type="search" id="search-{name}" placeholder="Words or an ID" autocomplete="off">{filters}</div>'
+            f'<p class="lib-status" role="status" data-status></p>{listing}'
+            f'<p class="empty" data-none{" hidden" if rows else ""}>{esc(empty)}</p>')
+
+
+def library_lists(data: dict[str, object], *, served: bool) -> tuple[str, str]:
+    references, answered = [], []
+    for item in newest_first(data["items"]):  # type: ignore[arg-type]
+        if item["kind"] != "questions":
+            references.append(item)
+        elif not desk_item(item):
+            answered.append(item)
+    return (library_panel("references", references, "No references are saved yet.", served=served),
+            library_panel("answered", answered, "Nothing is answered yet.", served=served))
+
+
+def library_dialog(data: dict[str, object]) -> str:
+    """The pop-out: a bottom sheet on a phone and a right drawer on a desktop, with References and Answered."""
+    references, answered = library_lists(data, served=True)
+    tabs = "".join(f'<button type="button" role="tab" id="tab-{name}" aria-controls="panel-{name}" '
+                   f'aria-selected="{"true" if number == 0 else "false"}" tabindex="{0 if number == 0 else -1}">{label}</button>'
+                   for number, (name, label) in enumerate((("references", "References"), ("answered", "Answered"))))
+    panels = "".join(f'<section class="lib-panel" role="tabpanel" id="panel-{name}" aria-labelledby="tab-{name}"'
+                     f'{"" if number == 0 else " hidden"}>{content}</section>'
+                     for number, (name, content) in enumerate((("references", references), ("answered", answered))))
+    return (f'<dialog id="library" class="library" aria-label="Library"><div class="lib-top">'
+            f'<div role="tablist" aria-label="Library">{tabs}</div><button type="button" data-close>Close library</button></div>'
+            f'{panels}</dialog>\n')
+
+
+def desk_item(item: dict[str, object]) -> bool:
+    """A question item stays on the Desk while a question is open or a non-closed question has pending delivery."""
+    _, open_parts, pending = question_summary(item)
+    return bool(open_parts or pending)
+
+
 def workers_section(ready: bool) -> str:
     if not ready:
         return ('<section id="workers"><h2>Workers</h2><p class="empty">Workers show here once firstmate_home '
@@ -2086,55 +2473,46 @@ def workers_section(ready: bool) -> str:
 def list_page(data: dict[str, object], site_title: str, *, served: bool, saved_name: str = "index.html",
               workers: bool = False) -> str:
     items = newest_first(data["items"])  # type: ignore[arg-type]
-    empty = "Nothing is saved yet. Ask Firstmate to send something to Quarterdeck: a link, a list or open questions."
-    attention, reviewed, references = [], [], []
+    empty = "Nothing is saved yet. Ask Firstmate to send something to Quarterdeck, such as a link, a list or open questions."
+    attention = []
     for item in items:
-        if item["kind"] != "questions":
-            references.append(item)
-            continue
-        summary = question_summary(item)
-        _, open_parts, pending = summary
-        (attention if open_parts or pending else reviewed).append((item, summary))
+        if item["kind"] == "questions" and desk_item(item):
+            summary = question_summary(item)
+            attention.append((item, summary))
     # With more than one project on the Desk, its cards group by project, the group holding the newest item first.
     projects = list(dict.fromkeys(item.get("project", "") for item, _ in attention))
     grouped = len(projects) > 1
     primary = next((item for item, summary in attention if summary[1]), None)
     body = ""
 
-    def desk(group, *, list_id: str = "", show_project: bool = True) -> str:
+    def desk(group, *, show_project: bool = True) -> str:
         cards = "".join(question_card(item, summary, served=served, primary=item is primary, show_project=show_project)
                         for item, summary in group)
-        return f'<div class="desk"{f' id="{list_id}"' if list_id else ""}>{cards}</div>'
+        return f'<div class="desk">{cards}</div>'
 
     if attention:
-        body += "<h1>My desk</h1>"
+        body += "<h1>Desk</h1>"
         if grouped:
             for project in projects:
                 members = [pair for pair in attention if pair[0].get("project", "") == project]
                 body += f'<h2 class="group-name">{esc(project or "(No project)")}</h2>' + desk(members, show_project=False)
         else:
             body += desk(attention)
-    elif served:
-        nothing = empty if not items else "Nothing is waiting for you. Saved questions that need an answer show here."
-        body += f'<h1>My desk</h1><p class="empty">{esc(nothing)}</p>'
+    elif not items:
+        body = f'<h1>Desk</h1><p class="empty">{esc(empty)}</p>'
+    else:
+        body = '<h1>Desk</h1><p class="empty">Nothing is on your Desk. A question that needs an answer shows here.</p>'
     if served:
         body += workers_section(workers)
-    filters = False
-    if reviewed:
-        level = 2 if body else 1
-        bar = filter_bar("reviewed-list", [item for item, _ in reviewed])
-        filters = filters or bool(bar)
-        body += (f"<h{level}>Reviewed questions</h{level}>" + bar + desk(reviewed, list_id="reviewed-list")
-                 + (no_match("reviewed-list") if bar else ""))
-    if references:
-        level = 2 if body else 1
-        bar = filter_bar("references-list", references)
-        filters = filters or bool(bar)
-        body += f"<h{level}>References</h{level}>" + bar + items_table(references) + (no_match("references-list") if bar else "")
-    if not items and not served:
-        body = f'<h1>Saved</h1><p class="empty">{esc(empty)}</p>'
+    library = ""
+    if served:
+        library = library_dialog(data)
+    elif items:
+        references, answered = library_lists(data, served=False)
+        body += (f'<section class="page-section"><h2>References</h2>{references}</section>'
+                 f'<section class="page-section"><h2>Answered</h2>{answered}</section>')
     return page_shell(site_title, site_title, body, served=served, saved_name=saved_name, workers=served and workers,
-                      filters=filters)
+                      library=library, filters=bool(items) and not served)
 
 
 def item_body_html(item: dict[str, object]) -> str:
@@ -2155,7 +2533,7 @@ def item_page(item: dict[str, object], site_title: str, *, served: bool, saved_n
     body = (
         f'<p class="id">{esc(item_id)}</p><h1>{esc(item["title"])}</h1>'
         f'<p class="meta">{esc(KIND_LABELS[str(item["kind"])])}{" · " + esc(item["project"]) if item.get("project") else ""}'
-        f' · saved <time datetime="{esc(item["saved_at"])}">{esc(saved_day(item))}</time></p>'
+        f' · saved <time class="day" datetime="{esc(item["saved_at"])}">{esc(saved_day(item))}</time></p>'
         f'{tag_labels(list(item.get("tags", [])))}'
         f'<p class="lead">{linked_text(item["description"])}</p>{content}'
     )
@@ -2760,7 +3138,7 @@ def url(args: argparse.Namespace) -> int:
 # --- install, update and help -------------------------------------------------------------
 
 COMMAND_DOCS = {
-    "mark": ["how-to/read-answers.md", "reference/item-store.md"],
+    "mark": ["how-to/read-answers.md", "how-to/use-the-library.md", "reference/item-store.md"],
     "classify": ["how-to/classify-items.md", "reference/cli-and-config.md", "reference/item-store.md"],
     "stats": ["how-to/read-the-report.md", "reference/cli-and-config.md"],
     "add": ["how-to/save-items.md", "how-to/classify-items.md", "reference/cli-and-config.md", "reference/item-store.md"],
@@ -2768,7 +3146,7 @@ COMMAND_DOCS = {
     "show": ["how-to/read-answers.md", "how-to/save-items.md", "reference/cli-and-config.md"],
     "remove": ["how-to/save-items.md", "reference/cli-and-config.md"],
     "render": ["how-to/serve-the-page.md", "reference/cli-and-config.md", "explanation/privacy-and-architecture.md"],
-    "serve": ["how-to/answer-questions.md", "how-to/read-workers.md", "how-to/serve-the-page.md", "reference/cli-and-config.md", "explanation/privacy-and-architecture.md"],
+    "serve": ["how-to/answer-questions.md", "how-to/use-the-library.md", "how-to/read-workers.md", "how-to/serve-the-page.md", "reference/cli-and-config.md", "explanation/privacy-and-architecture.md"],
     "service": ["how-to/serve-the-page.md", "reference/cli-and-config.md"],
     "url": ["how-to/serve-the-page.md", "reference/cli-and-config.md"],
     "install": ["how-to/install.md", "how-to/update.md", "how-to/uninstall.md"],
@@ -2893,13 +3271,13 @@ def make_parser() -> argparse.ArgumentParser:
     remove.add_argument("id", help="item ID, such as Q7")
 
     render_parser = command("render", "write the page to HTML files",
-                            "Write the Saved page and one page per item as HTML files.", render)
-    render_parser.add_argument("--output", help="HTML file path for the Saved page; the other pages go beside it")
+                            "Write the Desk page and one page per item as HTML files.", render)
+    render_parser.add_argument("--output", help="HTML file path for the Desk page; the other pages go beside it")
     render_parser.add_argument("--config", type=Path, help="optional JSON config file")
     render_parser.add_argument("--title", help="override the page title")
 
     serve_parser = command("serve", "serve the page over HTTP",
-                           "Serve saved items and accept same-origin answers. With firstmate_home set, the page also lists that home's running workers, read on entry and on Refresh workers. Anyone who can reach the service can answer as the owner.", serve)
+                           "Serve the Desk, References and Answered, and accept same-origin answers. With firstmate_home set, the page also lists that home's running workers, read on entry and on Refresh workers. Anyone who can reach the service can answer as the owner.", serve)
     add_serve_options(serve_parser)
     serve_parser.add_argument("--title", help="override the page title")
     for flag in LEGACY_SERVE_FLAGS:  # accepted so an existing service unit keeps starting; they do nothing now
