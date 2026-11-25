@@ -5706,11 +5706,16 @@ class TalkToFirstmateTests(ImageCase):
         original = self.inbox(accept=False)
         replacement = self.inbox(name="replacement")
         alias = self.root / "current"
-        alias.symlink_to(original, target_is_directory=True)
         config = self.root / "explicit.json"
         config.write_text(json.dumps({"firstmate_home": str(alias)}))
-        code, out, err = self.run_cli(
-            "converse", "--title", "Tide work", "--text", "Started the tide job.", "--config", str(config))
+        command = ("converse", "--title", "Tide work", "--text", "Started the tide job.", "--config", str(config))
+        code, out, err = self.run_cli(*command)
+        self.assertEqual((code, out), (2, ""))
+        self.assertIn("firstmate_home must resolve to an existing directory", err)
+        self.assertFalse(quarterdeck.store_path().exists())
+
+        alias.symlink_to(original, target_is_directory=True)
+        code, out, err = self.run_cli(*command)
         self.assertEqual((code, out, err), (0, "Q1\n", ""))
         self.assertFalse((original / "attempts").exists())
 

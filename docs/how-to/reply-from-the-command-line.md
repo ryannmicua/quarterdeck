@@ -5,9 +5,9 @@ Use the target and message IDs from the inbox note. A note that begins
 or a numbered question. For [`CONVERSATION`](../reference/cli-and-config.md#conversation-endpoint),
 see [Reply in a conversation](#reply-in-a-conversation).
 
-For both targets, `quarterdeck reply` must use the live server's
+Run `quarterdeck reply`, `post`, and `converse` with the live server's
 [item store](../reference/item-store.md). If the server uses a custom
-`XDG_STATE_HOME`, run the reply command with the same setting.
+`XDG_STATE_HOME`, use the same setting for these commands.
 
 ```sh
 quarterdeck reply Q7 --ask "$ask_id" --text "The whole layout is ready for review."
@@ -66,6 +66,12 @@ Firstmate can add news that answers no message. `post` adds an update to a
 conversation and `converse` opens a new conversation in Firstmate's name. Both
 take the same `--link-text`/`--url` and `--image`/`--alt` options as `reply`.
 
+For `converse`, use the same configuration as `serve`, including
+`--config FILE` if the server uses a custom file. If `firstmate_home` is set,
+it must resolve to an existing directory. The conversation binds to that
+directory. With no configured home, the owner's first message establishes
+the binding.
+
 ```sh
 quarterdeck post Q12 --text "The amber lamps are installed."
 quarterdeck converse --title "Pier lamp install" --text "Started the install." # prints the new ID
@@ -76,7 +82,3 @@ shows as Replied until the owner opens the conversation. Neither command sends
 an inbox note, because Firstmate wrote the message. The owner replies from the
 conversation page, and Firstmate answers that message with `reply`. Updates are
 served only, like all conversations. `post` refuses question items.
-
-Use the same configuration as `serve`, including `--config FILE` if the server
-uses a custom file. When `firstmate_home` is set, `converse` binds the conversation
-to that home. Otherwise the owner's first message establishes the binding.

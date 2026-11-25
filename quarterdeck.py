@@ -1729,9 +1729,9 @@ def converse(args: argparse.Namespace) -> int:
         home = configured_firstmate_home(selected_config(args))
         message = firstmate_message(text, links, images)
         if home is not None:
-            _, binding = ask_destination(home, require_directory=False)
+            _, binding = ask_destination(home, require_directory=True)
             if binding is None:
-                raise ValueError("could not resolve firstmate_home")
+                raise ValueError("firstmate_home must resolve to an existing directory")
             message["home"] = binding
         store = store_path()
         with locked_store(store):

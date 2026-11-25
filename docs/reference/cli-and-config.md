@@ -34,6 +34,11 @@ uppercase form.
 
 ### Items
 
+`reply`, `post`, and `converse` need the same
+[item store](item-store.md) as the live server. Match the server's
+`XDG_STATE_HOME` if it uses a custom state directory. For `converse`,
+`--config FILE` selects the settings file, and `XDG_STATE_HOME` selects the state directory.
+
 | Command | What it does |
 | --- | --- |
 | `add` | Saves a new item and prints its ID. A `resource` needs `--url` and `--link-text`. A `list` or `questions` item needs `--body-file`. See [the input formats and examples](../how-to/save-items.md#add-an-item) and [how to classify items and questions when saving](../how-to/classify-items.md#classify-when-you-save). |
@@ -41,7 +46,7 @@ uppercase form.
 | `show` | Prints the item's text, numbering list entries and questions as `Q7.1`, `Q7.2`. Includes question links, stored states, and saved answers with their timestamps and delivery status. For a standalone conversation, prints the messages and replies in saved order with timestamps, IDs, delivery status for outgoing messages, and reply attachments. Image references are paths relative to the served site or the item store directory. |
 | `reply` | Adds Firstmate's reply to an existing ask on a whole question item (`Q7`) or one question (`Q7.1`), or to a message in a [conversation](../how-to/talk-to-firstmate.md) (`Q12`). It preserves saved answers and question states. Supply the required `--ask ID` from the inbox note and the reply in `--text`. Pair `--link-text` with `--url` and `--image` with `--alt` in the order given. See [Reply from the command line](../how-to/reply-from-the-command-line.md). |
 | `post` | Adds an update from Firstmate to a [conversation](../how-to/talk-to-firstmate.md) (`Q12`), with no `--ask`. It shows in time order as a Firstmate update, not "In reply to", and as Replied until the owner opens it. It sends no inbox note. Links and images work as for `reply`. Prints `Q12 Updated`. Question items are refused. |
-| `converse` | Opens a conversation in Firstmate's name, with `--title` and a first message in `--text`, and prints its item ID. The first message is a Firstmate update and shows as Replied. It sends no inbox note. Use `--config FILE` when serving with a custom config file so the conversation binds to the same `firstmate_home`. Links and images work as for `reply`. |
+| `converse` | Opens a conversation in Firstmate's name, with `--title` and a first message in `--text`, and prints its item ID. The first message is a Firstmate update and shows as Replied. It sends no inbox note. Use `--config FILE` when serving with a custom config file so the conversation binds to the same `firstmate_home`. A configured home must resolve to an existing directory. Links and images work as for `reply`. |
 | `mark` | Sets question state, optionally for a whole questions item. `--via` is required with `answered` and accepted only with that state. Skips exit with status 0. See [Read answers](../how-to/read-answers.md) for which questions are marked. |
 | `classify` | Requires at least one classification option. Use `--project` for an item ID, `--kind` for a question ID, and `--tag` for either. See [how to change classification](../how-to/classify-items.md#change-it-later). |
 | `stats` | Prints a question activity table by default or JSON with `--json`. See [Read the report](../how-to/read-the-report.md) for date filtering and field definitions. |
