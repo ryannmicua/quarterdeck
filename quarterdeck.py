@@ -3702,9 +3702,9 @@ class VisitLog:
         self.path = path
         self.clock = clock
 
-    def record(self, page: str, user_agent: str | None) -> None:
+    def record(self, user_agent: str | None) -> None:
         stamp = self.clock().astimezone(timezone.utc).isoformat(timespec="milliseconds").replace("+00:00", "Z")
-        line = json.dumps({"ts": stamp, "page": page, "device": device_class(user_agent)}) + "\n"
+        line = json.dumps({"ts": stamp, "page": "main", "device": device_class(user_agent)}) + "\n"
         payload = line.encode("utf-8")
         self.path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
         descriptor = os.open(self.path, os.O_RDWR | os.O_APPEND | os.O_CREAT | os.O_NOFOLLOW, 0o600)
@@ -3717,15 +3717,8 @@ class VisitLog:
                 os.fchmod(descriptor, 0o600)
 
             end = info.st_size
-            while end:
-                start = max(0, end - 4096)
-                newline = os.pread(descriptor, end - start, start).rfind(b"\n")
-                if newline >= 0:
-                    end = start + newline + 1
-                    break
-                end = start
-            if end != info.st_size:
-                os.ftruncate(descriptor, end)
+            if end and os.pread(descriptor, 1, end - 1) != b"\n":
+                payload = b"\n" + payload
 
             if os.write(descriptor, payload) != len(payload):
                 os.ftruncate(descriptor, end)
@@ -3832,7 +3825,7 @@ def make_handler(site_title: str, base_path: str = "", store: Path | None = None
             if name == "index.html":
                 if visit_log is not None:
                     try:
-                        visit_log.record("main", self.headers.get("User-Agent"))
+                        visit_log.record(self.headers.get("User-Agent"))
                     except (OSError, ValueError) as exc:  # a visit that cannot be logged must never stop the page
                         print(f"quarterdeck: could not log the visit: {exc}", file=sys.stderr, flush=True)
                 _, ask_binding = ask_destination(require_directory=True)

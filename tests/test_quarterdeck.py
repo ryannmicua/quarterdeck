@@ -2013,35 +2013,41 @@ check(!button('send').disabled && button('send').textContent === 'Send 2 answers
                     self.assertEqual(set(record), {"ts", "page", "device"})
                     self.assertRegex(record["ts"], r"^\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d\.\d{3}Z$")
 
-    def test_visit_log_preserves_history_and_repairs_an_interrupted_tail(self) -> None:
+    def test_visit_log_preserves_and_separates_an_unterminated_tail(self) -> None:
         path = self.root / "state" / "quarterdeck" / "visits.jsonl"
         now = datetime(2026, 6, 1, tzinfo=timezone.utc)
         old = b'{"ts":"2026-01-01T00:00:00.000Z","page":"main","device":"desktop"}\n'
         history = old * 2000
         path.parent.mkdir(parents=True)
-        path.write_bytes(history + b'{"ts": "2026-06')
-        path.chmod(0o644)
-        quarterdeck.VisitLog(path, clock=lambda: now).record("main", None)
-        content = path.read_bytes()
-        self.assertEqual(content[:len(history)], history)
-        self.assertEqual(content[len(history):].count(b"\n"), 1)
-        self.assertTrue(content.endswith(b"\n"))
-        self.assertEqual(json.loads(content[len(history):]),
-                         {"ts": "2026-06-01T00:00:00.000Z", "page": "main", "device": "desktop"})
-        self.assertEqual(stat.S_IMODE(path.stat().st_mode), 0o600)
+        for tail in (old.rstrip(b"\n"), b'{"ts": "2026-06'):
+            with self.subTest(tail=tail):
+                path.write_bytes(history + tail)
+                path.chmod(0o644)
+                quarterdeck.VisitLog(path, clock=lambda: now).record(None)
+                content = path.read_bytes()
+                prefix = history + tail + b"\n"
+                self.assertEqual(content[:len(prefix)], prefix)
+                appended = content[len(prefix):].splitlines(keepends=True)
+                self.assertEqual(len(appended), 1)
+                self.assertTrue(appended[0].endswith(b"\n"))
+                self.assertEqual(json.loads(appended[0]),
+                                 {"ts": "2026-06-01T00:00:00.000Z", "page": "main", "device": "desktop"})
+                self.assertEqual(stat.S_IMODE(path.stat().st_mode), 0o600)
 
     def test_visit_log_rolls_back_and_reports_a_short_write(self) -> None:
         path = self.root / "state" / "quarterdeck" / "visits.jsonl"
         log = quarterdeck.VisitLog(path)
-        log.record("main", None)
-        before = path.read_bytes()
+        log.record(None)
+        original = path.read_bytes()
         write = os.write
 
-        with patch.object(os, "write", side_effect=lambda descriptor, data: write(descriptor, data[:-1])):
-            with self.assertRaisesRegex(OSError, "incomplete visit log write"):
-                log.record("main", None)
-
-        self.assertEqual(path.read_bytes(), before)
+        for before in (original, original.rstrip(b"\n")):
+            with self.subTest(terminated=before.endswith(b"\n")):
+                path.write_bytes(before)
+                with patch.object(os, "write", side_effect=lambda descriptor, data: write(descriptor, data[:-1])):
+                    with self.assertRaisesRegex(OSError, "incomplete visit log write"):
+                        log.record(None)
+                self.assertEqual(path.read_bytes(), before)
 
     def test_visit_log_never_follows_a_symbolic_link(self) -> None:
         path = self.root / "state" / "quarterdeck" / "visits.jsonl"
@@ -2049,7 +2055,7 @@ check(!button('send').disabled && button('send').textContent === 'Send 2 answers
         target = self.root / "elsewhere"
         path.symlink_to(target)
         with self.assertRaises(OSError) as error:
-            quarterdeck.VisitLog(path).record("main", None)
+            quarterdeck.VisitLog(path).record(None)
         self.assertEqual(error.exception.errno, errno.ELOOP)
         self.assertFalse(target.exists())
 
