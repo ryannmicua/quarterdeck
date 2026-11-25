@@ -720,8 +720,8 @@ def find_item(data: dict[str, object], item_id: str) -> dict[str, object]:
     raise ValueError(f"no item {wanted}")
 
 
-def now_text() -> str:
-    return datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+def now_text(*, fractional=False) -> str:
+    return datetime.now(timezone.utc).isoformat(timespec="microseconds" if fractional else "seconds").replace("+00:00", "Z")
 
 
 def saved_day(item: dict[str, object]) -> str:
@@ -855,7 +855,7 @@ def validate_conversation(item):
                     or clean_text(message["text"], "message", TEXT_LIMIT, multiline=True) != message["text"]):
                 raise ValueError("invalid message")
             seen.add(message["id"])
-            datetime.strptime(str(message["at"]), "%Y-%m-%dT%H:%M:%SZ")
+            parse_utc(message["at"])
             if you:
                 if (message["delivery"] not in ("pending", "sent")
                         or not isinstance(message["request_id"], str)
@@ -887,12 +887,16 @@ def valid_clarifications(clarify, parts):
 
 def clarifications(item, number):
     """What Firstmate's replies in the set discussion clarified about one question, oldest first."""
-    return [{**reply["clarify"][str(number)], "reply_id": reply["id"]} for reply in part_thread(item, None)
+    return [{**reply["clarify"][str(number)], "reply_id": reply["id"], "at": reply["at"]} for reply in part_thread(item, None)
             if reply["author"] == "firstmate" and str(number) in reply.get("clarify", {})]
 
 
-def option_revision(notes):
-    return next((note["reply_id"] for note in reversed(notes) if note["option_changed"]), "")
+def latest_option_change(notes):
+    return next((note for note in reversed(notes) if note["option_changed"]), {})
+
+
+def option_review_required(change, record):
+    return bool(change) and ("answer" not in record or parse_utc(change["at"]) > parse_utc(record["answered_at"]))
 
 
 def thread_key(part):
@@ -1075,7 +1079,8 @@ def send_answer(store, home, payload):
         if state == "closed":
             raise AnswerConflict("Question closed. Reopen it before sending.")
         notes = clarifications(item, part)
-        if reviewed != option_revision(notes):
+        change = latest_option_change(notes)
+        if reviewed != change.get("reply_id", ""):
             raise OptionChanged(notes)
         same = old.get("answer") == answer
         repeat = same and state == "answered" and old.get("delivery") != "cancelled"
@@ -1083,8 +1088,11 @@ def send_answer(store, home, payload):
             raise AnswerConflict("Question changed. Reload before sending.")
         if same:
             record = old
+            if option_review_required(change, record):
+                record["answered_at"] = now_text(fractional=True)
+                write_store(store, data)
         else:
-            at = now_text()
+            at = now_text(fractional=bool(change))
             record = put_record(item, part, "answered", mark={"via": DESK, "answered_at": at}, answer=answer, answered_at=at,
                                 delivery="pending", request_id="quarterdeck-" + uuid.uuid4().hex)
             write_store(store, data)
@@ -1461,7 +1469,9 @@ UNCLASSIFIED = "(unclassified)"
 
 
 def parse_utc(text: object) -> datetime:
-    return datetime.strptime(str(text), "%Y-%m-%dT%H:%M:%SZ").replace(tzinfo=timezone.utc)
+    value = str(text)
+    seconds = "%S.%f" if "." in value else "%S"
+    return datetime.strptime(value, "%Y-%m-%dT%H:%M:" + seconds + "Z").replace(tzinfo=timezone.utc)
 
 
 def question_facts(data: dict[str, object], since: str | None) -> list[dict[str, object]]:
@@ -1628,7 +1638,9 @@ def reply_item(args: argparse.Namespace) -> int:
             ask = args.ask
             if ask not in asks:
                 raise ValueError(f"No {noun} {ask!r} on {target}.")
-            message: dict[str, object] = {"id": uuid.uuid4().hex, "author": "firstmate", "text": text, "at": now_text(),
+            option_changed = any(note["option_changed"] for note in clarify.values())
+            message: dict[str, object] = {"id": uuid.uuid4().hex, "author": "firstmate", "text": text,
+                                          "at": now_text(fractional=option_changed),
                                           "read": False, "ask": ask}
             if clarify:
                 if item["kind"] != "questions":
@@ -2750,7 +2762,7 @@ def conversation_page(item, ask_binding):
 
 def clarified_html(notes, editable):
     """What the set discussion clarified, shown at the question it affects; a changed option holds the draft for review."""
-    revision = option_revision(notes)
+    revision = latest_option_change(notes).get("reply_id", "")
     html = ''.join(f'<p class="record">{linked_text(note["text"])}</p>' for note in notes)
     review = ""
     if editable and revision:
@@ -2799,7 +2811,8 @@ def question_form(item, served, *, ask_binding=None):
             saved = (f'<div class="saved-answer"{hidden}><p class="record">{esc(answer)}</p>'
                      f'<p class="meta"><span class="delivery">{delivery}</span> '
                      f'<time datetime="{at}">{at}</time></p></div>')
-            saved += f'<div class="answer-history">{earlier_answers_html(record)}</div>'
+            if served:
+                saved += f'<div class="answer-history">{earlier_answers_html(record)}</div>'
         elsewhere = latest_off_desk_mark(record)
         if elsewhere:
             at = esc(elsewhere["answered_at"]) if elsewhere["answered_at"] else ""
@@ -2811,7 +2824,7 @@ def question_form(item, served, *, ask_binding=None):
         if editable:
             editor += (f' tabindex="-1" data-revision="{esc(record.get("revision", ""))}"'
                        f' data-pending="{int(delivery_pending(record))}"'
-                       f'{" data-review" if option_revision(notes) else ""}')
+                       f'{" data-review" if option_review_required(latest_option_change(notes), record) else ""}')
             suggestions = question.get("suggestion")
             choices = list(question["options"])
             if suggestions and suggestions not in map(option_label, choices):
@@ -3121,14 +3134,10 @@ if (send) {
     const answer = answerText(f.value);
     return answer && (answer !== f.defaultValue || f.closest('section').dataset.pending === '1');
   };
-  const needsReview = f => {
-    const {review, pending} = f.closest('section').dataset;
-    const answer = answerText(f.value);
-    return review !== undefined && (answer === review || (pending === '1' && answer === f.defaultValue));
-  };
+  const needsReview = section => section.hasAttribute('data-review');
   const changed = f => {
     return !rejectedAsk(draftOrigins.get(f)) && !rejections.has(f) && !excluded.has(f)
-      && !needsReview(f) && answerDraft(f);
+      && !needsReview(f.closest('section')) && answerDraft(f);
   };
   const suggestionFor = f => {
     const section = f.closest('section');
@@ -3185,9 +3194,6 @@ if (send) {
   function reviewed(section) {
     section.removeAttribute('data-review');
   }
-  function holdForReview(field) {
-    field.closest('section').dataset.review = answerText(field.value);
-  }
   function updateClarification(section, html) {
     const current = section.querySelector('.clarified');
     const field = section.querySelector('textarea');
@@ -3196,13 +3202,13 @@ if (send) {
     const next = template.content.firstElementChild;
     if (Number(next.dataset.notes) <= Number(current.dataset.notes)) return;
     if (field && next.dataset.optionRevision !== current.dataset.optionRevision) {
-      holdForReview(field);
+      section.setAttribute('data-review', '');
       const folded = section.closest('details.done');
       if (folded && answerDraft(field)) folded.open = true;
     }
     const restoreFocus = current.contains(document.activeElement);
     const review = next.querySelector('.review');
-    if (review) review.hidden = !field || !needsReview(field);
+    if (review) review.hidden = !needsReview(section);
     current.replaceWith(next);
     if (restoreFocus) (next.querySelector('.review:not([hidden]) .keep-draft') || section).focus();
     return true;
@@ -3284,7 +3290,7 @@ if (send) {
         retry.disabled = Boolean(newDraft(f));
       }
       const review = section.querySelector('.review');
-      if (review) review.hidden = !needsReview(f);
+      if (review) review.hidden = !needsReview(section);
       const error = document.getElementById(f.getAttribute('aria-describedby'));
       const message = rejections.get(f)?.message || '';
       error.textContent = message;
@@ -3318,13 +3324,7 @@ if (send) {
     }
     forget(field);
     const card = field.closest('.decision');
-    if (card) {
-      if (restoring && optionRevision(card)) {
-        if (!card.hasAttribute('data-review')) holdForReview(field);
-      } else if (answerText(field.value) && !needsReview(field)) {
-        excluded.delete(field);
-      }
-    }
+    if (card && answerText(field.value) && !needsReview(card)) excluded.delete(field);
     refresh();
   });
   queueAdd?.addEventListener('click', () => {
@@ -3392,15 +3392,12 @@ if (send) {
         const section = f.closest('section');
         const option = choice ? (section.contains(choice) && choice) : suggestionFor(f);
         const origin = draftOrigins.get(f);
-        if (option && (option.dataset.choice !== f.value || handEdited(origin) || excluded.has(f) ||
-                       section.hasAttribute('data-review'))) {
+        if (option && (option.dataset.choice !== f.value || handEdited(origin) || excluded.has(f))) {
           const askError = rejectedAsk(origin) ? rejections.get(f) : undefined;
-          step.set(f, {value: f.value, origin, askError, excluded: excluded.has(f),
-            review: section.getAttribute('data-review'), revision: optionRevision(section)});
+          step.set(f, {value: f.value, origin, askError, excluded: excluded.has(f)});
           if (askError) rejections.delete(f);
           f.value = option.dataset.choice;
-          if (choice) reviewed(section);
-          if (!needsReview(f)) excluded.delete(f);
+          excluded.delete(f);
           if (origin) draftOrigins.set(f, {choice: option, edited: false});
         }
       }
@@ -3424,9 +3421,6 @@ if (send) {
         pending.querySelector('button').addEventListener('click', () => askRequest(section, {...body, action: 'retry'}, pending));
         thread.querySelector('.pending-asks').append(pending);
         field.value = field.defaultValue;
-        if (!section.hasAttribute('data-review') && section.dataset.pending === '1' && optionRevision(section)) {
-          holdForReview(field);
-        }
         if (rejectedAsk(draftOrigins.get(field))) rejections.delete(field);
         if (draftOrigins.has(field)) draftOrigins.set(field, 'filled');
         forget(field);
@@ -3442,18 +3436,12 @@ if (send) {
     }
     if (e.target === undo && history.length) {
       const step = history.pop();
-      for (const [f, draft] of step) {
-        const {value, origin, askError, review, revision} = draft;
-        const section = f.closest('section');
+      for (const [f, {value, origin, askError, excluded: wasExcluded}] of step) {
         f.value = value;
         if (origin) draftOrigins.set(f, origin);
         if (askError) rejections.set(f, askError);
-        if (draft.excluded) excluded.add(f);
+        if (wasExcluded) excluded.add(f);
         else excluded.delete(f);
-        if (revision !== optionRevision(section)) {
-          if (!section.hasAttribute('data-review')) holdForReview(f);
-        } else if (review !== null) section.dataset.review = review;
-        else reviewed(section);
       }
       refresh();
       if (history.length) undo.focus();
@@ -3542,11 +3530,12 @@ if (send) {
     if (failedDraft) failedDraft.focus();
     return {delivery, message: output.textContent};
   }
-  function showAnswer(section, field, record) {
+  function showAnswer(section, field, record, reviewedRevision) {
     section.dataset.state = record.state;
     section.dataset.revision = record.revision;
     section.dataset.pending = record.delivery === 'pending' ? '1' : '0';
     field.defaultValue = field.value = record.answer;
+    if (reviewedRevision === optionRevision(section)) reviewed(section);
     if (draftOrigins.has(field)) draftOrigins.set(field, 'filled');
     forget(field);
 
@@ -3610,7 +3599,7 @@ if (send) {
         }
         if (!response.ok) throw new Error(await response.text());
         const record = await response.json();
-        showAnswer(section, f, record);
+        showAnswer(section, f, record, option_revision);
         if (record.delivery === 'sent' || record.delivery === 'pending') totals[record.delivery] += 1;
         else rejected += 1;
       }
@@ -3628,9 +3617,6 @@ if (send) {
     return {...totals, message: output.textContent};
   }
   send?.addEventListener('click', () => submitAnswers(fields.filter(changed)));
-  for (const field of fields) {
-    if (field.closest('section').hasAttribute('data-review')) holdForReview(field);
-  }
   refresh();
 }
 """

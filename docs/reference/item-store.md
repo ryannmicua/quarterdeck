@@ -201,11 +201,14 @@ A Desk answer also stores the current `answer` (plain text, up to 20,000
 characters), `answered_at` (UTC), `delivery` (pending, sent, or cancelled),
 and a stable `request_id` for inbox retries. The answer is saved before inbox
 delivery. A correction gets a new request ID and adds a mark. Retrying
-delivery reuses the same ID and mark.
+delivery reuses the same ID and mark. Reconfirming the same answer after a
+newer option change updates its acceptance time and keeps its original mark.
+Answers and option-change replies can carry fractional UTC seconds.
 
 Corrections keep the superseded text, UTC timestamp and request ID in
 `earlier_answers`, in recording order. Closing, reopening and reconciling
-the question preserve those entries. Older records may omit the list.
+the question preserve those entries. The served Desk shows earlier answers.
+Static exports include the current answer only. Older records may omit the list.
 
 Reports can read dated answers saved before `answer_marks` existed. An old
 answered record with no source or timestamp counts as Elsewhere in the

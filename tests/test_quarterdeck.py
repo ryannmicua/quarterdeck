@@ -4505,7 +4505,6 @@ check(!document.getElementById('send').disabled && queueItems().length === 1 && 
         self.assertIn("An option changed.", first)
         self.assertIn("The printer can make one sample first.", second)
         self.assertNotIn("An option changed.", second)
-        self.assertIn(" data-review", first)
         retries_before = (home / "attempts").read_text()
         for stale in (answer, {**answer, "revision": pending["revision"]},
                       {**answer, "answer": "Merge", "revision": pending["revision"]}):
@@ -4513,8 +4512,12 @@ check(!document.getElementById('send').disabled && queueItems().length === 1 && 
             self.assertEqual(status, 409)
             self.assertIn("This choice is for the cover proof.", conflict["clarification"])
         self.assertEqual((home / "attempts").read_text(), retries_before)
+        reaffirmed_answer = {**answer, "option_revision": reply["id"]}
+        status, reaffirmed = self.post(port, "/qd/answers", reaffirmed_answer)
+        self.assertEqual((status, reaffirmed["delivery"], reaffirmed["revision"]), (200, "pending", pending["revision"]))
+        page_after_acceptance = self.fetch(port, "/qd/q4.html")[1]
         self.inbox()
-        status, confirmed = self.post(port, "/qd/answers", {**answer, "option_revision": reply["id"]})
+        status, confirmed = self.post(port, "/qd/answers", reaffirmed_answer)
         self.assertEqual((status, confirmed["delivery"]), (200, "sent"))
         self.assertEqual(confirmed["revision"], pending["revision"])
         self.assertEqual((home / "notes").read_text(), "Q4.1 Hold\n")
@@ -4594,13 +4597,18 @@ window.setInterval = callback => {{ refreshDiscussion = callback; }};
         self.check_page(port, r"""
 window.fetch = async () => ({ok: true, json: async () => snapshot});
 document.getElementById('open-item-ask').click();
-type(1, 'Merge');
+type(1, 'Hold');
+card(1).querySelector('[data-choice="Merge"]').click();
 type(2, 'Red');
 const [coverRemove, quantityRemove] = document.querySelectorAll('#queue-list button');
 coverRemove.focus();
 await refreshDiscussion();
 check(!coverRemove.isConnected && document.activeElement === quantityRemove && field(1).value === 'Merge',
       'When review held the cover draft, focus did not move to the remaining queue control');
+document.getElementById('undo').click();
+check(field(1).value === 'Hold' && !card(1).querySelector('.review').hidden &&
+      document.querySelectorAll('#queue-list li').length === 1,
+      'Undo across an option change released a previous draft');
 type(1, '');
 document.getElementById('suggest').click();
 check(field(1).value === 'Merge' && !card(1).querySelector('.review').hidden &&
@@ -4609,7 +4617,7 @@ check(field(1).value === 'Merge' && !card(1).querySelector('.review').hidden &&
 document.getElementById('undo').click();
 type(1, 'Merge');
 check(!card(1).querySelector('.review').hidden && document.querySelectorAll('#queue-list li').length === 1,
-      'Restoring a draft after Undo lost its review baseline');
+      'Restoring a draft after Undo released the review hold');
 """, page=page_before_reply, setup=f"""
 const snapshot = {json.dumps(snapshot)};
 let refreshDiscussion;
@@ -4625,7 +4633,12 @@ card(1).querySelector('.keep-draft').click();
 check(document.getElementById('send').textContent === 'Send 2 answers' && card(1).querySelector('.review').hidden &&
       queueItems().length === 2, 'Keeping the draft did not release it');
 """, page=page)
-        self.assertIn("This choice is for the cover proof.", self.fetch(port, "/qd/q4.html")[1])
+        self.check_page(port, r"""
+document.getElementById('open-item-ask').click();
+check(card(1).querySelector('.review').hidden && field(1).value === 'Hold' &&
+      !document.getElementById('send').disabled && !document.getElementById('send-queue').disabled,
+      'Reload put a confirmed pending answer back on hold');
+""", page=page_after_acceptance)
 
     def test_live_option_review_reveals_a_folded_correction(self) -> None:
         home = self.inbox()
@@ -4638,13 +4651,17 @@ check(document.getElementById('send').textContent === 'Send 2 answers' && card(1
         self.assertEqual(self.run_cli("reply", "Q4", "--ask", ask["id"], "--text", "Check the revised proof.",
                                       "--clarify", "Q4.1=The cover option changed.", "--option-changed", "Q4.1")[0], 0)
         snapshot = json.loads(self.fetch(port, "/qd/q4.discussion.json")[1])
+        self.assertEqual(self.run_cli("reply", "Q4", "--ask", ask["id"], "--text", "Use the new proof.",
+                                      "--clarify", "Q4.1=The printer revised it again.", "--option-changed", "Q4.1")[0], 0)
+        newer_snapshot = json.loads(self.fetch(port, "/qd/q4.discussion.json")[1])
         for via_poll in (True, False):
             with self.subTest(via_poll=via_poll):
                 self.check_page(port, r"""
 const calls = [];
+let discussion = snapshot;
 window.fetch = async (url, options) => {
   calls.push(url);
-  const result = url === 'q4.discussion.json' || !viaPoll ? snapshot : {thread: ''};
+  const result = url === 'q4.discussion.json' || !viaPoll ? discussion : {thread: ''};
   return {ok: true, status: 200, json: async () => ({...result, delivery: 'sent', message: 'Ask sent.'})};
 };
 const fold = card(1).closest('details.done');
@@ -4669,16 +4686,31 @@ const editor = field(1);
 editor.focus();
 editor.setSelectionRange(editor.value.length, editor.value.length);
 check(document.execCommand('insertText', false, '.') && editor.value === 'Hold.' &&
-      review.hidden && !document.getElementById('send').disabled,
-      'The changed draft was not available to send');
+      !review.hidden && document.getElementById('send').disabled,
+      'A changed draft bypassed explicit confirmation');
+check(document.execCommand('undo') && editor.value === 'Hold' && document.getElementById('send').disabled &&
+      document.execCommand('redo') && editor.value === 'Hold.' && document.getElementById('send').disabled,
+      'Native Undo or Redo released the review hold');
 check(document.execCommand('delete') && editor.value === 'Hold' && !review.hidden &&
       document.getElementById('send').disabled && document.getElementById('send-queue').disabled,
       'Typing and deleting a character released the original draft without confirmation');
 type(1, 'Wait for the proof.');
+check(!review.hidden && document.getElementById('send').disabled && document.getElementById('send-queue').disabled,
+      'Changing the answer text released the review hold');
+card(1).querySelector('[data-choice="Hold"]').click();
+check(!review.hidden && document.getElementById('send').disabled && document.getElementById('send-queue').disabled,
+      'Selecting an option released the review hold');
+card(1).querySelector('.keep-draft').click();
 check(review.hidden && !document.getElementById('send').disabled && !document.getElementById('send-queue').disabled,
-      'A change to the submitted answer text did not release the review hold');
+      'Explicit confirmation did not release the held draft');
+discussion = newerSnapshot;
+await refreshDiscussion();
+check(!card(1).querySelector('.review').hidden && field(1).value === 'Hold' &&
+      document.getElementById('send').disabled && document.getElementById('send-queue').disabled,
+      'A later option change did not require a fresh confirmation');
 """, page=before_reply, setup=f"""
 const snapshot = {json.dumps(snapshot)};
+const newerSnapshot = {json.dumps(newer_snapshot)};
 const viaPoll = {json.dumps(via_poll)};
 let refreshDiscussion;
 window.setInterval = callback => {{ refreshDiscussion = callback; }};
@@ -4821,10 +4853,17 @@ window.fetch = async (url, options) => {
 };
 card(1).closest('details.done').open = true;
 type(1, 'Merge');
+card(1).querySelector('.keep-draft').click();
 document.getElementById('send').click();
 await settled();
 """ + check_history, page=live_page, setup=setup + f"const corrected = {json.dumps(corrected)};")
         self.check_page(port, check_history, setup=setup)
+        export = self.root / "export"
+        self.assertEqual(self.run_cli("render", "--output", str(export / "index.html"))[0], 0)
+        exported = (export / "q4.html").read_text()
+        self.assertIn('<p class="record">Merge</p>', exported)
+        self.assertNotIn(escape(original["answer"]), exported)
+        self.assertNotIn(old_entry["request_id"], exported)
 
     def test_reply_images_fit_both_threads_on_a_phone(self) -> None:
         port = self.start("/qd", ask_home=self.inbox())
