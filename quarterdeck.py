@@ -1541,9 +1541,12 @@ details.done { margin:.6rem 0; max-width:52rem; border:1px solid var(--rule); bo
 details.done > summary { display:grid; grid-template-columns:auto minmax(0, 7fr) minmax(0, 5fr); gap:.8rem; align-items:baseline;
   padding:.7rem 1rem; min-height:var(--tap); cursor:pointer; font-family:var(--sans); }
 details.done > summary:focus-visible { outline:3px solid var(--focus); outline-offset:-3px; }
-details.done .sum-q, details.done .sum-a { white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+details.done > summary:has(.sum-source:not([hidden])) {
+  grid-template-columns:auto minmax(0, 7fr) minmax(min(50%, 7em), 5fr); }
+details.done .sum-q, details.done .sum-text { white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
 details.done .sum-q { font-weight:700; }
-details.done .sum-a { color:var(--soft); }
+details.done .sum-a { display:flex; color:var(--soft); }
+details.done .sum-source { flex:none; white-space:pre; }
 details.done > .decision { margin:0; border:0; border-top:1px solid var(--rule); border-radius:0 0 8px 8px; max-width:none; }
 .library { position:fixed; inset-block:auto var(--visible-bottom, 0px); padding:0; border:0; background:var(--raised); color:var(--ink);
   font-family:var(--sans); max-width:none; max-height:none; overflow:hidden; }
@@ -2144,10 +2147,11 @@ def question_form(item, served):
                 f'<h2 id="title-{part}">{linked_text(question["question"])}</h2><p>{linked_text(question["context"])}</p>'
                 f'{question_shots(item, question)}{saved}{controls}</section>')
         if status == "answered" and record.get("delivery") == "sent":
-            suffix = " (Desk)" if elsewhere else ""
+            source_hidden = "" if elsewhere else " hidden"
             folded.append(f'<details class="done"><summary><span class="id">{part}</span>'
                           f'<span class="sum-q">{esc(question["question"])}</span>'
-                          f'<span class="sum-a">{esc(answer)}{suffix}</span></summary>{card}</details>')
+                          f'<span class="sum-a"><span class="sum-text">{esc(answer)}</span>'
+                          f'<span class="sum-source"{source_hidden}> (Desk)</span></span></summary>{card}</details>')
         else:
             cards.append(card)
     progress = f"{remaining} of {len(cards) + len(folded)} open" if remaining else state
@@ -2288,13 +2292,16 @@ if (send) {
       box = document.createElement('details');
       box.className = 'done';
       const summary = document.createElement('summary');
-      summary.append(part('span', 'id', section.id), part('span', 'sum-q', section.querySelector('h2').textContent), part('span', 'sum-a', ''));
+      const answer = part('span', 'sum-a', '');
+      answer.append(part('span', 'sum-text', ''), part('span', 'sum-source', ' (Desk)'));
+      summary.append(part('span', 'id', section.id), part('span', 'sum-q', section.querySelector('h2').textContent), answer);
       box.append(summary, section);
       const next = [...list.querySelectorAll(':scope > details.done')]
         .find(child => questionNumber(child.lastElementChild) > number);
       list.insertBefore(box, next ?? null);
     }
-    box.querySelector('.sum-a').textContent = record.answer + (record.has_off_desk_answer ? ' (Desk)' : '');
+    box.querySelector('.sum-text').textContent = record.answer;
+    box.querySelector('.sum-source').hidden = !record.has_off_desk_answer;
     box.open = false;
     if (focusInSection) box.querySelector('summary').focus();
   }

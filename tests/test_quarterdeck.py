@@ -408,7 +408,8 @@ class PageTests(StoreCase):
                 body = page.split('<div id="questions">')[1].split("</main>")[0]
                 self.assertLess(body.index('id="Q1.2"'), body.index('<details class="done">'))
                 self.assertIn('<summary><span class="id">Q1.1</span><span class="sum-q">Merge the tide tables now?</span>'
-                              '<span class="sum-a">Answer 1</span></summary>', body)
+                              '<span class="sum-a"><span class="sum-text">Answer 1</span>'
+                              '<span class="sum-source" hidden> (Desk)</span></span></summary>', body)
                 self.assertIn("1 of 2 open", page)
                 self.assertEqual(page.count('class="sendbar"'), 1 if served else 0)
                 if served:
@@ -424,7 +425,7 @@ class PageTests(StoreCase):
             with self.subTest(served=served, via="chat"):
                 page = quarterdeck.item_page(item, "Quarterdeck", served=served)
                 summary, expanded = page.split('<details class="done">', 1)[1].split("</summary>", 1)
-                self.assertIn('<span class="sum-a">Answer 1 (Desk)</span>', summary)
+                self.assertIn('<span class="sum-text">Answer 1</span><span class="sum-source"> (Desk)</span>', summary)
                 self.assertIn("Answered elsewhere · chat", expanded)
         for state in ("closed", "open", "answered"):
             with self.subTest(state=state):
@@ -1194,14 +1195,26 @@ check(button('suggest').disabled, 'Bulk suggestions remained available with noth
         script.chmod(0o700)
         port = self.start("/qd", home=home)
         self.assertEqual(self.post_answer(port, "Q1.3", "Wait for the harbourmaster. " * 8)[1]["delivery"], "sent")
+        self.assertEqual(self.run_cli("mark", "Q1.3", "open")[0], 0)
+        self.assertEqual(self.run_cli("mark", "Q1.3", "answered", "--via", "chat")[0], 0)
         for width in (320, 390, 1440):
             with self.subTest(width=width):
                 self.check_answer_page(port, r"""
 const list = document.querySelector('#questions');
 const order = () => [...list.children].map(row => row.id || row.lastElementChild.id).join();
-const checkVisibleWord = (summary, word, text) => {
-  const answer = summary.querySelector('.sum-a');
-  check(answer.textContent === text, 'The folded answer had the wrong label');
+const checkDeskMarker = summary => {
+  const source = summary.querySelector('.sum-source');
+  check(source && source.textContent === ' (Desk)', 'The folded answer lacked a trailing Desk marker');
+  const range = document.createRange();
+  range.selectNodeContents(source);
+  const marker = range.getBoundingClientRect();
+  const answer = source.closest('.sum-a').getBoundingClientRect();
+  check(marker.width > 0 && marker.left >= answer.left && marker.right <= answer.right + 1,
+        'The Desk marker was clipped at ' + innerWidth + ' pixels');
+};
+const checkVisibleWord = (summary, word) => {
+  const answer = summary.querySelector('.sum-text');
+  check(answer.textContent === word, 'The folded answer had the wrong text');
   const range = document.createRange();
   range.setStart(answer.firstChild, 0);
   range.setEnd(answer.firstChild, word.length);
@@ -1213,7 +1226,7 @@ const checkVisibleWord = (summary, word, text) => {
 };
 const checkSummary = summary => {
   const question = summary.querySelector('.sum-q');
-  const answer = summary.querySelector('.sum-a');
+  const answer = summary.querySelector('.sum-text');
   for (const width of [300, 650]) {
     list.style.maxWidth = width + 'px';
     check(question.offsetTop === answer.offsetTop && summary.scrollWidth === summary.clientWidth,
@@ -1231,6 +1244,7 @@ check(card(1).parentElement === list && card(2).parentElement === list, 'Open qu
 const initiallyFolded = card(3).closest('details');
 check(initiallyFolded && !initiallyFolded.open, 'A previously delivered question did not start folded');
 checkSummary(initiallyFolded.querySelector('summary'));
+checkDeskMarker(initiallyFolded.querySelector('summary'));
 let delivery = 'sent';
 let hasOffDeskAnswer = false;
 let focusDuringSend;
@@ -1247,7 +1261,9 @@ typeAnswer(2, 'Blue');
 focusDuringSend = card(2).querySelector('a');
 await sendBatch();
 const secondSummary = card(2).closest('details').querySelector('summary');
-checkVisibleWord(secondSummary, 'Blue', 'Blue');
+checkVisibleWord(secondSummary, 'Blue');
+check(secondSummary.querySelector('.sum-source').getClientRects().length === 0,
+      'A Desk-only answer displayed a provenance marker');
 check(document.activeElement === secondSummary, 'First delivery dropped focus from the row');
 focusDuringSend = null;
 check(order() === 'Q1.1,Q1.2,Q1.3', 'The later question was not inserted before a higher-numbered folded question');
@@ -1274,7 +1290,8 @@ hasOffDeskAnswer = true;
 focusDuringSend = card(1).querySelector('a');
 await sendBatch();
 check(!folded.open, 'The delivered correction did not close the row');
-checkVisibleWord(summary, 'Hold', 'Hold (Desk)');
+checkVisibleWord(summary, 'Hold');
+checkDeskMarker(summary);
 check(document.activeElement === summary, 'Refolding a correction dropped focus from the row');
 summary.click();
 typeAnswer(1, 'Use the next tide');
