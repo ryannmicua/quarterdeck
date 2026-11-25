@@ -1881,6 +1881,9 @@ class QuestionImagePageTests(ImageCase):
     def test_images_are_served_only_from_the_store_and_only_for_their_item(self) -> None:
         first = self.add_pictured()
         second = self.add("questions", "Plain", "No images.", "--body-file", "-", stdin=json.dumps(QUESTIONS))
+        unlisted = tiny_png((1, 2, 3))
+        unlisted_name = hashlib.sha256(unlisted).hexdigest()[:16] + ".png"
+        (quarterdeck.store_path().parent / "images" / first.lower() / unlisted_name).write_bytes(unlisted)
         for original in (self.red, self.blue, self.wide):
             original.unlink()
         port = self.start()
@@ -1893,7 +1896,7 @@ class QuestionImagePageTests(ImageCase):
             self.assertEqual(headers["X-Content-Type-Options"], "nosniff")
             self.assertEqual(headers["Cache-Control"], "no-store")
             self.assertNotIn("Content-Encoding", headers)
-        for path in (f"/images/{second.lower()}/{image}", f"/images/{first.lower()}/0123456789abcdef.png",
+        for path in (f"/images/{second.lower()}/{image}", f"/images/{first.lower()}/{unlisted_name}",
                      f"/images/{first.lower()}/..%2Fitems.json", f"/images/{first.lower()}/%2e%2e/items.json",
                      "/images/q1/", "/images/q1", "/images/q9/" + image, f"/images/{first.upper()}/{image}",
                      "/items.json", f"/images/{first.lower()}/{image[:-4]}.gif"):
@@ -2085,14 +2088,14 @@ class QuestionImagePageTests(ImageCase):
     def test_remove_deletes_exactly_the_files_the_record_names(self) -> None:
         keep, gone = self.add_pictured(), self.add_pictured()
         images = quarterdeck.store_path().parent / "images"
-        stray = images / gone.lower() / "stray.txt"
-        stray.write_text("not an image of the record")
-        named = quarterdeck.item_image_files(self.store()["items"][1])
+        unlisted = tiny_png((1, 2, 3))
+        unlisted_name = hashlib.sha256(unlisted).hexdigest()[:16] + ".png"
+        removed_folder = images / gone.lower()
+        (removed_folder / unlisted_name).write_bytes(unlisted)
         self.assertEqual(self.run_cli("remove", gone)[0], 0)
-        self.assertEqual({path.name for path in (images / gone.lower()).iterdir()}, {"stray.txt"})
-        self.assertFalse(named & {path.name for path in (images / gone.lower()).iterdir()})
+        self.assertEqual({path.name: path.read_bytes() for path in removed_folder.iterdir()},
+                         {unlisted_name: unlisted})
         self.assertEqual(len(list((images / keep.lower()).iterdir())), 3)
-        stray.unlink()
         self.assertEqual(self.run_cli("remove", keep)[0], 0)
         self.assertEqual(list((images / keep.lower()).iterdir()), [])
 

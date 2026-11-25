@@ -33,8 +33,9 @@ before sending an answer.
 ## View mockups
 
 Open the item page to see mockups below the question text or above their
-option labels. On an editable question, tap the option's image or label to
-pick its label as your draft answer. Select **Open image** to see the full
+option labels. On an editable question, tap the mockup or radio button to
+pick the option as your draft answer. Inline links in option labels open
+their destinations in a new tab. Select **Open image** to see the full
 image in a new tab. Tap the image itself to open it full size when it belongs
 to the whole question or appears on a read-only option.
 
