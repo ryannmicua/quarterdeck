@@ -17,7 +17,8 @@ Firstmate saves its reply on the same item.
 Under **Queued to send**, each queued answer names its question ID, such as
 **Answer · Q7.1**, and shows the text it will send. Answer drafts join the queue
 from their cards. To add one set message, write in **Message about this set**
-and select **Queue item**.
+and select **Queue item**. You can edit the message in the same field while
+it is queued. **Remove message** takes it out of the queue and keeps the draft.
 
 Select **Send queued items** to send the queued answers, then the set message.
 A message-only send leaves every question open. **Remove from send** keeps the
@@ -27,8 +28,8 @@ You can send more messages before answering anything.
 When Firstmate's reply clarifies a question, **Clarified after discussion**
 appears on that card. If the reply says an option changed, the card asks you to
 review your draft. Both send buttons hold it until you edit it, pick an option,
-or select **Keep this draft**. The open page refreshes clarifications without
-replacing your draft.
+or select **Keep this draft**. The open page refreshes the set discussion and
+its clarifications without replacing your drafts.
 
 When every question is answered, the discussion stays readable. Select **Read
 set discussion** under the item in **Answered** in the Library.
@@ -55,8 +56,8 @@ from oldest to newest, with its replies underneath in the order they arrived.
 ## Read replies
 
 Firstmate's reply appears under its ask and can include text, links, and images.
-Reload the served page to see new replies. Sending or retrying an ask also
-refreshes that conversation. If the refresh finds an unread reply on a folded
+Sending or retrying a numbered ask refreshes its conversation. If the refresh
+finds an unread reply on a folded
 answer, the question expands and its **Messages** panel stays open if you
 already opened it.
 
@@ -78,8 +79,8 @@ If a new draft blocks **Send ask again** for an interrupted ask, clear the
 field before retrying. If the ask never reaches Quarterdeck, reloading the
 page clears it and you’ll need to type it again.
 
-A confirmed rejection before saving returns a set message to the queue and
-a numbered ask to its card field.
+A confirmed rejection before saving returns the text to its editable field.
+For a set message, select **Queue item** when it is ready to send again.
 **Undo changes** can still undo option selections on other questions.
 If the inbox becomes unavailable during a retry, the ask keeps its original
 ID because the first attempt may have saved it.
