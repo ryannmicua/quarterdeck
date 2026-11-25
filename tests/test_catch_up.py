@@ -27,8 +27,8 @@ class CatchUpCase(StoreCase):
         self.assertEqual(code, 0, err)
         return out.strip()
 
-    def start(self) -> int:
-        handler = quarterdeck.make_handler("Quarterdeck", "/qd")
+    def start(self, *, ask_home: Path | None = None) -> int:
+        handler = quarterdeck.make_handler("Quarterdeck", "/qd", ask_home=ask_home)
         server = quarterdeck.make_server("127.0.0.1", 0, handler)
         threading.Thread(target=server.serve_forever, daemon=True).start()
         self.addCleanup(server.server_close)
@@ -297,7 +297,9 @@ class CatchUpPageTests(CatchUpCase):
         self.age_read("C1", 8)
         self.notice("D")
         self.run_cli("catch-up", "read", "C4")
-        port = self.start()
+        home = self.root / "firstmate"
+        home.mkdir()
+        port = self.start(ask_home=home)
         status, _ = self.post_read(port, {"ids": ["C1", "C2"]})
         self.assertEqual(status, 409)
         self.assertNotIn("read_at", self.store()["catch_ups"][0])
@@ -326,34 +328,49 @@ class CatchUpPageTests(CatchUpCase):
     button.click();
   });
   (async () => {
-    if (control('C1')) {
-      const fetchFromDesk = window.fetch;
-      let failSave;
-      window.fetch = () => new Promise(resolve => { failSave = resolve; });
-      const failed = clickAndWait(control('C3'));
-      check(control('C1').disabled && control('C2').disabled && control('C3').disabled && bulk.disabled,
-            'Every acknowledgment control should be disabled during a save');
-      failSave(new Response('', {status:503}));
-      await failed;
-      check(control('C3') && !bulk.disabled && status.textContent.includes('Try again.'),
-            'A failed save should keep the notice, restore the controls, and show feedback');
-      window.fetch = async () => new Response('<h1>Sign in</h1>', {headers:{'Content-Type':'text/html'}});
-      await clickAndWait(control('C3'));
-      check(control('C3') && status.textContent.includes('Try again.'),
-            'An HTTP 200 sign-in page should leave the notice visible');
-      window.fetch = async () => Response.json({read:['C3']});
-      await clickAndWait(bulk);
-      check(control('C1') && control('C2') && control('C3') && status.textContent.includes('Try again.'),
-            'An incomplete batch acknowledgment should leave all rows visible');
-      window.fetch = fetchFromDesk;
-      await clickAndWait(control('C3'));
-      check(!control('C3') && document.querySelector('[data-count]').textContent === '(2)',
-            'A successful save should remove the row and update the count');
+    check(control('C1'), 'Conflict recovery should preserve the original Desk page');
+    const form = document.getElementById('talk-form');
+    const draft = document.getElementById('talk-message');
+    document.getElementById('open-talk').click();
+    draft.value = 'Draft about the tide chart.';
+    draft.dispatchEvent(new Event('input', {bubbles:true}));
+    const fetchFromDesk = window.fetch;
+    let failSave;
+    window.fetch = () => new Promise(resolve => { failSave = resolve; });
+    const failed = clickAndWait(control('C3'));
+    check(control('C1').disabled && control('C2').disabled && control('C3').disabled && bulk.disabled,
+          'Every acknowledgment control should be disabled during a save');
+    failSave(new Response('', {status:503}));
+    await failed;
+    check(control('C3') && !bulk.disabled && status.textContent.includes('Try again.'),
+          'A failed save should keep the notice, restore the controls, and show feedback');
+    window.fetch = async () => new Response('<h1>Sign in</h1>', {headers:{'Content-Type':'text/html'}});
+    await clickAndWait(control('C3'));
+    check(control('C3') && status.textContent.includes('Try again.'),
+          'An HTTP 200 sign-in page should leave the notice visible');
+    window.fetch = async () => Response.json({read:['C3']});
+    await clickAndWait(bulk);
+    check(control('C1') && control('C2') && control('C3') && status.textContent.includes('Try again.'),
+          'An incomplete batch acknowledgment should leave all rows visible');
+    window.fetch = fetchFromDesk;
+    await clickAndWait(control('C3'));
+    check(!control('C3') && document.querySelector('[data-count]').textContent === '(2)',
+          'A successful save should remove the row and update the count');
+    await new Promise(resolve => {
+      const observer = new MutationObserver(() => {
+        if (!control('C1')) {
+          observer.disconnect();
+          resolve();
+        }
+      });
+      observer.observe(document.querySelector('.catch-up'), {childList:true, subtree:true});
       bulk.click();
-      return;
-    }
-    check(control('C2') && !control('C3') && !bulk && !document.querySelector('[data-count]'),
-          'A stale batch should refresh the Desk and leave the unread notice available');
+    });
+    check(control('C2') && !control('C3') && !document.querySelector('[data-read-all]') &&
+          !document.querySelector('[data-count]'), 'A stale batch should leave the current unread notice available');
+    check(document.getElementById('talk-form') === form && !form.hidden &&
+          document.getElementById('talk-message') === draft && draft.value === 'Draft about the tide chart.',
+          'Refreshing Catch-up should preserve the open Talk to Firstmate form and its draft');
     await clickAndWait(control('C2'));
     check(!document.querySelector('.catch-up') && document.activeElement.textContent === 'Desk',
           'Acknowledging the last notice should remove Catch-up and focus the Desk heading');

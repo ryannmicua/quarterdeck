@@ -2504,43 +2504,55 @@ WORKERS_SCRIPT = r"""
 CATCH_UP_SCRIPT = r"""
 {
   const section = document.querySelector('.catch-up');
-  const status = section.querySelector('[data-catch-up-status]');
-  const heading = section.querySelector('h2');
-  const count = section.querySelector('[data-count]');
-  const readAll = section.querySelector('[data-read-all]');
-  const controls = section.querySelectorAll('button');
+  const focusHeading = heading => {
+    heading.tabIndex = -1;
+    heading.focus();
+  };
+  const removeSection = () => {
+    section.remove();
+    const empty = document.querySelector('[data-empty-desk]');
+    if (empty) {
+      empty.textContent = empty.dataset.emptyDesk;
+      empty.removeAttribute('data-empty-desk');
+    }
+    focusHeading(document.querySelector('main h1'));
+  };
   const finish = ids => {
     for (const id of ids) section.querySelector('.note[data-id="' + id + '"]').remove();
     const left = section.querySelectorAll('.note').length;
     if (!left) {
-      section.remove();
-      const empty = document.querySelector('[data-empty-desk]');
-      if (empty) {
-        empty.textContent = empty.dataset.emptyDesk;
-        empty.removeAttribute('data-empty-desk');
-      }
-      const title = document.querySelector('main h1');
-      title.tabIndex = -1;
-      title.focus();
+      removeSection();
       return;
     }
+    const count = section.querySelector('[data-count]');
     if (left === 1) {
       count.remove();
-      if (readAll) readAll.remove();
+      section.querySelector('[data-read-all]').remove();
     } else {
       count.textContent = '(' + left + ')';
     }
-    heading.tabIndex = -1;
-    heading.focus();
+    focusHeading(section.querySelector('h2'));
   };
   const markRead = async ids => {
+    const status = section.querySelector('[data-catch-up-status]');
+    const controls = section.querySelectorAll('button');
     controls.forEach(button => { button.disabled = true; });
     status.textContent = '';
     try {
       const response = await fetch('catch-ups/read', {method:'POST', redirect:'error', headers:{'Content-Type':'application/json'},
                                                       body:JSON.stringify({ids})});
       if (response.status === 409) {
-        window.location.reload();
+        const refreshed = await fetch(window.location.href, {redirect:'error'});
+        if (!refreshed.ok) throw new Error(refreshed.status);
+        const desk = new DOMParser().parseFromString(await refreshed.text(), 'text/html');
+        if (!desk.querySelector('main #workers')) throw new Error('Could not read the Desk');
+        const notices = desk.querySelector('main .catch-up');
+        if (notices) {
+          section.replaceChildren(...notices.childNodes);
+          focusHeading(section.querySelector('h2'));
+        } else {
+          removeSection();
+        }
         return;
       }
       if (!response.ok) throw new Error(response.status);
