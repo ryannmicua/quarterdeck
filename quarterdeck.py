@@ -1742,6 +1742,11 @@ LIBRARY_SCRIPT = r"""
   });
   const tabs = [...dialog.querySelectorAll('[role="tab"]')];
   const panelOf = tab => document.getElementById(tab.getAttribute('aria-controls'));
+  const searchOf = tab => panelOf(tab).querySelector('input[type="search"]');
+  const selectedTab = () => tabs.find(tab => tab.getAttribute('aria-selected') === 'true');
+  const {libraryLookup, ...otherState} = history.state ?? {};
+  const restoredTab = tabs.find(tab => tab.id === libraryLookup?.tab);
+  if (libraryLookup) history.replaceState(otherState, '');
   const select = (tab, focus) => {
     for (const other of tabs) {
       const on = other === tab;
@@ -1761,18 +1766,27 @@ LIBRARY_SCRIPT = r"""
       if (next) { e.preventDefault(); select(next, true); }
     });
   }
-  opener.addEventListener('click', () => {
+  const openLibrary = () => {
     dialog.showModal();
-    (tabs.find(tab => tab.getAttribute('aria-selected') === 'true') || tabs[0]).focus();
-  });
+    selectedTab().focus();
+  };
+  opener.addEventListener('click', openLibrary);
   dialog.addEventListener('close', () => opener.focus());
   dialog.addEventListener('click', e => {
-    if (e.target === dialog || e.target.closest('[data-close]')) dialog.close();
+    if (e.target === dialog || e.target.closest('[data-close]')) {
+      dialog.close();
+    } else if (!e.defaultPrevented && e.button === 0 && !e.altKey && !e.ctrlKey && !e.metaKey && !e.shiftKey
+               && e.target.closest('a.lib-title')) {
+      const tab = selectedTab();
+      history.replaceState({...history.state, libraryLookup:{tab:tab.id, query:searchOf(tab).value}}, '');
+    }
   });
 
   const idQuery = /^(q\d+)(?:\.(\d+))?$/;
-  for (const panel of dialog.querySelectorAll('[role="tabpanel"]')) {
-    const search = panel.querySelector('input[type="search"]');
+  for (const tab of tabs) {
+    const panel = panelOf(tab);
+    const search = searchOf(tab);
+    if (tab === restoredTab) search.value = libraryLookup.query;
     const status = panel.querySelector('[data-status]');
     const none = panel.querySelector('[data-none]');
     const rows = [...panel.querySelectorAll('.lib-item')];
@@ -1794,6 +1808,10 @@ LIBRARY_SCRIPT = r"""
     };
     search.addEventListener('input', run);
     run();
+  }
+  if (restoredTab) {
+    select(restoredTab, false);
+    openLibrary();
   }
 })();
 """

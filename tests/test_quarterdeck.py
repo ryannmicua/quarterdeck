@@ -1372,10 +1372,23 @@ for (const [item, destination, expectedLinks] of [[first, 'q2.html#Q2.1', []], [
 <script>
 const result = document.getElementById('browser-result');
 const check = (condition, message) => { if (!condition) throw new Error(message); };
+const dialog = document.getElementById('library');
+const tab = document.getElementById('tab-answered');
+const panel = document.getElementById('panel-answered');
+const search = panel.querySelector('input');
+const shown = () => [...panel.querySelectorAll('li:not([hidden]) a')].map(link => link.getAttribute('href')).join();
+const find = text => {
+  search.value = text;
+  search.dispatchEvent(new Event('input', {bubbles:true}));
+  return shown();
+};
 (async () => {
   const desk = document.querySelector('main');
   if (!sessionStorage.getItem('restoring')) {
     check(desk.textContent.includes('Pier lights'), 'The open item did not start on the Desk');
+    document.getElementById('open-library').click();
+    tab.click();
+    check(find('saffron') === 'q2.html', 'The original answer did not match its search');
     for (const payload of [
       {part:'Q1.1', answer:'Keep the lights', revision:''},
       {part:'Q2.1', answer:'Ultramarine', revision:""" + json.dumps(old_answer["revision"]) + """}
@@ -1384,22 +1397,18 @@ const check = (condition, message) => { if (!condition) throw new Error(message)
         body:JSON.stringify(payload)});
       check(response.ok && (await response.json()).delivery === 'sent', 'The fixture answer was not delivered');
     }
+    window.addEventListener('click', event => event.preventDefault(), {once:true});
+    panel.querySelector('a[href="q2.html"]').click();
     sessionStorage.setItem('restoring', 'yes');
     window.dispatchEvent(new PageTransitionEvent('pageshow', {persisted:true}));
     return;
   }
   check(!desk.textContent.includes('Pier lights'), 'The restored Desk still showed the completed item');
-  document.getElementById('open-library').click();
-  document.getElementById('tab-answered').click();
-  const panel = document.getElementById('panel-answered');
+  check(dialog.open && tab.getAttribute('aria-selected') === 'true' && !panel.hidden,
+        'The library did not reopen on Answered');
+  check(search.value === 'saffron' && shown() === '', 'The saved search was lost or still used the old answer');
   check(panel.querySelector('a[href="q1.html"]'), 'The completed item was missing from Answered');
-  const search = panel.querySelector('input');
-  const find = text => {
-    search.value = text;
-    search.dispatchEvent(new Event('input', {bubbles:true}));
-    return [...panel.querySelectorAll('li:not([hidden]) a')].map(link => link.getAttribute('href')).join();
-  };
-  check(find('saffron') === '' && find('ultramarine') === 'q2.html', 'The restored search used stale answer text');
+  check(find('ultramarine') === 'q2.html', 'The restored search did not find the corrected answer');
   result.textContent = 'PASS';
 })().catch(error => { result.textContent = error.message; });
 </script>
