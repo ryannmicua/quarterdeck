@@ -4095,6 +4095,36 @@ check(savedRetry.isConnected && calls.at(-1).id === savedRetry.dataset.retryAsk 
       'The refused saved retry changed its original entry');
 """, setup=f"const interrupted = {json.dumps(interrupted)};")
 
+    def test_restored_retry_discards_only_its_own_option_history(self) -> None:
+        port = self.start("/qd", ask_home=self.inbox())
+        self.assertEqual(self.post(port, "/qd/answers", {"part": "Q4.1", "answer": "Merge", "revision": ""})[0], 200)
+        self.check_page(port, r"""
+const draft = 'Show the alternate layout.';
+window.fetch = async (url, options) => {
+  const body = JSON.parse(options.body);
+  if (!body.action) throw new Error('Connection lost before saving');
+  return {status: 409, json: async () => ({message: 'Firstmate home changed.', saved: false})};
+};
+type(1, draft);
+card(1).querySelector('.ask-button').click();
+await settled();
+card(2).querySelector('[data-choice="Blue"]').click();
+card(1).querySelector('[data-choice="Hold"]').click();
+card(1).querySelector('[data-choice="Merge"]').click();
+const retry = card(1).querySelector('[data-local-ask] button');
+check(!retry.disabled, 'Returning to the saved answer did not enable retry');
+retry.click();
+await settled();
+check(field(1).value === draft && !retry.isConnected, 'The rejected retry did not restore the draft');
+const undo = document.getElementById('undo');
+check(!undo.hidden, 'Restoring the draft discarded the sibling option history');
+undo.click();
+check(field(1).value === draft && field(2).value === '' && undo.hidden,
+      'Undo overwrote the restored draft or failed to undo the sibling option');
+check(!card(1).querySelector('.ask-button').disabled && document.getElementById('send').disabled,
+      'Undo changed the restored draft from an ask into an answer');
+""")
+
     def test_rejected_ask_can_be_corrected_without_entering_answer_batch(self) -> None:
         port = self.start("/qd", ask_home=self.inbox())
         for interrupted in (False, True):

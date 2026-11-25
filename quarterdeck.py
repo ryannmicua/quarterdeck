@@ -2795,6 +2795,7 @@ if (send) {
         if (pending && saved === false && !blockedRetry) {
           failedDraft = section.querySelector('textarea');
           failedDraft.value = pending.querySelector('.record').textContent;
+          forget(failedDraft);
           if (draftOrigins.has(failedDraft)) draftOrigins.set(failedDraft, 'ask');
           rejections.set(failedDraft, {message, draft: body.text});
           pending.remove();
