@@ -29,8 +29,9 @@ The kinds are `pick` (choose between options), `confirm`
 (choose the words), `scope` (what is in or out), `approve` (permission to go
 ahead) and `inform` (nothing to decide, only to read).
 
-Use the exact lowercase spelling for each kind and tag. For an unknown word,
-the error lists the allowed values.
+Use the exact lowercase spelling for each kind and tag. Leave out `kind` to
+save an unclassified question. For an unknown word, the error lists the allowed
+values.
 
 ## Change it later
 
@@ -45,10 +46,10 @@ already there. The question text, options and answers are never touched.
 
 ## See it on the page
 
-The project shows on each Desk card and each reference row. With questions from
-more than one project on the Desk, the cards group under a heading for each
-project. Tags show as small quiet labels. The References and Reviewed questions
-lists can be filtered by project and by tag once they hold more than one of
-either.
+Projects appear on reference rows and individual Desk cards. When the Desk
+groups cards by project, the project appears in the group heading. Tags appear
+as labels. In References and Reviewed questions, a project or tag filter
+appears when it can tell entries apart, including when some entries have a
+project or tag and others have none.
 
 To count questions by kind, tag and project, see [Read the report](read-the-report.md).

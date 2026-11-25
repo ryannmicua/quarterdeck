@@ -115,6 +115,7 @@ check(document.querySelectorAll('main .tags').length === 0, 'Unclassified items 
                 self.assertEqual(code, 2)
                 self.assertIn(message, err)
         bad_bodies = [
+            ([{**ASK[0], "kind": None}], "question 1 kind must be one lowercase word"),
             ([{**ASK[0], "kind": "PICK"}], "question 1 kind must be one lowercase word"),
             ([{**ASK[0], "tags": ["UI"]}], "question 1 tag must be one lowercase word"),
             ([{**ASK[0], "kind": "gossip"}], "unknown question 1 kind 'gossip'; allowed: pick, confirm, rule"),
@@ -325,11 +326,11 @@ class AnsweredViaTests(ClassificationCase):
         self.assertIn("Reviewed questions", saved_page)
         self.assertNotIn("My desk</h1>", saved_page)
         shown = self.run_cli("show", "Q1")[1]
-        self.assertIn(f"Answer: Hold ({desk_at}, Not sent)", shown)
+        self.assertIn(f"Answer: Hold ({desk_at}, Sending stopped)", shown)
         self.assertIn(f"Answered elsewhere: chat ({chat_at})", shown)
         for served in (True, False):
             page = quarterdeck.item_page(item, "Quarterdeck", served=served)
-            for value in ("Hold", "Not sent", "Answered elsewhere · chat", desk_at, chat_at):
+            for value in ("Hold", "Sending stopped", "Answered elsewhere · chat", desk_at, chat_at):
                 self.assertIn(value, page)
 
         old = item["answers"]["1"]

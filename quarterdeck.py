@@ -550,7 +550,7 @@ def question_entries(raw: object, pending: dict[str, bytes] | None = None, *,
         links = question_links(entry.get("links", []), where)
         if links:
             cleaned["links"] = links
-        if entry.get("kind") is not None:
+        if "kind" in entry:
             cleaned["kind"] = clean_word(entry["kind"], "kind", where=where, stored=stored)
         tags = clean_tags(entry.get("tags", []), where, stored=stored)
         if tags:
@@ -1784,7 +1784,7 @@ def items_table(items: list[dict[str, object]]) -> str:
 
 
 def delivery_label(record):
-    return {"sent": "Sent", "pending": "Not delivered", "cancelled": "Not sent"}[record["delivery"]]
+    return {"sent": "Sent", "pending": "Not delivered", "cancelled": "Sending stopped"}[record["delivery"]]
 
 
 def question_summary(item) -> tuple[str, list[int], bool]:
@@ -2028,7 +2028,7 @@ if (send) {
 
     const saved = section.querySelector('.saved-answer');
     saved.querySelector('.record').textContent = record.answer;
-    saved.querySelector('.delivery').textContent = {sent: 'Sent', pending: 'Not delivered', cancelled: 'Not sent'}[record.delivery];
+    saved.querySelector('.delivery').textContent = {sent: 'Sent', pending: 'Not delivered', cancelled: 'Sending stopped'}[record.delivery];
     const time = saved.querySelector('time');
     time.dateTime = record.answered_at;
     time.textContent = localTime(record.answered_at);
