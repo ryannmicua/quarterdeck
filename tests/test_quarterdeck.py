@@ -419,7 +419,8 @@ class PageTests(StoreCase):
         self.assertEqual(self.run_cli("mark", "Q1.1", "answered", "--via", "chat")[0], 0)
         repeat = quarterdeck.send_answer(quarterdeck.store_path(), None,
                                          {"part": "Q1.1", "answer": "Answer 1", "revision": ""})
-        self.assertEqual((repeat["answer"], repeat["delivery"], repeat["has_off_desk_answer"]), ("Answer 1", "sent", True))
+        self.assertEqual((repeat["answer"], repeat["delivery"]), ("Answer 1", "sent"))
+        self.assertEqual(repeat["off_desk_answer"]["via"], "chat")
         item = quarterdeck.read_store(quarterdeck.store_path())["items"][0]
         for served in (True, False):
             with self.subTest(served=served, via="chat"):
@@ -1246,7 +1247,7 @@ check(initiallyFolded && !initiallyFolded.open, 'A previously delivered question
 checkSummary(initiallyFolded.querySelector('summary'));
 checkDeskMarker(initiallyFolded.querySelector('summary'));
 let delivery = 'sent';
-let hasOffDeskAnswer = false;
+let offDeskAnswer = null;
 let focusDuringSend;
 window.fetch = async (url, options) => {
   const {answer} = JSON.parse(options.body);
@@ -1255,7 +1256,7 @@ window.fetch = async (url, options) => {
     check(document.activeElement === focusDuringSend, 'The focus fixture did not reach the row during delivery');
   }
   return {ok: true, json: async () => ({answer, state: 'answered', revision: 'saved-revision',
-    answered_at: '2026-01-12T15:00:00Z', delivery, has_off_desk_answer:hasOffDeskAnswer})};
+    answered_at: '2026-01-12T15:00:00Z', delivery, off_desk_answer:offDeskAnswer})};
 };
 typeAnswer(2, 'Blue');
 focusDuringSend = card(2).querySelector('a');
@@ -1286,7 +1287,7 @@ check(folded.open && field(1).value === longAnswer &&
       card(1).querySelector('h2').textContent === 'Merge the tide tables now? '.repeat(8).trim(),
       'Opening the folded row did not reveal the full question and answer');
 typeAnswer(1, 'Hold');
-hasOffDeskAnswer = true;
+offDeskAnswer = {via: 'chat', answered_at: '2026-01-11T12:00:00Z'};
 focusDuringSend = card(1).querySelector('a');
 await sendBatch();
 check(!folded.open, 'The delivered correction did not close the row');
@@ -1294,13 +1295,22 @@ checkVisibleWord(summary, 'Hold');
 checkDeskMarker(summary);
 check(document.activeElement === summary, 'Refolding a correction dropped focus from the row');
 summary.click();
+const source = card(1).querySelector('.answer-source');
+const sourceTime = source.querySelector('time');
+check(source.innerText.includes('Answered elsewhere · chat') &&
+      sourceTime?.dateTime === '2026-01-11T12:00:00Z' && sourceTime.innerText.includes('Jan 11, 2026'),
+      'The expanded correction lost the latest answer source or its timestamp');
 typeAnswer(1, 'Use the next tide');
 delivery = 'pending';
+offDeskAnswer = {via: 'email', answered_at: '2026-01-12T05:00:00Z'};
 focusDuringSend = summary;
 await sendBatch();
 check(order() === 'Q1.1,Q1.2,Q1.3' && card(1).parentElement === list,
       'The pending correction did not return to its place among expanded questions');
 check(card(1).querySelector('.delivery').textContent === 'Not delivered', 'The pending correction lost its delivery status');
+check(source.innerText.includes('Answered elsewhere · email') &&
+      source.querySelector('time')?.dateTime === '2026-01-12T05:00:00Z',
+      'The pending correction retained the previous answer source or timestamp');
 check(document.activeElement === card(1).querySelector('a'), 'Expanding a pending correction lost focus from its removed summary');
 secondSummary.click();
 typeAnswer(2, 'Red');
@@ -1583,7 +1593,8 @@ window.addEventListener('pageshow', async () => {
         self.add("questions", "Tide decisions", "Decide the launch plan.", "--body-file", "-", stdin=json.dumps(QUESTIONS))
         self.add("questions", "Pier lights", "Pick the lamp colour.", "--body-file", "-", stdin=json.dumps(QUESTIONS))
         description = "A chart of the quay, showing slips and moorings. " * 8 + "See https://example.org/notes"
-        self.add("resource", "Harbour map ΧΑΡΤΗΣ [A+B]", description, "--url", "https://example.org/map", "--link-text", "Open the map")
+        self.add("resource", "Harbour map Straße ΧΑΡΤΗΣ [A+B]", description,
+                 "--url", "https://example.org/map", "--link-text", "Open the map")
         self.add("list", "Harbour supplies", "Tools for the pilot.", "--body-file", "-", stdin="Rope")
         home = self.root / "home"
         script = home / "bin" / "fm-inbox.sh"
@@ -1592,7 +1603,7 @@ window.addEventListener('pageshow', async () => {
         script.chmod(0o700)
         port = self.start("/qd", home=home)
         with patch.object(quarterdeck, "now_text", return_value="2026-01-10T16:25:00Z"):
-            self.assertEqual(self.post_answer(port, "Q2.1", "Use amber ΔΡΟΜΟΣ")[1]["delivery"], "sent")
+            self.assertEqual(self.post_answer(port, "Q2.1", "Use amber ΔΡΟΜΟΣ at the office")[1]["delivery"], "sent")
         self.assertEqual(self.run_cli("mark", "Q2.2", "answered", "--via", "chat")[0], 0)
         for name in ("q1.html", "q2.html", "q3.html", "q4.html"):
             status, page, _ = self.fetch(port, f"/qd/{name}")
@@ -1619,7 +1630,7 @@ const type = text => { search.value = text; search.dispatchEvent(new Event('inpu
 check(shown().join() === 'q2.html', 'The answered list was wrong');
 check(dialog.querySelectorAll('input[type="search"]').length === 2 && !dialog.querySelector('input[type="date"]'),
       'The library does not have exactly one search per tab');
-for (const query of ['pier lamp merge amber', 'Σ amber', 'Q2', 'q2.1', 'q2.2']) {
+for (const query of ['pier lamp merge amber', 'Σ amber', 'oﬃce amber', 'Q2', 'q2.1', 'q2.2']) {
   type(query);
   check(shown().join() === 'q2.html', 'Failed to match ' + query);
   check(!panel.querySelector('[role="status"]').textContent, 'A successful search reported a match count');
@@ -1631,7 +1642,7 @@ for (const query of ['q2.0', 'q2.9', 'q2.01', 'q20']) {
 }
 tabs[0].click();
 const references = document.getElementById('search-references');
-references.value = 'Σ [a+b] chart';
+references.value = 'STRASSE Σ [a+b] chart';
 references.dispatchEvent(new Event('input', {bubbles: true}));
 check([...document.querySelectorAll('#panel-references .lib-item')].filter(row => !row.hidden).length === 1, 'References search failed');
 check(!references.closest('[role="tabpanel"]').querySelector('[role="status"]').textContent, 'References search reported a match count');

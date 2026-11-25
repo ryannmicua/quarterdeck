@@ -950,7 +950,7 @@ def send_answer(store, home, payload):
                 except (OSError, subprocess.TimeoutExpired):
                     pass
     return {**{k: record[k] for k in ("state", "revision", "answer", "answered_at", "delivery")},
-            "has_off_desk_answer": latest_off_desk_mark(record) is not None}
+            "off_desk_answer": latest_off_desk_mark(record)}
 
 
 def item_text(item: dict[str, object]) -> str:
@@ -1727,6 +1727,17 @@ function trackVisibleViewport(onChange) {
 """
 
 
+@functools.cache
+def library_case_folds() -> str:
+    folds = {}
+    for codepoint in range(sys.maxunicode + 1):
+        character = chr(codepoint)
+        folded = character.casefold()
+        if folded != character:
+            folds[character] = folded
+    return json.dumps(folds, ensure_ascii=False, separators=(",", ":"))
+
+
 LIBRARY_SCRIPT = r"""
 (() => {
   window.addEventListener('pageshow', event => {
@@ -1805,6 +1816,7 @@ LIBRARY_SCRIPT = r"""
   });
 
   const idQuery = /^(q\d+)(?:\.(\d+))?$/i;
+  const caseFold = text => Array.from(text, character => libraryCaseFolds[character] ?? character).join('');
   for (const tab of tabs) {
     const panel = panelOf(tab);
     const search = searchOf(tab);
@@ -1833,14 +1845,13 @@ LIBRARY_SCRIPT = r"""
     const run = () => {
       const query = search.value.trim();
       const id = idQuery.exec(query);
-      const terms = query && !id ? query.split(/\s+/).map(word =>
-        new RegExp(word.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), 'iu')) : [];
+      const terms = query && !id ? caseFold(query).split(/\s+/) : [];
       let hasMatch = false;
       for (const row of rows) {
         const searchMatch = id
           ? row.dataset.id.toLowerCase() === id[1].toLowerCase()
             && (id[2] === undefined || (/^[1-9]\d*$/.test(id[2]) && Number(id[2]) <= Number(row.dataset.questions)))
-          : terms.every(term => term.test(row.dataset.search));
+          : terms.every(term => row.dataset.search.includes(term));
         const ok = searchMatch && matchesClassification(row, filters);
         row.hidden = !ok;
         hasMatch ||= ok;
@@ -1994,7 +2005,7 @@ def page_shell(title: str, site_title: str, body: str, *, served: bool, saved_na
         f"<main>\n{body}\n</main>\n{library}<script>{TIME_SCRIPT}{VIEWPORT_SCRIPT if interactive or library else ''}"
         f"{ANSWER_SCRIPT if interactive else ''}"
         f"{WORKERS_SCRIPT if workers else ''}{FILTER_SCRIPT if filters or library else ''}"
-        f"{LIBRARY_SCRIPT if library else ''}</script>\n</body>\n</html>\n"
+        f"{f'const libraryCaseFolds = {library_case_folds()};' + LIBRARY_SCRIPT if library else ''}</script>\n</body>\n</html>\n"
     )
 
 
@@ -2115,10 +2126,13 @@ def question_form(item, served):
             saved = (f'<div class="saved-answer"{hidden}><p class="record">{esc(answer)}</p>'
                      f'<p class="meta"><span class="delivery">{delivery}</span> '
                      f'<time datetime="{at}">{at}</time></p></div>')
-        if elsewhere := latest_off_desk_mark(record):
+        elsewhere = latest_off_desk_mark(record)
+        if elsewhere:
             at = esc(elsewhere["answered_at"]) if elsewhere["answered_at"] else ""
             time = f' <time datetime="{at}">{at}</time>' if at else ""
             saved += f'<p class="meta answer-source">Answered elsewhere · {esc(elsewhere["via"])}{time}</p>'
+        elif editable:
+            saved += '<p class="meta answer-source" hidden></p>'
         editor = ""
         if editable:
             editor = (f' tabindex="-1" data-revision="{esc(record.get("revision", ""))}"'
@@ -2301,7 +2315,7 @@ if (send) {
       list.insertBefore(box, next ?? null);
     }
     box.querySelector('.sum-text').textContent = record.answer;
-    box.querySelector('.sum-source').hidden = !record.has_off_desk_answer;
+    box.querySelector('.sum-source').hidden = !record.off_desk_answer;
     box.open = false;
     if (focusInSection) box.querySelector('summary').focus();
   }
@@ -2320,6 +2334,17 @@ if (send) {
     time.dateTime = record.answered_at;
     time.textContent = localTime(record.answered_at);
     saved.hidden = false;
+
+    const source = section.querySelector('.answer-source');
+    const elsewhere = record.off_desk_answer;
+    source.hidden = !elsewhere;
+    source.textContent = elsewhere ? 'Answered elsewhere · ' + elsewhere.via : '';
+    if (elsewhere?.answered_at) {
+      const markedAt = document.createElement('time');
+      markedAt.dateTime = elsewhere.answered_at;
+      markedAt.textContent = localTime(markedAt.dateTime);
+      source.append(' ', markedAt);
+    }
 
     updateFold(section, record);
     const remaining = sections.filter(s => s.dataset.state === 'open').length;
@@ -2382,7 +2407,7 @@ def library_row(item, *, served):
             search.extend(q["question"] for q in item["body"]["questions"])
             search.extend(part_record(item, n).get("answer", "") for n in parts)
             attributes += f' data-questions="{len(parts)}"'
-        attributes += f' data-id="{item_id}" data-search="{esc(" ".join(search))}"'
+        attributes += f' data-id="{item_id}" data-search="{esc(" ".join(search).casefold())}"'
     if kind == "questions":
         detail = f'<p class="meta">{question_summary(item)[0]}</p>'
     else:
