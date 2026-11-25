@@ -4310,7 +4310,7 @@ document.getElementById('undo').click();
 check(editor.value === fill && !ask.disabled, 'Undo changes lost the saved hand-edited origin');
 """, setup=f"const suggested = {json.dumps(suggested)};")
 
-    def test_native_history_treats_whitespace_around_fills_as_an_answer(self) -> None:
+    def test_whitespace_around_fills_stays_an_answer_through_edits_and_history(self) -> None:
         port = self.start("/qd", ask_home=self.inbox())
         for suggested in (False, True):
             with self.subTest(suggested=suggested):
@@ -4321,7 +4321,9 @@ const fill = suggested ? 'Merge' : 'Hold';
 (suggested ? document.getElementById('suggest') : card(1).querySelector('[data-choice="Hold"]')).click();
 editor.focus();
 editor.setSelectionRange(fill.length, fill.length);
-check(document.execCommand('insertText', false, ' ') && editor.value === fill + ' ', 'Adding whitespace failed');
+check(document.execCommand('insertText', false, ' ') && editor.value === fill + ' ' && ask.disabled,
+      'Adding only whitespace made the filled answer askable');
+check(document.getElementById('send').textContent === 'Send 1 answer', 'Adding whitespace dropped the answer draft');
 check(document.execCommand('undo') && editor.value === fill && ask.disabled, 'Undo made the original fill askable');
 check(document.execCommand('redo') && editor.value === fill + ' ' && ask.disabled,
       'Redo made a draft askable that would send the unchanged answer');

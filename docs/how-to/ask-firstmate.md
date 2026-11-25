@@ -17,7 +17,8 @@ its conversations stay readable. Reopen a question to use the toolbar ask.
 
 1. Type or edit a draft by hand in **Your answer or question**. Selecting
    an option or using **Use all suggestions** fills an answer. **Ask
-   Firstmate** is available for a new hand-edited draft.
+   Firstmate** is available for a new hand-edited draft. Adding only leading
+   or trailing whitespace to a filled answer keeps it an answer.
    If the editor's Undo or Redo restores the option or suggestion text,
    Quarterdeck treats it as the filled answer, ignoring surrounding
    whitespace. Retype it to ask Firstmate. **Undo changes** restores

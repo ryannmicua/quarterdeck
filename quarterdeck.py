@@ -2658,7 +2658,7 @@ if (send) {
     const restoring = e.inputType === 'historyUndo' || e.inputType === 'historyRedo';
     if (origin?.choice) {
       // Native undo and redo treat matching hand-edited text as the fill. Retype it to ask.
-      const edited = !restoring || answerText(field.value) !== answerText(origin.choice.dataset.choice);
+      const edited = answerText(field.value) !== answerText(origin.choice.dataset.choice) || (!restoring && origin.edited);
       draftOrigins.set(field, {choice: origin.choice, edited});
     } else if (origin?.rejected && (!restoring || origin.edited !== undefined)) {
       const edited = answerText(field.value) !== origin.rejected;
