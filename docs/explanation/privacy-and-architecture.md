@@ -9,6 +9,8 @@ when enabled, the live Firstmate workers roster.
 - Item commands use the [item store and its lock](../reference/item-store.md).
   `add` copies body text from the named file or standard input into the store.
   A questions body can also name [local image attachments](../reference/item-store.md#question-images).
+  `quarterdeck reply --image` reads the explicitly named image files and copies
+  them into the store's `reply-images` directory.
 - `render`, `serve`, `service` and `url` can read the
   [optional config](../reference/cli-and-config.md#json-configuration).
 - `render` reads the item store and saved images. It inspects existing output
@@ -25,7 +27,8 @@ when enabled, the live Firstmate workers roster.
 - `service --write` writes the systemd unit. `url` reads it if it exists.
 - `install` and `update` invoke the [user-local installer](../how-to/install.md).
 
-Apart from explicitly supplied `add` inputs and the workers snapshot,
+Apart from explicitly supplied `add` inputs, images named with `reply --image`,
+and the workers snapshot,
 Quarterdeck reads no backlog, board, topic, report, ledger or saved session
 from a Firstmate home, and it does not read terminal text. Quarterdeck keeps the
 workers snapshot only for the current request. It saves card asks and replies

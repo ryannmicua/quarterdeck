@@ -807,7 +807,6 @@ def validate_records(item):
 
 # A question's conversation: the asks the owner sent and the replies Firstmate wrote, oldest first, kept apart from the
 # answer so that a reply never changes what was decided.
-AUTHORS = ("you", "firstmate")
 AUTHOR_LABELS = {"you": "You", "firstmate": "Firstmate"}
 
 
@@ -823,9 +822,12 @@ def validate_conversation(item):
             raise ValueError("invalid conversation")
         asks = set()
         for message in messages:
-            if not isinstance(message, dict) or message.get("author") not in AUTHORS:
+            if not isinstance(message, dict):
                 raise ValueError("invalid message")
-            you = message["author"] == "you"
+            author = message.get("author")
+            if not isinstance(author, str) or author not in AUTHOR_LABELS:
+                raise ValueError("invalid message")
+            you = author == "you"
             required = {"id", "author", "text", "at"} | ({"delivery", "request_id", "home"} if you else {"read", "ask"})
             if not required <= set(message) <= required | (set() if you else {"links", "images"}):
                 raise ValueError("invalid message")

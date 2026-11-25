@@ -3672,6 +3672,7 @@ class ConversationTests(ImageCase):
         self.run_cli("reply", "Q4.1", "--ask", self.messages("1", 3)[0]["id"], "--text", "Fine.")
         data = self.store()
         for damage in (lambda c: c["1"][1].update(read="yes"), lambda c: c["1"][1].update(author="owner"),
+                       lambda c: c["1"][0].update(author=["you"]), lambda c: c["1"][1].update(author={"firstmate": True}),
                        lambda c: c.update({"9": c.pop("1")}), lambda c: c["1"][1].update(extra=1),
                        lambda c: c["1"][1].update(images=[{"file": "../x.png", "alt": "x"}]),
                        lambda c: c["1"][1].update(ask="0" * 32), lambda c: c["1"].reverse(),
@@ -3680,7 +3681,9 @@ class ConversationTests(ImageCase):
             damage(damaged["items"][3]["conversation"])
             with self.subTest(damage=damage):
                 quarterdeck.store_path().write_text(json.dumps(damaged))
-                self.assertEqual(self.run_cli("show", "Q4")[0], 2)
+                status, _, error = self.run_cli("show", "Q4")
+                self.assertEqual(status, 2)
+                self.assertIn("the item store is damaged", error)
 
     def test_the_store_rejects_numeric_conversation_identifiers(self) -> None:
         port = self.start("/qd", ask_home=self.inbox())
