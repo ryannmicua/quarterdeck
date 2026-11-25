@@ -931,8 +931,8 @@ def remove_item(args: argparse.Namespace) -> int:
 
 
 # --- Workers ------------------------------------------------------------------------------
-# The one deliberate read of a Firstmate home: its own read-only fleet snapshot, run without a model.
-# Quarterdeck keeps nothing from it, shows only what the snapshot states outright, and never writes to the home.
+# Roster refresh runs only the home's read-only fleet snapshot, without a model.
+# Quarterdeck shows only what the snapshot states outright and keeps no copy.
 
 SNAPSHOT_COMMAND = ("bin/fm-fleet-snapshot.sh", "--local")
 SNAPSHOT_SECONDS = 60

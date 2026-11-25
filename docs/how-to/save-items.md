@@ -100,7 +100,8 @@ or both. You can mix pictured options with plain text options.
 ```
 
 Save the JSON with the same `quarterdeck add --kind questions` command as
-above. Choose images you can share with everyone who can view the item.
+above. Check [who can view saved images](serve-the-page.md#security-loopback-by-default)
+before attaching them.
 See the [image requirements and storage rules](../reference/item-store.md#question-images)
 and [how to view and pick pictured options](answer-questions.md#view-mockups).
 

@@ -65,10 +65,12 @@ writes pages. Keep the `images` folder with the exported pages.
 
 Exports in a separate directory keep image copies of removed items until you
 delete `<output>/images/<id>/` by hand. A refused render can leave new image
-copies in the output folder. Rendering into another store's state directory can
-replace or retire that store's generated pages and add image files. Use a
-separate export directory to keep that store's `remove` command from
-deleting images the export reuses. See the [image removal rules](item-store.md#store-layout).
+copies in the output folder.
+
+Rendering into another store's state directory is unsupported. It can replace
+or retire that store's generated pages and add image files. If the export
+reuses that store's images, the store's `remove` command can break the export.
+See the [image removal rules](item-store.md#store-layout).
 
 ### Workers endpoint
 
