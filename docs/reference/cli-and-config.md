@@ -70,6 +70,20 @@ to `/qd/`, and a path outside the prefix to the same path beneath it, such as
 `serve` still accepts `--allow-marks`, `--watch-waits`, `--no-snapshot` and
 `--home`, which older service units pass, and ignores them with a notice.
 
+### Visit log
+
+`serve` appends one line to
+`${XDG_STATE_HOME:-~/.local/state}/quarterdeck/visits.jsonl` each time it
+serves the Desk (`/` or `/index.html` under the base path). The line holds the
+UTC time with milliseconds (`ts`), the page (`main`), and `device`: `phone`
+for a phone browser, otherwise `desktop`, judged from the `User-Agent`. It
+holds no address, item or content. Item pages, images and the workers
+endpoint are not logged. Quarterdeck has no login, so every Desk load counts,
+whoever makes it. Logging needs no flag. The file has mode 0600 and must
+not be a symbolic link. When it grows past 128 KiB, visits older than 120
+days are dropped. If a visit cannot be logged, the Desk is still served and
+`serve` prints the reason to standard error.
+
 ### Rendered images
 
 Pages link to `images/<id>/<file>` relative to themselves. When rendering

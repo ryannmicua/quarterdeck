@@ -28,6 +28,7 @@ import zlib
 from concurrent.futures import ThreadPoolExecutor
 from configparser import ConfigParser
 from contextlib import contextmanager, redirect_stderr, redirect_stdout, suppress
+from datetime import datetime, timezone
 from html import escape
 from html.parser import HTMLParser
 from pathlib import Path
@@ -744,10 +745,13 @@ class ServeTests(StoreCase):
         self.addCleanup(server.shutdown)
         return server.server_address[1]
 
-    def fetch(self, port: int, path: str, method: str = "GET", host: str | None = None) -> tuple[int, str, dict]:
+    def fetch(self, port: int, path: str, method: str = "GET", host: str | None = None,
+              user_agent: str | None = None) -> tuple[int, str, dict]:
         request = urllib.request.Request(f"http://127.0.0.1:{port}{path}", method=method)
         if host:
             request.add_header("Host", host)
+        if user_agent:
+            request.add_header("User-Agent", user_agent)
 
         class NoRedirect(urllib.request.HTTPRedirectHandler):
             def redirect_request(self, *args, **kwargs):  # noqa: ANN002, ANN003
@@ -1986,6 +1990,55 @@ check(!button('send').disabled && button('send').textContent === 'Send 2 answers
             status, record = self.post_answer(port, "Q3.1", "Hold")
             self.assertEqual((status, record["delivery"]), (200, "sent"))
             self.assertEqual((home / "received-note").read_text(), "Q3.1 Hold")
+
+    def test_every_served_desk_load_is_logged_under_old_and_current_service_flags(self) -> None:
+        self.add_all_kinds()
+        phone = "Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) Mobile/15E148"
+        tablet = "Mozilla/5.0 (iPad; CPU OS 17_0 like Mac OS X) Mobile/15E148"
+        # An older unit passes --allow-marks and --watch-waits, which serve ignores; a current unit passes neither.
+        for flags in (("--allow-marks", "--watch-waits"), ()):
+            with self.subTest(flags=flags):
+                quarterdeck.visits_path().unlink(missing_ok=True)
+                with self.serve_cli("--base-path", "/qd", *flags) as port:
+                    self.assertEqual(self.fetch(port, "/qd/", user_agent=phone)[0], 200)
+                    self.assertEqual(self.fetch(port, "/qd/index.html", user_agent=tablet)[0], 200)
+                    self.assertEqual(self.fetch(port, "/qd/q3.html")[0], 200)
+                    self.assertEqual(self.fetch(port, "/qd/missing.html")[0], 404)
+                    self.assertEqual(self.fetch(port, "/qd/", host="attacker.example")[0], 403)
+                path = quarterdeck.visits_path()
+                self.assertEqual(stat.S_IMODE(path.stat().st_mode), 0o600)
+                records = [json.loads(line) for line in path.read_text(encoding="utf-8").splitlines()]
+                self.assertEqual([(r["page"], r["device"]) for r in records], [("main", "phone"), ("main", "desktop")])
+                for record in records:
+                    self.assertEqual(set(record), {"ts", "page", "device"})
+                    self.assertRegex(record["ts"], r"^\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d\.\d{3}Z$")
+
+    def test_visit_log_keeps_recent_visits_and_never_follows_a_symbolic_link(self) -> None:
+        path = self.root / "state" / "quarterdeck" / "visits.jsonl"
+        now = datetime(2026, 6, 1, tzinfo=timezone.utc)
+        old = json.dumps({"ts": "2026-01-01T00:00:00.000Z", "page": "main", "device": "desktop"})
+        recent = json.dumps({"ts": "2026-05-20T00:00:00.000Z", "page": "main", "device": "phone"})
+        path.parent.mkdir(parents=True)
+        path.write_text((old + "\n") * 2000 + recent + "\n" + "damaged\n" + '{"ts": "2026-01-01T00:00:00"}\n', encoding="utf-8")
+        quarterdeck.VisitLog(path, clock=lambda: now).record("main", None)
+        lines = path.read_text(encoding="utf-8").splitlines()
+        self.assertEqual(lines[:3], [recent, "damaged", '{"ts": "2026-01-01T00:00:00"}'])
+        self.assertEqual(json.loads(lines[3]), {"ts": "2026-06-01T00:00:00.000Z", "page": "main", "device": "desktop"})
+        self.assertEqual(stat.S_IMODE(path.stat().st_mode), 0o600)
+        path.unlink()
+        target = self.root / "elsewhere"
+        path.symlink_to(target)
+        with self.assertRaises(ValueError):
+            quarterdeck.VisitLog(path).record("main", None)
+        self.assertFalse(target.exists())
+
+    def test_a_visit_that_cannot_be_logged_still_serves_the_desk(self) -> None:
+        self.add_all_kinds()
+        quarterdeck.visits_path().mkdir(parents=True)
+        with self.serve_cli() as port:
+            status, body, _headers = self.fetch(port, "/")
+        self.assertEqual(status, 200)
+        self.assertIn("Tide launch decisions", body)
 
     def test_damaged_store_returns_an_error_without_server_paths(self) -> None:
         self.add_all_kinds()

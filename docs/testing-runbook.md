@@ -12,7 +12,7 @@ Run one group while changing it, then the whole suite before a pull request
 | Question link validation and Desk card previews | `PYTHONPATH=tests python3 -m unittest -v test_quarterdeck.QuestionLinkTests` |
 | `render` | `PYTHONPATH=tests python3 -m unittest -v test_quarterdeck.RenderTests` |
 | Question image import, serving, and export | `PYTHONPATH=tests python3 -m unittest -v test_quarterdeck.QuestionImageTests test_quarterdeck.QuestionImagePageTests` |
-| `serve`, base path and host checks | `PYTHONPATH=tests python3 -m unittest -v test_quarterdeck.ServeTests` |
+| `serve`, base path, host checks and the visit log | `PYTHONPATH=tests python3 -m unittest -v test_quarterdeck.ServeTests` |
 | Card asks, replies, and acknowledgment | `PYTHONPATH=tests python3 -m unittest -v test_quarterdeck.ConversationTests` |
 | Desk conversations, home binding, and export exclusion | `PYTHONPATH=tests python3 -m unittest -v test_quarterdeck.TalkToFirstmateTests` |
 | Workers snapshot and refresh | `PYTHONPATH=tests python3 -m unittest -v test_quarterdeck.WorkersTests` |
