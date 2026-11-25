@@ -6,10 +6,11 @@ item. If a question is open, the page jumps to the first one. Question wording,
 options, and suggestions are on the item page. Each question has an ID you can
 cite later.
 
-Items with open questions show **Asked**. When no questions are open and an
-answer still needs delivery, the row shows **None open** and **Answered** with
-**Not delivered**. An unread reply changes the status to **Replied**. The
-**Not delivered** notice stays visible while an answer needs delivery.
+Items with open questions show **Asked**. If no questions are open and an
+answer still needs delivery, the row shows **None open** and **Answered**.
+**Replied** takes precedence over both **Asked** and **Answered** when there is
+an unread reply. The row also shows **Not delivered** alongside any of these
+statuses while an answer needs delivery.
 
 An item page lists every question in one list. A question marked **Answered**
 with a **Sent** answer and no unread replies collapses to one line below the

@@ -1465,20 +1465,34 @@ reach(button('panel-references').querySelector('a[href="q1.html"]'));
                  stdin=json.dumps([QUESTIONS[0], question]))
         self.add("questions", "Tide tables", "Check the latest plan.", "--project", "W" * 40, "--body-file", "-",
                  stdin=json.dumps(QUESTIONS))
+        self.add("questions", "Chart review", "Review the chart.", "--body-file", "-",
+                 stdin=json.dumps(QUESTIONS[:1]))
         self.assertEqual(self.run_cli("mark", "Q1.1", "closed")[0], 0)
         port = self.start("/qd")
+        for part, answer in (("Q2.2", "Blue"), ("Q3.1", "Merge")):
+            status, record = self.post_answer(port, part, answer)
+            self.assertEqual((status, record["delivery"]), (200, "pending"))
         script = r"""
-const [first, second] = document.querySelectorAll('.desk tbody tr');
+const [pending, first, second] = document.querySelectorAll('.desk tbody tr');
 const desk = document.querySelector('.desk');
 const project = first.querySelector('.project');
 check(project.checkVisibility() && project.textContent === 'W'.repeat(40), 'The Project column lost the saved name');
 check(desk.scrollWidth === desk.clientWidth, 'A long project widened the Desk beyond its container');
+check(first.cells[3].textContent === 'Asked Not delivered', 'An open row lost its delivery notice');
+const status = pending.cells[3];
+check(status.textContent === 'Answered Not delivered', 'A pending-only row lost its delivery notice');
+if (innerWidth === 390) {
+  const text = document.createRange();
+  text.selectNodeContents(status);
+  const lines = new Set(Array.from(text.getClientRects(), rect => rect.top));
+  check(lines.size > 1, 'The pending delivery status did not wrap on the phone');
+}
 const hit = node => {
   node.scrollIntoView({block:'center'});
   const rect = node.getClientRects()[0];
   return document.elementFromPoint(rect.left + rect.width / 2, rect.top + rect.height / 2)?.closest('a');
 };
-for (const [row, destination] of [[first, 'q2.html#Q2.1'], [second, 'q1.html#Q1.2']]) {
+for (const [row, destination] of [[pending, 'q3.html'], [first, 'q2.html#Q2.1'], [second, 'q1.html#Q1.2']]) {
   const links = [...row.querySelectorAll('a')];
   const action = links[0];
   check(action && links.length === 1 && action.getAttribute('href') === destination, 'A row had several links or the wrong destination');

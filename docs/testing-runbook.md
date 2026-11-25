@@ -39,7 +39,8 @@ focused control visible. A long send error scrolls inside the bar. The browser
 checks also cover focus through delivery transitions. At 390, 641, and 1440
 pixels, the Desk check confirms that every cell hits its row's item link and
 that a 40-character unbroken project name stays visible without horizontal
-scrolling. A 320-pixel sheet check covers both tabs and Close library. A zoomed
+scrolling. At 390 pixels the pending-only delivery status wraps. A 320-pixel
+sheet check covers both tabs and Close library. A zoomed
 viewport check verifies the sheet at 640 CSS pixels and the drawer at a
 fractional width just above it.
 At 140 pixels tall, browser checks cover the Send
@@ -54,10 +55,10 @@ fresh Desk and archive, including filters whose values disappear from the
 refreshed results. After dismissal, returning from a Desk card and
 reloading the Desk both leave the library closed.
 
-The classification browser tests use headless `google-chrome` to verify item
-and project pairs in a single Desk table on served and exported pages. They
-also select filters and check which reference rows, reviewed cards, and empty
-messages are visible in the narrow and desktop layouts.
+The classification tests parse served and exported HTML to verify item and
+project pairs in a single Desk table. The classification browser tests use
+headless `google-chrome` to select filters and check which reference rows,
+reviewed cards, and empty messages are visible in the narrow and desktop layouts.
 
 The workers browser test uses headless `google-chrome` to count actual snapshot
 requests on entry, during a virtual minute of idle time, and after a refresh click.

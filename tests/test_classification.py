@@ -7,6 +7,7 @@ import shutil
 import subprocess
 import sys
 import unittest
+from html.parser import HTMLParser
 from pathlib import Path
 from unittest.mock import patch
 
@@ -548,25 +549,57 @@ class StatsTests(ClassificationCase):
         self.assertEqual([quarterdeck.wait_text(v) for v in (None, 0, 90, 3660, 90000)], ["none", "0m", "1m", "1h 1m", "1d 1h"])
 
 
+class DeskTables(HTMLParser):
+    def __init__(self) -> None:
+        super().__init__()
+        self.in_main = False
+        self.in_body = False
+        self.table_count = 0
+        self.rows: list[list[str]] = []
+        self.cell: list[str] | None = None
+
+    def handle_starttag(self, tag, attrs) -> None:
+        if tag == "main":
+            self.in_main = True
+        if self.in_main:
+            if tag == "table":
+                self.table_count += 1
+            elif tag == "tbody":
+                self.in_body = True
+            elif self.in_body and tag == "tr":
+                self.rows.append([])
+            elif self.in_body and tag in ("th", "td"):
+                self.cell = []
+
+    def handle_data(self, text) -> None:
+        if self.cell is not None:
+            self.cell.append(text)
+
+    def handle_endtag(self, tag) -> None:
+        if tag == "main":
+            self.in_main = False
+        elif tag == "tbody":
+            self.in_body = False
+        elif tag in ("th", "td") and self.cell is not None:
+            self.rows[-1].append(" ".join("".join(self.cell).split()))
+            self.cell = None
+
+
 class PageTests(ClassificationCase):
     def pages(self):
         return quarterdeck.site_pages(quarterdeck.read_store(quarterdeck.store_path()), "Quarterdeck", "index.html")
 
     def check_desk_projects(self, expected_rows: list[tuple[str, str]]) -> None:
-        script = r"""
-const tables = document.querySelectorAll('main table');
-check(tables.length === 1, 'All Desk items should be in one table');
-const rows = Array.from(tables[0].querySelectorAll('tbody tr'), row => [
-  row.cells[0].textContent.trim().replace(/\s+/g, ' '), row.cells[1].textContent.trim()
-]);
-check(JSON.stringify(rows) === JSON.stringify(""" + json.dumps(expected_rows) + """),
-      'The Desk table should pair each item with its saved project');
-"""
         data = quarterdeck.read_store(quarterdeck.store_path())
         for served in (True, False):
             with self.subTest(served=served):
-                page = quarterdeck.list_page(data, "Quarterdeck", served=True) if served else self.pages()["index.html"]
-                self.check_browser(page, script)
+                page = (quarterdeck.list_page(data, "Quarterdeck", served=True) if served else
+                        quarterdeck.site_pages(data, "Quarterdeck", "index.html")["index.html"])
+                desk = DeskTables()
+                desk.feed(page)
+                desk.close()
+                self.assertEqual(desk.table_count, 1)
+                self.assertEqual([tuple(row[:2]) for row in desk.rows], expected_rows)
 
     def test_shared_project_shows_once_per_row_in_one_table(self) -> None:
         self.questions("Quay choices", "--project", "Harbor", "--tag", "process")

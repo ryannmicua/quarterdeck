@@ -1833,7 +1833,6 @@ textarea { display:block; width:100%; resize:vertical; background:var(--ground);
 .desk tbody th { font-weight:600; }
 .desk td { overflow-wrap:normal; }
 .desk td.project { overflow-wrap:anywhere; }
-.desk td:last-child { white-space:nowrap; }
 .desk .work { position:relative; cursor:pointer; border-left:5px solid var(--rule); }
 .desk .work.next { background:var(--signal-ground); }
 .desk .work:hover { background:var(--faint); }
