@@ -4507,7 +4507,7 @@ check(unread.join() === later && decision.querySelector('.badge').textContent ==
       'Stale snapshot overwrote the acknowledgment or hid a newer reply');
 """, page=page, setup=setup)
 
-    def test_acknowledgment_does_not_show_a_badge_for_an_unrendered_reply(self) -> None:
+    def test_late_acknowledgment_cannot_restore_a_reply_read_in_another_tab(self) -> None:
         port = self.start("/qd", ask_home=self.inbox())
         self.assertEqual(self.ask(port, "Q4.1", "Show me.")[0], 200)
         (ask,) = self.messages("1", 3)
@@ -4538,8 +4538,10 @@ check(requests.length === 2 && requests.every(request => JSON.stringify(request)
       'Reopening messages acknowledged a reply outside this tab');
 if (oldFirst) complete[0](old); else complete[1](newer);
 await settled();
-check(card(1).querySelector('.badge').textContent === 'Open',
-      'An unrendered reply kept the badge visible after acknowledgment');
+check(card(1).querySelector('.badge').textContent === (oldFirst ? 'Replied' : 'Open'),
+      'The first response reported the wrong reply status');
+check(document.querySelector('.progress').textContent.includes('Replied') === oldFirst,
+      'Question progress did not reflect the unread reply');
 if (oldFirst) complete[1](newer); else complete[0](old);
 await settled();
 check(card(1).querySelector('.badge').textContent === 'Open', 'The badge did not settle on the read state');
@@ -4568,7 +4570,7 @@ class TalkToFirstmateTests(ImageCase):
         port = self.start("/qd", ask_home=home)
         body, (status, result) = self.begin(port)
         self.assertEqual(status, 200)
-        self.assertEqual(result, {"item": "Q1", "href": "q1.html", "message": "Message sent."})
+        self.assertEqual(result, {"href": "q1.html", "message": "Message sent."})
         (item,) = self.store()["items"]
         self.assertEqual((item["kind"], item["title"], item["body"]), ("conversation", "Harbor lamp colours", {}))
         self.assertNotIn(body["text"], item["description"])
@@ -4597,16 +4599,16 @@ class TalkToFirstmateTests(ImageCase):
         home = self.inbox(accept=False)
         port = self.start("/qd", ask_home=home)
         body, (status, result) = self.begin(port)
-        self.assertEqual((status, result), (200, {"item": "Q1", "href": "q1.html", "message": "Message saved. Not delivered."}))
+        self.assertEqual((status, result), (200, {"href": "q1.html", "message": "Message saved. Not delivered."}))
         (first,) = self.thread()
         self.assertIn("Send message again", self.fetch(port, "/qd/q1.html")[1])
-        self.assertEqual(self.post(port, "/qd/conversations", body)[1]["item"], "Q1")
+        self.assertEqual(self.post(port, "/qd/conversations", body), (status, result))
         self.assertEqual(len(self.store()["items"]), 1)
         self.assertEqual(self.post(port, "/qd/conversations", {**body, "text": "Another."})[0], 409)
         self.assertEqual(self.post(port, "/qd/conversations", {**body, "title": "Another"})[0], 409)
         self.inbox()
         self.assertEqual(self.post(port, "/qd/conversations", body),
-                         (200, {"item": "Q1", "href": "q1.html", "message": "Message sent."}))
+                         (200, {"href": "q1.html", "message": "Message sent."}))
         self.assertEqual(self.thread(), [{**first, "delivery": "sent"}])
         self.assertEqual((home / "notes").read_text(), f"CONVERSATION Q1 {body['id']} Topic: {body['title']}\n{body['text']}\n")
         retry = {"part": "Q1", "id": body["id"], "action": "retry"}
@@ -4794,7 +4796,7 @@ check(document.querySelector('.badge').hidden, 'The badge stayed visible after r
 const sent = [];
 window.fetch = async (path, init) => {
   sent.push([path, JSON.parse(init.body)]);
-  return {ok:false, status:409, json:async () => ({message:'Firstmate home changed.'})};
+  return {ok:false, status:409, json:async () => ({message:'Firstmate home changed.', saved:false})};
 };
 const form = document.getElementById('talk-form');
 check(form.hidden, 'The form showed before it was asked for');
@@ -4813,6 +4815,9 @@ check(sent.length === 1 && sent[0][0] === 'conversations' && sent[0][1].title ==
 const error = document.getElementById('talk-error');
 check(!error.hidden && error.textContent === 'Firstmate home changed.', 'The refusal was not shown');
 check(!submit.disabled && !button('talk-topic').disabled, 'The form stayed locked after a refusal');
+form.requestSubmit();
+await new Promise(resolve => setTimeout(resolve, 50));
+check(sent.length === 2 && sent[1][1].id !== sent[0][1].id, 'An unsaved refusal kept the old request ID');
 """, path="/qd/", viewport=(390, 844))
 
     def test_retrying_an_interrupted_follow_up_reuses_the_draft_and_requests_delivery(self) -> None:
@@ -4824,6 +4829,9 @@ window.fetch = async (path, init) => {
   check(path === 'asks', 'The composer posted to the wrong endpoint');
   posts.push(JSON.parse(init.body));
   if (posts.length === 1) throw new Error('Connection lost');
+  if (posts.length === 2) {
+    return {ok:false, status:409, json:async () => ({message:'Firstmate home changed.', saved:true})};
+  }
   return {ok:true, json:async () => ({thread:'<p>A follow-up</p>', message:'Message sent.'})};
 };
 const field = button('message-Q1');
@@ -4844,6 +4852,11 @@ const [first, retry] = posts;
 check(posts.length === 2 && retry.action === 'retry', 'The second send did not request redelivery');
 check(retry.id === first.id && retry.part === 'Q1' && retry.text === 'A follow-up' && retry.home === first.home,
       'The retry changed the original message');
+check(!button('error-Q1').hidden && field.value === 'A follow-up' && !send.disabled, 'The saved refusal lost the draft');
+send.click();
+await new Promise(resolve => setTimeout(resolve, 50));
+check(posts.length === 3 && posts[2].id === first.id && posts[2].action === 'retry',
+      'The saved refusal discarded the original message ID');
 check(field.value === '' && send.disabled, 'The confirmed draft stayed in the composer');
 """, path="/qd/q1.html", viewport=(390, 844))
 
@@ -4854,6 +4867,9 @@ const posts = [];
 window.fetch = async (path, init) => {
   check(path === 'conversations', 'The Desk posted to the wrong endpoint');
   posts.push(JSON.parse(init.body));
+  if (posts.length === 2) {
+    return {ok:false, status:409, json:async () => ({message:'Firstmate home changed.', saved:true})};
+  }
   throw new Error('Connection lost');
 };
 button('open-talk').click();
@@ -4875,11 +4891,15 @@ for (const field of [topic, message]) {
 form.requestSubmit();
 await new Promise(resolve => setTimeout(resolve, 50));
 check(posts.length === 2 && posts[1].id === posts[0].id, 'Undo discarded the interrupted creation ID');
+check(!button('talk-error').hidden, 'The saved refusal was not shown');
+form.requestSubmit();
+await new Promise(resolve => setTimeout(resolve, 50));
+check(posts.length === 3 && posts[2].id === posts[0].id, 'The saved refusal discarded the original creation ID');
 message.value = 'Use navy.';
 message.dispatchEvent(new Event('input', {bubbles:true}));
 form.requestSubmit();
 await new Promise(resolve => setTimeout(resolve, 50));
-check(posts.length === 3 && posts[2].id !== posts[0].id, 'Different content reused the prior request ID');
+check(posts.length === 4 && posts[3].id !== posts[0].id, 'Different content reused the prior request ID');
 """, path="/qd/", viewport=(390, 844))
 
     def test_reply_attachments_are_on_the_card_and_in_cli_transcripts(self) -> None:
@@ -4900,7 +4920,7 @@ check(posts.length === 3 && posts[2].id !== posts[0].id, 'Different content reus
         self.assertEqual(status, 0, err)
         self.assertIn(f"  See this.\n  Link: Lamp chart: {chart}\n  Image: A red lamp: {image}", transcript)
         status, replay = self.post(port, "/qd/conversations", body)
-        self.assertEqual((status, replay), (200, {"item": "Q1", "href": "q1.html", "message": "Message sent."}))
+        self.assertEqual((status, replay), (200, {"href": "q1.html", "message": "Message sent."}))
 
     def test_add_cannot_save_a_conversation_and_help_names_the_conversation_note(self) -> None:
         with redirect_stderr(io.StringIO()), self.assertRaises(SystemExit):

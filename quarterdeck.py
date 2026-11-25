@@ -1186,7 +1186,7 @@ def start_conversation(store, home, binding, payload):
             write_store(store, data)
     result = ask_message(store, home, binding, {"part": item_id, "id": message_id, "action": "retry"},
                          include_thread=False)
-    return {**result, "item": item_id, "href": item_page_name(item_id)}
+    return {**result, "href": item_page_name(item_id)}
 
 
 def mark_replies_read(store, payload):
@@ -2628,7 +2628,7 @@ def question_form(item, served, *, ask_binding=None):
 
 QUESTION_SCRIPT = """
 const sections = [...document.querySelectorAll('.decision')];
-const readReplies = new Map([...document.querySelectorAll('[data-conversation]')].map(section => [section, new Set()]));
+const replyStates = new Map([...document.querySelectorAll('[data-conversation]')].map(section => [section, new Map()]));
 const questionNumber = section => Number(section.id.split('.')[1]);
 function expandAnswer(section) {
   const box = section.closest('details.done');
@@ -2645,27 +2645,31 @@ function expandAnswer(section) {
 function updateProgress() {
   const progress = document.querySelector('.progress');
   if (!progress) return;
-  const replied = [...readReplies.keys()].some(s => s.querySelector('.badge').textContent === 'Replied');
+  const replied = [...replyStates.keys()].some(s => s.querySelector('.badge').textContent === 'Replied');
   const remaining = sections.filter(s => s.dataset.state === 'open').length;
   const open = remaining ? remaining + ' of ' + sections.length + ' open' : '';
   const state = sections.every(s => s.dataset.state === 'closed') ? 'Closed' : 'Answered';
   progress.textContent = replied ? ['Replied', open].filter(Boolean).join(', ') : (open || state);
 }
 function reconcileReplies(section, snapshot = {}) {
-  const readIds = readReplies.get(section);
+  const states = replyStates.get(section);
   const replies = section.querySelectorAll('[data-reply-id]');
   for (const [id, read] of Object.entries(snapshot)) {
-    if (read) readIds.add(id);
+    if (read || !states.has(id)) states.set(id, read);
   }
-  let unread = false;
+  let visibleUnread = false;
   for (const reply of replies) {
     const id = reply.dataset.replyId;
-    if (!reply.hasAttribute('data-unread')) readIds.add(id);
-    else if (readIds.has(id)) reply.removeAttribute('data-unread');
-    else unread = true;
+    if (!reply.hasAttribute('data-unread')) states.set(id, true);
+    else if (states.get(id)) reply.removeAttribute('data-unread');
+    else {
+      states.set(id, false);
+      visibleUnread = true;
+    }
   }
   const state = section.dataset.state;
   const badge = section.querySelector('.badge');
+  const unread = section.classList.contains('conversation') ? visibleUnread : [...states.values()].includes(false);
   badge.textContent = unread ? 'Replied' : state ? state[0].toUpperCase() + state.slice(1) : '';
   badge.hidden = !badge.textContent;
   if (unread) expandAnswer(section);
@@ -2704,7 +2708,10 @@ const trimmed = value => value.replace(/^\s+|\s+$/g, '');
 const SENDING_FAILED = () => navigator.onLine ? 'Send interrupted. Send again.' : 'Offline. Reconnect and send again.';
 async function postJson(path, body) {
   const response = await fetch(path, {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify(body)});
-  if (response.status === 409) return {ok:false, message:(await response.json()).message};
+  if (response.status === 409) {
+    const {message, saved} = await response.json();
+    return {ok:false, message, saved};
+  }
   if ([400, 403].includes(response.status)) return {ok:false, message:await response.text()};
   if (!response.ok) throw new Error('failed');
   return {ok:true, result:await response.json()};
@@ -2754,7 +2761,7 @@ CONVERSATION_SCRIPT = talk_script(r"""
       } else {
         output.textContent = '';
         show(outcome.message);
-        if (body.text !== undefined) draft = null;
+        if (body.text !== undefined && !outcome.saved) draft = null;
       }
     } catch {
       output.textContent = SENDING_FAILED();
@@ -2818,7 +2825,7 @@ START_SCRIPT = talk_script(r"""
       output.textContent = '';
       error.textContent = outcome.message;
       error.hidden = false;
-      draft = null;
+      if (!outcome.saved) draft = null;
     } catch {
       output.textContent = SENDING_FAILED();
     }
