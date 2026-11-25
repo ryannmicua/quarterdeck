@@ -176,6 +176,7 @@ def write_private_bytes(path: Path, data: bytes) -> None:
     descriptor, temporary = tempfile.mkstemp(prefix=f".{path.name}.", dir=path.parent)
     try:
         with os.fdopen(descriptor, "wb") as stream:
+            os.fchmod(stream.fileno(), 0o600)
             stream.write(data)
             stream.flush()
             os.fsync(stream.fileno())
@@ -189,6 +190,7 @@ def write_private_bytes(path: Path, data: bytes) -> None:
         os.unlink(temporary)
     descriptor = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
     with os.fdopen(descriptor, "wb") as stream:
+        os.fchmod(stream.fileno(), 0o600)
         stream.write(data)
         stream.flush()
         os.fsync(stream.fileno())
