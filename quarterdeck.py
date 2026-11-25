@@ -33,6 +33,7 @@ from contextlib import contextmanager
 from datetime import datetime, timedelta, timezone
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
+from time import monotonic
 from urllib.parse import quote, unquote, urlparse
 
 
@@ -1724,27 +1725,34 @@ class SavedWorkers:
     """The last successful reading, in memory only, shared by every visitor until the server stops."""
 
     def __init__(self) -> None:
-        self.snapshot: dict[str, object] | None = None
+        self._reading: tuple[float, dict[str, object]] | None = None
 
-    def refresh(self, home: Path, *, force: bool) -> dict[str, object]:
+    @staticmethod
+    def _stale(checked_at: float) -> bool:
+        return monotonic() - checked_at > WORKERS_FRESH_SECONDS
+
+    def refresh(self, home: Path, *, reuse: bool) -> dict[str, object]:
         if not snapshot_lock.acquire(blocking=False):
             raise SnapshotError("the fleet snapshot is already running")
         try:
-            if not force and self.snapshot is not None and not self.view()["stale"]:
-                return self.snapshot
-            self.snapshot = workers_snapshot(home)
-            return self.snapshot
+            reading = self._reading
+            if reuse and reading is not None:
+                checked_at, snapshot = reading
+                if not self._stale(checked_at):
+                    return snapshot
+            snapshot = workers_snapshot(home)
+            self._reading = (monotonic(), snapshot)
+            return snapshot
         finally:
             snapshot_lock.release()
 
-    def view(self, now: datetime | None = None) -> dict[str, object]:
+    def view(self) -> dict[str, object]:
         """The saved reading and whether it is missing or older than WORKERS_FRESH_SECONDS."""
-        snapshot = self.snapshot
-        if snapshot is None:
+        reading = self._reading
+        if reading is None:
             return {"snapshot": None, "stale": True}
-        observed = datetime.strptime(str(snapshot["observed_at"]), "%Y-%m-%dT%H:%M:%SZ").replace(tzinfo=timezone.utc)
-        age = ((now or datetime.now(timezone.utc)) - observed).total_seconds()
-        return {"snapshot": snapshot, "stale": age > WORKERS_FRESH_SECONDS or age < 0}
+        checked_at, snapshot = reading
+        return {"snapshot": snapshot, "stale": self._stale(checked_at)}
 
 
 # --- Pages ------------------------------------------------------------------------------
@@ -2082,11 +2090,11 @@ WORKERS_SCRIPT = r"""
     status.textContent = lastObservedAt ? 'Refreshing workers' : 'Loading workers';
     try {
       if (manual) {
-        show(await read('workers.json?force=1'));
+        show(await read('workers.json'));
       } else {
         const saved = await read('workers-saved.json');
         if (saved.snapshot) show(saved.snapshot);
-        if (saved.stale) show(await read('workers.json'));
+        if (saved.stale) show(await read('workers.json?reuse=1'));
       }
     } catch (error) {
       failed();
@@ -3815,7 +3823,7 @@ def make_handler(site_title: str, base_path: str = "", store: Path | None = None
                 return
             if name == "workers.json" and workers_home is not None:
                 try:
-                    snapshot = saved_workers.refresh(workers_home, force=request.query == "force=1")
+                    snapshot = saved_workers.refresh(workers_home, reuse=request.query == "reuse=1")
                 except SnapshotError:
                     self.send_text(502, json.dumps({"error": "The workers could not be read."}), "application/json")
                 else:

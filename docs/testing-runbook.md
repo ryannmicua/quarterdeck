@@ -65,12 +65,14 @@ are visible in the narrow and desktop layouts.
 The workers browser tests use headless `google-chrome` on the Desk and the
 Workers page. They check for zero Workers requests on the Desk and count
 requests on entry, during a virtual minute of idle time, and after a manual
-check. They cover a click during entry, fresh saved readings, and manual
-recovery after a failed saved lookup. A successful manual check replaces the
+check. They cover a click during entry, reuse of fresh saved readings,
+replacement of expired readings on entry, and manual recovery after a failed
+saved lookup. A successful manual check replaces the
 closed worker's row with the new live worker and updates the time element's
 `datetime` attribute even when the source clock moves backward. The server
-tests cover reusing a reading refreshed by another request and keeping the
-previous reading after a failed check.
+tests cover the elapsed-time expiry boundary, explicit checks with fresh
+data in the cache, reusing a reading refreshed by another request, and
+keeping the previous reading after a failed check.
 The timeout test checks that the snapshot shell and its child both release a
 shared pipe when the endpoint returns 502.
 

@@ -169,20 +169,21 @@ intact. Every ID must belong to the named conversation. The response field
 ### Workers endpoint
 
 `GET /workers.html` is the Workers page. It reads `GET /workers-saved.json`
-and calls `GET /workers.json` if that lookup succeeds and reports a stale
-reading. **Check workers** calls `GET /workers.json?force=1` when the page has
+and calls `GET /workers.json?reuse=1` if that lookup succeeds and reports a stale
+reading. **Check workers** calls `GET /workers.json` when the page has
 no request in progress. The Desk never calls either endpoint.
 
 `GET /workers-saved.json` returns `{"snapshot": ..., "stale": ...}` without
 reading the home. `snapshot` is the last reading from `workers.json` in the
 same format, or `null` when the server has none. It is held in memory only and
-is lost when `serve` stops. `stale` is `true` when there is no snapshot, or
-its `observed_at` is more than one hour old or in the future. It returns 404
-when `firstmate_home` is absent.
+is lost when `serve` stops. `stale` is `true` when there is no snapshot or
+more than one hour has elapsed since the last successful check. The server
+measures elapsed time with a monotonic clock and displays the fleet's
+`observed_at` timestamp. The endpoint returns 404 when `firstmate_home` is absent.
 
-`GET /workers.json` (under any `base_path`) reuses a fresh saved reading or
-runs and saves a new reading. The `?force=1` variant requests a new reading
-regardless of age. The server locks refreshes through the freshness check,
+`GET /workers.json` (under any `base_path`) runs and saves a new reading.
+With the exact query `?reuse=1`, it returns a fresh saved reading when one
+is available. The server locks refreshes through the freshness check,
 the fleet command, and saving the result. A failed read keeps the previous one. The
 [snapshot command](../explanation/privacy-and-architecture.md#what-quarterdeck-reads-and-writes)
 runs with `FM_HOME` set to the configured home. Other inherited `FM_` variables

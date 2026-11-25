@@ -13,9 +13,10 @@ page shows a setup message. Rendered snapshots have no Workers page.
 
 1. Select **Workers** on the Desk. The page shows the last reading with
    **Last checked** and its time in your local time zone.
-2. If the saved-reading lookup succeeds and the reading is missing or more
-   than an hour old, the page asks the server to check. The server can reuse a
-   fresh reading from another visitor's check. A lookup error appears in the status line.
+2. After a successful saved-reading lookup, the page asks the server to check
+   if there is no saved reading or the last successful check was more than an
+   hour ago. The server can reuse a fresh reading from another visitor's check.
+   A lookup error appears in the status line.
 3. Select **Check workers** to read the home again once the current request
    finishes. The page checks automatically only on entry.
 4. Read each row. The name and status come first, followed by the project,
