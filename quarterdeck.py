@@ -1453,7 +1453,7 @@ button[hidden], table.items tr[hidden], .desk .work[hidden] { display:none; }
 button.primary { color:var(--raised); background:var(--ink); }
 button:disabled, button[aria-disabled="true"] { opacity:.55; cursor:default; }
 :focus-visible { outline:3px solid var(--focus); outline-offset:2px; }
-.decision,button,textarea { scroll-margin-top:2rem; scroll-margin-bottom:11rem; }
+.decision,button,textarea { scroll-margin-top:2rem; }
 output { display:block; margin:.4rem 0; }
 .choices { display:flex; flex-wrap:wrap; gap:.5rem; margin-bottom:.8rem; }
 .choice { display:inline-flex; gap:.4em; align-items:baseline; flex-wrap:wrap; padding:.5rem .75rem; min-height:44px; border:1px solid var(--soft); border-radius:5px; cursor:pointer; font:1rem/1.5 var(--sans); }
@@ -1533,7 +1533,10 @@ table.items td.project { white-space:normal; }
 .card-link:focus-visible { outline:none; }
 .desk .work:has(.card-link:focus-visible) { outline:3px solid var(--focus); outline-offset:-3px; }
 .desk .work a:not(.card-link), .desk .work button { position:relative; z-index:1; }
-.sendbar { position:sticky; bottom:0; z-index:2; margin:1rem calc(var(--gutter) * -1) 0; padding:.7rem var(--gutter) calc(.7rem + env(safe-area-inset-bottom));
+html:has(.sendbar) { scroll-padding-bottom:var(--sendbar-height, 0px); }
+main:has(> .sendbar) { padding-bottom:var(--sendbar-height, 0px); }
+.sendbar { position:fixed; inset:auto 0 0; z-index:2;
+  padding:.7rem max(var(--gutter), calc((100% - var(--page)) / 2 + var(--gutter))) calc(.7rem + env(safe-area-inset-bottom));
   background:var(--ground); border-top:1px solid var(--rule); box-shadow:0 -6px 14px -10px var(--ink); }
 .sendbar output { margin:.4rem 0 0; }
 .sendbar output:empty { display:none; }
@@ -1577,7 +1580,7 @@ body:has(dialog[open]) { overflow:hidden; }
 .lib-tools label { font-size:var(--text-sm); color:var(--soft); margin-bottom:.2rem; }
 .lib-tools input { width:100%; min-height:var(--tap); padding:.4rem .6rem; font:var(--text-md)/1.3 var(--sans); color:var(--ink); background:var(--ground);
   border:1px solid var(--soft); border-radius:5px; }
-.lib-status { margin:0; padding:0 var(--gutter) .4rem; min-height:1.6em; color:var(--soft); font-size:var(--text-sm); }
+.lib-status { margin:0; padding:0 var(--gutter); color:var(--soft); font-size:var(--text-sm); }
 .lib-panel > .empty { margin:1rem var(--gutter); }
 .lib-list { list-style:none; margin:0; padding:0 var(--gutter) 2rem; overflow-y:auto; flex:1; min-height:0; overscroll-behavior:contain; }
 .lib-item { padding:.9rem 0; border-bottom:1px solid var(--rule); }
@@ -1741,17 +1744,17 @@ LIBRARY_SCRIPT = r"""
       const query = search.value.trim().toLowerCase();
       const id = idQuery.exec(query);
       const words = query ? query.split(/\s+/) : [];
-      let shown = 0;
+      let hasMatch = false;
       for (const row of rows) {
         const ok = id
           ? row.dataset.id.toLowerCase() === id[1]
             && (id[2] === undefined || (/^[1-9]\d*$/.test(id[2]) && Number(id[2]) <= Number(row.dataset.questions)))
           : words.every(word => row.dataset.search.toLowerCase().includes(word));
         row.hidden = !ok;
-        if (ok) shown += 1;
+        hasMatch ||= ok;
       }
       none.hidden = Boolean(query) || rows.length > 0;
-      status.textContent = !query ? '' : shown ? shown + (shown === 1 ? ' match' : ' matches') : 'No results match your search.';
+      status.textContent = query && !hasMatch ? 'No results match your search.' : '';
     };
     search.addEventListener('input', run);
     run();
@@ -2061,7 +2064,13 @@ const send = document.querySelector('#send');
 if (send) {
   const fields = [...document.querySelectorAll('textarea')];
   const sections = [...document.querySelectorAll('.decision')];
-  const output = document.querySelector('.sendbar output');
+  const bar = send.closest('.sendbar');
+  const output = bar.querySelector('output');
+  const reserveBarSpace = () => {
+    document.documentElement.style.setProperty('--sendbar-height', bar.getBoundingClientRect().height + 'px');
+  };
+  reserveBarSpace();
+  new ResizeObserver(reserveBarSpace).observe(bar, {box:'border-box'});
   const list = document.querySelector('#questions');
   const suggest = document.querySelector('#suggest');
   const undo = document.querySelector('#undo');
@@ -2100,11 +2109,8 @@ if (send) {
       const rejection = rejections.get(f);
       error.textContent = rejection ? rejection.message : '';
       error.hidden = !rejection;
-      if (rejection) {
-        f.setAttribute('aria-invalid', 'true');
-        const box = f.closest('details');
-        if (box) box.open = true;
-      } else f.removeAttribute('aria-invalid');
+      if (rejection) f.setAttribute('aria-invalid', 'true');
+      else f.removeAttribute('aria-invalid');
       for (const b of f.closest('section').querySelectorAll('[data-choice]')) {
         b.checked = b.dataset.choice === f.value;
       }
@@ -2131,9 +2137,16 @@ if (send) {
       refresh();
     }
     if (e.target === undo && history.length) {
-      for (const [f, value] of history.pop()) f.value = value;
+      const step = history.pop();
+      for (const [f, value] of step) f.value = value;
       refresh();
-      (history.length ? undo : send.disabled ? fields[0] : send).focus();
+      if (history.length) undo.focus();
+      else if (!send.disabled) send.focus();
+      else {
+        const field = step.keys().next().value;
+        const folded = field.closest('details:not([open])');
+        (folded ? folded.querySelector('summary') : field).focus();
+      }
     }
   });
   const questionNumber = section => Number(section.id.split('.')[1]);
@@ -2203,6 +2216,8 @@ if (send) {
           body:JSON.stringify({part:section.id, revision:section.dataset.revision, answer})});
         if (response.status === 400 || response.status === 409) {
           rejections.set(f, {message: await response.text(), draft: response.status === 400 ? answer : undefined});
+          const box = f.closest('details');
+          if (box) box.open = true;
           rejected += 1;
           continue;
         }

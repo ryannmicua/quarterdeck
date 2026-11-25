@@ -27,6 +27,9 @@ in place while preserving their text. They also cover one-line summaries,
 numeric order after out-of-order delivery, refolding a delivered correction,
 expanding a pending correction, and finding archived items by text and exact
 question IDs without revealing answer previews.
+The send bar check uses 390 × 844 and 1440 × 900 viewports with one and twelve
+questions. It verifies the bar at both ends of the page and after its status
+message grows, including that the last answer field can scroll clear of the bar.
 
 The classification browser test uses headless `google-chrome` to select
 filters and check which reference rows, reviewed cards, and empty messages

@@ -26,6 +26,7 @@ import zlib
 from concurrent.futures import ThreadPoolExecutor
 from configparser import ConfigParser
 from contextlib import contextmanager, redirect_stderr, redirect_stdout, suppress
+from html import escape
 from html.parser import HTMLParser
 from pathlib import Path
 from unittest.mock import MagicMock, patch
@@ -931,16 +932,18 @@ class ServeTests(StoreCase):
         status, record = self.post_answer(port, "Q3.1", "Hold", origin=public_origin, forwarded_proto="https")
         self.assertEqual((status, record["answer"]), (200, "Hold"))
 
-    def check_answer_page(self, port, script, path="/qd/q1.html"):
+    def check_answer_page(self, port, script, path="/qd/q1.html", *, viewport=None):
         chrome = shutil.which("google-chrome")
         if not chrome:
             self.skipTest("google-chrome is required for the answer-card browser tests")
         status, page, _ = self.fetch(port, path)
         self.assertEqual(status, 200)
         fixture = self.root / "question.html"
-        fixture.write_text(page.replace("</body>", """
+        page = page.replace("</body>", """
+<style>#browser-result { display:none }</style>
 <output id="browser-result">Incomplete</output>
 <script>
+const result = (window.frameElement ? parent.document : document).getElementById('browser-result');
 const check = (condition, message) => { if (!condition) throw new Error(message); };
 const field = n => document.getElementById('answer-Q1.' + n);
 const card = n => document.getElementById('Q1.' + n);
@@ -962,16 +965,64 @@ const sendBatch = () => new Promise(resolve => {
 });
 (async () => {
 """ + script + """
-  button('browser-result').textContent = 'PASS';
-})().catch(error => { button('browser-result').textContent = error.message; });
+  result.textContent = 'PASS';
+})().catch(error => { result.textContent = error.message; });
 </script>
-</body>"""), encoding="utf-8")
+</body>""")
+        timing = []
+        if viewport:
+            width, height = viewport
+            page = (f'<iframe width="{width}" height="{height}" style="border:0" srcdoc="{escape(page)}"></iframe>'
+                    '<output id="browser-result">Incomplete</output>')
+            timing = ["--virtual-time-budget=1000"]
+        fixture.write_text(page, encoding="utf-8")
         result = subprocess.run([chrome, "--headless", "--disable-background-networking", "--no-first-run", "--lang=en-US",
-                                 f"--user-data-dir={self.root / 'browser'}", "--dump-dom", fixture.as_uri()],
+                                 f"--user-data-dir={self.root / 'browser'}", *timing, "--dump-dom", fixture.as_uri()],
                                 env={**os.environ, "TZ": "Asia/Tokyo", "LC_ALL": "en_US.utf-8"},
                                 capture_output=True, text=True, timeout=30, check=True)
         browser_result = result.stdout.partition('<output id="browser-result">')[2].partition("</output>")[0]
         self.assertEqual(browser_result, "PASS", result.stderr)
+
+    def test_send_bar_stays_at_viewport_bottom_and_reserves_its_height(self):
+        for count in (1, 12):
+            self.add("questions", "Tide decisions", "Decide the launch plan.", "--body-file", "-",
+                     stdin=json.dumps(QUESTIONS[:1] * count))
+        port = self.start("/qd")
+        for width, height in ((390, 844), (1440, 900)):
+            for item, count in ((1, 1), (2, 12)):
+                with self.subTest(viewport=(width, height), questions=count):
+                    self.check_answer_page(port, f"""
+check(innerWidth === {width} && innerHeight === {height}, 'Wrong fixture viewport');
+check(document.querySelectorAll('textarea').length === {count}, 'Wrong fixture question count');
+""" + r"""
+const main = document.querySelector('main');
+const bar = button('send').closest('.sendbar');
+const lastField = [...document.querySelectorAll('textarea')].pop();
+const checkPosition = () => {
+  const bounds = bar.getBoundingClientRect();
+  check(Math.abs(bounds.bottom - innerHeight) < 1, 'The send bar moved away from the viewport bottom');
+  check(Math.abs(parseFloat(getComputedStyle(main).paddingBottom) - bounds.height) < 1,
+        'The page did not reserve exactly one send bar height');
+};
+const checkPageEnd = () => {
+  scrollTo(0, document.documentElement.scrollHeight);
+  checkPosition();
+  check(lastField.getBoundingClientRect().bottom <= bar.getBoundingClientRect().top, 'The bar covered the last field');
+  if (document.documentElement.scrollHeight > innerHeight) {
+    check(Math.abs(main.getBoundingClientRect().bottom - innerHeight) < 1, 'Extra space remained below the page end');
+  }
+};
+checkPosition();
+checkPageEnd();
+const originalHeight = bar.getBoundingClientRect().height;
+bar.querySelector('output').textContent = 'An answer was rejected. '.repeat(12);
+await new Promise(resolve => {
+  const observer = new ResizeObserver(() => { observer.disconnect(); resolve(); });
+  observer.observe(bar);
+});
+check(bar.getBoundingClientRect().height > originalHeight, 'The status fixture did not grow the bar');
+checkPageEnd();
+""", path=f"/qd/q{item}.html", viewport=(width, height))
 
     def test_bulk_suggestions_skip_saved_answers_and_drafts(self):
         self.add("questions", "Tide decisions", "Decide the launch plan.", "--body-file", "-",
@@ -1112,6 +1163,7 @@ check(dialog.querySelectorAll('input[type="search"]').length === 2 && !dialog.qu
 for (const query of ['pier lamp merge amber', 'Q2', 'q2.1', 'q2.2']) {
   type(query);
   check(shown().join() === 'q2.html', 'Failed to match ' + query);
+  check(!panel.querySelector('[role="status"]').textContent, 'A successful search reported a match count');
   check(!/amber|Merge the tide tables/.test(panel.innerText), 'Search revealed private previews');
 }
 for (const query of ['q2.0', 'q2.9', 'q2.01', 'q20']) {
@@ -1123,6 +1175,7 @@ const references = document.getElementById('search-references');
 references.value = 'chart';
 references.dispatchEvent(new Event('input', {bubbles: true}));
 check([...document.querySelectorAll('#panel-references .lib-item')].filter(row => !row.hidden).length === 1, 'References search failed');
+check(!references.closest('[role="tabpanel"]').querySelector('[role="status"]').textContent, 'References search reported a match count');
 const notes = dialog.querySelector('a[href="https://example.org/notes"]');
 notes.scrollIntoView({block: 'nearest'});
 const rect = notes.getClientRects()[0];
@@ -1152,6 +1205,51 @@ check(field(1).value === '', 'Second undo did not reverse the earlier option');
 check(field(2).value === 'Use the next tide' && field(4).value === 'Consult the pilot',
       'Second undo removed later drafts');
 check(button('undo').hidden, 'Undo history was not empty');
+""")
+
+    def test_folded_correction_undo_focus_and_rejection_respect_the_row(self):
+        self.add("questions", "Tide decisions", "Decide the launch plan.", "--body-file", "-",
+                 stdin=json.dumps([*QUESTIONS, QUESTIONS[0]]))
+        self.check_answer_page(self.start("/qd"), r"""
+window.fetch = async (url, options) => {
+  const {answer} = JSON.parse(options.body);
+  return {ok: true, json: async () => ({answer, state: 'answered', revision: 'saved-revision',
+    answered_at: '2026-01-12T15:00:00Z', delivery: 'sent'})};
+};
+typeAnswer(1, 'Hold');
+typeAnswer(2, 'Blue');
+await sendBatch();
+const first = card(1).closest('details');
+const second = card(2).closest('details');
+const summary = second.querySelector('summary');
+check(!first.open && !second.open, 'The delivered questions should start folded');
+summary.click();
+const red = card(2).querySelector('[data-choice="Red"]');
+const undo = button('undo');
+red.click();
+undo.focus();
+undo.click();
+check(document.activeElement === field(2) && field(2).value === 'Blue', 'Undo lost focus instead of returning to the affected field');
+red.click();
+summary.click();
+undo.focus();
+undo.click();
+check(document.activeElement === summary && !second.open, 'Undo did not focus the collapsed row summary');
+summary.click();
+red.click();
+window.fetch = async () => {
+  summary.click();
+  return {ok: false, status: 409, text: async () => 'Question changed. Reload before sending.'};
+};
+await sendBatch();
+const error = document.getElementById(field(2).getAttribute('aria-describedby'));
+check(second.open && !error.hidden && error.textContent === 'Question changed. Reload before sending.',
+      'The rejected correction did not reveal its inline error');
+summary.click();
+typeAnswer(3, 'Merge');
+check(!second.open && !first.open, 'An unrelated edit reopened a folded question');
+summary.click();
+check(!error.hidden && field(2).value === 'Red', 'Closing the row discarded its rejected draft or error');
 """)
 
     def test_batch_conflict_keeps_its_draft_and_sends_independent_answers(self):
