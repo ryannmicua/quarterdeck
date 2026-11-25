@@ -1474,8 +1474,10 @@ reach(button('panel-references').querySelector('a[href="q1.html"]'));
             status, record = self.post_answer(port, part, answer)
             self.assertEqual((status, record["delivery"]), (200, "pending"))
         script = r"""
-const [pending, first, second] = document.querySelectorAll('.desk tbody tr');
 const desk = document.querySelector('.desk');
+const rows = desk.querySelectorAll('table tr:not(thead tr)');
+check(rows.length === 3, 'The Desk should have one row per fixture item');
+const [pending, first, second] = rows;
 const project = first.querySelector('.project');
 check(project.checkVisibility() && project.textContent === 'W'.repeat(40), 'The Project column lost the saved name');
 check(desk.scrollWidth === desk.clientWidth, 'A long project widened the Desk beyond its container');

@@ -37,7 +37,8 @@ message grows, including that the last answer field can scroll clear of the bar.
 On the long phone page, it also checks that Undo and status messages leave the
 focused control visible. A long send error scrolls inside the bar. The browser
 checks also cover focus through delivery transitions. At 390, 641, and 1440
-pixels, the Desk check confirms that every cell hits its row's item link.
+pixels, the Desk check confirms one row per fixture item and that every cell
+hits its row's item link.
 It also checks that the item ID labels the link when the title is invisible
 and that a long project name and delivery status fit without horizontal
 scrolling. A 320-pixel sheet check covers both tabs and Close library. A
@@ -56,9 +57,10 @@ refreshed results. After dismissal, returning from a Desk card and
 reloading the Desk both leave the library closed.
 
 The classification tests parse served and exported HTML to verify item and
-project pairs in a single Desk table. The classification browser tests use
-headless `google-chrome` to select filters and check which reference rows,
-reviewed cards, and empty messages are visible in the narrow and desktop layouts.
+project pairs in a single Desk table, including sets with multiple prompts.
+The classification browser tests use headless `google-chrome` to select
+filters and check which reference rows, reviewed cards, and empty messages
+are visible in the narrow and desktop layouts.
 
 The workers browser test uses headless `google-chrome` to count actual snapshot
 requests on entry, during a virtual minute of idle time, and after a refresh click.

@@ -553,7 +553,8 @@ class DeskTables(HTMLParser):
     def __init__(self) -> None:
         super().__init__()
         self.in_main = False
-        self.in_body = False
+        self.in_table = False
+        self.in_header = False
         self.table_count = 0
         self.rows: list[list[str]] = []
         self.cell: list[str] | None = None
@@ -561,14 +562,15 @@ class DeskTables(HTMLParser):
     def handle_starttag(self, tag, attrs) -> None:
         if tag == "main":
             self.in_main = True
-        if self.in_main:
-            if tag == "table":
-                self.table_count += 1
-            elif tag == "tbody":
-                self.in_body = True
-            elif self.in_body and tag == "tr":
+        elif self.in_main and tag == "table":
+            self.in_table = True
+            self.table_count += 1
+        elif self.in_table and tag == "thead":
+            self.in_header = True
+        elif self.in_table and not self.in_header:
+            if tag == "tr":
                 self.rows.append([])
-            elif self.in_body and tag in ("th", "td"):
+            elif tag in ("th", "td"):
                 self.cell = []
 
     def handle_data(self, text) -> None:
@@ -578,8 +580,10 @@ class DeskTables(HTMLParser):
     def handle_endtag(self, tag) -> None:
         if tag == "main":
             self.in_main = False
-        elif tag == "tbody":
-            self.in_body = False
+        elif tag == "table":
+            self.in_table = False
+        elif tag == "thead":
+            self.in_header = False
         elif tag in ("th", "td") and self.cell is not None:
             self.rows[-1].append(" ".join("".join(self.cell).split()))
             self.cell = None
@@ -619,11 +623,10 @@ class PageTests(ClassificationCase):
 
     def test_more_prompts_add_no_desk_rows_or_prompt_text(self) -> None:
         self.questions("Harbor choices", "--project", "Harbor", body=ASK[:1])
-        before = self.pages()["index.html"]
+        self.check_desk_projects([("Q1 Harbor choices", "Harbor")])
         self.questions("Second set", "--project", "Harbor", body=ASK * 3)
+        self.check_desk_projects([("Q2 Second set", "Harbor"), ("Q1 Harbor choices", "Harbor")])
         after = self.pages()["index.html"]
-        self.assertEqual(before.count('<tr class="work'), 1)
-        self.assertEqual(after.count('<tr class="work'), 2)
         for prompt in [q["question"] for q in ASK]:
             self.assertNotIn(prompt, after.split("<h2>References</h2>")[0])
 
