@@ -1042,7 +1042,9 @@ def ask_message(store, home, binding, payload):
     if not isinstance(message_id, str) or not re.fullmatch(r"[0-9a-f]{32}", message_id):
         raise ValueError("Invalid ask ID.")
     changed_home = "Firstmate home changed. This ask belongs to the original home."
-    if fields == {"part", "id", "text", "home"}:
+    create_fields = {"part", "id", "text", "home"}
+    retry = payload.get("action") == "retry"
+    if fields == create_fields or (retry and fields == create_fields | {"action"}):
         if payload["home"] != binding:
             raise AnswerConflict(changed_home)
         text = clean_text(payload["text"], "Ask", TEXT_LIMIT, multiline=True)
@@ -1057,16 +1059,19 @@ def ask_message(store, home, binding, payload):
                     continue
                 if number != str(part) or message["author"] != "you" or message["text"] != text:
                     raise AnswerConflict("Ask ID already in use. Reload the question.")
-                if message["delivery"] == "pending" and message["home"] != binding:
-                    raise AnswerConflict(changed_home)
-                return ask_result(item, part, message)
-            if part_record(item, part).get("state") == "closed":
-                raise AnswerConflict("Question closed. Reopen it before asking.")
-            thread = item.setdefault("conversation", {}).setdefault(str(part), [])
-            thread.append({"id": message_id, "author": "you", "text": text, "at": now_text(), "delivery": "pending",
-                           "request_id": "quarterdeck-" + uuid.uuid4().hex, "home": binding})
-            write_store(store, data)
-    elif fields != {"part", "id", "action"} or payload["action"] != "retry":
+                if not retry:
+                    if message["delivery"] == "pending" and message["home"] != binding:
+                        raise AnswerConflict(changed_home)
+                    return ask_result(item, part, message)
+                break
+            else:
+                if part_record(item, part).get("state") == "closed":
+                    raise AnswerConflict("Question closed. Reopen it before asking.")
+                thread = item.setdefault("conversation", {}).setdefault(str(part), [])
+                thread.append({"id": message_id, "author": "you", "text": text, "at": now_text(), "delivery": "pending",
+                               "request_id": "quarterdeck-" + uuid.uuid4().hex, "home": binding})
+                write_store(store, data)
+    elif not retry or fields != {"part", "id", "action"}:
         raise ValueError("Invalid ask fields.")
     # The ask is saved before the external call, and delivery runs under the lock so a retry reuses the same note ID.
     with changing_store(store) as data:
@@ -1118,7 +1123,7 @@ def item_text(item: dict[str, object]) -> str:
     elif item["kind"] == "list":
         lines.extend(f"{item_id}.{number}  {entry}" for number, entry in enumerate(body["entries"], 1))  # type: ignore[index]
     else:
-        state, open_parts, _ = question_summary(item)
+        state, open_parts, _ = question_summary(item, replies=False)
         remaining = len(open_parts)
         lines.extend([f"{state} ({remaining} of {len(question_parts(item))} open)" if remaining else state, ""])
         for number, question in enumerate(body["questions"], 1):  # type: ignore[index]
@@ -1135,13 +1140,16 @@ def item_text(item: dict[str, object]) -> str:
             if question.get("suggestion"):
                 lines.append(f"      Suggestion: {question['suggestion']}")
             record = part_record(item, number)
-            lines.append("      " + part_state(item, number).capitalize())
+            thread = part_thread(item, number)
+            lines.append("      " + record.get("state", "open").capitalize())
+            if any(map(unread_reply, thread)):
+                lines.append("      Replied")
             if "answer" in record:
                 lines.append(f"      Answer: {record['answer']} ({record['answered_at']}, {delivery_label(record)})")
             if mark := latest_off_desk_mark(record):
                 at = f" ({mark['answered_at']})" if mark["answered_at"] else ""
                 lines.append(f"      Answered elsewhere: {mark['via']}{at}")
-            for message in part_thread(item, number):
+            for message in thread:
                 detail = (f"ask {message['id']}, {delivery_label(message)}" if message["author"] == "you"
                           else f"reply to {message['ask']}")
                 lines.append(f"      {AUTHOR_LABELS[message['author']]} ({message['at']}, {detail}): "
@@ -2548,8 +2556,17 @@ if (send) {
   }
   function refresh() {
     for (const [field, rejection] of rejections) {
-      if (rejection.draft !== undefined && answerText(field.value) !== rejection.draft) {
+      const draft = answerText(field.value);
+      if (rejection.ask && !draft) {
         rejections.delete(field);
+        output.textContent = '';
+      } else if (rejection.draft !== undefined && draft !== rejection.draft) {
+        if (rejection.ask) {
+          rejection.message = '';
+          delete rejection.draft;
+        } else {
+          rejections.delete(field);
+        }
         output.textContent = '';
       }
     }
@@ -2559,56 +2576,22 @@ if (send) {
     if (suggest) suggest.disabled = !fields.some(suggestionFor);
     undo.hidden = !history.length;
     for (const f of fields) {
-      const ask = f.closest('section').querySelector('.ask-button');
+      const section = f.closest('section');
+      const ask = section.querySelector('.ask-button');
       if (ask) ask.disabled = !askDraft(f);
+      for (const retry of section.querySelectorAll('.pending-asks button')) {
+        retry.disabled = Boolean(askDraft(f));
+      }
       const error = document.getElementById(f.getAttribute('aria-describedby'));
-      const rejection = rejections.get(f);
-      error.textContent = rejection ? rejection.message : '';
-      error.hidden = !rejection;
-      if (rejection) f.setAttribute('aria-invalid', 'true');
+      const message = rejections.get(f)?.message || '';
+      error.textContent = message;
+      error.hidden = !message;
+      if (message) f.setAttribute('aria-invalid', 'true');
       else f.removeAttribute('aria-invalid');
-      for (const b of f.closest('section').querySelectorAll('[data-choice]')) {
+      for (const b of section.querySelectorAll('[data-choice]')) {
         b.checked = b.dataset.choice === f.value;
       }
     }
-  }
-  function showPendingText(node, text) {
-    const pattern = /(?<![\p{L}\p{N}_.+-])https?:\/\/\S+/giu;
-    const delimiters = {'"': '"', "'": "'", '<': '>'};
-    let end = 0;
-    for (let match; (match = pattern.exec(text));) {
-      const closer = delimiters[text[match.index - 1]];
-      const boundary = closer ? match[0].indexOf(closer) : -1;
-      let url = boundary >= 0 ? match[0].slice(0, boundary) : match[0].replace(/[.,;:!?]+$/, '');
-      if (boundary < 0) {
-        let depth = 0;
-        for (let i = 0; i < url.length; i++) {
-          if (url[i] === '(') depth += 1;
-          else if (url[i] === ')') {
-            if (depth) depth -= 1;
-            else if (/^[).,;:!?]+$/.test(url.slice(i))) {
-              url = url.slice(0, i).replace(/[.,;:!?]+$/, '');
-              break;
-            }
-          }
-        }
-      }
-      pattern.lastIndex = match.index + url.length;
-      if (url.includes('\\')) continue;
-      try {
-        new URL(url);
-      } catch {
-        continue;
-      }
-      const link = document.createElement('a');
-      link.href = url;
-      link.textContent = url;
-      link.target = '_blank';
-      link.rel = 'noopener noreferrer';
-      node.append(text.slice(end, match.index), link);
-      end = match.index + url.length;
-    }
-    node.append(text.slice(end));
   }
   document.addEventListener('input', e => {
     if (!e.target.matches('textarea')) return;
@@ -2643,14 +2626,15 @@ if (send) {
         pending.dataset.localAsk = id;
         pending.innerHTML = '<li class="msg you"><p class="who"><strong>You</strong> <span class="delivery">Pending</span></p>'
           + '<p class="record"></p><div class="actions"><button type="button">Send ask again</button></div></li>';
-        showPendingText(pending.querySelector('.record'), body.text);
-        pending.querySelector('button').addEventListener('click', () => askRequest(section, body));
+        pending.querySelector('.record').textContent = field.value;
+        pending.querySelector('button').addEventListener('click', () => askRequest(section, {...body, action: 'retry'}, pending));
         thread.querySelector('.pending-asks').append(pending);
         field.value = field.defaultValue;
+        if (rejections.get(field)?.ask) rejections.delete(field);
         forget(field);
         thread.hidden = false;
         thread.open = true;
-        askRequest(section, body);
+        askRequest(section, body, pending);
       }
     }
     const threadButton = e.target.closest('[data-retry-ask]');
@@ -2710,7 +2694,8 @@ if (send) {
     box.open = false;
     if (focusInSection) box.querySelector('summary').focus();
   }
-  async function askRequest(section, body) {
+  async function askRequest(section, body, pending) {
+    let failedDraft;
     undo.hidden = true;
     const controls = document.querySelectorAll('button,input,textarea');
     controls.forEach(c => c.disabled = true);
@@ -2719,7 +2704,16 @@ if (send) {
       const response = await fetch('asks', {method:'POST', headers:{'Content-Type':'application/json'},
         body:JSON.stringify(body)});
       if (response.status === 400 || response.status === 409) {
-        output.textContent = await response.text();
+        const message = await response.text();
+        output.textContent = message;
+        if (response.status === 400 && pending) {
+          failedDraft = section.querySelector('textarea');
+          failedDraft.value = pending.querySelector('.record').textContent;
+          rejections.set(failedDraft, {ask: true, message, draft: body.text});
+          pending.remove();
+          const thread = section.querySelector('.thread');
+          thread.hidden = !thread.querySelector('.thread-messages > *, .pending-asks > *');
+        }
       } else if (!response.ok) {
         throw new Error(await response.text());
       } else {
@@ -2739,6 +2733,7 @@ if (send) {
     }
     controls.forEach(c => c.disabled = false);
     refresh();
+    if (failedDraft) failedDraft.focus();
   }
   function showAnswer(section, field, record) {
     section.dataset.state = record.state;

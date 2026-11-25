@@ -173,8 +173,10 @@ and removed with the item.
 
 ## Question states
 
-The stored `state` is Open, Answered or Closed. The served site and CLI
-show Replied while any reply on the question has `read` set to false.
+The stored `state` is Open, Answered or Closed. The served site shows a
+Replied badge while any reply on the question has `read` set to false.
+`quarterdeck show` prints the stored state and then a separate Replied
+line while a reply is unread.
 The served page acknowledges displayed replies by ID when the user opens
 that question's **Messages**. When all replies are read, the question shows
 its stored state again.

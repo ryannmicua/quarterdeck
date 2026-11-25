@@ -32,7 +32,7 @@ Item commands report validation errors on stderr and exit with status 2.
 | --- | --- |
 | `add` | Saves a new item and prints its ID. A `resource` needs `--url` and `--link-text`. A `list` or `questions` item needs `--body-file`. See [the input formats and examples](../how-to/save-items.md#add-an-item) and [how to classify items and questions when saving](../how-to/classify-items.md#classify-when-you-save). |
 | `list` | Prints saved items, newest first, with ID, kind, saved date and title. |
-| `show` | Prints the item's text, numbering list entries and questions as `Q7.1`, `Q7.2`. Each question link is printed with its text and URL. Prints saved answers and messages in time order with their author, UTC time, ask ID or reference, and the delivery status of each ask. Replied indicates an unread reply. |
+| `show` | Prints the item's text, numbering list entries and questions as `Q7.1`, `Q7.2`. Prints each question's stored state and a separate Replied line if it has an unread reply. Includes question links, saved answers, and messages in time order with their author, UTC time, ask ID or reference, and ask delivery status. |
 | `reply` | Adds Firstmate's reply to an existing ask on one question, such as `Q7.1`. Supply the required `--ask ID` from the inbox note and the reply in `--text`. Each `--link-text` pairs with a `--url`, and each `--image` with an `--alt`, in the order given. It preserves the answer and state. The question shows Replied while any reply is unread. See [Reply from the command line](../how-to/reply-from-the-command-line.md). |
 | `mark` | Sets question state, optionally for a whole questions item. `--via` is required with `answered` and accepted only with that state. Skips exit with status 0. See [Read answers](../how-to/read-answers.md) for which questions are marked. |
 | `classify` | Requires at least one classification option. Use `--project` for an item ID, `--kind` for a question ID, and `--tag` for either. See [how to change classification](../how-to/classify-items.md#change-it-later). |
@@ -92,10 +92,13 @@ See the [image removal rules](item-store.md#store-layout).
 and the same origin as `/answers`. Send
 `{"part": "Q7.1", "id": "<ask id>", "text": "...", "home": "<home binding>"}`
 to save and deliver an ask. The page generates the 32-character lowercase
-hexadecimal ID and takes the resolved home binding from the served form. Repeating the
-same create request returns the existing ask. Send
-`{"part": "Q7.1", "id": "<ask id>", "action": "retry"}` to retry delivery
-of a saved ask using its original note ID. A changed home, closed question,
+hexadecimal ID and takes the resolved home binding from the served form.
+Repeating the same create request returns the existing ask. Add
+`"action": "retry"` to the original request to recover from an interrupted
+send. Quarterdeck saves the ask if that request never arrived. For a
+saved ask, the page can also send
+`{"part": "Q7.1", "id": "<ask id>", "action": "retry"}`. Both forms
+reuse the saved ask and note IDs. A changed home, closed question,
 or removed item can return 409. The inbox note starts with
 `ASK Q7.1 <ask id>`, followed by the ask text.
 

@@ -30,5 +30,6 @@ and on its page while any reply is unread.
 
 A reply never changes the question's answer or state. Run `quarterdeck show Q7`
 to read the whole conversation, with each message's author, UTC time, and
-ask ID or reference.
+ask ID or reference. It prints each question's stored state and adds a
+separate Replied line while that question has an unread reply.
 See the [CLI reference](../reference/cli-and-config.md#items) for the command.
