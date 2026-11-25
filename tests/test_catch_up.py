@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import os
 import re
 import shutil
 import subprocess
@@ -293,10 +294,17 @@ class CatchUpPageTests(CatchUpCase):
         self.notice("B")
         self.notice("C")
         stale_store = self.store()
+        stale_store["catch_ups"][1]["saved_at"] = "2026-11-25T18:30:00Z"
+        quarterdeck.store_path().write_text(json.dumps(stale_store), encoding="utf-8")
         self.run_cli("catch-up", "read", "C1")
         self.age_read("C1", 8)
         self.notice("D")
         self.run_cli("catch-up", "read", "C4")
+        reference = self.add("resource", "Tide chart", "A chart.", "--url", "https://example.com/chart",
+                             "--link-text", "Chart")
+        data = self.store()
+        data["catch_ups"][0]["item"] = reference
+        quarterdeck.store_path().write_text(json.dumps(data), encoding="utf-8")
         home = self.root / "firstmate"
         home.mkdir()
         port = self.start(ask_home=home)
@@ -307,13 +315,16 @@ class CatchUpPageTests(CatchUpCase):
         catch_up_section = quarterdeck.catch_up_section
         pages = iter([stale_store])
 
-        def instrumented_page(*args, **kwargs):
-            return list_page(*args, **kwargs).replace("</body>", """
+        def instrumented_page(data, *args, **kwargs):
+            snapshot = next(pages, data)
+            kwargs["notices"] = catch_up_section(snapshot)
+            return list_page(snapshot, *args, **kwargs).replace("</body>", """
 <output id="browser-result">Incomplete</output>
 <script>
 {
   const result = document.getElementById('browser-result');
   const control = id => document.querySelector('[data-read="' + id + '"]');
+  const noticeDay = () => document.querySelector('.note[data-id="C2"] time').textContent;
   const bulk = document.querySelector('[data-read-all]');
   const status = document.querySelector('[data-catch-up-status]');
   const check = (condition, message) => { if (!condition) throw new Error(message); };
@@ -329,6 +340,7 @@ class CatchUpPageTests(CatchUpCase):
   });
   (async () => {
     check(control('C1'), 'Conflict recovery should preserve the original Desk page');
+    check(noticeDay() === 'Nov 26, 2026', 'The initial notice should show the next date in Manila');
     const form = document.getElementById('talk-form');
     const draft = document.getElementById('talk-message');
     document.getElementById('open-talk').click();
@@ -368,27 +380,29 @@ class CatchUpPageTests(CatchUpCase):
     });
     check(control('C2') && !control('C3') && !document.querySelector('[data-read-all]') &&
           !document.querySelector('[data-count]'), 'A stale batch should leave the current unread notice available');
+    check(noticeDay() === 'Nov 26, 2026', 'The refreshed notice should still show the local date');
+    check(document.querySelector('.catch-up a[href="q1.html"]')?.textContent === 'Tide chart',
+          'Refreshing Catch-up should show the new saved reference link');
     check(document.getElementById('talk-form') === form && !form.hidden &&
           document.getElementById('talk-message') === draft && draft.value === 'Draft about the tide chart.',
           'Refreshing Catch-up should preserve the open Talk to Firstmate form and its draft');
     await clickAndWait(control('C2'));
     check(!document.querySelector('.catch-up') && document.activeElement.textContent === 'Desk',
           'Acknowledging the last notice should remove Catch-up and focus the Desk heading');
-    check(document.querySelector('main p.empty').textContent.startsWith('Nothing is saved yet.'),
-          'An empty Desk should show its getting-started guidance again');
+    check(document.querySelector('main > p.empty').textContent.startsWith('Nothing is on your Desk.'),
+          'The Desk should restore guidance that accounts for the saved reference');
     result.textContent = 'PASS';
   })().catch(error => { result.textContent = error.message; });
 }
 </script>
 </body>""")
 
-        with patch.object(quarterdeck, "list_page", instrumented_page), patch.object(
-            quarterdeck, "catch_up_section", lambda data: catch_up_section(next(pages, data))
-        ):
+        with patch.object(quarterdeck, "list_page", instrumented_page):
             browser = subprocess.run(
-                [chrome, "--headless", "--disable-background-networking", "--no-first-run",
+                [chrome, "--headless", "--disable-background-networking", "--no-first-run", "--lang=en-US",
                  f"--user-data-dir={self.root / 'browser'}", "--dump-dom", "--virtual-time-budget=10000",
                  f"http://127.0.0.1:{port}/qd/"],
+                env={**os.environ, "TZ": "Asia/Manila", "LC_ALL": "en_US.UTF-8"},
                 capture_output=True, text=True, timeout=30, check=True,
             )
         result = browser.stdout.partition('<output id="browser-result">')[2].partition("</output>")[0]

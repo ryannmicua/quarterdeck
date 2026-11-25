@@ -2389,9 +2389,12 @@ const localizeTimes = root => {
   }
 };
 localizeTimes(document);
-for (const time of document.querySelectorAll('time.day[datetime]:not([datetime=""])')) {
-  time.textContent = new Date(time.dateTime).toLocaleDateString(undefined, {dateStyle:'medium'});
-}
+const localizeDays = root => {
+  for (const time of root.querySelectorAll('time.day[datetime]:not([datetime=""])')) {
+    time.textContent = new Date(time.dateTime).toLocaleDateString(undefined, {dateStyle:'medium'});
+  }
+};
+localizeDays(document);
 """
 
 
@@ -2546,9 +2549,19 @@ CATCH_UP_SCRIPT = r"""
         if (!refreshed.ok) throw new Error(refreshed.status);
         const desk = new DOMParser().parseFromString(await refreshed.text(), 'text/html');
         if (!desk.querySelector('main #workers')) throw new Error('Could not read the Desk');
+        const empty = document.querySelector('[data-empty-desk]');
+        if (empty) {
+          const refreshedEmpty = desk.querySelector('main > p.empty');
+          if (refreshedEmpty) {
+            empty.dataset.emptyDesk = refreshedEmpty.dataset.emptyDesk ?? refreshedEmpty.textContent;
+          } else {
+            empty.remove();
+          }
+        }
         const notices = desk.querySelector('main .catch-up');
         if (notices) {
           section.replaceChildren(...notices.childNodes);
+          localizeDays(section);
           focusHeading(section.querySelector('h2'));
         } else {
           removeSection();
