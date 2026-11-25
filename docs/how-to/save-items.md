@@ -124,6 +124,8 @@ Only `remove` deletes an image, and only the files the removed item names.
   delete it by hand.
 - Each distinct path spelling is resolved once per save. Two spellings can
   pick up different targets if a symlink is retargeted during the save.
+  Quarterdeck uses the standard library's resolved path even when the operating
+  system would reject the original spelling, such as a parent step through a regular file.
 - Two paths to one file through hard links count as different files.
 - Another store that renders into this store's folder can replace or retire
   generated pages. It can add image files but never remove one.

@@ -1812,10 +1812,7 @@ def render(args: argparse.Namespace) -> int:
             raise ValueError("the rendered page must be outside the Quarterdeck checkout")
         store = store_path()
         root = output.parent / "images"
-        live_root = images_root(store).parent.resolve() / "images"
-        live = root == live_root
-        if live_root in output.parents:
-            raise ValueError("the rendered pages must be outside the stored images directory")
+        live = output.parent == store.parent.resolve()
         protected = {store.resolve(), store.with_name(store.name + ".lock").resolve()}
         if ITEM_PAGE_RE.fullmatch(output.name.lower()):
             raise ValueError("the Saved filename is reserved for item pages")

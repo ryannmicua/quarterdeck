@@ -2098,6 +2098,7 @@ class QuestionImagePageTests(ImageCase):
             {"label": "B", "image": {"path": str(link), "alt": "Second"}}]}
         with patch.object(os.path, "realpath", side_effect=retargeting):
             self.add_pictured([question])
+        self.assertEqual(link.readlink(), self.blue)
         options = self.store()["items"][0]["body"]["questions"][0]["options"]
         self.assertEqual(options[0]["image"]["file"], options[1]["image"]["file"])
         folder = quarterdeck.store_path().parent / "images" / "q1"
