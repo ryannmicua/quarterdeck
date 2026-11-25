@@ -27,6 +27,8 @@ quarterdeck reply Q7.1 --ask "$ask_id" --text "Here are both layouts." \
 Images follow the same rules as [question images](../reference/item-store.md#question-images):
 PNG, JPEG or still WebP, up to 5 MB per image. The live page serves them from
 the [private reply image folder](../reference/item-store.md#store-layout).
+If a file named `reply-images` occupies that location in the state
+directory, move it before attaching reply images.
 
 Quarterdeck prints the target and `Replied`, for example `Q7.1 Replied`.
 The live page shows **Replied** while a reply is unread, and the item's

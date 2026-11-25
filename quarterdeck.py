@@ -1223,7 +1223,10 @@ def place_image(target: Path, data: bytes) -> None:
 def save_images(store: Path, item_id: str, images: dict[str, bytes], *, tree: str = "images") -> None:
     if not images:
         return
-    directory = image_directory(images_root(store, tree), item_id)
+    root = images_root(store, tree)
+    if tree == REPLY_IMAGES and root.is_file():
+        raise ValueError(f"Move the file {root} before attaching reply images.")
+    directory = image_directory(root, item_id)
     directory.parent.mkdir(mode=0o700, exist_ok=True)
     os.chmod(directory.parent, 0o700)
     directory.mkdir(mode=0o700, exist_ok=True)
@@ -3108,7 +3111,7 @@ def render(args: argparse.Namespace) -> int:
         protected = {store.resolve(), store.with_name(store.name + ".lock").resolve()}
         if ITEM_PAGE_RE.fullmatch(output.name.lower()):
             raise ValueError("the Saved filename is reserved for item pages")
-        if output.name.lower() in ("images", REPLY_IMAGES):
+        if output.name.lower() == "images" or (live and output.name.lower() == REPLY_IMAGES):
             raise ValueError(f"the Saved filename is reserved for {output.name.lower()}")
         with locked_store(store, read_only=not live):
             data = read_store(store)

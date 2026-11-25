@@ -3065,14 +3065,19 @@ class QuestionImagePageTests(ImageCase):
         self.assertEqual({path for path in (output.parent / "images").rglob("*") if path.is_file()}, exported)
 
     def test_render_reserves_image_directories_before_the_first_pictured_add(self) -> None:
-        for directory in (quarterdeck.store_path().parent, self.root / "site"):
+        state, external = quarterdeck.store_path().parent, self.root / "site"
+        for directory in (state, external):
             for name in ("images", "reply-images", "Reply-Images"):
                 with self.subTest(directory=directory, name=name):
                     output = directory / name
                     code, _, err = self.run_cli("render", "--output", str(output))
-                    self.assertEqual(code, 2)
-                    self.assertIn(f"the Saved filename is reserved for {name.lower()}", err)
-                    self.assertFalse(output.exists())
+                    if directory == external and name != "images":
+                        self.assertEqual((code, err), (0, ""))
+                        self.assertTrue(output.is_file())
+                    else:
+                        self.assertEqual(code, 2)
+                        self.assertIn(f"the Saved filename is reserved for {name.lower()}", err)
+                        self.assertFalse(output.exists())
         self.assertEqual(self.add_pictured(), "Q1")
 
     def test_live_render_reads_its_snapshot_under_the_store_lock(self) -> None:
@@ -3340,6 +3345,23 @@ class ConversationTests(ImageCase):
             self.assertNotIn(text, shown)
         self.assertEqual(self.run_cli("remove", "Q4")[0], 0)
         self.assertEqual(list((quarterdeck.store_path().parent / "reply-images" / "q4").iterdir()), [])
+
+    def test_reply_image_names_the_blocking_file_without_changing_the_store(self) -> None:
+        port = self.start("/qd", ask_home=self.inbox())
+        blocker = quarterdeck.store_path().parent / "reply-images"
+        blocker.write_text("Earlier Saved page.", encoding="utf-8")
+        for target, thread in (("Q4", "item"), ("Q4.1", "1")):
+            with self.subTest(target=target):
+                self.assertEqual(self.ask(port, target, "Show the layout.")[0], 200)
+                ask, = self.messages(thread, 3)
+                reply = ("reply", target, "--ask", ask["id"], "--text", "Here it is.")
+                before = self.store()
+                code, out, err = self.run_cli(*reply, "--image", str(self.red), "--alt", "Layout")
+                self.assertEqual((code, out, err),
+                                 (2, "", f"quarterdeck: Move the file {blocker} before attaching reply images.\n"))
+                self.assertEqual(self.store(), before)
+                self.assertEqual(blocker.read_text(encoding="utf-8"), "Earlier Saved page.")
+                self.assertEqual(self.run_cli(*reply)[0], 0)
 
     def test_reply_rejects_bad_input_and_changes_nothing(self) -> None:
         before = self.store()
