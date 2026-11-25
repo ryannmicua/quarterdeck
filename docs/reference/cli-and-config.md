@@ -93,8 +93,8 @@ See the [image removal rules](item-store.md#store-layout).
 ### Ask endpoint
 
 `POST /asks` (under any `base_path`) requires an explicit `firstmate_home`
-that resolves to an existing directory
-and the same origin as `/answers`. Send
+and the same origin as `/answers`. Question-card asks can be saved as
+**Not delivered** while the home directory is unavailable. Send
 `{"part": "Q7.1", "id": "<ask id>", "text": "...", "home": "<home binding>"}`
 to save and deliver an ask. Use `"part": "Q7"` for the whole question item or
 `"part": "Q7.1"` for one question. The page generates the 32-character lowercase
@@ -128,7 +128,8 @@ instead of creating another, and retries delivery of the first message while it
 is pending. The same ID with a different topic or text returns 409. A successful
 response contains `message` (delivery status) and `href` (the conversation card).
 
-Later messages use `POST /asks` with `"part": "Q12"`. A conversation has no
+Later messages use `POST /asks` with `"part": "Q12"` and still require the home
+to resolve to an existing directory. A conversation has no
 questions, so nothing closes it. Sending or retrying with a different
 Firstmate home returns 409 before saving or delivering the message.
 The inbox note for every conversation message is

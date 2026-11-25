@@ -983,6 +983,10 @@ class SavedAskConflict(AnswerConflict):
     pass
 
 
+class AskHomeUnavailable(Exception):
+    pass
+
+
 def find_answer_item(data, item_id):
     try:
         return find_item(data, item_id)
@@ -1095,7 +1099,7 @@ def conversation_home_matches(item, binding):
     return item["kind"] != "conversation" or part_thread(item, None)[0]["home"] == binding
 
 
-def ask_message(store, home, binding, payload, *, include_thread=True):
+def ask_message(store, home, binding, payload, *, home_available=True, include_thread=True):
     if not isinstance(payload, dict):
         raise ValueError("Invalid ask fields.")
     fields = set(payload)
@@ -1113,6 +1117,8 @@ def ask_message(store, home, binding, payload, *, include_thread=True):
         with locked_store(store):
             data = read_store(store)
             item = find_answer_item(data, item_id)
+            if item["kind"] == "conversation" and not home_available:
+                raise AskHomeUnavailable
             check_conversation_target(item, part, target)
             home_changed = payload["home"] != binding or not conversation_home_matches(item, binding)
             for number, messages in item.get("conversation", {}).items():
@@ -1139,6 +1145,8 @@ def ask_message(store, home, binding, payload, *, include_thread=True):
     # The ask is saved before the external call, and delivery runs under the lock so a retry reuses the same note ID.
     with changing_store(store) as data:
         item = find_answer_item(data, item_id)
+        if item["kind"] == "conversation" and not home_available:
+            raise AskHomeUnavailable
         check_conversation_target(item, part, target)
         message = next((m for m in part_thread(item, part) if m["id"] == message_id and m["author"] == "you"), None)
         if message is None:
@@ -3676,11 +3684,11 @@ def make_server(host: str, port: int, handler: type[BaseHTTPRequestHandler],
 def make_handler(site_title: str, base_path: str = "", store: Path | None = None, home: Path | None = None,
                  *, ask_home: Path | None = None, workers_home: Path | None = None) -> type[BaseHTTPRequestHandler]:
     """Every page is built from the item store when it is requested."""
-    def ask_destination():
+    def ask_destination(*, require_directory):
         if ask_home is not None:
             try:
-                resolved = ask_home.resolve(strict=True)
-                if not resolved.is_dir():
+                resolved = ask_home.resolve(strict=require_directory)
+                if require_directory and not resolved.is_dir():
                     return None, None
             except (OSError, RuntimeError):
                 return None, None
@@ -3768,7 +3776,7 @@ def make_handler(site_title: str, base_path: str = "", store: Path | None = None
                 self.send_image(data, *picture.groups())
                 return
             if name == "index.html":
-                _, ask_binding = ask_destination()
+                _, ask_binding = ask_destination(require_directory=True)
                 self.send_text(200, list_page(data, site_title, served=True, workers=workers_home is not None,
                                               ask_binding=ask_binding), "text/html; charset=utf-8",
                                prevent_framing=bool(ask_binding))
@@ -3778,7 +3786,9 @@ def make_handler(site_title: str, base_path: str = "", store: Path | None = None
             except ValueError:
                 self.send_text(404, "Not found\n")
                 return
-            _, ask_binding = ask_destination() if item["kind"] in ("questions", "conversation") else (None, None)
+            ask_binding = None
+            if item["kind"] in ("questions", "conversation"):
+                _, ask_binding = ask_destination(require_directory=item["kind"] == "conversation")
             content = item_page(item, site_title, served=True, ask_binding=ask_binding)
             prevent_framing = has_answer_controls(item) or item["kind"] == "conversation" or (
                 item["kind"] == "questions" and question_summary(item)[0] == "Replied")
@@ -3799,7 +3809,10 @@ def make_handler(site_title: str, base_path: str = "", store: Path | None = None
                 self.send_text(403, "Open the question on Quarterdeck.")
                 return
             if endpoint in ("/asks", "/conversations"):
-                ask_path, ask_binding = ask_destination()
+                ask_path, ask_binding = ask_destination(require_directory=True)
+                home_available = ask_path is not None
+                if endpoint == "/asks" and not home_available:
+                    ask_path, ask_binding = ask_destination(require_directory=False)
                 if ask_path is None:
                     self.send_text(403, "Configure an available firstmate_home to ask Firstmate.")
                     return
@@ -3815,11 +3828,13 @@ def make_handler(site_title: str, base_path: str = "", store: Path | None = None
                 if endpoint == "/answers":
                     record = send_answer(active_store, home, payload)
                 elif endpoint == "/asks":
-                    record = ask_message(active_store, ask_path, ask_binding, payload)
+                    record = ask_message(active_store, ask_path, ask_binding, payload, home_available=home_available)
                 elif endpoint == "/conversations":
                     record = start_conversation(active_store, ask_path, ask_binding, payload)
                 else:
                     record = mark_replies_read(active_store, payload)
+            except AskHomeUnavailable:
+                self.send_text(403, "Configure an available firstmate_home to ask Firstmate.")
             except AnswerConflict as exc:
                 if endpoint in ("/asks", "/conversations"):
                     record = {"message": str(exc), "saved": isinstance(exc, SavedAskConflict)}

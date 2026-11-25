@@ -3270,6 +3270,30 @@ class ConversationTests(ImageCase):
             self.assertEqual(self.store(), before)
             self.assertFalse((replacement / "attempts").exists())
 
+    def test_question_and_whole_item_asks_can_wait_for_a_missing_home_directory(self) -> None:
+        home = self.root / "home"
+        port = self.start("/qd", ask_home=home)
+        page = self.fetch(port, "/qd/q4.html")[1]
+        self.assertIn('id="open-item-ask"', page)
+        self.assertIn('class="ask-button" data-home=', page)
+        self.assertNotIn('id="open-talk"', self.fetch(port, "/qd/")[1])
+        for target in ("Q4", "Q4.1"):
+            with self.subTest(target=target):
+                body = self.ask_body(port, target, f"Please explain {target}.")
+                for request in (body, {**body, "action": "retry"},
+                                {"part": target, "id": body["id"], "action": "retry"}):
+                    status, result = self.post(port, "/qd/asks", request)
+                    self.assertEqual((status, result["message"]), (200, "Ask saved. Not delivered."))
+                    self.assertIn("Send ask again", result["thread"])
+        whole, = self.messages("item", 3)
+        numbered, = self.messages("1", 3)
+        self.assertEqual((whole["delivery"], numbered["delivery"]), ("pending", "pending"))
+        self.assertEqual(self.inbox(), home)
+        for target, message in (("Q4", whole), ("Q4.1", numbered)):
+            retry = {"part": target, "id": message["id"], "action": "retry"}
+            self.assertEqual(self.post(port, "/qd/asks", retry)[1]["message"], "Ask sent.")
+        self.assertEqual((home / "attempts").read_text().splitlines(), [whole["request_id"], numbered["request_id"]])
+
     def test_pending_asks_cannot_follow_a_repointed_home_symlink(self) -> None:
         original = self.inbox(accept=False)
         replacement = self.inbox(name="replacement")
