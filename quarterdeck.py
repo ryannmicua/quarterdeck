@@ -1702,7 +1702,7 @@ textarea { display:block; width:100%; resize:vertical; background:var(--ground);
 .ref-links li { margin:0; }
 .ref-link { display:inline-block; padding:.6rem 0; min-height:44px; box-sizing:border-box; font-size:1.1rem; font-weight:600; text-decoration:underline; color:var(--ink); }
 .visual { margin:.2rem 0 1rem; font-family:var(--sans); }
-.decision img { display:block; width:100%; height:auto; max-height:30rem; object-fit:contain; background:var(--faint);
+.decision img,.thread img { display:block; width:100%; height:auto; max-height:30rem; object-fit:contain; background:var(--faint);
   border:1px solid var(--rule); border-radius:4px; }
 .shots,.has-images { list-style:none; margin:.2rem 0 1rem; padding:0; display:grid; gap:1rem;
   grid-template-columns:repeat(auto-fit,minmax(min(100%,13rem),1fr)); align-items:start; }
@@ -2599,7 +2599,7 @@ if (send) {
   let history = [];
   const answerText = value => value.replace(/^[\p{White_Space}\x1c-\x1f]+|[\p{White_Space}\x1c-\x1f]+$/gu, '');
   const newDraft = f => answerText(f.value) && answerText(f.value) !== answerText(f.defaultValue);
-  const handEdited = origin => origin === 'manual' || origin === 'edited-fill' || origin === 'ask';
+  const handEdited = origin => origin === 'manual' || origin === 'ask' || origin?.edited;
   const askDraft = f => (f.closest('.item-conversation') || handEdited(draftOrigins.get(f))) && newDraft(f);
   const changed = f => {
     const {pending} = f.closest('section').dataset;
@@ -2653,9 +2653,11 @@ if (send) {
     const field = e.target;
     if (!field.matches('[data-conversation] textarea')) return;
     const origin = draftOrigins.get(field);
-    if (origin === 'filled' || origin === 'edited-fill') {
-      const restoredFill = e.inputType === 'historyUndo' && !document.queryCommandEnabled('undo');
-      draftOrigins.set(field, restoredFill ? 'filled' : 'edited-fill');
+    if (origin?.choice) {
+      const restoredFill = e.inputType === 'historyUndo' && field.value === origin.choice.dataset.choice;
+      draftOrigins.set(field, {choice: origin.choice, edited: !restoredFill});
+    } else if (origin === 'filled') {
+      draftOrigins.set(field, 'manual');
     }
     forget(field);
     refresh();
@@ -2679,7 +2681,7 @@ if (send) {
           step.set(f, {value: f.value, origin, askError});
           if (origin === 'ask') rejections.delete(f);
           f.value = option.dataset.choice;
-          if (origin) draftOrigins.set(f, 'filled');
+          if (origin) draftOrigins.set(f, {choice: option, edited: false});
         }
       }
       if (step.size) history.push(step);
@@ -2719,7 +2721,7 @@ if (send) {
       const step = history.pop();
       for (const [f, {value, origin, askError}] of step) {
         f.value = value;
-        if (origin) draftOrigins.set(f, origin === 'edited-fill' ? 'manual' : origin);
+        if (origin) draftOrigins.set(f, origin.edited ? 'manual' : origin);
         if (askError) rejections.set(f, askError);
       }
       refresh();
@@ -2792,8 +2794,6 @@ if (send) {
           pending.remove();
           const thread = section.querySelector('.thread');
           thread.hidden = !thread.querySelector('.thread-messages > *, .pending-asks > *');
-        } else if (pending && saved === true) {
-          pending.querySelector('.delivery').textContent = 'Saved';
         }
       } else if (!response.ok) {
         throw new Error(await response.text());

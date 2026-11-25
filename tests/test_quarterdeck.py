@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import base64
 import errno
 import fcntl
 import hashlib
@@ -3911,6 +3912,55 @@ check(calls.length === 3 && calls[2][0] === 'answers' && calls[2][1].part === 'Q
       'The batch did not remain scoped to the numbered question');
 """, setup=f"const replyId = {json.dumps(reply['id'])};")
 
+    def test_reply_images_fit_both_threads_on_a_phone(self) -> None:
+        port = self.start("/qd", ask_home=self.inbox())
+        png = tiny_png((40, 160, 40), 1200)
+        image = self.picture("mockup.png", png)
+        for target in ("Q4", "Q4.1"):
+            ask = self.ask_body(port, target, "Show the layout.")
+            self.assertEqual(self.post(port, "/qd/asks", ask)[0], 200)
+            self.assertEqual(self.run_cli("reply", target, "--ask", ask["id"], "--text", "Here it is.",
+                                          "--image", str(image), "--alt", "Layout mockup")[0], 0)
+        status, replacement = self.ask(port, "Q4", "Show another layout.")
+        self.assertEqual(status, 200)
+        url = "data:image/png;base64," + base64.b64encode(png).decode("ascii")
+
+        def embed_picture(html):
+            return re.sub(r'(?<=src=")reply-images/q4/[^"]+', url, html).replace('loading="lazy"', 'loading="eager"')
+
+        replacement["thread"] = embed_picture(replacement["thread"])
+        page = embed_picture(self.fetch(port, "/qd/q4.html")[1])
+        self.check_page(port, r"""
+document.documentElement.style.maxWidth = '390px';
+const whole = document.getElementById('Q4');
+async function checkImage(section) {
+  section.querySelector('details').open = true;
+  const image = section.querySelector('.thread img');
+  if (!image.complete) {
+    await new Promise((resolve, reject) => {
+      image.addEventListener('load', resolve, {once: true});
+      image.addEventListener('error', reject, {once: true});
+    });
+  }
+  const imageBox = image.getBoundingClientRect();
+  const cardBox = section.getBoundingClientRect();
+  check(image.naturalWidth === 1200 && imageBox.width > 0 && imageBox.right <= cardBox.right,
+        'The reply image overflowed ' + section.id);
+}
+await checkImage(whole);
+await checkImage(card(1));
+window.fetch = async () => ({ok: true, status: 200, json: async () => replacement});
+document.getElementById('open-item-ask').click();
+const editor = whole.querySelector('textarea');
+editor.value = 'Show another layout.';
+editor.dispatchEvent(new Event('input', {bubbles: true}));
+const initial = whole.querySelector('.thread img');
+whole.querySelector('.ask-button').click();
+await settled();
+check(!initial.isConnected, 'The thread did not refresh');
+await checkImage(whole);
+""", setup=f"const replacement = {json.dumps(replacement)};", page=page)
+
     def test_confirmed_ask_conflicts_restore_local_drafts_and_keep_saved_asks(self) -> None:
         port = self.start("/qd", ask_home=self.inbox(accept=False))
         self.assertEqual(self.ask(port, "Q4.2", "A saved preview request.")[0], 200)
@@ -3957,6 +4007,8 @@ for (const section of [whole, card(1)]) {
   await settled();
   check(editor.value === '' && recovery.isConnected && document.getElementById('send').disabled,
         'A saved conflict restored an ask as a fresh draft');
+  check(recovery.closest('[data-local-ask]').querySelector('.delivery').textContent === 'Pending',
+        'A conflict changed the pending delivery label');
   check(calls[first][1].id === calls.at(-1)[1].id && calls[first][1].home === calls.at(-1)[1].home,
         'A saved conflict lost the ask identity or home');
 }
@@ -4035,11 +4087,14 @@ check(field(1).value === '' && !pending.firstElementChild && send.disabled, 'The
 const ask = n => card(n).querySelector('.ask-button');
 const send = document.getElementById('send');
 const undo = document.getElementById('undo');
+field(2).focus();
+check(document.execCommand('insertText', false, 'Sibling draft'), 'Sibling edit failed');
 document.getElementById('suggest').click();
 check(field(1).value === 'Merge' && ask(1).disabled, 'A bulk suggestion became an ask');
-check(send.textContent === 'Send 1 answer', 'A bulk suggestion was not queued as an answer');
+check(send.textContent === 'Send 2 answers', 'A bulk suggestion was not queued alongside the sibling draft');
 undo.click();
-check(field(1).value === '' && ask(1).disabled && send.disabled, 'Undo did not clear the suggestion');
+check(field(1).value === '' && ask(1).disabled && send.textContent === 'Send 1 answer',
+      'Undo changes lost the sibling draft or left the suggestion queued');
 card(1).querySelector('[data-choice="Hold"]').click();
 check(field(1).value === 'Hold' && ask(1).disabled, 'Selecting an option enabled Ask Firstmate');
 field(1).focus();
@@ -4070,6 +4125,23 @@ check(document.execCommand('undo') && field(1).value === 'Merge' && !ask(1).disa
       'Native Undo classified a manually typed option label as a selected answer');
 check(document.execCommand('redo') && field(1).value === '?Merge' && !ask(1).disabled,
       'Native Redo lost the manually typed draft');
+""")
+
+    def test_native_undo_of_a_suggestion_ignores_sibling_history(self) -> None:
+        port = self.start("/qd", ask_home=self.inbox())
+        self.check_page(port, r"""
+field(2).focus();
+check(document.execCommand('insertText', false, 'Sibling draft'), 'Sibling edit failed');
+document.getElementById('suggest').click();
+const ask = card(1).querySelector('.ask-button');
+field(1).focus();
+field(1).setSelectionRange(5, 5);
+check(document.execCommand('insertText', false, '?') && !ask.disabled, 'Editing the suggestion did not enable Ask');
+check(document.execCommand('undo') && field(1).value === 'Merge' && ask.disabled,
+      'Native Undo made the restored suggestion askable');
+check(field(2).value === 'Sibling draft', 'Undo changed the sibling draft');
+check(document.execCommand('redo') && field(1).value === 'Merge?' && !ask.disabled,
+      'Native Redo did not restore the edited suggestion');
 """)
 
     def test_replacing_a_rejected_ask_allows_answer_edits_before_and_after_saving(self) -> None:

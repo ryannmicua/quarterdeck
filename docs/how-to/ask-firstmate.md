@@ -38,8 +38,7 @@ from oldest to newest, with its replies underneath in the order they arrived.
 
 ## Retry a missed delivery
 
-If an ask stays **Pending** after an interruption or shows **Saved** or
-**Not delivered**,
+If an ask stays **Pending** after an interruption or shows **Not delivered**,
 select **Send ask again** once the
 [inbox is available](read-answers.md#connect-the-inbox). The retry keeps the
 original ask and note IDs. Reopen a closed question before sending or

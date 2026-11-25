@@ -67,14 +67,16 @@ The conversation group uses a fake inbox to check that ask replays and
 retries keep their original IDs and reject a repointed home symlink. It
 checks recovery when an ask is already saved and when the first request
 never arrived, and checks assets from plain and external renders. Its
-headless Chrome checks cover native undo and redo of rejected asks and
-hand edits that match a selected answer. They also verify that an owner
+headless Chrome checks cover native undo and redo of rejected asks,
+hand edits that match an option, and undoing edits with history in a sibling
+editor. They also verify that an owner
 can edit and save an answer after replacing a rejected ask. Tests open
 **Messages** explicitly and exercise both response orders for overlapping
 acknowledgments and live updates.
 The whole-item checks cover the toolbar editor, the inbox target and retry ID,
 separate reply acknowledgment for the item and each question, and private
-reply images. The conversation group also checks that confirmed conflicts
+reply images. The browser checks a 1200-pixel reply image in both conversations
+at phone width and after a thread refresh. The conversation group also checks that confirmed conflicts
 return local drafts to their editors, preserve saved asks, and keep reference
 items outside the conversation workflow. The closed-item check closes the
 questions between saving an ask and delivering it, then verifies that the
