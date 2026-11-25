@@ -4109,12 +4109,12 @@ field(1).setSelectionRange(4, 5);
 check(document.execCommand('delete') && field(1).value === 'Hold' && !ask(1).disabled,
       'Deleting the question mark lost the hand-edited origin');
 check(document.execCommand('undo') && field(1).value === 'Hold?' && !ask(1).disabled, 'Native Undo lost the hand edit');
-check(document.execCommand('redo') && field(1).value === 'Hold' && !ask(1).disabled,
-      'Native Redo mistook the hand edit for the original option');
+check(document.execCommand('redo') && field(1).value === 'Hold' && ask(1).disabled,
+      'Native Redo made matching fill text askable');
 card(1).querySelector('[data-choice="Merge"]').click();
 check(field(1).value === 'Merge' && ask(1).disabled, 'A replacement option remained askable');
 undo.click();
-check(field(1).value === 'Hold' && !ask(1).disabled, 'Undo changes lost the draft’s hand-edited origin');
+check(field(1).value === 'Hold' && ask(1).disabled, 'Undo changes made matching fill text askable');
 card(1).querySelector('[data-choice="Hold"]').click();
 field(1).focus();
 field(1).select();
@@ -4144,7 +4144,7 @@ check(document.execCommand('redo') && field(1).value === 'Merge?' && !ask.disabl
       'Native Redo did not restore the edited suggestion');
 """)
 
-    def test_native_undo_keeps_a_manual_edit_that_matches_its_fill(self) -> None:
+    def test_undo_treats_restored_text_matching_its_fill_as_an_answer(self) -> None:
         port = self.start("/qd", ask_home=self.inbox())
         for suggested in (False, True):
             with self.subTest(suggested=suggested):
@@ -4163,20 +4163,51 @@ check(document.execCommand('delete') && editor.value === fill && !ask.disabled,
       'Deleting the punctuation did not preserve the manual draft');
 editor.setSelectionRange(0, 0);
 check(document.execCommand('insertText', false, '!'), 'The separate manual edit failed');
-check(document.execCommand('undo') && editor.value === fill && !ask.disabled,
-      'Native Undo mistook matching manual text for the original fill');
+check(document.execCommand('undo') && editor.value === fill && ask.disabled,
+      'Native Undo made matching manual text askable');
 check(document.execCommand('undo') && editor.value === fill + '?' && !ask.disabled,
       'Native Undo lost the first manual edit');
 check(document.execCommand('undo') && editor.value === fill && ask.disabled,
       'Native Undo made the actual fill askable');
 check(document.execCommand('redo') && editor.value === fill + '?' && !ask.disabled,
       'Native Redo lost the first manual edit');
-check(document.execCommand('redo') && editor.value === fill && !ask.disabled,
-      'Native Redo mistook matching manual text for the original fill');
+check(document.execCommand('redo') && editor.value === fill && ask.disabled,
+      'Native Redo made matching manual text askable');
+editor.setSelectionRange(0, 1);
+check(document.execCommand('insertText', false, '!'), 'Editing the fill failed');
+editor.setSelectionRange(0, 1);
+check(document.execCommand('insertText', false, fill[0]) && editor.value === fill && !ask.disabled,
+      'Retyping the fill did not enable Ask Firstmate');
 (suggested ? card(1).querySelector('[data-choice="Merge"]') : option).click();
 check(editor.value === fill && ask.disabled, 'Selecting the option did not replace the manual origin');
 document.getElementById('undo').click();
-check(editor.value === fill && !ask.disabled, 'Undo changes lost the matching manual draft');
+check(editor.value === fill && ask.disabled, 'Undo changes made matching manual text askable');
+""", setup=f"const suggested = {json.dumps(suggested)};")
+
+    def test_grouped_backspaces_undo_and_redo_classify_the_restored_text(self) -> None:
+        port = self.start("/qd", ask_home=self.inbox())
+        for suggested in (False, True):
+            with self.subTest(suggested=suggested):
+                self.check_page(port, r"""
+const editor = field(1);
+const ask = card(1).querySelector('.ask-button');
+const fill = suggested ? 'Merge' : 'Hold';
+(suggested ? document.getElementById('suggest') : card(1).querySelector('[data-choice="Hold"]')).click();
+editor.focus();
+editor.setSelectionRange(fill.length, fill.length);
+check(document.execCommand('insertText', false, '??'), 'The initial edit failed');
+const shortened = fill.slice(0, -1);
+for (const expected of [fill + '?', fill, shortened]) {
+  check(document.execCommand('delete') && editor.value === expected, 'Backspace did not produce ' + expected);
+}
+check(document.execCommand('undo') && editor.value === fill + '??' && !ask.disabled,
+      'The first Undo did not restore the grouped deletion as one edit');
+check(document.execCommand('undo') && editor.value === fill && ask.disabled,
+      'Undo made the restored fill askable');
+check(document.execCommand('redo') && editor.value === fill + '??' && !ask.disabled,
+      'Redo did not restore the askable draft');
+check(document.execCommand('redo') && editor.value === shortened && !ask.disabled,
+      'Redo did not restore the grouped deletion as one edit');
 """, setup=f"const suggested = {json.dumps(suggested)};")
 
     def test_replacing_a_rejected_ask_allows_answer_edits_before_and_after_saving(self) -> None:

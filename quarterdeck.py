@@ -2599,8 +2599,11 @@ if (send) {
   let history = [];
   const answerText = value => value.replace(/^[\p{White_Space}\x1c-\x1f]+|[\p{White_Space}\x1c-\x1f]+$/gu, '');
   const newDraft = f => answerText(f.value) && answerText(f.value) !== answerText(f.defaultValue);
-  const handEdited = origin => origin === 'manual' || origin === 'ask' ||
-    (origin?.choice && (!origin.matchesFill || origin.matchingEdits > 0));
+  const handEdited = origin => origin === 'manual' || origin === 'ask' || origin?.edited;
+  const restoredOrigin = (field, origin) => {
+    // Undo and redo treat matching hand-edited text as the fill. Retype it to ask.
+    return origin?.choice ? {choice: origin.choice, edited: field.value !== origin.choice.dataset.choice} : origin;
+  };
   const askDraft = f => (f.closest('.item-conversation') || handEdited(draftOrigins.get(f))) && newDraft(f);
   const changed = f => {
     const {pending} = f.closest('section').dataset;
@@ -2655,14 +2658,8 @@ if (send) {
     if (!field.matches('[data-conversation] textarea')) return;
     const origin = draftOrigins.get(field);
     if (origin?.choice) {
-      const matchesFill = field.value === origin.choice.dataset.choice;
-      let matchingEdits = origin.matchingEdits;
-      if (e.inputType === 'historyUndo') {
-        if (origin.matchesFill && matchingEdits > 0) matchingEdits--;
-      } else if (matchesFill) {
-        matchingEdits++;
-      }
-      draftOrigins.set(field, {choice: origin.choice, matchesFill, matchingEdits});
+      const restoring = e.inputType === 'historyUndo' || e.inputType === 'historyRedo';
+      draftOrigins.set(field, restoring ? restoredOrigin(field, origin) : {choice: origin.choice, edited: true});
     } else if (origin === 'filled') {
       draftOrigins.set(field, 'manual');
     }
@@ -2688,7 +2685,7 @@ if (send) {
           step.set(f, {value: f.value, origin, askError});
           if (origin === 'ask') rejections.delete(f);
           f.value = option.dataset.choice;
-          if (origin) draftOrigins.set(f, {choice: option, matchesFill: true, matchingEdits: 0});
+          if (origin) draftOrigins.set(f, {choice: option, edited: false});
         }
       }
       if (step.size) history.push(step);
@@ -2728,7 +2725,7 @@ if (send) {
       const step = history.pop();
       for (const [f, {value, origin, askError}] of step) {
         f.value = value;
-        if (origin) draftOrigins.set(f, origin.choice && handEdited(origin) ? 'manual' : origin);
+        if (origin) draftOrigins.set(f, restoredOrigin(f, origin));
         if (askError) rejections.set(f, askError);
       }
       refresh();

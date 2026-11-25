@@ -68,9 +68,9 @@ retries keep their original IDs and reject a repointed home symlink. It
 checks recovery when an ask is already saved and when the first request
 never arrived, and checks assets from plain and external renders. Its
 headless Chrome checks cover native undo and redo of rejected asks,
-hand edits that match an option or suggestion, and undoing edits with history
-in a sibling editor. The matching-text check steps back through the edited
-value and the original fill, then checks Redo and **Undo changes**.
+option and suggestion fills, and edits with history in a sibling editor.
+They check matching text after native Undo, Redo, and **Undo changes**, and
+verify that grouped Backspaces cannot make a restored fill askable.
 The tests also verify that an owner
 can edit and save an answer after replacing a rejected ask. Tests open
 **Messages** explicitly and exercise both response orders for overlapping

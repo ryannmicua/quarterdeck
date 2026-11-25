@@ -19,6 +19,8 @@ its conversations stay readable. Reopen a question to use the toolbar ask.
    suggestions** fills an answer. **Ask Firstmate** is available for a
    new hand-edited draft when
    [`firstmate_home` is configured](read-answers.md#connect-the-inbox).
+   If Undo or Redo restores the option or suggestion text, Quarterdeck treats
+   it as the filled answer. Retype it to ask Firstmate.
 2. Select **Ask Firstmate** below that field. The draft moves to **Messages**
    as a pending ask. The inbox note starts with `ASK`, the question ID and
    the ask ID. Use **Send answers** in the page bar when you're ready to
