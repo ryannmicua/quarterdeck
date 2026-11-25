@@ -4431,6 +4431,10 @@ card(1).querySelector('[data-choice="Merge"]').click();
 document.getElementById('undo').click();
 check(field(1).value === 'Hold' && queueItems().length === 1 && document.getElementById('send').disabled,
       'Undo put the excluded answer back in both send paths');
+type(1, 'Hold ');
+check(queueItems().length === 1 && document.getElementById('send').disabled,
+      'A whitespace-only edit requeued the removed answer');
+type(1, 'Hold');
 check(document.querySelectorAll('#queue-list button').length === 0,
       'The set-message preview offered a separate removal action');
 queueText('   ');
@@ -4449,6 +4453,12 @@ document.getElementById('undo').click();
 check(field(1).value === 'Hold' && document.getElementById('send').disabled &&
       document.getElementById('send-queue').disabled, 'Undo did not restore the exclusion');
 type(1, '');
+field(1).focus();
+check(document.execCommand('insertText', false, 'Wait until we see the proof') &&
+      !document.getElementById('send').disabled, 'A replacement answer was not queued');
+check(document.execCommand('undo') && field(1).value === '' &&
+      document.getElementById('send').disabled && document.getElementById('send-queue').disabled,
+      'Undo did not restore the excluded blank field');
 document.getElementById('suggest').click();
 check(field(1).value === '' && field(2).value === 'Red' && queueItems().length === 1 &&
       queueItems()[0].includes('Q4.2') && document.getElementById('send').textContent === 'Send 1 answer',
@@ -4642,8 +4652,7 @@ document.getElementById('undo').click();
 check(field(1).value === ' Hold ' && !card(1).querySelector('.review').hidden && send.disabled,
       'Undo released the review-held draft');
 card(1).querySelector('.keep-draft').click();
-check(!send.disabled && !sendQueue.disabled, 'The edited draft did not enter the queue after confirmation');
-document.querySelector('#queue-list button').click();
+check(send.disabled && sendQueue.disabled, 'Confirming the draft cleared its send exclusion');
 composer.value = 'Please include the cover in the proof.';
 composer.dispatchEvent(new Event('input', {bubbles: true}));
 document.getElementById('queue-add').click();
@@ -4889,12 +4898,46 @@ check(calls[2][1].id === calls[1][1].id && calls[2][1].action === 'retry',
         self.assertEqual(self.run_cli("reply", "Q4", "--ask", whole["id"], "--text", "Yes.")[0], 0)
         self.assertEqual(self.run_cli("mark", "Q4", "answered", "--via", "elsewhere")[0], 0)
         index = self.fetch(port, "/qd/")[1]
-        self.assertIn('href="q4.html#Q4">Read set discussion</a>', index)
+        answered = index.split('id="panel-answered"', 1)[1].split("</section>", 1)[0]
+        self.assertEqual(re.findall(r'<a [^>]*href="(q4\.html[^"]*)"[^>]*>([^<]*)</a>', answered),
+                         [("q4.html", "Two decisions")])
         page = self.fetch(port, "/qd/q4.html")[1]
         self.assertIn("Discuss this set", page)
         self.assertIn("Can the quantity wait?", page)
         self.assertIn('<span class="id">Q4.1</span>', page)
         self.assertIn("Answered elsewhere", page)
+
+    def test_a_closed_set_discussion_refreshes_on_an_open_page(self) -> None:
+        port = self.start("/qd", ask_home=self.inbox())
+        status, _ = self.ask(port, "Q4", "Can we see the proof?")
+        self.assertEqual(status, 200)
+        self.assertEqual(self.run_cli("mark", "Q4", "closed")[0], 0)
+        before_reply = self.fetch(port, "/qd/q4.html")[1]
+        ask, = self.messages("item", 3)
+        self.assertEqual(self.run_cli("reply", "Q4", "--ask", ask["id"], "--text", "Here is the proof.",
+                                      "--clarify", "Q4.1=The cover proof is ready.")[0], 0)
+        status, body, _ = self.fetch(port, "/qd/q4.discussion.json")
+        self.assertEqual(status, 200)
+        self.check_page(port, r"""
+const discussion = document.getElementById('Q4');
+const summary = discussion.querySelector('summary');
+summary.click();
+check(!document.getElementById('send') && !discussion.querySelector('[data-reply-id]'),
+      'The closed discussion unexpectedly had answer controls or an initial reply');
+window.fetch = async url => {
+  check(url === 'q4.discussion.json', 'The closed discussion refreshed another item');
+  return {ok: true, json: async () => snapshot};
+};
+await refreshDiscussion();
+check(summary.parentElement.open && discussion.querySelector('[data-reply-id] .record').textContent === 'Here is the proof.' &&
+      discussion.querySelector('.badge').textContent === 'Replied' &&
+      card(1).querySelector('.clarified .record').textContent === 'The cover proof is ready.',
+      'The open read-only discussion did not display the reply and clarification');
+""", page=before_reply, setup=f"""
+const snapshot = {json.dumps(json.loads(body))};
+let refreshDiscussion;
+window.setInterval = callback => {{ refreshDiscussion = callback; }};
+""")
 
     def test_a_correction_keeps_the_previous_answer_traceable_on_the_card(self) -> None:
         home = self.inbox()
@@ -4931,7 +4974,7 @@ check(calls[2][1].id === calls[1][1].id && calls[2][1].action === 'retry',
         self.assertEqual(self.run_cli("mark", "Q4", "answered", "--via", "elsewhere")[0], 0)
         self.assertEqual(self.store()["items"][3]["answers"]["1"]["earlier_answers"], [old_entry])
         self.assertNotIn(old_entry["request_id"], corrected["earlier_answers_html"])
-        self.assertIn('href="q4.html#Q4">Read set discussion</a>', self.fetch(port, "/qd/")[1])
+        self.assertIn('<a class="lib-title" href="q4.html">Two decisions</a>', self.fetch(port, "/qd/")[1])
 
         check_history = r"""
 const outer = card(1).closest('details.done');

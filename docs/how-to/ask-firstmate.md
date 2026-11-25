@@ -23,8 +23,9 @@ it is queued. Clear the field to leave the message out of the send.
 Select **Send queued items** to send the queued answers, then the set message.
 A message-only send leaves each question in its current state. **Remove from
 send** keeps the draft on its card and leaves it out of both send buttons.
-Edit the draft or select an option on its card to put the answer back in the
-queue. You can send more messages before answering anything.
+Change the answer text or select an option on its card to put it back in the
+queue. Adding or removing surrounding whitespace keeps it out of the send.
+You can send more messages before answering anything.
 
 When delivery is incomplete, the send bar counts sent items, items saved
 for retry, failed requests, and interrupted sends whose outcome is
@@ -37,8 +38,8 @@ the hold for both send buttons. A newer option change asks for confirmation
 again. The open page refreshes the set discussion and its clarifications
 without replacing your drafts.
 
-After the item moves to **Answered** in the Library, select **Read set
-discussion** to return to its thread.
+After the item moves to **Answered** in the Library, select its title and
+open **Messages** under **Discuss this set** to return to the thread.
 
 ## Ask about one question
 

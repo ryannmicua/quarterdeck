@@ -2872,7 +2872,7 @@ def question_form(item, served, *, ask_binding=None):
     return f'<p class="progress">{progress}</p>' + whole_item + '<div id="questions">' + ''.join(cards) + ''.join(folded) + '</div>' + toolbar
 
 
-QUESTION_SCRIPT = """
+QUESTION_SCRIPT = r"""
 const sections = [...document.querySelectorAll('.decision')];
 const replyStates = new Map([...document.querySelectorAll('[data-conversation]')].map(section => [section, new Map()]));
 const questionNumber = section => Number(section.id.split('.')[1]);
@@ -2935,6 +2935,83 @@ async function acknowledgeReplies(section) {
       return;
     }
   }
+}
+const whole = document.querySelector('.item-conversation:not(.conversation)');
+let sending = false;
+let discussionRequest;
+let refreshAnswerControls;
+const answerText = value => value.replace(/^[\p{White_Space}\x1c-\x1f]+|[\p{White_Space}\x1c-\x1f]+$/gu, '');
+const answerDraft = f => {
+  const answer = answerText(f.value);
+  return answer && (answer !== f.defaultValue || f.closest('section').dataset.pending === '1');
+};
+const needsReview = section => section.hasAttribute('data-review');
+function updateClarification(section, html) {
+  const current = section.querySelector('.clarified');
+  const field = section.querySelector('textarea');
+  const template = document.createElement('template');
+  template.innerHTML = html;
+  const next = template.content.firstElementChild;
+  if (Number(next.dataset.notes) <= Number(current.dataset.notes)) return;
+  if (field && next.dataset.optionRevision !== current.dataset.optionRevision) {
+    section.setAttribute('data-review', '');
+    const folded = section.closest('details.done');
+    if (folded && answerDraft(field)) folded.open = true;
+  }
+  const restoreFocus = current.contains(document.activeElement);
+  const review = next.querySelector('.review');
+  if (review) review.hidden = !needsReview(section);
+  current.replaceWith(next);
+  if (restoreFocus) (next.querySelector('.review:not([hidden]) .keep-draft') || section).focus();
+  return true;
+}
+function updateClarifications(clarifications) {
+  let changed = false;
+  for (const [id, html] of Object.entries(clarifications)) {
+    if (updateClarification(document.getElementById(id), html)) changed = true;
+  }
+  if (changed) refreshAnswerControls?.();
+}
+function updateThread(section, html) {
+  const thread = section.querySelector('.thread');
+  const messages = thread.querySelector('.thread-messages');
+  const next = messages.cloneNode(false);
+  const preview = thread.cloneNode(false);
+  preview.append(next);
+  next.innerHTML = html;
+  localizeTimes(preview);
+  if (section !== whole || !messages.isEqualNode(next)) {
+    const restoreFocus = messages.contains(document.activeElement);
+    messages.replaceChildren(...next.childNodes);
+    if (restoreFocus) thread.querySelector('summary').focus();
+  }
+  const saved = new Set([...messages.querySelectorAll('[data-ask-id]')].map(ask => ask.dataset.askId));
+  for (const pending of thread.querySelectorAll('[data-local-ask]')) {
+    if (saved.has(pending.dataset.localAsk)) {
+      if (pending.contains(document.activeElement)) thread.querySelector('summary').focus();
+      pending.remove();
+    }
+  }
+  thread.hidden = !thread.querySelector('.thread-messages > *, .pending-asks > *');
+  reconcileReplies(section);
+}
+if (whole) {
+  setInterval(async () => {
+    if (document.hidden || sending || discussionRequest) return;
+    const request = discussionRequest = new AbortController();
+    try {
+      const response = await fetch(whole.id.toLowerCase() + '.discussion.json', {signal: request.signal});
+      if (!response.ok) return;
+      const result = await response.json();
+      if (request.signal.aborted || sending) return;
+      updateThread(whole, result.thread);
+      updateClarifications(result.clarifications);
+    } catch {
+      return;
+    } finally {
+      discussionRequest = null;
+    }
+  }, 10000);
 }
 document.addEventListener('click', event => {
   const summary = event.target.closest('.thread > summary');
@@ -3116,9 +3193,6 @@ if (send) {
   const rejections = new Map();
   const exclusions = new Map();
   let messageQueued = false;
-  let sending = false;
-  let discussionRequest;
-  const whole = document.querySelector('.item-conversation');
   const queueList = document.querySelector('#queue-list');
   const queueField = document.querySelector('.queue-form textarea');
   const queueAdd = document.querySelector('#queue-add');
@@ -3127,18 +3201,12 @@ if (send) {
   const draftOrigins = new Map(fields.filter(f => f.closest('section').querySelector('.ask-button'))
     .map(f => [f, 'filled']));
   let history = [];
-  const answerText = value => value.replace(/^[\p{White_Space}\x1c-\x1f]+|[\p{White_Space}\x1c-\x1f]+$/gu, '');
   const newDraft = f => answerText(f.value) && answerText(f.value) !== answerText(f.defaultValue);
   const rejectedAsk = origin => origin?.rejected && !origin.edited;
   const handEdited = origin => origin === 'manual' || origin?.rejected || origin?.edited;
   const askDraft = f => handEdited(draftOrigins.get(f)) && newDraft(f);
   const requestRejected = status => [400, 403, 405, 409, 415].includes(status);
   const optionRevision = section => section.querySelector('.clarified').dataset.optionRevision;
-  const answerDraft = f => {
-    const answer = answerText(f.value);
-    return answer && (answer !== f.defaultValue || f.closest('section').dataset.pending === '1');
-  };
-  const needsReview = section => section.hasAttribute('data-review');
   const isExcluded = field => exclusions.get(field)?.active;
   const changed = f => {
     return !rejectedAsk(draftOrigins.get(f)) && !rejections.has(f) && !isExcluded(f)
@@ -3208,73 +3276,6 @@ if (send) {
   function reviewed(section) {
     section.removeAttribute('data-review');
   }
-  function updateClarification(section, html) {
-    const current = section.querySelector('.clarified');
-    const field = section.querySelector('textarea');
-    const template = document.createElement('template');
-    template.innerHTML = html;
-    const next = template.content.firstElementChild;
-    if (Number(next.dataset.notes) <= Number(current.dataset.notes)) return;
-    if (field && next.dataset.optionRevision !== current.dataset.optionRevision) {
-      section.setAttribute('data-review', '');
-      const folded = section.closest('details.done');
-      if (folded && answerDraft(field)) folded.open = true;
-    }
-    const restoreFocus = current.contains(document.activeElement);
-    const review = next.querySelector('.review');
-    if (review) review.hidden = !needsReview(section);
-    current.replaceWith(next);
-    if (restoreFocus) (next.querySelector('.review:not([hidden]) .keep-draft') || section).focus();
-    return true;
-  }
-  function updateClarifications(clarifications) {
-    let changed = false;
-    for (const [id, html] of Object.entries(clarifications)) {
-      if (updateClarification(document.getElementById(id), html)) changed = true;
-    }
-    if (changed) refresh();
-  }
-  function updateThread(section, html) {
-    const thread = section.querySelector('.thread');
-    const messages = thread.querySelector('.thread-messages');
-    const next = messages.cloneNode(false);
-    const preview = thread.cloneNode(false);
-    preview.append(next);
-    next.innerHTML = html;
-    localizeTimes(preview);
-    if (section !== whole || !messages.isEqualNode(next)) {
-      const restoreFocus = messages.contains(document.activeElement);
-      messages.replaceChildren(...next.childNodes);
-      if (restoreFocus) thread.querySelector('summary').focus();
-    }
-    const saved = new Set([...messages.querySelectorAll('[data-ask-id]')].map(ask => ask.dataset.askId));
-    for (const pending of thread.querySelectorAll('[data-local-ask]')) {
-      if (saved.has(pending.dataset.localAsk)) {
-        if (pending.contains(document.activeElement)) thread.querySelector('summary').focus();
-        pending.remove();
-      }
-    }
-    thread.hidden = !thread.querySelector('.thread-messages > *, .pending-asks > *');
-    reconcileReplies(section);
-  }
-  if (whole) {
-    setInterval(async () => {
-      if (document.hidden || sending || discussionRequest) return;
-      const request = discussionRequest = new AbortController();
-      try {
-        const response = await fetch(whole.id.toLowerCase() + '.discussion.json', {signal: request.signal});
-        if (!response.ok) return;
-        const result = await response.json();
-        if (request.signal.aborted || sending) return;
-        updateThread(whole, result.thread);
-        updateClarifications(result.clarifications);
-      } catch {
-        return;
-      } finally {
-        discussionRequest = null;
-      }
-    }, 10000);
-  }
   function forget(field) {
     for (const step of history) step.delete(field);
     history = history.filter(step => step.size);
@@ -3338,10 +3339,10 @@ if (send) {
     }
     const exclusion = exclusions.get(field);
     const text = answerText(field.value);
-    if (exclusion && !restoring && text) {
+    if (exclusion && !restoring && text && text !== exclusion.text) {
       exclusions.set(field, {...exclusion, active: false, edited: true});
     } else if (exclusion && restoring) {
-      exclusions.set(field, exclusion.edited ? {...exclusion, active: text === exclusion.text} : {...exclusion, text});
+      exclusions.set(field, exclusion.edited ? {...exclusion, active: !text || text === exclusion.text} : {...exclusion, text});
     }
     forget(field);
     refresh();
@@ -3635,6 +3636,7 @@ if (send) {
     return {...totals, message: output.textContent};
   }
   send?.addEventListener('click', () => submitAnswers(fields.filter(changed)));
+  refreshAnswerControls = refresh;
   refresh();
 }
 """
@@ -3672,8 +3674,6 @@ def library_row(item, *, served):
         replied = '<span class="badge">Replied</span>' if unread else ""
         description = '' if kind == "conversation" else f'<p class="lib-desc">{linked_text(item["description"])}</p>'
         detail = description + f'<p class="meta"><span>{KIND_LABELS[kind]}</span>{replied}{day_time(item["saved_at"])}</p>'
-    if served and kind == "questions" and part_thread(item, None):
-        detail += f'<p class="meta"><a href="{item_page_name(item_id)}#{item_id}">Read set discussion</a></p>'
     return (f'<li class="lib-item"{attributes}>'
             f'<div class="lib-head"><span class="id">{item_id}</span>'
             f'{title}{project}</div>{detail}{tags}</li>')
