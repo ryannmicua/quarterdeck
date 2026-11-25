@@ -29,19 +29,21 @@ its conversations stay readable. Reopen a question to use the toolbar ask.
 3. Read the ask under **Messages**. Once saved, it shows who wrote it, its
    local time, and **Sent** or **Not delivered**.
 
-Firstmate's reply appears under the ask in its own conversation. It can include text,
-links, and images. Reload the served page to see new replies. Sending or
-retrying an ask also refreshes that conversation. An unread reply expands a
-folded answer and leaves its Messages panel open if it was already open. Select
-**Messages** on the question to open its conversation and acknowledge the
-replies shown there. If it is already open, close and reopen it to
-acknowledge any new replies. The item's listing shows **Replied** while any
-of its replies are unread, including in the library's **Answered** tab. A closed
-question can also show **Replied**. An open question stays on the **Desk**
-after Firstmate replies.
-
 You can send another ask while waiting for a reply. The card shows every ask
 from oldest to newest, with its replies underneath in the order they arrived.
+
+## Read replies
+
+Firstmate's reply appears under its ask and can include text, links, and images.
+Reload the served page to see new replies. Sending or retrying an ask also
+refreshes that conversation. If the refresh finds an unread reply on a folded
+answer, the question expands and its **Messages** panel stays open if you
+already opened it.
+
+Select **Messages** on the question to acknowledge the replies shown there.
+If it is already open, close and reopen it to acknowledge new replies. A
+closed question can also show **Replied**. See
+[where to find items with unread replies](use-the-library.md#when-an-item-moves).
 
 ## Retry a missed delivery
 
