@@ -36,9 +36,11 @@ when nothing is unread.
 
 A read notice leaves the Desk at once. If the page cannot save the change, the row
 stays and the section says **The notice could not be marked read. Try again.**
+If an older tab shows a notice that has since been removed, the Desk refreshes
+so you can mark the remaining notices read.
 
-Rendered pages show the same notices without the buttons. Mark a notice read
-from the command line with `quarterdeck catch-up read C4`, or every unread one
+Catch-up is available on the served Desk only. Mark a notice read from the
+command line with `quarterdeck catch-up read C4`, or every unread one
 with `quarterdeck catch-up read --all`. `quarterdeck catch-up list` prints the
 unread ones.
 
@@ -46,7 +48,7 @@ unread ones.
 
 Unread notices stay until they are read. A read notice is removed after
 `catch_up_days` days, which is 7 unless the
-[config](../reference/cli-and-config.md#json-configuration) says otherwise.
+[default config file](../reference/cli-and-config.md#json-configuration) says otherwise.
 Removal happens when a notice is next saved or marked read. The store keeps
 `read_at` for each notice until then, so a count of notices read is possible
 within that time. See the [store format](../reference/item-store.md#catch-up-notices).

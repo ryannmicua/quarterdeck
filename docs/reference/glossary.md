@@ -1,7 +1,6 @@
 # Glossary
 
-These are the words Quarterdeck shows on its pages. Use only these words in
-the interface, and add a word here before using it.
+These are terms Quarterdeck uses on its pages.
 
 | Word | Meaning |
 | --- | --- |

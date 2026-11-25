@@ -147,7 +147,7 @@ def catch_up_days(config: dict[str, object]) -> int:
     return days if type(days) is int else CATCH_UP_DAYS
 
 
-def selected_config_path(args: argparse.Namespace) -> Path | None:
+def selected_config_path(args: argparse.Namespace | None = None) -> Path | None:
     """The --config file, else the default config when it exists, else no config."""
     path = getattr(args, "config", None)
     if path is None:
@@ -156,7 +156,7 @@ def selected_config_path(args: argparse.Namespace) -> Path | None:
     return path.expanduser() if path else None
 
 
-def selected_config(args: argparse.Namespace) -> dict[str, object]:
+def selected_config(args: argparse.Namespace | None = None) -> dict[str, object]:
     return load_config(selected_config_path(args))
 
 
@@ -1587,6 +1587,10 @@ def prune_catch_ups(data: dict[str, object], days: int, now: datetime | None = N
                          if "read_at" not in notice or utc_stamp(notice["read_at"], "read_at") > cutoff]
 
 
+class CatchUpConflict(ValueError):
+    pass
+
+
 def mark_catch_ups_read(store: Path, payload: object, days: int) -> dict[str, object]:
     """Mark the named notices read. A notice that is already read keeps its first read time."""
     if not isinstance(payload, dict) or set(payload) != {"ids"}:
@@ -1598,7 +1602,7 @@ def mark_catch_ups_read(store: Path, payload: object, days: int) -> dict[str, ob
     with changing_store(store) as data:
         notices = {notice["id"]: notice for notice in catch_ups(data)}
         if not notices.keys() >= set(wanted):
-            raise ValueError("Unknown catch-up notice.")
+            raise CatchUpConflict("Unknown catch-up notice.")
         stamp = now_text()
         for notice_id in wanted:
             notices[notice_id].setdefault("read_at", stamp)
@@ -1606,13 +1610,9 @@ def mark_catch_ups_read(store: Path, payload: object, days: int) -> dict[str, ob
         return {"read": {notice_id: notices[notice_id]["read_at"] for notice_id in wanted}}
 
 
-def command_days(args: argparse.Namespace) -> int:
-    return catch_up_days(selected_config(args))
-
-
 def add_catch_up(args: argparse.Namespace) -> int:
     def action() -> int:
-        days = command_days(args)
+        days = catch_up_days(selected_config())
         notice: dict[str, object] = {
             "title": clean_text(args.title, "title", TITLE_LIMIT),
             "summary": clean_text(args.summary, "summary", CATCH_UP_SUMMARY_LIMIT),
@@ -1659,7 +1659,7 @@ def read_catch_up(args: argparse.Namespace) -> int:
             ids = args.ids
         else:
             raise ValueError("give a catch-up ID such as C4, or --all")
-        result = mark_catch_ups_read(store, {"ids": ids}, command_days(args))
+        result = mark_catch_ups_read(store, {"ids": ids}, catch_up_days(selected_config()))
         for notice_id in result["read"]:  # type: ignore[attr-defined]
             print(f"{notice_id} Read")
         return 0
@@ -2524,7 +2524,7 @@ CATCH_UP_SCRIPT = r"""
   const heading = section.querySelector('h2');
   const count = section.querySelector('[data-count]');
   const readAll = section.querySelector('[data-read-all]');
-  let busy = false;
+  const controls = section.querySelectorAll('button');
   const finish = ids => {
     for (const id of ids) section.querySelector('.note[data-id="' + id + '"]').remove();
     const left = section.querySelectorAll('.note').length;
@@ -2545,18 +2545,21 @@ CATCH_UP_SCRIPT = r"""
     heading.focus();
   };
   const markRead = async ids => {
-    if (busy) return;
-    busy = true;
+    controls.forEach(button => { button.disabled = true; });
     status.textContent = '';
     try {
       const response = await fetch('catch-ups/read', {method:'POST', headers:{'Content-Type':'application/json'},
                                                       body:JSON.stringify({ids})});
+      if (response.status === 409) {
+        window.location.reload();
+        return;
+      }
       if (!response.ok) throw new Error(response.status);
       finish(ids);
     } catch (error) {
       status.textContent = 'The notice could not be marked read. Try again.';
     } finally {
-      busy = false;
+      controls.forEach(button => { button.disabled = false; });
     }
   };
   section.addEventListener('click', event => {
@@ -4063,7 +4066,7 @@ def desk_item(item: dict[str, object]) -> bool:
     return bool(open_parts or pending)
 
 
-def catch_up_note(data, notice, *, served):
+def catch_up_note(data, notice):
     links = []
     if "item" in notice and any(item["id"] == notice["item"] for item in data["items"]):
         item = find_item(data, str(notice["item"]))
@@ -4072,23 +4075,23 @@ def catch_up_note(data, notice, *, served):
         links.append(f'<a href="{esc(notice["url"])}" rel="noopener noreferrer">{esc(notice["link_text"])}</a>')
     project = f' <span class="project-name">{esc(notice["project"])}</span>' if "project" in notice else ""
     button = (f'<button type="button" data-read="{esc(notice["id"])}" aria-label="Mark read, {esc(notice["title"])}">'
-              "Mark read</button>") if served else ""
+              "Mark read</button>")
     return (f'<li class="note" data-id="{esc(notice["id"])}"><div class="note-text"><h3>{esc(notice["title"])}{project}</h3>'
             f'<p>{esc(notice["summary"])}</p><p class="meta">{"".join(f"<span>{link}</span>" for link in links)}'
             f'{day_time(notice["saved_at"])}</p></div>{button}</li>')
 
 
-def catch_up_section(data: dict[str, object], *, served: bool) -> str:
+def catch_up_section(data: dict[str, object]) -> str:
     """Unread notices, newest first. The section is absent when none is unread."""
     notices = unread_catch_ups(data)
     if not notices:
         return ""
     many = len(notices) > 1
     count = f' <span data-count>({len(notices)})</span>' if many else ""
-    read_all = '<button type="button" data-read-all>Mark all read</button>' if served and many else ""
-    status = '<p class="meta failed" role="status" data-catch-up-status></p>' if served else ""
+    read_all = '<button type="button" data-read-all>Mark all read</button>' if many else ""
+    status = '<p class="meta failed" role="status" data-catch-up-status></p>'
     return (f'<section class="catch-up"><div class="section-head"><h2>Catch-up{count}</h2>{read_all}</div>{status}'
-            f'<ul class="notes">{"".join(catch_up_note(data, notice, served=served) for notice in notices)}</ul></section>')
+            f'<ul class="notes">{"".join(catch_up_note(data, notice) for notice in notices)}</ul></section>')
 
 
 def workers_section(ready: bool) -> str:
@@ -4118,7 +4121,6 @@ def talk_form(binding):
 def list_page(data: dict[str, object], site_title: str, *, served: bool, saved_name: str = "index.html",
               ask_binding: str | None = None) -> str:
     items = newest_first(data["items"])  # type: ignore[arg-type]
-    empty = "Nothing is saved yet. Ask Firstmate to send something to Quarterdeck, such as a link, a list or open questions."
     attention = []
     for item in items:
         if item["kind"] == "questions" and desk_item(item):
@@ -4127,8 +4129,7 @@ def list_page(data: dict[str, object], site_title: str, *, served: bool, saved_n
         elif served and item["kind"] == "conversation" and thread_unread(item, None):
             attention.append((item, ("Replied", [], False)))
     primary = next((item for item, summary in attention if summary[1]), None)
-    body = ""
-    notices = catch_up_section(data, served=served)
+    notices = catch_up_section(data) if served else ""
 
     def desk() -> str:
         rows = "".join(desk_row(item, summary, primary=item is primary) for item, summary in attention)
@@ -4140,12 +4141,11 @@ def list_page(data: dict[str, object], site_title: str, *, served: bool, saved_n
     if served and ask_binding:
         heading = ('<div class="page-head"><h1>Desk</h1><button type="button" id="open-talk" aria-expanded="false" '
                    'aria-controls="talk-form">Talk to Firstmate</button></div>' + talk_form(ask_binding))
+    body = heading + notices
     if attention:
-        body += heading + notices + desk()
-    elif not items:
-        body = f'{heading}{notices}<p class="empty">{esc(empty)}</p>'
+        body += desk()
     else:
-        body = f'{heading}{notices}<p class="empty">Nothing is on your Desk. A question that needs an answer shows here.</p>'
+        body += '<p class="empty">No questions need your attention.</p>'
     if served:
         body += '<p class="workers-link"><a href="workers.html">Workers</a></p>'
     library = ""
@@ -4157,7 +4157,7 @@ def list_page(data: dict[str, object], site_title: str, *, served: bool, saved_n
                  f'<section class="page-section"><h2>Answered</h2>{answered}</section>')
     return page_shell(site_title, site_title, body, served=served, saved_name=saved_name,
                       library=library, filters=bool(items) and not served,
-                      starting=served and bool(ask_binding), catch_up=served and bool(notices))
+                      starting=served and bool(ask_binding), catch_up=bool(notices))
 
 
 def item_body_html(item: dict[str, object]) -> str:
@@ -4639,8 +4639,9 @@ def make_handler(site_title: str, base_path: str = "", store: Path | None = None
                 except (OSError, ValueError) as exc:  # a visit that cannot be logged must never stop the page
                     print(f"quarterdeck: could not log the visit: {exc}", file=sys.stderr, flush=True)
                 _, ask_binding = ask_destination(ask_home, require_directory=True)
+                has_notices = any("read_at" not in notice for notice in catch_ups(data))
                 self.send_text(200, list_page(data, site_title, served=True, ask_binding=ask_binding), "text/html; charset=utf-8",
-                               prevent_framing=bool(ask_binding))
+                               prevent_framing=bool(ask_binding) or has_notices)
                 return
             try:
                 item = find_item(data, discussion[1] if discussion else name.removesuffix(".html"))
@@ -4709,6 +4710,8 @@ def make_handler(site_title: str, base_path: str = "", store: Path | None = None
                 self.send_text(403, "Configure an available firstmate_home to ask Firstmate.")
             except OptionChanged as exc:
                 self.send_text(409, json.dumps({"clarification": clarified_html(exc.notes, True)}), "application/json")
+            except CatchUpConflict as exc:
+                self.send_text(409, str(exc))
             except AnswerConflict as exc:
                 if endpoint in ("/asks", "/conversations"):
                     record = {"message": str(exc), "saved": isinstance(exc, SavedAskConflict)}
@@ -4749,11 +4752,13 @@ def serve(args: argparse.Namespace) -> int:
     try:
         config_path = selected_config_path(args)
         config = load_config(config_path)
+        retention_config = selected_config_path()
+        retention_days = catch_up_days(config if config_path == retention_config else load_config(retention_config))
         tls = tls_context(args)
         base_path = effective_base_path(args)
         firstmate = configured_firstmate_home(config)
         handler = make_handler(page_title(args, config), base_path, home=answer_home(config, config_path),
-                               ask_home=firstmate, workers_home=firstmate, retention_days=catch_up_days(config))
+                               ask_home=firstmate, workers_home=firstmate, retention_days=retention_days)
         port = args.port
         for host in bind_hosts(args):
             server = make_server(host, port, handler, tls)
@@ -4823,13 +4828,15 @@ def service_unit(args: argparse.Namespace) -> str:
         load_config(config_path)
         command += ["--config", str(config_path)]
     exec_start = " ".join(systemd_quote(part, literal_dollars=True) for part in command)
-    environment = ""
-    if os.environ.get("XDG_STATE_HOME"):
-        state_home = Path(os.environ["XDG_STATE_HOME"]).expanduser().resolve()
-        environment = "Environment=" + systemd_quote("XDG_STATE_HOME=" + str(state_home)) + "\n"
+    environment = []
+    for name in ("XDG_STATE_HOME", "XDG_CONFIG_HOME"):
+        if os.environ.get(name):
+            directory = Path(os.environ[name]).expanduser().resolve()
+            environment.append(systemd_quote(f"{name}={directory}"))
+    environment_line = f"Environment={' '.join(environment)}\n" if environment else ""
     return (
         "[Unit]\nDescription=Quarterdeck page of saved items\nAfter=network.target\n\n"
-        f"[Service]\n{environment}ExecStart={exec_start}\nRestart=on-failure\nRestartSec=5\n\n"
+        f"[Service]\n{environment_line}ExecStart={exec_start}\nRestart=on-failure\nRestartSec=5\n\n"
         "[Install]\nWantedBy=default.target\n"
     )
 
@@ -5100,7 +5107,6 @@ def make_parser() -> argparse.ArgumentParser:
     catch_up_add.add_argument("--link-text", help="the words of that link; required with --url")
     catch_up_add.add_argument("--item", metavar="ID", help="a saved item the notice is about, such as Q7")
     catch_up_add.add_argument("--project", help="the notice's project name or owner/name repository")
-    catch_up_add.add_argument("--config", type=Path, help="optional JSON config file")
     catch_up_list = catch_up_actions.add_parser("list", help="list unread notices, newest first",
                                                 description="List unread notices, newest first.")
     catch_up_list.set_defaults(handler=list_catch_ups)
@@ -5109,7 +5115,6 @@ def make_parser() -> argparse.ArgumentParser:
     catch_up_read.set_defaults(handler=read_catch_up)
     catch_up_read.add_argument("ids", nargs="*", metavar="ID", help="notice IDs, such as C4")
     catch_up_read.add_argument("--all", action="store_true", help="mark every unread notice read")
-    catch_up_read.add_argument("--config", type=Path, help="optional JSON config file")
 
     remove = command("remove", "delete an item", "Delete an item. Its ID is never given to another item.", remove_item)
     remove.add_argument("id", help="item ID, such as Q7")

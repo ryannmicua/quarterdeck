@@ -16,9 +16,9 @@ quarterdeck mark ID[.PART] answered --via WHERE
 quarterdeck mark ID[.PART] closed|open
 quarterdeck classify ID[.PART] [--project NAME] [--tag TAG ...] [--kind KIND]
 quarterdeck stats [--since DATE] [--json]
-quarterdeck catch-up add --title TEXT --summary TEXT [--url URL --link-text TEXT] [--item ID] [--project NAME] [--config FILE]
+quarterdeck catch-up add --title TEXT --summary TEXT [--url URL --link-text TEXT] [--item ID] [--project NAME]
 quarterdeck catch-up list
-quarterdeck catch-up read ID... | --all [--config FILE]
+quarterdeck catch-up read ID... | --all
 quarterdeck remove ID
 quarterdeck render [--output PATH] [--config FILE] [--title TEXT]
 quarterdeck serve [--host ADDRESS ...] [--port N] [--base-path PATH] [--tls-cert FILE --tls-key FILE] [--config FILE] [--title TEXT]
@@ -70,12 +70,12 @@ on served and rendered pages.
 
 Rendered item pages include current saved answers with their timestamps and
 delivery status. Earlier answers, conversation text, clarifications, reply
-links, reply images, and Replied badges are exclusive to the served site.
-Answer controls are available on served pages.
+links, reply images, and Replied badges are exclusive to the served site,
+along with Catch-up notices and answer controls.
 
-If `XDG_STATE_HOME` is set when you run `service`, the generated unit includes
-that setting so it uses the same [item store](item-store.md) and
-[visit log](#visit-log).
+The generated unit preserves `XDG_STATE_HOME` and `XDG_CONFIG_HOME` when set so
+it uses the same [item store](item-store.md), [visit log](#visit-log), and default
+config file as the CLI.
 
 `--base-path /qd` (or `base_path` in the config) serves pages and their images
 under that prefix for a reverse proxy. A request for the bare prefix is redirected (308)
@@ -207,9 +207,10 @@ thread to its current read status (`true` for read).
 `POST /catch-ups/read` (under any `base_path`) uses the same origin check as
 `/answers`. The served page sends `{"ids": ["C4"]}` when you select **Mark
 read**, or every shown ID when you select **Mark all read**. Every ID must name a
-saved notice. A notice that is already read keeps its first read time. The
-response field `read` maps each ID to the UTC time it was read. The request also
-removes notices that were read more than `catch_up_days` days ago.
+saved notice. If any ID is missing, the endpoint returns 409 without changing
+the store and the Desk reloads. A notice that is already read keeps its first
+read time. The response field `read` maps each ID to the UTC time it was read.
+The request also removes notices that were read more than `catch_up_days` days ago.
 
 ### Workers endpoint
 
@@ -266,9 +267,10 @@ the documentation to read; `help --json` prints a machine-readable index.
 
 ## JSON configuration
 
-The config is optional. `converse`, `render`, `serve`, `service`, `catch-up add`
-and `catch-up read` read `--config FILE`,
-or `${XDG_CONFIG_HOME:-~/.config}/quarterdeck.json` when it exists.
+The config is optional. The default is
+`${XDG_CONFIG_HOME:-~/.config}/quarterdeck.json` when it exists.
+`converse`, `render`, `serve` and `service` accept `--config FILE`. The served Desk,
+`catch-up add` and `catch-up read` all take `catch_up_days` from the default file.
 
 | Key | Type | Default | Meaning |
 | --- | --- | --- | --- |

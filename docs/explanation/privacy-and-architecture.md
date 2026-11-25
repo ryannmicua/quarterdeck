@@ -14,7 +14,7 @@ for who can start conversations and use the other browser controls.
 - `converse`, `render`, `serve`, `service` and `url` can read the
   [optional config](../reference/cli-and-config.md#json-configuration).
 - `render` reads the item store and the images attached to questions and
-  options. It inspects existing output files before replacing or retiring
+  options. Catch-up notices appear only on the served Desk. Render inspects existing output files before replacing or retiring
   them. See the [render reference](../reference/cli-and-config.md#pages) for
   which items are exported.
 - `serve` reads the item store to build pages and writes to it when users

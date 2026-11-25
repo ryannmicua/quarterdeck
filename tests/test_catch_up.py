@@ -2,13 +2,16 @@ from __future__ import annotations
 
 import json
 import re
+import shutil
+import subprocess
+import sys
 import threading
 import unittest
 import urllib.error
 import urllib.request
-import sys
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
+from unittest.mock import patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
@@ -116,18 +119,26 @@ class CatchUpCommandTests(CatchUpCase):
         self.assertEqual([n["id"] for n in self.store()["catch_ups"]], ["C2", "C3", "C4"])
 
     def test_retention_is_one_config_setting(self) -> None:
-        config = self.root / "retention.json"
+        config = self.root / "config" / "quarterdeck.json"
+        config.parent.mkdir()
         config.write_text(json.dumps({"catch_up_days": 2}), encoding="utf-8")
         self.notice("A")
         self.run_cli("catch-up", "read", "C1")
         self.age_read("C1", 3)
         self.notice("B")
-        self.assertEqual(len(self.store()["catch_ups"]), 2)
-        self.assertEqual(self.run_cli("catch-up", "add", "--title", "C", "--summary", "S", "--config", str(config))[0], 0)
-        self.assertEqual([n["id"] for n in self.store()["catch_ups"]], ["C2", "C3"])
+        self.assertEqual([n["id"] for n in self.store()["catch_ups"]], ["C2"])
+        self.notice("C")
+        self.run_cli("catch-up", "read", "C2")
+        self.age_read("C2", 3)
+        self.assertEqual(self.run_cli("catch-up", "read", "--all")[0], 0)
+        self.assertEqual([n["id"] for n in self.store()["catch_ups"]], ["C3"])
+        for command in (("add", "--title", "D", "--summary", "S"), ("read", "C3")):
+            with self.assertRaises(SystemExit) as rejected:
+                self.run_cli("catch-up", *command, "--config", str(config))
+            self.assertEqual(rejected.exception.code, 2)
         for bad in (0, -1, "7", 3651, True, 2.5):
             config.write_text(json.dumps({"catch_up_days": bad}), encoding="utf-8")
-            self.assertEqual(self.run_cli("catch-up", "read", "--all", "--config", str(config))[0], 2, bad)
+            self.assertEqual(self.run_cli("catch-up", "read", "C3")[0], 2, bad)
 
     def test_a_damaged_notice_is_refused_when_the_store_is_read(self) -> None:
         self.notice()
@@ -169,12 +180,12 @@ class CatchUpPageTests(CatchUpCase):
         self.assertIn('<a href="q1.html">Tide launch decisions</a>', page)
         self.assertIn('<a href="https://example.com/review" rel="noopener noreferrer">Open the review</a>', page)
         self.assertRegex(page, r'<time class="day" datetime="\d{4}-\d\d-\d\dT[\d:]+Z">\d{4}-\d\d-\d\d</time>')
-        self.assertIn("catch-ups/read", page)
 
     def test_one_notice_has_no_count_and_no_mark_all(self) -> None:
         self.notice()
         page = self.get(self.start(), "/qd/")
         self.assertIn("<h2>Catch-up</h2>", page)
+        self.assertIn("No questions need your attention.", page)
         self.assertNotIn("data-read-all>", page)
         self.assertNotIn("(1)", page)
 
@@ -185,7 +196,14 @@ class CatchUpPageTests(CatchUpCase):
         self.run_cli("catch-up", "read", "C1")
         page = self.get(port, "/qd/")
         self.assertNotIn("Catch-up", page)
-        self.assertNotIn("catch-ups/read", page)
+
+    def test_the_served_desk_with_notices_cannot_be_framed(self) -> None:
+        self.notice()
+        port = self.start()
+        for path in ("/", "/index.html", "/qd", "/qd/", "/qd/index.html"):
+            with self.subTest(path=path):
+                with urllib.request.urlopen(f"http://127.0.0.1:{port}{path}", timeout=5) as response:
+                    self.assertEqual(response.headers.get("Content-Security-Policy"), "frame-ancestors 'none'")
 
     def test_a_removed_item_leaves_a_notice_without_its_link_and_text_is_escaped(self) -> None:
         self.add("resource", "Gone", "Soon removed.", "--url", "https://example.com", "--link-text", "Open")
@@ -196,21 +214,24 @@ class CatchUpPageTests(CatchUpCase):
         self.assertIn("&lt;b&gt;Bold&lt;/b&gt; &amp; more", page)
         self.assertNotIn("<i>Jerry</i>", page)
 
-    def test_rendered_pages_list_unread_notices_without_buttons(self) -> None:
-        self.notice("Rendered notice")
+    def test_rendered_pages_exclude_catch_up(self) -> None:
+        self.notice("Private notice", "Private summary", "--url", "https://example.com/review",
+                    "--link-text", "Private review link")
         out = self.root / "out"
-        self.assertEqual(self.run_cli("render", "--output", str(out / "index.html"))[0], 0)
-        page = (out / "index.html").read_text(encoding="utf-8")
-        self.assertIn("Rendered notice", page)
-        self.assertNotIn("<button", page)
-        self.assertNotIn("catch-ups/read", page)
+        for name in ("index.html", "snapshot.html"):
+            output = out / name
+            self.assertEqual(self.run_cli("render", "--output", str(output))[0], 0)
+            page = output.read_text(encoding="utf-8")
+            for hidden in ("Catch-up", "Private notice", "Private summary", "Private review link",
+                           "https://example.com/review", "<button"):
+                self.assertNotIn(hidden, page)
 
     def test_marking_read_uses_the_owner_path_and_records_the_time(self) -> None:
         for title in ("A", "B", "C"):
             self.notice(title)
         port = self.start()
         self.assertEqual(self.post_read(port, {"ids": ["C1"]}, origin="https://example.org")[0], 403)
-        for bad in ({"ids": []}, {"ids": ["C9"]}, {"ids": ["Q1"]}, {"ids": "C1"}, {"ids": ["C1"], "all": True}, {}, []):
+        for bad in ({"ids": []}, {"ids": ["Q1"]}, {"ids": "C1"}, {"ids": ["C1"], "all": True}, {}, []):
             self.assertEqual(self.post_read(port, bad)[0], 400, bad)
         self.assertNotIn("read_at", self.store()["catch_ups"][0])
         status, record = self.post_read(port, {"ids": ["C1", "C3"]})
@@ -224,24 +245,98 @@ class CatchUpPageTests(CatchUpCase):
         self.assertNotIn("Catch-up", self.get(port, "/qd/"))
 
     def test_the_server_applies_the_retention_setting(self) -> None:
+        default = self.root / "config" / "quarterdeck.json"
+        default.parent.mkdir()
+        default.write_text(json.dumps({"catch_up_days": 3}), encoding="utf-8")
+        alternate = self.root / "alternate.json"
+        alternate.write_text(json.dumps({"catch_up_days": 7, "base_path": "/qd"}), encoding="utf-8")
         self.notice("A")
         self.notice("B")
         self.run_cli("catch-up", "read", "C1")
         self.age_read("C1", 4)
-        port = self.start(retention_days=3)
-        self.assertEqual(self.post_read(port, {"ids": ["C2"]})[0], 200)
+        with self.serve_cli("--config", str(alternate)) as port:
+            self.assertEqual(self.post_read(port, {"ids": ["C2"]})[0], 200)
         self.assertEqual([n["id"] for n in self.store()["catch_ups"]], ["C2"])
 
-    def test_the_page_script_removes_a_row_and_keeps_it_when_saving_fails(self) -> None:
+    def test_acknowledgment_buttons_in_the_browser(self) -> None:
+        chrome = shutil.which("google-chrome")
+        if not chrome:
+            self.skipTest("google-chrome is required for the Catch-up browser test")
         self.notice("A")
         self.notice("B")
         self.notice("C")
-        script = quarterdeck.CATCH_UP_SCRIPT
-        self.assertIn("Mark read", quarterdeck.catch_up_section(self.store(), served=True))
-        for needle in ("section.remove()", "The notice could not be marked read. Try again.", "count.remove()",
-                       "heading.focus()", "'catch-ups/read'"):
-            self.assertIn(needle, script)
-        self.assertIn('role="status"', quarterdeck.catch_up_section(self.store(), served=True))
+        stale_store = self.store()
+        self.run_cli("catch-up", "read", "C1")
+        self.age_read("C1", 8)
+        self.notice("D")
+        self.run_cli("catch-up", "read", "C4")
+        port = self.start()
+        status, _ = self.post_read(port, {"ids": ["C1", "C2"]})
+        self.assertEqual(status, 409)
+        self.assertNotIn("read_at", self.store()["catch_ups"][0])
+        list_page = quarterdeck.list_page
+        pages = iter([stale_store])
+
+        def instrumented_page(data, *args, **kwargs):
+            return list_page(next(pages, data), *args, **kwargs).replace("</body>", """
+<output id="browser-result">Incomplete</output>
+<script>
+{
+  const result = document.getElementById('browser-result');
+  const control = id => document.querySelector('[data-read="' + id + '"]');
+  const bulk = document.querySelector('[data-read-all]');
+  const status = document.querySelector('[data-catch-up-status]');
+  const check = (condition, message) => { if (!condition) throw new Error(message); };
+  const clickAndWait = button => new Promise(resolve => {
+    const observer = new MutationObserver(() => {
+      if (!button.disabled) {
+        observer.disconnect();
+        resolve();
+      }
+    });
+    observer.observe(button, {attributes:true, attributeFilter:['disabled']});
+    button.click();
+  });
+  (async () => {
+    if (control('C1')) {
+      const fetchFromDesk = window.fetch;
+      let failSave;
+      window.fetch = () => new Promise(resolve => { failSave = resolve; });
+      const failed = clickAndWait(control('C3'));
+      check(control('C1').disabled && control('C2').disabled && control('C3').disabled && bulk.disabled,
+            'Every acknowledgment control should be disabled during a save');
+      failSave(new Response('', {status:503}));
+      await failed;
+      check(control('C3') && !bulk.disabled && status.textContent.includes('Try again.'),
+            'A failed save should keep the notice, restore the controls, and show feedback');
+      window.fetch = fetchFromDesk;
+      await clickAndWait(control('C3'));
+      check(!control('C3') && document.querySelector('[data-count]').textContent === '(2)',
+            'A successful save should remove the row and update the count');
+      bulk.click();
+      return;
+    }
+    check(control('C2') && !control('C3') && !bulk && !document.querySelector('[data-count]'),
+          'A stale batch should refresh the Desk and leave the unread notice available');
+    await clickAndWait(control('C2'));
+    check(!document.querySelector('.catch-up') && document.activeElement.textContent === 'Desk',
+          'Acknowledging the last notice should remove Catch-up and focus the Desk heading');
+    result.textContent = 'PASS';
+  })().catch(error => { result.textContent = error.message; });
+}
+</script>
+</body>""")
+
+        with patch.object(quarterdeck, "list_page", instrumented_page):
+            browser = subprocess.run(
+                [chrome, "--headless", "--disable-background-networking", "--no-first-run",
+                 f"--user-data-dir={self.root / 'browser'}", "--dump-dom", "--virtual-time-budget=10000",
+                 f"http://127.0.0.1:{port}/qd/"],
+                capture_output=True, text=True, timeout=30, check=True,
+            )
+        result = browser.stdout.partition('<output id="browser-result">')[2].partition("</output>")[0]
+        self.assertEqual(result, "PASS", browser.stderr)
+        self.assertTrue(all("read_at" in notice for notice in self.store()["catch_ups"]))
 
 
 if __name__ == "__main__":
