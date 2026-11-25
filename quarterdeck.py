@@ -180,16 +180,17 @@ def write_private_bytes(path: Path, data: bytes) -> None:
             os.fsync(stream.fileno())
         try:
             os.link(temporary, path)
+            return
         except OSError as exc:
             if exc.errno not in {errno.EOPNOTSUPP, errno.ENOTSUP, errno.ENOSYS, errno.EPERM}:
                 raise
-            descriptor = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
-            with os.fdopen(descriptor, "wb") as stream:
-                stream.write(data)
-                stream.flush()
-                os.fsync(stream.fileno())
     finally:
         os.unlink(temporary)
+    descriptor = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+    with os.fdopen(descriptor, "wb") as stream:
+        stream.write(data)
+        stream.flush()
+        os.fsync(stream.fileno())
 
 
 # --- The item store -----------------------------------------------------------------
