@@ -32,6 +32,7 @@ from datetime import datetime, timezone
 from html import escape
 from html.parser import HTMLParser
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 from urllib.parse import urljoin
 
@@ -2324,8 +2325,10 @@ class WorkersTests(StoreCase):
             first = pool.submit(self.workers, port)
             try:
                 self.assertTrue(entered.wait(timeout=5))
-                self.assertEqual(self.workers(port)[0], 502)
-                self.assertEqual(self.workers(port, "/qd/workers.json?reuse=1")[0], 502)
+                error = {"error": "The workers could not be read."}
+                self.assertEqual(self.workers(port), (502, error))
+                self.assertEqual(self.workers(port, "/qd/workers.json?reuse=1"),
+                                 (502, {**error, "code": "snapshot_busy"}))
                 self.assertIsNone(self.workers(port, "/qd/workers-saved.json")[1]["snapshot"])
             finally:
                 release.set()
@@ -2383,7 +2386,8 @@ class WorkersTests(StoreCase):
         port = self.start("/qd", workers_home=self.make_home())
         saved_path = "/qd/workers-saved.json"
         self.assertEqual(self.workers(port, saved_path), (200, {"snapshot": None, "stale": True}))
-        with patch.object(quarterdeck, "monotonic") as clock:
+        clock = MagicMock()
+        with patch.object(quarterdeck, "time", SimpleNamespace(monotonic=clock)):
             for checked_at, source_time in ((100, "2000-01-01T00:00:00Z"), (4000, "2099-01-01T00:00:00Z")):
                 with self.subTest(source_time=source_time):
                     self.make_home(body=json.dumps({"generated": source_time, "tasks": []}))
@@ -2395,11 +2399,27 @@ class WorkersTests(StoreCase):
                         clock.return_value = checked_at + elapsed
                         self.assertEqual(self.workers(port, saved_path), (200, {"snapshot": snapshot, "stale": stale}))
 
+    def test_suspend_time_expires_the_reading_for_lookup_and_automatic_refresh(self) -> None:
+        port = self.start("/qd", workers_home=self.make_home([snapshot_task("Wren")]))
+        clock = SimpleNamespace(CLOCK_BOOTTIME=7, clock_gettime=MagicMock(return_value=100), monotonic=lambda: 100)
+        saved_path = "/qd/workers-saved.json"
+        with patch.object(quarterdeck, "time", clock):
+            status, initial = self.workers(port)
+            self.assertEqual(status, 200)
+            self.assertEqual(self.workers(port, saved_path), (200, {"snapshot": initial, "stale": False}))
+            clock.clock_gettime.return_value += 3601
+            self.assertEqual(self.workers(port, saved_path), (200, {"snapshot": initial, "stale": True}))
+            self.make_home([snapshot_task("Bracken")])
+            status, refreshed = self.workers(port, "/qd/workers.json?reuse=1")
+            self.assertEqual(status, 200)
+            self.assertEqual([row["name"] for row in refreshed["workers"]], ["Bracken"])
+            self.assertEqual(self.workers(port, saved_path), (200, {"snapshot": refreshed, "stale": False}))
+
     def test_automatic_refresh_rechecks_freshness_after_another_visitor_refreshes(self) -> None:
         port = self.start("/qd", workers_home=self.make_home([snapshot_task("Wren")]))
         automatic_path = "/qd/workers.json?reuse=1"
         saved_path = "/qd/workers-saved.json"
-        with patch.object(quarterdeck, "monotonic", return_value=100) as clock:
+        with patch.object(quarterdeck, "workers_clock", return_value=100) as clock:
             self.assertEqual(self.workers(port)[0], 200)
             clock.return_value += 3601
             for _ in range(2):
@@ -2515,7 +2535,7 @@ const quiet = () => new Promise(resolve => setTimeout(resolve, 1500));
         'The expired roster was not replaced');
   check(statusLine.querySelector('time')?.dateTime === '2026-03-02T14:45:00Z', 'The expired time was not replaced');
 """
-        with patch.object(quarterdeck, "monotonic", return_value=100) as clock:
+        with patch.object(quarterdeck, "workers_clock", return_value=100) as clock:
             self.assertEqual(self.workers(port)[0], 200)
             clock.return_value += 3601
             self.make_home(body=json.dumps({"generated": "2026-03-02T14:45:00Z", "tasks": [snapshot_task("Bracken")]}))
@@ -2545,6 +2565,33 @@ const quiet = () => new Promise(resolve => setTimeout(resolve, 1500));
 """
         with patch.object(quarterdeck, "workers_page", self.instrumented_page(quarterdeck.workers_page, steps)):
             outcome, stderr = self.browser_page(port)
+        self.assertEqual(outcome, "PASS", stderr)
+
+    def test_busy_entry_preserves_the_saved_roster_and_leaves_manual_check_available(self) -> None:
+        if not shutil.which("google-chrome"):
+            self.skipTest("google-chrome is required for the workers browser test")
+        port = self.start("/qd", workers_home=self.make_home([snapshot_task("Wren")]))
+        steps = """
+  await settled();
+  check(statusLine.textContent.includes('A check is already running.') && !statusLine.classList.contains('failed'),
+        'A busy entry was shown as a failed check');
+  check(roster.textContent.includes('Wren') && statusLine.querySelector('time')?.dateTime === '2026-03-02T13:40:00Z',
+        'The saved roster or its time was lost');
+  const checked = settled();
+  button.click();
+  await checked;
+  check(statusLine.textContent.includes('Check failed'), 'Manual Check did not keep its ordinary busy behavior');
+  await quiet();
+"""
+        with patch.object(quarterdeck, "workers_clock", return_value=100) as clock:
+            self.assertEqual(self.workers(port)[0], 200)
+            clock.return_value += 3601
+            with quarterdeck.snapshot_lock, \
+                    patch.object(quarterdeck, "workers_page", self.instrumented_page(quarterdeck.workers_page, steps)), \
+                    patch.object(quarterdeck.SavedWorkers, "refresh", autospec=True,
+                                 side_effect=quarterdeck.SavedWorkers.refresh) as refresh:
+                outcome, stderr = self.browser_page(port)
+                self.assertEqual([request.kwargs["reuse"] for request in refresh.call_args_list], [True, False])
         self.assertEqual(outcome, "PASS", stderr)
 
     def test_failed_saved_lookup_waits_for_a_manual_check(self) -> None:
@@ -2601,6 +2648,7 @@ class ServiceAndHelpTests(StoreCase):
                 code, _, warning = self.run_cli("serve", "--host", host)
                 self.assertEqual(code, 0, warning)
                 self.assertEqual("start conversations" in warning, host == "192.0.2.10")
+                self.assertEqual("read or check the worker and second mate roster" in warning, host == "192.0.2.10")
         help_output = io.StringIO()
         with redirect_stdout(help_output), self.assertRaises(SystemExit) as exit_info:
             quarterdeck.main(["serve", "--help"])

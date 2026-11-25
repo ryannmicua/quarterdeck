@@ -25,6 +25,7 @@ import subprocess
 import sys
 import tempfile
 import threading
+import time
 import unicodedata
 import uuid
 import zlib
@@ -33,7 +34,6 @@ from contextlib import contextmanager
 from datetime import datetime, timedelta, timezone
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
-from time import monotonic
 from urllib.parse import quote, unquote, urlparse
 
 
@@ -1582,6 +1582,15 @@ class SnapshotError(Exception):
     pass
 
 
+class SnapshotBusy(SnapshotError):
+    pass
+
+
+def workers_clock() -> float:
+    clock = getattr(time, "CLOCK_BOOTTIME", None)
+    return time.monotonic() if clock is None else time.clock_gettime(clock)
+
+
 def run_snapshot(home: Path) -> object:
     """Run the home's read-only fleet snapshot and return its parsed output."""
     env = {k: v for k, v in os.environ.items() if not k.startswith("FM_")}
@@ -1729,11 +1738,11 @@ class SavedWorkers:
 
     @staticmethod
     def _stale(checked_at: float) -> bool:
-        return monotonic() - checked_at > WORKERS_FRESH_SECONDS
+        return workers_clock() - checked_at > WORKERS_FRESH_SECONDS
 
     def refresh(self, home: Path, *, reuse: bool) -> dict[str, object]:
         if not snapshot_lock.acquire(blocking=False):
-            raise SnapshotError("the fleet snapshot is already running")
+            raise SnapshotBusy("the fleet snapshot is already running")
         try:
             reading = self._reading
             if reuse and reading is not None:
@@ -1741,7 +1750,7 @@ class SavedWorkers:
                 if not self._stale(checked_at):
                     return snapshot
             snapshot = workers_snapshot(home)
-            self._reading = (monotonic(), snapshot)
+            self._reading = (workers_clock(), snapshot)
             return snapshot
         finally:
             snapshot_lock.release()
@@ -2077,8 +2086,10 @@ WORKERS_SCRIPT = r"""
       ? 'Check failed. Showing the list from ' + localTime(lastObservedAt) + '.'
       : 'Workers could not be loaded. Try again.';
   };
-  const read = async path => {
+  const busy = new Error('worker check already running');
+  const read = async (path, automatic = false) => {
     const response = await fetch(path, {cache: 'no-store', headers: {Accept: 'application/json'}});
+    if (automatic && response.status === 502 && (await response.json()).code === 'snapshot_busy') throw busy;
     if (!response.ok) throw new Error('worker read failed');
     return response.json();
   };
@@ -2094,10 +2105,16 @@ WORKERS_SCRIPT = r"""
       } else {
         const saved = await read('workers-saved.json');
         if (saved.snapshot) show(saved.snapshot);
-        if (saved.stale) show(await read('workers.json?reuse=1'));
+        if (saved.stale) show(await read('workers.json?reuse=1', true));
       }
     } catch (error) {
-      failed();
+      if (error === busy) {
+        const message = 'A check is already running.';
+        if (lastObservedAt) status.prepend(message + ' ');
+        else status.textContent = message;
+      } else {
+        failed();
+      }
     } finally {
       button.removeAttribute('aria-disabled');
       list.removeAttribute('aria-busy');
@@ -3822,10 +3839,14 @@ def make_handler(site_title: str, base_path: str = "", store: Path | None = None
                 self.send_text(200, app_asset(name) or b"", APP_ICON_PATHS[name], cache="public, max-age=86400")
                 return
             if name == "workers.json" and workers_home is not None:
+                reuse = request.query == "reuse=1"
                 try:
-                    snapshot = saved_workers.refresh(workers_home, reuse=request.query == "reuse=1")
-                except SnapshotError:
-                    self.send_text(502, json.dumps({"error": "The workers could not be read."}), "application/json")
+                    snapshot = saved_workers.refresh(workers_home, reuse=reuse)
+                except SnapshotError as exc:
+                    body = {"error": "The workers could not be read."}
+                    if reuse and isinstance(exc, SnapshotBusy):
+                        body["code"] = "snapshot_busy"
+                    self.send_text(502, json.dumps(body), "application/json")
                 else:
                     self.send_text(200, json.dumps(snapshot), "application/json")
                 return
@@ -3979,7 +4000,8 @@ def serve(args: argparse.Namespace) -> int:
     if exposed:
         print(f"quarterdeck: warning: {', '.join(exposed)} is not a loopback address; anyone who can reach this port can "
               "read saved items, answers, conversations and images, submit answers, and acknowledge replies. With "
-              "firstmate_home set, they can send asks, start conversations and send messages.",
+              "firstmate_home set, they can read or check the worker and second mate roster, "
+              "send asks, start conversations and send messages.",
               file=sys.stderr, flush=True)
     for server in servers[1:]:
         threading.Thread(target=server.serve_forever, daemon=True).start()
@@ -4271,8 +4293,8 @@ def make_parser() -> argparse.ArgumentParser:
     serve_parser = command("serve", "serve the page over HTTP",
                            "Anyone who can reach the service can read saved items, answers, conversations and reply images, "
                            "and can submit answers or acknowledge replies as the owner. With firstmate_home set, they can "
-                           "also send asks, start conversations, send messages and read that home's running workers "
-                           "when they open the Workers page or press Check workers. Browser "
+                           "also send asks, start conversations, send messages and read or check that home's workers "
+                           "and second mates from the Workers page or workers.json. Browser "
                            "writes require the same origin as the served page.", serve)
     add_serve_options(serve_parser)
     serve_parser.add_argument("--title", help="override the page title")

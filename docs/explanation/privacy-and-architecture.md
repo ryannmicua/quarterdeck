@@ -25,8 +25,9 @@ for who can start conversations and use the other browser controls.
   It reads the TLS certificate and key if you supply them.
 - The [workers endpoint](../reference/cli-and-config.md#workers-endpoint) runs
   the configured home's read-only `bin/fm-fleet-snapshot.sh --local` when the
-  Workers page finds no reading from the last hour or the owner presses
-  **Check workers**. This command uses no model.
+  Workers page opens and no fresh saved reading is available. Anyone who can reach the
+  service can also trigger a fleet read with **Check workers** or a direct
+  `GET /workers.json`. This command uses no model.
 - `service --write` writes the systemd unit. `url` reads it if it exists.
 - `install` and `update` invoke the [user-local installer](../how-to/install.md).
 

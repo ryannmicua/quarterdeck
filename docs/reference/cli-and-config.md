@@ -178,7 +178,8 @@ reading the home. `snapshot` is the last reading from `workers.json` in the
 same format, or `null` when the server has none. It is held in memory only and
 is lost when `serve` stops. `stale` is `true` when there is no snapshot or
 more than one hour has elapsed since the last successful check. The server
-measures elapsed time with a monotonic clock and displays the fleet's
+uses `CLOCK_BOOTTIME` where available, which includes time spent suspended,
+and falls back to `time.monotonic()` elsewhere. The page displays the fleet's
 `observed_at` timestamp. The endpoint returns 404 when `firstmate_home` is absent.
 
 `GET /workers.json` (under any `base_path`) runs and saves a new reading.
@@ -188,8 +189,11 @@ the fleet command, and saving the result. A failed read keeps the previous one. 
 [snapshot command](../explanation/privacy-and-architecture.md#what-quarterdeck-reads-and-writes)
 runs with `FM_HOME` set to the configured home. Other inherited `FM_` variables
 are removed. The endpoint returns 404 when `firstmate_home` is absent. It
-returns 502 immediately if a refresh is already in progress. It also returns 502
-if the command fails, exceeds 60 seconds, or returns invalid snapshot data.
+returns 502 immediately if a refresh is already in progress. For `?reuse=1`,
+that response also includes `"code": "snapshot_busy"`. The Workers page then
+reports the active check and leaves **Check workers** available. The endpoint
+also returns 502 if the command fails, exceeds 60 seconds, or returns invalid
+snapshot data.
 
 | Field in a snapshot | Meaning |
 | --- | --- |

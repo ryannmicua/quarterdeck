@@ -62,6 +62,10 @@ how duplicate rows are selected.
 
 ## If a check fails
 
+If another check is running when you open Workers, the page reports it and
+keeps any saved roster and its time visible. **Check workers** is available
+once the entry request finishes.
+
 The page keeps the last list in the tab and says **Check failed** with the
 time of that list. If there is no list, the page says **Workers could not
 be loaded**. Select **Check workers** to try again. See the
