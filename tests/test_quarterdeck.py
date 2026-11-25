@@ -985,6 +985,68 @@ const sendBatch = () => new Promise(resolve => {
         browser_result = result.stdout.partition('<output id="browser-result">')[2].partition("</output>")[0]
         self.assertEqual(browser_result, "PASS", result.stderr)
 
+    def test_keyboard_visual_viewport_repositions_send_and_library(self):
+        self.add("questions", "Tide decisions", "Decide the launch plan.", "--body-file", "-",
+                 stdin=json.dumps(QUESTIONS * 3))
+        self.add("resource", "Harbor chart", "Review the route.", "--url", "https://example.org/chart",
+                 "--link-text", "Open chart")
+        port = self.start("/qd")
+        viewport_events = r"""
+const adjust = (height, offsetTop, event) => {
+  Object.defineProperties(visualViewport, {
+    height: {value:height, configurable:true},
+    offsetTop: {value:offsetTop, configurable:true}
+  });
+  visualViewport.dispatchEvent(new Event(event));
+  check(innerHeight === 844, 'The keyboard fixture resized the layout viewport');
+};
+const near = (actual, expected) => Math.abs(actual - expected) < 1;
+"""
+        self.check_answer_page(port, viewport_events + r"""
+const bar = button('send').closest('.sendbar');
+field(6).focus();
+adjust(240, 60, 'resize');
+check(near(bar.getBoundingClientRect().bottom, 300), 'The Send bar stayed behind the keyboard');
+adjust(240, 100, 'scroll');
+check(near(bar.getBoundingClientRect().bottom, 340), 'The Send bar did not follow viewport panning');
+scrollTo(0, document.documentElement.scrollHeight);
+check(field(6).getBoundingClientRect().bottom <= bar.getBoundingClientRect().top,
+      'The last field could not scroll clear of the keyboard and bar');
+adjust(844, 0, 'resize');
+check(near(bar.getBoundingClientRect().bottom, 844), 'The Send bar did not return after closing the keyboard');
+check(near(parseFloat(getComputedStyle(document.querySelector('main')).paddingBottom), bar.getBoundingClientRect().height),
+      'The page kept extra clearance after closing the keyboard');
+""", viewport=(390, 844))
+        for width in (390, 900):
+            with self.subTest(width=width):
+                self.check_answer_page(port, viewport_events + r"""
+button('open-library').click();
+const dialog = button('library');
+for (const animation of dialog.getAnimations()) animation.finish();
+const normalHeight = dialog.getBoundingClientRect().height;
+const search = button('search-references');
+search.focus();
+adjust(140, 60, 'resize');
+let bounds = dialog.getBoundingClientRect();
+check(near(bounds.bottom, 200) && bounds.top >= 60 && bounds.height <= 140,
+      'The library did not fit above the keyboard');
+const searchBounds = search.getBoundingClientRect();
+check(document.activeElement === search && searchBounds.top >= bounds.top && searchBounds.bottom <= bounds.bottom + 1,
+      'The focused search was clipped when the keyboard opened');
+search.value = 'harbor';
+search.dispatchEvent(new Event('input', {bubbles:true}));
+const resultLink = dialog.querySelector('a[href="q2.html"]');
+resultLink.scrollIntoView({block:'center'});
+bounds = dialog.getBoundingClientRect();
+const linkBounds = resultLink.getBoundingClientRect();
+check(linkBounds.top >= bounds.top && linkBounds.bottom <= bounds.bottom, 'The result could not scroll into view');
+adjust(140, 90, 'scroll');
+check(near(dialog.getBoundingClientRect().bottom, 230), 'The library did not follow viewport panning');
+adjust(844, 0, 'resize');
+bounds = dialog.getBoundingClientRect();
+check(near(bounds.bottom, 844) && near(bounds.height, normalHeight), 'The library did not return to its original size');
+""", path="/qd/", viewport=(width, 844))
+
     def test_send_bar_stays_at_viewport_bottom_and_reserves_its_height(self):
         for count in (1, 12):
             self.add("questions", "Tide decisions", "Decide the launch plan.", "--body-file", "-",

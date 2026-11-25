@@ -1531,13 +1531,13 @@ table.items td.project { white-space:normal; }
 .card-link:focus { outline:none; }
 .desk .work:has(.card-link:focus) { outline:3px solid var(--focus); outline-offset:-3px; }
 .desk .work a:not(.card-link), .desk .work button { position:relative; z-index:1; }
-html:has(.sendbar) { scroll-padding-bottom:var(--sendbar-height, 0px); }
-main:has(> .sendbar) { padding-bottom:var(--sendbar-height, 0px); }
-.sendbar { position:fixed; inset:auto 0 0; z-index:2;
-  max-height:50vh; max-height:50dvh; overflow:auto;
+html:has(.sendbar) { --sendbar-space:calc(var(--sendbar-height, 0px) + var(--visible-bottom, 0px)); scroll-padding-bottom:var(--sendbar-space); }
+main:has(> .sendbar) { padding-bottom:var(--sendbar-space); }
+.sendbar { position:fixed; inset:auto 0 var(--visible-bottom, 0px); z-index:2;
+  max-height:calc(var(--visible-height, 100vh) / 2); overflow:auto;
   padding:.7rem max(var(--gutter), calc((100% - var(--page)) / 2 + var(--gutter))) calc(.7rem + env(safe-area-inset-bottom));
   background:var(--ground); border-top:1px solid var(--rule); box-shadow:0 -6px 14px -10px var(--ink); }
-.sendbar output { margin:.4rem 0 0; max-height:min(8rem,25vh); max-height:min(8rem,25dvh); overflow:auto; }
+.sendbar output { margin:.4rem 0 0; max-height:min(8rem, calc(var(--visible-height, 100vh) / 4)); overflow:auto; }
 .sendbar output:empty { display:none; }
 details.done { margin:.6rem 0; max-width:52rem; border:1px solid var(--rule); border-radius:8px; background:var(--raised); }
 details.done > summary { display:grid; grid-template-columns:auto minmax(0, 7fr) minmax(0, 5fr); gap:.8rem; align-items:baseline;
@@ -1547,14 +1547,16 @@ details.done .sum-q, details.done .sum-a { white-space:nowrap; overflow:hidden; 
 details.done .sum-q { font-weight:700; }
 details.done .sum-a { color:var(--soft); }
 details.done > .decision { margin:0; border:0; border-top:1px solid var(--rule); border-radius:0 0 8px 8px; max-width:none; }
-.library { padding:0; border:0; background:var(--raised); color:var(--ink); font-family:var(--sans); max-width:none; max-height:none; overflow:hidden; }
+.library { position:fixed; inset-block:auto var(--visible-bottom, 0px); padding:0; border:0; background:var(--raised); color:var(--ink);
+  font-family:var(--sans); max-width:none; max-height:none; overflow:hidden; }
 .library::backdrop { background:color-mix(in srgb, var(--ink) 55%, transparent); }
 .library[open] { display:flex; flex-direction:column; }
 @media (min-width: 40.01rem) {
-  .library { width:min(36rem, 100vw); height:100vh; height:100dvh; margin:0 0 0 auto; border-left:1px solid var(--rule); }
+  .library { width:min(36rem, 100vw); height:var(--visible-height, 100vh); margin:0 0 0 auto; border-left:1px solid var(--rule); }
 }
 @media (max-width: 40rem) {
-  .library { width:100%; height:min(88vh, calc(100vh - 2.5rem)); height:min(88dvh, calc(100dvh - 2.5rem)); margin:auto 0 0; border-radius:14px 14px 0 0; border-top:1px solid var(--rule); }
+  .library { width:100%; height:min(calc(var(--visible-height, 100vh) * .88), calc(var(--visible-height, 100vh) - 2.5rem));
+    margin:0; border-radius:14px 14px 0 0; border-top:1px solid var(--rule); }
 }
 @media (prefers-reduced-motion: no-preference) {
   .library[open] { animation:lib-in .18s ease-out; }
@@ -1582,10 +1584,8 @@ body:has(dialog[open]) { overflow:hidden; }
 .lib-status { margin:0; padding:0 var(--gutter); color:var(--soft); font-size:var(--text-sm); }
 .lib-panel > .empty { margin:1rem var(--gutter); }
 .lib-list { list-style:none; margin:0; padding:0 var(--gutter) 2rem; overflow-y:auto; flex:1; min-height:0; overscroll-behavior:contain; }
-@media (max-height: 22rem) {
-  .library[open] { display:block; overflow-y:auto; overscroll-behavior:contain; }
-  .lib-panel .lib-list { overflow:visible; }
-}
+.library.short[open] { display:block; overflow-y:auto; overscroll-behavior:contain; }
+.library.short .lib-list { overflow:visible; }
 .lib-item { padding:.9rem 0; border-bottom:1px solid var(--rule); }
 .lib-item p { margin:.2rem 0 0; }
 .lib-head { display:flex; gap:.2rem .8rem; align-items:baseline; }
@@ -1702,11 +1702,40 @@ WORKERS_SCRIPT = r"""
 """
 
 
+VIEWPORT_SCRIPT = """
+function trackVisibleViewport(onChange) {
+  const viewport = window.visualViewport;
+  const style = document.documentElement.style;
+  let previousHeight;
+  const update = () => {
+    const height = viewport?.height ?? innerHeight;
+    const bottom = Math.max(0, innerHeight - height - (viewport?.offsetTop ?? 0));
+    style.setProperty('--visible-height', height + 'px');
+    style.setProperty('--visible-bottom', bottom + 'px');
+    onChange(height, previousHeight);
+    previousHeight = height;
+  };
+  viewport?.addEventListener('resize', update);
+  viewport?.addEventListener('scroll', update);
+  window.addEventListener('resize', update);
+  update();
+}
+"""
+
+
 LIBRARY_SCRIPT = r"""
 (() => {
   const dialog = document.querySelector('#library');
   const opener = document.querySelector('#open-library');
   if (!dialog || !opener || !dialog.showModal) return;
+  trackVisibleViewport((height, previousHeight) => {
+    const shortHeight = 22 * parseFloat(getComputedStyle(document.documentElement).fontSize);
+    dialog.classList.toggle('short', height <= shortHeight);
+    const focused = document.activeElement;
+    if (height < previousHeight && dialog.open && dialog.contains(focused)) {
+      focused.scrollIntoView({block:'nearest', inline:'nearest'});
+    }
+  });
   const tabs = [...dialog.querySelectorAll('[role="tab"]')];
   const panelOf = tab => document.getElementById(tab.getAttribute('aria-controls'));
   const select = (tab, focus) => {
@@ -1893,7 +1922,8 @@ def page_shell(title: str, site_title: str, body: str, *, served: bool, saved_na
         f"  {GENERATED_MARKER}\n  <title>{esc(title)}</title>\n  {links}<style>{PAGE_CSS}</style>\n</head>\n<body>\n"
         f'<header class="bar"><a class="mark" href="{saved_href}">{esc(site_title)}</a>'
         f'<nav><a href="{saved_href}">Desk</a>{opener}</nav></header>\n'
-        f"<main>\n{body}\n</main>\n{library}<script>{TIME_SCRIPT}{ANSWER_SCRIPT if interactive else ''}"
+        f"<main>\n{body}\n</main>\n{library}<script>{TIME_SCRIPT}{VIEWPORT_SCRIPT if interactive or library else ''}"
+        f"{ANSWER_SCRIPT if interactive else ''}"
         f"{WORKERS_SCRIPT if workers else ''}{LIBRARY_SCRIPT if library else ''}</script>\n</body>\n</html>\n"
     )
 
@@ -2070,20 +2100,21 @@ if (send) {
   const sections = [...document.querySelectorAll('.decision')];
   const bar = send.closest('.sendbar');
   const output = bar.querySelector('output');
+  let previousBarTop;
   const reserveBarSpace = () => {
-    const pageStyle = document.documentElement.style;
-    const previousHeight = parseFloat(pageStyle.getPropertyValue('--sendbar-height'));
     const bounds = bar.getBoundingClientRect();
-    pageStyle.setProperty('--sendbar-height', bounds.height + 'px');
+    document.documentElement.style.setProperty('--sendbar-height', bounds.height + 'px');
+    const coveredTop = previousBarTop;
+    previousBarTop = bounds.top;
     const focused = document.activeElement;
-    if (bounds.height > previousHeight && focused && focused !== document.body && !bar.contains(focused)) {
+    if (bounds.top < coveredTop && focused && focused !== document.body && !bar.contains(focused)) {
       const control = focused.getBoundingClientRect();
-      if (control.top < bounds.bottom - previousHeight && control.bottom > bounds.top) {
+      if (control.top < coveredTop && control.bottom > bounds.top) {
         focused.scrollIntoView({block:'nearest', inline:'nearest'});
       }
     }
   };
-  reserveBarSpace();
+  trackVisibleViewport(reserveBarSpace);
   new ResizeObserver(reserveBarSpace).observe(bar, {box:'border-box'});
   const list = document.querySelector('#questions');
   const suggest = document.querySelector('#suggest');
