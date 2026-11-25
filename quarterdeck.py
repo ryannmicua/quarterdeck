@@ -971,6 +971,10 @@ class AnswerConflict(ValueError):
     pass
 
 
+class SavedAskConflict(AnswerConflict):
+    pass
+
+
 def find_answer_item(data, item_id):
     try:
         return find_item(data, item_id)
@@ -1050,7 +1054,9 @@ def check_conversation_target(item, part, target):
 
 
 def conversation_editable(item, part):
-    return part is None or part_record(item, part).get("state") != "closed"
+    if part is None:
+        return has_answer_controls(item)
+    return part_record(item, part).get("state") != "closed"
 
 
 def ask_result(item, part, message):
@@ -1072,8 +1078,6 @@ def ask_message(store, home, binding, payload):
     create_fields = {"part", "id", "text", "home"}
     retry = payload.get("action") == "retry"
     if fields == create_fields or (retry and fields == create_fields | {"action"}):
-        if payload["home"] != binding:
-            raise AnswerConflict(changed_home)
         text = clean_text(payload["text"], "Ask", TEXT_LIMIT, multiline=True)
         with locked_store(store):
             data = read_store(store)
@@ -1085,12 +1089,14 @@ def ask_message(store, home, binding, payload):
                     continue
                 if number != key or message["author"] != "you" or message["text"] != text:
                     raise AnswerConflict("Ask ID already in use. Reload the question.")
+                if payload["home"] != binding or (message["delivery"] == "pending" and message["home"] != binding):
+                    raise SavedAskConflict(changed_home)
                 if not retry:
-                    if message["delivery"] == "pending" and message["home"] != binding:
-                        raise AnswerConflict(changed_home)
                     return ask_result(item, part, message)
                 break
             else:
+                if payload["home"] != binding:
+                    raise AnswerConflict(changed_home)
                 if not conversation_editable(item, part):
                     raise AnswerConflict("Question closed. Reopen it before asking.")
                 thread = item.setdefault("conversation", {}).setdefault(key, [])
@@ -1108,9 +1114,9 @@ def ask_message(store, home, binding, payload):
             raise AnswerConflict("Ask not found. Reload the question.")
         if message["delivery"] == "pending":
             if message["home"] != binding:
-                raise AnswerConflict(changed_home)
+                raise SavedAskConflict(changed_home)
             if not conversation_editable(item, part):
-                raise AnswerConflict("Question closed. Reopen it before sending the ask.")
+                raise SavedAskConflict("Question closed. Reopen it before sending the ask.")
             if deliver_note(home, message["request_id"], f"ASK {target} {message_id} {message['text']}"):
                 message["delivery"] = "sent"
         return ask_result(item, part, message)
@@ -2404,19 +2410,16 @@ def conversation_thread(item, number, target, *, editable):
             f'<div class="thread-messages">{thread}</div>{pending}</details>')
 
 
-def conversation_toolbar(item, *, answers, asking):
-    controls = ""
-    if answers:
-        controls = '<button id="send" class="primary" disabled>Send answers</button>'
+def conversation_toolbar(item, *, asking):
+    controls = '<button id="send" class="primary" disabled>Send answers</button>'
     if asking:
         controls += ('<button type="button" id="open-item-ask" aria-controls="item-ask-editor" '
                      'aria-expanded="false">Ask Firstmate</button>')
-    if answers:
-        if any(q.get("suggestion") and conversation_editable(item, n)
-               for n, q in enumerate(item["body"]["questions"], 1)):
-            controls += '<button id="suggest">Use all suggestions</button>'
-        controls += '<button id="undo" hidden>Undo changes</button>'
-    return f'<div class="sendbar"><div class="actions">{controls}</div><output role="status" tabindex="0"></output></div>' if controls else ""
+    if any(q.get("suggestion") and conversation_editable(item, n)
+           for n, q in enumerate(item["body"]["questions"], 1)):
+        controls += '<button id="suggest">Use all suggestions</button>'
+    controls += '<button id="undo" hidden>Undo changes</button>'
+    return f'<div class="sendbar"><div class="actions">{controls}</div><output role="status" tabindex="0"></output></div>'
 
 
 def item_conversation(item, ask_binding):
@@ -2502,8 +2505,9 @@ def question_form(item, served, *, ask_binding=None):
         else:
             cards.append(card)
     progress = progress_text(item, question_summary(item, replies=served))
-    toolbar = conversation_toolbar(item, answers=has_answer_controls(item), asking=asking) if served else ""
-    whole_item = item_conversation(item, ask_binding) if served else ""
+    editable = served and conversation_editable(item, None)
+    toolbar = conversation_toolbar(item, asking=asking) if editable else ""
+    whole_item = item_conversation(item, ask_binding if editable else None) if served else ""
     return f'<p class="progress">{progress}</p>' + whole_item + '<div id="questions">' + ''.join(cards) + ''.join(folded) + '</div>' + toolbar
 
 
@@ -2565,10 +2569,10 @@ document.addEventListener('click', event => {
 ANSWER_SCRIPT = r"""
 const send = document.querySelector('#send');
 const openItemAsk = document.querySelector('#open-item-ask');
-if (send || openItemAsk) {
+if (send) {
   const fields = [...document.querySelectorAll('.decision textarea')];
   const editors = [...document.querySelectorAll('[data-conversation] textarea')];
-  const bar = (send || openItemAsk).closest('.sendbar');
+  const bar = send.closest('.sendbar');
   const output = bar.querySelector('output');
   let previousBarTop;
   const reserveBarSpace = () => {
@@ -2595,7 +2599,7 @@ if (send || openItemAsk) {
   let history = [];
   const answerText = value => value.replace(/^[\p{White_Space}\x1c-\x1f]+|[\p{White_Space}\x1c-\x1f]+$/gu, '');
   const newDraft = f => answerText(f.value) && answerText(f.value) !== answerText(f.defaultValue);
-  const handEdited = origin => origin === 'manual' || origin === 'ask';
+  const handEdited = origin => origin === 'manual' || origin === 'edited-fill' || origin === 'ask';
   const askDraft = f => (f.closest('.item-conversation') || handEdited(draftOrigins.get(f))) && newDraft(f);
   const changed = f => {
     const {pending} = f.closest('section').dataset;
@@ -2648,11 +2652,10 @@ if (send || openItemAsk) {
   document.addEventListener('input', e => {
     const field = e.target;
     if (!field.matches('[data-conversation] textarea')) return;
-    if (draftOrigins.has(field) && draftOrigins.get(field) !== 'ask') {
-      const restoredChoice = e.inputType === 'historyUndo' &&
-        [...field.closest('section').querySelectorAll('[data-choice]')]
-          .some(option => option.dataset.choice === field.value);
-      draftOrigins.set(field, restoredChoice ? 'filled' : 'manual');
+    const origin = draftOrigins.get(field);
+    if (origin === 'filled' || origin === 'edited-fill') {
+      const restoredFill = e.inputType === 'historyUndo' && !document.queryCommandEnabled('undo');
+      draftOrigins.set(field, restoredFill ? 'filled' : 'edited-fill');
     }
     forget(field);
     refresh();
@@ -2716,7 +2719,7 @@ if (send || openItemAsk) {
       const step = history.pop();
       for (const [f, {value, origin, askError}] of step) {
         f.value = value;
-        if (origin) draftOrigins.set(f, origin);
+        if (origin) draftOrigins.set(f, origin === 'edited-fill' ? 'manual' : origin);
         if (askError) rejections.set(f, askError);
       }
       refresh();
@@ -2778,9 +2781,10 @@ if (send || openItemAsk) {
       const response = await fetch('asks', {method:'POST', headers:{'Content-Type':'application/json'},
         body:JSON.stringify(body)});
       if (response.status === 400 || response.status === 409) {
-        const message = await response.text();
+        const {message, saved} = response.status === 409 ? await response.json() :
+          {message: await response.text(), saved: false};
         output.textContent = message;
-        if (pending) {
+        if (pending && saved === false) {
           failedDraft = section.querySelector('textarea');
           failedDraft.value = pending.querySelector('.record').textContent;
           if (draftOrigins.has(failedDraft)) draftOrigins.set(failedDraft, 'ask');
@@ -2788,6 +2792,8 @@ if (send || openItemAsk) {
           pending.remove();
           const thread = section.querySelector('.thread');
           thread.hidden = !thread.querySelector('.thread-messages > *, .pending-asks > *');
+        } else if (pending && saved === true) {
+          pending.querySelector('.delivery').textContent = 'Saved';
         }
       } else if (!response.ok) {
         throw new Error(await response.text());
@@ -3032,7 +3038,7 @@ def item_page(item: dict[str, object], site_title: str, *, served: bool, saved_n
     )
     return page_shell(f"{item_id} {item['title']} · {site_title}", site_title, body,
                       served=served, saved_name=saved_name,
-                      interactive=served and questions and (has_answer_controls(item) or ask_binding is not None),
+                      interactive=served and has_answer_controls(item),
                       conversations=served and questions)
 
 
@@ -3425,7 +3431,7 @@ def make_handler(site_title: str, base_path: str = "", store: Path | None = None
                 return
             _, ask_binding = ask_destination() if item["kind"] == "questions" else (None, None)
             content = item_page(item, site_title, served=True, ask_binding=ask_binding)
-            prevent_framing = ask_binding is not None or has_answer_controls(item) or (
+            prevent_framing = has_answer_controls(item) or (
                 item["kind"] == "questions" and question_summary(item)[0] == "Replied")
             self.send_text(200, content, "text/html; charset=utf-8", prevent_framing=prevent_framing)
 
@@ -3464,7 +3470,11 @@ def make_handler(site_title: str, base_path: str = "", store: Path | None = None
                 else:
                     record = mark_replies_read(active_store, payload)
             except AnswerConflict as exc:
-                self.send_text(409, str(exc))
+                if endpoint == "/asks":
+                    record = {"message": str(exc), "saved": isinstance(exc, SavedAskConflict)}
+                    self.send_text(409, json.dumps(record), "application/json")
+                else:
+                    self.send_text(409, str(exc))
             except (OSError, StoreReadError):
                 self.send_text(500, f"Could not save the {subject}.")
             except (ValueError, RecursionError):

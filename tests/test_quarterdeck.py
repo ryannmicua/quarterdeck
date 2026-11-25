@@ -3124,7 +3124,7 @@ class ConversationTests(ImageCase):
             with urllib.request.urlopen(request, timeout=5) as response:
                 return response.status, json.load(response)
         except urllib.error.HTTPError as error:
-            return error.code, error.read().decode()
+            return error.code, json.load(error) if error.headers.get_content_type() == "application/json" else error.read().decode()
 
     def ask_body(self, port, part, text):
         item, _, _ = part.partition(".")
@@ -3243,7 +3243,8 @@ class ConversationTests(ImageCase):
             rebound = {**body, "home": self.ask_body(port, "Q4.1", "Unused")["home"]}
             for request in (retry, body, rebound, stale_draft, {**body, "action": "retry"}, {**rebound, "action": "retry"}):
                 self.assertEqual(self.post(port, "/qd/asks", request),
-                                 (409, "Firstmate home changed. This ask belongs to the original home."))
+                                 (409, {"message": "Firstmate home changed. This ask belongs to the original home.",
+                                        "saved": request["id"] == body["id"]}))
             self.assertEqual(self.store(), before)
             self.assertFalse((replacement / "attempts").exists())
 
@@ -3261,7 +3262,7 @@ class ConversationTests(ImageCase):
         alias.symlink_to(replacement, target_is_directory=True)
         for request in (retry, body):
             self.assertEqual(self.post(port, "/qd/asks", request),
-                             (409, "Firstmate home changed. This ask belongs to the original home."))
+                             (409, {"message": "Firstmate home changed. This ask belongs to the original home.", "saved": True}))
         self.assertFalse((replacement / "attempts").exists())
         self.assertEqual(self.ask(port, "Q4.1", "A new ask.")[1]["message"], "Ask sent.")
         self.assertIn("A new ask.", (replacement / "notes").read_text())
@@ -3514,15 +3515,44 @@ class ConversationTests(ImageCase):
                 quarterdeck.store_path().write_text(json.dumps(data))
                 self.assertEqual(self.fetch(port, "/qd/")[0], 500)
 
-    def test_whole_item_asks_work_without_answer_controls(self) -> None:
-        port = self.start("/qd", ask_home=self.inbox())
-        self.assertEqual(self.run_cli("mark", "Q4", "closed")[0], 0)
-        self.assertEqual(self.ask(port, "Q4", "Explain the whole decision.")[0], 200)
-        status, page, headers = self.fetch(port, "/qd/q4.html")
-        self.assertEqual(status, 200)
-        self.assertIn('id="open-item-ask"', page)
-        self.assertNotIn('<button id="send"', page)
-        self.assertEqual(headers.get("Content-Security-Policy"), "frame-ancestors 'none'")
+    def test_closed_items_keep_existing_threads_without_ask_controls(self) -> None:
+        home = self.inbox()
+        port = self.start("/qd", ask_home=home)
+        for target, key in (("Q4", "item"), ("Q4.1", "1")):
+            with self.subTest(target=target):
+                self.assertEqual(self.run_cli("mark", "Q4", "open")[0], 0)
+                body = self.ask_body(port, target, "Explain this decision.")
+                stale = self.ask_body(port, target, "Another question.")
+                changing_store = quarterdeck.changing_store
+
+                @contextmanager
+                def close_before_delivery(path):
+                    with patch.object(quarterdeck, "changing_store", changing_store):
+                        self.assertEqual(self.run_cli("mark", "Q4", "closed")[0], 0)
+                    with changing_store(path) as data:
+                        yield data
+
+                with patch.object(quarterdeck, "changing_store", close_before_delivery):
+                    status, conflict = self.post(port, "/qd/asks", body)
+                self.assertEqual((status, conflict["saved"]), (409, True))
+                original = self.messages(key, 3)[0]
+                self.assertEqual((original["id"], original["delivery"]), (body["id"], "pending"))
+                for payload, saved in ((stale, False), ({**stale, "action": "retry"}, False),
+                                       ({**body, "action": "retry"}, True),
+                                       ({"part": target, "id": body["id"], "action": "retry"}, True)):
+                    status, conflict = self.post(port, "/qd/asks", payload)
+                    self.assertEqual((status, conflict["saved"]), (409, saved))
+                self.assertEqual(self.messages(key, 3), [original])
+                self.assertEqual(self.run_cli("reply", target, "--ask", body["id"], "--text", "Here it is.")[0], 0)
+                status, page, headers = self.fetch(port, "/qd/q4.html")
+                self.assertEqual(status, 200)
+                self.assertIn('Here it is.', page)
+                for absent in ('id="open-item-ask"', 'id="item-ask-editor"', '<button id="send"', 'data-retry-ask='):
+                    self.assertNotIn(absent, page)
+                self.assertEqual(headers.get("Content-Security-Policy"), "frame-ancestors 'none'")
+                reply = self.messages(key, 3)[1]
+                self.assertEqual(self.post(port, "/qd/replies/read", {"part": target, "ids": [reply["id"]]})[0], 200)
+        self.assertFalse((home / "attempts").exists())
 
     def test_static_exports_exclude_conversation_and_reply_images(self) -> None:
         port = self.start("/qd", ask_home=self.inbox(accept=False))
@@ -3893,7 +3923,7 @@ window.fetch = async (url, options) => {
   const body = JSON.parse(options.body);
   calls.push([url, body]);
   if (interrupted && body.text && !body.action) throw new Error('Connection lost');
-  return {status: 409, text: async () => conflict};
+  return {status: 409, json: async () => ({message: conflict, saved: !body.text || body.text.startsWith("Saved ")})};
 };
 const whole = document.getElementById('Q4');
 document.getElementById('open-item-ask').click();
@@ -3917,6 +3947,18 @@ for (const section of [whole, card(1)]) {
         'The confirmed conflict did not return the draft and its error');
   check(!section.querySelector('[data-local-ask]'), 'A rejected draft stayed pending');
   check(document.getElementById('send').disabled, 'A conflicted ask entered the answer batch');
+  editor.value = 'Saved ' + draft;
+  editor.dispatchEvent(new Event('input', {bubbles: true}));
+  const first = calls.length;
+  section.querySelector('.ask-button').click();
+  await settled();
+  const recovery = section.querySelector('[data-local-ask] button');
+  recovery.click();
+  await settled();
+  check(editor.value === '' && recovery.isConnected && document.getElementById('send').disabled,
+        'A saved conflict restored an ask as a fresh draft');
+  check(calls[first][1].id === calls.at(-1)[1].id && calls[first][1].home === calls.at(-1)[1].home,
+        'A saved conflict lost the ask identity or home');
 }
 const savedRetry = card(2).querySelector('[data-retry-ask]');
 savedRetry.click();
@@ -4018,6 +4060,16 @@ card(1).querySelector('[data-choice="Merge"]').click();
 check(field(1).value === 'Merge' && ask(1).disabled, 'A replacement option remained askable');
 undo.click();
 check(field(1).value === 'Hold' && !ask(1).disabled, 'Undo changes lost the draft’s hand-edited origin');
+card(1).querySelector('[data-choice="Hold"]').click();
+field(1).focus();
+field(1).select();
+check(document.execCommand('insertText', false, 'Merge'), 'Manual replacement failed');
+field(1).setSelectionRange(0, 0);
+check(document.execCommand('insertText', false, '?'), 'Separate manual edit failed');
+check(document.execCommand('undo') && field(1).value === 'Merge' && !ask(1).disabled,
+      'Native Undo classified a manually typed option label as a selected answer');
+check(document.execCommand('redo') && field(1).value === '?Merge' && !ask(1).disabled,
+      'Native Redo lost the manually typed draft');
 """)
 
     def test_replacing_a_rejected_ask_allows_answer_edits_before_and_after_saving(self) -> None:

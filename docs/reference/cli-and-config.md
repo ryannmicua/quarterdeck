@@ -102,8 +102,11 @@ Repeating the same create request returns the existing ask. Add
 send. Quarterdeck saves the ask if that request never arrived. For a
 saved ask, the page can also send
 `{"part": "Q7.1", "id": "<ask id>", "action": "retry"}`. Both forms
-reuse the saved ask and note IDs. A changed home, closed question,
-or removed item can return 409. The inbox note starts with
+reuse the saved ask and note IDs. Sending or retrying a whole-item ask
+requires at least one question whose state is not Closed. A changed home,
+closed question, or removed item can return 409 with a JSON `message`
+and a `saved` flag indicating whether the matching ask remains in the store.
+The inbox note starts with
 `ASK Q7 <ask id>` for the whole item or `ASK Q7.1 <ask id>` for one question,
 followed by the ask text.
 

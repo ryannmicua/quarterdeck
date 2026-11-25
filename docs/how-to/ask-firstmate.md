@@ -9,8 +9,8 @@ Select **Ask Firstmate** in the page bar beside **Send answers**. Type in
 **Message about this item**, then select **Send ask**. The inbox note names
 the item, for example `ASK Q7 <ask id>`. Read replies in **Messages**
 under **Item conversation** above the questions. Opening that conversation
-acknowledges only its replies. The toolbar ask is available on question
-items, including when all their questions are closed.
+acknowledges only its replies. When all questions on an item are closed,
+its conversations stay readable. Reopen a question to use the toolbar ask.
 
 ## Ask about one question
 
@@ -38,12 +38,14 @@ from oldest to newest, with its replies underneath in the order they arrived.
 
 ## Retry a missed delivery
 
-If an ask stays **Pending** after an interruption or shows **Not delivered**,
+If an ask stays **Pending** after an interruption or shows **Saved** or
+**Not delivered**,
 select **Send ask again** once the
 [inbox is available](read-answers.md#connect-the-inbox). The retry keeps the
 original ask and note IDs. Reopen a closed question before sending or
 retrying an ask. If the configured Firstmate home has changed, Quarterdeck
-refuses the retry.
+refuses the retry. A saved ask keeps its original identity and home after
+a conflict.
 If an ask never reaches Quarterdeck, reloading the page clears the draft and
 you’ll need to type it again.
 
