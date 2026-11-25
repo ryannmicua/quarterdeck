@@ -10,24 +10,25 @@ about the whole item or a particular question.
 Use **Discuss this set** when a premise affects several questions. Select it in
 the page bar beside **Send answers**. Read replies in **Messages** under
 **Discuss this set** above the questions. Opening that conversation acknowledges
-only its replies. Item and question IDs travel with every message, and
+only its replies. A set message carries the item ID, such as **Q7**. An answer
+or ask on a numbered card carries its full question ID, such as **Q7.1**.
 Firstmate saves its reply on the same item.
 
 Under **Queued to send**, each queued answer names its question ID, such as
-**Answer · Q7.1**, and shows the text it will send. A set message shows as
-**Set message**. Use **Add to the queue** to queue either one: pick **Message
-about this set** or a question, write in **Your text**, and select **Queue item**.
-A question's draft on its card joins the queue too.
+**Answer · Q7.1**, and shows the text it will send. Answer drafts join the queue
+from their cards. To add one set message, write in **Message about this set**
+and select **Queue item**.
 
-Select **Send queued items** to send the queued answers, then the set messages.
+Select **Send queued items** to send the queued answers, then the set message.
 A message-only send leaves every question open. **Remove from send** keeps the
 draft on its card and takes it out of the queue; editing the draft puts it back.
 You can send more messages before answering anything.
 
 When Firstmate's reply clarifies a question, **Clarified after discussion**
 appears on that card. If the reply says an option changed, the card asks you to
-review your draft: it stays out of **Send answers** until you edit it, pick an
-option or select **Keep this draft**.
+review your draft. Both send buttons hold it until you edit it, pick an option,
+or select **Keep this draft**. The open page refreshes clarifications without
+replacing your draft.
 
 When every question is answered, the discussion stays readable. Select **Read
 set discussion** under the item in **Answered** in the Library.
@@ -77,7 +78,8 @@ If a new draft blocks **Send ask again** for an interrupted ask, clear the
 field before retrying. If the ask never reaches Quarterdeck, reloading the
 page clears it and you’ll need to type it again.
 
-A confirmed rejection before saving puts the draft back in the field.
+A confirmed rejection before saving returns a set message to the queue and
+a numbered ask to its card field.
 **Undo changes** can still undo option selections on other questions.
 If the inbox becomes unavailable during a retry, the ask keeps its original
 ID because the first attempt may have saved it.

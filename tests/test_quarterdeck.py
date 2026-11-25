@@ -4340,7 +4340,8 @@ window.fetch = async (url, options) => {
   const result = url === 'replies/read' ? {replies: {[replyId]: true}} :
     url === 'answers' ? {state: 'answered', revision: 'new', delivery: 'sent',
                         answer: 'Hold', answered_at: '2026-11-25T01:00:00Z'} :
-    {thread: `<ol><li data-ask-id="${body.id}"><p class="record">Explain the colors.</p></li></ol>`, message: 'Ask sent.'};
+    {thread: `<ol><li data-ask-id="${body.id}"><p class="record">Explain the colors.</p></li></ol>`,
+     message: 'Ask sent.', delivery: 'sent'};
   return {ok: true, status: 200, json: async () => result};
 };
 const whole = document.getElementById('Q4');
@@ -4393,7 +4394,8 @@ window.fetch = async (url, options) => {
   calls.push([url, body]);
   const result = url === 'answers' ? {state: 'answered', revision: 'new', delivery: 'sent',
                                       answer: body.answer, answered_at: '2026-11-25T01:00:00Z'} :
-    {thread: `<ol><li data-ask-id="${body.id}"><p class="record">${body.text}</p></li></ol>`, message: 'Ask sent.'};
+    {thread: `<ol><li data-ask-id="${body.id}"><p class="record">${body.text}</p></li></ol>`,
+     message: 'Ask sent.', delivery: 'sent'};
   return {ok: true, status: 200, json: async () => result};
 };
 const queueItems = () => [...document.querySelectorAll('#queue-list li')].map(li => li.textContent);
@@ -4411,14 +4413,11 @@ document.getElementById('open-item-ask').click();
         self.check_page(port, self.SET_STUB + r"""
 check(document.getElementById('queue-empty').textContent === 'Your queue is empty.' &&
       document.getElementById('send-queue').disabled, 'An empty queue offered a send');
-const scope = document.getElementById('queue-scope');
-check([...scope.options].map(o => o.textContent).join('|') ===
-      'Message about this set|Answer \u00b7 Merge the tide tables now?|Answer \u00b7 Which colour for the quay?',
-      'The queue did not offer the set and each open question');
-scope.value = 'Q4.1';
-queueText('Hold');
-check(field(1).value === 'Hold', 'A queued answer did not fill its card');
+type(1, 'Hold');
 queueText('Please send me the proof before ordering the run.');
+queueText('A later follow-up.');
+check(document.getElementById('queue-add').disabled && document.getElementById('ask-Q4').value === 'A later follow-up.',
+      'A second set draft replaced the staged message or was lost');
 const items = queueItems();
 check(items.length === 2 && items[0].includes('Answer \u00b7 Q4.1') && items[0].includes('Merge the tide tables now?') &&
       items[0].includes('Hold') && items[1].includes('Set message') && items[1].includes('Please send me the proof'),
@@ -4432,6 +4431,7 @@ check(calls.length === 2 && calls[0][0] === 'answers' && calls[0][1].part === 'Q
 check(card(1).dataset.state === 'answered' && card(2).dataset.state === 'open' && field(2).value === '' &&
       !calls.some(([, body]) => body.part === 'Q4.2'), 'The other question did not stay open');
 check(status().textContent === 'Queued items sent.' && queueItems().length === 0, 'The queue did not empty');
+check(!document.getElementById('queue-add').disabled, 'A later follow-up could not be staged');
 """)
 
     def test_set_discussion_sends_only_the_request_and_keeps_the_cover_draft(self) -> None:
@@ -4443,6 +4443,10 @@ check(queueItems().length === 2 && document.getElementById('send').textContent =
 [...document.querySelectorAll('#queue-list button')].find(b => b.textContent === 'Remove from send').click();
 check(field(1).value === 'Hold' && queueItems().length === 1 && document.getElementById('send').disabled,
       'Removing the answer from this send lost its draft');
+card(1).querySelector('[data-choice="Merge"]').click();
+document.getElementById('undo').click();
+check(field(1).value === 'Hold' && queueItems().length === 1 && document.getElementById('send').disabled,
+      'Undo put the excluded answer back in both send paths');
 document.getElementById('send-queue').click();
 await settled();
 check(calls.length === 1 && calls[0][0] === 'asks' && calls[0][1].part === 'Q4', 'A message-only send also sent an answer');
@@ -4454,9 +4458,15 @@ check(!document.getElementById('send').disabled && queueItems().length === 1 && 
 """)
 
     def test_a_changed_option_holds_its_draft_for_review_and_the_card_shows_what_was_clarified(self) -> None:
-        port = self.start("/qd", ask_home=self.inbox())
+        home = self.inbox(accept=False)
+        port = self.start("/qd", home=home, ask_home=home)
+        page_before_reply = self.fetch(port, "/qd/q4.html")[1]
+        answer = {"part": "Q4.1", "answer": "Hold", "revision": ""}
+        status, pending = self.post(port, "/qd/answers", answer)
+        self.assertEqual((status, pending["delivery"]), (200, "pending"))
         whole = self.ask_body(port, "Q4", "Can the quantity wait?")
-        self.assertEqual(self.post(port, "/qd/asks", whole)[0], 200)
+        status, saved_ask = self.post(port, "/qd/asks", whole)
+        self.assertEqual((status, saved_ask["delivery"]), (200, "pending"))
         code, _, error = self.run_cli("reply", "Q4", "--ask", whole["id"], "--text", "Yes, a proof first.",
                                       "--clarify", "Q4.1=This choice is for the cover proof.",
                                       "--clarify", "Q4.2=The printer can make one sample first.", "--option-changed", "q4.1")
@@ -4472,6 +4482,71 @@ check(!document.getElementById('send').disabled && queueItems().length === 1 && 
         self.assertIn("The printer can make one sample first.", second)
         self.assertNotIn("An option changed.", second)
         self.assertIn(" data-review", first)
+        retries_before = (home / "attempts").read_text()
+        for stale in (answer, {**answer, "revision": pending["revision"]},
+                      {**answer, "answer": "Merge", "revision": pending["revision"]}):
+            status, conflict = self.post(port, "/qd/answers", stale)
+            self.assertEqual(status, 409)
+            self.assertIn("This choice is for the cover proof.", conflict["clarification"])
+        self.assertEqual((home / "attempts").read_text(), retries_before)
+        self.inbox()
+        status, confirmed = self.post(port, "/qd/answers", {**answer, "option_revision": reply["id"]})
+        self.assertEqual((status, confirmed["delivery"]), (200, "sent"))
+        self.assertEqual(confirmed["revision"], pending["revision"])
+        self.assertEqual((home / "notes").read_text(), "Q4.1 Hold\n")
+        snapshot = json.loads(self.fetch(port, "/qd/q4.clarifications.json")[1])
+        self.check_page(port, r"""
+const requests = [];
+window.fetch = async (url, options) => {
+  if (url === 'q4.clarifications.json') return {ok: true, json: async () => snapshot};
+  const body = JSON.parse(options.body);
+  requests.push([url, body]);
+  if (url === 'asks') return {ok: true, status: 200, json: async () => ({
+    delivery: 'sent', message: 'Ask sent.',
+    thread: `<ol><li data-ask-id="${body.id}"></li></ol>`,
+  })};
+  return {ok: true, status: 200, json: async () => confirmed};
+};
+const send = document.getElementById('send');
+const sendQueue = document.getElementById('send-queue');
+const opener = document.getElementById('open-item-ask');
+opener.click();
+type(1, 'Hold');
+[...document.querySelectorAll('#queue-list button')].find(b => b.textContent === 'Remove from send').click();
+const composer = document.getElementById('ask-Q4');
+composer.value = 'Can the quantity wait?';
+composer.dispatchEvent(new Event('input', {bubbles: true}));
+document.getElementById('queue-add').click();
+sendQueue.click();
+await settled();
+check(requests.length === 1 && requests[0][0] === 'asks' && requests[0][1].part === 'Q4',
+      'The request sent an answer or went to the wrong item');
+await refreshDiscussion();
+check(field(1).value === 'Hold' && !card(1).querySelector('.review').hidden &&
+      card(2).querySelector('.clarified').textContent.includes('The printer can make one sample first.'),
+      'The open page lost the draft or missed the clarification');
+send.click();
+sendQueue.click();
+check(requests.length === 1 && send.disabled && sendQueue.disabled, 'A send button accepted a stale draft');
+card(1).querySelector('[data-choice="Merge"]').click();
+document.getElementById('undo').click();
+check(field(1).value === 'Hold' && !card(1).querySelector('.review').hidden && send.disabled,
+      'Undo released the review-held draft');
+card(1).querySelector('.keep-draft').click();
+check(send.disabled && sendQueue.disabled, 'Confirming the draft cleared its send exclusion');
+type(1, 'Hold');
+sendQueue.click();
+await settled();
+check(requests.length === 2 && requests[1][1].option_revision === revision &&
+      requests[1][1].answer === 'Hold' && card(2).dataset.state === 'open',
+      'The confirmed answer did not carry the current option revision');
+""", page=page_before_reply, setup=f"""
+const snapshot = {json.dumps(snapshot)};
+const revision = {json.dumps(reply["id"])};
+const confirmed = {json.dumps(confirmed)};
+let refreshDiscussion;
+window.setInterval = callback => {{ refreshDiscussion = callback; }};
+""")
         self.check_page(port, self.SET_STUB + r"""
 field(1).value = 'Hold';
 type(2, 'Red');
@@ -4483,6 +4558,29 @@ check(document.getElementById('send').textContent === 'Send 2 answers' && card(1
       queueItems().length === 2, 'Keeping the draft did not release it');
 """, page=page)
         self.assertIn("This choice is for the cover proof.", self.fetch(port, "/qd/q4.html")[1])
+
+    def test_mixed_queue_reports_delivered_pending_and_rejected_entries(self) -> None:
+        port = self.start("/qd", ask_home=self.inbox())
+        self.check_page(port, self.SET_STUB + r"""
+const sent = window.fetch;
+window.fetch = async (url, options) => {
+  const body = JSON.parse(options.body);
+  if (body.part === 'Q4.2') return {ok: false, status: 400, text: async () => 'Check the answer.'};
+  const response = await sent(url, options);
+  if (body.part === 'Q4.1') {
+    return {...response, json: async () => ({...(await response.json()), delivery: 'pending'})};
+  }
+  return response;
+};
+type(1, 'Hold');
+type(2, 'Red');
+queueText('Can we see the proof first?');
+document.getElementById('send-queue').click();
+await settled();
+check(status().textContent.startsWith('1 sent. 1 saved for retry. 1 failed.') &&
+      card(1).querySelector('.delivery').textContent === 'Not delivered' && field(2).value === 'Red',
+      'The successful set message hid an undelivered or rejected answer');
+""")
 
     def test_clarifications_belong_to_a_reply_to_the_whole_set(self) -> None:
         port = self.start("/qd", ask_home=self.inbox())
@@ -4520,9 +4618,6 @@ check(document.getElementById('send').textContent === 'Send 2 answers' && card(1
         self.assertIn("Can the quantity wait?", page)
         self.assertIn('<span class="id">Q4.1</span>', page)
         self.assertIn("Answered elsewhere", page)
-
-    def post_answer(self, port, part, answer, revision=""):
-        return self.post(port, "/qd/answers", {"part": part, "answer": answer, "revision": revision})
 
     def test_reply_images_fit_both_threads_on_a_phone(self) -> None:
         port = self.start("/qd", ask_home=self.inbox())
@@ -4690,7 +4785,9 @@ for (const section of [whole, card(1)]) {
           'A first-attempt refusal did not restore the editable draft');
     check(!section.querySelector('[data-local-ask]'), 'A first-attempt refusal stayed pending');
   }
-  check(status().textContent === refusal, 'A definite response was reported as an interruption');
+  check(status().textContent === (section === whole && !interrupted ?
+        '0 sent. 0 saved for retry. 1 failed. ' + refusal : refusal),
+        'A definite response was reported as an interruption');
   check(document.getElementById('send').disabled, 'The refused ask was queued as an answer');
 }
 const savedRetry = card(2).querySelector('[data-retry-ask]');

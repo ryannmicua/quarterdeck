@@ -876,8 +876,12 @@ def valid_clarifications(clarify, parts):
 
 def clarifications(item, number):
     """What Firstmate's replies in the set discussion clarified about one question, oldest first."""
-    return [reply["clarify"][str(number)] for reply in part_thread(item, None)
+    return [{**reply["clarify"][str(number)], "reply_id": reply["id"]} for reply in part_thread(item, None)
             if reply["author"] == "firstmate" and str(number) in reply.get("clarify", {})]
+
+
+def option_revision(notes):
+    return next((note["reply_id"] for note in reversed(notes) if note["option_changed"]), "")
 
 
 def thread_key(part):
@@ -999,6 +1003,12 @@ class AnswerConflict(ValueError):
     pass
 
 
+class OptionChanged(AnswerConflict):
+    def __init__(self, notes, answer_revision):
+        self.notes = notes
+        self.answer_revision = answer_revision
+
+
 class SavedAskConflict(AnswerConflict):
     pass
 
@@ -1029,12 +1039,21 @@ def deliver_note(home, request_id, text):
 
 
 def send_answer(store, home, payload):
-    if not isinstance(payload, dict) or set(payload) != {"part", "answer", "revision"}:
+    required = {"part", "answer", "revision"}
+    if not isinstance(payload, dict) or not required <= payload.keys() <= required | {"option_revision"}:
         raise ValueError("Invalid answer fields.")
-    if not isinstance(payload["revision"], str) or not re.fullmatch(r"(?:[0-9a-f]{32})?", payload["revision"]):
+    reviewed = payload.get("option_revision", "")
+    if any(not isinstance(value, str) or not re.fullmatch(r"(?:[0-9a-f]{32})?", value)
+           for value in (payload["revision"], reviewed)):
         raise ValueError("Invalid question revision.")
     item_id, part = parse_part(payload["part"])
     answer = clean_text(payload["answer"], "Answer", TEXT_LIMIT, multiline=True)
+
+    def check_options(item, answer_revision=None):
+        notes = clarifications(item, part)
+        if reviewed != option_revision(notes):
+            raise OptionChanged(notes, answer_revision)
+
     with changing_store(store) as data:
         item = find_answer_item(data, item_id)
         if part not in question_parts(item):
@@ -1043,6 +1062,7 @@ def send_answer(store, home, payload):
         state = old.get("state")
         if state == "closed":
             raise AnswerConflict("Question closed. Reopen it before sending.")
+        check_options(item)
         same = old.get("answer") == answer
         repeat = same and state == "answered" and old.get("delivery") != "cancelled"
         if not repeat and payload["revision"] != old.get("revision", ""):
@@ -1056,9 +1076,11 @@ def send_answer(store, home, payload):
     # The first transaction commits before the external call. Serialize delivery against edits and reuse its note ID on retries.
     if home and delivery_pending(record):
         with changing_store(store) as data:
-            record_now = part_record(find_answer_item(data, item_id), part)
+            item = find_answer_item(data, item_id)
+            record_now = part_record(item, part)
             if record_now["revision"] != record["revision"]:
                 raise AnswerConflict("Question changed. Reload before sending.")
+            check_options(item, record_now["revision"])
             record = record_now
             if delivery_pending(record) and deliver_note(home, record["request_id"], f"{item_id}.{part} {record['answer']}"):
                 record["delivery"] = "sent"
@@ -1097,9 +1119,13 @@ def conversation_editable(item, part):
 
 def ask_result(item, part, message, *, include_thread):
     noun = "Message" if item["kind"] == "conversation" else "Ask"
-    result = {"message": f"{noun} sent." if message["delivery"] == "sent" else f"{noun} saved. Not delivered."}
+    delivery = message["delivery"]
+    result = {"message": f"{noun} sent." if delivery == "sent" else f"{noun} saved. Not delivered."}
     if include_thread:
         result["thread"] = thread_html(item, part, editable=conversation_editable(item, part))
+        if part is None and item["kind"] == "questions":
+            result["delivery"] = delivery
+            result["clarifications"] = discussion_clarifications(item)
     return result
 
 
@@ -2060,8 +2086,6 @@ body:has(dialog[open]) { overflow:hidden; }
 .queue ul { list-style:none; margin:0 0 .75rem; padding:0; font-family:var(--sans); }
 .queue li { padding:.6rem 0; border-top:1px solid var(--rule); overflow-wrap:anywhere; }
 .queue li p { margin:.2rem 0; }
-.queue-form select { display:block; width:100%; max-width:100%; min-height:var(--tap); margin:.3rem 0 .6rem; padding:.4rem .5rem;
-  background:var(--ground); color:var(--ink); border:1px solid var(--rule); border-radius:5px; font:inherit; }
 #item-ask-editor { margin:0 0 1rem; }
 .clarified { border-left:3px solid var(--signal); padding:.1rem 0 .1rem .8rem; margin:.5rem 0 1rem; }
 .clarified p { margin:.3rem 0; }
@@ -2673,9 +2697,7 @@ def queue_panel(target, ask_binding):
             '<section class="queue" aria-labelledby="queue-title"><h3 id="queue-title">Queued to send (<span id="queue-count">0</span>)</h3>'
             '<ul id="queue-list"></ul><p id="queue-empty">Your queue is empty.</p>'
             '<div class="actions"><button type="button" id="send-queue" class="primary" disabled>Send queued items</button></div></section>'
-            '<div class="queue-form"><label for="queue-scope">Add to the queue</label><select id="queue-scope">'
-            '<option value="">Message about this set</option></select>'
-            f'<label for="ask-{target}">Your text</label>'
+            f'<div class="queue-form"><label for="ask-{target}">Message about this set</label>'
             f'<textarea id="ask-{target}" maxlength="{TEXT_LIMIT}" rows="2" aria-describedby="error-{target}"></textarea>'
             f'<p id="error-{target}" hidden></p><div class="actions">'
             '<button type="button" id="queue-add" disabled>Queue item</button></div></div></div>')
@@ -2715,17 +2737,21 @@ def conversation_page(item, ask_binding):
             f'<div class="eyebrow">{badge}</div><div class="thread-messages">{thread}</div>{composer}</section>')
 
 
-def clarified_html(item, number, editable):
+def clarified_html(notes, editable):
     """What the set discussion clarified, shown at the question it affects; a changed option holds the draft for review."""
-    notes = clarifications(item, number)
-    if not notes:
-        return ""
+    revision = option_revision(notes)
     html = ''.join(f'<p class="record">{linked_text(note["text"])}</p>' for note in notes)
     review = ""
-    if editable and any(note["option_changed"] for note in notes):
+    if editable and revision:
         review = ('<p class="review" role="status"><strong>An option changed.</strong> Review your draft before sending. '
                   '<button type="button" class="keep-draft">Keep this draft</button></p>')
-    return f'<div class="clarified"><p class="who"><strong>Clarified after discussion</strong></p>{html}{review}</div>'
+    return (f'<div class="clarified" data-notes="{len(notes)}" data-option-revision="{revision}"'
+            f'{"" if notes else " hidden"}><p class="who"><strong>Clarified after discussion</strong></p>{html}{review}</div>')
+
+
+def discussion_clarifications(item):
+    return {f'{item["id"]}.{number}': clarified_html(clarifications(item, number), conversation_editable(item, number))
+            for number in question_parts(item)}
 
 
 def question_form(item, served, *, ask_binding=None):
@@ -2738,6 +2764,7 @@ def question_form(item, served, *, ask_binding=None):
         label = part_state(item, number, replies=served).capitalize()
         answer = record.get("answer", "")
         editable = served and status != "closed"
+        notes = clarifications(item, number) if served else []
         saved = ""
         if answer or editable:
             at = esc(record.get("answered_at", ""))
@@ -2757,7 +2784,7 @@ def question_form(item, served, *, ask_binding=None):
         if editable:
             editor += (f' tabindex="-1" data-revision="{esc(record.get("revision", ""))}"'
                        f' data-pending="{int(delivery_pending(record))}"'
-                       f'{" data-review" if any(n["option_changed"] for n in clarifications(item, number)) else ""}')
+                       f'{" data-review" if option_revision(notes) else ""}')
             suggestions = question.get("suggestion")
             choices = list(question["options"])
             if suggestions and suggestions not in map(option_label, choices):
@@ -2779,7 +2806,7 @@ def question_form(item, served, *, ask_binding=None):
             if question.get("suggestion"):
                 controls += f'<p><strong>Suggested answer</strong><br>{linked_text(question["suggestion"])}</p>'
         thread = conversation_thread(item, number, part, editable=editable and asking) if served else ''
-        clarified = clarified_html(item, number, editable) if served else ""
+        clarified = clarified_html(notes, editable) if served else ""
         card = (f'<section class="decision" id="{part}" aria-labelledby="title-{part}"{editor}>'
                 f'<div class="eyebrow"><span class="id">{part}</span><span class="badge">{label}</span>'
                 f'{f"<span>{esc(question['kind'].capitalize())}</span>" if question.get("kind") else ""}</div>'
@@ -3044,9 +3071,11 @@ if (send) {
   const undo = document.querySelector('#undo');
   const rejections = new Map();
   const excluded = new Set();
-  const queue = [];
+  let queuedMessage = null;
+  let sending = false;
+  const whole = document.querySelector('.item-conversation');
   const queueList = document.querySelector('#queue-list');
-  const queueScope = document.querySelector('#queue-scope');
+  const queueField = document.querySelector('.queue-form textarea');
   const queueAdd = document.querySelector('#queue-add');
   const sendQueue = document.querySelector('#send-queue');
   const freshId = () => Array.from(crypto.getRandomValues(new Uint8Array(16)), byte => byte.toString(16).padStart(2, '0')).join('');
@@ -3057,7 +3086,8 @@ if (send) {
   const newDraft = f => answerText(f.value) && answerText(f.value) !== answerText(f.defaultValue);
   const rejectedAsk = origin => origin?.rejected && !origin.edited;
   const handEdited = origin => origin === 'manual' || origin?.rejected || origin?.edited;
-  const askDraft = f => (f.closest('.item-conversation') || handEdited(draftOrigins.get(f))) && newDraft(f);
+  const askDraft = f => handEdited(draftOrigins.get(f)) && newDraft(f);
+  const optionRevision = section => section.querySelector('.clarified').dataset.optionRevision;
   const changed = f => {
     const {pending} = f.closest('section').dataset;
     const answer = answerText(f.value);
@@ -3073,7 +3103,7 @@ if (send) {
   function renderQueue() {
     if (!queueList) return;
     const answers = fields.filter(changed);
-    const count = answers.length + queue.length;
+    const count = answers.length + Number(Boolean(queuedMessage));
     const item = (title, text, remove, label) => {
       const li = document.createElement('li');
       const head = document.createElement('p');
@@ -3093,30 +3123,51 @@ if (send) {
         return item('Answer \u00b7 ' + section.id, [['', section.querySelector('h2').textContent], ['record', answerText(f.value)]],
           () => { excluded.add(f); refresh(); }, 'Remove from send');
       }),
-      ...queue.map(message => item('Set message', [['record', message.text]],
-        () => { queue.splice(queue.indexOf(message), 1); refresh(); }, 'Remove message')));
+      ...(queuedMessage ? [item('Set message', [['record', queuedMessage.text]],
+        () => { queuedMessage = null; refresh(); }, 'Remove message')] : []));
     document.querySelector('#queue-count').textContent = count;
     document.querySelector('#queue-empty').hidden = count > 0;
     sendQueue.disabled = !count;
     sendQueue.textContent = count ? 'Send queued items (' + count + ')' : 'Send queued items';
-    queueAdd.disabled = !answerText(queueScope.closest('.queue-form').querySelector('textarea').value);
-    const chosen = queueScope.value;
-    queueScope.replaceChildren(queueScope.options[0], ...sections.filter(s => s.dataset.state === 'open' && s.querySelector('textarea'))
-      .map(s => Object.assign(document.createElement('option'), {value: s.id, textContent: 'Answer \u00b7 ' + s.querySelector('h2').textContent})));
-    queueScope.value = [...queueScope.options].some(o => o.value === chosen) ? chosen : '';
-    for (const section of sections) {
-      const review = section.querySelector('.review');
-      if (review) review.hidden = !section.hasAttribute('data-review');
-    }
+    queueAdd.disabled = Boolean(queuedMessage) || !answerText(queueField.value);
   }
   function reviewed(section) {
     section.removeAttribute('data-review');
+  }
+  function updateClarification(section, html) {
+    const current = section.querySelector('.clarified');
+    const template = document.createElement('template');
+    template.innerHTML = html;
+    const next = template.content.firstElementChild;
+    if (Number(next.dataset.notes) <= Number(current.dataset.notes)) return;
+    if (section.hasAttribute('data-revision') && next.dataset.optionRevision !== current.dataset.optionRevision) {
+      section.setAttribute('data-review', '');
+    }
+    current.replaceWith(next);
+  }
+  function updateClarifications(clarifications) {
+    for (const [id, html] of Object.entries(clarifications)) {
+      updateClarification(document.getElementById(id), html);
+    }
+    refresh();
+  }
+  if (whole) {
+    setInterval(async () => {
+      if (document.hidden || sending) return;
+      try {
+        const response = await fetch(whole.id.toLowerCase() + '.clarifications.json');
+        if (response.ok) updateClarifications(await response.json());
+      } catch {
+        return;
+      }
+    }, 10000);
   }
   function forget(field) {
     for (const step of history) step.delete(field);
     history = history.filter(step => step.size);
   }
   function refresh() {
+    if (sending) return;
     for (const [field, rejection] of rejections) {
       const draft = answerText(field.value);
       if (rejection.draft !== undefined && draft !== rejection.draft) {
@@ -3137,8 +3188,10 @@ if (send) {
       const ask = section.querySelector('.ask-button');
       if (ask) ask.disabled = !askDraft(f);
       for (const retry of section.querySelectorAll('.pending-asks button')) {
-        retry.disabled = Boolean(newDraft(f));
+        retry.disabled = section === whole ? Boolean(queuedMessage) : Boolean(newDraft(f));
       }
+      const review = section.querySelector('.review');
+      if (review) review.hidden = !section.hasAttribute('data-review');
       const error = document.getElementById(f.getAttribute('aria-describedby'));
       const message = rejections.get(f)?.message || '';
       error.textContent = message;
@@ -3166,37 +3219,29 @@ if (send) {
       draftOrigins.set(field, 'manual');
     }
     forget(field);
-    excluded.delete(field);
     const card = field.closest('.decision');
-    if (card) reviewed(card);
+    if (card) {
+      excluded.delete(field);
+      card.toggleAttribute('data-review', restoring && Boolean(optionRevision(card)));
+    }
     refresh();
   });
   queueAdd?.addEventListener('click', () => {
-    const textField = queueScope.closest('.queue-form').querySelector('textarea');
-    const text = answerText(textField.value);
-    if (!text) return;
-    if (!queueScope.value) queue.push({id: freshId(), text});
-    else {
-      const f = document.getElementById('answer-' + queueScope.value);
-      f.value = text;
-      if (draftOrigins.has(f)) draftOrigins.set(f, 'manual');
-      forget(f);
-      excluded.delete(f);
-      reviewed(f.closest('section'));
-    }
-    textField.value = '';
-    queueScope.value = '';
+    const text = answerText(queueField.value);
+    if (!text || queuedMessage) return;
+    queuedMessage = {id: freshId(), text};
+    queueField.value = '';
     refresh();
-    textField.focus();
+    queueField.focus();
   });
   sendQueue?.addEventListener('click', async () => {
     const answers = fields.filter(changed);
-    const messages = queue.splice(0);
+    const message = queuedMessage;
+    queuedMessage = null;
     const home = document.querySelector('#item-ask-editor').dataset.home;
-    const whole = document.querySelector('.item-conversation');
-    const summary = answers.length ? await submitAnswers(answers) : '';
-    let sent = 0;
-    for (const message of messages) {
+    const totals = answers.length ? await submitAnswers(answers) : {sent: 0, pending: 0, failed: 0, skipped: 0};
+    const details = totals.failed ? [totals.message] : [];
+    if (message) {
       const body = {part: whole.id, id: message.id, text: message.text, home};
       const pending = document.createElement('ol');
       pending.className = 'exchange';
@@ -3209,10 +3254,20 @@ if (send) {
       thread.querySelector('.pending-asks').append(pending);
       thread.hidden = false;
       thread.open = true;
-      if (await askRequest(whole, body, pending)) sent += 1;
+      const result = await askRequest(whole, body, pending);
+      totals[result.delivery] += 1;
+      if (result.delivery === 'failed') details.push(result.message);
     }
-    if (messages.length && sent === messages.length && (!summary || summary === 'Answers saved.')) {
+    if (!totals.pending && !totals.failed && !totals.skipped) {
       output.textContent = 'Queued items sent.';
+    } else {
+      output.textContent = [
+        totals.sent + ' sent.',
+        totals.pending + ' saved for retry.',
+        totals.failed + ' failed.',
+        totals.skipped ? totals.skipped + ' skipped.' : '',
+        ...details,
+      ].filter(Boolean).join(' ');
     }
   });
   document.addEventListener('click', e => {
@@ -3235,9 +3290,10 @@ if (send) {
         const section = f.closest('section');
         const option = choice ? (section.contains(choice) && choice) : suggestionFor(f);
         const origin = draftOrigins.get(f);
-        if (option && (option.dataset.choice !== f.value || handEdited(origin))) {
+        if (option && (option.dataset.choice !== f.value || handEdited(origin) || section.hasAttribute('data-review'))) {
           const askError = rejectedAsk(origin) ? rejections.get(f) : undefined;
-          step.set(f, {value: f.value, origin, askError});
+          step.set(f, {value: f.value, origin, askError, excluded: excluded.has(f),
+            review: section.hasAttribute('data-review'), revision: optionRevision(section)});
           if (askError) rejections.delete(f);
           f.value = option.dataset.choice;
           excluded.delete(f);
@@ -3253,7 +3309,7 @@ if (send) {
       const section = askButton.closest('section');
       const field = section.querySelector('textarea');
       if (askDraft(field)) {
-        const id = Array.from(crypto.getRandomValues(new Uint8Array(16)), byte => byte.toString(16).padStart(2, '0')).join('');
+        const id = freshId();
         const body = {part: section.id, id, text: answerText(field.value), home: askButton.dataset.home};
         const thread = section.querySelector('.thread');
         const pending = document.createElement('ol');
@@ -3265,7 +3321,8 @@ if (send) {
         pending.querySelector('button').addEventListener('click', () => askRequest(section, {...body, action: 'retry'}, pending));
         thread.querySelector('.pending-asks').append(pending);
         field.value = field.defaultValue;
-        if (section.matches('.item-conversation') || rejectedAsk(draftOrigins.get(field))) rejections.delete(field);
+        if (section.dataset.pending === '1' && optionRevision(section)) section.setAttribute('data-review', '');
+        if (rejectedAsk(draftOrigins.get(field))) rejections.delete(field);
         if (draftOrigins.has(field)) draftOrigins.set(field, 'filled');
         forget(field);
         thread.hidden = false;
@@ -3280,10 +3337,15 @@ if (send) {
     }
     if (e.target === undo && history.length) {
       const step = history.pop();
-      for (const [f, {value, origin, askError}] of step) {
+      for (const [f, draft] of step) {
+        const {value, origin, askError, review, revision} = draft;
+        const section = f.closest('section');
         f.value = value;
         if (origin) draftOrigins.set(f, origin);
         if (askError) rejections.set(f, askError);
+        if (draft.excluded) excluded.add(f);
+        else excluded.delete(f);
+        section.toggleAttribute('data-review', review || revision !== optionRevision(section));
       }
       refresh();
       if (history.length) undo.focus();
@@ -3328,7 +3390,8 @@ if (send) {
   }
   async function askRequest(section, body, pending) {
     let failedDraft;
-    let delivered = false;
+    let delivery = 'failed';
+    sending = true;
     if (undo) undo.hidden = true;
     const controls = document.querySelectorAll('button,input,textarea');
     controls.forEach(c => c.disabled = true);
@@ -3341,8 +3404,8 @@ if (send) {
           {message: await response.text(), saved: false};
         output.textContent = message;
         const blockedRetry = response.status === 403 && body.action === 'retry';
-        if (pending && saved === false && !blockedRetry && section.matches('.item-conversation')) {
-          queue.unshift({id: freshId(), text: body.text});
+        if (pending && saved === false && !blockedRetry && section === whole) {
+          queuedMessage = {id: freshId(), text: body.text};
           pending.remove();
           const thread = section.querySelector('.thread');
           thread.hidden = !thread.querySelector('.thread-messages > *, .pending-asks > *');
@@ -3368,16 +3431,18 @@ if (send) {
         }
         localizeTimes(thread);
         reconcileReplies(section);
+        if (result.clarifications) updateClarifications(result.clarifications);
         output.textContent = result.message;
-        delivered = true;
+        delivery = result.delivery;
       }
     } catch (err) {
       output.textContent = navigator.onLine ? 'Send interrupted. ' + err.message : 'Offline. Reconnect and send again.';
     }
     controls.forEach(c => c.disabled = false);
+    sending = false;
     refresh();
     if (failedDraft) failedDraft.focus();
-    return delivered;
+    return {delivery, message: output.textContent};
   }
   function showAnswer(section, field, record) {
     section.dataset.state = record.state;
@@ -3410,36 +3475,53 @@ if (send) {
     updateFold(section, record);
   }
   async function submitAnswers(pending) {
+    const revisions = pending.map(f => optionRevision(f.closest('section')));
+    sending = true;
     undo.hidden = true;
     const controls = document.querySelectorAll('button,input,textarea');
     controls.forEach(c => c.disabled = true);
     let interrupted = '';
     let rejected = 0;
+    const totals = {sent: 0, pending: 0, failed: 0, skipped: 0};
     try {
       for (const [i,f] of pending.entries()) {
         output.textContent = 'Sending ' + (i+1) + ' of ' + pending.length;
         const section = f.closest('section');
         const answer = answerText(f.value);
+        const option_revision = revisions[i];
         const response = await fetch('answers', {method:'POST', headers:{'Content-Type':'application/json'},
-          body:JSON.stringify({part:section.id, revision:section.dataset.revision, answer})});
+          body:JSON.stringify({part:section.id, revision:section.dataset.revision, answer,
+            ...(option_revision ? {option_revision} : {})})});
         if (response.status === 400 || response.status === 409) {
-          rejections.set(f, {message: await response.text(), draft: response.status === 400 ? answer : undefined});
+          if (response.status === 409 && response.headers?.get('Content-Type') === 'application/json') {
+            const {clarification, answer_revision} = await response.json();
+            updateClarification(section, clarification);
+            if (answer_revision) section.dataset.revision = answer_revision;
+          } else {
+            rejections.set(f, {message: await response.text(), draft: response.status === 400 ? answer : undefined});
+          }
           const box = f.closest('details.done');
           if (box) box.open = true;
           rejected += 1;
           continue;
         }
         if (!response.ok) throw new Error(await response.text());
-        showAnswer(section, f, await response.json());
+        const record = await response.json();
+        showAnswer(section, f, record);
+        if (record.delivery === 'sent' || record.delivery === 'pending') totals[record.delivery] += 1;
+        else rejected += 1;
       }
     } catch (err) {
       interrupted = navigator.onLine ? 'Send interrupted. ' + err.message : 'Offline. Reconnect and send again.';
     }
     const summary = rejected ? rejected + (rejected === 1 ? ' answer rejected.' : ' answers rejected.') : '';
     output.textContent = [summary, interrupted].filter(Boolean).join(' ') || 'Answers saved.';
+    totals.failed = rejected + Number(Boolean(interrupted));
+    totals.skipped = pending.length - totals.failed - totals.sent - totals.pending;
     controls.forEach(c => c.disabled = false);
+    sending = false;
     refresh();
-    return output.textContent;
+    return {...totals, message: output.textContent};
   }
   send?.addEventListener('click', () => submitAnswers(fields.filter(changed)));
   refresh();
@@ -4060,7 +4142,8 @@ def make_handler(site_title: str, base_path: str = "", store: Path | None = None
                 self.send_text(200, workers_page(site_title, ready=workers_home is not None), "text/html; charset=utf-8")
                 return
             picture = IMAGE_URL_RE.fullmatch(name)
-            if name != "index.html" and not picture and not ITEM_PAGE_RE.fullmatch(name):
+            discussion = re.fullmatch(r"(q[1-9][0-9]*)[.]clarifications[.]json", name)
+            if name != "index.html" and not picture and not discussion and not ITEM_PAGE_RE.fullmatch(name):
                 self.send_text(404, "Not found\n")
                 return
             try:
@@ -4081,9 +4164,15 @@ def make_handler(site_title: str, base_path: str = "", store: Path | None = None
                                prevent_framing=bool(ask_binding))
                 return
             try:
-                item = find_item(data, name.removesuffix(".html"))
+                item = find_item(data, discussion[1] if discussion else name.removesuffix(".html"))
             except ValueError:
                 self.send_text(404, "Not found\n")
+                return
+            if discussion:
+                if item["kind"] == "questions":
+                    self.send_text(200, json.dumps(discussion_clarifications(item)), "application/json")
+                else:
+                    self.send_text(404, "Not found\n")
                 return
             ask_binding = None
             if item["kind"] in ("questions", "conversation"):
@@ -4134,6 +4223,9 @@ def make_handler(site_title: str, base_path: str = "", store: Path | None = None
                     record = mark_replies_read(active_store, payload)
             except AskHomeUnavailable:
                 self.send_text(403, "Configure an available firstmate_home to ask Firstmate.")
+            except OptionChanged as exc:
+                self.send_text(409, json.dumps({"clarification": clarified_html(exc.notes, True),
+                                               "answer_revision": exc.answer_revision}), "application/json")
             except AnswerConflict as exc:
                 if endpoint in ("/asks", "/conversations"):
                     record = {"message": str(exc), "saved": isinstance(exc, SavedAskConflict)}
