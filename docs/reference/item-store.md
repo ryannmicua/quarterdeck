@@ -9,7 +9,10 @@ ${XDG_STATE_HOME:-~/.local/state}/quarterdeck/items.json
 Item commands and submitted answers update the store. Both set the store
 directory to mode 0700, take an exclusive lock on `items.json.lock`, validate
 the existing records, and atomically replace `items.json` with mode 0600.
-`render` takes the same lock from its store read through publication of its output. Other readers validate records without taking the lock.
+An in-place `render` takes the same exclusive lock from its store read
+through publication. An external render takes a shared lock if the lock
+file exists and can read from a read-only store. Other readers validate
+records without taking the lock.
 
 ## Format (version 1)
 

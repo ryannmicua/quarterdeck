@@ -1865,6 +1865,7 @@ class QuestionImagePageTests(ImageCase):
         return {str(path.relative_to(folder)): path.read_bytes() for path in sorted(folder.rglob("*")) if path.is_file()}
 
     def test_render_from_another_store_never_deletes_this_stores_images(self) -> None:
+        replacement = self.picture("replacement.png", tiny_png((9, 9, 9)))
         damage = {"missing": None, "empty object": "{}", "no next_id": '{"version": 1, "items": []}',
                   "no version": '{"next_id": 1, "items": []}', "damaged": "{not json", "empty file": ""}
         other = {"empty": [], "same id, other content": ["pictured"], "same id, text only": ["text"]}
@@ -1875,6 +1876,10 @@ class QuestionImagePageTests(ImageCase):
                     with patch.dict(os.environ, {"XDG_STATE_HOME": str(first)}):
                         self.add_pictured()
                         store = quarterdeck.store_path()
+                        code, _, err = self.run_cli("render")
+                        self.assertEqual(code, 0, err)
+                    item_page = store.parent / "q1.html"
+                    self.assertIn("<h1>Quay colours</h1>", item_page.read_text())
                     before = self.images_of(first)
                     self.assertEqual(len(before), 3)
                     if text is None:
@@ -1884,13 +1889,87 @@ class QuestionImagePageTests(ImageCase):
                     with patch.dict(os.environ, {"XDG_STATE_HOME": str(second)}):
                         for kind in items:
                             if kind == "pictured":
-                                self.picture("red.png", tiny_png((9, 9, 9)))
-                                self.add_pictured(self.pictured())
+                                questions = self.pictured()
+                                questions[0]["options"][0]["image"]["path"] = str(replacement)
+                                self.add("questions", "New quay colours", "A replacement mockup.",
+                                         "--body-file", "-", stdin=json.dumps(questions))
                             else:
                                 self.add("questions", "Plain", "No images.", "--body-file", "-", stdin=json.dumps(QUESTIONS))
-                        self.run_cli("render", "--output", str(first / "quarterdeck" / "index.html"))
+                        code, _, err = self.run_cli("render", "--output", str(store.parent / "index.html"))
+                        self.assertEqual(code, 0, err)
+                    if items:
+                        title = "New quay colours" if items == ["pictured"] else "Plain"
+                        self.assertIn(f"<h1>{title}</h1>", item_page.read_text())
+                    else:
+                        self.assertFalse(item_page.exists())
                     self.assertEqual({name: data for name, data in self.images_of(first).items()
                                       if name in before}, before)
+
+    def test_failed_item_page_write_preserves_the_previous_saved_page(self) -> None:
+        self.add_pictured()
+        default = self.root / "default" / "index.html"
+        custom = self.root / "custom" / "Shelf.html"
+        config = self.root / "config.json"
+        config.write_text(json.dumps({"output_dir": str(default.parent)}))
+        destinations = ((default, ("--config", str(config))), (custom, ("--output", str(custom))))
+        for output, args in destinations:
+            code, _, err = self.run_cli("render", *args)
+            self.assertEqual(code, 0, err)
+        previous = {output: output.read_bytes() for output, _ in destinations}
+        self.add_pictured()
+        write_private = quarterdeck.write_private
+
+        def fail_q2(path, content):
+            if path.name == "q2.html":
+                raise OSError("disk full")
+            write_private(path, content)
+
+        for output, args in destinations:
+            with self.subTest(output=output), patch.object(quarterdeck, "write_private", side_effect=fail_q2):
+                code, _, err = self.run_cli("render", *args)
+                self.assertEqual(code, 2)
+                self.assertIn("disk full", err)
+                self.assertFalse((output.parent / "q2.html").exists())
+                self.assertEqual(output.read_bytes(), previous[output])
+
+    def test_external_render_can_read_a_read_only_store(self) -> None:
+        self.add_pictured()
+        store = quarterdeck.store_path()
+        lock = store.with_name("items.json.lock")
+        originals = self.images_of(store.parent.parent)
+        self.assertEqual(len(originals), 3)
+        explicit = self.root / "explicit"
+        configured = self.root / "configured"
+        config = self.root / "config.json"
+        config.write_text(json.dumps({"output_dir": str(configured)}))
+        chmod = os.chmod
+        os_open = os.open
+
+        def deny_store_chmod(path, *args, **kwargs):
+            if Path(path) == store.parent:
+                raise OSError(errno.EROFS, "Read-only file system")
+            return chmod(path, *args, **kwargs)
+
+        def deny_store_lock_writes(path, flags, *args, **kwargs):
+            if Path(path) == lock and flags & (os.O_WRONLY | os.O_RDWR | os.O_CREAT):
+                raise OSError(errno.EROFS, "Read-only file system")
+            return os_open(path, flags, *args, **kwargs)
+
+        with (patch.object(os, "chmod", side_effect=deny_store_chmod),
+              patch.object(os, "open", side_effect=deny_store_lock_writes)):
+            for directory, args, has_lock in (
+                (explicit, ("--output", str(explicit / "index.html")), True),
+                (configured, ("--config", str(config)), False),
+            ):
+                with self.subTest(directory=directory):
+                    if not has_lock:
+                        lock.unlink()
+                    code, _, err = self.run_cli("render", *args)
+                    self.assertEqual(code, 0, err)
+                    self.assertEqual(lock.exists(), has_lock)
+                    self.assertTrue((directory / "q1.html").is_file())
+                    for name, data in originals.items():
+                        self.assertEqual((directory / "images" / name).read_bytes(), data)
 
     def test_remove_deletes_exactly_the_files_the_record_names(self) -> None:
         keep, gone = self.add_pictured(), self.add_pictured()

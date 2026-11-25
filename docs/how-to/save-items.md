@@ -119,6 +119,8 @@ Only `remove` deletes an image, and only the files the removed item names.
 - A failed `add` or an interrupted `remove` can leave files in the store's
   `images/<id>/` folder that no item names. They are never served.
 - A refused render can leave new image copies in the output folder.
+- Each distinct path spelling is resolved once per save. Two spellings can
+  pick up different targets if a symlink is retargeted during the save.
 - Two paths to one file through hard links count as different files.
 - Another store that renders into this store's folder can replace or retire
   generated pages. It can add image files but never remove one.

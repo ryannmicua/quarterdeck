@@ -40,6 +40,8 @@ Item commands report validation errors on stderr and exit with status 2.
 | `service` | Prints a systemd user unit with the supplied serving options, or writes it to `${XDG_CONFIG_HOME:-~/.config}/systemd/user/quarterdeck.service` with `--write`. |
 | `url` | Prints the address the installed unit serves, or the default address when no unit is installed. |
 
+Capitalization variants of `images` are reserved on all filesystems.
+
 Rendered item pages include any saved answers and their timestamps and
 delivery status. Answer controls are available on served pages.
 

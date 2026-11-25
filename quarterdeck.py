@@ -424,6 +424,8 @@ def question_entries(raw: object, pending: dict[str, bytes] | None = None) -> li
     if not isinstance(raw, list) or not raw:
         raise ValueError("questions body must be a non-empty JSON array")
     image_count = 0
+    questions = []
+    named: list[tuple[dict[str, str], str]] = []
     for number, entry in enumerate(raw, 1):
         where = f"question {number}"
         if not isinstance(entry, dict):
@@ -433,17 +435,10 @@ def question_entries(raw: object, pending: dict[str, bytes] | None = None) -> li
             raise ValueError(f"{where} options must be a list of text or objects with a label and image")
         if not isinstance(images, list):
             raise ValueError(f"{where} images must be a list")
-        image_count += len(images) + sum(isinstance(option, dict) for option in options)
-        if image_count > IMAGE_COUNT_LIMIT:
-            raise ValueError(f"an item can hold at most {IMAGE_COUNT_LIMIT} images")
-    questions = []
-    named: list[tuple[dict[str, str], str]] = []
-    for number, entry in enumerate(raw, 1):
-        where = f"question {number}"
+        image_count += len(images)
         unknown = sorted(set(entry) - {"question", "context", "options", "suggestion", "links", "images"})
         if unknown:
             raise ValueError(f"{where} has unsupported field(s): {', '.join(unknown)}")
-        options = entry.get("options", [])
         choices: list[object] = []
         seen: set[str] = set()
         pictured: set[str] = set()
@@ -465,12 +460,14 @@ def question_entries(raw: object, pending: dict[str, bytes] | None = None) -> li
             seen.add(label)
             pictured.add(label)
             choices.append({"label": label, "image": image_entry(option.get("image"), f"{name} image", named if pending is not None else None)})
+            image_count += 1
+        if image_count > IMAGE_COUNT_LIMIT:
+            raise ValueError(f"an item can hold at most {IMAGE_COUNT_LIMIT} images")
         cleaned: dict[str, object] = {
             "question": clean_text(entry.get("question"), f"{where} question", TEXT_LIMIT, multiline=True),
             "context": clean_text(entry.get("context"), f"{where} context", TEXT_LIMIT, multiline=True),
             "options": choices,
         }
-        images = entry.get("images", [])
         if images:
             cleaned["images"] = [image_entry(image, f"{where} image {position}", named if pending is not None else None)
                                  for position, image in enumerate(images, 1)]
@@ -579,10 +576,21 @@ def read_store(path: Path) -> dict[str, object]:
 
 
 @contextmanager
-def locked_store(path: Path) -> Iterator[None]:
+def locked_store(path: Path, *, read_only: bool = False) -> Iterator[None]:
+    lock_path = path.with_name(path.name + ".lock")
+    if read_only:
+        try:
+            lock = lock_path.open("rb")
+        except FileNotFoundError:
+            yield
+        else:
+            with lock:
+                fcntl.flock(lock, fcntl.LOCK_SH)
+                yield
+        return
     path.parent.mkdir(parents=True, exist_ok=True)
     os.chmod(path.parent, 0o700)
-    descriptor = os.open(path.with_name(path.name + ".lock"), os.O_CREAT | os.O_RDWR, 0o600)
+    descriptor = os.open(lock_path, os.O_CREAT | os.O_RDWR, 0o600)
     with os.fdopen(descriptor, "r+", encoding="utf-8") as lock:
         fcntl.flock(lock, fcntl.LOCK_EX)
         yield
@@ -895,11 +903,10 @@ def remove_item(args: argparse.Namespace) -> int:
         with changing_store(store) as data:
             item = find_item(data, args.id)
             data["items"] = [other for other in data["items"] if other is not item]  # type: ignore[union-attr]
-        if item_image_files(item):
-            try:
-                remove_images(store, item)
-            except (OSError, ValueError) as exc:
-                raise ValueError(f"removed {item['id']} from the store but could not delete its images: {exc}") from exc
+        try:
+            remove_images(store, item)
+        except (OSError, ValueError) as exc:
+            raise ValueError(f"removed {item['id']} from the store but could not delete its images: {exc}") from exc
         print(f"Removed {item['id']}; its ID is not reused")
         return 0
     return run_item_command(action)
@@ -1740,9 +1747,10 @@ def item_page(item: dict[str, object], site_title: str, *, served: bool, saved_n
 
 
 def site_pages(data: dict[str, object], site_title: str, saved_name: str) -> dict[str, str]:
-    pages = {saved_name: list_page(data, site_title, served=False, saved_name=saved_name)}
+    pages = {}
     for item in data["items"]:  # type: ignore[union-attr]
         pages[item_page_name(str(item["id"]))] = item_page(item, site_title, served=False, saved_name=saved_name)
+    pages[saved_name] = list_page(data, site_title, served=False, saved_name=saved_name)
     return pages
 
 
@@ -1804,7 +1812,7 @@ def render(args: argparse.Namespace) -> int:
             raise ValueError("the Saved filename is reserved for item pages")
         if output.name.lower() == "images":
             raise ValueError("the Saved filename is reserved for images")
-        with locked_store(store):
+        with locked_store(store, read_only=not live):
             data = read_store(store)
             pages = site_pages(data, page_title(args, config), output.name)
             for name in pages:
