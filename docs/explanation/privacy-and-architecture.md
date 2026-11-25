@@ -14,7 +14,8 @@ when enabled, the live Firstmate workers roster.
 - `render` reads the item store and saved images. It inspects existing output
   files before replacing or retiring them. See the [render reference](../reference/cli-and-config.md#pages).
 - `serve` reads the item store to build pages and writes to it when users
-  submit answers. It serves images only from the private `images` folder and
+  submit answers, send asks or acknowledge replies to an opened question.
+  Page reads leave the store intact. It serves images only from the private `images` folder and
   only when the store lists the file for that item. It reads the TLS certificate
   and key if you supply them.
 - The [workers endpoint](../reference/cli-and-config.md#workers-endpoint) runs
@@ -29,7 +30,8 @@ from a Firstmate home, and it does not read terminal text. Quarterdeck stores
 no snapshot data or contact history on the server.
 Quarterdeck writes nothing to the home except through the configured home's
 `bin/fm-inbox.sh note` command on explicit answer or ask submission. It passes
-the plain text prefixed with the part ID; an ask is also prefixed with `ASK`.
+an answer as the part ID followed by the text. Asks go to the explicit
+`firstmate_home` with `ASK`, the part ID and the ask ID before the text.
 Replies come back only through `quarterdeck reply`, which Firstmate runs on
 the same machine. Quarterdeck never calls a model.
 
@@ -49,7 +51,7 @@ To change its classification, use [`classify`](../how-to/classify-items.md#chang
 
 See [serving security](../how-to/serve-the-page.md#security-loopback-by-default)
 for the browser interface and who can reach it. Saving, rendering
-and serving items make no outbound requests or model calls. The installer
+and serving pages make no outbound requests or model calls. The installer
 uses Git to clone or update the checkout.
 
 The served Desk includes archived question and answer text in its HTML so the

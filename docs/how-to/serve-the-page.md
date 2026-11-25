@@ -84,4 +84,5 @@ They can also send answers as the owner.
 Quarterdeck prints a warning when you bind a non-loopback address. Keep the
 listener and proxy on the trusted network, or protect both with an owner access
 gate. Browser submissions require an `Origin` that matches the public host and
-scheme. Question pages with answer controls cannot be embedded in frames.
+scheme. Asks and reply acknowledgments use the same check. Question pages
+with answer controls or unread replies cannot be embedded in frames.

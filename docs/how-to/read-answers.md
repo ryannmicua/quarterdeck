@@ -2,8 +2,9 @@
 
 Run `quarterdeck show Q7` to read each question's state, any saved Desk answer
 with its UTC timestamp and delivery status, and the latest off-Desk mark.
-Asks and replies follow in time order. Replied means the newest message is a
-reply the owner has not opened yet.
+Asks and replies follow in time order, with ask IDs and reply references. The
+stored question state is Open, Answered or Closed. Replied indicates at least
+one unread Firstmate reply.
 
 If a decision came through another channel, mark the open question answered
 and use `--via` to record its [source](../reference/cli-and-config.md#classification).

@@ -732,8 +732,9 @@ class RenderTests(StoreCase):
 
 
 class ServeTests(StoreCase):
-    def start(self, base_path: str = "", *, home: Path | None = None, workers_home: Path | None = None) -> int:
-        handler = quarterdeck.make_handler("Quarterdeck", base_path, home=home, workers_home=workers_home)
+    def start(self, base_path: str = "", *, home: Path | None = None,
+              ask_home: Path | None = None, workers_home: Path | None = None) -> int:
+        handler = quarterdeck.make_handler("Quarterdeck", base_path, home=home, ask_home=ask_home, workers_home=workers_home)
         server = quarterdeck.make_server("127.0.0.1", 0, handler)
         thread = threading.Thread(target=server.serve_forever, daemon=True)
         thread.start()
@@ -3130,8 +3131,9 @@ class ConversationTests(ImageCase):
     def inbox(self, accept=True) -> Path:
         home = self.root / "home"
         script = home / "bin" / "fm-inbox.sh"
-        script.parent.mkdir(parents=True)
-        script.write_text('#!/bin/sh\n' + ('printf "%s\n" "$6" >> "$FM_HOME/notes"\n' if accept else 'exit 1\n'))
+        script.parent.mkdir(parents=True, exist_ok=True)
+        script.write_text('#!/bin/sh\nprintf "%s\\n" "$3" >> "$FM_HOME/attempts"\n'
+                          + ('printf "%s\\n" "$6" >> "$FM_HOME/notes"\n' if accept else 'exit 1\n'))
         script.chmod(0o700)
         return home
 
@@ -3145,54 +3147,51 @@ class ConversationTests(ImageCase):
 
     def test_an_ask_keeps_the_question_open_and_reaches_the_inbox_marked_as_an_ask(self) -> None:
         home = self.inbox()
-        port = self.start("/qd", home=home)
+        port = self.start("/qd", ask_home=home)
         before = self.store()["items"][3].get("answers")
         status, result = self.ask(port, "Q4.1", "Show me mockups,\nnot just text")
         self.assertEqual(status, 200)
         self.assertEqual(result["label"], "Open")
-        self.assertEqual(result["message"], "Ask sent. A sent ask cannot be unsent.")
+        self.assertEqual(result["message"], "Ask sent.")
         self.assertIn("Sent", result["thread"])
         self.assertIn("Show me mockups,\nnot just text", result["thread"])
         (message,) = self.messages("1", 3)
         self.assertEqual((message["author"], message["delivery"]), ("you", "sent"))
-        self.assertEqual((home / "notes").read_text(), "ASK Q4.1 Show me mockups,\nnot just text\n")
+        self.assertEqual((home / "notes").read_text(), f"ASK Q4.1 {message['id']} Show me mockups,\nnot just text\n")
         self.assertEqual(self.store()["items"][3].get("answers"), before)
         self.assertIn("Open (2 of 2 open)", self.run_cli("show", "Q4")[1])
         self.assertIn("You (", self.run_cli("show", "Q4")[1])
 
-    def test_an_ask_without_an_inbox_is_saved_then_retried_or_undone(self) -> None:
-        port = self.start("/qd")
+    def test_an_undelivered_ask_can_be_retried_with_the_same_note(self) -> None:
+        home = self.inbox(accept=False)
+        port = self.start("/qd", ask_home=home)
         status, result = self.ask(port, "Q4.2", "Which blue?")
         self.assertEqual((status, result["message"]), (200, "Ask saved. Not delivered."))
         self.assertIn("Not delivered", result["thread"])
-        self.assertIn('data-ask-action="retry"', result["thread"])
-        self.assertIn(">Undo ask<", result["thread"])
-        self.assertIn("Not delivered", self.fetch(port, "/qd/")[1])
         (message,) = self.messages("2", 3)
         retry = {"part": "Q4.2", "id": message["id"], "action": "retry"}
         self.assertEqual(self.post(port, "/qd/asks", retry)[1]["message"], "Ask saved. Not delivered.")
-        home = self.inbox()
-        port = self.start("/qd", home=home)
-        status, result = self.post(port, "/qd/asks", retry)
-        self.assertEqual((status, result["message"]), (200, "Ask sent. A sent ask cannot be unsent."))
-        self.assertEqual((home / "notes").read_text(), "ASK Q4.2 Which blue?\n")
+        self.inbox()
+        self.assertEqual(self.post(port, "/qd/asks", retry)[1]["message"], "Ask sent.")
         self.assertEqual(self.post(port, "/qd/asks", retry)[0], 200)
-        self.assertEqual((home / "notes").read_text(), "ASK Q4.2 Which blue?\n")
-        status, text = self.post(port, "/qd/asks", {**retry, "action": "discard"})
-        self.assertEqual((status, text), (409, "This ask was sent. A sent ask cannot be unsent."))
-        self.assertEqual(len(self.messages("2", 3)), 1)
+        self.assertEqual((home / "notes").read_text(), f"ASK Q4.2 {message['id']} Which blue?\n")
+        self.assertEqual((home / "attempts").read_text().splitlines(), [message["request_id"]] * 3)
+        self.assertEqual(self.messages("2", 3), [{**message, "delivery": "sent"}])
 
-    def test_an_ask_that_was_not_delivered_can_be_undone(self) -> None:
-        port = self.start("/qd", home=self.inbox(accept=False))
-        self.ask(port, "Q4.1", "First")
-        (message,) = self.messages("1", 3)
-        status, result = self.post(port, "/qd/asks", {"part": "Q4.1", "id": message["id"], "action": "discard"})
-        self.assertEqual((status, result["message"], result["thread"]), (200, "Ask undone.", ""))
-        self.assertNotIn("conversation", self.store()["items"][3])
-        self.assertEqual(self.post(port, "/qd/asks", {"part": "Q4.1", "id": message["id"], "action": "discard"})[0], 409)
+    def test_legacy_home_can_receive_answers_but_cannot_receive_asks(self) -> None:
+        home = self.inbox()
+        config = self.root / "legacy.json"
+        config.write_text(json.dumps({"homes": [{"path": "home"}]}))
+        with self.serve_cli("--config", str(config), "--base-path", "/qd") as port:
+            self.assertNotIn('class="ask-button"', self.fetch(port, "/qd/q4.html")[1])
+            self.assertEqual(self.ask(port, "Q4.1", "Show the preview.")[0], 403)
+            self.assertEqual(self.messages("1", 3), [])
+            status, result = self.post(port, "/qd/answers", {"part": "Q4.1", "answer": "Hold", "revision": ""})
+            self.assertEqual((status, result["delivery"]), (200, "sent"))
+        self.assertEqual((home / "notes").read_text(), "Q4.1 Hold\n")
 
     def test_bad_asks_change_nothing(self) -> None:
-        port = self.start("/qd")
+        port = self.start("/qd", ask_home=self.inbox())
         before = self.store()
         for payload in ({"part": "Q4.3", "text": "x"}, {"part": "Q1.1", "text": "x"}, {"part": "Q4.1", "text": " "},
                         {"part": "Q4.1", "text": "a" * 20001}, {"part": "Q4.1", "text": "x", "extra": 1},
@@ -3207,7 +3206,7 @@ class ConversationTests(ImageCase):
         self.assertEqual(self.store(), before)
 
     def test_an_ask_on_an_answered_question_leaves_the_answer_alone(self) -> None:
-        port = self.start("/qd")
+        port = self.start("/qd", ask_home=self.inbox())
         base = f"http://127.0.0.1:{port}"
         request = urllib.request.Request(base + "/qd/answers", method="POST", data=json.dumps(
             {"part": "Q4.1", "answer": "Merge", "revision": ""}).encode(),
@@ -3219,11 +3218,19 @@ class ConversationTests(ImageCase):
         self.assertEqual(self.store()["items"][3]["answers"]["1"]["state"], "answered")
 
     def test_reply_adds_text_links_and_images_and_never_changes_the_answer(self) -> None:
+        config = self.root / "explicit.json"
+        home = self.inbox()
+        config.write_text(json.dumps({"firstmate_home": str(home)}))
+        with self.serve_cli("--config", str(config), "--base-path", "/qd") as port:
+            self.assertIn('class="ask-button"', self.fetch(port, "/qd/q4.html")[1])
+            self.assertEqual(self.ask(port, "Q4.1", "Show both layouts.")[0], 200)
+        (ask,) = self.messages("1", 3)
         code, out, err = self.run_cli("reply", "q4.1", "--text", "Here are both.", "--link-text", "Open the preview",
                                       "--url", "https://example.com/preview", "--image", str(self.red), "--alt", "A red quay",
                                       "--image", str(self.blue), "--alt", "A blue quay")
         self.assertEqual((code, out.strip(), err), (0, "Q4.1 Replied", ""))
-        (message,) = self.messages("1", 3)
+        _, message = self.messages("1", 3)
+        self.assertEqual(message["ask"], ask["id"])
         self.assertEqual((message["author"], message["read"], message["text"]), ("firstmate", False, "Here are both."))
         self.assertEqual(message["links"], [{"text": "Open the preview", "url": "https://example.com/preview"}])
         self.assertEqual([image["alt"] for image in message["images"]], ["A red quay", "A blue quay"])
@@ -3242,7 +3249,7 @@ class ConversationTests(ImageCase):
         before = self.store()
         cases = (
             (("Q4", "--text", "x"), "Q7.1"), (("Q4.9", "--text", "x"), "no question"), (("Q1.1", "--text", "x"), "questions item"),
-            (("Q9.1", "--text", "x"), "no item"), (("Q4.1", "--text", " "), "must not be empty"),
+            (("Q9.1", "--text", "x"), "no item"), (("Q4.1", "--text", "x"), "has no asks"), (("Q4.1", "--text", " "), "must not be empty"),
             (("Q4.1", "--text", "x", "--link-text", "Only words"), "--url"),
             (("Q4.1", "--text", "x", "--link-text", "Bad", "--url", "ftp://example.com"), "http"),
             (("Q4.1", "--text", "x", "--image", str(self.red)), "--alt"),
@@ -3256,93 +3263,120 @@ class ConversationTests(ImageCase):
                 self.assertIn(expected, err)
         self.assertEqual(self.store(), before)
 
-    def test_replied_shows_on_the_card_and_the_question_until_the_page_is_opened(self) -> None:
-        port = self.start("/qd")
+    def test_replied_persists_across_reads_until_acknowledged(self) -> None:
+        port = self.start("/qd", ask_home=self.inbox())
+        self.ask(port, "Q4.2", "Which blue?")
         self.assertEqual(self.run_cli("reply", "Q4.2", "--text", "Blue is the newer sign.")[0], 0)
-        desk = self.fetch(port, "/qd/")[1].split("<h1>My desk</h1>", 1)[1].split('<section id="workers">', 1)[0]
-        self.assertIn('<span class="badge">Replied</span><span>2 of 2 open</span>', desk)
-        self.assertIn('<a class="work-action" href="q4.html#Q4.2">Answer questions</a>', desk)
-        self.assertEqual(self.fetch(port, "/qd/")[1], self.fetch(port, "/qd/")[1])
+        _, reply = self.messages("2", 3)
+        for _ in range(2):
+            desk = self.fetch(port, "/qd/")[1].split("<h1>My desk</h1>", 1)[1].split('<section id="workers">', 1)[0]
+            self.assertIn('<span class="badge">Replied</span><span>2 of 2 open</span>', desk)
+            self.assertIn('<a class="work-action" href="q4.html#Q4.1">Answer questions</a>', desk)
+            page = self.fetch(port, "/qd/q4.html")[1]
+            self.assertRegex(page, r'id="Q4.2".*?<span class="badge">Replied</span>')
+            self.assertIn('<p class="progress">Replied, 2 of 2 open</p>', page)
+            self.assertIn("Blue is the newer sign.", page)
+            self.assertFalse(self.messages("2", 3)[1]["read"])
+            self.assertIn("Replied", self.run_cli("show", "Q4")[1])
+        self.assertEqual(self.post(port, "/qd/replies/read", {"part": "Q4.2", "ids": [reply["id"]]}),
+                         (200, {"unread": False}))
+        self.assertTrue(self.messages("2", 3)[1]["read"])
+        self.assertIn('<p class="progress">2 of 2 open</p>', self.fetch(port, "/qd/q4.html")[1])
+        self.assertNotIn('>Replied</span>', self.fetch(port, "/qd/")[1])
+        self.assertNotIn("Replied", self.run_cli("show", "Q4")[1])
+
+    def test_a_new_ask_an_answer_and_closing_preserve_unread_replies(self) -> None:
+        port = self.start("/qd", ask_home=self.inbox())
+        self.ask(port, "Q4.1", "Why merge?")
+        self.assertEqual(self.run_cli("reply", "Q4.1", "--text", "First answer from me.")[0], 0)
+        self.assertEqual(self.ask(port, "Q4.1", "And then?")[1]["label"], "Replied")
+        self.assertEqual(self.post(port, "/qd/answers", {"part": "Q4.1", "answer": "Merge", "revision": ""})[0], 200)
+        self.run_cli("mark", "Q4", "closed")
+        _, page, headers = self.fetch(port, "/qd/q4.html")
+        self.assertIn('<p class="progress">Replied</p>', page)
         self.assertIn("Replied", self.run_cli("show", "Q4")[1])
-        page = self.fetch(port, "/qd/q4.html")[1]
-        self.assertRegex(page, r'id="Q4.2".*?<span class="badge">Replied</span>')
-        self.assertIn('<span class="badge">Open</span>', page.split('id="Q4.2"')[0])
-        self.assertIn("<p class=\"progress\">Replied, 2 of 2 open</p>", page)
-        self.assertIn("Blue is the newer sign.", page)
-        self.assertIn("<h3>Messages</h3>", page)
-        self.assertTrue(self.messages("2", 3)[0]["read"])
-        again = self.fetch(port, "/qd/q4.html")[1]
-        self.assertIn('<p class="progress">2 of 2 open</p>', again)
-        self.assertNotIn("Replied", again.split("<h3>Messages</h3>")[0])
-        self.assertNotIn("Replied", self.fetch(port, "/qd/")[1].split("<h1>My desk</h1>", 1)[1].split('<section id="workers">', 1)[0])
-        self.assertNotIn("Replied", self.run_cli("show", "Q4")[1].split("Firstmate (")[0])
+        self.assertEqual(headers.get("Content-Security-Policy"), "frame-ancestors 'none'")
+        _, reply, _ = self.messages("1", 3)
+        self.assertEqual(self.post(port, "/qd/replies/read", {"part": "Q4.1", "ids": [reply["id"]]}),
+                         (200, {"unread": False}))
+        self.assertIn('<p class="progress">Closed</p>', self.fetch(port, "/qd/q4.html")[1])
 
-    def test_a_new_ask_returns_a_replied_question_to_its_stored_state_and_a_new_reply_raises_it_again(self) -> None:
-        port = self.start("/qd")
-        self.run_cli("reply", "Q4.1", "--text", "First answer from me.")
-        self.assertEqual(self.ask(port, "Q4.1", "And then?")[1]["label"], "Open")
-        self.assertNotIn("Replied", self.fetch(port, "/qd/")[1].split('<section id="workers">')[0].split("<h1>My desk</h1>")[1])
-        self.run_cli("reply", "Q4.1", "--text", "Then this.")
-        self.assertIn("Replied", self.fetch(port, "/qd/")[1])
-        self.run_cli("mark", "Q4.1", "closed")
-        self.assertNotIn("Replied", self.run_cli("show", "Q4")[1].split("Firstmate (")[0])
-
-    def test_a_replied_item_sorts_first_and_takes_the_primary_action(self) -> None:
+    def test_a_replied_item_keeps_its_desk_order_and_primary_action(self) -> None:
         self.add("questions", "Newest decision", "A later one.", "--body-file", "-", stdin=json.dumps(QUESTIONS[:1]))
-        port = self.start("/qd")
-        order = lambda page: re.findall(r'<h3>([^<]+)</h3>', page.split("<h1>My desk</h1>")[1].split('<section id="workers">')[0])
-        self.assertEqual(order(self.fetch(port, "/qd/")[1]), ["Newest decision", "Two decisions", "Tide launch decisions"])
-        self.run_cli("reply", "Q3.2", "--text", "Looked at it.")
-        desk = self.fetch(port, "/qd/")[1]
-        self.assertEqual(order(desk), ["Tide launch decisions", "Newest decision", "Two decisions"])
+        port = self.start("/qd", ask_home=self.inbox())
+        self.ask(port, "Q3.2", "How does it look?")
+        self.assertEqual(self.run_cli("reply", "Q3.2", "--text", "Looked at it.")[0], 0)
+        desk = self.fetch(port, "/qd/")[1].split("<h1>My desk</h1>")[1].split('<section id="workers">')[0]
+        self.assertEqual(re.findall(r'<h3>([^<]+)</h3>', desk), ["Newest decision", "Two decisions", "Tide launch decisions"])
         self.assertEqual(desk.count('class="work-action"'), 1)
-        self.assertIn('<a class="work-action" href="q3.html#Q3.2">Answer questions</a>', desk)
+        self.assertIn('<a class="work-action" href="q5.html#Q5.1">Answer questions</a>', desk)
+        self.assertIn('<a class="button-link" href="q3.html">Answer questions</a>', desk)
 
-    def test_an_answered_question_with_a_reply_stays_on_the_desk_with_a_read_action(self) -> None:
-        port = self.start("/qd")
+    def test_reply_and_pending_ask_leave_answered_items_in_reviewed(self) -> None:
+        port = self.start("/qd", ask_home=self.inbox(accept=False))
         self.run_cli("mark", "Q3", "answered")
         self.run_cli("mark", "Q4", "answered")
-        self.assertIn("Nothing is waiting", self.fetch(port, "/qd/")[1])
-        self.run_cli("reply", "Q4.2", "--text", "One more thing.")
-        desk = self.fetch(port, "/qd/")[1].split("<h1>My desk</h1>", 1)[1].split('<section id="workers">', 1)[0]
-        self.assertIn('<span class="badge">Replied</span>', desk)
-        self.assertIn(">Read reply</a>", desk)
-        self.assertIn("<li>Which colour for the quay?</li>", desk)
+        self.ask(port, "Q4.2", "Anything else?")
+        self.assertEqual(self.run_cli("reply", "Q4.2", "--text", "One more thing.")[0], 0)
+        self.ask(port, "Q3.2", "Do you have a preview?")
+        desk, reviewed = self.fetch(port, "/qd/")[1].split("<h2>Reviewed questions</h2>")
+        self.assertIn("Nothing is waiting", desk)
+        self.assertIn('<span class="badge">Replied</span>', reviewed)
+        self.assertIn('<a class="button-link" href="q4.html">Review answers</a>', reviewed)
+        self.assertIn('<a class="button-link" href="q3.html">Review answers</a>', reviewed)
 
-    def test_rendered_pages_show_the_conversation_without_marking_replies_read(self) -> None:
-        self.run_cli("reply", "Q4.1", "--text", "Static reply.")
+    def test_static_exports_exclude_conversation_and_reply_images(self) -> None:
+        port = self.start("/qd", ask_home=self.inbox(accept=False))
+        self.ask(port, "Q4.1", "Private ask.")
+        self.assertEqual(self.run_cli("reply", "Q4.1", "--text", "Private reply.", "--image", str(self.red),
+                                      "--alt", "Private mockup.")[0], 0)
         output = self.root / "site" / "index.html"
         self.assertEqual(self.run_cli("render", "--output", str(output))[0], 0)
-        page = (output.parent / "q4.html").read_text()
-        self.assertIn("Static reply.", page)
-        self.assertNotIn("Ask Firstmate", page)
-        self.assertIn("Replied", page)
-        self.assertFalse(self.messages("1", 3)[0]["read"])
+        for page in (output, output.parent / "q4.html"):
+            content = page.read_text()
+            for private in ("Private ask.", "Private reply.", "Private mockup.", ">Replied<", ">Not delivered<"):
+                self.assertNotIn(private, content)
+        self.assertFalse((output.parent / "images" / "q4").exists())
+        self.assertFalse(self.messages("1", 3)[1]["read"])
 
-    def test_the_conversation_folds_earlier_exchanges_past_two(self) -> None:
-        port = self.start("/qd")
-        for number in (1, 2):
-            self.ask(port, "Q4.1", f"Ask number {number}")
-            self.run_cli("reply", "Q4.1", "--text", f"Reply number {number}")
-        two = self.fetch(port, "/qd/q4.html")[1]
-        self.assertNotIn("Show earlier messages", two)
-        self.ask(port, "Q4.1", "Ask number 3")
-        three = self.fetch(port, "/qd/q4.html")[1]
-        self.assertEqual(three.count("Show earlier messages"), 1)
-        folded, latest = three.split("</details>", 1)
-        self.assertIn("Ask number 1", folded)
-        self.assertIn("Reply number 2", folded)
-        self.assertNotIn("Ask number 3", folded)
-        self.assertIn("Ask number 3", latest)
-        order = [three.index(f"{kind} number {n}") for n in (1, 2, 3) for kind in ("Ask", "Reply") if f"{kind} number {n}" in three]
-        self.assertEqual(order, sorted(order))
+    def test_overlapping_asks_show_all_replies_under_the_correct_ask(self) -> None:
+        port = self.start("/qd", ask_home=self.inbox())
+        for text in ("Show red.", "Show blue.", "Show green."):
+            self.assertEqual(self.ask(port, "Q4.1", text)[0], 200)
+        red, blue, green = [m["id"] for m in self.messages("1", 3)]
+        self.ask(port, "Q4.2", "Show another layout.")
+        other = self.messages("2", 3)[0]["id"]
+        for args in ((), ("--ask", other)):
+            self.assertEqual(self.run_cli("reply", "Q4.1", "--text", "No match.", *args)[0], 2)
+        for ask, text in ((blue, "Blue mockup."), (red, "Red mockup."), (red, "Red detail.")):
+            self.assertEqual(self.run_cli("reply", "Q4.1", "--ask", ask, "--text", text)[0], 0)
+        self.assertEqual(self.run_cli("reply", "Q4.1", "--text", "Green mockup.")[0], 0)
+        page = self.fetch(port, "/qd/q4.html")[1]
+        groups = re.findall(r'<ol class="exchange">(.*?)</ol>', page, re.DOTALL)
+        self.assertEqual([re.findall(r'<p class="record">(.*?)</p>', group) for group in groups], [
+            ["Show red.", "Red mockup.", "Red detail."], ["Show blue.", "Blue mockup."],
+            ["Show green.", "Green mockup."], ["Show another layout."],
+        ])
+        self.assertEqual(self.messages("1", 3)[-1]["ask"], green)
+
+    def test_an_ask_past_one_hundred_messages_can_be_delivered_and_answered(self) -> None:
+        port = self.start("/qd", ask_home=self.inbox())
+        self.ask(port, "Q4.1", "First ask.")
+        (ask,) = self.messages("1", 3)
+        for number in range(99):
+            self.assertEqual(self.run_cli("reply", "Q4.1", "--ask", ask["id"], "--text", f"Detail {number}.")[0], 0)
+        self.assertEqual(self.ask(port, "Q4.1", "One more ask.")[1]["message"], "Ask sent.")
+        self.assertEqual(self.run_cli("reply", "Q4.1", "--text", "One more reply.")[0], 0)
+        self.assertEqual(len(self.messages("1", 3)), 102)
+        self.assertIn("One more reply.", self.fetch(port, "/qd/q4.html")[1])
 
     def test_reply_images_are_served_for_that_item_only_and_links_open_safely(self) -> None:
-        port = self.start("/qd")
+        port = self.start("/qd", ask_home=self.inbox())
+        self.ask(port, "Q4.1", "Show the preview.")
         self.run_cli("reply", "Q4.1", "--text", "See https://example.com/a.", "--link-text", "The preview",
                      "--url", "https://example.com/preview", "--image", str(self.red), "--alt", "A red quay")
         page = self.fetch(port, "/qd/q4.html")[1]
-        file = self.messages("1", 3)[0]["images"][0]["file"]
+        file = self.messages("1", 3)[1]["images"][0]["file"]
         self.assertIn(f'<img src="images/q4/{file}" alt="A red quay"', page)
         self.assertIn('<a class="ref-link" href="https://example.com/preview" target="_blank" rel="noopener noreferrer">The preview</a>', page)
         self.assertIn('<a href="https://example.com/a" target="_blank"', page)
@@ -3351,7 +3385,8 @@ class ConversationTests(ImageCase):
         self.assertEqual(self.fetch(port, f"/qd/images/q3/{file}")[0], 404)
 
     def test_messages_are_escaped(self) -> None:
-        port = self.start("/qd")
+        port = self.start("/qd", ask_home=self.inbox())
+        self.ask(port, "Q4.1", "What does it say?")
         self.run_cli("reply", "Q4.1", "--text", "<script>alert(1)</script>")
         self.ask(port, "Q4.2", "<img src=x onerror=alert(2)>")
         page = self.fetch(port, "/qd/q4.html")[1]
@@ -3360,32 +3395,45 @@ class ConversationTests(ImageCase):
         self.assertIn("&lt;script&gt;alert(1)&lt;/script&gt;", page)
 
     def test_a_damaged_conversation_is_reported(self) -> None:
+        port = self.start("/qd", ask_home=self.inbox())
+        self.ask(port, "Q4.1", "How is it?")
         self.run_cli("reply", "Q4.1", "--text", "Fine.")
         data = self.store()
-        for damage in (lambda c: c["1"][0].update(read="yes"), lambda c: c["1"][0].update(author="owner"),
-                       lambda c: c.update({"9": c.pop("1")}), lambda c: c["1"][0].update(extra=1),
-                       lambda c: c["1"][0].update(images=[{"file": "../x.png", "alt": "x"}]),
+        for damage in (lambda c: c["1"][1].update(read="yes"), lambda c: c["1"][1].update(author="owner"),
+                       lambda c: c.update({"9": c.pop("1")}), lambda c: c["1"][1].update(extra=1),
+                       lambda c: c["1"][1].update(images=[{"file": "../x.png", "alt": "x"}]),
+                       lambda c: c["1"][1].update(ask="0" * 32), lambda c: c["1"].reverse(),
                        lambda c: c.update({"1": []})):
             damaged = json.loads(json.dumps(data))
             damage(damaged["items"][3]["conversation"])
             with self.subTest(damage=damage):
-                with self.assertRaises(ValueError):
-                    quarterdeck.check_store(damaged)
-        quarterdeck.check_store(data)
+                quarterdeck.store_path().write_text(json.dumps(damaged))
+                self.assertEqual(self.run_cli("show", "Q4")[0], 2)
 
-    def test_unread_state_is_lost_only_for_the_replies_the_opened_page_showed(self) -> None:
-        self.run_cli("reply", "Q4.1", "--text", "Seen.")
-        item = self.store()["items"][3]
-        seen = quarterdeck.unread_reply_ids(item)
-        self.run_cli("reply", "Q4.1", "--text", "Arrived later.")
-        quarterdeck.mark_replies_read(quarterdeck.store_path(), "Q4", seen)
-        self.assertEqual([m["read"] for m in self.messages("1", 3)], [True, False])
+    def test_acknowledgment_is_same_origin_and_scoped_to_shown_replies_on_one_part(self) -> None:
+        port = self.start("/qd", ask_home=self.inbox())
+        for part in ("Q4.1", "Q4.2"):
+            self.ask(port, part, "Show me.")
+            self.assertEqual(self.run_cli("reply", part, "--text", "Here it is.")[0], 0)
+        _, shown = self.messages("1", 3)
+        _, sibling = self.messages("2", 3)
+        self.assertIn("Here it is.", self.fetch(port, "/qd/q4.html")[1])
+        self.assertEqual(self.run_cli("reply", "Q4.1", "--ask", shown["ask"], "--text", "Arrived later.")[0], 0)
+        payload = {"part": "Q4.1", "ids": [shown["id"]]}
+        endpoint = "/qd/replies/read"
+        self.assertEqual(self.post(port, endpoint, payload, origin="https://example.org")[0], 403)
+        self.assertEqual(self.post(port, endpoint, {**payload, "ids": [shown["id"], sibling["id"]]})[0], 400)
+        self.assertFalse(self.messages("1", 3)[1]["read"])
+        self.assertEqual(self.post(port, endpoint, payload), (200, {"unread": True}))
+        self.assertEqual([m["read"] for m in self.messages("1", 3)[1:]], [True, False])
+        self.assertFalse(self.messages("2", 3)[1]["read"])
 
-    def check_page(self, port, script):
+    def check_page(self, port, script, *, setup="", fragment=""):
         chrome = shutil.which("google-chrome")
         if not chrome:
             self.skipTest("google-chrome is required for the ask-card browser tests")
         page = self.fetch(port, "/qd/q4.html")[1]
+        page = page.replace("</head>", f"<script>{setup}</script></head>")
         fixture = self.root / "ask.html"
         fixture.write_text(page.replace("</body>", """
 <output id="browser-result">Incomplete</output>
@@ -3403,64 +3451,100 @@ const settled = () => new Promise(resolve => setTimeout(resolve, 50));
 </script>
 </body>"""), encoding="utf-8")
         result = subprocess.run([chrome, "--headless", "--disable-background-networking", "--no-first-run", "--lang=en-US",
-                                 f"--user-data-dir={self.root / 'browser'}", "--virtual-time-budget=4000", "--dump-dom", fixture.as_uri()],
+                                 f"--user-data-dir={self.root / 'browser'}", "--virtual-time-budget=4000", "--dump-dom", fixture.as_uri() + fragment],
                                 env={**os.environ, "TZ": "Asia/Tokyo", "LC_ALL": "en_US.utf-8"},
                                 capture_output=True, text=True, timeout=30, check=True)
         outcome = result.stdout.partition('<output id="browser-result">')[2].partition("</output>")[0]
         self.assertEqual(outcome, "PASS", result.stderr)
 
-    def test_the_page_asks_without_sending_an_answer(self) -> None:
-        port = self.start("/qd")
-        self.run_cli("reply", "Q4.1", "--text", "A first reply.")
+    def test_the_page_requires_a_new_ask_draft_and_preserves_the_reply_badge_on_answer(self) -> None:
+        port = self.start("/qd", ask_home=self.inbox())
+        self.assertEqual(self.post(port, "/qd/answers", {"part": "Q4.1", "answer": "Merge", "revision": ""})[0], 200)
         self.check_page(port, r"""
 const ask = n => card(n).querySelector('.ask-button');
 const send = document.getElementById('send');
-check(ask(1).disabled && ask(2).disabled, 'Ask Firstmate was ready with nothing typed');
-check(ask(1).textContent === 'Ask Firstmate' && send.textContent === 'Send answers', 'Wrong button words');
-check(send.classList.contains('primary') && !ask(1).classList.contains('primary'), 'Ask Firstmate is not secondary');
+check(field(1).value === 'Merge' && ask(1).disabled && ask(2).disabled, 'Ask Firstmate accepted a saved answer');
+check(card(1).contains(ask(1)) && !card(1).contains(send), 'Question and page actions moved');
+check(!send.disabled, 'Pending answer could not be retried');
+type(1, '  Merge  ');
+check(ask(1).disabled, 'Whitespace on a saved answer enabled Ask Firstmate');
 type(1, 'Show me mockups');
 check(!ask(1).disabled && ask(2).disabled, 'Ask Firstmate did not follow its own box');
-check(send.textContent === 'Send 1 answer', 'Send answers lost its meaning');
 const calls = [];
 window.fetch = async (url, options) => {
   calls.push([url, JSON.parse(options.body)]);
-  return {ok: true, status: 200, json: async () => ({label: 'Open', message: 'Ask sent. A sent ask cannot be unsent.',
-    thread: '<h3>Messages</h3><ol class="exchange"><li class="msg you"><p class="who"><strong>You</strong> <time datetime="2026-11-25T01:00:00Z">x</time> <span class="delivery">Sent</span></p><p class="record">Show me mockups</p></li></ol>'})};
+  const body = url === 'asks'
+    ? {label: 'Replied', message: 'Ask sent.',
+       thread: '<h3>Messages</h3><ol class="exchange"><li class="msg you"><p class="who"><strong>You</strong> <time datetime="2026-11-25T01:00:00Z">x</time> <span class="delivery">Sent</span></p><p class="record">Show me mockups</p></li></ol>'}
+    : {state: 'answered', revision: 'new', delivery: 'sent', answer: 'Hold', answered_at: '2026-11-25T01:00:00Z'};
+  return {ok: true, status: 200, json: async () => body};
 };
 ask(1).click();
 await settled();
 check(calls.length === 1 && calls[0][0] === 'asks', 'The ask went to ' + calls.map(c => c[0]));
 check(calls[0][1].part === 'Q4.1' && calls[0][1].text === 'Show me mockups' && !('answer' in calls[0][1]), 'Wrong ask body');
 check(card(1).querySelector('.thread .record').textContent === 'Show me mockups', 'The ask did not appear');
-check(/2026/.test(card(1).querySelector('.thread time').textContent) && /AM|PM/.test(card(1).querySelector('.thread time').textContent), 'The time was not localised: ' + card(1).querySelector('.thread time').textContent);
-check(card(1).querySelector('.badge').textContent === 'Open', 'The badge did not leave Replied');
-check(document.querySelector('.progress').textContent === '2 of 2 open', 'Progress: ' + document.querySelector('.progress').textContent);
-check(field(1).value === '' && send.disabled && ask(1).disabled, 'The box was not cleared or the answer was queued');
-check(status().textContent === 'Ask sent. A sent ask cannot be unsent.', 'Status: ' + status().textContent);
+check(/2026/.test(card(1).querySelector('.thread time').textContent) && /AM|PM/.test(card(1).querySelector('.thread time').textContent), 'The time was not localised');
+check(card(1).querySelector('.badge').textContent === 'Replied', 'An ask cleared the Replied badge');
+check(field(1).value === 'Merge' && ask(1).disabled, 'The saved answer was not restored');
+check(status().textContent === 'Ask sent.', 'Status: ' + status().textContent);
+type(1, 'Hold');
+send.click();
+await settled();
+check(calls[1][0] === 'answers' && calls[1][1].answer === 'Hold', 'The answer was not sent');
+check(card(1).querySelector('.badge').textContent === 'Replied', 'Saving an answer cleared the Replied badge');
+check(document.querySelector('.progress').textContent === 'Replied, 1 of 2 open', 'Wrong progress');
+check(field(1).value === 'Hold' && ask(1).disabled && send.disabled, 'The saved answer became a draft');
 """)
 
-    def test_the_page_retries_and_undoes_an_undelivered_ask(self) -> None:
-        port = self.start("/qd")
+    def test_the_page_retries_an_undelivered_ask(self) -> None:
+        port = self.start("/qd", ask_home=self.inbox(accept=False))
         self.ask(port, "Q4.1", "Which one?")
         (message,) = self.messages("1", 3)
+        retry_expected = json.dumps({"part": "Q4.1", "id": message["id"], "action": "retry"})
         self.check_page(port, r"""
-const buttons = [...card(1).querySelectorAll('[data-ask-action]')];
-check(buttons.map(b => b.textContent).join() === 'Send ask again,Undo ask', 'Buttons: ' + buttons.map(b => b.textContent));
+const button = card(1).querySelector('[data-retry-ask]');
+check(button.textContent === 'Send ask again', 'Retry action missing');
 check(card(1).querySelector('.thread .delivery').textContent === 'Not delivered', 'No delivery state');
 const calls = [];
 window.fetch = async (url, options) => {
-  calls.push(JSON.parse(options.body));
-  return {ok: false, status: 409, text: async () => 'This ask was sent. A sent ask cannot be unsent.'};
+  calls.push([url, JSON.parse(options.body)]);
+  return {ok: true, status: 200, json: async () => ({label: 'Open', message: 'Ask sent.',
+    thread: '<ol class="exchange"><li><span class="delivery">Sent</span><p class="record">Which one?</p></li></ol>'})};
 };
-buttons[1].click();
+button.click();
 await settled();
-check(calls[0].action === 'discard' && calls[0].id === '""" + message["id"] + r"""' && calls[0].part === 'Q4.1', 'Wrong request');
-check(status().textContent === 'This ask was sent. A sent ask cannot be unsent.', 'Conflict not shown: ' + status().textContent);
-check(card(1).querySelectorAll('[data-ask-action]').length === 2, 'The ask was removed after a conflict');
-window.fetch = async () => ({ok: true, status: 200, json: async () => ({label: 'Open', message: 'Ask undone.', thread: ''})});
-card(1).querySelector('[data-ask-action="discard"]').click();
+check(calls[0][0] === 'asks' && JSON.stringify(calls[0][1]) === JSON.stringify(""" + retry_expected + r"""), 'Wrong request');
+check(card(1).querySelector('.thread .record').textContent === 'Which one?', 'Retry lost the ask');
+check(card(1).querySelector('.thread .delivery').textContent === 'Sent', 'Retry did not update delivery');
+check(!card(1).querySelector('[data-retry-ask]'), 'A delivered ask can still be retried');
+""")
+
+    def test_the_page_acknowledges_only_the_opened_question_even_when_closed(self) -> None:
+        port = self.start("/qd", ask_home=self.inbox())
+        for part in ("Q4.1", "Q4.2"):
+            self.ask(port, part, "Show me.")
+            self.assertEqual(self.run_cli("reply", part, "--text", "Here it is.")[0], 0)
+        self.run_cli("mark", "Q4", "closed")
+        _, selected = self.messages("2", 3)
+        expected = json.dumps({"part": "Q4.2", "ids": [selected["id"]]})
+        self.check_page(port, r"""
 await settled();
-check(card(1).querySelector('.thread').innerHTML === '' && status().textContent === 'Ask undone.', 'The ask stayed after Undo');
+check(calls.length === 1 && calls[0][0] === 'replies/read', 'Wrong acknowledgment endpoint or count');
+check(JSON.stringify(calls[0][1]) === JSON.stringify(""" + expected + r"""), 'Wrong reply was acknowledged');
+check(card(2).querySelector('.badge').textContent === 'Closed', 'Opened question did not return to Closed');
+check(card(1).querySelector('.badge').textContent === 'Replied', 'Sibling lost its Replied badge');
+check(document.querySelector('.progress').textContent === 'Replied', 'Progress lost the sibling reply');
+card(1).querySelector('a[href="#Q4.1"]').click();
+await settled();
+check(calls.length === 2 && calls[1][1].part === 'Q4.1', 'Opening the sibling did not acknowledge its reply');
+check(document.querySelector('.progress').textContent === 'Closed', 'Progress did not return to Closed');
+""", fragment="#Q4.2", setup="""
+const calls = [];
+window.fetch = async (url, options) => {
+  calls.push([url, JSON.parse(options.body)]);
+  return {ok: true, json: async () => ({unread: false})};
+};
 """)
 
 

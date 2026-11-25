@@ -153,7 +153,7 @@ and [export behavior](cli-and-config.md#rendered-images).
 ## Question conversation
 
 A questions item may contain a `conversation` object keyed by the one-based part
-number as a string, holding that question's messages oldest first (up to 100).
+number as a string, holding that question's messages oldest first.
 It is kept apart from `answers`, so a message never changes what was decided.
 Older items need no migration.
 
@@ -163,18 +163,18 @@ text, up to 20,000 characters) and `at` (UTC).
 | `author` | Other fields |
 | --- | --- |
 | `you` | An ask sent from the page. `delivery` (`pending` or `sent`) and a stable `request_id` for inbox retries. |
-| `firstmate` | A reply added by `quarterdeck reply`. `read` (true once the question page was opened), and optional `links` (the same `text` and `url` objects as question links) and `images` (`file` and `alt`, up to 6 each). |
+| `firstmate` | A reply added by `quarterdeck reply`. `ask` (ID of an earlier ask on the same question), `read` (true once the page acknowledges this reply), and optional `links` (the same `text` and `url` objects as question links) and `images` (`file` and `alt`, up to 6 each). |
 
 Reply images are copied into the item's [image folder](#store-layout) and
 removed with the item.
 
 ## Question states
 
-A question is Open, Answered, Closed or Replied. The first three are the
-stored `state`. Replied is not stored: a question that is not closed shows
-Replied while the newest message in its conversation is a Firstmate reply with
-`read` false. Opening the question page sets `read` on the replies it showed,
-and the question shows its stored state again.
+The stored `state` is Open, Answered or Closed. The served site and CLI
+show Replied while any reply on the question has `read` set to false.
+The served page acknowledges displayed replies on the opened question by
+ID. When all replies are read, the question shows its stored state again.
+Static exports omit conversations and their images.
 
 ## Question answers
 
