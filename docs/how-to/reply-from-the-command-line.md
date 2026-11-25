@@ -56,6 +56,23 @@ numbered parts, so `Q12.1` is refused. Run `quarterdeck show Q12` to read the
 transcript. See the [CLI reference](../reference/cli-and-config.md#items)
 for the transcript fields.
 
+## Post an update or open a conversation
+
+Firstmate can add news that answers no message. `post` adds an update to a
+conversation and `converse` opens a new conversation in Firstmate's name. Both
+take the same `--link-text`/`--url` and `--image`/`--alt` options as `reply`.
+
+```sh
+quarterdeck post Q12 --text "The amber lamps are installed."
+quarterdeck converse --title "Pier lamp install" --text "Started the install." # prints the new ID
+```
+
+An update shows in time order as a Firstmate update, not "In reply to", and
+shows as Replied until the owner opens the conversation. Neither command sends
+an inbox note, because Firstmate wrote the message. The owner replies from the
+conversation page, and Firstmate answers that message with `reply`. Updates are
+served only, like all conversations. `post` refuses question items.
+
 Quarterdeck prints the target and `Replied`, for example `Q7.1 Replied`.
 See how to read replies on a [question card](ask-firstmate.md#read-replies)
 or [conversation card](talk-to-firstmate.md#read-replies).

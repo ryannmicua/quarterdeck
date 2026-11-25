@@ -5662,6 +5662,52 @@ class TalkToFirstmateTests(ImageCase):
         self.assertEqual(self.run_cli("classify", "Q1", "--project", "harbor-signs", "--tag", "product-design")[0], 0)
         self.assertEqual(self.store()["items"][0]["project"], "harbor-signs")
 
+    def test_firstmate_opens_a_conversation_and_posts_updates_without_an_inbox_note(self) -> None:
+        home = self.inbox()
+        code, out, err = self.run_cli("converse", "--title", "Tide work", "--text", "Started the tide job.",
+                                      "--link-text", "Plan", "--url", "https://example.com/plan",
+                                      "--image", str(self.red), "--alt", "A red quay")
+        self.assertEqual((code, out, err), (0, "Q1\n", ""))
+        self.assertEqual(self.run_cli("post", "q1", "--text", "Halfway there.")[1:], ("Q1 Updated\n", ""))
+        first, update = self.thread()
+        self.assertEqual((first["author"], first["read"], "ask" in first, first["links"][0]["text"]), ("firstmate", False, False, "Plan"))
+        self.assertTrue((quarterdeck.store_path().parent / "reply-images" / "q1" / first["images"][0]["file"]).is_file())
+        self.assertEqual((update["text"], update["read"], "ask" in update), ("Halfway there.", False, False))
+        shown = self.run_cli("show", "Q1")[1]
+        self.assertEqual(shown.count("Update"), 2)
+        self.assertNotIn("In reply to", shown)
+        port = self.start("/qd", ask_home=home)
+        page = self.fetch(port, "/qd/q1.html")[1]
+        self.assertEqual(page.count("Firstmate update"), 2)
+        self.assertNotIn("In reply to", page)
+        self.assertIn('id="send-message"', page)
+        self.assertIn("Replied", self.fetch(port, "/qd/")[1])
+        self.assertEqual(self.post(port, "/qd/replies/read", {"part": "Q1", "ids": [first["id"], update["id"]]})[0], 200)
+        self.assertFalse(any(m["read"] is False for m in self.thread()))
+        self.assertFalse((home / "notes").exists())
+        # The owner continues it as any conversation, and Firstmate replies to that message as usual.
+        page = self.fetch(port, "/qd/q1.html")[1]
+        ask = {"part": "Q1", "id": uuid.uuid4().hex, "text": "Thanks, which tide?",
+               "home": re.search(r'id="send-message" data-home="([^"]+)"', page)[1]}
+        self.assertEqual(self.post(port, "/qd/asks", ask)[1]["message"], "Message sent.")
+        self.assertEqual((home / "notes").read_text(), f"CONVERSATION Q1 {ask['id']} Topic: Tide work\nThanks, which tide?\n")
+        self.assertEqual(self.run_cli("reply", "Q1", "--ask", ask["id"], "--text", "The spring tide.")[0], 0)
+        self.assertEqual(self.thread()[-1]["ask"], ask["id"])
+        self.assertIn("In reply to message 1", self.fetch(port, "/qd/q1.html")[1])
+
+    def test_post_and_converse_reject_bad_input_and_change_nothing(self) -> None:
+        self.assertEqual(self.run_cli("converse", "--title", "Tide work", "--text", "Hello.")[0], 0)
+        self.assertEqual(self.run_cli("add", "--kind", "list", "--title", "T", "--description", "D", "--body-file", "-",
+                                      stdin=json.dumps({"entries": ["a"]}))[0], 0)
+        before = self.store()
+        for argv in (("post", "Q2", "--text", "No."), ("post", "Q9", "--text", "No."), ("post", "Q1.1", "--text", "No."),
+                     ("post", "Q1", "--text", " "), ("post", "Q1", "--text", "a", "--url", "https://example.com"),
+                     ("post", "Q1", "--text", "a", "--image", str(self.red)),
+                     ("converse", "--title", " ", "--text", "a"), ("converse", "--title", "a", "--text", "a", "--alt", "x")):
+            with self.subTest(argv=argv):
+                self.assertEqual(self.run_cli(*argv)[0], 2)
+        self.assertEqual(self.store(), before)
+
     def test_the_desk_offers_talk_to_firstmate_only_with_a_home(self) -> None:
         port = self.start("/qd", ask_home=self.inbox())
         for path in ("/qd/", "/qd/index.html"):
