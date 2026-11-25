@@ -1,8 +1,9 @@
 # Reply from the command line
 
-Use the target ID and ask ID from the [inbox note](../reference/cli-and-config.md#ask-endpoint)
-to reply in the conversation where the ask was sent. Pass the ask ID with
-`--ask`.
+Use the target and message IDs from the inbox note. A note that begins
+[`ASK`](../reference/cli-and-config.md#ask-endpoint) comes from a question
+card. For [`CONVERSATION`](../reference/cli-and-config.md#conversation-endpoint),
+see [Reply in a conversation](#reply-in-a-conversation).
 
 For both targets, `quarterdeck reply` must use the live server's
 [item store](../reference/item-store.md). If the server uses a custom
@@ -30,6 +31,21 @@ as question images. The live page serves them from the
 If a file named `reply-images` occupies that location in the state
 directory, move it before attaching reply images.
 
+## Reply in a conversation
+
+Pass the conversation's item ID and use `--ask` for the message ID.
+
+```sh
+quarterdeck reply Q12 --ask "$message_id" --text "Use the 2200 K amber."
+```
+
+Links, images and follow-ups work as they do for a card ask. Reply to each
+message by its own ID and the reply shows in time order. A conversation has no
+numbered parts, so `Q12.1` is refused. Run `quarterdeck show Q12` to read the
+transcript. See the [CLI reference](../reference/cli-and-config.md#items)
+for the transcript fields.
+
 Quarterdeck prints the target and `Replied`, for example `Q7.1 Replied`.
-See [how to read replies on the card](ask-firstmate.md).
+See how to read replies on a [question card](ask-firstmate.md#read-replies)
+or [conversation card](talk-to-firstmate.md#read-replies).
 See the [CLI reference](../reference/cli-and-config.md#items) for the command.

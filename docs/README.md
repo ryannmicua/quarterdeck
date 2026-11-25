@@ -6,6 +6,7 @@ Guides are grouped by purpose, following Diataxis:
 - [How-to guides](how-to/) cover installing, updating and removing Quarterdeck,
   [saving items](how-to/save-items.md), [serving the page](how-to/serve-the-page.md),
   [asking Firstmate from a card](how-to/ask-firstmate.md),
+  [talking to Firstmate about any topic](how-to/talk-to-firstmate.md),
   [replying from the command line](how-to/reply-from-the-command-line.md)
   and [reading the workers section](how-to/read-workers.md).
 - The [CLI and configuration reference](reference/cli-and-config.md) lists every

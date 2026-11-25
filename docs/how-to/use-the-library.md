@@ -5,25 +5,28 @@ at viewport widths up to `40rem` and a right-side drawer at wider widths.
 Select **Close library**, press Escape, or tap outside the library to return
 to the Desk.
 
-The pop-out has two tabs.
+The pop-out has three tabs.
 
 - **References** lists saved links and lists, newest first.
 - **Answered** lists question items that have left the Desk, newest saved items
   first. Select an item title to read its questions and saved answers.
+- **Conversations** lists the [conversations you started](talk-to-firstmate.md), newest
+  first, each under its topic.
 
 With a tab focused, use the left or right arrow to switch tabs. Home opens
-References, and End opens Answered.
+References, and End opens Conversations.
 
 ## Search
 
-Use the search box in either tab to match text in the title or description.
-**Answered** also searches question and saved answer text. Search ignores case
-and matches every space-separated term literally. Enter an exact ID on its
+**References** and **Answered** search titles and descriptions. **Answered**
+also searches question and saved answer text. **Conversations** searches
+topics and item IDs. Search ignores case and matches every space-separated
+term literally. Enter an exact ID on its
 own, such as `Q5` to find item Q5 or `Q5.3` to find Q5 if it has a third
-question.
+question. An ID-shaped topic such as `Q5.3` also matches in **Conversations**.
 
 Use the [project and tag filters](classify-items.md#see-it-on-the-page) when
-available to narrow either list, including on rendered pages.
+available to narrow the lists, including on rendered pages.
 
 After opening an item from the library, use your browser’s Back button to
 return to the same tab, search and filters with fresh results. A restored
@@ -38,11 +41,15 @@ or **Close library**.
 
 ## When an item moves
 
-An item stays on the Desk while it has an open question or a non-closed
-question with an answer awaiting delivery. Otherwise it appears under
+An item with questions stays on the Desk while it has an open question or a
+non-closed question with an answer awaiting delivery. Otherwise it appears under
 **Answered**. Pending asks and unread replies leave the item in its current
-listing. Both the Desk and the library’s **Answered** tab show **Replied** while
-an item has unread replies. See [how to read and acknowledge replies](ask-firstmate.md#read-replies).
+listing. Both locations can show **Replied**. See
+[how to read question-card replies](ask-firstmate.md#read-replies).
+
+Standalone conversations are always in **Conversations**. They also appear on
+the Desk while they have unread replies. Both locations show **Replied** until
+you [read the replies on the card](talk-to-firstmate.md#read-replies).
 
 Reopen a question with `quarterdeck mark Q5.2 open` to return
 its item to the Desk. The item stays saved until you remove it with
@@ -50,6 +57,6 @@ its item to the Desk. The item stays saved until you remove it with
 
 ## Rendered pages
 
-If the store has saved items, a page written by `quarterdeck render` shows
+When an [HTML export](../reference/cli-and-config.md#pages) has saved items, it shows
 References and Answered as plain sections after the Desk. The Answered section
 links each title to its item page.

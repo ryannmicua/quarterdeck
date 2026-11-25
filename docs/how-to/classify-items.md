@@ -40,17 +40,18 @@ quarterdeck classify Q5 --project harbor --tag architecture --tag bug
 quarterdeck classify Q5.3 --kind rule --tag business-rule
 ```
 
-`Q5` sets the project and tags of the item. `Q5.3` sets the kind and tags of one
-question. Options you leave out stay as they are. `--tag` replaces all the tags
-already there. The question text, options and answers are never touched.
+`Q5` sets the project and tags of the item, including a conversation.
+`Q5.3` sets the kind and tags of one question. Options you leave out stay as
+they are. `--tag` replaces all the tags already there. The question text,
+options and answers are never touched.
 
 ## See it on the page
 
-Projects appear on reference rows and question set cards. When the Desk has
-different project assignments, it groups cards under project headings,
+Projects appear on reference and conversation rows and on Desk cards. When
+the Desk has different project assignments, it groups cards under project headings,
 including **(No project)** for unassigned cards. Question set cards show
 tags from the set and its questions. On an item page, each question shows
-its own kind and tags. In References and Answered, the project
+its own kind and tags. In the library tabs, the project
 filter appears when project assignments differ, including when some entries
 have no project.
 Each list with at least one tag shows a tag filter. It offers every tag in that

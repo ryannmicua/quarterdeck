@@ -35,8 +35,8 @@ uppercase form.
 | --- | --- |
 | `add` | Saves a new item and prints its ID. A `resource` needs `--url` and `--link-text`. A `list` or `questions` item needs `--body-file`. See [the input formats and examples](../how-to/save-items.md#add-an-item) and [how to classify items and questions when saving](../how-to/classify-items.md#classify-when-you-save). |
 | `list` | Prints saved items, newest first, with ID, kind, saved date and title. |
-| `show` | Prints the item's text, numbering list entries and questions as `Q7.1`, `Q7.2`. Includes question links, stored states, and saved answers with their timestamps and delivery status. |
-| `reply` | Adds Firstmate's reply to an existing ask on a whole question item (`Q7`) or one question (`Q7.1`). It preserves saved answers and question states. Supply the required `--ask ID` from the inbox note and the reply in `--text`. Pair `--link-text` with `--url` and `--image` with `--alt` in the order given. See [Reply from the command line](../how-to/reply-from-the-command-line.md). |
+| `show` | Prints the item's text, numbering list entries and questions as `Q7.1`, `Q7.2`. Includes question links, stored states, and saved answers with their timestamps and delivery status. For a standalone conversation, prints the messages and replies in saved order with timestamps, IDs, delivery status for outgoing messages, and reply attachments. Image references are paths relative to the served site or the item store directory. |
+| `reply` | Adds Firstmate's reply to an existing ask on a whole question item (`Q7`) or one question (`Q7.1`), or to a message in a [conversation](../how-to/talk-to-firstmate.md) (`Q12`). It preserves saved answers and question states. Supply the required `--ask ID` from the inbox note and the reply in `--text`. Pair `--link-text` with `--url` and `--image` with `--alt` in the order given. See [Reply from the command line](../how-to/reply-from-the-command-line.md). |
 | `mark` | Sets question state, optionally for a whole questions item. `--via` is required with `answered` and accepted only with that state. Skips exit with status 0. See [Read answers](../how-to/read-answers.md) for which questions are marked. |
 | `classify` | Requires at least one classification option. Use `--project` for an item ID, `--kind` for a question ID, and `--tag` for either. See [how to change classification](../how-to/classify-items.md#change-it-later). |
 | `stats` | Prints a question activity table by default or JSON with `--json`. See [Read the report](../how-to/read-the-report.md) for date filtering and field definitions. |
@@ -46,7 +46,7 @@ uppercase form.
 
 | Command | What it does |
 | --- | --- |
-| `render` | Writes `index.html` (the Desk) and one `q<N>.html` page per item. `--output PATH` names the Desk page and puts the item pages beside it. Otherwise the pages go to `output_dir`. The names `q<N>.html` and `images` are reserved regardless of capitalization. The live state directory also reserves `reply-images` regardless of capitalization. Existing destination pages must carry Quarterdeck's generated-page marker. Render retires obsolete marked item pages. Separately named Desk pages are kept and share the item pages in that directory. The output must be outside the Quarterdeck checkout. See [rendered images](#rendered-images). |
+| `render` | Writes `index.html` (the Desk) and one `q<N>.html` page per resource, list or question item. Standalone conversations are served only. `--output PATH` names the Desk page and puts the item pages beside it. Otherwise the pages go to `output_dir`. The names `q<N>.html` and `images` are reserved regardless of capitalization. The live state directory also reserves `reply-images` regardless of capitalization. Existing destination pages must carry Quarterdeck's generated-page marker. Render retires obsolete marked item pages. Separately named Desk pages are kept and share the item pages in that directory. The output must be outside the Quarterdeck checkout. See [rendered images](#rendered-images). |
 | `serve` | Serves the Desk and item pages over HTTP, or HTTPS with `--tls-cert` and `--tls-key`. Page requests read the store, so a new item shows on the next load. Open item Q7 at `/q7.html`. `--host` may be repeated. `--port` defaults to 8765. See [serving security](../how-to/serve-the-page.md#security-loopback-by-default) for the default bind and browser access rules. |
 | `service` | Prints a systemd user unit with the supplied serving options, or writes it to `${XDG_CONFIG_HOME:-~/.config}/systemd/user/quarterdeck.service` with `--write`. |
 | `url` | Prints the address the installed unit serves, or the default address when no unit is installed. |
@@ -92,8 +92,9 @@ See the [image removal rules](item-store.md#store-layout).
 
 ### Ask endpoint
 
-`POST /asks` (under any `base_path`) requires the explicit `firstmate_home`
-and the same origin as `/answers`. Send
+`POST /asks` (under any `base_path`) requires an explicit `firstmate_home`
+and the same origin as `/answers`. Question-card asks can be saved as
+**Not delivered** while the home directory is unavailable. Send
 `{"part": "Q7.1", "id": "<ask id>", "text": "...", "home": "<home binding>"}`
 to save and deliver an ask. Use `"part": "Q7"` for the whole question item or
 `"part": "Q7.1"` for one question. The page generates the 32-character lowercase
@@ -114,15 +115,40 @@ The inbox note starts with
 `ASK Q7 <ask id>` for the whole item or `ASK Q7.1 <ask id>` for one question,
 followed by the ask text.
 
+### Conversation endpoint
+
+`POST /conversations` (under any `base_path`) requires an explicit
+`firstmate_home` that resolves to an existing directory and the same origin
+as `/answers`. If the directory is unavailable, the request returns 403.
+Send
+`{"id": "<message id>", "title": "...", "text": "...", "home": "<home binding>"}`
+to save a new conversation item and deliver its first message. The title is the
+topic, up to 200 characters. The page generates the 32-character lowercase
+hexadecimal ID. Repeating the same request reuses the saved conversation
+instead of creating another, and retries delivery of the first message while it
+is pending. The same ID with a different topic or text returns 409. A successful
+response contains `message` (delivery status) and `href` (the relative URL of
+the conversation card).
+
+Later messages use the [ask endpoint](#ask-endpoint) with `"part": "Q12"`.
+The directory requirement applies to both sends and retries. A different
+resolved Firstmate home path results in 409 before saving or delivering
+the message.
+The inbox note for every conversation message is
+`CONVERSATION Q12 <message id> Topic: <topic>`, a line break, then the message
+text. See [Reply in a conversation](../how-to/reply-from-the-command-line.md#reply-in-a-conversation).
+
 ### Reply acknowledgment endpoint
 
 `POST /replies/read` (under any `base_path`) uses the same origin check as
 `/answers`. The served page sends `{"part": "Q7.1", "ids": ["<reply id>"]}`
 when the user opens that question's **Messages**, or sends `"part": "Q7"`
-when the user opens the whole-item **Messages**. Every ID must belong to
-the named conversation. The response field `replies` maps each reply ID in
-that conversation to its current read status (`true` for read).
-Page loads leave these records intact.
+when the user opens the whole-item **Messages**. On a standalone conversation
+card, the browser sends `"part": "Q12"` and the displayed unread reply IDs
+on open and after a send or retry refresh. A GET alone leaves read records
+intact. Every ID must belong to the named conversation. The response field
+`replies` maps each reply ID in that conversation to its current read status
+(`true` for read).
 
 ### Workers endpoint
 
@@ -167,7 +193,7 @@ or `${XDG_CONFIG_HOME:-~/.config}/quarterdeck.json` when it exists.
 | `page_title` | string | `Quarterdeck` | The site name in the navigation bar and browser title. `--title` overrides it for `render` and `serve`. |
 | `output_dir` | string path | `${XDG_STATE_HOME:-~/.local/state}/quarterdeck` | Where `render` writes the pages. |
 | `base_path` | string | none | The URL prefix described above. |
-| `firstmate_home` | absolute path after expanding `~` | unset | Local destination for answers and asks submitted to `serve`, and the home whose workers the page lists. |
+| `firstmate_home` | absolute path after expanding `~` | unset | Local destination for answers, asks and conversation messages submitted to `serve`, and the home whose workers the page lists. |
 
 When `firstmate_home` is absent, `serve` uses a legacy `homes` list only for
 answer delivery and only if it contains exactly one object with a valid

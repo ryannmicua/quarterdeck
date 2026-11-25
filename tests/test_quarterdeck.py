@@ -1658,7 +1658,7 @@ const search = document.getElementById('search-answered');
 const shown = () => [...panel.querySelectorAll('li:not([hidden]) a')].map(link => link.getAttribute('href'));
 const type = text => { search.value = text; search.dispatchEvent(new Event('input', {bubbles: true})); };
 check(shown().join() === 'q2.html', 'The answered list was wrong');
-check(dialog.querySelectorAll('input[type="search"]').length === 2 && !dialog.querySelector('input[type="date"]'),
+check(dialog.querySelectorAll('input[type="search"]').length === 3 && !dialog.querySelector('input[type="date"]'),
       'The library does not have exactly one search per tab');
 for (const query of ['pier lamp merge amber', 'Σ amber', 'oﬃce amber', 'Q2', 'q2.1', 'q2.2']) {
   type(query);
@@ -2324,6 +2324,20 @@ const check = (condition, message) => { if (!condition) throw new Error(message)
 
 
 class ServiceAndHelpTests(StoreCase):
+    def test_serve_warns_that_reachable_clients_can_start_conversations(self) -> None:
+        for host in ("127.0.0.1", "192.0.2.10"):
+            with self.subTest(host=host), patch.object(quarterdeck, "make_server") as make_server:
+                make_server.return_value.server_address = (host, 8765)
+                code, _, warning = self.run_cli("serve", "--host", host)
+                self.assertEqual(code, 0, warning)
+                self.assertEqual("start conversations" in warning, host == "192.0.2.10")
+        help_output = io.StringIO()
+        with redirect_stdout(help_output), self.assertRaises(SystemExit) as exit_info:
+            quarterdeck.main(["serve", "--help"])
+        self.assertEqual(exit_info.exception.code, 0)
+        self.assertIn("With firstmate_home set, they can also send asks, start conversations",
+                      " ".join(help_output.getvalue().split()))
+
     def test_service_unit_runs_serve_without_old_flags(self) -> None:
         args = quarterdeck.make_parser().parse_args(["service", "--host", "127.0.0.1", "--port", "9000", "--base-path", "/qd"])
         unit = ConfigParser(interpolation=None)
@@ -3255,6 +3269,30 @@ class ConversationTests(ImageCase):
                                         "saved": request["id"] == body["id"]}))
             self.assertEqual(self.store(), before)
             self.assertFalse((replacement / "attempts").exists())
+
+    def test_question_and_whole_item_asks_can_wait_for_a_missing_home_directory(self) -> None:
+        home = self.root / "home"
+        port = self.start("/qd", ask_home=home)
+        page = self.fetch(port, "/qd/q4.html")[1]
+        self.assertIn('id="open-item-ask"', page)
+        self.assertIn('class="ask-button" data-home=', page)
+        self.assertNotIn('id="open-talk"', self.fetch(port, "/qd/")[1])
+        for target in ("Q4", "Q4.1"):
+            with self.subTest(target=target):
+                body = self.ask_body(port, target, f"Please explain {target}.")
+                for request in (body, {**body, "action": "retry"},
+                                {"part": target, "id": body["id"], "action": "retry"}):
+                    status, result = self.post(port, "/qd/asks", request)
+                    self.assertEqual((status, result["message"]), (200, "Ask saved. Not delivered."))
+                    self.assertIn("Send ask again", result["thread"])
+        whole, = self.messages("item", 3)
+        numbered, = self.messages("1", 3)
+        self.assertEqual((whole["delivery"], numbered["delivery"]), ("pending", "pending"))
+        self.assertEqual(self.inbox(), home)
+        for target, message in (("Q4", whole), ("Q4.1", numbered)):
+            retry = {"part": target, "id": message["id"], "action": "retry"}
+            self.assertEqual(self.post(port, "/qd/asks", retry)[1]["message"], "Ask sent.")
+        self.assertEqual((home / "attempts").read_text().splitlines(), [whole["request_id"], numbered["request_id"]])
 
     def test_pending_asks_cannot_follow_a_repointed_home_symlink(self) -> None:
         original = self.inbox(accept=False)
@@ -4526,10 +4564,519 @@ if (oldFirst) complete[0](old); else complete[1](newer);
 await settled();
 check(card(1).querySelector('.badge').textContent === (oldFirst ? 'Replied' : 'Open'),
       'The first response reported the wrong reply status');
+check(document.querySelector('.progress').textContent.includes('Replied') === oldFirst,
+      'Question progress did not reflect the unread reply');
 if (oldFirst) complete[1](newer); else complete[0](old);
 await settled();
 check(card(1).querySelector('.badge').textContent === 'Open', 'The badge did not settle on the read state');
 """, page=page, setup=f"const [firstRequest, old, newer, oldFirst] = {data};")
+
+
+class TalkToFirstmateTests(ImageCase):
+    """A conversation about any topic: its own saved item, asks that name the item, replies in time order."""
+
+    start = ServeTests.start
+    fetch = ServeTests.fetch
+    post = ConversationTests.post
+    inbox = ConversationTests.inbox
+
+    def begin(self, port, title="Harbor lamp colours", text="Which amber suits the pier lamps?", **changes):
+        page = self.fetch(port, "/qd/")[1]
+        match = re.search(r'data-home="([^"]+)"', page)
+        body = {"id": uuid.uuid4().hex, "title": title, "text": text, "home": match[1] if match else ""}
+        return body, self.post(port, "/qd/conversations", {**body, **changes})
+
+    def thread(self, item=0):
+        return self.store()["items"][item]["conversation"]["item"]
+
+    def test_a_new_conversation_is_its_own_item_and_reaches_the_inbox_as_a_conversation_message(self) -> None:
+        home = self.inbox()
+        port = self.start("/qd", ask_home=home)
+        body, (status, result) = self.begin(port)
+        self.assertEqual(status, 200)
+        self.assertEqual(result, {"href": "q1.html", "message": "Message sent."})
+        (item,) = self.store()["items"]
+        self.assertEqual((item["kind"], item["title"], item["body"]), ("conversation", "Harbor lamp colours", {}))
+        self.assertNotIn(body["text"], item["description"])
+        (message,) = self.thread()
+        self.assertEqual((message["id"], message["author"], message["delivery"]), (body["id"], "you", "sent"))
+        self.assertEqual((home / "notes").read_text(),
+                         f"CONVERSATION Q1 {body['id']} Topic: Harbor lamp colours\nWhich amber suits the pier lamps?\n")
+        self.assertEqual(self.run_cli("list")[1].split()[1], "conversation")
+        self.assertIn("Conversation", self.run_cli("show", "Q1")[1])
+        self.assertEqual(self.run_cli("classify", "Q1", "--project", "harbor-signs", "--tag", "product-design")[0], 0)
+        self.assertEqual(self.store()["items"][0]["project"], "harbor-signs")
+
+    def test_the_desk_offers_talk_to_firstmate_only_with_a_home(self) -> None:
+        port = self.start("/qd", ask_home=self.inbox())
+        for path in ("/qd/", "/qd/index.html"):
+            _, page, headers = self.fetch(port, path)
+            self.assertIn('id="open-talk"', page)
+            self.assertIn('Talk to Firstmate', page)
+            self.assertIn('id="talk-form"', page)
+            self.assertEqual(headers["Content-Security-Policy"], "frame-ancestors 'none'")
+        _, page, headers = self.fetch(self.start("/qd"), "/qd/")
+        self.assertNotIn('id="open-talk"', page)
+        self.assertNotIn("Content-Security-Policy", headers)
+
+    def test_a_conversation_replays_once_and_retries_with_the_same_note(self) -> None:
+        home = self.inbox(accept=False)
+        port = self.start("/qd", ask_home=home)
+        body, (status, result) = self.begin(port)
+        self.assertEqual((status, result), (200, {"href": "q1.html", "message": "Message saved. Not delivered."}))
+        (first,) = self.thread()
+        self.assertIn("Send message again", self.fetch(port, "/qd/q1.html")[1])
+        self.assertEqual(self.post(port, "/qd/conversations", body), (status, result))
+        self.assertEqual(len(self.store()["items"]), 1)
+        self.assertEqual(self.post(port, "/qd/conversations", {**body, "text": "Another."})[0], 409)
+        self.assertEqual(self.post(port, "/qd/conversations", {**body, "title": "Another"})[0], 409)
+        self.inbox()
+        self.assertEqual(self.post(port, "/qd/conversations", body),
+                         (200, {"href": "q1.html", "message": "Message sent."}))
+        self.assertEqual(self.thread(), [{**first, "delivery": "sent"}])
+        self.assertEqual((home / "notes").read_text(), f"CONVERSATION Q1 {body['id']} Topic: {body['title']}\n{body['text']}\n")
+        retry = {"part": "Q1", "id": body["id"], "action": "retry"}
+        self.assertEqual(self.post(port, "/qd/asks", retry)[1]["message"], "Message sent.")
+        self.assertEqual(len(self.store()["items"]), 1)
+        self.assertEqual(len((home / "notes").read_text().splitlines()), 2)
+        self.assertEqual((home / "attempts").read_text().splitlines(), [first["request_id"]] * 3)
+
+    def test_conversations_wait_for_a_missing_home_alias_to_return(self) -> None:
+        home = self.root / "home"
+        home.mkdir()
+        alias = self.root / "current"
+        port = self.start("/qd", ask_home=alias)
+        self.assertNotIn('id="open-talk"', self.fetch(port, "/qd/")[1])
+        self.assertEqual(self.begin(port)[1][0], 403)
+        self.assertFalse(quarterdeck.store_path().exists())
+
+        alias.symlink_to(home, target_is_directory=True)
+        body, result = self.begin(port)
+        self.assertEqual(result, (200, {"href": "q1.html", "message": "Message saved. Not delivered."}))
+        (first,) = self.thread()
+        before = quarterdeck.store_path().read_bytes()
+        alias.unlink()
+        alias.symlink_to(self.root / "missing", target_is_directory=True)
+        self.assertNotIn('id="open-talk"', self.fetch(port, "/qd/")[1])
+        page = self.fetch(port, "/qd/q1.html")[1]
+        self.assertIn(body["text"], page)
+        self.assertNotIn('id="send-message"', page)
+        self.assertNotIn('data-retry-ask=', page)
+        follow_up = {"part": "Q1", "id": uuid.uuid4().hex, "text": "Which green?", "home": body["home"]}
+        retry = {"part": "Q1", "id": body["id"], "action": "retry"}
+        for endpoint, payload in (("conversations", body), ("asks", follow_up), ("asks", retry)):
+            with self.subTest(endpoint=endpoint, payload=payload):
+                self.assertEqual(self.post(port, f"/qd/{endpoint}", payload)[0], 403)
+        self.assertEqual(quarterdeck.store_path().read_bytes(), before)
+
+        self.inbox()
+        alias.unlink()
+        alias.symlink_to(home, target_is_directory=True)
+        self.assertIn('id="send-message"', self.fetch(port, "/qd/q1.html")[1])
+        self.assertEqual(self.post(port, "/qd/conversations", body),
+                         (200, {"href": "q1.html", "message": "Message sent."}))
+        self.assertEqual(self.thread(), [{**first, "delivery": "sent"}])
+        self.assertEqual((home / "attempts").read_text().splitlines(), [first["request_id"]])
+
+    def test_bad_conversations_save_nothing(self) -> None:
+        home = self.inbox()
+        port = self.start("/qd", ask_home=home)
+        for changes in ({"title": "  "}, {"text": ""}, {"id": "nope"}, {"title": "x" * 201}, {"title": 3}):
+            self.assertEqual(self.begin(port, **changes)[1][0], 400, changes)
+        self.assertEqual(self.begin(port, home="0" * 64)[1][0], 409)
+        self.assertEqual(self.post(port, "/qd/conversations", {"id": uuid.uuid4().hex, "title": "T"})[0], 400)
+        self.assertEqual(self.post(port, "/qd/conversations", {}, origin="http://example.com")[0], 403)
+        self.assertFalse(quarterdeck.store_path().exists())
+        self.assertEqual(self.post(self.start("/qd"), "/qd/conversations", {"id": "a" * 32, "title": "T", "text": "M", "home": ""})[0], 403)
+        self.assertFalse((home / "attempts").exists())
+
+    def test_more_messages_and_replies_show_in_time_order_with_replied_until_opened(self) -> None:
+        home = self.inbox()
+        port = self.start("/qd", ask_home=home)
+        first, _ = self.begin(port)
+        binding = first["home"]
+        second = {"part": "Q1", "id": uuid.uuid4().hex, "text": "Also, which green?", "home": binding}
+        self.assertEqual(self.post(port, "/qd/asks", second)[1]["message"], "Message sent.")
+        self.assertEqual((home / "notes").read_text().splitlines()[-2:],
+                         [f"CONVERSATION Q1 {second['id']} Topic: Harbor lamp colours", "Also, which green?"])
+        self.assertEqual(self.run_cli("reply", "Q1", "--ask", second["id"], "--text", "Sea green.")[0], 0)
+        self.assertEqual(self.run_cli("reply", "Q1", "--ask", first["id"], "--text", "Warm amber.")[0], 0)
+        self.assertEqual(self.run_cli("reply", "Q1", "--ask", "f" * 32, "--text", "Lost.")[0], 2)
+        self.assertEqual(self.run_cli("reply", "Q1.1", "--ask", first["id"], "--text", "Lost.")[0], 2)
+        text = [m["text"] for m in self.thread()]
+        self.assertEqual(text, ["Which amber suits the pier lamps?", "Also, which green?", "Sea green.", "Warm amber."])
+        page = self.fetch(port, "/qd/q1.html")[1]
+        self.assertEqual([page.index(t) for t in text], sorted(page.index(t) for t in text))
+        status, transcript, err = self.run_cli("show", "Q1")
+        self.assertEqual(status, 0, err)
+        self.assertEqual([transcript.index(t) for t in text], sorted(transcript.index(t) for t in text))
+        self.assertIn(f"{first['id']}  Message 1\n  {first['text']}", transcript)
+        self.assertIn(f"{second['id']}  Message 2\n  {second['text']}", transcript)
+        self.assertIn("In reply to message 2\n  Sea green.", transcript)
+        self.assertIn("In reply to message 1\n  Warm amber.", transcript)
+        self.assertIn("Content-Security-Policy", self.fetch(port, "/qd/q1.html")[2])
+        self.assertIn('id="send-message"', page)
+        self.assertNotIn('class="lead"', page)
+        desk = self.fetch(port, "/qd/")[1]
+        self.assertIn("Read reply", desk)
+        self.assertIn('<span class="badge">Replied</span>', self.fetch(port, "/qd/")[1])
+        ids = [m["id"] for m in self.thread() if m["author"] == "firstmate"]
+        self.assertEqual(self.post(port, "/qd/replies/read", {"part": "Q1", "ids": ids})[0], 200)
+        desk = self.fetch(port, "/qd/")[1]
+        self.assertNotIn("Read reply", desk)
+        self.assertIn("Nothing is on your Desk. A question that needs an answer shows here.", desk)
+        status, sent = self.post(port, "/qd/asks", {**second, "id": uuid.uuid4().hex, "text": "Thanks."})
+        self.assertEqual((status, sent["message"]), (200, "Message sent."))
+        status, retried = self.post(port, "/qd/asks", {"part": "Q1", "id": second["id"], "action": "retry"})
+        self.assertEqual((status, retried["message"]), (200, "Message sent."))
+        for path, markup in (("open", page), ("send", sent["thread"]), ("retry", retried["thread"])):
+            with self.subTest(path=path):
+                self.assertRegex(markup, rf'data-ask-id="{first["id"]}" id="message-1"[^>]*>[^\n]*<span>Message 1</span>')
+                self.assertRegex(markup, rf'data-ask-id="{second["id"]}" id="message-2"[^>]*>[^\n]*<span>Message 2</span>')
+                self.assertIn('<a href="#message-2">In reply to message 2</a></p><p class="record">Sea green.</p>', markup)
+                self.assertIn('<a href="#message-1">In reply to message 1</a></p><p class="record">Warm amber.</p>', markup)
+
+    def test_a_conversation_cannot_send_messages_to_a_replacement_home(self) -> None:
+        home = self.inbox()
+        original_port = self.start("/qd", ask_home=home)
+        first, _ = self.begin(original_port)
+        self.inbox(accept=False)
+        pending = {"part": "Q1", "id": uuid.uuid4().hex, "text": "Which green?", "home": first["home"]}
+        self.assertEqual(self.post(original_port, "/qd/asks", pending)[1]["message"], "Message saved. Not delivered.")
+        original_page = self.fetch(original_port, "/qd/q1.html")[1]
+        self.assertIn('id="send-message"', original_page)
+        self.assertIn(f'data-retry-ask="{pending["id"]}"', original_page)
+        before = quarterdeck.store_path().read_bytes()
+        replacement = self.inbox(name="replacement")
+        port = self.start("/qd", ask_home=replacement)
+        binding = re.search(r'data-home="([^"]+)"', self.fetch(port, "/qd/")[1])[1]
+        self.assertNotEqual(binding, first["home"])
+        for readonly_port, notice in ((port, "Restore the original firstmate_home"),
+                                      (self.start("/qd"), "Set firstmate_home")):
+            status, page, _ = self.fetch(readonly_port, "/qd/q1.html")
+            self.assertEqual(status, 200)
+            self.assertIn(notice, page)
+            self.assertIn(pending["text"], page)
+            self.assertIn("Not delivered", page)
+            self.assertNotIn('id="send-message"', page)
+            self.assertNotIn('data-retry-ask=', page)
+        for endpoint, request, saved in (
+            ("asks", {**pending, "id": uuid.uuid4().hex, "home": binding}, False),
+            ("asks", {**pending, "home": binding}, True),
+            ("asks", {"part": "Q1", "id": pending["id"], "action": "retry"}, True),
+            ("conversations", {**first, "home": binding}, True),
+        ):
+            with self.subTest(endpoint=endpoint, request=request):
+                status, result = self.post(port, f"/qd/{endpoint}", request)
+                self.assertEqual((status, result["saved"]), (409, saved))
+                self.assertIn("Firstmate home changed", result["message"])
+        self.assertEqual(quarterdeck.store_path().read_bytes(), before)
+        self.assertFalse((replacement / "attempts").exists())
+        self.assertEqual(self.begin(port, "New home topic")[1][1]["message"], "Message sent.")
+
+    def test_conversations_are_listed_on_the_served_desk_and_excluded_from_exports(self) -> None:
+        port = self.start("/qd", ask_home=self.inbox())
+        first, _ = self.begin(port)
+        self.begin(port, "Quay sign colours", "Navy or black lettering?")
+        with quarterdeck.changing_store(quarterdeck.store_path()) as data:
+            data["items"][0]["description"] = first["text"]
+        self.assertEqual(self.run_cli("reply", "Q1", "--ask", first["id"], "--text", "Use golden amber.",
+                                      "--link-text", "Colour chart", "--url", "https://example.org/chart",
+                                      "--image", str(self.red), "--alt", "A red lamp")[0], 0)
+        desk = self.fetch(port, "/qd/")[1]
+        self.assertIn('id="tab-conversations"', desk)
+        self.assertIn("Read reply", desk)
+        panel = desk[desk.index('id="panel-conversations"'):]
+        self.assertLess(panel.index("Quay sign colours"), panel.index("Harbor lamp colours"))
+        for private in (first["text"], "Navy or black lettering?", "Use golden amber.", "https://example.org/chart",
+                        "A red lamp"):
+            self.assertNotIn(private.casefold(), desk.casefold())
+        page = self.fetch(port, "/qd/q1.html")[1]
+        for private in (first["text"], "Use golden amber.", "https://example.org/chart", "A red lamp"):
+            self.assertIn(private, page)
+        self.add("resource", "Public chart", "A reference.", "--url", "https://example.org", "--link-text", "Open")
+        output = self.root / "site" / "index.html"
+        output.parent.mkdir()
+        (output.parent / "q1.html").write_text(page)
+        self.assertEqual(self.run_cli("render", "--output", str(output))[0], 0)
+        exported = output.read_text()
+        self.assertIn("Nothing is on your Desk. A question that needs an answer shows here.", exported)
+        for private in ("<h2>Conversations</h2>", "Harbor lamp colours", "Quay sign colours", first["text"]):
+            self.assertNotIn(private, exported)
+        self.assertIn('href="q3.html"', exported)
+        self.assertEqual({path.name for path in output.parent.glob("*.html")}, {"index.html", "q3.html"})
+
+    check_answer_page = ServeTests.check_answer_page
+
+    def test_conversation_search_matches_id_shaped_topics_and_exact_item_ids(self) -> None:
+        port = self.start("/qd", ask_home=self.inbox())
+        self.begin(port, "Q5.3", "Hidden message")
+        self.assertEqual(self.begin(port, "Other\u0085topic", "Q5.3")[1][0], 200)
+        self.check_answer_page(self.start("/qd"), r"""
+button('open-library').click();
+button('tab-conversations').click();
+const search = button('search-conversations');
+const find = query => {
+  search.value = query;
+  search.dispatchEvent(new Event('input', {bubbles: true}));
+  return [...document.querySelectorAll('#conversations-list .lib-item:not([hidden])')].map(row => row.dataset.id).join(',');
+};
+check(find('q5.3') === 'Q1', 'The ID-shaped topic was missed or a message matched');
+check(find('Q2') === 'Q2', 'An exact conversation item ID did not match');
+check(find('hidden message') === '', 'Message content matched a search');
+check(find('other topic') === 'Q2', 'A plain topic did not match');
+check(find('Other\u0085topic') === 'Q2', 'The pasted topic did not normalize like the saved topic');
+check(find('\u0085Q2\u0085') === 'Q2', 'Whitespace prevented an exact item ID match');
+""", path="/qd/", viewport=(390, 844))
+
+    def test_the_pages_send_messages_and_start_conversations_in_a_browser(self) -> None:
+        port = self.start("/qd", ask_home=self.inbox())
+        self.begin(port)
+        stub = r"""
+const sent = [];
+window.fetch = async (path, init) => {
+  sent.push([path, JSON.parse(init.body)]);
+  return {ok:true, status:200, json: async () => ({thread:'<ol class="exchange"><li>stub</li></ol>', message:'Message sent.', href:'q9.html'})};
+};
+"""
+        self.check_answer_page(port, stub + r"""
+const box = document.getElementById('message-Q1');
+const send = button('send-message');
+check(send.disabled, 'Send message was ready with no text');
+box.value = '  Also, which green?  ';
+box.dispatchEvent(new Event('input', {bubbles: true}));
+check(!send.disabled, 'Send message stayed disabled');
+send.click();
+await new Promise(resolve => setTimeout(resolve, 50));
+check(sent.length === 1 && sent[0][0] === 'asks' && sent[0][1].part === 'Q1' && sent[0][1].text === 'Also, which green?'
+      && /^[0-9a-f]{32}$/.test(sent[0][1].id), 'The message was not posted as expected');
+check(box.value === '' && send.disabled, 'The sent message stayed in the box');
+check(document.querySelector('.thread-messages').textContent === 'stub', 'The conversation was not refreshed');
+check(document.querySelector('output').textContent === 'Message sent.', 'The status was not shown');
+""", path="/qd/q1.html", viewport=(390, 844))
+        self.check_answer_page(port, r"""
+const seen = [];
+const posts = [];
+window.fetch = async (path, init) => {
+  const payload = JSON.parse(init.body);
+  if (path === 'replies/read') {
+    check(payload.part === 'Q1', 'The reply acknowledgment targeted the wrong conversation');
+    check(document.querySelector('.badge').textContent === 'Replied', 'The badge missed a newly visible reply');
+    seen.push(...payload.ids);
+    const unseen = seen.length === 1 ? 'reply-two' : 'reply-three';
+    return {ok:true, json:async () => ({replies:{[unseen]:false, ...Object.fromEntries(seen.map(id => [id, true]))}})};
+  }
+  check(path === 'asks', 'Unexpected conversation request');
+  posts.push(payload);
+  const reply = id => `<p data-reply-id="${id}" data-unread>Firstmate replied.</p>`;
+  const retry = '<button data-retry-ask="saved-message">Send message again</button>';
+  return {ok:true, json:async () => ({thread: reply('reply-one') + (payload.action ? reply('reply-two') : retry),
+    message: 'Message sent.'})};
+};
+const field = button('message-Q1');
+field.value = 'A follow-up';
+field.dispatchEvent(new Event('input', {bubbles:true}));
+button('send-message').click();
+await new Promise(resolve => setTimeout(resolve, 50));
+check(seen.join(',') === 'reply-one', 'Sending did not acknowledge the newly displayed reply');
+check(document.querySelector('.badge').hidden, 'The badge stayed visible even after acknowledgment');
+document.querySelector('[data-retry-ask]').click();
+await new Promise(resolve => setTimeout(resolve, 50));
+check(posts[1].action === 'retry' && posts[1].id === 'saved-message', 'The saved message was not retried');
+check(seen.join(',') === 'reply-one,reply-two', 'Retry did not acknowledge only the newly displayed reply');
+check(document.querySelector('.badge').hidden, 'The badge stayed visible after retry acknowledgment');
+""", path="/qd/q1.html", viewport=(390, 844))
+        self.check_answer_page(port, r"""
+const sent = [];
+window.fetch = async (path, init) => {
+  sent.push([path, JSON.parse(init.body)]);
+  return {ok:false, status:409, json:async () => ({message:'Firstmate home changed.', saved:false})};
+};
+const form = document.getElementById('talk-form');
+check(form.hidden, 'The form showed before it was asked for');
+button('open-talk').click();
+check(!form.hidden && button('open-talk').getAttribute('aria-expanded') === 'true', 'Talk to Firstmate did not open the form');
+const submit = form.querySelector('button[type="submit"]');
+check(submit.disabled, 'Start conversation was ready with nothing typed');
+button('talk-topic').value = 'Quay sign colours';
+button('talk-message').value = 'Navy or black lettering?';
+form.dispatchEvent(new Event('input', {bubbles: true}));
+check(!submit.disabled, 'Start conversation stayed disabled');
+form.requestSubmit();
+await new Promise(resolve => setTimeout(resolve, 50));
+check(sent.length === 1 && sent[0][0] === 'conversations' && sent[0][1].title === 'Quay sign colours'
+      && sent[0][1].text === 'Navy or black lettering?', 'The conversation was not posted as expected');
+const error = document.getElementById('talk-error');
+check(!error.hidden && error.textContent === 'Firstmate home changed.', 'The refusal was not shown');
+check(!submit.disabled && !button('talk-topic').disabled, 'The form stayed locked after a refusal');
+form.requestSubmit();
+await new Promise(resolve => setTimeout(resolve, 50));
+check(sent.length === 2 && sent[1][1].id !== sent[0][1].id, 'An unsaved refusal kept the old request ID');
+""", path="/qd/", viewport=(390, 844))
+
+    def test_retrying_an_interrupted_follow_up_reuses_the_draft_and_requests_delivery(self) -> None:
+        port = self.start("/qd", ask_home=self.inbox())
+        self.begin(port)
+        self.check_answer_page(port, r"""
+const posts = [];
+window.fetch = async (path, init) => {
+  check(path === 'asks', 'The composer posted to the wrong endpoint');
+  posts.push(JSON.parse(init.body));
+  if (posts.length === 1) throw new Error('Connection lost');
+  if (posts.length === 2) {
+    return {ok:false, status:409, json:async () => ({message:'Firstmate home changed.', saved:true})};
+  }
+  if (posts.length === 3) {
+    return {ok:false, status:403, text:async () => 'Configure an available firstmate_home to ask Firstmate.'};
+  }
+  if (posts.length === 4) throw new Error('Connection lost');
+  return {ok:true, json:async () => ({thread:'<p>A follow-up</p>', message:'Message sent.'})};
+};
+const field = button('message-Q1');
+const send = button('send-message');
+field.value = 'A follow-up';
+field.dispatchEvent(new Event('input', {bubbles:true}));
+send.click();
+await new Promise(resolve => setTimeout(resolve, 50));
+check(posts.length === 1 && posts[0].action === undefined, 'The first send should be a new message');
+check(field.value === 'A follow-up' && !send.disabled, 'Interruption lost the draft');
+field.focus();
+field.setSelectionRange(field.value.length, field.value.length);
+check(document.execCommand('insertText', false, '?') && field.value === 'A follow-up?', 'Editing the draft failed');
+check(document.execCommand('undo') && field.value === 'A follow-up', 'Undo did not restore the draft');
+send.click();
+await new Promise(resolve => setTimeout(resolve, 50));
+const [first, retry] = posts;
+check(posts.length === 2 && retry.action === 'retry', 'The second send did not request redelivery');
+check(retry.id === first.id && retry.part === 'Q1' && retry.text === 'A follow-up' && retry.home === first.home,
+      'The retry changed the original message');
+check(!button('error-Q1').hidden && field.value === 'A follow-up' && !send.disabled, 'The saved refusal lost the draft');
+send.click();
+await new Promise(resolve => setTimeout(resolve, 50));
+check(posts.length === 3 && posts[2].id === first.id && posts[2].action === 'retry',
+      'The saved refusal discarded the original message ID');
+check(button('error-Q1').textContent.includes('firstmate_home') && field.value === 'A follow-up' && !send.disabled,
+      'The unavailable home refusal lost the draft or hid the error');
+const submit = async text => {
+  field.value = text;
+  field.dispatchEvent(new Event('input', {bubbles:true}));
+  send.click();
+  await new Promise(resolve => setTimeout(resolve, 50));
+};
+await submit('Different follow-up');
+check(posts.length === 4 && posts[3].id !== first.id && posts[3].action === undefined,
+      'A different draft reused the unresolved message ID');
+await submit('A follow-up');
+check(posts.length === 5 && posts[4].id === first.id && posts[4].action === 'retry',
+      'Submitting a different message discarded the original unresolved ID');
+check(field.value === '' && send.disabled, 'The confirmed draft stayed in the composer');
+await submit('Different follow-up');
+check(posts.length === 6 && posts[5].id === posts[3].id && posts[5].action === 'retry',
+      'Confirming the first message cleared a different unresolved ID');
+await submit('A follow-up');
+check(posts.length === 7 && posts[6].id !== first.id && posts[6].action === undefined,
+      'A new message reused a confirmed ID');
+""", path="/qd/q1.html", viewport=(390, 844))
+
+    def test_desk_replay_keeps_its_id_after_undo_in_either_field(self) -> None:
+        port = self.start("/qd", ask_home=self.inbox())
+        self.check_answer_page(port, r"""
+const posts = [];
+window.fetch = async (path, init) => {
+  check(path === 'conversations', 'The Desk posted to the wrong endpoint');
+  posts.push(JSON.parse(init.body));
+  if (posts.length === 2) {
+    return {ok:false, status:409, json:async () => ({message:'Firstmate home changed.', saved:true})};
+  }
+  if (posts.length === 3) {
+    return {ok:false, status:403, text:async () => 'Configure an available firstmate_home to ask Firstmate.'};
+  }
+  throw new Error('Connection lost');
+};
+button('open-talk').click();
+const form = button('talk-form');
+const topic = button('talk-topic');
+const message = button('talk-message');
+topic.value = 'Quay sign';
+message.value = 'Navy or black?';
+form.dispatchEvent(new Event('input', {bubbles:true}));
+form.requestSubmit();
+await new Promise(resolve => setTimeout(resolve, 50));
+for (const field of [topic, message]) {
+  const original = field.value;
+  field.focus();
+  field.setSelectionRange(original.length, original.length);
+  check(document.execCommand('insertText', false, '!') && field.value === original + '!', 'Editing the draft failed');
+  check(document.execCommand('undo') && field.value === original, 'Undo did not restore the draft');
+}
+form.requestSubmit();
+await new Promise(resolve => setTimeout(resolve, 50));
+check(posts.length === 2 && posts[1].id === posts[0].id, 'Undo discarded the interrupted creation ID');
+check(!button('talk-error').hidden, 'The saved refusal was not shown');
+form.requestSubmit();
+await new Promise(resolve => setTimeout(resolve, 50));
+check(posts.length === 3 && posts[2].id === posts[0].id, 'The saved refusal discarded the original creation ID');
+check(button('talk-error').textContent.includes('firstmate_home'), 'The unavailable home refusal was not shown');
+form.requestSubmit();
+await new Promise(resolve => setTimeout(resolve, 50));
+check(posts.length === 4 && posts[3].id === posts[0].id, 'The unavailable home refusal discarded the original creation ID');
+topic.value = 'Quay  \u0085 sign';
+topic.dispatchEvent(new Event('input', {bubbles:true}));
+form.requestSubmit();
+await new Promise(resolve => setTimeout(resolve, 50));
+check(posts.length === 5 && posts[4].id === posts[0].id && posts[4].title === 'Quay sign',
+      'Equivalent topic whitespace changed the creation request');
+message.value = 'Use navy.';
+message.dispatchEvent(new Event('input', {bubbles:true}));
+form.requestSubmit();
+await new Promise(resolve => setTimeout(resolve, 50));
+check(posts.length === 6 && posts[5].id !== posts[0].id, 'Different content reused the prior request ID');
+message.value = 'Navy or black?';
+message.dispatchEvent(new Event('input', {bubbles:true}));
+form.requestSubmit();
+await new Promise(resolve => setTimeout(resolve, 50));
+check(posts.length === 7 && posts[6].id === posts[0].id, 'Submitting a different topic or message discarded the unresolved ID');
+""", path="/qd/", viewport=(390, 844))
+
+    def test_reply_attachments_are_on_the_card_and_in_cli_transcripts(self) -> None:
+        port = self.start("/qd", ask_home=self.inbox())
+        body, _ = self.begin(port)
+        chart = "https://example.org/lamp-chart"
+        code, _, err = self.run_cli("reply", "Q1", "--ask", body["id"], "--text", "See this.",
+                                    "--link-text", "Lamp chart", "--url", chart,
+                                    "--image", str(self.red), "--alt", "A red lamp")
+        self.assertEqual(code, 0, err)
+        (reply,) = [m for m in self.thread() if m["author"] == "firstmate"]
+        image = f"reply-images/q1/{reply['images'][0]['file']}"
+        self.assertEqual(urllib.request.urlopen(f"http://127.0.0.1:{port}/qd/{image}", timeout=5).status, 200)
+        card = self.fetch(port, "/qd/q1.html")[1]
+        self.assertIn("A red lamp", card)
+        self.assertIn(chart, card)
+        status, transcript, err = self.run_cli("show", "Q1")
+        self.assertEqual(status, 0, err)
+        self.assertIn(f"  See this.\n  Link: Lamp chart: {chart}\n  Image: A red lamp: {image}", transcript)
+        status, replay = self.post(port, "/qd/conversations", body)
+        self.assertEqual((status, replay), (200, {"href": "q1.html", "message": "Message sent."}))
+
+    def test_add_cannot_save_a_conversation_and_help_names_the_conversation_note(self) -> None:
+        with redirect_stderr(io.StringIO()), self.assertRaises(SystemExit):
+            self.run_cli("add", "--kind", "conversation", "--title", "T", "--description", "D")
+        out = io.StringIO()
+        with redirect_stdout(out), self.assertRaises(SystemExit):
+            quarterdeck.main(["reply", "--help"])
+        self.assertIn("CONVERSATION", out.getvalue())
+        self.assertIn("Talk to Firstmate", out.getvalue())
+
+    def test_a_damaged_conversation_item_is_refused(self) -> None:
+        port = self.start("/qd", ask_home=self.inbox())
+        self.begin(port)
+        valid = self.store()
+        for damage in (lambda i: i.pop("conversation"), lambda i: i.update(body={"a": 1}),
+                       lambda i: i["conversation"].update({"1": i["conversation"]["item"]})):
+            data = json.loads(json.dumps(valid))
+            damage(data["items"][0])
+            quarterdeck.store_path().write_text(json.dumps(data))
+            self.assertEqual(self.fetch(port, "/qd/")[0], 500)
 
 
 class PrivacyGuardTests(unittest.TestCase):

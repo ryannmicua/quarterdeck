@@ -251,12 +251,14 @@ def item_classification(raw_project: object, raw_tags: object, *, stored: bool =
     return fields
 
 
-# Item records live in one JSON file. Every item was saved by hand through `quarterdeck add`; its body is stored by value
-# at save time and never read again from anywhere else. An ID is never reused, even after its item is removed.
+# Store item bodies by value so saved content survives changes to the original inputs.
+# An ID is never reused, even after its item is removed.
 
 STORE_VERSION = 1
-KIND_LABELS = {"resource": "Resource", "list": "List", "questions": "Questions"}
+KIND_LABELS = {"resource": "Resource", "list": "List", "questions": "Questions", "conversation": "Conversation"}
 KINDS = tuple(KIND_LABELS)
+# The Desk saves a conversation together with its first message.
+ADD_KINDS = tuple(kind for kind in KINDS if kind != "conversation")
 ID_RE = re.compile(r"[Qq][1-9][0-9]*")
 ITEM_PAGE_RE = re.compile(r"q[1-9][0-9]*[.]html")
 TITLE_LIMIT = 200
@@ -490,13 +492,11 @@ def option_label(option: object) -> str:
 
 def item_image_files(item: dict[str, object], tree: str = "images") -> set[str]:
     files: set[str] = set()
-    if item["kind"] != "questions":
-        return files
     if tree == REPLY_IMAGES:
         for messages in item.get("conversation", {}).values():  # type: ignore[attr-defined]
             for message in messages:
                 files.update(image["file"] for image in message.get("images", []))
-    else:
+    elif item["kind"] == "questions":
         for question in item["body"]["questions"]:  # type: ignore[index]
             files.update(image["file"] for image in question.get("images", []))
             files.update(option["image"]["file"] for option in question["options"] if isinstance(option, dict))
@@ -581,6 +581,10 @@ def validated_body(kind: str, body: object, pending: dict[str, bytes] | None = N
         return {"url": clean_url(body.get("url")), "link_text": clean_text(body.get("link_text"), "link text", TITLE_LIMIT)}
     if kind == "list":
         return {"entries": list_entries(body.get("entries"))}
+    if kind == "conversation":
+        if body:
+            raise ValueError("a conversation has no body")
+        return {}
     return {"questions": question_entries(body.get("questions"), pending, stored=stored)}
 
 
@@ -644,6 +648,8 @@ def check_store(data: object) -> dict[str, object]:
                 validate_records(item)
             if "conversation" in item:
                 validate_conversation(item)
+            elif item["kind"] == "conversation":
+                raise ValueError("a conversation needs its messages")
         except ValueError as exc:
             raise ValueError(f"the item store is damaged: {item_id}: {exc}") from exc
     return data
@@ -811,7 +817,7 @@ AUTHOR_LABELS = {"you": "You", "firstmate": "Firstmate"}
 
 
 def validate_conversation(item):
-    parts = question_parts(item)
+    parts = range(0) if item["kind"] == "conversation" else question_parts(item)
     conversation = item["conversation"]
     if not isinstance(conversation, dict) or not conversation:
         raise ValueError("invalid conversation")
@@ -977,6 +983,10 @@ class SavedAskConflict(AnswerConflict):
     pass
 
 
+class AskHomeUnavailable(Exception):
+    pass
+
+
 def find_answer_item(data, item_id):
     try:
         return find_item(data, item_id)
@@ -1050,6 +1060,10 @@ def parse_thread_target(value):
 
 
 def check_conversation_target(item, part, target):
+    if item["kind"] == "conversation":
+        if part is not None:
+            raise ValueError(f"no question {target}")
+        return
     parts = question_parts(item)
     if part is not None and part not in parts:
         raise ValueError(f"no question {target}")
@@ -1057,16 +1071,35 @@ def check_conversation_target(item, part, target):
 
 def conversation_editable(item, part):
     if part is None:
-        return has_answer_controls(item)
+        return item["kind"] == "conversation" or has_answer_controls(item)
     return part_record(item, part).get("state") != "closed"
 
 
-def ask_result(item, part, message):
-    return {"thread": thread_html(item, part, editable=conversation_editable(item, part)),
-            "message": "Ask sent." if message["delivery"] == "sent" else "Ask saved. Not delivered."}
+def ask_result(item, part, message, *, include_thread):
+    noun = "Message" if item["kind"] == "conversation" else "Ask"
+    result = {"message": f"{noun} sent." if message["delivery"] == "sent" else f"{noun} saved. Not delivered."}
+    if include_thread:
+        result["thread"] = thread_html(item, part, editable=conversation_editable(item, part))
+    return result
 
 
-def ask_message(store, home, binding, payload):
+def new_ask(message_id, text, binding):
+    return {"id": message_id, "author": "you", "text": text, "at": now_text(), "delivery": "pending",
+            "request_id": "quarterdeck-" + uuid.uuid4().hex, "home": binding}
+
+
+def ask_note(item, target, message):
+    """The inbox note: a card ask names its question; a conversation message names the item and its topic."""
+    if item["kind"] == "conversation":
+        return f"CONVERSATION {item['id']} {message['id']} Topic: {item['title']}\n{message['text']}"
+    return f"ASK {target} {message['id']} {message['text']}"
+
+
+def conversation_home_matches(item, binding):
+    return item["kind"] != "conversation" or part_thread(item, None)[0]["home"] == binding
+
+
+def ask_message(store, home, binding, payload, *, home_available=True, include_thread=True):
     if not isinstance(payload, dict):
         raise ValueError("Invalid ask fields.")
     fields = set(payload)
@@ -1084,44 +1117,84 @@ def ask_message(store, home, binding, payload):
         with locked_store(store):
             data = read_store(store)
             item = find_answer_item(data, item_id)
+            if item["kind"] == "conversation" and not home_available:
+                raise AskHomeUnavailable
             check_conversation_target(item, part, target)
+            home_changed = payload["home"] != binding or not conversation_home_matches(item, binding)
             for number, messages in item.get("conversation", {}).items():
                 message = next((m for m in messages if m["id"] == message_id), None)
                 if message is None:
                     continue
                 if number != key or message["author"] != "you" or message["text"] != text:
                     raise AnswerConflict("Ask ID already in use. Reload the question.")
-                if payload["home"] != binding or (message["delivery"] == "pending" and message["home"] != binding):
+                if home_changed or (message["delivery"] == "pending" and message["home"] != binding):
                     raise SavedAskConflict(changed_home)
                 if not retry:
-                    return ask_result(item, part, message)
+                    return ask_result(item, part, message, include_thread=include_thread)
                 break
             else:
-                if payload["home"] != binding:
+                if home_changed:
                     raise AnswerConflict(changed_home)
                 if not conversation_editable(item, part):
                     raise AnswerConflict("Question closed. Reopen it before asking.")
                 thread = item.setdefault("conversation", {}).setdefault(key, [])
-                thread.append({"id": message_id, "author": "you", "text": text, "at": now_text(), "delivery": "pending",
-                               "request_id": "quarterdeck-" + uuid.uuid4().hex, "home": binding})
+                thread.append(new_ask(message_id, text, binding))
                 write_store(store, data)
     elif not retry or fields != {"part", "id", "action"}:
         raise ValueError("Invalid ask fields.")
     # The ask is saved before the external call, and delivery runs under the lock so a retry reuses the same note ID.
     with changing_store(store) as data:
         item = find_answer_item(data, item_id)
+        if item["kind"] == "conversation" and not home_available:
+            raise AskHomeUnavailable
         check_conversation_target(item, part, target)
         message = next((m for m in part_thread(item, part) if m["id"] == message_id and m["author"] == "you"), None)
         if message is None:
             raise AnswerConflict("Ask not found. Reload the question.")
+        if not conversation_home_matches(item, binding):
+            raise SavedAskConflict(changed_home)
         if message["delivery"] == "pending":
             if message["home"] != binding:
                 raise SavedAskConflict(changed_home)
             if not conversation_editable(item, part):
                 raise SavedAskConflict("Question closed. Reopen it before sending the ask.")
-            if deliver_note(home, message["request_id"], f"ASK {target} {message_id} {message['text']}"):
+            if deliver_note(home, message["request_id"], ask_note(item, target, message)):
                 message["delivery"] = "sent"
-        return ask_result(item, part, message)
+        return ask_result(item, part, message, include_thread=include_thread)
+
+
+def start_conversation(store, home, binding, payload):
+    """Save a new conversation item holding its first message, then deliver that message like any ask."""
+    if not isinstance(payload, dict) or set(payload) != {"id", "title", "text", "home"}:
+        raise ValueError("Invalid conversation fields.")
+    message_id = payload["id"]
+    if not isinstance(message_id, str) or not re.fullmatch(r"[0-9a-f]{32}", message_id):
+        raise ValueError("Invalid message ID.")
+    title = clean_text(payload["title"], "Topic", TITLE_LIMIT)
+    text = clean_text(payload["text"], "Message", TEXT_LIMIT, multiline=True)
+    with locked_store(store):
+        data = read_store(store)
+        for item in data["items"]:
+            first = item.get("conversation", {}).get("item", [None])[0] if item["kind"] == "conversation" else None
+            if first and first["id"] == message_id:
+                if (item["title"], first["text"]) != (title, text):
+                    raise AnswerConflict("Message ID already in use. Reload the Desk.")
+                if payload["home"] != binding or first["home"] != binding:
+                    raise SavedAskConflict("Firstmate home changed. This message belongs to the original home.")
+                item_id = item["id"]
+                break
+        else:
+            if payload["home"] != binding:
+                raise AnswerConflict("Firstmate home changed. This message belongs to the original home.")
+            item_id = f"Q{data['next_id']}"
+            data["next_id"] = int(data["next_id"]) + 1
+            data["items"].append({"id": item_id, "kind": "conversation", "title": title,
+                                  "description": "Conversation with Firstmate.", "saved_at": now_text(), "body": {},
+                                  "conversation": {"item": [new_ask(message_id, text, binding)]}})
+            write_store(store, data)
+    result = ask_message(store, home, binding, {"part": item_id, "id": message_id, "action": "retry"},
+                         include_thread=False)
+    return {**result, "href": item_page_name(item_id)}
 
 
 def mark_replies_read(store, payload):
@@ -1143,6 +1216,11 @@ def mark_replies_read(store, payload):
         return {"replies": {message_id: reply["read"] for message_id, reply in replies.items()}}
 
 
+def conversation_message_numbers(messages):
+    return {message["id"]: number
+            for number, message in enumerate((m for m in messages if m["author"] == "you"), 1)}
+
+
 def item_text(item: dict[str, object]) -> str:
     """One item as plain text, numbered the way the page numbers it."""
     item_id, body = str(item["id"]), item["body"]
@@ -1156,6 +1234,24 @@ def item_text(item: dict[str, object]) -> str:
         lines.append(f"{body['link_text']}: {body['url']}")  # type: ignore[index]
     elif item["kind"] == "list":
         lines.extend(f"{item_id}.{number}  {entry}" for number, entry in enumerate(body["entries"], 1))  # type: ignore[index]
+    elif item["kind"] == "conversation":
+        lines = lines[:-2]
+        messages = part_thread(item, None)
+        numbers = conversation_message_numbers(messages)
+        for message in messages:
+            who = AUTHOR_LABELS[message["author"]]
+            if message["author"] == "you":
+                label = f"{who} ({delivery_label(message).lower()})"
+                reference = f"Message {numbers[message['id']]}"
+            else:
+                label = who
+                reference = f"In reply to message {numbers[message['ask']]}"
+            lines.append(f"{message['at']}  {label}  {message['id']}  {reference}")
+            lines.extend("  " + line for line in message["text"].splitlines())
+            lines.extend(f"  Link: {link['text']}: {link['url']}" for link in message.get("links", []))
+            lines.extend(f"  Image: {image['alt']}: {image_url(item, image, REPLY_IMAGES)}"
+                         for image in message.get("images", []))
+            lines.append("")
     else:
         state, open_parts, _ = question_summary(item, replies=False)
         remaining = len(open_parts)
@@ -1427,7 +1523,7 @@ def reply_item(args: argparse.Namespace) -> int:
         try:
             item_id, part = parse_thread_target(target)
         except ValueError as exc:
-            raise ValueError(f"reply to a question item or one of its questions, such as Q7 or Q7.1: {args.id!r}") from exc
+            raise ValueError(f"reply to a conversation item, a question item or one of its questions, such as Q7 or Q7.1: {args.id!r}") from exc
         text = clean_text(args.text, "reply text", TEXT_LIMIT, multiline=True)
         link_texts, urls = args.link_text or [], args.url or []
         if len(link_texts) != len(urls):
@@ -1448,11 +1544,12 @@ def reply_item(args: argparse.Namespace) -> int:
             check_conversation_target(item, part, target)
             thread = part_thread(item, part)
             asks = {m["id"] for m in thread if m["author"] == "you"}
+            noun = "message" if item["kind"] == "conversation" else "ask"
             if not asks:
-                raise ValueError(f"{target} has no asks")
+                raise ValueError(f"{target} has no {noun}s")
             ask = args.ask
             if ask not in asks:
-                raise ValueError(f"No ask {ask!r} on {target}.")
+                raise ValueError(f"No {noun} {ask!r} on {target}.")
             message: dict[str, object] = {"id": uuid.uuid4().hex, "author": "firstmate", "text": text, "at": now_text(),
                                           "read": False, "ask": ask}
             if links:
@@ -1817,15 +1914,18 @@ details.done > .decision { margin:0; border:0; border-top:1px solid var(--rule);
 body:has(dialog[open]) { overflow:hidden; }
 .lib-top { display:flex; flex-wrap:wrap; gap:.4rem 1rem; align-items:center; justify-content:space-between; padding:.7rem var(--gutter) 0; border-bottom:1px solid var(--rule); }
 [role="tablist"] { display:flex; gap:.2rem; }
-[role="tab"] { background:transparent; border:0; border-bottom:4px solid transparent; border-radius:0; padding:.5rem .9rem; min-height:var(--tap);
-  font:600 var(--text-lg)/1.2 var(--sans); color:var(--soft); }
+[role="tab"] { background:transparent; border:0; border-bottom:4px solid transparent; border-radius:0; padding:.5rem .6rem; min-height:var(--tap);
+  font:600 var(--text-lg)/1.2 var(--sans); color:var(--soft); white-space:nowrap; }
 [role="tab"][aria-selected="true"] { color:var(--ink); border-bottom-color:var(--signal); }
 .lib-top > button { margin-bottom:.4rem; }
 @media (max-width: 40rem) {
   .lib-top { gap:.4rem; }
-  [role="tab"] { padding:.5rem .55rem; font-size:var(--text-md); }
+  [role="tab"] { padding:.5rem .45rem; font-size:var(--text-sm); }
   [role="tablist"] { gap:0; }
   .lib-top > button { padding:.5rem .7rem; flex:none; }
+}
+@media (max-width: 24rem) {
+  [role="tab"] { padding:.5rem .25rem; font-size:.8rem; }
 }
 .lib-panel { display:flex; flex-direction:column; flex:1; min-height:0; }
 .lib-top, .lib-tools, .lib-status { flex-shrink:0; }
@@ -1847,13 +1947,26 @@ body:has(dialog[open]) { overflow:hidden; }
 .lib-desc { font-size:var(--text-md); color:var(--soft); }
 .lib-item .meta { display:flex; flex-wrap:wrap; gap:0 1rem; font-size:var(--text-md); }
 .page-section { margin:2rem 0 0; }
+.page-head { display:flex; flex-wrap:wrap; gap:.6rem 1.5rem; align-items:center; justify-content:space-between; max-width:52rem; }
+.page-head h1 { margin:0; }
+.talk, .composer { max-width:52rem; margin:1rem 0; padding:clamp(1rem,3vw,1.5rem); background:var(--raised); border:1px solid var(--rule);
+  border-radius:8px; font-family:var(--sans); }
+.talk[hidden] { display:none; }
+.talk label, .composer label { margin:.8rem 0 .2rem; }
+.talk label:first-child, .composer label:first-child { margin-top:0; }
+.talk input { display:block; width:100%; min-height:var(--tap); background:var(--ground); color:var(--ink); border:1px solid var(--soft);
+  border-radius:4px; padding:.55rem; font:inherit; }
+.talk p[id], .composer p[id] { margin:.4rem 0 0; color:var(--signal); font-weight:600; }
+.talk .actions, .composer .actions { margin-top:.8rem; }
+.conversation .composer { margin:1rem 0 0; padding:1rem 0 0; background:none; border:0; border-top:1px solid var(--rule); border-radius:0; max-width:none; }
+.conversation .exchange { margin:0; }
 """
 
 
 TIME_SCRIPT = """
 const localTime = dateTime => new Date(dateTime).toLocaleString(undefined, {dateStyle:'medium', timeStyle:'short'});
 const localizeTimes = root => {
-  for (const time of root.querySelectorAll('.saved-answer time[datetime]:not([datetime=""]), .answer-source time, .thread time[datetime]')) {
+  for (const time of root.querySelectorAll('.saved-answer time[datetime]:not([datetime=""]), .answer-source time, .thread time[datetime], .conversation time[datetime]')) {
     time.textContent = localTime(time.dateTime);
   }
 };
@@ -2073,6 +2186,7 @@ LIBRARY_SCRIPT = r"""
   for (const tab of tabs) {
     const panel = panelOf(tab);
     const search = searchOf(tab);
+    const topics = tab.id === 'tab-conversations';
     const savedFilters = tab === restoredTab ? libraryLookup.filters ?? {} : {};
     if (tab === restoredTab) {
       search.value = libraryLookup.query;
@@ -2096,15 +2210,14 @@ LIBRARY_SCRIPT = r"""
     const none = panel.querySelector('[data-none]');
     const rows = [...panel.querySelectorAll('.lib-item')];
     const run = () => {
-      const query = search.value.trim();
+      const query = topics ? normalizeTopic(search.value) : search.value.trim();
       const id = idQuery.exec(query);
-      const terms = query && !id ? caseFold(query).split(/\s+/) : [];
+      const terms = caseFold(query).split(topics ? ' ' : /\s+/);
       let hasMatch = false;
       for (const row of rows) {
-        const searchMatch = id
-          ? row.dataset.id.toLowerCase() === id[1].toLowerCase()
-            && (id[2] === undefined || (/^[1-9]\d*$/.test(id[2]) && Number(id[2]) <= Number(row.dataset.questions)))
-          : terms.every(term => row.dataset.search.includes(term));
+        const idMatch = id && row.dataset.id.toLowerCase() === id[1].toLowerCase()
+          && (id[2] === undefined || (/^[1-9]\d*$/.test(id[2]) && Number(id[2]) <= Number(row.dataset.questions)));
+        const searchMatch = idMatch || ((!id || topics) && terms.every(term => row.dataset.search.includes(term)));
         const ok = searchMatch && matchesClassification(row, filters);
         row.hidden = !ok;
         hasMatch ||= ok;
@@ -2240,8 +2353,15 @@ def item_page_name(item_id: str) -> str:
     return f"{item_id.lower()}.html"
 
 
+CONVERSATION_TEXT_SCRIPT = r"""
+const trimmed = value => value.replace(/^[\p{White_Space}\u001c-\u001f]+|[\p{White_Space}\u001c-\u001f]+$/gu, '');
+const normalizeTopic = value => trimmed(value.replace(/[\p{White_Space}\u001c-\u001f]+/gu, ' '));
+"""
+
+
 def page_shell(title: str, site_title: str, body: str, *, served: bool, saved_name: str, interactive: bool = False,
-               workers: bool = False, library: str = "", conversations: bool = False, filters: bool = False) -> str:
+               workers: bool = False, library: str = "", conversations: bool = False, filters: bool = False,
+               talking: bool = False, starting: bool = False) -> str:
     saved_href = quote(saved_name, safe="")
     opener = ('<button type="button" id="open-library" aria-haspopup="dialog" aria-controls="library">Open library</button>'
               if library else "")
@@ -2256,7 +2376,8 @@ def page_shell(title: str, site_title: str, body: str, *, served: bool, saved_na
         f'<header class="bar"><a class="mark" href="{saved_href}">{esc(site_title)}</a>'
         f'<nav><a href="{saved_href}">Desk</a>{opener}</nav></header>\n'
         f"<main>\n{body}\n</main>\n{library}<script>{TIME_SCRIPT}{VIEWPORT_SCRIPT if interactive or library else ''}{QUESTION_SCRIPT if conversations else ''}"
-        f"{ANSWER_SCRIPT if interactive else ''}"
+        f"{CONVERSATION_TEXT_SCRIPT if library or talking or starting else ''}"
+        f"{ANSWER_SCRIPT if interactive else ''}{CONVERSATION_SCRIPT if talking else ''}{START_SCRIPT if starting else ''}"
         f"{WORKERS_SCRIPT if workers else ''}{FILTER_SCRIPT if filters or library else ''}"
         f"{f'const libraryCaseFolds = {library_case_folds()};' + LIBRARY_SCRIPT if library else ''}</script>\n</body>\n</html>\n"
     )
@@ -2373,22 +2494,37 @@ def read_only_option(item, option):
     return f'<li class="option">{image_link(item, option["image"])}<span>{linked_text(option["label"])}</span></li>'
 
 
-def message_html(item, message, *, editable):
+def message_html(item, message, *, editable, message_number=None):
     you = message["author"] == "you"
     when = esc(message["at"])
     delivery = f' <span class="delivery">{delivery_label(message)}</span>' if you else ''
     controls = ''
     if editable and you and message["delivery"] == "pending":
         controls = ('<div class="actions">'
-                    f'<button type="button" data-retry-ask="{message["id"]}">Send ask again</button></div>')
+                    f'<button type="button" data-retry-ask="{message["id"]}">'
+                    f'{"Send message again" if item["kind"] == "conversation" else "Send ask again"}</button></div>')
     identity = f' data-ask-id="{message["id"]}"' if you else f' data-reply-id="{message["id"]}"'
+    reference = ""
+    if message_number is not None:
+        if you:
+            identity += f' id="message-{message_number}" tabindex="-1"'
+            reference = f' <span>Message {message_number}</span>'
+        else:
+            reference = f' <a href="#message-{message_number}">In reply to message {message_number}</a>'
     unread = " data-unread" if unread_reply(message) else ""
     return (f'<li class="msg {message["author"]}"{identity}{unread}><p class="who"><strong>{AUTHOR_LABELS[message["author"]]}</strong> '
-            f'<time datetime="{when}">{when}</time>{delivery}</p><p class="record">{linked_text(message["text"])}</p>'
+            f'<time datetime="{when}">{when}</time>{delivery}{reference}</p><p class="record">{linked_text(message["text"])}</p>'
             f'{links_html(message)}{shots_html(item, message, tree=REPLY_IMAGES)}{controls}</li>')
 
 
 def thread_html(item, number, *, editable):
+    if item["kind"] == "conversation":
+        thread = part_thread(item, number)
+        numbers = conversation_message_numbers(thread)
+        messages = ''.join(message_html(item, m, editable=editable and m.get("home") == thread[0]["home"],
+                                        message_number=numbers[m.get("ask", m["id"])])
+                           for m in thread)
+        return f'<ol class="exchange">{messages}</ol>' if messages else ''
     groups = {}
     for message in part_thread(item, number):
         if message["author"] == "you":
@@ -2438,6 +2574,26 @@ def item_conversation(item, ask_binding):
     return (f'<section id="{target}" class="work item-conversation" data-conversation aria-labelledby="item-conversation-title">'
             f'<div class="eyebrow">{badge}</div><h2 id="item-conversation-title">Item conversation</h2>'
             f'{editor}{thread}</section>')
+
+
+def conversation_page(item, ask_binding):
+    """A conversation: every message and reply in time order, and a box for the next message."""
+    target = item["id"]
+    editable = bool(ask_binding) and conversation_home_matches(item, ask_binding)
+    thread = thread_html(item, None, editable=editable)
+    unread = thread_unread(item, None)
+    badge = '<span class="badge">Replied</span>' if unread else '<span class="badge" hidden></span>'
+    if editable:
+        composer = (f'<div class="composer"><label for="message-{target}">Your message</label>'
+                    f'<textarea id="message-{target}" maxlength="{TEXT_LIMIT}" rows="3" aria-describedby="error-{target}"></textarea>'
+                    f'<p id="error-{target}" hidden></p><div class="actions"><button type="button" class="primary" id="send-message" '
+                    f'data-home="{esc(ask_binding)}" disabled>Send message</button><output role="status" tabindex="0"></output></div></div>')
+    elif ask_binding:
+        composer = '<p class="empty">Restore the original firstmate_home to send or retry messages.</p>'
+    else:
+        composer = '<p class="empty">Set firstmate_home to send Firstmate more messages.</p>'
+    return (f'<section id="{target}" class="work item-conversation conversation" data-conversation>'
+            f'<div class="eyebrow">{badge}</div><div class="thread-messages">{thread}</div>{composer}</section>')
 
 
 def question_form(item, served, *, ask_binding=None):
@@ -2542,15 +2698,19 @@ function reconcileReplies(section, snapshot = {}) {
   for (const [id, read] of Object.entries(snapshot)) {
     if (read || !states.has(id)) states.set(id, read);
   }
+  let visibleUnread = false;
   for (const reply of replies) {
     const id = reply.dataset.replyId;
     if (!reply.hasAttribute('data-unread')) states.set(id, true);
     else if (states.get(id)) reply.removeAttribute('data-unread');
-    else states.set(id, false);
+    else {
+      states.set(id, false);
+      visibleUnread = true;
+    }
   }
   const state = section.dataset.state;
   const badge = section.querySelector('.badge');
-  const unread = [...states.values()].includes(false);
+  const unread = section.classList.contains('conversation') ? visibleUnread : [...states.values()].includes(false);
   badge.textContent = unread ? 'Replied' : state ? state[0].toUpperCase() + state.slice(1) : '';
   badge.hidden = !badge.textContent;
   if (unread) expandAnswer(section);
@@ -2579,6 +2739,146 @@ document.addEventListener('click', event => {
   acknowledgeReplies(summary.closest('[data-conversation]'));
 });
 """
+
+
+def talk_script(body):
+    """Shared by the Desk form and a conversation's message box: one POST of a message with its own ID."""
+    return r"""
+const messageId = () => Array.from(crypto.getRandomValues(new Uint8Array(16)), byte => byte.toString(16).padStart(2, '0')).join('');
+const SENDING_FAILED = () => navigator.onLine ? 'Send interrupted. Send again.' : 'Offline. Reconnect and send again.';
+async function postJson(path, body) {
+  const response = await fetch(path, {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify(body)});
+  if (response.status === 409) {
+    const {message, saved} = await response.json();
+    return {ok:false, message, saved};
+  }
+  if ([400, 403].includes(response.status)) return {ok:false, message:await response.text()};
+  if (!response.ok) throw new Error('failed');
+  return {ok:true, result:await response.json()};
+}
+""" + body
+
+
+CONVERSATION_SCRIPT = talk_script(r"""
+(() => {
+  const section = document.querySelector('.conversation');
+  if (!section) return;
+  const refreshReplies = () => {
+    reconcileReplies(section);
+    acknowledgeReplies(section);
+  };
+  refreshReplies();
+  const field = section.querySelector('textarea');
+  const button = section.querySelector('#send-message');
+  if (!field || !button) return;
+  const output = section.querySelector('output');
+  const error = document.getElementById(field.getAttribute('aria-describedby'));
+  const messages = section.querySelector('.thread-messages');
+  const drafts = new Map();
+  const refresh = () => {
+    button.disabled = !trimmed(field.value);
+  };
+  const show = message => {
+    error.textContent = message || '';
+    error.hidden = !message;
+  };
+  const send = async body => {
+    const controls = section.querySelectorAll('button,textarea');
+    controls.forEach(c => c.disabled = true);
+    output.textContent = 'Sending message';
+    show('');
+    try {
+      const outcome = await postJson('asks', body);
+      if (outcome.ok || outcome.saved === false) {
+        for (const [text, id] of drafts) {
+          if (id === body.id) drafts.delete(text);
+        }
+      }
+      if (outcome.ok) {
+        messages.innerHTML = outcome.result.thread;
+        localizeTimes(messages);
+        refreshReplies();
+        output.textContent = outcome.result.message;
+        if (body.text !== undefined) field.value = '';
+      } else {
+        output.textContent = '';
+        show(outcome.message);
+      }
+    } catch {
+      output.textContent = SENDING_FAILED();
+    }
+    controls.forEach(c => c.disabled = false);
+    refresh();
+  };
+  field.addEventListener('input', () => { show(''); refresh(); });
+  button.addEventListener('click', () => {
+    const text = trimmed(field.value);
+    if (!text) return;
+    const retryId = drafts.get(text);
+    const id = retryId ?? messageId();
+    drafts.set(text, id);
+    const body = {part:section.id, id, text, home:button.dataset.home};
+    send(retryId ? {...body, action:'retry'} : body);
+  });
+  section.addEventListener('click', event => {
+    const retry = event.target.closest('[data-retry-ask]');
+    if (retry) send({part:section.id, id:retry.dataset.retryAsk, action:'retry'});
+  });
+  refresh();
+})();
+""")
+
+
+START_SCRIPT = talk_script(r"""
+(() => {
+  const open = document.querySelector('#open-talk');
+  const form = document.querySelector('#talk-form');
+  if (!open || !form) return;
+  const topic = form.querySelector('#talk-topic');
+  const message = form.querySelector('#talk-message');
+  const button = form.querySelector('button[type="submit"]');
+  const output = form.querySelector('output');
+  const error = form.querySelector('#talk-error');
+  const drafts = new Map();
+  const refresh = () => {
+    button.disabled = !(normalizeTopic(topic.value) && trimmed(message.value));
+  };
+  open.addEventListener('click', () => {
+    form.hidden = !form.hidden;
+    open.setAttribute('aria-expanded', String(!form.hidden));
+    if (!form.hidden) topic.focus();
+  });
+  form.addEventListener('input', () => { error.hidden = true; refresh(); });
+  form.addEventListener('submit', async event => {
+    event.preventDefault();
+    const title = normalizeTopic(topic.value), text = trimmed(message.value);
+    if (!title || !text) return;
+    const key = JSON.stringify([title, text]);
+    const id = drafts.get(key) ?? messageId();
+    drafts.set(key, id);
+    const controls = form.querySelectorAll('button,input,textarea');
+    controls.forEach(c => c.disabled = true);
+    output.textContent = 'Starting conversation';
+    try {
+      const outcome = await postJson('conversations', {id, title, text, home:button.dataset.home});
+      if (outcome.ok || outcome.saved === false) drafts.delete(key);
+      if (outcome.ok) {
+        output.textContent = outcome.result.message;
+        location.href = outcome.result.href;
+        return;
+      }
+      output.textContent = '';
+      error.textContent = outcome.message;
+      error.hidden = false;
+    } catch {
+      output.textContent = SENDING_FAILED();
+    }
+    controls.forEach(c => c.disabled = false);
+    refresh();
+  });
+  refresh();
+})();
+""")
 
 
 ANSWER_SCRIPT = r"""
@@ -2910,9 +3210,12 @@ def library_row(item, *, served):
     attributes = filter_data(item)
     if kind == "questions" and not served:
         return f'<li class="lib-item"{attributes}>{title}{f" {project}" if project else ""}{tags}</li>'
+    unread = served and thread_unread(item, None)
 
     if served:
-        search = [item["title"], item["description"]]
+        search = [item["title"]]
+        if kind != "conversation":
+            search.append(item["description"])
         if kind == "questions":
             parts = question_parts(item)
             search.extend(q["question"] for q in item["body"]["questions"])
@@ -2924,8 +3227,9 @@ def library_row(item, *, served):
         label = '<span class="badge">Replied</span>' if state == "Replied" else state
         detail = f'<p class="meta">{label}</p>'
     else:
-        detail = (f'<p class="lib-desc">{linked_text(item["description"])}</p>'
-                  f'<p class="meta"><span>{KIND_LABELS[kind]}</span>{day_time(item["saved_at"])}</p>')
+        replied = '<span class="badge">Replied</span>' if unread else ""
+        description = '' if kind == "conversation" else f'<p class="lib-desc">{linked_text(item["description"])}</p>'
+        detail = description + f'<p class="meta"><span>{KIND_LABELS[kind]}</span>{replied}{day_time(item["saved_at"])}</p>'
     return (f'<li class="lib-item"{attributes}>'
             f'<div class="lib-head"><span class="id">{item_id}</span>'
             f'{title}{project}</div>{detail}{tags}</li>')
@@ -2947,23 +3251,26 @@ def library_panel(name: str, items: list[dict[str, object]], empty: str, *, serv
 def library_lists(data: dict[str, object], *, served: bool) -> tuple[str, str]:
     references, answered = [], []
     for item in newest_first(data["items"]):  # type: ignore[arg-type]
-        if item["kind"] != "questions":
+        if item["kind"] in ("resource", "list"):
             references.append(item)
-        elif not desk_item(item):
+        elif item["kind"] == "questions" and not desk_item(item):
             answered.append(item)
     return (library_panel("references", references, "No references are saved yet.", served=served),
             library_panel("answered", answered, "Nothing is answered yet.", served=served))
 
 
 def library_dialog(data: dict[str, object]) -> str:
-    """The pop-out: a bottom sheet on a phone and a right drawer on a desktop, with References and Answered."""
     references, answered = library_lists(data, served=True)
+    items = [item for item in newest_first(data["items"]) if item["kind"] == "conversation"]  # type: ignore[arg-type]
+    conversations = library_panel("conversations", items,
+                                  "No conversations yet. Talk to Firstmate from the Desk to start one.", served=True)
+    names = (("references", "References"), ("answered", "Answered"), ("conversations", "Conversations"))
     tabs = "".join(f'<button type="button" role="tab" id="tab-{name}" aria-controls="panel-{name}" '
                    f'aria-selected="{"true" if number == 0 else "false"}" tabindex="{0 if number == 0 else -1}">{label}</button>'
-                   for number, (name, label) in enumerate((("references", "References"), ("answered", "Answered"))))
+                   for number, (name, label) in enumerate(names))
     panels = "".join(f'<section class="lib-panel" role="tabpanel" id="panel-{name}" aria-labelledby="tab-{name}"'
                      f'{"" if number == 0 else " hidden"}>{content}</section>'
-                     for number, (name, content) in enumerate((("references", references), ("answered", answered))))
+                     for number, (name, content) in enumerate(zip((n for n, _ in names), (references, answered, conversations))))
     return (f'<dialog id="library" class="library" aria-label="Library"><div class="lib-top">'
             f'<div role="tablist" aria-label="Library">{tabs}</div><button type="button" data-close>Close library</button></div>'
             f'{panels}</dialog>\n')
@@ -2984,8 +3291,25 @@ def workers_section(ready: bool) -> str:
             '<p class="meta" id="workers-status" role="status">Loading workers</p><div id="workers-list"></div></section>')
 
 
+def conversation_card(item, *, show_project=True):
+    href, title = item_page_name(item["id"]), esc(item["title"])
+    project = f' <span class="project-name">{esc(item["project"])}</span>' if show_project and item.get("project") else ""
+    return (f'<article class="work"><div class="eyebrow"><span class="id">{item["id"]}</span> Conversation{project}</div>'
+            f'<h3>{title}</h3>{tag_labels(list(item.get("tags", [])))}'
+            f'<div class="actions"><span class="badge">Replied</span>'
+            f'<a class="card-link button-link" href="{href}" aria-label="Read the reply in {title}">Read reply</a></div></article>')
+
+
+def talk_form(binding):
+    return ('<form id="talk-form" class="talk" hidden novalidate><label for="talk-topic">Topic</label>'
+            f'<input id="talk-topic" maxlength="{TITLE_LIMIT}" autocomplete="off">'
+            f'<label for="talk-message">Message</label><textarea id="talk-message" maxlength="{TEXT_LIMIT}" rows="3"></textarea>'
+            f'<p id="talk-error" hidden></p><div class="actions"><button type="submit" class="primary" disabled '
+            f'data-home="{esc(binding)}">Start conversation</button><output role="status" tabindex="0"></output></div></form>')
+
+
 def list_page(data: dict[str, object], site_title: str, *, served: bool, saved_name: str = "index.html",
-              workers: bool = False) -> str:
+              workers: bool = False, ask_binding: str | None = None) -> str:
     items = newest_first(data["items"])  # type: ignore[arg-type]
     empty = "Nothing is saved yet. Ask Firstmate to send something to Quarterdeck, such as a link, a list or open questions."
     attention = []
@@ -2993,6 +3317,8 @@ def list_page(data: dict[str, object], site_title: str, *, served: bool, saved_n
         if item["kind"] == "questions" and desk_item(item):
             summary = question_summary(item, replies=served)
             attention.append((item, summary))
+        elif served and item["kind"] == "conversation" and thread_unread(item, None):
+            attention.append((item, ("Replied", [], False)))
     # With more than one project on the Desk, its cards group by project, the group holding the newest item first.
     projects = list(dict.fromkeys(item.get("project", "") for item, _ in attention))
     grouped = len(projects) > 1
@@ -3000,12 +3326,17 @@ def list_page(data: dict[str, object], site_title: str, *, served: bool, saved_n
     body = ""
 
     def desk(group, *, show_project: bool = True) -> str:
-        cards = "".join(question_card(item, summary, served=served, primary=item is primary, show_project=show_project)
+        cards = "".join(conversation_card(item, show_project=show_project) if item["kind"] == "conversation" else
+                        question_card(item, summary, served=served, primary=item is primary, show_project=show_project)
                         for item, summary in group)
         return f'<div class="desk">{cards}</div>'
 
+    heading = "<h1>Desk</h1>"
+    if served and ask_binding:
+        heading = ('<div class="page-head"><h1>Desk</h1><button type="button" id="open-talk" aria-expanded="false" '
+                   'aria-controls="talk-form">Talk to Firstmate</button></div>' + talk_form(ask_binding))
     if attention:
-        body += "<h1>Desk</h1>"
+        body += heading
         if grouped:
             for project in projects:
                 members = [pair for pair in attention if pair[0].get("project", "") == project]
@@ -3013,9 +3344,9 @@ def list_page(data: dict[str, object], site_title: str, *, served: bool, saved_n
         else:
             body += desk(attention)
     elif not items:
-        body = f'<h1>Desk</h1><p class="empty">{esc(empty)}</p>'
+        body = f'{heading}<p class="empty">{esc(empty)}</p>'
     else:
-        body = '<h1>Desk</h1><p class="empty">Nothing is on your Desk. A question that needs an answer shows here.</p>'
+        body = f'{heading}<p class="empty">Nothing is on your Desk. A question that needs an answer shows here.</p>'
     if served:
         body += workers_section(workers)
     library = ""
@@ -3026,7 +3357,8 @@ def list_page(data: dict[str, object], site_title: str, *, served: bool, saved_n
         body += (f'<section class="page-section"><h2>References</h2>{references}</section>'
                  f'<section class="page-section"><h2>Answered</h2>{answered}</section>')
     return page_shell(site_title, site_title, body, served=served, saved_name=saved_name, workers=served and workers,
-                      library=library, filters=bool(items) and not served)
+                      library=library, filters=bool(items) and not served,
+                      starting=served and bool(ask_binding))
 
 
 def item_body_html(item: dict[str, object]) -> str:
@@ -3045,25 +3377,29 @@ def item_page(item: dict[str, object], site_title: str, *, served: bool, saved_n
               ask_binding: str | None = None) -> str:
     item_id = str(item["id"])
     questions = item["kind"] == "questions"
-    content = question_form(item, served, ask_binding=ask_binding) if questions else item_body_html(item)
+    talking = item["kind"] == "conversation"
+    content = (question_form(item, served, ask_binding=ask_binding) if questions
+               else conversation_page(item, ask_binding) if talking else item_body_html(item))
+    lead = "" if talking else f'<p class="lead">{linked_text(item["description"])}</p>'
     body = (
         f'<p class="id">{esc(item_id)}</p><h1>{esc(item["title"])}</h1>'
         f'<p class="meta">{esc(KIND_LABELS[str(item["kind"])])}{" · " + esc(item["project"]) if item.get("project") else ""}'
         f' · saved <time class="day" datetime="{esc(item["saved_at"])}">{esc(saved_day(item))}</time></p>'
         f'{tag_labels(list(item.get("tags", [])))}'
-        f'<p class="lead">{linked_text(item["description"])}</p>{content}'
+        f'{lead}{content}'
     )
     return page_shell(f"{item_id} {item['title']} · {site_title}", site_title, body,
                       served=served, saved_name=saved_name,
                       interactive=served and has_answer_controls(item),
-                      conversations=served and questions)
+                      conversations=served and (questions or talking), talking=served and talking)
 
 
 def site_pages(data: dict[str, object], site_title: str, saved_name: str) -> dict[str, str]:
+    items = [item for item in data["items"] if item["kind"] != "conversation"]  # type: ignore[union-attr]
     pages = {}
-    for item in data["items"]:  # type: ignore[union-attr]
+    for item in items:
         pages[item_page_name(str(item["id"]))] = item_page(item, site_title, served=False, saved_name=saved_name)
-    pages[saved_name] = list_page(data, site_title, served=False, saved_name=saved_name)
+    pages[saved_name] = list_page({**data, "items": items}, site_title, served=False, saved_name=saved_name)
     return pages
 
 
@@ -3348,10 +3684,12 @@ def make_server(host: str, port: int, handler: type[BaseHTTPRequestHandler],
 def make_handler(site_title: str, base_path: str = "", store: Path | None = None, home: Path | None = None,
                  *, ask_home: Path | None = None, workers_home: Path | None = None) -> type[BaseHTTPRequestHandler]:
     """Every page is built from the item store when it is requested."""
-    def ask_destination():
+    def ask_destination(*, require_directory):
         if ask_home is not None:
             try:
-                resolved = ask_home.resolve()
+                resolved = ask_home.resolve(strict=require_directory)
+                if require_directory and not resolved.is_dir():
+                    return None, None
             except (OSError, RuntimeError):
                 return None, None
             return resolved, hashlib.sha256(os.fsencode(resolved)).hexdigest()
@@ -3438,23 +3776,27 @@ def make_handler(site_title: str, base_path: str = "", store: Path | None = None
                 self.send_image(data, *picture.groups())
                 return
             if name == "index.html":
-                self.send_text(200, list_page(data, site_title, served=True, workers=workers_home is not None),
-                               "text/html; charset=utf-8")
+                _, ask_binding = ask_destination(require_directory=True)
+                self.send_text(200, list_page(data, site_title, served=True, workers=workers_home is not None,
+                                              ask_binding=ask_binding), "text/html; charset=utf-8",
+                               prevent_framing=bool(ask_binding))
                 return
             try:
                 item = find_item(data, name.removesuffix(".html"))
             except ValueError:
                 self.send_text(404, "Not found\n")
                 return
-            _, ask_binding = ask_destination() if item["kind"] == "questions" else (None, None)
+            ask_binding = None
+            if item["kind"] in ("questions", "conversation"):
+                _, ask_binding = ask_destination(require_directory=item["kind"] == "conversation")
             content = item_page(item, site_title, served=True, ask_binding=ask_binding)
-            prevent_framing = has_answer_controls(item) or (
+            prevent_framing = has_answer_controls(item) or item["kind"] == "conversation" or (
                 item["kind"] == "questions" and question_summary(item)[0] == "Replied")
             self.send_text(200, content, "text/html; charset=utf-8", prevent_framing=prevent_framing)
 
         def do_POST(self) -> None:  # noqa: N802 - http.server naming
             endpoint = self.path.removeprefix(base_path)
-            subjects = {"/answers": "answer", "/asks": "ask", "/replies/read": "reply acknowledgment"}
+            subjects = {"/answers": "answer", "/asks": "ask", "/conversations": "conversation", "/replies/read": "reply acknowledgment"}
             if not self.path.startswith(base_path) or endpoint not in subjects:
                 self.send_text(405, "Use the question page.")
                 return
@@ -3466,8 +3808,11 @@ def make_handler(site_title: str, base_path: str = "", store: Path | None = None
                     or (is_loopback(str(self.server.server_address[0])) and not request_host_is_loopback(host))):
                 self.send_text(403, "Open the question on Quarterdeck.")
                 return
-            if endpoint == "/asks":
-                ask_path, ask_binding = ask_destination()
+            if endpoint in ("/asks", "/conversations"):
+                ask_path, ask_binding = ask_destination(require_directory=True)
+                home_available = ask_path is not None
+                if endpoint == "/asks" and not home_available:
+                    ask_path, ask_binding = ask_destination(require_directory=False)
                 if ask_path is None:
                     self.send_text(403, "Configure an available firstmate_home to ask Firstmate.")
                     return
@@ -3483,11 +3828,15 @@ def make_handler(site_title: str, base_path: str = "", store: Path | None = None
                 if endpoint == "/answers":
                     record = send_answer(active_store, home, payload)
                 elif endpoint == "/asks":
-                    record = ask_message(active_store, ask_path, ask_binding, payload)
+                    record = ask_message(active_store, ask_path, ask_binding, payload, home_available=home_available)
+                elif endpoint == "/conversations":
+                    record = start_conversation(active_store, ask_path, ask_binding, payload)
                 else:
                     record = mark_replies_read(active_store, payload)
+            except AskHomeUnavailable:
+                self.send_text(403, "Configure an available firstmate_home to ask Firstmate.")
             except AnswerConflict as exc:
-                if endpoint == "/asks":
+                if endpoint in ("/asks", "/conversations"):
                     record = {"message": str(exc), "saved": isinstance(exc, SavedAskConflict)}
                     self.send_text(409, json.dumps(record), "application/json")
                 else:
@@ -3554,8 +3903,9 @@ def serve(args: argparse.Namespace) -> int:
     exposed = [host for host in bind_hosts(args) if not is_loopback(host)]
     if exposed:
         print(f"quarterdeck: warning: {', '.join(exposed)} is not a loopback address; anyone who can reach this port can "
-              "read saved items, answers, conversations and images, submit answers, acknowledge replies, and send asks "
-              "when firstmate_home is set.", file=sys.stderr, flush=True)
+              "read saved items, answers, conversations and images, submit answers, and acknowledge replies. With "
+              "firstmate_home set, they can send asks, start conversations and send messages.",
+              file=sys.stderr, flush=True)
     for server in servers[1:]:
         threading.Thread(target=server.serve_forever, daemon=True).start()
     try:
@@ -3697,10 +4047,10 @@ COMMAND_DOCS = {
     "add": ["how-to/save-items.md", "how-to/classify-items.md", "reference/cli-and-config.md", "reference/item-store.md"],
     "list": ["how-to/save-items.md", "reference/cli-and-config.md"],
     "show": ["how-to/read-answers.md", "how-to/save-items.md", "reference/cli-and-config.md"],
-    "reply": ["how-to/reply-from-the-command-line.md", "reference/cli-and-config.md", "reference/item-store.md"],
+    "reply": ["how-to/reply-from-the-command-line.md", "how-to/talk-to-firstmate.md", "reference/cli-and-config.md", "reference/item-store.md"],
     "remove": ["how-to/save-items.md", "reference/cli-and-config.md"],
     "render": ["how-to/serve-the-page.md", "reference/cli-and-config.md", "explanation/privacy-and-architecture.md"],
-    "serve": ["how-to/answer-questions.md", "how-to/use-the-library.md", "how-to/ask-firstmate.md", "how-to/read-workers.md", "how-to/serve-the-page.md", "reference/cli-and-config.md", "explanation/privacy-and-architecture.md"],
+    "serve": ["how-to/answer-questions.md", "how-to/use-the-library.md", "how-to/ask-firstmate.md", "how-to/talk-to-firstmate.md", "how-to/read-workers.md", "how-to/serve-the-page.md", "reference/cli-and-config.md", "explanation/privacy-and-architecture.md"],
     "service": ["how-to/serve-the-page.md", "reference/cli-and-config.md"],
     "url": ["how-to/serve-the-page.md", "reference/cli-and-config.md"],
     "install": ["how-to/install.md", "how-to/update.md", "how-to/uninstall.md"],
@@ -3781,7 +4131,7 @@ def make_parser() -> argparse.ArgumentParser:
     add = command("add", "save a new item and print its ID",
                   "Save a new item and print its ID. The body is copied in now; Quarterdeck never reads it again "
                   f"from anywhere else. Kinds: {KIND_HELP}.", add_item)
-    add.add_argument("--kind", required=True, choices=KINDS, help="what the item is")
+    add.add_argument("--kind", required=True, choices=ADD_KINDS, help="what the item is")
     add.add_argument("--title", required=True, help="a short title that says what it is about")
     add.add_argument("--description", required=True, help="one or two sentences: what it is and why it was saved")
     add.add_argument("--url", help="a resource's http(s) address")
@@ -3797,12 +4147,13 @@ def make_parser() -> argparse.ArgumentParser:
     show = command("show", "show one item in full", "Show one item in full, with its parts numbered (Q7.1, Q7.2, ...).", show_item)
     show.add_argument("id", help="item ID, such as Q7")
 
-    reply = command("reply", "add Firstmate's reply to a question conversation",
-                    "Add Firstmate's reply under an ask on a question item (Q7) or one question (Q7.1). The reply shows as Replied "
-                    "until acknowledged in Messages. A reply leaves answers and states intact. Pair each "
-                    "--link-text with a --url and each --image with an --alt, in the order given.", reply_item)
-    reply.add_argument("id", help="item or question ID, such as Q7 or Q7.1")
-    reply.add_argument("--ask", required=True, metavar="ID", help="ask ID from the inbox note")
+    reply = command("reply", "add Firstmate's reply to an ask or a conversation message",
+                    "Add Firstmate's reply under an ask on a question item (Q7) or one question (Q7.1), or under a message in a "
+                    "conversation started with Talk to Firstmate (an inbox note that begins CONVERSATION; reply to its item ID, "
+                    "such as Q12, with its message ID). The reply shows as Replied until the owner opens it. A reply leaves answers "
+                    "and states intact. Pair each --link-text with a --url and each --image with an --alt, in the order given.", reply_item)
+    reply.add_argument("id", help="item or question ID, such as Q7 or Q7.1; a conversation's item ID, such as Q12")
+    reply.add_argument("--ask", required=True, metavar="ID", help="the ask or message ID from the inbox note")
     reply.add_argument("--text", required=True, help="the reply")
     reply.add_argument("--link-text", action="append", metavar="TEXT", help="the words of a link; repeat for more links")
     reply.add_argument("--url", action="append", metavar="URL", help="the http(s) address for the matching --link-text")
@@ -3837,7 +4188,7 @@ def make_parser() -> argparse.ArgumentParser:
     remove.add_argument("id", help="item ID, such as Q7")
 
     render_parser = command("render", "write the page to HTML files",
-                            "Write the Desk page and one page per item as HTML files.", render)
+                            "Write HTML pages for the Desk, resources, lists and question items.", render)
     render_parser.add_argument("--output", help="HTML file path for the Desk page; the other pages go beside it")
     render_parser.add_argument("--config", type=Path, help="optional JSON config file")
     render_parser.add_argument("--title", help="override the page title")
@@ -3845,7 +4196,8 @@ def make_parser() -> argparse.ArgumentParser:
     serve_parser = command("serve", "serve the page over HTTP",
                            "Anyone who can reach the service can read saved items, answers, conversations and reply images, "
                            "and can submit answers or acknowledge replies as the owner. With firstmate_home set, they can "
-                           "also send asks and read that home's running workers on entry or on Refresh workers. Browser "
+                           "also send asks, start conversations, send messages and read that home's running workers "
+                           "on entry or on Refresh workers. Browser "
                            "writes require the same origin as the served page.", serve)
     add_serve_options(serve_parser)
     serve_parser.add_argument("--title", help="override the page title")
