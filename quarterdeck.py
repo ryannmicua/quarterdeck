@@ -1744,9 +1744,8 @@ LIBRARY_SCRIPT = r"""
   const panelOf = tab => document.getElementById(tab.getAttribute('aria-controls'));
   const searchOf = tab => panelOf(tab).querySelector('input[type="search"]');
   const selectedTab = () => tabs.find(tab => tab.getAttribute('aria-selected') === 'true');
-  const {libraryLookup, ...otherState} = history.state ?? {};
+  const libraryLookup = history.state?.libraryLookup;
   const restoredTab = tabs.find(tab => tab.id === libraryLookup?.tab);
-  if (libraryLookup) history.replaceState(otherState, '');
   const select = (tab, focus) => {
     for (const other of tabs) {
       const on = other === tab;

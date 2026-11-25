@@ -1360,17 +1360,31 @@ for (const [item, destination, expectedLinks] of [[first, 'q2.html#Q2.1', []], [
         inbox.parent.mkdir(parents=True)
         inbox.write_text("#!/bin/sh\nexit 0\n")
         inbox.chmod(0o700)
-        port = self.start("/qd", home=home)
+        finished = threading.Event()
+        results = []
+        handler = quarterdeck.make_handler("Quarterdeck", "/qd", home=home)
+
+        class HistoryTestHandler(handler):
+            def do_POST(self):
+                if self.path == "/qd/history-test-result":
+                    results.append(self.rfile.read(int(self.headers["Content-Length"])).decode())
+                    self.send_text(200, "")
+                    finished.set()
+                else:
+                    super().do_POST()
+
+        with patch.object(quarterdeck, "make_handler", return_value=HistoryTestHandler):
+            port = self.start("/qd")
         status, old_answer = self.post_answer(port, "Q2.1", "Saffron")
         self.assertEqual((status, old_answer["delivery"]), (200, "sent"))
 
         list_page = quarterdeck.list_page
+        item_page = quarterdeck.item_page
 
         def instrumented_page(*args, **kwargs):
             return list_page(*args, **kwargs).replace("</body>", """
-<output id="browser-result">Incomplete</output>
 <script>
-const result = document.getElementById('browser-result');
+const report = message => fetch('history-test-result', {method:'POST', body:message});
 const check = (condition, message) => { if (!condition) throw new Error(message); };
 const dialog = document.getElementById('library');
 const tab = document.getElementById('tab-answered');
@@ -1382,45 +1396,64 @@ const find = text => {
   search.dispatchEvent(new Event('input', {bubbles:true}));
   return shown();
 };
-(async () => {
+try {
   const desk = document.querySelector('main');
-  if (!sessionStorage.getItem('restoring')) {
+  const visits = Number(sessionStorage.getItem('item-visits'));
+  if (!visits) {
     check(desk.textContent.includes('Pier lights'), 'The open item did not start on the Desk');
     document.getElementById('open-library').click();
     tab.click();
     check(find('saffron') === 'q2.html', 'The original answer did not match its search');
-    for (const payload of [
-      {part:'Q1.1', answer:'Keep the lights', revision:''},
-      {part:'Q2.1', answer:'Ultramarine', revision:""" + json.dumps(old_answer["revision"]) + """}
-    ]) {
-      const response = await fetch('answers', {method:'POST', headers:{'Content-Type':'application/json'},
-        body:JSON.stringify(payload)});
-      check(response.ok && (await response.json()).delivery === 'sent', 'The fixture answer was not delivered');
-    }
-    window.addEventListener('click', event => event.preventDefault(), {once:true});
     panel.querySelector('a[href="q2.html"]').click();
-    sessionStorage.setItem('restoring', 'yes');
-    window.dispatchEvent(new PageTransitionEvent('pageshow', {persisted:true}));
-    return;
+  } else {
+    check(!desk.textContent.includes('Pier lights'), 'The restored Desk still showed the completed item');
+    check(dialog.open && tab.getAttribute('aria-selected') === 'true' && !panel.hidden,
+          'The library did not reopen on Answered after item visit ' + visits);
+    check(search.value === 'saffron' && shown() === '', 'The saved search was lost or still used the old answer');
+    check(panel.querySelector('a[href="q1.html"]'), 'The completed item was missing from Answered');
+    check(find('ultramarine') === 'q2.html', 'The restored search did not find the corrected answer');
+    if (visits === 1) window.addEventListener('pageshow', () => setTimeout(() => history.forward(), 0), {once:true});
+    else {
+      check(visits === 2, 'The item was visited an unexpected number of times');
+      report('PASS');
+    }
   }
-  check(!desk.textContent.includes('Pier lights'), 'The restored Desk still showed the completed item');
-  check(dialog.open && tab.getAttribute('aria-selected') === 'true' && !panel.hidden,
-        'The library did not reopen on Answered');
-  check(search.value === 'saffron' && shown() === '', 'The saved search was lost or still used the old answer');
-  check(panel.querySelector('a[href="q1.html"]'), 'The completed item was missing from Answered');
-  check(find('ultramarine') === 'q2.html', 'The restored search did not find the corrected answer');
-  result.textContent = 'PASS';
-})().catch(error => { result.textContent = error.message; });
+} catch (error) { report(error.message); }
 </script>
 </body>""")
 
-        with patch.object(quarterdeck, "list_page", instrumented_page):
-            browser = subprocess.run([chrome, "--headless", "--disable-background-networking", "--no-first-run",
-                                      f"--user-data-dir={self.root / 'browser'}", "--dump-dom", "--virtual-time-budget=3000",
-                                      f"http://127.0.0.1:{port}/qd/"],
-                                     capture_output=True, text=True, timeout=30, check=True)
-        browser_result = browser.stdout.partition('<output id="browser-result">')[2].partition("</output>")[0]
-        self.assertEqual(browser_result, "PASS", browser.stderr)
+        def instrumented_item(*args, **kwargs):
+            return item_page(*args, **kwargs).replace("</body>", """
+<script>
+window.addEventListener('pageshow', async () => {
+  const visits = Number(sessionStorage.getItem('item-visits')) + 1;
+  sessionStorage.setItem('item-visits', visits);
+  try {
+    if (visits === 1) {
+      for (const payload of [
+        {part:'Q1.1', answer:'Keep the lights', revision:''},
+        {part:'Q2.1', answer:'Ultramarine', revision:""" + json.dumps(old_answer["revision"]) + """}
+      ]) {
+        const response = await fetch('answers', {method:'POST', headers:{'Content-Type':'application/json'},
+          body:JSON.stringify(payload)});
+        if (!response.ok || (await response.json()).delivery !== 'sent') throw new Error('The fixture answer was not delivered');
+      }
+    }
+    history.back();
+  } catch (error) { fetch('history-test-result', {method:'POST', body:error.message}); }
+});
+</script>
+</body>""")
+
+        with patch.object(quarterdeck, "list_page", instrumented_page), patch.object(quarterdeck, "item_page", instrumented_item):
+            with subprocess.Popen([chrome, "--headless", "--disable-background-networking", "--no-first-run",
+                                   f"--user-data-dir={self.root / 'browser'}", f"http://127.0.0.1:{port}/qd/"],
+                                  stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL) as browser:
+                try:
+                    self.assertTrue(finished.wait(10), "The browser did not complete Back, Forward, Back")
+                finally:
+                    browser.terminate()
+        self.assertEqual(results, ["PASS"])
 
     def test_the_library_pop_out_searches_and_returns_focus(self):
         self.add("questions", "Tide decisions", "Decide the launch plan.", "--body-file", "-", stdin=json.dumps(QUESTIONS))
