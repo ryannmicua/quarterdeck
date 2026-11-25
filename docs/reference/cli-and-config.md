@@ -25,6 +25,9 @@ quarterdeck help [COMMAND] [--json]
 
 An `ID` is the displayed ID in either case, such as `Q7` or `q7`.
 Item commands report validation errors on stderr and exit with status 2.
+Question-part IDs use an item ID and a positive part number, separated by a
+period, as in `Q7.1`. The CLI also accepts `q7.1`. Browser requests use the
+uppercase form.
 
 ### Items
 

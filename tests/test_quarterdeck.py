@@ -3808,11 +3808,68 @@ check(document.execCommand('undo') && field(1).value === 'Hold' && ask(1).disabl
       'Native Undo made the selected answer askable');
 check(document.execCommand('redo') && field(1).value === 'Hold?' && !ask(1).disabled,
       'Native Redo lost the hand edit');
+field(1).setSelectionRange(4, 5);
+check(document.execCommand('delete') && field(1).value === 'Hold' && !ask(1).disabled,
+      'Deleting the question mark lost the hand-edited origin');
+check(document.execCommand('undo') && field(1).value === 'Hold?' && !ask(1).disabled, 'Native Undo lost the hand edit');
+check(document.execCommand('redo') && field(1).value === 'Hold' && !ask(1).disabled,
+      'Native Redo mistook the hand edit for the original option');
 card(1).querySelector('[data-choice="Merge"]').click();
 check(field(1).value === 'Merge' && ask(1).disabled, 'A replacement option remained askable');
 undo.click();
-check(field(1).value === 'Hold?' && !ask(1).disabled, 'Undo changes lost the draft’s hand-edited origin');
+check(field(1).value === 'Hold' && !ask(1).disabled, 'Undo changes lost the draft’s hand-edited origin');
 """)
+
+    def test_replacing_a_rejected_ask_allows_answer_edits_before_and_after_saving(self) -> None:
+        port = self.start("/qd", ask_home=self.inbox())
+        for edit_option in (False, True):
+            with self.subTest(edit_option=edit_option):
+                self.check_page(port, r"""
+const answers = [];
+window.fetch = async (url, options) => {
+  if (url === 'asks') return {status: 400, text: async () => 'Check the question and ask.'};
+  const {answer} = JSON.parse(options.body);
+  answers.push(answer);
+  return {ok: true, json: async () => ({state: 'answered', revision: 'new', delivery: 'sent',
+    answer, answered_at: '2026-11-25T01:00:00Z'})};
+};
+const send = document.getElementById('send');
+type(1, 'Show the preview.');
+card(1).querySelector('.ask-button').click();
+await settled();
+check(send.disabled, 'The failed ask was queued as an answer');
+card(1).querySelector('[data-choice="Hold"]').click();
+if (editOption) type(1, 'Hold for the pilot.');
+check(!send.disabled, 'The rejected ask blocked a replacement answer');
+send.click();
+await settled();
+const expected = editOption ? 'Hold for the pilot.' : 'Hold';
+check(answers.join() === expected && field(1).defaultValue === expected, 'The replacement answer was not saved');
+type(1, 'Merge tomorrow.');
+check(!send.disabled, 'The rejected ask blocked a new decision after saving');
+send.click();
+await settled();
+check(answers.join() === expected + ',Merge tomorrow.', 'The answer batch kept stale ask intent');
+""", setup=f"const editOption = {json.dumps(edit_option)};")
+
+    def test_question_part_format_is_shared_by_cli_and_browser_commands(self) -> None:
+        port = self.start("/qd", ask_home=self.inbox())
+        ask = self.ask_body(port, "Q4.1", "Show the preview.")
+        self.assertEqual(self.post(port, "/qd/asks", ask)[0], 200)
+        self.assertEqual(self.run_cli("reply", "q4.1", "--ask", ask["id"], "--text", "Here it is.")[0], 0)
+        _, reply = self.messages("1", 3)
+        self.assertEqual(self.run_cli("mark", "q4.2", "closed")[0], 0)
+        before = self.store()
+        for part in ("Q4.01", "Q4.0", "Q4.1.2"):
+            with self.subTest(part=part):
+                self.assertEqual(self.run_cli("mark", part, "answered")[0], 2)
+                self.assertEqual(self.run_cli("reply", part, "--ask", ask["id"], "--text", "Wrong part.")[0], 2)
+        for part in ("Q4.01", "Q4.0", "Q4.1.2", "q4.1"):
+            with self.subTest(browser_part=part):
+                self.assertEqual(self.post(port, "/qd/answers", {"part": part, "answer": "Hold", "revision": ""})[0], 400)
+                self.assertEqual(self.post(port, "/qd/asks", {**ask, "part": part})[0], 400)
+                self.assertEqual(self.post(port, "/qd/replies/read", {"part": part, "ids": [reply["id"]]})[0], 400)
+        self.assertEqual(self.store(), before)
 
     def test_acknowledgment_reconciles_both_orders_of_live_thread_replacement(self) -> None:
         port = self.start("/qd", ask_home=self.inbox())

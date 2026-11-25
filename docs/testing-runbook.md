@@ -67,9 +67,11 @@ The conversation group uses a fake inbox to check that ask replays and
 retries keep their original IDs and reject a repointed home symlink. It
 checks recovery when an ask is already saved and when the first request
 never arrived, and checks assets from plain and external renders. Its
-headless Chrome checks cover native undo and redo of a rejected ask and
-of hand edits to a selected answer. They also open **Messages** explicitly and exercise both
-response orders for overlapping acknowledgments and live updates.
+headless Chrome checks cover native undo and redo of rejected asks and
+hand edits that match a selected answer. They also verify that an owner
+can edit and save an answer after replacing a rejected ask. Tests open
+**Messages** explicitly and exercise both response orders for overlapping
+acknowledgments and live updates.
 
 For a screen change, also save one item of each kind, run `quarterdeck serve`,
 and check the Desk, each tab of the library pop-out (try 3, 30 and 200 saved items) and each item page at phone width (about 390 px) and

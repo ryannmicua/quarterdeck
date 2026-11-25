@@ -37,5 +37,7 @@ refuses the retry.
 A validation error puts the draft back in the field. Correct it and select
 **Ask Firstmate** again. The draft stays out of **Send answers** while
 you correct it, including through editor undo and redo. To answer instead,
-choose an answer option or reload the page to start a fresh draft. Clear the
-field before retrying a different pending draft.
+choose an answer option, then edit that answer if needed. **Undo changes**
+brings back the preceding ask as an ask draft. You can also reload the page
+to start a fresh draft. Clear the field before retrying a different pending
+draft.

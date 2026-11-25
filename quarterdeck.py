@@ -878,12 +878,12 @@ def put_record(item, part, state, *, mark=None, **desk_fields):
 def part_numbers(item, target):
     """The question numbers a command names: one question (Q7.3) or all of an item (Q7)."""
     parts = question_parts(item)
-    _, dot, part = target.partition(".")
-    if not dot:
+    if "." not in target:
         return list(parts)
-    if not re.fullmatch(r"[1-9][0-9]*", part) or int(part) not in parts:
+    _, part = parse_part(target.upper())
+    if part not in parts:
         raise ValueError("Unknown question.")
-    return [int(part)]
+    return [part]
 
 
 def mark_item(args):
@@ -985,10 +985,7 @@ def send_answer(store, home, payload):
         raise ValueError("Invalid answer fields.")
     if not isinstance(payload["revision"], str) or not re.fullmatch(r"(?:[0-9a-f]{32})?", payload["revision"]):
         raise ValueError("Invalid question revision.")
-    match = re.fullmatch(r"(Q[1-9][0-9]*)[.]([1-9][0-9]*)", str(payload["part"]))
-    if not match:
-        raise ValueError("Unknown question.")
-    item_id, part = match[1], int(match[2])
+    item_id, part = parse_part(payload["part"])
     answer = clean_text(payload["answer"], "Answer", TEXT_LIMIT, multiline=True)
     with changing_store(store) as data:
         item = find_answer_item(data, item_id)
@@ -1396,10 +1393,10 @@ def show_stats(args: argparse.Namespace) -> int:
 
 def reply_item(args: argparse.Namespace) -> int:
     def action() -> int:
-        match = re.fullmatch(r"([Qq][1-9][0-9]*)[.]([1-9][0-9]*)", args.id)
-        if not match:
-            raise ValueError(f"reply to one question, such as Q7.1: {args.id!r}")
-        item_id, part = parse_id(match[1]), int(match[2])
+        try:
+            item_id, part = parse_part(args.id.upper())
+        except ValueError as exc:
+            raise ValueError(f"reply to one question, such as Q7.1: {args.id!r}") from exc
         text = clean_text(args.text, "reply text", TEXT_LIMIT, multiline=True)
         link_texts, urls = args.link_text or [], args.url or []
         if len(link_texts) != len(urls):
@@ -2536,23 +2533,21 @@ if (send) {
   const suggest = document.querySelector('#suggest');
   const undo = document.querySelector('#undo');
   const rejections = new Map();
-  const draftSources = new Map(fields.map(f => [f, {manual: false, filled: f.value}]));
+  const draftSource = (field, askOnly = false) => ({askOnly, values: [field.value], index: 0});
+  const draftSources = new Map(fields.map(f => [f, draftSource(f)]));
   let history = [];
   const answerText = value => value.replace(/^[\p{White_Space}\x1c-\x1f]+|[\p{White_Space}\x1c-\x1f]+$/gu, '');
   const newDraft = f => answerText(f.value) && answerText(f.value) !== answerText(f.defaultValue);
-  const askDraft = f => draftSources.get(f).manual && newDraft(f);
+  const handEdited = source => source.askOnly || source.index > 0;
+  const askDraft = f => handEdited(draftSources.get(f)) && newDraft(f);
   const changed = f => {
     const {pending} = f.closest('section').dataset;
     const answer = answerText(f.value);
-    const rejection = rejections.get(f);
-    const source = draftSources.get(f);
-    const filledAnswer = !source.manual && f.value === source.filled;
-    return (!rejection || (rejection.ask && filledAnswer)) && answer && (answer !== f.defaultValue || pending === '1');
+    return !draftSources.get(f).askOnly && !rejections.has(f) && answer && (answer !== f.defaultValue || pending === '1');
   };
   const suggestionFor = f => {
     const section = f.closest('section');
-    const rejection = rejections.get(f);
-    if ((!rejection || rejection.ask) && section.dataset.state === 'open' && !f.defaultValue && !f.value) {
+    if (!rejections.has(f) && section.dataset.state === 'open' && !f.defaultValue && !f.value) {
       return section.querySelector('[data-suggested]');
     }
   };
@@ -2564,12 +2559,7 @@ if (send) {
     for (const [field, rejection] of rejections) {
       const draft = answerText(field.value);
       if (rejection.draft !== undefined && draft !== rejection.draft) {
-        if (rejection.ask) {
-          rejection.message = '';
-          delete rejection.draft;
-        } else {
-          rejections.delete(field);
-        }
+        rejections.delete(field);
         output.textContent = '';
       }
     }
@@ -2600,8 +2590,18 @@ if (send) {
     const field = e.target;
     const source = draftSources.get(field);
     if (!source) return;
-    const nativeHistory = e.inputType === 'historyUndo' || e.inputType === 'historyRedo';
-    source.manual = !nativeHistory || field.value !== source.filled;
+    if (e.inputType === 'historyUndo' || e.inputType === 'historyRedo') {
+      const direction = e.inputType === 'historyUndo' ? -1 : 1;
+      for (let index = source.index + direction; index >= 0 && index < source.values.length; index += direction) {
+        if (source.values[index] === field.value) {
+          source.index = index;
+          break;
+        }
+      }
+    } else {
+      source.index += 1;
+      source.values.splice(source.index, source.values.length - source.index, field.value);
+    }
     forget(field);
     refresh();
   });
@@ -2613,10 +2613,12 @@ if (send) {
         const section = f.closest('section');
         const option = choice ? (section.contains(choice) && choice) : suggestionFor(f);
         const source = draftSources.get(f);
-        if (option && (option.dataset.choice !== f.value || source.manual)) {
-          step.set(f, {value: f.value, source});
+        if (option && (option.dataset.choice !== f.value || handEdited(source))) {
+          const askError = source.askOnly ? rejections.get(f) : undefined;
+          step.set(f, {value: f.value, source, askError});
+          if (source.askOnly) rejections.delete(f);
           f.value = option.dataset.choice;
-          draftSources.set(f, {manual: false, filled: f.value});
+          draftSources.set(f, draftSource(f));
         }
       }
       if (step.size) history.push(step);
@@ -2639,8 +2641,8 @@ if (send) {
         pending.querySelector('button').addEventListener('click', () => askRequest(section, {...body, action: 'retry'}, pending));
         thread.querySelector('.pending-asks').append(pending);
         field.value = field.defaultValue;
-        draftSources.set(field, {manual: false, filled: field.value});
-        if (rejections.get(field)?.ask) rejections.delete(field);
+        if (draftSources.get(field).askOnly) rejections.delete(field);
+        draftSources.set(field, draftSource(field));
         forget(field);
         thread.hidden = false;
         thread.open = true;
@@ -2654,9 +2656,10 @@ if (send) {
     }
     if (e.target === undo && history.length) {
       const step = history.pop();
-      for (const [f, {value, source}] of step) {
+      for (const [f, {value, source, askError}] of step) {
         f.value = value;
         draftSources.set(f, source);
+        if (askError) rejections.set(f, askError);
       }
       refresh();
       if (history.length) undo.focus();
@@ -2722,8 +2725,8 @@ if (send) {
         if (response.status === 400 && pending) {
           failedDraft = section.querySelector('textarea');
           failedDraft.value = pending.querySelector('.record').textContent;
-          draftSources.get(failedDraft).manual = true;
-          rejections.set(failedDraft, {ask: true, message, draft: body.text});
+          draftSources.set(failedDraft, draftSource(failedDraft, true));
+          rejections.set(failedDraft, {message, draft: body.text});
           pending.remove();
           const thread = section.querySelector('.thread');
           thread.hidden = !thread.querySelector('.thread-messages > *, .pending-asks > *');
@@ -2754,7 +2757,7 @@ if (send) {
     section.dataset.revision = record.revision;
     section.dataset.pending = record.delivery === 'pending' ? '1' : '0';
     field.defaultValue = field.value = record.answer;
-    draftSources.set(field, {manual: false, filled: field.value});
+    draftSources.set(field, draftSource(field));
     forget(field);
 
     const saved = section.querySelector('.saved-answer');
