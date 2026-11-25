@@ -60,7 +60,8 @@ Pages link to `images/<id>/<file>` relative to themselves. When rendering
 into the current store's state directory, pages use its saved images. When
 rendering elsewhere, Quarterdeck copies images beside the pages, reuses
 identical files already there, and refuses to overwrite other files at
-those paths. Keep the `images` folder with the exported pages.
+those paths. A missing or unreadable saved image stops the render before it
+writes pages. Keep the `images` folder with the exported pages.
 
 Exports in a separate directory keep image copies of removed items until you
 delete `<output>/images/<id>/` by hand. A refused render can leave new image

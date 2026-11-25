@@ -61,9 +61,10 @@ See [Answer questions](answer-questions.md) to send decisions.
 
 ### A question that points to a review page
 
-When a question is easier to decide with a picture or a mock-up, add `links` to
-that question. Use descriptive link text so the reader knows what they will
-see. For field requirements, see the
+To send readers to an external review page, add `links` to the question. Use
+descriptive link text so the reader knows what they will see. To show local
+mockups on the item page, see [Questions with images](#questions-with-images).
+For link field requirements, see the
 [item store reference](../reference/item-store.md#format-version-1).
 
 ```json
