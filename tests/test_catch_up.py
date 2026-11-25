@@ -342,6 +342,9 @@ class CatchUpPageTests(CatchUpCase):
   });
   (async () => {
     check(control('C1'), 'Conflict recovery should preserve the original Desk page');
+    check(status.getAttribute('role') === 'status' && status.getClientRects().length &&
+          status.getBoundingClientRect().height <= 1 && getComputedStyle(status).visibility === 'visible',
+          'The empty live region should be available without reserving visible space');
     check(noticeDay() === 'Nov 26, 2026', 'The initial notice should show the next date in Manila');
     const form = document.getElementById('talk-form');
     const draft = document.getElementById('talk-message');
@@ -359,6 +362,7 @@ class CatchUpPageTests(CatchUpCase):
     await failed;
     check(control('C3') && !bulk.disabled && status.textContent === retryMessage,
           'A failed save should keep the notice, restore the controls, and offer retry');
+    check(status.getBoundingClientRect().height > 1, 'The failure message should be visible');
     window.fetch = async () => new Response('<h1>Sign in</h1>', {headers:{'Content-Type':'text/html'}});
     await clickAndWait(control('C3'));
     check(control('C3') && status.textContent === retryMessage,

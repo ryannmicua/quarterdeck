@@ -2238,7 +2238,7 @@ textarea { display:block; width:100%; resize:vertical; background:var(--ground);
 .desk .work:has(.card-link:focus-visible) { outline:3px solid var(--focus); outline-offset:-3px; }
 .desk .card-link { display:inline-block; padding:.35rem 0; }
 .desk .card-link::after { content:""; position:absolute; inset:0; }
-.sr { position:absolute; width:1px; height:1px; overflow:hidden; clip-path:inset(50%); white-space:nowrap; }
+.sr, [data-catch-up-status]:empty { position:absolute; width:1px; height:1px; overflow:hidden; clip-path:inset(50%); white-space:nowrap; }
 .button-link, .work-action { display:inline-flex; align-items:center; min-height:44px; padding:.5rem .85rem; border-radius:5px; font:600 var(--text-md)/1.3 var(--sans);
   text-decoration:none; border:1px solid var(--soft); background:var(--raised); color:var(--ink); }
 .work-action { background:var(--ink); color:var(--raised); border-color:var(--ink); }
@@ -2255,7 +2255,6 @@ textarea { display:block; width:100%; resize:vertical; background:var(--ground);
 .note h3 { font:700 var(--text-md)/1.3 var(--sans); margin:0; }
 .note p { margin:.15rem 0 0; }
 .note .meta { display:flex; flex-wrap:wrap; gap:0 1rem; font-size:var(--text-md); }
-[data-catch-up-status]:empty { display:none; }
 .roster { list-style:none; margin:.5rem 0 0; padding:0; border-top:1px solid var(--rule); font-family:var(--sans); }
 .roster > li { padding:.9rem 0; border-bottom:1px solid var(--rule); }
 .roster p { margin:.15rem 0 0; }
