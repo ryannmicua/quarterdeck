@@ -6,7 +6,7 @@ This file is the project's committed home for project-intrinsic agent knowledge:
 
 ## Project notes
 
-- Preserve the boundary: Quarterdeck items are saved by hand with `quarterdeck add`. The workers section runs only the home's read-only `bin/fm-fleet-snapshot.sh --local`. See `docs/explanation/privacy-and-architecture.md` for the file access and serving boundaries.
+- Preserve the boundary: Quarterdeck items are saved by hand with `quarterdeck add`, except a conversation the owner starts from the Desk. The workers section runs only the home's read-only `bin/fm-fleet-snapshot.sh --local`. See `docs/explanation/privacy-and-architecture.md` for the file access and serving boundaries.
 - Validation commands live in `CONTRIBUTING.md`.
 
 ## Maintaining this file

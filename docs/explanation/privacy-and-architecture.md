@@ -1,7 +1,8 @@
 # Privacy and architecture
 
 Quarterdeck is a shelf the captain fills by hand. Firstmate saves an item only
-when the captain asks, with `quarterdeck add`. The page shows those items and,
+when the captain asks, with `quarterdeck add`. The captain can also start a
+conversation with Firstmate from the Desk. The page shows those items and,
 when enabled, the live Firstmate workers roster.
 
 ## What Quarterdeck reads and writes
@@ -31,12 +32,13 @@ Apart from explicitly supplied `add` inputs, images named with `reply --image`,
 and the workers snapshot,
 Quarterdeck reads no backlog, board, topic, report, ledger or saved session
 from a Firstmate home, and it does not read terminal text. Quarterdeck keeps the
-workers snapshot only for the current request. It saves card asks and replies
+workers snapshot only for the current request. It saves card asks, conversation messages and replies
 with their timestamps in the [item store](../reference/item-store.md#conversations).
 Quarterdeck writes nothing to the home except through the configured home's
 `bin/fm-inbox.sh note` command on explicit answer or ask submission. It passes
 an answer as the part ID followed by the text. Asks go to the explicit
-`firstmate_home` using the [ask note format](../reference/cli-and-config.md#ask-endpoint).
+`firstmate_home` using the [ask note format](../reference/cli-and-config.md#ask-endpoint),
+and a [conversation](../how-to/talk-to-firstmate.md) message goes the same way with its own note format.
 Replies come back only through `quarterdeck reply`, which Firstmate runs on
 the same machine. Quarterdeck never calls a model.
 

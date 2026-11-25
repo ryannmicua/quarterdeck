@@ -5,19 +5,22 @@ at viewport widths up to `40rem` and a right-side drawer at wider widths.
 Select **Close library**, press Escape, or tap outside the library to return
 to the Desk.
 
-The pop-out has two tabs.
+The pop-out has three tabs.
 
 - **References** lists saved links and lists, newest first.
 - **Answered** lists question items that have left the Desk, newest saved items
   first. Select an item title to read its questions and saved answers.
+- **Conversations** lists the [conversations you started](talk-to-firstmate.md), newest
+  first, each under its topic.
 
 With a tab focused, use the left or right arrow to switch tabs. Home opens
-References, and End opens Answered.
+References, and End opens Conversations.
 
 ## Search
 
 Use the search box in either tab to match text in the title or description.
-**Answered** also searches question and saved answer text. Search ignores case
+**Answered** also searches question and saved answer text, and **Conversations**
+also searches every message. Search ignores case
 and matches every space-separated term literally. Enter an exact ID on its
 own, such as `Q5` to find item Q5 or `Q5.3` to find Q5 if it has a third
 question.
@@ -41,7 +44,7 @@ or **Close library**.
 An item stays on the Desk while it has an open question or a non-closed
 question with an answer awaiting delivery. Otherwise it appears under
 **Answered**. Pending asks and unread replies leave the item in its current
-listing. Both the Desk and the library’s **Answered** tab show **Replied** while
+listing. The Desk and the library’s **Answered** and **Conversations** tabs show **Replied** while
 an item has unread replies. See [how to read and acknowledge replies](ask-firstmate.md#read-replies).
 
 Reopen a question with `quarterdeck mark Q5.2 open` to return
@@ -51,5 +54,5 @@ its item to the Desk. The item stays saved until you remove it with
 ## Rendered pages
 
 If the store has saved items, a page written by `quarterdeck render` shows
-References and Answered as plain sections after the Desk. The Answered section
+References, Answered and Conversations as plain sections after the Desk. The Answered section
 links each title to its item page.

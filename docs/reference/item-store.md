@@ -41,7 +41,7 @@ a read-only store. Other readers validate records without taking the lock.
 | --- | --- |
 | `next_id` | The number the next item gets. It only grows, so a removed item's ID is never given out again. |
 | `id` | Uppercase `Q` followed by a positive integer without leading zeros. Parts are cited as `Q3.1`, `Q3.2` in the order they are stored. |
-| `kind` | `resource`, `list` or `questions`. It does not change. |
+| `kind` | `resource`, `list`, `questions` or `conversation`. It does not change. |
 | `title` | Up to 200 characters after whitespace is collapsed to single spaces. |
 | `description` | Up to 600 characters describing what the item is and why it was saved. |
 | `saved_at` | UTC time when the item was saved. |
@@ -156,7 +156,7 @@ and [export behavior](cli-and-config.md#rendered-images).
 
 ## Conversations
 
-A questions item may contain a `conversation` object. The key `item` holds the
+A questions item may contain a `conversation` object. A `conversation` item always has one, with only the key `item`: its `body` is `{}` and its `description` is the first message, cut to fit. A conversation item is started from the Desk with **Talk to Firstmate**, and `quarterdeck add` cannot save one. Its messages are kept strictly in the order they were saved, and a reply names the message it answers. The key `item` holds the
 whole item's messages, oldest first. The object can also use one-based part
 numbers as string keys for its numbered questions. The conversation is kept
 apart from `answers`. Existing numbered threads keep their keys.

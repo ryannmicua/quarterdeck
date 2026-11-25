@@ -36,7 +36,7 @@ uppercase form.
 | `add` | Saves a new item and prints its ID. A `resource` needs `--url` and `--link-text`. A `list` or `questions` item needs `--body-file`. See [the input formats and examples](../how-to/save-items.md#add-an-item) and [how to classify items and questions when saving](../how-to/classify-items.md#classify-when-you-save). |
 | `list` | Prints saved items, newest first, with ID, kind, saved date and title. |
 | `show` | Prints the item's text, numbering list entries and questions as `Q7.1`, `Q7.2`. Includes question links, stored states, and saved answers with their timestamps and delivery status. |
-| `reply` | Adds Firstmate's reply to an existing ask on a whole question item (`Q7`) or one question (`Q7.1`). It preserves saved answers and question states. Supply the required `--ask ID` from the inbox note and the reply in `--text`. Pair `--link-text` with `--url` and `--image` with `--alt` in the order given. See [Reply from the command line](../how-to/reply-from-the-command-line.md). |
+| `reply` | Adds Firstmate's reply to an existing ask on a whole question item (`Q7`) or one question (`Q7.1`), or to a message in a [conversation](../how-to/talk-to-firstmate.md) (`Q12`). It preserves saved answers and question states. Supply the required `--ask ID` from the inbox note and the reply in `--text`. Pair `--link-text` with `--url` and `--image` with `--alt` in the order given. See [Reply from the command line](../how-to/reply-from-the-command-line.md). |
 | `mark` | Sets question state, optionally for a whole questions item. `--via` is required with `answered` and accepted only with that state. Skips exit with status 0. See [Read answers](../how-to/read-answers.md) for which questions are marked. |
 | `classify` | Requires at least one classification option. Use `--project` for an item ID, `--kind` for a question ID, and `--tag` for either. See [how to change classification](../how-to/classify-items.md#change-it-later). |
 | `stats` | Prints a question activity table by default or JSON with `--json`. See [Read the report](../how-to/read-the-report.md) for date filtering and field definitions. |
@@ -113,6 +113,26 @@ and a `saved` flag indicating whether the matching ask remains in the store.
 The inbox note starts with
 `ASK Q7 <ask id>` for the whole item or `ASK Q7.1 <ask id>` for one question,
 followed by the ask text.
+
+### Conversation endpoint
+
+`POST /conversations` (under any `base_path`) requires the explicit
+`firstmate_home` and the same origin as `/answers`. Send
+`{"id": "<message id>", "title": "...", "text": "...", "home": "<home binding>"}`
+to save a new conversation item and deliver its first message. The title is the
+topic, up to 200 characters. The page generates the 32-character lowercase
+hexadecimal ID. Repeating the same request reuses the saved conversation
+instead of creating another, and retries delivery of the first message while it
+is pending. The same ID with a different topic or text returns 409. A successful
+response has the fields of `/asks` plus `item` (the new ID, such as `Q12`) and
+`href` (its page).
+
+Later messages use `POST /asks` with `"part": "Q12"`. A conversation has no
+questions, so nothing closes it.
+The inbox note for every conversation message is
+`CONVERSATION Q12 <message id> Topic: <topic>`, a line break, then the message
+text. Reply with `quarterdeck reply Q12 --ask <message id> --text ...`. Reply
+acknowledgment uses `"part": "Q12"`.
 
 ### Reply acknowledgment endpoint
 
