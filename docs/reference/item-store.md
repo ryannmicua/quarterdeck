@@ -45,6 +45,8 @@ records without taking the lock.
 | `title` | Up to 200 characters after whitespace is collapsed to single spaces. |
 | `description` | Up to 600 characters describing what the item is and why it was saved. |
 | `saved_at` | UTC time when the item was saved. |
+| `project` | Optional. The project or repository the item belongs to: up to 40 characters of letters, digits, spaces, dots, hyphens and underscores. |
+| `tags` | Optional list of up to three [classification tags](cli-and-config.md#classification). Left out when empty. |
 | `body` | Depends on the kind; see below. |
 
 | Kind | `body` |
@@ -53,12 +55,24 @@ records without taking the lock.
 | `list` | `{"entries": ["...", "..."]}`, at least one. |
 | `questions` | A nonempty `questions` array of objects. `question` and `context` are required text fields. `options` can be empty when the object has a `suggestion`. Each question may include `links`, an array of objects with exactly two fields, `text` and `url`. See [question images](#question-images) for option and attachment fields. |
 
+A question may also carry `kind` (one word) and its own `tags` (up to three),
+described in [Classification](#classification). Both are left out when empty.
+
 Resource and question link URLs must use `http` or `https`, include a hostname,
 and pass port validation. After trimming, a URL may contain at most 2,000
 characters and cannot contain whitespace or backslashes.
 Question link `text` must be nonempty and is limited to 200 characters after
 whitespace is collapsed to single spaces. Quarterdeck omits an empty `links`
 array when saving.
+
+## Classification
+
+`project` and `tags` on an item, and `kind` and `tags` on a question, are
+lowercase words (a project keeps its capitals). The store checks only that
+each is well formed. The allowed values live in the [config](cli-and-config.md#classification)
+and are checked when `add`, `classify` or `mark` writes. A question's tags in a
+report include its item's tags. Items saved before these fields existed need no
+migration.
 
 ## Inline web addresses
 
@@ -139,4 +153,8 @@ and [export behavior](cli-and-config.md#rendered-images).
 
 Questions items may contain an `answers` object keyed by the one-based part number as a string. Missing entries mean Open. Records carry `state` (open, answered or closed) and an opaque `revision` for detecting concurrent edits. Older items need no migration.
 
-A browser answer also stores `answer` (plain text, up to 20,000 characters), `answered_at` (UTC), `delivery` (pending or sent) and a stable `request_id` for inbox retries. The answer is saved before delivery. A correction replaces the current record and gets a new request ID. The [`mark` command](cli-and-config.md#items) also refreshes the revision.
+A browser answer also stores `answer` (plain text, up to 20,000 characters), `answered_at` (UTC), `delivery` (pending or sent), a stable `request_id` for inbox retries and `via` set to `desk`. The answer is saved before delivery. A correction replaces the current record and gets a new request ID. The [`mark` command](cli-and-config.md#items) also refreshes the revision.
+
+An answer given somewhere else, recorded with `mark ... answered --via`, stores `via` (one of the configured answered-via values), `answered_at` (UTC) and an optional `note` of up to 600 characters. It has no `answer`, `delivery` or `request_id`, and nothing is sent to the inbox. A record that is answered but carries no source at all comes from before sources were recorded; reports count it as answered elsewhere, with no wait.
+
+The item's `saved_at` and the record's `answered_at` are both UTC. Reports measure the wait between them.

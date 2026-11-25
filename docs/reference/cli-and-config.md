@@ -5,9 +5,13 @@
 ```text
 quarterdeck add --kind resource|list|questions --title TEXT --description TEXT
                 [--url URL --link-text TEXT] [--body-file PATH|-]
+                [--project NAME] [--tag TAG ...] [--config FILE]
 quarterdeck list
 quarterdeck show ID
-quarterdeck mark ID[.PART] answered|closed|open
+quarterdeck mark ID[.PART] answered --via WHERE [--note TEXT] [--config FILE]
+quarterdeck mark ID[.PART] closed|open
+quarterdeck classify ID[.PART] [--project NAME] [--tag TAG ...] [--kind KIND] [--config FILE]
+quarterdeck stats [--since DATE] [--json] [--config FILE]
 quarterdeck remove ID
 quarterdeck render [--output PATH] [--config FILE] [--title TEXT]
 quarterdeck serve [--host ADDRESS ...] [--port N] [--base-path PATH] [--tls-cert FILE --tls-key FILE] [--config FILE] [--title TEXT]
@@ -25,10 +29,12 @@ Item commands report validation errors on stderr and exit with status 2.
 
 | Command | What it does |
 | --- | --- |
-| `add` | Saves a new item and prints its ID. A `resource` needs `--url` and `--link-text`. A `list` or `questions` item needs `--body-file`. See [the input formats and examples](../how-to/save-items.md#add-an-item). |
+| `add` | Saves a new item and prints its ID. A `resource` needs `--url` and `--link-text`. A `list` or `questions` item needs `--body-file`. `--project` and `--tag` (repeatable, up to three) classify the item; a question may carry its own `kind` and `tags` in the body. See [the input formats and examples](../how-to/save-items.md#add-an-item) and [Classify items](../how-to/classify-items.md). |
 | `list` | Prints saved items, newest first, with ID, kind, saved date and title. |
 | `show` | Prints the item's text, numbering list entries and questions as `Q7.1`, `Q7.2`. Each question link is printed with its text and URL. |
-| `mark` | Sets the state of one question or every question in a questions item. It preserves any saved answer, timestamp and delivery status. See [Read answers](../how-to/read-answers.md) for examples. |
+| `mark` | Sets the state of one question or every question in a questions item. `answered` records an answer given somewhere other than the page and needs `--via` (one of the [answered-via values](#classification)); `--note` adds a short note. Marking an item skips questions that are already answered. A single question that is already answered is refused: mark it `open` first. `closed` and `open` keep any saved answer, time and source. See [Read answers](../how-to/read-answers.md) for examples. |
+| `classify` | Sets or replaces the project and tags of an item (`Q7`), or the kind and tags of one question (`Q7.3`), without touching its content or answers. Options you leave out stay as they are; `--tag` replaces every tag already there. A kind is for a question and a project is for an item, so each is refused on the other. See [Classify items](../how-to/classify-items.md). |
+| `stats` | Counts questions by kind, tag and project. `--since DATE` keeps questions saved on or after that UTC date; `--json` prints the numbers as JSON. See [Read the report](../how-to/read-the-report.md) for the columns and the JSON fields. |
 | `remove` | Deletes an item. Its ID is never used again. See [image removal](item-store.md#store-layout). |
 
 ### Pages
@@ -116,6 +122,30 @@ or `${XDG_CONFIG_HOME:-~/.config}/quarterdeck.json` when it exists.
 | `output_dir` | string path | `${XDG_STATE_HOME:-~/.local/state}/quarterdeck` | Where `render` writes the pages. |
 | `base_path` | string | none | The URL prefix described above. |
 | `firstmate_home` | absolute path after expanding `~` | unset | Local destination for answers submitted to `serve`, and the home whose workers the page lists. |
+| `classification` | object | the defaults below | The kinds, tags and answered-via values `add`, `classify` and `mark` accept. |
+
+### Classification
+
+The `classification` section holds up to three lists. Each is a list of
+different lowercase words (letters, digits and single hyphens, up to 30
+characters). A list you leave out keeps its default. A list you give replaces
+the default whole.
+
+| Key | Default | Accepted by |
+| --- | --- | --- |
+| `kinds` | `pick`, `confirm`, `rule`, `wording`, `scope`, `approve`, `inform` | a question's `kind` |
+| `tags` | `product-design`, `ui`, `architecture`, `business-rule`, `terminology`, `process`, `bug`, `security-privacy`, `release`, `research` | an item's or a question's `tags` |
+| `answered_via` | `chat`, `review-page`, `elsewhere`, `superseded` | `mark --via` |
+
+```json
+{"classification": {"tags": ["billing", "onboarding", "bug"]}}
+```
+
+A value outside its list is refused when you save it, and the message names the
+allowed values. The lists are checked only when something is written: changing
+them never makes a saved item unreadable, and `stats` and the pages show
+whatever is stored. `desk` is the source Quarterdeck records for an answer sent
+from the page. It is always valid and cannot appear in `answered_via`.
 
 When `firstmate_home` is absent, `serve` uses a legacy `homes` list only for
 answer delivery and only if it contains exactly one object with a valid

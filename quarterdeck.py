@@ -20,6 +20,7 @@ import signal
 import socket
 import ssl
 import stat
+import statistics
 import subprocess
 import sys
 import tempfile
@@ -38,7 +39,7 @@ from urllib.parse import quote, unquote, urlparse
 DEFAULT_TITLE = "Quarterdeck"
 DEFAULT_HOST = "127.0.0.1"
 DEFAULT_PORT = 8765
-ALLOWED_CONFIG_KEYS = {"page_title", "output_dir", "base_path", "firstmate_home"}
+ALLOWED_CONFIG_KEYS = {"page_title", "output_dir", "base_path", "firstmate_home", "classification"}
 # Legacy configuration. Only a sole registered home can supply the note destination.
 LEGACY_CONFIG_KEYS = {"homes", "captain_waits"}
 # Split so the privacy guard, which rejects committed generated pages by this marker, does not flag the source.
@@ -131,6 +132,8 @@ def load_config(path: Path | None) -> dict[str, object]:
             raise ValueError(f"config {exc}") from exc
     if "output_dir" in config and not isinstance(config["output_dir"], str):
         raise ValueError("config output_dir must be a path string")
+    if "classification" in config:
+        classification_rules(config)
     return config
 
 
@@ -197,6 +200,87 @@ def write_private_bytes(path: Path, data: bytes) -> None:
 
 
 # --- The item store -----------------------------------------------------------------
+# Classification. The allowed kinds, tags and answered-via values come from the private config's `classification`
+# section; the lists below are the generic defaults. The store only checks that a value is well formed, so changing the
+# lists never makes an old item unreadable.
+
+DEFAULT_CLASSIFICATION = {
+    "kinds": ("pick", "confirm", "rule", "wording", "scope", "approve", "inform"),
+    "tags": ("product-design", "ui", "architecture", "business-rule", "terminology", "process", "bug",
+             "security-privacy", "release", "research"),
+    "answered_via": ("chat", "review-page", "elsewhere", "superseded"),
+}
+CLASSIFICATION_NAMES = {"kinds": "kind", "tags": "tag", "answered_via": "via"}
+DESK = "desk"  # where an answer sent from the page came from; always allowed, never listed in the config
+WORD_RE = re.compile(r"[a-z][a-z0-9]*(?:-[a-z0-9]+)*")
+WORD_LIMIT = 30
+TAG_LIMIT = 3
+PROJECT_LIMIT = 40
+NOTE_LIMIT = 600
+
+
+def classification_rules(config: dict[str, object]) -> dict[str, tuple[str, ...]]:
+    """The allowed values: the config's `classification` section over the defaults."""
+    section = config.get("classification", {})
+    if not isinstance(section, dict):
+        raise ValueError("config classification must be an object")
+    unknown = sorted(set(section) - set(DEFAULT_CLASSIFICATION))
+    if unknown:
+        raise ValueError(f"unsupported config classification key(s): {', '.join(unknown)}")
+    rules = dict(DEFAULT_CLASSIFICATION)
+    for name, values in section.items():
+        if (not isinstance(values, list) or not values or len(set(values)) != len(values)
+                or not all(isinstance(v, str) and WORD_RE.fullmatch(v) and len(v) <= WORD_LIMIT for v in values)):
+            raise ValueError(f"config classification {name} must be a list of different lowercase words "
+                             "(letters, digits and single hyphens)")
+        if name == "answered_via" and DESK in values:
+            raise ValueError(f"config classification answered_via must not list {DESK}: the page records it")
+        rules[name] = tuple(values)
+    return rules
+
+
+def clean_word(value: object, name: str, allowed: tuple[str, ...] | None) -> str:
+    """One classification word, lowercased; checked against the allowed list when there is one."""
+    word = clean_text(value, name, WORD_LIMIT).lower()
+    if not WORD_RE.fullmatch(word):
+        raise ValueError(f"{name} must be one lowercase word (letters, digits and single hyphens)")
+    if allowed is not None and word not in allowed:
+        raise ValueError(f"unknown {name} {word!r}; allowed: {', '.join(allowed)}")
+    return word
+
+
+def clean_tags(raw: object, where: str, rules: dict[str, tuple[str, ...]] | None) -> list[str]:
+    if not isinstance(raw, list):
+        raise ValueError(f"{where} tags must be a list")
+    tags = list(dict.fromkeys(clean_word(tag, f"{where} tag", rules["tags"] if rules else None) for tag in raw))
+    if len(tags) > TAG_LIMIT:
+        raise ValueError(f"{where} can carry at most {TAG_LIMIT} tags")
+    return tags
+
+
+def clean_project(value: object) -> str:
+    project = clean_text(value, "project", PROJECT_LIMIT)
+    if not all(character.isalnum() or character in " ._-" for character in project):
+        raise ValueError("project must be a short word or name (letters, digits, spaces, hyphens, dots, underscores)")
+    return project
+
+
+def clean_note(value: object) -> str:
+    return clean_text(value, "note", NOTE_LIMIT, multiline=True)
+
+
+def item_classification(raw_project: object, raw_tags: object, rules: dict[str, tuple[str, ...]] | None,
+                        ) -> dict[str, object]:
+    """The project and tags to store on an item, left out when empty."""
+    fields: dict[str, object] = {}
+    if raw_project is not None:
+        fields["project"] = clean_project(raw_project)
+    tags = clean_tags(raw_tags if raw_tags is not None else [], "item", rules)
+    if tags:
+        fields["tags"] = tags
+    return fields
+
+
 # Item records live in one JSON file. Every item was saved by hand through `quarterdeck add`; its body is stored by value
 # at save time and never read again from anywhere else. An ID is never reused, even after its item is removed.
 
@@ -442,7 +526,8 @@ def item_image_files(item: dict[str, object]) -> set[str]:
     return files
 
 
-def question_entries(raw: object, pending: dict[str, bytes] | None = None) -> list[dict[str, object]]:
+def question_entries(raw: object, pending: dict[str, bytes] | None = None,
+                     rules: dict[str, tuple[str, ...]] | None = None) -> list[dict[str, object]]:
     if not isinstance(raw, list) or not raw:
         raise ValueError("questions body must be a non-empty JSON array")
     image_count = 0
@@ -458,7 +543,7 @@ def question_entries(raw: object, pending: dict[str, bytes] | None = None) -> li
         if not isinstance(images, list):
             raise ValueError(f"{where} images must be a list")
         image_count += len(images)
-        unknown = sorted(set(entry) - {"question", "context", "options", "suggestion", "links", "images"})
+        unknown = sorted(set(entry) - {"question", "context", "options", "suggestion", "links", "images", "kind", "tags"})
         if unknown:
             raise ValueError(f"{where} has unsupported field(s): {', '.join(unknown)}")
         choices: list[object] = []
@@ -498,6 +583,11 @@ def question_entries(raw: object, pending: dict[str, bytes] | None = None) -> li
         links = question_links(entry.get("links", []), where)
         if links:
             cleaned["links"] = links
+        if entry.get("kind") is not None:
+            cleaned["kind"] = clean_word(entry["kind"], f"{where} kind", rules["kinds"] if rules else None)
+        tags = clean_tags(entry.get("tags", []), where, rules)
+        if tags:
+            cleaned["tags"] = tags
         if not cleaned["options"] and "suggestion" not in cleaned:
             raise ValueError(f"{where} needs options or a suggestion to decide from")
         questions.append(cleaned)
@@ -506,18 +596,19 @@ def question_entries(raw: object, pending: dict[str, bytes] | None = None) -> li
     return questions
 
 
-def validated_body(kind: str, body: object, pending: dict[str, bytes] | None = None) -> dict[str, object]:
+def validated_body(kind: str, body: object, pending: dict[str, bytes] | None = None,
+                   rules: dict[str, tuple[str, ...]] | None = None) -> dict[str, object]:
     if not isinstance(body, dict):
         raise ValueError("body must be an object")
     if kind == "resource":
         return {"url": clean_url(body.get("url")), "link_text": clean_text(body.get("link_text"), "link text", TITLE_LIMIT)}
     if kind == "list":
         return {"entries": list_entries(body.get("entries"))}
-    return {"questions": question_entries(body.get("questions"), pending)}
+    return {"questions": question_entries(body.get("questions"), pending, rules)}
 
 
 def make_body(kind: str, *, url: str | None, link_text: str | None, body: str | None,
-              images: dict[str, bytes]) -> dict[str, object]:
+              images: dict[str, bytes], rules: dict[str, tuple[str, ...]] | None = None) -> dict[str, object]:
     if kind == "resource":
         if url is None or link_text is None:
             raise ValueError("a resource needs --url and --link-text")
@@ -534,7 +625,7 @@ def make_body(kind: str, *, url: str | None, link_text: str | None, body: str | 
         questions = json.loads(body)
     except json.JSONDecodeError as exc:
         raise ValueError(f"questions body is not valid JSON: {exc}") from exc
-    return validated_body(kind, {"questions": questions}, images)
+    return validated_body(kind, {"questions": questions}, images, rules)
 
 
 def check_store(data: object) -> dict[str, object]:
@@ -569,6 +660,9 @@ def check_store(data: object) -> dict[str, object]:
             body = validated_body(item["kind"], item.get("body"))
             if (title, description, body) != (item["title"], item["description"], item["body"]):
                 raise ValueError("item text or body is not in the saved format")
+            if item_classification(item.get("project"), item.get("tags"), None) != {
+                    k: item[k] for k in ("project", "tags") if k in item}:
+                raise ValueError("item project or tags are not in the saved format")
             if "answers" in item:
                 validate_records(item)
         except ValueError as exc:
@@ -677,6 +771,18 @@ def part_record(item, part):
     return item.get("answers", {}).get(str(part), {})
 
 
+ANSWER_FIELDS = ("answer", "answered_at", "delivery", "request_id", "via", "note")
+
+
+def answer_via(record):
+    """Where an answered question's answer came from: desk, or one of the answered-via values."""
+    if record.get("state") != "answered":
+        return None
+    if "via" in record:
+        return record["via"]
+    return DESK if "answer" in record else "elsewhere"  # a bare mark from before answers carried a source
+
+
 def delivery_pending(record):
     return record.get("delivery") == "pending" and record.get("state") != "closed"
 
@@ -692,8 +798,15 @@ def validate_records(item):
         if record.get("state") not in ("open", "answered", "closed") or not re.fullmatch(
                 r"[0-9a-f]{32}", str(record.get("revision"))):
             raise ValueError("invalid question state")
-        if any(k in record for k in ("answer", "answered_at", "delivery", "request_id")):
-            if (clean_text(record.get("answer"), "answer", TEXT_LIMIT, multiline=True) != record["answer"]
+        if any(k in record for k in ANSWER_FIELDS):
+            via = record.get("via", DESK)
+            if via != DESK:
+                clean_word(via, "via", None)
+                if any(k in record for k in ("answer", "delivery", "request_id")):
+                    raise ValueError("invalid saved answer")
+                if "note" in record and clean_note(record["note"]) != record["note"]:
+                    raise ValueError("invalid answer note")
+            elif ("note" in record or clean_text(record.get("answer"), "answer", TEXT_LIMIT, multiline=True) != record["answer"]
                     or record.get("delivery") not in ("pending", "sent")
                     or not re.fullmatch(r"quarterdeck-[0-9a-f]{32}", str(record.get("request_id")))):
                 raise ValueError("invalid saved answer")
@@ -706,21 +819,79 @@ def put_record(item, part, state, **fields):
     return record
 
 
+def part_numbers(item, target):
+    """The question numbers a command names: one question (Q7.3) or all of an item (Q7)."""
+    parts = question_parts(item)
+    _, dot, part = target.partition(".")
+    if not dot:
+        return list(parts)
+    if not re.fullmatch(r"[1-9][0-9]*", part) or int(part) not in parts:
+        raise ValueError("Unknown question.")
+    return [int(part)]
+
+
 def mark_item(args):
     def action():
-        item_id, dot, part = args.id.partition(".")
+        via = note = None
+        if args.state == "answered":
+            if args.via is None:
+                allowed = classification_rules(selected_config(args))["answered_via"]
+                raise ValueError(f"marking answered needs --via, where the answer came from: {', '.join(allowed)}")
+            via = clean_word(args.via, "via", classification_rules(selected_config(args))["answered_via"])
+            note = clean_note(args.note) if args.note is not None else None
+        elif args.via is not None or args.note is not None:
+            raise ValueError("--via and --note go with answered")
+        item_id, dot, _ = args.id.partition(".")
+        changed = 0
         with changing_store(store_path()) as data:
             item = find_item(data, item_id)
-            parts = question_parts(item)
-            if dot:
-                if not re.fullmatch(r"[1-9][0-9]*", part) or int(part) not in parts:
-                    raise ValueError("Unknown question.")
-                parts = [int(part)]
-            for number in parts:
+            for number in part_numbers(item, args.id):
                 previous = part_record(item, number)
-                put_record(item, number, args.state, **{k: previous[k] for k in
-                           ("answer", "answered_at", "delivery", "request_id") if k in previous})
-        print(f"{args.id.upper()} {args.state.capitalize()}")
+                if args.state != "answered":
+                    put_record(item, number, args.state, **{k: previous[k] for k in ANSWER_FIELDS if k in previous})
+                elif previous.get("state") == "answered":
+                    if dot:
+                        raise ValueError(f"{args.id.upper()} is already answered; mark it open first to record a new answer")
+                else:
+                    put_record(item, number, "answered", via=via, answered_at=now_text(), **({"note": note} if note else {}))
+                    changed += 1
+            if args.state == "answered" and not changed:
+                raise ValueError(f"every question in {item['id']} is already answered")
+        print(f"{args.id.upper()} {args.state.capitalize()}" + (f" via {via}" if via else ""))
+        return 0
+    return run_item_command(action)
+
+
+def classify_item(args):
+    def action():
+        if args.project is None and args.tags is None and args.kind is None:
+            raise ValueError("give at least one of --project, --tag or --kind")
+        rules = classification_rules(selected_config(args))
+        item_id, dot, _ = args.id.partition(".")
+        with changing_store(store_path()) as data:
+            item = find_item(data, item_id)
+            if dot:
+                if args.project is not None:
+                    raise ValueError("a project belongs to the whole item; classify " + item["id"] + " instead")
+                number = part_numbers(item, args.id)[0]
+                question = item["body"]["questions"][number - 1]
+                if args.kind is not None:
+                    question["kind"] = clean_word(args.kind, "kind", rules["kinds"])
+                if args.tags is not None:
+                    tags = clean_tags(args.tags, "question", rules)
+                    question["tags"] = tags
+                    if not tags:
+                        del question["tags"]
+            else:
+                if args.kind is not None:
+                    raise ValueError("a kind belongs to one question; classify a question such as " + item["id"] + ".1")
+                if args.project is not None:
+                    item["project"] = clean_project(args.project)
+                if args.tags is not None:
+                    item.pop("tags", None)
+                    fields = item_classification(None, args.tags, rules)
+                    item.update(fields)
+        print(f"{args.id.upper()} Classified")
         return 0
     return run_item_command(action)
 
@@ -762,7 +933,7 @@ def send_answer(store, home, payload):
         if same:
             record = old
         else:
-            record = put_record(item, part, "answered", answer=answer, answered_at=now_text(),
+            record = put_record(item, part, "answered", answer=answer, answered_at=now_text(), via=DESK,
                                 delivery="pending", request_id="quarterdeck-" + uuid.uuid4().hex)
     # The first transaction commits before the external call. Serialize delivery against edits and reuse its note ID on retries.
     if home and delivery_pending(record):
@@ -790,6 +961,10 @@ def item_text(item: dict[str, object]) -> str:
     item_id, body = str(item["id"]), item["body"]
     lines = [f"{item_id} · {item['title']}", f"{KIND_LABELS[str(item['kind'])]} · saved {saved_day(item)}",
              "", str(item["description"]), ""]
+    if item.get("project"):
+        lines.insert(2, f"Project: {item['project']}")
+    if item.get("tags"):
+        lines.insert(3 if item.get("project") else 2, "Tags: " + ", ".join(item["tags"]))
     if item["kind"] == "resource":
         lines.append(f"{body['link_text']}: {body['url']}")  # type: ignore[index]
     elif item["kind"] == "list":
@@ -800,6 +975,10 @@ def item_text(item: dict[str, object]) -> str:
         lines.extend([f"{state} ({remaining} of {len(question_parts(item))} open)" if remaining else state, ""])
         for number, question in enumerate(body["questions"], 1):  # type: ignore[index]
             lines.append(f"{item_id}.{number}  {question['question']}")
+            if question.get("kind"):
+                lines.append(f"      Kind: {question['kind']}")
+            if question.get("tags"):
+                lines.append("      Tags: " + ", ".join(question["tags"]))
             lines.append(f"      Context: {question['context']}")
             for link in question.get("links", []):
                 lines.append(f"      Link: {link['text']}: {link['url']}")
@@ -811,6 +990,10 @@ def item_text(item: dict[str, object]) -> str:
             lines.append("      " + record.get("state", "open").capitalize())
             if "answer" in record:
                 lines.append(f"      Answer: {record['answer']} ({record['answered_at']}, {delivery_label(record)})")
+            elif "via" in record:
+                lines.append(f"      Answered elsewhere: {record['via']} ({record['answered_at']})")
+                if record.get("note"):
+                    lines.append(f"      Note: {record['note']}")
     return "\n".join(lines).rstrip() + "\n"
 
 
@@ -877,11 +1060,13 @@ def remove_images(store: Path, item: dict[str, object]) -> None:
 def add_item(args: argparse.Namespace) -> int:
     def action() -> int:
         images: dict[str, bytes] = {}
-        body = make_body(args.kind, url=args.url, link_text=args.link_text, body=read_body(args.body_file), images=images)
+        rules = classification_rules(selected_config(args))
+        body = make_body(args.kind, url=args.url, link_text=args.link_text, body=read_body(args.body_file), images=images,
+                         rules=rules)
         item: dict[str, object] = {
             "kind": args.kind, "title": clean_text(args.title, "title", TITLE_LIMIT),
             "description": clean_text(args.description, "description", DESCRIPTION_LIMIT, multiline=True),
-            "saved_at": now_text(), "body": body,
+            "saved_at": now_text(), **item_classification(args.project, args.tags, rules), "body": body,
         }
         store = store_path()
         with locked_store(store):
@@ -926,6 +1111,126 @@ def remove_item(args: argparse.Namespace) -> int:
         except (OSError, ValueError) as exc:
             raise ValueError(f"removed {item['id']} from the store but could not delete its images: {exc}") from exc
         print(f"Removed {item['id']}; its ID is not reused")
+        return 0
+    return run_item_command(action)
+
+
+# --- Report -------------------------------------------------------------------------------
+# Counts questions by kind, tag and project. A question's tags are its own plus its item's.
+# It reads only the store and never decides whether anything was answered elsewhere.
+
+UNCLASSIFIED = "unclassified"
+
+
+def parse_utc(text: object) -> datetime:
+    return datetime.strptime(str(text), "%Y-%m-%dT%H:%M:%SZ").replace(tzinfo=timezone.utc)
+
+
+def question_facts(data: dict[str, object], since: str | None) -> list[dict[str, object]]:
+    facts = []
+    for item in data["items"]:  # type: ignore[union-attr]
+        if item["kind"] != "questions" or (since and saved_day(item) < since):
+            continue
+        for number, question in enumerate(item["body"]["questions"], 1):
+            record = part_record(item, number)
+            via = answer_via(record)
+            wait = None
+            if via and "answered_at" in record:
+                wait = max(0, int((parse_utc(record["answered_at"]) - parse_utc(item["saved_at"])).total_seconds()))
+            facts.append({
+                "kind": question.get("kind"), "project": item.get("project"), "state": record.get("state", "open"),
+                "tags": list(dict.fromkeys([*question.get("tags", []), *item.get("tags", [])])),
+                "via": via, "wait": wait,
+                "matched": via == DESK and " ".join(str(record["answer"]).split()) == " ".join(str(question.get("suggestion", "\0")).split()),
+            })
+    return facts
+
+
+def median_seconds(waits: list[int]) -> int | None:
+    return int(statistics.median(waits)) if waits else None
+
+
+def summarize(facts: list[dict[str, object]], via_values: list[str]) -> dict[str, object]:
+    answered = [fact for fact in facts if fact["via"]]
+    elsewhere = [fact for fact in answered if fact["via"] != DESK]
+    return {
+        "saved": len(facts),
+        "answered_desk": len(answered) - len(elsewhere),
+        "answered_elsewhere": len(elsewhere),
+        "via": {value: sum(1 for fact in elsewhere if fact["via"] == value) for value in via_values},
+        "open": sum(1 for fact in facts if fact["state"] == "open"),
+        "closed": sum(1 for fact in facts if fact["state"] == "closed"),
+        "median_wait_seconds": median_seconds([int(f["wait"]) for f in answered if f["wait"] is not None]),
+        "median_wait_desk_seconds": median_seconds([int(f["wait"]) for f in answered if f["via"] == DESK and f["wait"] is not None]),
+        "median_wait_elsewhere_seconds": median_seconds([int(f["wait"]) for f in elsewhere if f["wait"] is not None]),
+        "matched_suggestion": sum(1 for fact in answered if fact["matched"]),
+    }
+
+
+def build_report(data: dict[str, object], since: str | None, rules: dict[str, tuple[str, ...]]) -> dict[str, object]:
+    facts = question_facts(data, since)
+    found = {str(f["via"]) for f in facts if f["via"] and f["via"] != DESK}
+    via_values = [*rules["answered_via"], *sorted(found - set(rules["answered_via"]))]
+    groups: dict[str, dict[str, list[dict[str, object]]]] = {"by_kind": {}, "by_tag": {}, "by_project": {}}
+    for fact in facts:
+        groups["by_kind"].setdefault(str(fact["kind"] or UNCLASSIFIED), []).append(fact)
+        groups["by_project"].setdefault(str(fact["project"] or UNCLASSIFIED), []).append(fact)
+        for tag in fact["tags"] or [UNCLASSIFIED]:  # type: ignore[union-attr]
+            groups["by_tag"].setdefault(str(tag), []).append(fact)
+    report: dict[str, object] = {"since": since, "via_values": via_values, "total": summarize(facts, via_values)}
+    for name, group in groups.items():
+        report[name] = {key: summarize(group[key], via_values) for key in sorted(group, key=lambda k: (k == UNCLASSIFIED, k))}
+    return report
+
+
+def wait_text(seconds: object) -> str:
+    if seconds is None:
+        return "none"
+    minutes = int(seconds) // 60  # type: ignore[call-overload]
+    days, rest = divmod(minutes, 1440)
+    hours, minutes = divmod(rest, 60)
+    if days:
+        return f"{days}d {hours}h"
+    return f"{hours}h {minutes}m" if hours else f"{minutes}m"
+
+
+def report_table(title: str, rows: dict[str, dict[str, object]], via_values: list[str]) -> list[str]:
+    heads = [title, "Saved", "Desk", *(value.replace("-", " ").capitalize() for value in via_values),
+             "Open", "Closed", "Median wait", "Matched"]
+    table = [heads] + [[label, *(str(v) for v in (r["saved"], r["answered_desk"], *r["via"].values(),  # type: ignore[union-attr]
+                                                  r["open"], r["closed"])), wait_text(r["median_wait_seconds"]),
+                        str(r["matched_suggestion"])] for label, r in rows.items()]
+    widths = [max(len(row[column]) for row in table) for column in range(len(heads))]
+    return ["  ".join(cell.ljust(widths[0]) if column == 0 else cell.rjust(widths[column])
+                      for column, cell in enumerate(row)).rstrip() for row in table]
+
+
+def report_text(report: dict[str, object]) -> str:
+    since = report["since"]
+    lines = [f"Questions saved since {since}" if since else "All saved questions"]
+    via_values = report["via_values"]  # type: ignore[assignment]
+    if not report["total"]["saved"]:  # type: ignore[index]
+        return lines[0] + "\nNo questions saved.\n"
+    for title, key in (("All", "total"), ("Kind", "by_kind"), ("Tag", "by_tag"), ("Project", "by_project")):
+        rows = {"All questions": report[key]} if key == "total" else report[key]  # type: ignore[dict-item]
+        lines += ["", *report_table(title, rows, via_values)]  # type: ignore[arg-type]
+    return "\n".join(lines) + "\n"
+
+
+def show_stats(args: argparse.Namespace) -> int:
+    def action() -> int:
+        since = None
+        if args.since is not None:
+            try:
+                since = datetime.strptime(args.since, "%Y-%m-%d").strftime("%Y-%m-%d")
+            except ValueError as exc:
+                raise ValueError("--since must be a date such as 2026-11-01") from exc
+        rules = classification_rules(selected_config(args))
+        store = store_path()
+        with locked_store(store, read_only=True):
+            data = read_store(store)
+        report = build_report(data, since, rules)
+        print(json.dumps(report, indent=2) if args.as_json else report_text(report), end="" if not args.as_json else "\n")
         return 0
     return run_item_command(action)
 
@@ -1221,7 +1526,19 @@ table.items td.when { white-space:normal; }
 .status.exception { color:var(--signal); background:var(--signal-ground); border-color:var(--signal); }
 .failed { color:var(--signal); }
 #workers h3 { font:700 var(--text-md)/1.3 var(--sans); margin:1.4rem 0 0; }
+.tags { display:flex; flex-wrap:wrap; gap:.3rem .5rem; list-style:none; margin:.35rem 0 0; padding:0; font-family:var(--sans); }
+.tags li { font-size:var(--text-sm); color:var(--soft); border:1px solid var(--rule); border-radius:5px; padding:.05rem .5rem; }
+.desk .work > .tags { grid-column:1; padding-inline-start:0; margin:.5rem 0 0; }
+.project-name { color:var(--soft); font-size:var(--text-sm); font-weight:400; }
+.group-name { font:700 var(--text-md)/1.3 var(--sans); margin:1.4rem 0 .3rem; color:var(--soft); }
+.filters { display:flex; flex-wrap:wrap; gap:.6rem 1.2rem; align-items:end; margin:.6rem 0; font-family:var(--sans); }
+.filters label { display:flex; flex-direction:column; gap:.2rem; font-size:var(--text-sm); color:var(--soft); }
+.filters select { min-height:var(--tap); min-width:min(100%,12rem); max-width:100%; font:var(--text-md)/1.3 var(--sans); padding:.4rem .6rem;
+  background:var(--raised); color:var(--ink); border:1px solid var(--soft); border-radius:5px; }
+.saved-answer .record:empty { display:none; }
+table.items td.project { white-space:normal; }
 @media (max-width: 40rem) {
+  table.items td.project { display:inline; color:var(--soft); margin-right:.6rem; }
   .desk .work { grid-template-columns:minmax(0,1fr); }
   .desk .work > .actions { grid-column:1; grid-row:auto; justify-content:flex-start; margin-top:.6rem; }
 }
@@ -1377,12 +1694,72 @@ def linked_text(value: object) -> str:
     return "".join(parts) + esc(text[last:])
 
 
+FILTER_SCRIPT = """
+for (const bar of document.querySelectorAll('.filters')) {
+  const list = document.getElementById(bar.dataset.list);
+  const selects = [...bar.querySelectorAll('select')];
+  const none = list.parentElement.querySelector('.no-match');
+  const apply = () => {
+    let shown = 0;
+    for (const entry of list.querySelectorAll('[data-project]')) {
+      const [project, tag] = selects.map(select => select.value);
+      const ok = (!project || entry.dataset.project === project) && (!tag || entry.dataset.tags.split('|').includes(tag));
+      entry.hidden = !ok;
+      if (ok) shown += 1;
+    }
+    none.hidden = shown > 0;
+  };
+  for (const select of selects) select.addEventListener('change', apply);
+}
+"""
+
+
+def tag_text(tag: str) -> str:
+    return tag.replace("-", " ")
+
+
+def tag_labels(tags: list[str]) -> str:
+    return '<ul class="tags">' + "".join(f"<li>{esc(tag_text(tag))}</li>" for tag in tags) + "</ul>" if tags else ""
+
+
+def all_tags(item) -> list[str]:
+    """An item's tags, then those of its questions."""
+    tags = list(item.get("tags", []))
+    if item["kind"] == "questions":
+        for question in item["body"]["questions"]:
+            tags.extend(question.get("tags", []))
+    return list(dict.fromkeys(tags))
+
+
+def filter_data(item) -> str:
+    return f' data-project="{esc(item.get("project", ""))}" data-tags="{esc("|".join(all_tags(item)))}"'
+
+
+def filter_bar(list_id: str, items) -> str:
+    """Project and tag filters for a list; a filter shows only when it could tell the items apart."""
+    projects = sorted({item["project"] for item in items if item.get("project")}, key=str.casefold)
+    tags = sorted({tag for item in items for tag in all_tags(item)})
+    fields = ""
+    for label, name, values, unset in (("Project", "projects", projects, any(not i.get("project") for i in items)),
+                                       ("Tag", "tags", tags, any(not all_tags(i) for i in items))):
+        if len(values) > 1 or (values and unset):
+            options = "".join(f'<option value="{esc(v)}">{esc(tag_text(v) if name == "tags" else v)}</option>' for v in values)
+            fields += f'<label>{label}<select><option value="">All {name}</option>{options}</select></label>'
+    if not fields:
+        return ""
+    return (f'<div class="filters" data-list="{list_id}">{fields}</div>')
+
+
+def no_match() -> str:
+    return '<p class="empty no-match" hidden>Nothing matches these filters.</p>'
+
+
 def item_page_name(item_id: str) -> str:
     return f"{item_id.lower()}.html"
 
 
 def page_shell(title: str, site_title: str, body: str, *, served: bool, saved_name: str, interactive: bool = False,
-               workers: bool = False) -> str:
+               workers: bool = False, filters: bool = False) -> str:
     saved_href = quote(saved_name, safe="")
     links = (
         '<link rel="manifest" href="manifest.webmanifest">\n  <link rel="icon" href="icon.svg" type="image/svg+xml">\n'
@@ -1394,20 +1771,24 @@ def page_shell(title: str, site_title: str, body: str, *, served: bool, saved_na
         f"  {GENERATED_MARKER}\n  <title>{esc(title)}</title>\n  {links}<style>{PAGE_CSS}</style>\n</head>\n<body>\n"
         f'<header class="bar"><a class="mark" href="{saved_href}">{esc(site_title)}</a>'
         f'<nav><a href="{saved_href}">Saved</a></nav></header>\n'
-        f"<main>\n{body}\n</main><script>{TIME_SCRIPT}{ANSWER_SCRIPT if interactive else ''}{WORKERS_SCRIPT if workers else ''}</script>\n</body>\n</html>\n"
+        f"<main>\n{body}\n</main><script>{TIME_SCRIPT}{ANSWER_SCRIPT if interactive else ''}{WORKERS_SCRIPT if workers else ''}{FILTER_SCRIPT if filters else ''}</script>\n</body>\n</html>\n"
     )
 
 
 def items_table(items: list[dict[str, object]]) -> str:
+    projects = any(item.get("project") for item in items)
     rows = "".join(
-        f'<tr><td class="id">{esc(item["id"])}</td><td class="kind">{esc(KIND_LABELS[str(item["kind"])])}</td>'
-        f'<td class="title"><a href="{item_page_name(str(item["id"]))}">{esc(item["title"])}</a></td>'
+        f'<tr{filter_data(item)}><td class="id">{esc(item["id"])}</td><td class="kind">{esc(KIND_LABELS[str(item["kind"])])}</td>'
+        + (f'<td class="project">{esc(item.get("project", ""))}</td>' if projects else '')
+        + f'<td class="title"><a href="{item_page_name(str(item["id"]))}">{esc(item["title"])}</a>{tag_labels(all_tags(item))}</td>'
         f'<td class="description">{linked_text(item["description"])}</td>'
         f'<td class="when"><time datetime="{esc(item["saved_at"])}">{esc(saved_day(item))}</time></td></tr>'
         for item in items
     )
-    return ('<table class="items"><thead><tr><th scope="col">ID</th><th scope="col">Kind</th><th scope="col">Title</th>'
-            f'<th scope="col">Description</th><th scope="col">Saved</th></tr></thead><tbody>{rows}</tbody></table>')
+    return ('<table class="items"><thead><tr><th scope="col">ID</th><th scope="col">Kind</th>'
+            + ('<th scope="col">Project</th>' if projects else '')
+            + '<th scope="col">Title</th>'
+            f'<th scope="col">Description</th><th scope="col">Saved</th></tr></thead><tbody id="references-list">{rows}</tbody></table>')
 
 
 def delivery_label(record):
@@ -1422,7 +1803,7 @@ def question_summary(item) -> tuple[str, list[int], bool]:
     return state, open_parts, pending
 
 
-def question_card(item, summary, *, served, primary):
+def question_card(item, summary, *, served, primary, show_project=True):
     state, open_parts, pending = summary
     remaining = len(open_parts)
     href = item_page_name(item["id"])
@@ -1436,9 +1817,11 @@ def question_card(item, summary, *, served, primary):
     first_link = next((link_html(questions[n - 1]["links"][0], prefix=f'{item["id"]}.{n} ')
                        for n in open_parts if questions[n - 1].get("links")), '')
     visual = f'<p class="visual">{first_link}</p>' if first_link else ''
-    return (f'<article class="work{' next' if primary else ''}"><div class="eyebrow"><span class="id">{item["id"]}</span> Questions</div>'
+    project = f' <span class="project-name">{esc(item["project"])}</span>' if show_project and item.get("project") else ""
+    return (f'<article class="work{' next' if primary else ''}"{filter_data(item)}><div class="eyebrow"><span class="id">{item["id"]}</span> Questions{project}</div>'
             f'<h3>{esc(item["title"])}</h3><p>{linked_text(item["description"])}</p>'
             + (f'<ul>{prompts}</ul>' if prompts else '')
+            + tag_labels(all_tags(item))
             + visual
             + f'<div class="actions"><span class="badge">{progress}</span>'
             + ('<span>Not delivered</span>' if pending else '')
@@ -1517,11 +1900,12 @@ def question_form(item, served):
         answer = record.get("answer", "")
         editable = served and status != "closed"
         saved = ""
-        if answer or editable:
+        elsewhere = "via" in record and not answer
+        if answer or elsewhere or editable:
             at = esc(record.get("answered_at", ""))
-            delivery = delivery_label(record) if answer else ""
-            hidden = "" if answer else " hidden"
-            saved = (f'<div class="saved-answer"{hidden}><p class="record">{esc(answer)}</p>'
+            delivery = "Answered elsewhere" if elsewhere else delivery_label(record) if answer else ""
+            hidden = "" if answer or elsewhere else " hidden"
+            saved = (f'<div class="saved-answer"{hidden}><p class="record">{esc(answer or record.get("note", ""))}</p>'
                      f'<p class="meta"><span class="delivery">{delivery}</span> '
                      f'<time datetime="{at}">{at}</time></p></div>')
         editor = ""
@@ -1546,7 +1930,9 @@ def question_form(item, served):
             if question.get("suggestion"):
                 controls += f'<p><strong>Suggested answer</strong><br>{linked_text(question["suggestion"])}</p>'
         cards.append(f'<section class="decision" id="{part}" aria-labelledby="title-{part}"{editor}>'
-                     f'<div class="eyebrow"><span class="id">{part}</span><span class="badge">{status.capitalize()}</span></div>'
+                     f'<div class="eyebrow"><span class="id">{part}</span><span class="badge">{status.capitalize()}</span>'
+                     f'{f"<span>{esc(question['kind'].capitalize())}</span>" if question.get("kind") else ""}</div>'
+                     f'{tag_labels(question.get("tags", []))}'
                      f'<h2 id="title-{part}">{linked_text(question["question"])}</h2><p>{linked_text(question["context"])}</p>'
                      f'{question_shots(item, question)}{saved}{controls}</section>')
     total = len(cards)
@@ -1705,7 +2091,6 @@ def list_page(data: dict[str, object], site_title: str, *, served: bool, saved_n
     items = newest_first(data["items"])  # type: ignore[arg-type]
     empty = "Nothing is saved yet. Ask Firstmate to send something to Quarterdeck: a link, a list or open questions."
     attention, reviewed, references = [], [], []
-    primary = None
     for item in items:
         if item["kind"] != "questions":
             references.append(item)
@@ -1713,30 +2098,47 @@ def list_page(data: dict[str, object], site_title: str, *, served: bool, saved_n
         summary = question_summary(item)
         _, open_parts, pending = summary
         (attention if open_parts or pending else reviewed).append((item, summary))
-        if open_parts and primary is None:
-            primary = item
+    # With more than one project on the Desk, its cards group by project, the group holding the newest item first.
+    projects = list(dict.fromkeys(item.get("project", "") for item, _ in attention))
+    grouped = len(projects) > 1
+    if grouped:
+        attention = [pair for project in projects for pair in attention if pair[0].get("project", "") == project]
+    primary = next((item for item, summary in attention if summary[1]), None)
     body = ""
 
-    def desk(group) -> str:
-        cards = "".join(question_card(item, summary, served=served, primary=item is primary) for item, summary in group)
-        return f'<div class="desk">{cards}</div>'
+    def desk(group, *, list_id: str = "", show_project: bool = True) -> str:
+        cards = "".join(question_card(item, summary, served=served, primary=item is primary, show_project=show_project)
+                        for item, summary in group)
+        return f'<div class="desk"{f' id="{list_id}"' if list_id else ""}>{cards}</div>'
 
     if attention:
-        body += "<h1>My desk</h1>" + desk(attention)
+        body += "<h1>My desk</h1>"
+        if grouped:
+            for project in projects:
+                members = [pair for pair in attention if pair[0].get("project", "") == project]
+                body += f'<h2 class="group-name">{esc(project or "No project")}</h2>' + desk(members, show_project=False)
+        else:
+            body += desk(attention)
     elif served:
         nothing = empty if not items else "Nothing is waiting for you. Saved questions that need an answer show here."
         body += f'<h1>My desk</h1><p class="empty">{esc(nothing)}</p>'
     if served:
         body += workers_section(workers)
+    filters = False
     if reviewed:
         level = 2 if body else 1
-        body += f"<h{level}>Reviewed questions</h{level}>" + desk(reviewed)
+        bar = filter_bar("reviewed-list", [item for item, _ in reviewed])
+        filters = filters or bool(bar)
+        body += f"<h{level}>Reviewed questions</h{level}>" + bar + desk(reviewed, list_id="reviewed-list") + (no_match() if bar else "")
     if references:
         level = 2 if body else 1
-        body += f"<h{level}>References</h{level}>" + items_table(references)
+        bar = filter_bar("references-list", references)
+        filters = filters or bool(bar)
+        body += f"<h{level}>References</h{level}>" + bar + items_table(references) + (no_match() if bar else "")
     if not items and not served:
         body = f'<h1>Saved</h1><p class="empty">{esc(empty)}</p>'
-    return page_shell(site_title, site_title, body, served=served, saved_name=saved_name, workers=served and workers)
+    return page_shell(site_title, site_title, body, served=served, saved_name=saved_name, workers=served and workers,
+                      filters=filters)
 
 
 def item_body_html(item: dict[str, object]) -> str:
@@ -1756,8 +2158,9 @@ def item_page(item: dict[str, object], site_title: str, *, served: bool, saved_n
     content = question_form(item, served) if item["kind"] == "questions" else item_body_html(item)
     body = (
         f'<p class="id">{esc(item_id)}</p><h1>{esc(item["title"])}</h1>'
-        f'<p class="meta">{esc(KIND_LABELS[str(item["kind"])])} · saved <time datetime="{esc(item["saved_at"])}">'
-        f'{esc(saved_day(item))}</time></p>'
+        f'<p class="meta">{esc(KIND_LABELS[str(item["kind"])])}{" · " + esc(item["project"]) if item.get("project") else ""}'
+        f' · saved <time datetime="{esc(item["saved_at"])}">{esc(saved_day(item))}</time></p>'
+        f'{tag_labels(list(item.get("tags", [])))}'
         f'<p class="lead">{linked_text(item["description"])}</p>{content}'
     )
     return page_shell(f"{item_id} {item['title']} · {site_title}", site_title, body,
@@ -2362,7 +2765,9 @@ def url(args: argparse.Namespace) -> int:
 
 COMMAND_DOCS = {
     "mark": ["how-to/read-answers.md", "reference/item-store.md"],
-    "add": ["how-to/save-items.md", "reference/cli-and-config.md", "reference/item-store.md"],
+    "classify": ["how-to/classify-items.md", "reference/cli-and-config.md", "reference/item-store.md"],
+    "stats": ["how-to/read-the-report.md", "reference/cli-and-config.md"],
+    "add": ["how-to/save-items.md", "how-to/classify-items.md", "reference/cli-and-config.md", "reference/item-store.md"],
     "list": ["how-to/save-items.md", "reference/cli-and-config.md"],
     "show": ["how-to/read-answers.md", "how-to/save-items.md", "reference/cli-and-config.md"],
     "remove": ["how-to/save-items.md", "reference/cli-and-config.md"],
@@ -2417,7 +2822,7 @@ def show_help(args: argparse.Namespace) -> int:
 # --- command line -------------------------------------------------------------------------
 
 KIND_HELP = ("resource (a link: --url and --link-text), list (one entry per non-blank line), "
-             "questions (a JSON array of {question, context, options, suggestion, links, images}; "
+             "questions (a JSON array of {question, context, options, suggestion, links, images, kind, tags}; "
              "links is a list of {text, url} shown above the options; an option may be "
              "{label, image}, and an image is {path, alt}, copied into the private store when saved)")
 
@@ -2453,6 +2858,11 @@ def make_parser() -> argparse.ArgumentParser:
     add.add_argument("--description", required=True, help="one or two sentences: what it is and why it was saved")
     add.add_argument("--url", help="a resource's http(s) address")
     add.add_argument("--link-text", help="a resource's link text")
+    add.add_argument("--project", help="the project or repository the item belongs to: one short word or name")
+    add.add_argument("--tag", dest="tags", action="append", metavar="TAG",
+                     help=f"a topic tag, repeatable, up to {TAG_LIMIT}; the allowed tags are the classification tags in the config "
+                          f"(default: {', '.join(DEFAULT_CLASSIFICATION['tags'])})")
+    add.add_argument("--config", type=Path, help="optional JSON config file; its classification section lists the allowed values")
     add.add_argument("--body-file", metavar="PATH", help="the body of a list or questions; - reads standard input. Questions may carry PNG, JPEG or still WebP images "
                                                           "(up to 5 MB each) that are copied in when saved")
 
@@ -2462,9 +2872,32 @@ def make_parser() -> argparse.ArgumentParser:
     show.add_argument("id", help="item ID, such as Q7")
 
     mark = command("mark", "mark questions answered, closed or open",
-                   "Set the state of a question (Q7.3) or every question in an item (Q7).", mark_item)
+                   "Set the state of a question (Q7.3) or every question in an item (Q7). Marking answered records an "
+                   "answer given somewhere other than the page, and needs --via.", mark_item)
     mark.add_argument("id", help="question or item ID")
     mark.add_argument("state", choices=("answered", "closed", "open"))
+    mark.add_argument("--via", metavar="WHERE", help="with answered: where the answer came from, one of the config's classification "
+                                                    f"answered_via values (default: {', '.join(DEFAULT_CLASSIFICATION['answered_via'])})")
+    mark.add_argument("--note", help="with answered: a short note about the answer, shown on the question")
+    mark.add_argument("--config", type=Path, help="optional JSON config file; its classification section lists the allowed values")
+
+    classify = command("classify", "set an item's or question's classification",
+                       "Set or replace the project and tags of an item (Q7), or the kind and tags of one question (Q7.3), "
+                       "without touching its content or answers. Options you leave out stay as they are.", classify_item)
+    classify.add_argument("id", help="item ID such as Q7, or question ID such as Q7.3")
+    classify.add_argument("--project", help="an item's project (item IDs only)")
+    classify.add_argument("--tag", dest="tags", action="append", metavar="TAG",
+                          help=f"a tag, repeatable, up to {TAG_LIMIT}; replaces the tags already there")
+    classify.add_argument("--kind", help=f"a question's kind (question IDs only; default: {', '.join(DEFAULT_CLASSIFICATION['kinds'])})")
+    classify.add_argument("--config", type=Path, help="optional JSON config file; its classification section lists the allowed values")
+
+    stats = command("stats", "count questions by kind, tag and project",
+                    "Print, by kind, by tag and by project: questions saved, answered on the Desk, answered elsewhere "
+                    "(per where the answer came from), still open, closed, median wait from saved to answered, and how many "
+                    "Desk answers matched the suggestion.", show_stats)
+    stats.add_argument("--since", metavar="DATE", help="only questions saved on or after this UTC date, such as 2026-11-01")
+    stats.add_argument("--json", dest="as_json", action="store_true", help="print the same numbers as JSON")
+    stats.add_argument("--config", type=Path, help="optional JSON config file; its classification section lists the answered_via values to show")
 
     remove = command("remove", "delete an item", "Delete an item. Its ID is never given to another item.", remove_item)
     remove.add_argument("id", help="item ID, such as Q7")

@@ -37,6 +37,10 @@ the saved content.
 - `quarterdeck add`, `list`, `show` and `remove` for
   Firstmate to manage items. `add` prints the new ID. See
   [Save items to Quarterdeck](docs/how-to/save-items.md).
+- `quarterdeck classify` and `stats` give items a project and tags, questions a
+  kind, and report how they get answered. See
+  [Classify items](docs/how-to/classify-items.md) and
+  [Read the report](docs/how-to/read-the-report.md).
 - `quarterdeck serve` serves the page; each request reads the store, so a new
   item shows on the next load. HTTPS, a reverse-proxy path prefix and a systemd
   user service are supported. See [Serve the page](docs/how-to/serve-the-page.md).
