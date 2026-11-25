@@ -1618,6 +1618,27 @@ class QuestionImageTests(ImageCase):
         self.assertEqual(self.store()["items"] if quarterdeck.store_path().exists() else [], [])
         self.assertFalse((quarterdeck.store_path().parent / "images").exists())
 
+    def test_named_pipe_is_refused_before_opening_in_either_attachment_type(self) -> None:
+        pipe = self.pictures / "mockup.png"
+        os.mkfifo(pipe)
+        image = {"path": str(pipe), "alt": "A mockup"}
+        open_file = open
+
+        def refuse_pipe_open(path, *args, **kwargs):
+            if str(path) == str(pipe):
+                self.fail("add attempted to open a named pipe")
+            return open_file(path, *args, **kwargs)
+
+        for fields in ({"options": ["A"], "images": [image]}, {"options": [{"label": "A", "image": image}]}):
+            with self.subTest(fields=fields), patch("builtins.open", side_effect=refuse_pipe_open):
+                question = {"question": "Which?", "context": "Pick one.", **fields}
+                code, _, err = self.run_cli("add", "--kind", "questions", "--title", "T", "--description", "D",
+                                            "--body-file", "-", stdin=json.dumps([question]))
+                self.assertEqual(code, 2)
+                self.assertIn("must be a regular file", err)
+                self.assertIn(pipe.name, err)
+        self.assertFalse(quarterdeck.store_path().exists())
+
     def test_truncated_images_are_refused_in_either_attachment_type(self) -> None:
         for filename, content in (
             ("short.png", tiny_png((1, 2, 3))[:-12]),
@@ -1984,8 +2005,21 @@ class QuestionImagePageTests(ImageCase):
     def test_add_and_render_write_images_without_hard_link_support(self) -> None:
         expected = {self.red.read_bytes(), self.blue.read_bytes(), self.wide.read_bytes()}
         output = self.root / "site" / "index.html"
-        unsupported = OSError(errno.EOPNOTSUPP, "Hard links are unsupported")
-        with patch.object(os, "link", side_effect=unsupported):
+        staged = {}
+        os_open = os.open
+
+        def link_unsupported(temporary, target):
+            staged[target] = Path(temporary)
+            raise OSError(errno.EOPNOTSUPP, "Hard links are unsupported")
+
+        def open_with_space_for_one_copy(path, flags, *args, **kwargs):
+            temporary = staged.get(Path(path))
+            if flags & os.O_EXCL and temporary is not None and temporary.exists():
+                raise OSError(errno.ENOSPC, "Only one image copy fits")
+            return os_open(path, flags, *args, **kwargs)
+
+        with (patch.object(os, "link", side_effect=link_unsupported),
+              patch.object(os, "open", side_effect=open_with_space_for_one_copy)):
             self.assertEqual(self.add_pictured(), "Q1")
             code, _, err = self.run_cli("render", "--output", str(output))
             self.assertEqual(code, 0, err)
@@ -2039,7 +2073,11 @@ class QuestionImagePageTests(ImageCase):
                                            "--body-file", "-", stdin=json.dumps(self.pictured()))
         self.assertEqual(code, 2)
         self.assertIn("disk full", err)
-        self.assertTrue(stray.exists())
+        self.assertEqual(stray.read_text(), "kept")
+        self.assertCountEqual(
+            [path.read_bytes() for path in images.iterdir() if path != stray],
+            [picture.read_bytes() for picture in (self.red, self.blue, self.wide)],
+        )
         self.assertEqual(self.add_pictured(), "Q1")
         self.assertEqual(len(list(images.iterdir())), 4)
 

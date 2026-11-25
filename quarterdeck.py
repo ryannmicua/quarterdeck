@@ -372,6 +372,8 @@ def read_images(named: list[tuple[dict[str, str], str]], pending: dict[str, byte
     for image, where in named:
         value = image["file"]
         if real[value] not in files:
+            if not os.path.isfile(real[value]):
+                raise ValueError(f"{where} must be a regular file: {value!r}")
             try:
                 with open(real[value], "rb") as stream:
                     data = stream.read(IMAGE_BYTES_LIMIT + 1)
