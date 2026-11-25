@@ -2519,6 +2519,7 @@ const quiet = () => new Promise(resolve => setTimeout(resolve, 1500));
         steps = """
   const headings = () => [...document.querySelectorAll('#workers :is(h1,h2,h3,h4,h5,h6)')]
     .map(heading => heading.tagName + ' ' + heading.textContent).join('|');
+  check(statusLine.textContent === 'Loading workers', 'Entry without a reading must show that it is loading');
   button.click();
   await settled();
   check(requestCount('workers-saved.json') === 1, 'Expected one saved read on entry');
@@ -2551,12 +2552,23 @@ const quiet = () => new Promise(resolve => setTimeout(resolve, 1500));
             self.skipTest("google-chrome is required for the workers browser test")
         port = self.start("/qd", workers_home=self.make_home([snapshot_task("Wren")]))
         steps = """
-  await settled();
+  const refreshed = settled();
+  await new Promise(resolve => {
+    const watcher = new MutationObserver(() => {
+      if (roster.textContent.includes('Wren')) { watcher.disconnect(); resolve(); }
+    });
+    watcher.observe(roster, {childList: true});
+  });
+  check(statusLine.textContent.startsWith('Refreshing workers.') &&
+        statusLine.querySelector('time')?.dateTime === '2026-03-02T13:40:00Z' &&
+        button.getAttribute('aria-disabled') === 'true', 'The saved time and refresh progress must appear together');
+  await refreshed;
   check(requestCount('workers-saved.json') === 1 && requestCount('workers.json?reuse=1') === 1 &&
         requestCount('workers.json') === 0, 'Entry did not request a single automatic check');
   check(!roster.textContent.includes('Wren') && roster.textContent.includes('Bracken'),
         'The expired roster was not replaced');
-  check(statusLine.querySelector('time')?.dateTime === '2026-03-02T14:45:00Z', 'The expired time was not replaced');
+  check(statusLine.textContent.startsWith('Last checked ') && statusLine.querySelector('time')?.dateTime === '2026-03-02T14:45:00Z',
+        'The completed refresh did not show its new time');
 """
         with patch.object(quarterdeck, "workers_clock", return_value=100) as clock:
             self.assertEqual(self.workers(port)[0], 200)
@@ -2579,9 +2591,11 @@ const quiet = () => new Promise(resolve => setTimeout(resolve, 1500));
   check(requestCount('workers.json') === 0 && requestCount('workers.json?reuse=1') === 0,
         'A fresh saved reading was fetched again');
   check(roster.textContent.includes('Wren'), 'The saved roster did not appear');
-  check(statusLine.querySelector('time')?.dateTime === '2026-03-02T13:40:00Z', 'The saved time was not shown');
+  check(statusLine.textContent.startsWith('Last checked ') && statusLine.querySelector('time')?.dateTime === '2026-03-02T13:40:00Z',
+        'The fresh saved reading did not show its settled time');
   const checked = settled();
   button.click();
+  check(statusLine.textContent === 'Refreshing workers', 'The manual check did not show its progress');
   await checked;
   check(requestCount('workers.json') === 1 && requestCount('workers.json?reuse=1') === 0,
         'The check button did not make exactly one worker request');
@@ -2596,7 +2610,7 @@ const quiet = () => new Promise(resolve => setTimeout(resolve, 1500));
         port = self.start("/qd", workers_home=self.make_home([snapshot_task("Wren")]))
         steps = """
   await settled();
-  check(statusLine.textContent.includes('A check is already running.') && !statusLine.classList.contains('failed'),
+  check(statusLine.textContent.startsWith('A check is already running. Last checked ') && !statusLine.classList.contains('failed'),
         'A busy entry was shown as a failed check');
   check(roster.textContent.includes('Wren') && statusLine.querySelector('time')?.dateTime === '2026-03-02T13:40:00Z',
         'The saved roster or its time was lost');

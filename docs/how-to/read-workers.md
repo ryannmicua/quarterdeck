@@ -15,7 +15,9 @@ page shows a setup message. Rendered snapshots have no Workers page.
    **Last checked** and its time in your local time zone.
 2. After a successful saved-reading lookup, the page asks the server to check
    if there is no saved reading or the last successful check was more than an
-   hour ago. The server can reuse a fresh reading from another visitor's check.
+   hour ago. While refreshing an expired reading, the page shows
+   **Refreshing workers** alongside the saved time. The server can reuse a
+   fresh reading from another visitor's check.
    A lookup error appears in the status line.
 3. Select **Check workers** to read the home again once the current request
    finishes. The page checks automatically only on entry.

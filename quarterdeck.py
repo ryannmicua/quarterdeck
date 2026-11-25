@@ -2067,18 +2067,21 @@ WORKERS_SCRIPT = r"""
     box.append(roster);
     return box;
   };
-  const show = data => {
+  const lastChecked = prefix => {
+    status.textContent = prefix + 'Last checked ';
+    const time = make('time', '', localTime(lastObservedAt));
+    time.dateTime = lastObservedAt;
+    status.append(time);
+  };
+  const show = (data, prefix = '') => {
     heading.textContent = data.workers.length > 1 ? 'Workers (' + data.workers.length + ')' : 'Workers';
     list.replaceChildren();
     if (data.workers.length) list.append(group('', data.workers, false));
     else list.append(make('p', 'empty', 'No workers are running. A worker with a terminal shows here.'));
     if (data.second_mates.length) list.append(group('Second mates', data.second_mates, true));
     status.className = 'meta';
-    status.textContent = 'Last checked ';
-    const time = make('time', '', localTime(data.observed_at));
-    time.dateTime = data.observed_at;
-    status.append(time);
     lastObservedAt = data.observed_at;
+    lastChecked(prefix);
   };
   const failed = () => {
     status.className = 'meta failed';
@@ -2104,13 +2107,13 @@ WORKERS_SCRIPT = r"""
         show(await read('workers.json'));
       } else {
         const saved = await read('workers-saved.json');
-        if (saved.snapshot) show(saved.snapshot);
+        if (saved.snapshot) show(saved.snapshot, saved.stale ? 'Refreshing workers. ' : '');
         if (saved.stale) show(await read('workers.json?reuse=1', true));
       }
     } catch (error) {
       if (error === busy) {
         const message = 'A check is already running.';
-        if (lastObservedAt) status.prepend(message + ' ');
+        if (lastObservedAt) lastChecked(message + ' ');
         else status.textContent = message;
       } else {
         failed();
