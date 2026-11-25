@@ -163,8 +163,9 @@ on individual questions. These threads are separate from `answers`.
 A standalone `conversation` item requires a `conversation` object with only
 the key `item`. Its `body` is `{}` and its `description` is a generic label.
 Older descriptions are accepted and omitted from listings. The earliest
-message with a `home` field binds the conversation. See
-[how to start a conversation](../how-to/talk-to-firstmate.md).
+message with a `home` field binds the conversation. `converse` records that
+field on the opening update when a home is configured. Otherwise the owner's
+first message supplies it.
 
 Each thread stores messages in the order they were saved. Every reply
 names the earlier ask or message it answers.
@@ -175,7 +176,7 @@ text, up to 20,000 characters) and `at` (UTC).
 | `author` | Other fields |
 | --- | --- |
 | `you` | An ask or conversation message with a browser-generated ID. `delivery` (`pending` or `sent`), a stable `request_id` string for inbox retries, and `home`, a hexadecimal `sha256` digest of the resolved path of the configured Firstmate home. |
-| `firstmate` | A reply added by `quarterdeck reply`, or an update added by `quarterdeck post` or `quarterdeck converse`. `read` becomes true once the page acknowledges the message. Optional fields include `links` (the same `text` and `url` objects as question links) and `images` (`file` and `alt`). A reply has `ask`, the ID of an earlier message from `you` in the same thread. Standalone conversation updates omit `ask`. Only the opening update can carry `home`, with the same digest format as a message from `you`. A reply to a question item as a whole may include `clarify`, which maps question numbers to `text` and `option_changed` (true or false). |
+| `firstmate` | `read` (true once the page acknowledges the message) and optional `links` (the same `text` and `url` objects as question links) and `images` (`file` and `alt`). A reply also has `ask`, the ID of an earlier message from `you` in the same thread. Standalone conversation updates omit `ask`. An opening update may carry `home` in the same digest format as a message from `you`. A reply to a question item as a whole may include `clarify`, which maps question numbers to `text` and `option_changed` (true or false). |
 
 Clarification keys are one-based question numbers as strings. The clarification
 text is plain text, up to 20,000 characters. Reply images use the item's

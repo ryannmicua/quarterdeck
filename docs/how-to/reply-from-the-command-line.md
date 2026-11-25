@@ -62,27 +62,21 @@ or [conversation card](talk-to-firstmate.md#read-replies).
 
 ## Post an update or open a conversation
 
-Firstmate can add news that answers no message. `post` adds an update to a
-conversation and `converse` opens a new conversation in Firstmate's name. Both
-take the same `--link-text`/`--url` and `--image`/`--alt` options as `reply`.
-
 Before using either command, [update Quarterdeck and restart the live server](update.md)
 so it can read standalone updates in the item store.
 
 For `converse`, use the same configuration as `serve`. Pass the live config
 with `--config FILE`, or match the server's `XDG_CONFIG_HOME` when it uses the
-default config lookup. If `firstmate_home` is set,
-it must resolve to an existing directory. The conversation binds to that
-directory. With no configured home, the owner's first message establishes
-the binding.
+[default config lookup](../reference/cli-and-config.md#json-configuration).
+
+Use `post` to add an update to an existing conversation or `converse` to open
+one with a title and a first message from Firstmate.
 
 ```sh
 quarterdeck post Q12 --text "The amber lamps are installed."
-quarterdeck converse --title "Pier lamp install" --text "Started the install." # prints the new ID
+quarterdeck converse --title "Pier lamp install" --text "Started the install."
 ```
 
-An update shows in time order as a Firstmate update, not "In reply to", and
-shows as Replied until the owner opens the conversation. Neither command sends
-an inbox note, because Firstmate wrote the message. The owner replies from the
-conversation page, and Firstmate answers that message with `reply`. Updates are
-served only, like all conversations. `post` refuses question items.
+See the [CLI reference](../reference/cli-and-config.md#items) for attachments
+and command output. The owner can [respond on the conversation page](talk-to-firstmate.md#send-more-messages).
+Use [reply](#reply-in-a-conversation) to answer their message.

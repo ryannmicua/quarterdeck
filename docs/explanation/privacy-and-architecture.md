@@ -19,7 +19,7 @@ for who can start conversations and use the other browser controls.
   which items are exported.
 - `serve` reads the item store to build pages and writes to it when users
   submit answers, send asks, start conversations, send messages or acknowledge
-  replies. It also writes the [local visit log](../reference/cli-and-config.md#visit-log).
+  Firstmate messages. It also writes the [local visit log](../reference/cli-and-config.md#visit-log).
   It serves only files listed for the requested item from
   the corresponding [private image folder](../reference/item-store.md#store-layout).
   It reads the TLS certificate and key if you supply them.
@@ -30,8 +30,7 @@ for who can start conversations and use the other browser controls.
 - `service --write` writes the systemd unit. `url` reads it if it exists.
 - `install` and `update` invoke the [user-local installer](../how-to/install.md).
 
-Apart from explicitly supplied `add` inputs, images named with `--image` on
-`reply`, `post` or `converse`, and the workers snapshot,
+Apart from the explicit file inputs above and the workers snapshot,
 Quarterdeck reads no backlog, board, topic, report, ledger or saved session
 from a Firstmate home, and it does not read terminal text. The
 [saved workers reading](../reference/cli-and-config.md#workers-endpoint)
@@ -43,6 +42,7 @@ Quarterdeck writes nothing to the home except through the configured home's
 [conversation message](../reference/cli-and-config.md#conversation-endpoint).
 It passes an answer as the part ID followed by the text.
 Firstmate runs `quarterdeck reply`, `post` and `converse` on the same machine.
+These commands save messages directly to the store and send no inbox note.
 Quarterdeck never calls a model.
 
 Firstmate handles any periodic checks for decisions made in chat or on review
