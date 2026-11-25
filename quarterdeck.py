@@ -4751,9 +4751,9 @@ def make_parser() -> argparse.ArgumentParser:
         sub.add_argument("--alt", action="append", metavar="TEXT", help="alt text that describes the matching --image")
 
     reply = command("reply", "add Firstmate's reply to an ask or a conversation message",
-                    "Add Firstmate's reply under an ask on a question item (Q7) or one question (Q7.1), or under a message in a "
-                    "conversation started with Talk to Firstmate (an inbox note that begins CONVERSATION; reply to its item ID, "
-                    "such as Q12, with its message ID). The reply shows as Replied until the owner opens it. A reply leaves answers "
+                    "Add Firstmate's reply under an ask on a question item (Q7) or one question (Q7.1), or under the owner's "
+                    "message in any conversation. For a note that begins CONVERSATION, use its item ID (such as Q12) and message ID. "
+                    "The reply shows as Replied until the owner opens it. A reply leaves answers "
                     "and states intact. Pair each --link-text with a --url and each --image with an --alt, in the order given.", reply_item)
     reply.add_argument("id", help="item or question ID, such as Q7 or Q7.1; a conversation's item ID, such as Q12")
     reply.add_argument("--ask", required=True, metavar="ID", help="the ask or message ID from the inbox note")

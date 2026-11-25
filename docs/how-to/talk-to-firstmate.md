@@ -19,7 +19,7 @@ Conversations leave question answers and states unchanged.
 ## Send more messages
 
 Type in **Your message** on the conversation and select **Send message**. The
-conversation shows every message and reply from oldest to newest. Each of your
+conversation shows every message, reply and update from oldest to newest. Each of your
 messages shows **Sent** or **Not delivered**. Select **Send message again**
 under a message that shows **Not delivered** once the
 [inbox is available](read-answers.md#connect-the-inbox). The retry keeps the
@@ -31,9 +31,10 @@ messages or retry delivery.
 
 ## Read replies
 
-Firstmate replies from the command line. Reload, send a message, or retry
-delivery to refresh the conversation. The card acknowledges replies when it
-displays them. See [where unread replies appear](use-the-library.md#when-an-item-moves)
+Firstmate sends replies and standalone updates from the command line. Reload,
+send a message, or retry delivery to refresh the conversation. The card
+acknowledges replies and updates when it displays them. See
+[where unread replies and updates appear](use-the-library.md#when-an-item-moves)
 and [how Firstmate replies](reply-from-the-command-line.md#reply-in-a-conversation).
 
 ## Find a conversation later

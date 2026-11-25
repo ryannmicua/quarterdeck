@@ -5674,6 +5674,16 @@ class TalkToFirstmateTests(ImageCase):
         self.assertTrue((quarterdeck.store_path().parent / "reply-images" / "q1" / first["images"][0]["file"]).is_file())
 
         port = self.start("/qd", ask_home=home)
+
+        def assert_replied_on_desk():
+            status, page, _ = self.fetch(port, "/qd/")
+            self.assertEqual(status, 200)
+            desk = page.partition('<div class="desk"><table>')[2].partition("</table>")[0]
+            rows = [row for row in re.findall(r"<tr\b[^>]*>.*?</tr>", desk, re.DOTALL) if 'href="q1.html"' in row]
+            self.assertEqual(len(rows), 1)
+            self.assertIn('<span class="badge">Replied</span>', rows[0])
+
+        assert_replied_on_desk()
         self.assertEqual(self.post(port, "/qd/replies/read", {"part": "Q1", "ids": [first["id"]]})[0], 200)
         status, page, _ = self.fetch(port, "/qd/")
         self.assertEqual(status, 200)
@@ -5689,12 +5699,7 @@ class TalkToFirstmateTests(ImageCase):
         self.assertEqual(update["links"], [{"text": "Progress", "url": "https://example.com/progress"}])
         self.assertEqual(update["images"][0]["alt"], "A blue quay")
         self.assertTrue((quarterdeck.store_path().parent / "reply-images" / "q1" / update["images"][0]["file"]).is_file())
-        status, page, _ = self.fetch(port, "/qd/")
-        self.assertEqual(status, 200)
-        desk = page.partition('<div class="desk"><table>')[2].partition("</table>")[0]
-        rows = [row for row in re.findall(r"<tr\b[^>]*>.*?</tr>", desk, re.DOTALL) if 'href="q1.html"' in row]
-        self.assertEqual(len(rows), 1)
-        self.assertIn('<span class="badge">Replied</span>', rows[0])
+        assert_replied_on_desk()
 
         shown = self.run_cli("show", "Q1")[1]
         self.assertEqual(shown.count("Update"), 2)
@@ -6243,7 +6248,7 @@ check(posts.length === 7 && posts[6].id === posts[0].id, 'Submitting a different
         with redirect_stdout(out), self.assertRaises(SystemExit):
             quarterdeck.main(["reply", "--help"])
         self.assertIn("CONVERSATION", out.getvalue())
-        self.assertIn("Talk to Firstmate", out.getvalue())
+        self.assertIn("owner's message in any conversation", " ".join(out.getvalue().split()))
 
     def test_a_damaged_conversation_item_is_refused(self) -> None:
         port = self.start("/qd", ask_home=self.inbox())

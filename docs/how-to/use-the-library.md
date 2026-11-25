@@ -10,7 +10,7 @@ The pop-out has three tabs.
 - **References** lists saved links and lists, newest first.
 - **Answered** lists question items that have left the Desk, newest saved items
   first. Select an item title to read its questions and saved answers.
-- **Conversations** lists the [conversations you started](talk-to-firstmate.md), newest
+- **Conversations** lists conversations started by you or Firstmate, newest
   first, each under its topic.
 
 With a tab focused, use the left or right arrow to switch tabs. Home opens
@@ -48,8 +48,8 @@ listing. Both locations can show **Replied**. See
 [how to read question-card replies](ask-firstmate.md#read-replies).
 
 Standalone conversations are always in **Conversations**. They also appear on
-the Desk while they have unread replies. Both locations show **Replied** until
-you [read the replies on the card](talk-to-firstmate.md#read-replies).
+the Desk while they have unread replies or updates from Firstmate. Both
+locations show **Replied** until you [read them on the card](talk-to-firstmate.md#read-replies).
 
 Reopen a question with `quarterdeck mark Q5.2 open` to return
 its item to the Desk. The item stays saved until you remove it with
