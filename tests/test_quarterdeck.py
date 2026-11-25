@@ -1963,6 +1963,8 @@ check(!button('send').disabled && button('send').textContent === 'Send 2 answers
         self.assertEqual(self.fetch(port, "/qd/")[0], 200)
         self.assertEqual(self.fetch(port, "/q3.html")[2].get("Location"), "/qd/q3.html")
         self.assertEqual(self.fetch(port, "/qd/", host="attacker.example")[0], 403)
+        log = self.root / "state" / "quarterdeck" / "visits.jsonl"
+        self.assertEqual([json.loads(line)["page"] for line in log.read_text(encoding="utf-8").splitlines()], ["main"])
 
     def test_legacy_config_delivers_to_a_relative_home_without_ingesting_it(self) -> None:
         self.add_all_kinds()

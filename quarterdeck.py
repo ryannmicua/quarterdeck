@@ -3728,9 +3728,10 @@ class VisitLog:
 
 
 def make_handler(site_title: str, base_path: str = "", store: Path | None = None, home: Path | None = None,
-                 *, ask_home: Path | None = None, workers_home: Path | None = None,
-                 visit_log: VisitLog | None = None) -> type[BaseHTTPRequestHandler]:
+                 *, ask_home: Path | None = None, workers_home: Path | None = None) -> type[BaseHTTPRequestHandler]:
     """Every page is built from the item store when it is requested."""
+    visit_log = VisitLog(visits_path())
+
     def ask_destination(*, require_directory):
         if ask_home is not None:
             try:
@@ -3823,11 +3824,10 @@ def make_handler(site_title: str, base_path: str = "", store: Path | None = None
                 self.send_image(data, *picture.groups())
                 return
             if name == "index.html":
-                if visit_log is not None:
-                    try:
-                        visit_log.record(self.headers.get("User-Agent"))
-                    except (OSError, ValueError) as exc:  # a visit that cannot be logged must never stop the page
-                        print(f"quarterdeck: could not log the visit: {exc}", file=sys.stderr, flush=True)
+                try:
+                    visit_log.record(self.headers.get("User-Agent"))
+                except (OSError, ValueError) as exc:  # a visit that cannot be logged must never stop the page
+                    print(f"quarterdeck: could not log the visit: {exc}", file=sys.stderr, flush=True)
                 _, ask_binding = ask_destination(require_directory=True)
                 self.send_text(200, list_page(data, site_title, served=True, workers=workers_home is not None,
                                               ask_binding=ask_binding), "text/html; charset=utf-8",
@@ -3932,7 +3932,7 @@ def serve(args: argparse.Namespace) -> int:
         explicit_home = config.get("firstmate_home")
         firstmate = Path(explicit_home) if isinstance(explicit_home, str) else None
         handler = make_handler(page_title(args, config), base_path, home=answer_home(config, config_path),
-                               ask_home=firstmate, workers_home=firstmate, visit_log=VisitLog(visits_path()))
+                               ask_home=firstmate, workers_home=firstmate)
         port = args.port
         for host in bind_hosts(args):
             server = make_server(host, port, handler, tls)
