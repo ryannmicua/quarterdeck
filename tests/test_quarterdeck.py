@@ -28,6 +28,7 @@ import zlib
 from concurrent.futures import ThreadPoolExecutor
 from configparser import ConfigParser
 from contextlib import contextmanager, redirect_stderr, redirect_stdout, suppress
+from datetime import datetime, timezone
 from html import escape
 from html.parser import HTMLParser
 from pathlib import Path
@@ -744,10 +745,13 @@ class ServeTests(StoreCase):
         self.addCleanup(server.shutdown)
         return server.server_address[1]
 
-    def fetch(self, port: int, path: str, method: str = "GET", host: str | None = None) -> tuple[int, str, dict]:
+    def fetch(self, port: int, path: str, method: str = "GET", host: str | None = None,
+              user_agent: str | None = None) -> tuple[int, str, dict]:
         request = urllib.request.Request(f"http://127.0.0.1:{port}{path}", method=method)
         if host:
             request.add_header("Host", host)
+        if user_agent:
+            request.add_header("User-Agent", user_agent)
 
         class NoRedirect(urllib.request.HTTPRedirectHandler):
             def redirect_request(self, *args, **kwargs):  # noqa: ANN002, ANN003
@@ -1959,6 +1963,8 @@ check(!button('send').disabled && button('send').textContent === 'Send 2 answers
         self.assertEqual(self.fetch(port, "/qd/")[0], 200)
         self.assertEqual(self.fetch(port, "/q3.html")[2].get("Location"), "/qd/q3.html")
         self.assertEqual(self.fetch(port, "/qd/", host="attacker.example")[0], 403)
+        log = self.root / "state" / "quarterdeck" / "visits.jsonl"
+        self.assertEqual([json.loads(line)["page"] for line in log.read_text(encoding="utf-8").splitlines()], ["main"])
 
     def test_legacy_config_delivers_to_a_relative_home_without_ingesting_it(self) -> None:
         self.add_all_kinds()
@@ -1986,6 +1992,82 @@ check(!button('send').disabled && button('send').textContent === 'Send 2 answers
             status, record = self.post_answer(port, "Q3.1", "Hold")
             self.assertEqual((status, record["delivery"]), (200, "sent"))
             self.assertEqual((home / "received-note").read_text(), "Q3.1 Hold")
+
+    def test_every_served_desk_load_is_logged_under_old_and_current_service_flags(self) -> None:
+        self.add_all_kinds()
+        path = self.root / "state" / "quarterdeck" / "visits.jsonl"
+        phone = "Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) Mobile/15E148"
+        tablet = "Mozilla/5.0 (iPad; CPU OS 17_0 like Mac OS X) Mobile/15E148"
+        # An older unit passes --allow-marks and --watch-waits, which serve ignores; a current unit passes neither.
+        for flags in (("--allow-marks", "--watch-waits"), ()):
+            with self.subTest(flags=flags):
+                path.unlink(missing_ok=True)
+                with self.serve_cli("--base-path", "/qd", *flags) as port:
+                    self.assertEqual(self.fetch(port, "/qd/", user_agent=phone)[0], 200)
+                    self.assertEqual(self.fetch(port, "/qd/index.html", user_agent=tablet)[0], 200)
+                    self.assertEqual(self.fetch(port, "/qd/q3.html")[0], 200)
+                    self.assertEqual(self.fetch(port, "/qd/missing.html")[0], 404)
+                    self.assertEqual(self.fetch(port, "/qd/", host="attacker.example")[0], 403)
+                self.assertEqual(stat.S_IMODE(path.stat().st_mode), 0o600)
+                records = [json.loads(line) for line in path.read_text(encoding="utf-8").splitlines()]
+                self.assertEqual([(r["page"], r["device"]) for r in records], [("main", "phone"), ("main", "desktop")])
+                for record in records:
+                    self.assertEqual(set(record), {"ts", "page", "device"})
+                    self.assertRegex(record["ts"], r"^\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d\.\d{3}Z$")
+
+    def test_visit_log_preserves_and_separates_an_unterminated_tail(self) -> None:
+        path = self.root / "state" / "quarterdeck" / "visits.jsonl"
+        now = datetime(2026, 6, 1, tzinfo=timezone.utc)
+        old = b'{"ts":"2026-01-01T00:00:00.000Z","page":"main","device":"desktop"}\n'
+        history = old * 2000
+        path.parent.mkdir(parents=True)
+        for tail in (old.rstrip(b"\n"), b'{"ts": "2026-06'):
+            with self.subTest(tail=tail):
+                path.write_bytes(history + tail)
+                path.chmod(0o644)
+                quarterdeck.VisitLog(path, clock=lambda: now).record(None)
+                content = path.read_bytes()
+                prefix = history + tail + b"\n"
+                self.assertEqual(content[:len(prefix)], prefix)
+                appended = content[len(prefix):].splitlines(keepends=True)
+                self.assertEqual(len(appended), 1)
+                self.assertTrue(appended[0].endswith(b"\n"))
+                self.assertEqual(json.loads(appended[0]),
+                                 {"ts": "2026-06-01T00:00:00.000Z", "page": "main", "device": "desktop"})
+                self.assertEqual(stat.S_IMODE(path.stat().st_mode), 0o600)
+
+    def test_visit_log_rolls_back_and_reports_a_short_write(self) -> None:
+        path = self.root / "state" / "quarterdeck" / "visits.jsonl"
+        log = quarterdeck.VisitLog(path)
+        log.record(None)
+        original = path.read_bytes()
+        write = os.write
+
+        for before in (original, original.rstrip(b"\n")):
+            with self.subTest(terminated=before.endswith(b"\n")):
+                path.write_bytes(before)
+                with patch.object(os, "write", side_effect=lambda descriptor, data: write(descriptor, data[:-1])):
+                    with self.assertRaisesRegex(OSError, "incomplete visit log write"):
+                        log.record(None)
+                self.assertEqual(path.read_bytes(), before)
+
+    def test_visit_log_never_follows_a_symbolic_link(self) -> None:
+        path = self.root / "state" / "quarterdeck" / "visits.jsonl"
+        path.parent.mkdir(parents=True)
+        target = self.root / "elsewhere"
+        path.symlink_to(target)
+        with self.assertRaises(OSError) as error:
+            quarterdeck.VisitLog(path).record(None)
+        self.assertEqual(error.exception.errno, errno.ELOOP)
+        self.assertFalse(target.exists())
+
+    def test_a_visit_that_cannot_be_logged_still_serves_the_desk(self) -> None:
+        self.add_all_kinds()
+        (self.root / "state" / "quarterdeck" / "visits.jsonl").mkdir(parents=True)
+        with self.serve_cli() as port:
+            status, body, _headers = self.fetch(port, "/")
+        self.assertEqual(status, 200)
+        self.assertIn("Tide launch decisions", body)
 
     def test_damaged_store_returns_an_error_without_server_paths(self) -> None:
         self.add_all_kinds()
@@ -5096,18 +5178,24 @@ class PrivacyGuardTests(unittest.TestCase):
             self.stage(root, "quarterdeck-output/index.html")
             self.assertTrue(any("generated output" in item for item in privacy_guard.check_staged(root)))
 
-    def test_item_store_is_ignored_and_force_staging_is_rejected(self) -> None:
+    def test_local_state_is_ignored_and_force_staging_is_rejected(self) -> None:
         with tempfile.TemporaryDirectory() as temp:
             root = Path(temp)
             self.initialize_git(root)
             (root / ".gitignore").write_bytes((ROOT / ".gitignore").read_bytes())
-            for name in ("quarterdeck/items.json", "nested/quarterdeck/items.json", "nested/quarterdeck/items.json.lock"):
+            for name, reason in (
+                ("quarterdeck/items.json", "local Quarterdeck item store or lock"),
+                ("nested/quarterdeck/items.json", "local Quarterdeck item store or lock"),
+                ("nested/quarterdeck/items.json.lock", "local Quarterdeck item store or lock"),
+                ("quarterdeck/visits.jsonl", "local Quarterdeck visit log"),
+                ("nested/quarterdeck/visits.jsonl", "local Quarterdeck visit log"),
+            ):
                 path = root / name
                 path.parent.mkdir(parents=True, exist_ok=True)
                 path.write_text("Fictional decision context.")
                 subprocess.run(["git", "check-ignore", "--", name], cwd=root, check=True, capture_output=True)
                 subprocess.run(["git", "add", "-f", "--", name], cwd=root, check=True)
-                self.assertIn(f"{name}: local Quarterdeck item store or lock", privacy_guard.check_staged(root))
+                self.assertIn(f"{name}: {reason}", privacy_guard.check_staged(root))
 
     def test_rejects_generated_page_marker_in_an_unusual_filename(self) -> None:
         marker = b'<meta name="quarterdeck-' + b'generated"'

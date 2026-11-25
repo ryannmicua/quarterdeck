@@ -28,6 +28,8 @@ def forbidden_path(path: str) -> str | None:
         return "generated output or screenshots directory"
     if parts[-2:] in {("quarterdeck", "items.json"), ("quarterdeck", "items.json.lock")}:
         return "local Quarterdeck item store or lock"
+    if parts[-2:] == ("quarterdeck", "visits.jsonl"):
+        return "local Quarterdeck visit log"
     if any(part == "data" for part in parts):
         return "Firstmate data directory"
     if name in {".quarterdeck.json", "quarterdeck.local.json", "config.local.json", "backlog.md", "report.md"}:

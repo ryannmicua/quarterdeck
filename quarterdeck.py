@@ -3681,9 +3681,57 @@ def make_server(host: str, port: int, handler: type[BaseHTTPRequestHandler],
     return Server((host, port), handler)
 
 
+# Every served Desk load is logged so Firstmate's adoption reviews can see when the page is used.
+VISITS_NAME = "visits.jsonl"
+PHONE_AGENT_RE = re.compile(r"Mobile|iPhone|iPod", re.IGNORECASE)
+
+
+def visits_path() -> Path:
+    return state_dir() / VISITS_NAME
+
+
+def device_class(user_agent: str | None) -> str:
+    """'phone' for a phone browser, otherwise 'desktop' (tablets and unknown browsers included)."""
+    return "phone" if user_agent and "ipad" not in user_agent.lower() and PHONE_AGENT_RE.search(user_agent) else "desktop"
+
+
+class VisitLog:
+    """Append-only local log of page loads: time, page and device class only, never an address or content."""
+
+    def __init__(self, path: Path, clock=lambda: datetime.now(timezone.utc)) -> None:  # noqa: ANN001 - test hook
+        self.path = path
+        self.clock = clock
+
+    def record(self, user_agent: str | None) -> None:
+        stamp = self.clock().astimezone(timezone.utc).isoformat(timespec="milliseconds").replace("+00:00", "Z")
+        line = json.dumps({"ts": stamp, "page": "main", "device": device_class(user_agent)}) + "\n"
+        payload = line.encode("utf-8")
+        self.path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
+        descriptor = os.open(self.path, os.O_RDWR | os.O_APPEND | os.O_CREAT | os.O_NOFOLLOW, 0o600)
+        try:
+            fcntl.flock(descriptor, fcntl.LOCK_EX)
+            info = os.fstat(descriptor)
+            if not stat.S_ISREG(info.st_mode):
+                raise ValueError(f"visit log must be a regular file: {self.path}")
+            if stat.S_IMODE(info.st_mode) != 0o600:
+                os.fchmod(descriptor, 0o600)
+
+            end = info.st_size
+            if end and os.pread(descriptor, 1, end - 1) != b"\n":
+                payload = b"\n" + payload
+
+            if os.write(descriptor, payload) != len(payload):
+                os.ftruncate(descriptor, end)
+                raise OSError(errno.EIO, "incomplete visit log write", self.path)
+        finally:
+            os.close(descriptor)
+
+
 def make_handler(site_title: str, base_path: str = "", store: Path | None = None, home: Path | None = None,
                  *, ask_home: Path | None = None, workers_home: Path | None = None) -> type[BaseHTTPRequestHandler]:
     """Every page is built from the item store when it is requested."""
+    visit_log = VisitLog(visits_path())
+
     def ask_destination(*, require_directory):
         if ask_home is not None:
             try:
@@ -3776,6 +3824,10 @@ def make_handler(site_title: str, base_path: str = "", store: Path | None = None
                 self.send_image(data, *picture.groups())
                 return
             if name == "index.html":
+                try:
+                    visit_log.record(self.headers.get("User-Agent"))
+                except (OSError, ValueError) as exc:  # a visit that cannot be logged must never stop the page
+                    print(f"quarterdeck: could not log the visit: {exc}", file=sys.stderr, flush=True)
                 _, ask_binding = ask_destination(require_directory=True)
                 self.send_text(200, list_page(data, site_title, served=True, workers=workers_home is not None,
                                               ask_binding=ask_binding), "text/html; charset=utf-8",
