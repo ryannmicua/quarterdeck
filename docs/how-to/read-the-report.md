@@ -14,14 +14,15 @@ With `--since`, the report includes questions saved or marked answered on or
 after that UTC date. Each answer source counts by its recorded date, so an
 older question can count under Chat without adding to Saved. The all-time
 report includes undated legacy answers under Elsewhere. A `--since` report
-excludes undated answers because their dates are unknown.
+excludes undated answers because their dates are unknown. Both formats use
+current classification and state for the questions included in the report.
 
 ## The table
 
 The report prints one table for all questions, then one each by kind, by tag
 and by project. A question counts under each of its tags, its item's tags
-included, so the tag rows can add up to more than the total. A question with
-no kind, tag or project counts under `(unclassified)`.
+included, so the tag rows can add up to more than the total. In each breakdown,
+questions missing that classification count under `(unclassified)`.
 
 | Column | Meaning |
 | --- | --- |
@@ -30,14 +31,14 @@ no kind, tag or project counts under `(unclassified)`.
 | Chat, Review page, Elsewhere, Superseded | Questions marked answered through each of the four supported off-Desk sources. |
 | Open | Still waiting for an answer. |
 | Closed | Currently closed. |
-| Median Desk wait | Median time from save to a Desk submission, shown in whole minutes or larger units. `none` when there are no Desk submissions to measure. |
+| Median Desk wait | Median time from save to a Desk submission. The table shows whole minutes for waits under a day and whole days and hours for longer waits. It shows `none` when there are no Desk submissions to measure. |
 
 Each question counts once per recorded source, even if it was marked through
 that source more than once. A question can count in multiple source columns
 and can also be Open or Closed. Legacy source names outside the fixed list
 contribute to the JSON off-Desk total. For answers marked elsewhere, the timestamp
-records when Quarterdeck learned of the answer. Only Desk submissions
-contribute to the median wait.
+records when Quarterdeck learned of the answer. Each Desk submission in the
+report contributes a separate wait, including corrections.
 
 ## The JSON
 
@@ -56,4 +57,5 @@ and the total have the same fields:
 | `open`, `closed` | Questions still open, and closed. |
 | `median_wait_desk_seconds` | Median seconds from save to a Desk submission, including fractional seconds, or `null`. |
 
-To follow a trend, run the report with a later `--since` each time and compare.
+To follow a trend, save a report at the end of each period using that period's
+start date as `--since`. Compare the saved reports by kind, tag or project.

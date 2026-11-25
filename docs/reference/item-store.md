@@ -12,8 +12,8 @@ the existing records, and atomically replace `items.json` with mode 0600.
 An in-place `render` takes the same exclusive lock from its store read
 through publication. An external render takes a shared lock if it can
 open the lock file and otherwise reads without coordinating with writers.
-External render can read from a read-only store. Other readers validate
-records without taking the lock.
+`stats` uses the same shared-lock rule for its store read. Both can read from
+a read-only store. Other readers validate records without taking the lock.
 
 ## Format (version 1)
 
@@ -45,8 +45,8 @@ records without taking the lock.
 | `title` | Up to 200 characters after whitespace is collapsed to single spaces. |
 | `description` | Up to 600 characters describing what the item is and why it was saved. |
 | `saved_at` | UTC time when the item was saved. |
-| `project` | Optional. A plain project name or an `owner/name` repository, up to 40 characters total. Name parts may contain letters, digits, internal spaces, dots, hyphens, and underscores. A qualified name uses one slash, with a nonempty name on each side. Neither part may be `.` or `..`. |
-| `tags` | Optional list of up to three [classification tags](cli-and-config.md#classification). Left out when empty. |
+| `project` | Optional. A plain project name or an `owner/name` repository, up to 40 characters after whitespace is collapsed. Name parts may contain letters, digits, internal spaces, dots, hyphens, and underscores. A qualified name uses one slash, with a nonempty name on each side. In a qualified name, each part must differ from `.` and `..`. |
+| `tags` | Optional list of up to three distinct [classification tags](cli-and-config.md#classification). Repeated tags collapse to one. An empty list is omitted. |
 | `body` | Depends on the kind; see below. |
 
 | Kind | `body` |
@@ -55,8 +55,8 @@ records without taking the lock.
 | `list` | `{"entries": ["...", "..."]}`, at least one. |
 | `questions` | A nonempty `questions` array of objects. `question` and `context` are required text fields. `options` can be empty when the object has a `suggestion`. Each question may include `links`, an array of objects with exactly two fields, `text` and `url`. See [question images](#question-images) for option and attachment fields. |
 
-A question may also carry `kind` (one word) and its own `tags` (up to three),
-described in [Classification](#classification). Both are left out when empty.
+A question may also carry `kind` (one word) and its own `tags`, which follow
+the same list rules as item tags. An unclassified question omits `kind`.
 
 Resource and question link URLs must use `http` or `https`, include a hostname,
 and pass port validation. After trimming, a URL may contain at most 2,000
@@ -70,8 +70,7 @@ array when saving.
 Kinds and tags are lowercase words. Project names preserve case. The store
 checks that existing values are well formed. `add`, `classify` and `mark`
 check new values against the [fixed lists](cli-and-config.md#classification).
-A question's tags in a report include its item's tags. Items saved before
-these fields existed need no migration.
+Items saved before these fields existed need no migration.
 
 ## Inline web addresses
 
@@ -160,12 +159,12 @@ delivery to `cancelled`.
 Removing the item removes its answer records.
 
 A Desk answer also stores the current `answer` (plain text, up to 20,000
-characters), `answered_at` (UTC), `delivery` (pending, sent, or cancelled), and a stable
-`request_id` for inbox retries. A correction gets a new request ID and adds
-a mark. Retrying delivery reuses the same ID and mark.
+characters), `answered_at` (UTC), `delivery` (pending, sent, or cancelled),
+and a stable `request_id` for inbox retries. The answer is saved before inbox
+delivery. A correction gets a new request ID and adds a mark. Retrying
+delivery reuses the same ID and mark.
 
 Reports can read dated answers saved before `answer_marks` existed. An old
 answered record with no source or timestamp counts as Elsewhere in the
 all-time report. When that record changes, Quarterdeck keeps the prior mark
-with `via` set to `elsewhere` and `answered_at` set to `null`. The report measures wait from the item's `saved_at` to
-each included Desk answer's `answered_at`.
+with `via` set to `elsewhere` and `answered_at` set to `null`.

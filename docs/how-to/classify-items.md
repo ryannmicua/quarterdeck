@@ -12,9 +12,9 @@ quarterdeck add --kind questions --title "Pop-up layout" \
   --project harbor --tag ui --tag product-design --body-file questions.json
 ```
 
-`--project` takes a plain project name or an `owner/name` repository. You can
-repeat `--tag` up to three times. In the questions JSON, each question may
-carry its own `kind` and `tags`:
+`--project` takes a plain project name or an `owner/name` repository. Use
+`--tag` for each topic tag, subject to the [tag limit](../reference/item-store.md#format-version-1).
+In the questions JSON, each question may carry its own `kind` and `tags`:
 
 ```json
 [
@@ -46,10 +46,13 @@ already there. The question text, options and answers are never touched.
 
 ## See it on the page
 
-Projects appear on reference rows and individual Desk cards. When the Desk
-groups cards by project, the project appears in the group heading. Tags appear
-as labels. In References and Reviewed questions, the project filter appears
-when project assignments differ, including when some entries have no project.
+Projects appear on reference rows and question set cards. When the Desk has
+different project assignments, it groups cards under project headings,
+including **(No project)** for unassigned cards. Question set cards show
+tags from the set and its questions. On an item page, each question shows
+its own kind and tags. In References and Reviewed questions, the project
+filter appears when project assignments differ, including when some entries
+have no project.
 Each list with at least one tag shows a tag filter. It offers every tag in that
 list, including tags shared by all entries.
 

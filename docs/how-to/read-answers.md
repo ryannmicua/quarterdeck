@@ -1,13 +1,14 @@
 # Read answers
 
-Run `quarterdeck show Q7` to read each question's state and any saved answer,
-including its UTC timestamp and delivery status.
+Run `quarterdeck show Q7` to read each question's state, any saved Desk answer
+with its UTC timestamp and delivery status, and the latest off-Desk mark.
 
 If a decision came through another channel, mark the open question answered
-and use `--via` to record its source. Choose `chat`, `review-page`, `elsewhere`
-or `superseded`, using the exact lowercase spelling. The question shows the
-source and the time it was marked. Any saved Desk answer stays visible.
-A pending Desk answer leaves the delivery queue and shows as **Sending stopped**.
+and use `--via` to record its [source](../reference/cli-and-config.md#classification).
+The question page shows the latest off-Desk source and the time it was marked.
+Any saved Desk answer stays visible. After an off-Desk mark, a previously
+pending Desk answer shows as **Sending stopped**. To send a new Desk decision,
+edit the saved answer.
 Use the item ID to mark every open question in the item. Both forms report
 any answered or closed question they skip.
 
@@ -17,9 +18,8 @@ quarterdeck mark Q7 closed
 quarterdeck mark Q7.3 open
 ```
 
-Reopen a question before recording another off-Desk answer. Each mark retains
-its own source and time. Answers given on the Desk are recorded as `desk`.
-See [Read the report](read-the-report.md) for counts by source.
+Reopen an answered or closed question before recording an off-Desk answer.
+See [Read the report](read-the-report.md) for counts that include earlier marks.
 If a question is reopened between reading it and marking it by hand, use
 `quarterdeck mark Q7.3 open` to restore its Open state.
 

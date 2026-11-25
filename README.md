@@ -28,7 +28,7 @@ the saved content.
 ## Features
 
 - **My desk** shows open question prompts grouped by set. It also keeps sets
-  with undelivered answers on editable questions in view. Other question sets
+  with pending answer deliveries on editable questions in view. Other question sets
   appear under **Reviewed questions**. Links and lists appear under **References**.
 - **Workers** follows **My desk** on the served page. See
   [how to enable and refresh the roster](docs/how-to/read-workers.md).
