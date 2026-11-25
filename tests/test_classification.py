@@ -625,6 +625,29 @@ check(visibleIds('table .id') === 'Q2,Q1', 'Clearing the reference filter should
 check(!filterError, filterError);
 """, widths=(390, 1024))
 
+    def test_uniformly_tagged_lists_keep_the_tag_selector(self) -> None:
+        for title in ("Tide chart", "Harbor chart"):
+            self.add("resource", title, "A chart.", "--url", "https://example.com/t", "--link-text", "Chart",
+                     "--tag", "bug")
+        for title in ("Quay decision", "Dock decision"):
+            item_id = self.questions(title, body=[{**ASK[2], "tags": ["bug"]}])
+            self.assertEqual(self.run_cli("mark", item_id, "answered", "--via", "chat")[0], 0)
+        self.check_browser(self.saved_page(), """
+const cases = [
+  ['references-list', 'tr .id', 'Q2,Q1'],
+  ['reviewed-list', 'article .id', 'Q4,Q3']
+];
+for (const [id, entries, expected] of cases) {
+  const select = document.querySelector(`[data-list="${id}"] select`);
+  check(select?.checkVisibility(), `${id} should offer its shared tag`);
+  check([...select.options].map(option => option.value).join(',') === ',bug', `${id} should offer only bug and reset`);
+  select.value = 'bug';
+  select.dispatchEvent(new Event('change', {bubbles: true}));
+  const visible = [...document.getElementById(id).querySelectorAll(entries)].filter(entry => entry.checkVisibility());
+  check(visible.map(entry => entry.innerText.trim()).join(',') === expected, `Both ${id} entries should remain visible`);
+}
+""")
+
     def test_reconciled_answer_stays_out_of_the_browser_send_queue(self) -> None:
         self.questions()
         with patch.object(quarterdeck, "now_text", return_value="2026-11-03T00:00:00Z"):

@@ -48,8 +48,9 @@ already there. The question text, options and answers are never touched.
 
 Projects appear on reference rows and individual Desk cards. When the Desk
 groups cards by project, the project appears in the group heading. Tags appear
-as labels. In References and Reviewed questions, a project or tag filter
-appears when it can tell entries apart, including when some entries have a
-project or tag and others have none.
+as labels. In References and Reviewed questions, the project filter appears
+when project assignments differ, including when some entries have no project.
+Each list with at least one tag shows a tag filter. It offers every tag in that
+list, including tags shared by all entries.
 
 To count questions by kind, tag and project, see [Read the report](read-the-report.md).

@@ -1730,14 +1730,13 @@ def filter_data(item) -> str:
 
 
 def filter_bar(list_id: str, items) -> str:
-    """Project and tag filters for a list; a filter shows only when it could tell the items apart."""
-    projects = sorted({item["project"] for item in items if item.get("project")}, key=str.casefold)
-    item_tags = [set(all_tags(item)) for item in items]
-    tags = sorted(set().union(*item_tags)) if item_tags and any(t != item_tags[0] for t in item_tags) else []
+    """Show distinct project choices and every tag in use."""
+    project_values = {item.get("project", "") for item in items}
+    projects = sorted(project_values - {""}, key=str.casefold) if len(project_values) > 1 else []
+    tags = sorted({tag for item in items for tag in all_tags(item)})
     fields = ""
-    for label, name, values, unset in (("Project", "projects", projects, any(not i.get("project") for i in items)),
-                                       ("Tag", "tags", tags, any(not t for t in item_tags))):
-        if len(values) > 1 or (values and unset):
+    for label, name, values in (("Project", "projects", projects), ("Tag", "tags", tags)):
+        if values:
             options = "".join(f'<option value="{esc(v)}">{esc(tag_text(v) if name == "tags" else v)}</option>' for v in values)
             fields += f'<label>{label}<select name="{label.lower()}"><option value="">(All {name})</option>{options}</select></label>'
     if not fields:
