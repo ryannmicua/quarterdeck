@@ -51,7 +51,7 @@ own copy of the saved content.
   and the [local visit log reference](docs/reference/cli-and-config.md#visit-log).
 - `quarterdeck render` writes [HTML exports](docs/reference/cli-and-config.md#pages).
 - [Answer questions](docs/how-to/answer-questions.md) or
-  [ask Firstmate from a card](docs/how-to/ask-firstmate.md) or
+  [ask Firstmate about a question or a whole set](docs/how-to/ask-firstmate.md) or
   [talk to Firstmate about any topic](docs/how-to/talk-to-firstmate.md) in the browser.
 - Python 3 standard library only.
 

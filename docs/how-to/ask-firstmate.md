@@ -21,10 +21,12 @@ and select **Queue item**. You can edit the message in the same field while
 it is queued. Clear the field to leave the message out of the send.
 
 Select **Send queued items** to send the queued answers, then the set message.
+Use **Send answers** when you want to send just the queued answers.
 A message-only send leaves each question in its current state. **Remove from
 send** keeps the draft on its card and leaves it out of both send buttons.
 Change the answer text or select an option on its card to put it back in the
 queue. Adding or removing surrounding whitespace keeps it out of the send.
+**Use all suggestions** skips removed drafts, including ones you cleared.
 You can send more messages before answering anything.
 
 When delivery is incomplete, the send bar counts sent items, items saved
@@ -35,8 +37,9 @@ When Firstmate's reply clarifies a question, **Clarified after discussion**
 appears on that card. If the reply says an option changed, the card asks you to
 review your draft. Make any changes and select **Keep this draft** to release
 the hold for both send buttons. A newer option change asks for confirmation
-again. The open page refreshes the set discussion and its clarifications
-without replacing your drafts.
+again. The visible page refreshes the set discussion and its clarifications
+without replacing your drafts. If **Messages** is already open when a new
+reply appears, close and reopen it to acknowledge the reply.
 
 After the item moves to **Answered** in the Library, select its title and
 open **Messages** under **Discuss this set** to return to the thread.
@@ -79,9 +82,10 @@ If an ask stays **Pending** after an interruption or shows **Not delivered**,
 select **Send ask again** once the
 [inbox is available](read-answers.md#connect-the-inbox). The retry keeps the
 original ask and note IDs. Reopen a closed question before sending or
-retrying an ask. If the configured Firstmate home has changed, Quarterdeck
-refuses the retry. A saved ask keeps its original identity and home after
-a conflict.
+retrying its numbered ask. When every question is closed, reopen any question
+and reload the page to send or retry a set message. If the configured Firstmate
+home has changed, Quarterdeck refuses the retry. A saved ask keeps its original
+identity and home after a conflict.
 If a new draft blocks **Send ask again** for an interrupted ask, clear the
 field before retrying. If the ask never reaches Quarterdeck, reloading the
 page clears it and you’ll need to type it again.

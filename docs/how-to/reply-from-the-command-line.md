@@ -1,8 +1,8 @@
 # Reply from the command line
 
 Use the target and message IDs from the inbox note. A note that begins
-[`ASK`](../reference/cli-and-config.md#ask-endpoint) comes from a question
-card. For [`CONVERSATION`](../reference/cli-and-config.md#conversation-endpoint),
+[`ASK`](../reference/cli-and-config.md#ask-endpoint) comes from a set discussion
+or a numbered question. For [`CONVERSATION`](../reference/cli-and-config.md#conversation-endpoint),
 see [Reply in a conversation](#reply-in-a-conversation).
 
 For both targets, `quarterdeck reply` must use the live server's
@@ -18,8 +18,8 @@ Use the same ask ID to send a follow-up.
 
 To show context on specific cards, reply to the whole set and repeat
 `--clarify` once for each affected question. Add `--option-changed` for
-a clarified question when an option actually changed. This asks the owner to
-review their draft before sending. See [how clarifications appear on cards](ask-firstmate.md#discuss-the-whole-set).
+a clarified question when an option actually changed. See
+[how clarifications and option changes appear on cards](ask-firstmate.md#discuss-the-whole-set).
 
 ```sh
 quarterdeck reply Q7 --ask "$ask_id" --text "The printer sent a new proof." \

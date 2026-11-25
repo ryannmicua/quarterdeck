@@ -89,5 +89,6 @@ Quarterdeck prints a warning when you bind a non-loopback address. Keep the
 listener and proxy on the trusted network, or protect both with an owner access
 gate. Browser submissions require an `Origin` that matches the public host and
 scheme. Conversations, asks and reply acknowledgments use the same check.
-The Desk with **Talk to Firstmate**, conversation pages, and question pages
-with answer controls or unread replies cannot be embedded in frames.
+The Desk with **Talk to Firstmate** and standalone conversation pages block
+framing. Question pages also block framing when they have answer controls,
+unread replies, or an existing set discussion, even if all questions are closed.

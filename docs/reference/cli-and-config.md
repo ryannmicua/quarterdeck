@@ -149,8 +149,8 @@ followed by the ask text.
 
 `GET /q<N>.discussion.json` (under any `base_path`) returns `thread`
 (rendered set discussion HTML) and `clarifications` (a map from full
-question IDs to clarification HTML). It serves question items and leaves
-reply read status intact.
+question IDs to clarification HTML for questions with clarifications). It
+serves question items and leaves reply read status intact.
 
 ### Conversation endpoint
 
