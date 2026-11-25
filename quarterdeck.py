@@ -2508,7 +2508,9 @@ CATCH_UP_SCRIPT = r"""
     heading.tabIndex = -1;
     heading.focus();
   };
-  const finish = ids => {
+  const finish = (ids, previousFocus) => {
+    const focused = document.activeElement === document.body ? previousFocus : document.activeElement;
+    const hadFocus = section.contains(focused);
     for (const id of ids) section.querySelector('.note[data-id="' + id + '"]').remove();
     const left = section.querySelectorAll('.note').length;
     if (!left) {
@@ -2518,7 +2520,7 @@ CATCH_UP_SCRIPT = r"""
         empty.textContent = empty.dataset.emptyDesk;
         empty.removeAttribute('data-empty-desk');
       }
-      focusHeading(document.querySelector('main h1'));
+      if (hadFocus && !focused.isConnected) focusHeading(document.querySelector('main h1'));
       return;
     }
     const count = section.querySelector('[data-count]');
@@ -2528,24 +2530,29 @@ CATCH_UP_SCRIPT = r"""
     } else {
       count.textContent = '(' + left + ')';
     }
-    focusHeading(section.querySelector('h2'));
+    if (hadFocus && !focused.isConnected) focusHeading(section.querySelector('h2'));
   };
   const markRead = async ids => {
     const status = section.querySelector('[data-catch-up-status]');
     const controls = section.querySelectorAll('button');
+    const previousFocus = document.activeElement;
     controls.forEach(button => { button.disabled = true; });
     status.textContent = '';
     try {
       const response = await fetch('catch-ups/read', {method:'POST', redirect:'error', headers:{'Content-Type':'application/json'},
                                                       body:JSON.stringify({ids})});
+      if (response.status === 409) {
+        status.textContent = 'A notice may already be read. Reload the page when ready.';
+        return;
+      }
       if (!response.ok) throw new Error(response.status);
       const {read} = await response.json();
       if (!Array.isArray(read) || read.length !== ids.length || !ids.every((id, index) => read[index] === id)) {
         throw new Error('Unconfirmed acknowledgment');
       }
-      finish(ids);
+      finish(ids, previousFocus);
     } catch (error) {
-      status.textContent = 'A notice may already be read. Reload the page when ready.';
+      status.textContent = 'The notice could not be marked read. Try again.';
     } finally {
       controls.forEach(button => { button.disabled = false; });
     }

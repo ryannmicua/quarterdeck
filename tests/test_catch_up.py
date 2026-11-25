@@ -328,6 +328,7 @@ class CatchUpPageTests(CatchUpCase):
   const bulk = document.querySelector('[data-read-all]');
   const status = document.querySelector('[data-catch-up-status]');
   const reloadMessage = 'A notice may already be read. Reload the page when ready.';
+  const retryMessage = 'The notice could not be marked read. Try again.';
   const check = (condition, message) => { if (!condition) throw new Error(message); };
   const clickAndWait = button => new Promise(resolve => {
     const observer = new MutationObserver(() => {
@@ -356,20 +357,29 @@ class CatchUpPageTests(CatchUpCase):
           'Every acknowledgment control should be disabled during a save');
     failSave(new Response('', {status:503}));
     await failed;
-    check(control('C3') && !bulk.disabled && status.textContent === reloadMessage,
-          'A failed save should keep the notice, restore the controls, and show feedback');
+    check(control('C3') && !bulk.disabled && status.textContent === retryMessage,
+          'A failed save should keep the notice, restore the controls, and offer retry');
     window.fetch = async () => new Response('<h1>Sign in</h1>', {headers:{'Content-Type':'text/html'}});
     await clickAndWait(control('C3'));
-    check(control('C3') && status.textContent === reloadMessage,
+    check(control('C3') && status.textContent === retryMessage,
           'An HTTP 200 sign-in page should leave the notice visible');
     window.fetch = async () => Response.json({read:['C3']});
     await clickAndWait(bulk);
-    check(control('C1') && control('C2') && control('C3') && status.textContent === reloadMessage,
+    check(control('C1') && control('C2') && control('C3') && status.textContent === retryMessage,
           'An incomplete batch acknowledgment should leave all rows visible');
+    let releaseSave;
+    window.fetch = (...args) => new Promise(resolve => {
+      releaseSave = () => resolve(fetchFromDesk(...args));
+    });
+    control('C3').focus();
+    const saved = clickAndWait(control('C3'));
+    draft.focus();
+    releaseSave();
+    await saved;
     window.fetch = fetchFromDesk;
-    await clickAndWait(control('C3'));
     check(!control('C3') && document.querySelector('[data-count]').textContent === '(2)',
           'A successful save should remove the row and update the count');
+    check(document.activeElement === draft, 'A delayed acknowledgment should leave focus in the draft');
     await clickAndWait(bulk);
     await clickAndWait(control('C1'));
     check(control('C1') && control('C2') && !control('C3') && !bulk.disabled &&
@@ -383,10 +393,13 @@ class CatchUpPageTests(CatchUpCase):
     check(document.getElementById('talk-form') === form && !form.hidden &&
           document.getElementById('talk-message') === draft && draft.value === 'Draft about the tide chart.',
           'A conflict should preserve the open Talk to Firstmate form and its draft');
+    control('C2').focus();
     await clickAndWait(control('C2'));
     check(control('C1') && !control('C2') && !document.querySelector('[data-read-all]') &&
           !document.querySelector('[data-count]') && !status.textContent,
           'An unread notice should still be actionable after a conflict');
+    check(document.activeElement === document.querySelector('.catch-up h2'),
+          'Removing the focused acknowledgment control should focus the section heading');
     result.textContent = 'PASS';
   })().catch(error => { result.textContent = error.message; });
 }

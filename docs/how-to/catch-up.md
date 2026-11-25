@@ -37,8 +37,8 @@ absent when nothing is unread.
 - Select **Mark all read** to read every notice shown.
 
 A read notice leaves the Desk at once. If the page cannot confirm the change,
-the rows and any unsent draft stay in place. Catch-up says **A notice may
-already be read. Reload the page when ready.**
+the rows and any unsent draft stay in place. Try again if the save fails.
+If a notice may already be read, Catch-up asks you to reload when ready.
 
 To review or acknowledge notices from a terminal, see the
 [`catch-up` commands](../reference/cli-and-config.md#items).
