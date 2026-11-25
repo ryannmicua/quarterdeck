@@ -50,7 +50,7 @@ Unread notices stay until they are read. Each Quarterdeck process uses
 `catch_up_days` from the [config it loads](../reference/cli-and-config.md#json-configuration),
 with a default of 7 days. The served Desk reads the setting at startup, so
 restart it after changing the config. If the CLI and the Desk use different
-retention periods, either can remove a notice once its own period has elapsed.
+retention periods, a write using the shorter period can remove a notice sooner.
 
 A read notice stays on disk until its retention period has elapsed and a
 notice is saved or marked read. The store keeps `read_at` until then. See the

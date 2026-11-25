@@ -179,7 +179,7 @@ class CatchUpPageTests(CatchUpCase):
         code, out, error = self.run_cli("help", "serve")
         self.assertEqual(code, 0, error)
         help_text = " ".join(out.split())
-        self.assertIn("unread Catch-up notice titles, summaries and links", help_text)
+        self.assertIn("unread Catch-up notice titles, summaries, links and projects", help_text)
         self.assertIn("mark Catch-up notices read as the owner", help_text)
 
     def test_unread_notices_show_above_the_questions_newest_first(self) -> None:

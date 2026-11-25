@@ -4420,12 +4420,14 @@ def base_path_option(value: str) -> str:
         raise argparse.ArgumentTypeError(str(exc)) from exc
 
 
-def effective_base_path(args: argparse.Namespace) -> str:
+def effective_base_path(args: argparse.Namespace, config: dict[str, object] | None = None) -> str:
     """--base-path when given (even as "" to switch a configured prefix off), else the config's base_path, else none."""
     given = getattr(args, "base_path", None)
     if given is not None:
         return normalize_base_path(given)
-    return normalize_base_path(selected_config(args).get("base_path"))
+    if config is None:
+        config = selected_config(args)
+    return normalize_base_path(config.get("base_path"))
 
 
 def is_loopback(host: str) -> bool:
@@ -4758,7 +4760,7 @@ def answer_home(config: dict[str, object], config_path: Path | None) -> Path | N
     homes = config.get("homes")
     if config_path is not None and isinstance(homes, list) and len(homes) == 1 and isinstance(homes[0], dict):
         try:
-            return (config_path.resolve().parent / inbox_path(homes[0].get("path"))).resolve()
+            return (config_path.parent / inbox_path(homes[0].get("path"))).resolve()
         except (OSError, RuntimeError, ValueError):
             return None
     return None
@@ -4768,9 +4770,14 @@ def serve(args: argparse.Namespace) -> int:
     servers: list[ThreadingHTTPServer] = []
     try:
         config_path = selected_config_path(args)
+        if config_path is not None:
+            try:
+                config_path = config_path.resolve(strict=True)
+            except (OSError, RuntimeError) as exc:
+                raise ValueError(f"could not resolve serving config {config_path}: {exc}") from exc
         config = load_config(config_path)
         tls = tls_context(args)
-        base_path = effective_base_path(args)
+        base_path = effective_base_path(args, config)
         firstmate = configured_firstmate_home(config)
         handler = make_handler(page_title(args, config), base_path, home=answer_home(config, config_path),
                                ask_home=firstmate, workers_home=firstmate, retention_days=catch_up_days(config))
@@ -4796,8 +4803,8 @@ def serve(args: argparse.Namespace) -> int:
     exposed = [host for host in bind_hosts(args) if not is_loopback(host)]
     if exposed:
         print(f"quarterdeck: warning: {', '.join(exposed)} is not a loopback address; anyone who can reach this port can "
-              "read saved items, answers, conversations, images, and unread Catch-up notice titles, summaries and links. "
-              "They can submit answers, acknowledge replies, and mark Catch-up notices read. "
+              "read saved items, answers, conversations, images, and unread Catch-up notice titles, summaries, links "
+              "and projects. They can submit answers, acknowledge replies, and mark Catch-up notices read. "
               "With firstmate_home set, they can read or check the worker and second mate roster, "
               "send asks, start conversations and send messages.",
               file=sys.stderr, flush=True)
@@ -4877,8 +4884,8 @@ def service(args: argparse.Namespace) -> int:
     exposed = [host for host in bind_hosts(args) if not is_loopback(host)]
     if exposed:
         print(f"quarterdeck: warning: {', '.join(exposed)} is not a loopback address; anyone who can reach the port can "
-              "read your saved items and unread Catch-up notice titles, summaries and links. They can send answers and "
-              "mark Catch-up notices read as the owner.", file=sys.stderr)
+              "read your saved items and unread Catch-up notice titles, summaries, links and projects. They can send "
+              "answers and mark Catch-up notices read as the owner.", file=sys.stderr)
     return 0
 
 
@@ -5142,7 +5149,7 @@ def make_parser() -> argparse.ArgumentParser:
 
     serve_parser = command("serve", "serve the page over HTTP",
                            "Anyone who can reach the service can read saved items, answers, conversations, reply images, "
-                           "and unread Catch-up notice titles, summaries and links. They can submit answers, acknowledge "
+                           "and unread Catch-up notice titles, summaries, links and projects. They can submit answers, acknowledge "
                            "replies, and mark Catch-up notices read as the owner. With firstmate_home set, they can also "
                            "send asks, start conversations, send messages and read or check that home's workers "
                            "and second mates from the Workers page or workers.json. Browser "

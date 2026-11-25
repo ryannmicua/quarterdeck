@@ -79,7 +79,9 @@ the browser-facing `Host` and the `/qd/` prefix.
 The default bind is `127.0.0.1`. A loopback listener refuses requests whose
 `Host` is outside loopback. Quarterdeck has no login. Anyone who can reach the
 service can read saved items, their images, answers, conversations, reply
-images. They can also send answers and acknowledge Firstmate messages as the owner.
+images, and unread Catch-up notices, including their titles, summaries, links
+and project names when present. They can also send answers, acknowledge
+Firstmate messages, and mark Catch-up notices read as the owner.
 When `firstmate_home` is set, anyone who can reach the service can view the
 home's worker and second mate roster and run a check from the Workers page
 or `GET /workers.json`. They can also send asks to that home's inbox and, with the
@@ -88,8 +90,8 @@ from the Desk and send messages.
 Quarterdeck prints a warning when you bind a non-loopback address. Keep the
 listener and proxy on the trusted network, or protect both with an owner access
 gate. Browser submissions require an `Origin` that matches the public host and
-scheme. Conversations, asks and reply acknowledgments use the same check.
-The Desk with **Talk to Firstmate** and standalone conversation pages block
-framing.
-Question pages also block framing when they have answer controls,
+scheme. Conversations, asks, reply acknowledgments, and Catch-up
+acknowledgments use the same check. The Desk blocks framing when it shows
+**Talk to Firstmate** or unread Catch-up notices. Standalone conversation pages
+also block framing. Question pages block framing when they have answer controls,
 unread replies, or an existing set discussion, even if all questions are closed.
