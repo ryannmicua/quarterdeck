@@ -3718,16 +3718,17 @@ class ConversationTests(ImageCase):
         self.assertEqual([m["read"] for m in self.messages("1", 3)[1:]], [True, False])
         self.assertFalse(self.messages("2", 3)[1]["read"])
 
-    def check_page(self, port, script, *, setup="", fragment="", page=None):
+    def check_page(self, port, script, *, setup="", fragment="", page=None, viewport_width=None):
         chrome = shutil.which("google-chrome")
         if not chrome:
             self.skipTest("google-chrome is required for the ask-card browser tests")
         page = self.fetch(port, "/qd/q4.html")[1] if page is None else page
         page = page.replace("</head>", f"<script>{setup}</script></head>")
         fixture = self.root / "ask.html"
-        fixture.write_text(page.replace("</body>", """
+        page = page.replace("</body>", """
 <output id="browser-result">Incomplete</output>
 <script>
+const browserResult = window.parent.document.getElementById('browser-result');
 const check = (condition, message) => { if (!condition) throw new Error(message); };
 const field = n => document.getElementById('answer-Q4.' + n);
 const card = n => document.getElementById('Q4.' + n);
@@ -3736,10 +3737,14 @@ const status = () => document.querySelector('main output[role="status"]');
 const settled = () => new Promise(resolve => setTimeout(resolve, 50));
 (async () => {
 """ + script + """
-  document.getElementById('browser-result').textContent = 'PASS';
-})().catch(error => { document.getElementById('browser-result').textContent = error.message; });
+  browserResult.textContent = 'PASS';
+})().catch(error => { browserResult.textContent = error.message; });
 </script>
-</body>"""), encoding="utf-8")
+</body>""")
+        if viewport_width is not None:
+            page = ('<!doctype html><output id="browser-result">Incomplete</output>'
+                    f'<iframe width="{viewport_width}" height="844" srcdoc="{escape(page)}"></iframe>')
+        fixture.write_text(page, encoding="utf-8")
         result = subprocess.run([chrome, "--headless", "--disable-background-networking", "--no-first-run", "--lang=en-US",
                                  f"--user-data-dir={self.root / 'browser'}", "--virtual-time-budget=4000", "--dump-dom", fixture.as_uri() + fragment],
                                 env={**os.environ, "TZ": "Asia/Tokyo", "LC_ALL": "en_US.utf-8"},
@@ -3955,7 +3960,7 @@ check(calls.length === 3 && calls[2][0] === 'answers' && calls[2][1].part === 'Q
         replacement["thread"] = embed_picture(replacement["thread"])
         page = embed_picture(self.fetch(port, "/qd/q4.html")[1])
         self.check_page(port, r"""
-document.documentElement.style.maxWidth = '390px';
+check(matchMedia('(width: 390px)').matches, 'Expected a 390px browser viewport, got ' + innerWidth);
 const whole = document.getElementById('Q4');
 async function checkImage(section) {
   section.querySelector('details').open = true;
@@ -3983,7 +3988,7 @@ whole.querySelector('.ask-button').click();
 await settled();
 check(!initial.isConnected, 'The thread did not refresh');
 await checkImage(whole);
-""", setup=f"const replacement = {json.dumps(replacement)};", page=page)
+""", setup=f"const replacement = {json.dumps(replacement)};", page=page, viewport_width=390)
 
     def test_confirmed_ask_conflicts_restore_local_drafts_and_keep_saved_asks(self) -> None:
         port = self.start("/qd", ask_home=self.inbox(accept=False))

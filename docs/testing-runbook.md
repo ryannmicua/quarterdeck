@@ -79,7 +79,8 @@ acknowledgments and live updates.
 The whole-item checks cover the toolbar editor, the inbox target and retry ID,
 separate reply acknowledgment for the item and each question, and private
 reply images. The browser checks a 1200-pixel reply image in both conversations
-at phone width and after a thread refresh. The conversation group also checks that confirmed conflicts
+in a 390 CSS-pixel browser viewport and checks the whole-item image again after
+a thread refresh. The conversation group also checks that confirmed conflicts
 return local drafts to their editors, preserve saved asks, and keep reference
 items outside the conversation workflow. The closed-item check closes the
 questions between saving an ask and delivering it, then verifies that the
