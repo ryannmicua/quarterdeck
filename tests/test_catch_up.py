@@ -361,6 +361,45 @@ class CatchUpPageTests(CatchUpCase):
         unit.read_string(out)
         self.assertEqual(shlex.split(unit["Service"]["ExecStart"])[-2:], ["--config", str(first)])
 
+    def test_dangling_config_home_cannot_prune_or_pass_preflight(self) -> None:
+        config_home = self.root / "config"
+        target = self.root / "profile"
+        target.mkdir()
+        config_home.symlink_to(target, target_is_directory=True)
+        (target / "quarterdeck.json").write_text('{"catch_up_days": 30}', encoding="utf-8")
+        self.notice("A")
+        self.notice("B")
+        self.assertEqual(self.run_cli("catch-up", "read", "C1")[0], 0)
+        self.age_read("C1", 8)
+        before = self.store()
+        port = self.start()
+        target.rename(self.root / "moved-profile")
+        for path in (config_home, config_home / "nested"):
+            with self.subTest(config_home=path), patch.dict(os.environ, {"XDG_CONFIG_HOME": str(path)}):
+                self.assertEqual(self.run_cli("catch-up", "add", "--title", "C", "--summary", "Ready.")[0], 2)
+                self.assertEqual(self.run_cli("catch-up", "read", "C2")[0], 2)
+                self.assertEqual(self.post_read(port, {"ids": ["C2"]})[0], 500)
+                self.assertEqual(self.store(), before)
+                self.assertEqual(self.run_cli("service")[0], 2)
+
+    def test_read_all_includes_a_notice_saved_before_lock_acquisition(self) -> None:
+        self.notice("A")
+        locked_store = quarterdeck.locked_store
+
+        @contextmanager
+        def save_before_lock(path, **options):
+            with patch.object(quarterdeck, "locked_store", locked_store):
+                self.assertEqual(self.notice("B"), "C2")
+                self.assertIn("C2", self.run_cli("catch-up", "list")[1])
+            with locked_store(path, **options):
+                yield
+
+        with patch.object(quarterdeck, "locked_store", save_before_lock):
+            code, out, error = self.run_cli("catch-up", "read", "--all")
+        self.assertEqual(code, 0, error)
+        self.assertEqual(out, "C2 Read\nC1 Read\n")
+        self.assertEqual(self.run_cli("catch-up", "list")[1], "No unread catch-up notices.\n")
+
     def test_each_notice_write_reads_retention_with_the_store_locked(self) -> None:
         default = self.root / "config" / "quarterdeck.json"
         default.parent.mkdir()

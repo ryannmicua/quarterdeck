@@ -174,6 +174,9 @@ def selected_config_path(args: argparse.Namespace | None = None) -> Path | None:
         try:
             path.lstat()
         except FileNotFoundError:
+            for parent in path.parents:
+                if parent.is_symlink():
+                    parent.stat()
             return None
     return path.expanduser().absolute()
 
@@ -1611,9 +1614,14 @@ class CatchUpConflict(ValueError):
     pass
 
 
-def mark_catch_ups_read(store: Path, ids: list[str]) -> None:
-    """Mark the named notices read. A notice that is already read keeps its first read time."""
-    with changing_store(store) as data:
+def mark_catch_ups_read(store: Path, ids: list[str] | None) -> list[str]:
+    """Mark the named notices, or all unread notices, and return their IDs."""
+    with locked_store(store):
+        data = read_store(store)
+        if ids is None:
+            ids = [str(notice["id"]) for notice in unread_catch_ups(data)]
+            if not ids:
+                return ids
         notices = {notice["id"]: notice for notice in catch_ups(data)}
         if not notices.keys() >= set(ids):
             raise CatchUpConflict("Unknown catch-up notice.")
@@ -1622,6 +1630,8 @@ def mark_catch_ups_read(store: Path, ids: list[str]) -> None:
         for notice_id in ids:
             notices[notice_id].setdefault("read_at", stamp)
         prune_catch_ups(data, days)
+        write_store(store, data)
+        return ids
 
 
 def add_catch_up(args: argparse.Namespace) -> int:
@@ -1665,16 +1675,15 @@ def read_catch_up(args: argparse.Namespace) -> int:
         if args.all:
             if args.ids:
                 raise ValueError("give catch-up IDs or --all, not both")
-            ids = [str(notice["id"]) for notice in unread_catch_ups(read_store(store))]
-            if not ids:
-                print("No unread catch-up notices.")
-                return 0
+            ids = None
         elif args.ids:
             ids = list(dict.fromkeys(parse_catch_up_id(value) for value in args.ids))
         else:
             raise ValueError("give a catch-up ID such as C4, or --all")
-        mark_catch_ups_read(store, ids)
-        for notice_id in ids:
+        marked = mark_catch_ups_read(store, ids)
+        if not marked:
+            print("No unread catch-up notices.")
+        for notice_id in marked:
             print(f"{notice_id} Read")
         return 0
     return run_item_command(action)
@@ -4740,8 +4749,7 @@ def make_handler(site_title: str, base_path: str = "", store: Path | None = None
                         isinstance(value, str) and CATCH_UP_ID_RE.fullmatch(value) for value in ids
                     ):
                         raise ValueError("Invalid catch-up IDs.")
-                    mark_catch_ups_read(active_store, ids)
-                    record = {"read": ids}
+                    record = {"read": mark_catch_ups_read(active_store, ids)}
                 else:
                     record = mark_replies_read(active_store, payload)
             except AskHomeUnavailable:
@@ -4781,16 +4789,16 @@ def answer_home(config: dict[str, object], config_path: Path | None) -> Path | N
     homes = config.get("homes")
     if config_path is not None and isinstance(homes, list) and len(homes) == 1 and isinstance(homes[0], dict):
         try:
-            return (config_path.resolve().parent / inbox_path(homes[0].get("path"))).resolve()
+            return (config_path.parent / inbox_path(homes[0].get("path"))).resolve()
         except (OSError, RuntimeError, ValueError):
             return None
     return None
 
 
-def serve_config(args: argparse.Namespace, *, resolve: bool = False) -> tuple[Path | None, dict[str, object]]:
+def serve_config(args: argparse.Namespace) -> tuple[Path | None, dict[str, object]]:
     catch_up_days()
     config_path = selected_config_path(args)
-    if resolve and config_path is not None:
+    if config_path is not None:
         config_path = config_path.resolve(strict=True)
     config = load_config(config_path)
     return config_path, config
@@ -4873,7 +4881,7 @@ def service_unit(args: argparse.Namespace) -> str:
         raise ValueError("--tls-cert and --tls-key go together")
     if tls_cert and tls_key:
         command += ["--tls-cert", str(Path(tls_cert).expanduser().resolve()), "--tls-key", str(Path(tls_key).expanduser().resolve())]
-    config_path, _ = serve_config(args, resolve=True)
+    config_path, _ = serve_config(args)
     if config_path is not None:
         command += ["--config", str(config_path)]
     exec_start = " ".join(systemd_quote(part, literal_dollars=True) for part in command)

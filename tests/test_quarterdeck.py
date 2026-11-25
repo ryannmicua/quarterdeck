@@ -1920,6 +1920,52 @@ check(!button('send').disabled && button('send').textContent === 'Send 2 answers
         path.write_text(json.dumps({"homes": homes[:1], "firstmate_home": explicit}))
         self.assertEqual(Path(explicit), quarterdeck.answer_home(quarterdeck.load_config(path), path))
 
+    def test_serve_binds_relative_inbox_to_the_config_it_loaded(self):
+        self.add_all_kinds()
+        link = self.root / "config" / "quarterdeck.json"
+        link.parent.mkdir()
+        first = self.root / "first" / "settings.json"
+        second = self.root / "second" / "settings.json"
+        for path in (first, second):
+            script = path.parent / "inbox" / "bin" / "fm-inbox.sh"
+            script.parent.mkdir(parents=True)
+            script.write_text('#!/bin/sh\nprintf "%s" "$6" > delivered\n')
+            script.chmod(0o700)
+            path.write_text(json.dumps({"base_path": "/qd", "homes": [{"path": "inbox"}]}))
+        load_config = quarterdeck.load_config
+        make_server = quarterdeck.make_server
+
+        def retarget_after_load(path):
+            config = load_config(path)
+            link.unlink()
+            link.symlink_to(second)
+            return config
+
+        def send_during_serve(host, port, handler, tls):
+            server = make_server(host, 0, handler, tls)
+            serve_forever = server.serve_forever
+
+            def serve_and_send():
+                thread = threading.Thread(target=serve_forever)
+                thread.start()
+                try:
+                    status, result = self.post_answer(server.server_address[1], "Q3.1", "Hold")
+                    self.assertEqual((status, result["delivery"]), (200, "sent"))
+                finally:
+                    server.shutdown()
+                    thread.join()
+
+            server.serve_forever = serve_and_send
+            return server
+
+        link.symlink_to(first)
+        with patch.object(quarterdeck, "load_config", retarget_after_load), patch.object(
+            quarterdeck, "make_server", send_during_serve
+        ):
+            self.assertEqual(self.run_cli("serve", "--host", "127.0.0.1")[0], 0)
+        self.assertEqual((first.parent / "inbox" / "delivered").read_text(), "Q3.1 Hold")
+        self.assertFalse((second.parent / "inbox" / "delivered").exists())
+
     def test_render_and_service_unit_ignore_unresolvable_legacy_inbox(self):
         config = self.root / "config" / "quarterdeck.json"
         config.parent.mkdir()
