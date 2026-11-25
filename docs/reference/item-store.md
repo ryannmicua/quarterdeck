@@ -51,7 +51,7 @@ records without taking the lock.
 | --- | --- |
 | `resource` | A `url` and `link_text`. |
 | `list` | `{"entries": ["...", "..."]}`, at least one. |
-| `questions` | A nonempty `questions` array of objects. `question` and `context` are required text fields. `options` is an array of text or option objects and can be empty when the object has a `suggestion`. Each question may include `links`, an array of objects with exactly two fields, `text` and `url`. A question may also have `images`. |
+| `questions` | A nonempty `questions` array of objects. `question` and `context` are required text fields. `options` can be empty when the object has a `suggestion`. Each question may include `links`, an array of objects with exactly two fields, `text` and `url`. See [question images](#question-images) for option and attachment fields. |
 
 Resource and question link URLs must use `http` or `https`, include a hostname,
 and pass port validation. After trimming, a URL may contain at most 2,000
@@ -87,25 +87,29 @@ and an `image`. Plain text options are strings. A pictured option's label
 must be distinct from all other option labels in its question after whitespace
 normalization.
 
-```json
-{"question": "Which card style?", "context": "Both fit a phone.",
- "images": [{"path": "~/shots/overview.png", "alt": "Both card styles side by side"}],
- "options": ["Plain", {"label": "Framed", "image": {"path": "~/shots/framed.png", "alt": "A card with a frame"}}]}
-```
+See the [example questions body](../how-to/save-items.md#questions-with-images).
 
 | Field | Meaning |
 | --- | --- |
-| `path` | A local PNG, JPEG or still WebP file, up to 5 MiB. It is read once, when the item is saved, and the type is checked from the file's content, not its name. Any other type is refused with a message naming the file. |
+| `path` | A local regular file containing a PNG, JPEG or still WebP image, up to 5 MiB. Quarterdeck checks the file contents to identify its type. It rejects directories, named pipes and other nonregular files. |
 | `alt` | Required text that describes the image, up to 300 characters. |
 
-An item holds at most 24 images. Saving copies each file into the private
-store and keeps this record in `items.json` in place of `path`:
+An item can name up to 24 images across questions and options. `add` validates
+the whole body before opening any attachment. It resolves each distinct path
+spelling once per save and reads each resolved file once. Two spellings can
+resolve to different targets if a symlink is retargeted during the save.
+Quarterdeck uses the standard library's resolved path even when the operating
+system would reject the original spelling, such as a parent step through a
+regular file. Different paths to a hard-linked file count as separate reads.
+
+Quarterdeck copies the original bytes into the store. The original can move
+or go away after saving. The stored image entry replaces `path` with `file`:
 
 ```json
 {"file": "3f9a0c2d41b7e6a8.png", "alt": "A card with a frame"}
 ```
 
-`file` is the first 16 hexadecimal characters of the content's hash
+`file` is the first 16 hexadecimal characters of the content's `sha256` digest
 plus the type's extension.
 
 ### Store layout
@@ -116,12 +120,15 @@ ${XDG_STATE_HOME:-~/.local/state}/quarterdeck/images/<id>/<file>
 
 The `images` folder has mode 0700 and each file mode 0600. `<id>` is the
 lowercase item ID, such as `q3`. `remove` deletes exactly the files the removed
-item's record names. Empty item folders can remain. `add` and `render` never delete an image. A page links to `images/<id>/<file>` relative to itself, so it works
-under a [base path](cli-and-config.md#pages). `serve` returns only a file the
-store lists for that item. `render` copies the files beside the pages, into
-`images/<id>/`.
+item's record names and leaves the item folder in place. `add` and `render`
+never delete saved image files.
 
-A failed `add` or an interrupted `remove` can leave files that no item names; they are never served and retrying does not clean them. See the [known limits](../how-to/save-items.md#questions-with-images).
+A failed `add` or an interrupted `remove` can leave files that no item names.
+Retrying does not clean them up. Where the destination does not support hard
+links, an interrupted image write during `add` or `render` can leave a partial
+file. Delete that partial file by hand before retrying the write. See the
+[serving boundary](../explanation/privacy-and-architecture.md#what-quarterdeck-reads-and-writes)
+and [export behavior](cli-and-config.md#rendered-images).
 
 ## Question answers
 

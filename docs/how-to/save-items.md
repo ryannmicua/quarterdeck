@@ -81,17 +81,15 @@ the first such question, prefixed with that question's ID, as in
 `Q6.2 See the mock-ups`.
 On both surfaces, the links open in a new tab.
 
-#### Questions with images
+### Questions with images
 
-When a decision is easier to make by looking, add images. A question can have
-`images`, shown under its text. An option can be an object with a `label` and
-an `image`, shown above its label so options can be compared. Plain text
-options still work in the same question.
+Attach an overview to the question and a mockup to each option you want to
+illustrate. You can mix pictured options with plain text options.
 
 ```json
 [
   {"question": "Which card style?",
-   "context": "Both fit a phone. Tap an image to pick it, or open it full size.",
+   "context": "Both fit a phone.",
    "images": [{"path": "~/shots/overview.png", "alt": "Both card styles side by side"}],
    "options": [
      {"label": "Plain", "image": {"path": "~/shots/plain.png", "alt": "A card with no frame"}},
@@ -100,47 +98,16 @@ options still work in the same question.
 ]
 ```
 
-Every image needs a `path` to a PNG, JPEG or still WebP file of at most 5 MiB, and
-`alt` text that describes it. Saving checks the whole body first, then reads
-each real file once, even when several images name the same path, and copies it
-into Quarterdeck's private store, so the original can move or go away.
-`remove` deletes the item's copies. A file of another type, one that is
-too large or one with no alt text is refused with a message naming it, and
-nothing is saved. Give each pictured option a label distinct from the other
-options in its question. See the [store layout](../reference/item-store.md#question-images).
-
-Images are shown exactly as saved to everyone who can view the item, so save only images fit to share with that audience.
-
-Only `remove` deletes an image, and only the files the removed item names.
-`add` and `render` never delete one. Some clean-up is given up in return:
-
-- An exported folder keeps the image copies of removed items until you delete
-  `<output>/images/<id>/` by hand. Render still retires the pages of removed items.
-- A failed `add` or an interrupted `remove` can leave files in the store's
-  `images/<id>/` folder that no item names. They are never served.
-- A refused render can leave new image copies in the output folder.
-- Where the destination does not support hard links, an interrupted image
-  write can leave a partial file. A later run refuses that file until you
-  delete it by hand.
-- Each distinct path spelling is resolved once per save. Two spellings can
-  pick up different targets if a symlink is retargeted during the save.
-  Quarterdeck uses the standard library's resolved path even when the operating
-  system would reject the original spelling, such as a parent step through a regular file.
-- Two paths to one file through hard links count as different files.
-- Another store that renders into this store's folder can replace or retire
-  generated pages. It can add image files but never remove one.
-  Rendering into another store's state folder is unsupported because removing
-  an item from that store can break a picture in the export.
-
-On a phone the images fit the width and a tap on an image in a question opens
-it full size. On an option, a tap on the image or its label picks it and
-**Open image** shows it full size.
+Save the JSON with the same `quarterdeck add --kind questions` command as
+above. Choose images you can share with everyone who can view the item.
+See the [image requirements and storage rules](../reference/item-store.md#question-images)
+and [how to view and pick pictured options](answer-questions.md#view-mockups).
 
 ## Find, read and remove items
 
 ```sh
 quarterdeck list         # saved items, newest first
-quarterdeck show Q3      # one item in full, numbered as on the page
+quarterdeck show Q3      # read Q3
 quarterdeck remove Q3    # delete Q3 and retire its ID
 ```
 

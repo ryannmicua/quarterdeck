@@ -19,6 +19,7 @@ import shlex
 import signal
 import socket
 import ssl
+import stat
 import subprocess
 import sys
 import tempfile
@@ -358,6 +359,10 @@ def image_kind(data: bytes) -> str | None:
     return None
 
 
+def open_nonblocking(path: str, flags: int) -> int:
+    return os.open(path, flags | os.O_NONBLOCK)
+
+
 def read_images(named: list[tuple[dict[str, str], str]], pending: dict[str, bytes]) -> None:
     """Snapshot the files a body names: resolve each path text once, then read each real file once."""
     real: dict[str, str] = {}
@@ -375,7 +380,9 @@ def read_images(named: list[tuple[dict[str, str], str]], pending: dict[str, byte
             if not os.path.isfile(real[value]):
                 raise ValueError(f"{where} must be a regular file: {value!r}")
             try:
-                with open(real[value], "rb") as stream:
+                with open(real[value], "rb", opener=open_nonblocking) as stream:
+                    if not stat.S_ISREG(os.fstat(stream.fileno()).st_mode):
+                        raise ValueError(f"{where} must be a regular file: {value!r}")
                     data = stream.read(IMAGE_BYTES_LIMIT + 1)
             except OSError as exc:
                 raise ValueError(f"{where} could not be read: {value!r} ({exc})") from exc
@@ -1532,7 +1539,7 @@ def question_form(item, served):
                         + f'<p id="error-{part}" hidden></p>')
         else:
             pictured = any(isinstance(v, dict) for v in question["options"])
-            controls = (links_html(question) + f'<ul{" class=\"has-images\"" if pictured else ""}>'
+            controls = (links_html(question) + ('<ul class="has-images">' if pictured else '<ul>')
                         + ''.join(read_only_option(item, v) for v in question["options"]) + '</ul>')
             if question.get("suggestion"):
                 controls += f'<p><strong>Suggested answer</strong><br>{linked_text(question["suggestion"])}</p>'

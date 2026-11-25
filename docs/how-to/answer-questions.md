@@ -30,6 +30,14 @@ The page shows answer times in your local time zone. If you're viewing a
 [rendered snapshot](../reference/cli-and-config.md#pages), open the served page
 before sending an answer.
 
+## View mockups
+
+Open the item page to see mockups below the question text or above their
+option labels. On an editable question, tap the option's image or label to
+pick its label as your draft answer. Select **Open image** to see the full
+image in a new tab. Tap the image itself to open it full size when it belongs
+to the whole question or appears on a read-only option.
+
 ## Known limits
 
 - If the saved-items file becomes unreadable or the disk fills, Send can report an error after saving the answer. Restore access or free space, reopen the card, and retry any answer marked **Not delivered**.

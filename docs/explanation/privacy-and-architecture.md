@@ -8,15 +8,15 @@ when enabled, the live Firstmate workers roster.
 
 - Item commands use the [item store and its lock](../reference/item-store.md).
   `add` copies body text from the named file or standard input into the store.
-  When a questions body names image files, `add` reads each one once, copies
-  it into the store's private `images` folder and never reads that path again.
+  A questions body can also name [local image attachments](../reference/item-store.md#question-images).
 - `render`, `serve`, `service` and `url` can read the
   [optional config](../reference/cli-and-config.md#json-configuration).
-- `render` reads the item store and inspects existing output files before
-  replacing or retiring them. See the [render reference](../reference/cli-and-config.md#pages).
+- `render` reads the item store and saved images. It inspects existing output
+  files before replacing or retiring them. See the [render reference](../reference/cli-and-config.md#pages).
 - `serve` reads the item store to build pages and writes to it when users
-  submit answers. It serves an image only from the private `images` folder and
-  only when the store lists it for that item. It reads the TLS certificate and key if you supply them.
+  submit answers. It serves images only from the private `images` folder and
+  only when the store lists the file for that item. It reads the TLS certificate
+  and key if you supply them.
 - The [workers endpoint](../reference/cli-and-config.md#workers-endpoint) runs
   the configured home's read-only `bin/fm-fleet-snapshot.sh --local`. This
   command uses no model.

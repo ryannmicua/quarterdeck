@@ -1639,6 +1639,39 @@ class QuestionImageTests(ImageCase):
                 self.assertIn(pipe.name, err)
         self.assertFalse(quarterdeck.store_path().exists())
 
+    def test_attachment_replaced_by_a_named_pipe_is_refused_without_blocking(self) -> None:
+        child = """
+import builtins
+import os
+import sys
+import quarterdeck
+
+fixture = sys.argv[1]
+real_open = builtins.open
+
+def replace_before_open(path, *args, **kwargs):
+    if path == fixture:
+        os.unlink(fixture)
+        os.mkfifo(fixture)
+    return real_open(path, *args, **kwargs)
+
+builtins.open = replace_before_open
+sys.exit(quarterdeck.main(["add", "--kind", "questions", "--title", "T",
+                          "--description", "D", "--body-file", "-"]))
+"""
+        for field in ("images", "options"):
+            with self.subTest(field=field):
+                fixture = self.picture(f"{field}.png", tiny_png((1, 2, 3)))
+                image = {"path": str(fixture), "alt": "A mockup"}
+                question = {"question": "Which?", "context": "Pick one.", "options": ["One"]}
+                question[field] = [image] if field == "images" else [{"label": "One", "image": image}]
+                result = subprocess.run([sys.executable, "-c", child, str(fixture)], cwd=ROOT,
+                                        input=json.dumps([question]), text=True, capture_output=True, timeout=3)
+                self.assertTrue(stat.S_ISFIFO(fixture.stat().st_mode))
+                self.assertEqual(result.returncode, 2, result.stderr)
+                self.assertIn("must be a regular file", result.stderr)
+        self.assertFalse(quarterdeck.store_path().exists())
+
     def test_truncated_images_are_refused_in_either_attachment_type(self) -> None:
         for filename, content in (
             ("short.png", tiny_png((1, 2, 3))[:-12]),

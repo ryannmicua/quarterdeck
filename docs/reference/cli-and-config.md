@@ -25,22 +25,20 @@ Item commands report validation errors on stderr and exit with status 2.
 
 | Command | What it does |
 | --- | --- |
-| `add` | Saves a new item and prints its ID. A `resource` needs `--url` and `--link-text`. A `list` or `questions` item needs `--body-file`. Questions may carry images, which are copied into the private store. See [the input formats and examples](../how-to/save-items.md#add-an-item). |
+| `add` | Saves a new item and prints its ID. A `resource` needs `--url` and `--link-text`. A `list` or `questions` item needs `--body-file`. See [the input formats and examples](../how-to/save-items.md#add-an-item). |
 | `list` | Prints saved items, newest first, with ID, kind, saved date and title. |
-| `show` | Prints one item in full, numbering list entries and questions as `Q7.1`, `Q7.2`. Each question link is printed with its text and URL. |
+| `show` | Prints the item's text, numbering list entries and questions as `Q7.1`, `Q7.2`. Each question link is printed with its text and URL. |
 | `mark` | Sets the state of one question or every question in a questions item. It preserves any saved answer, timestamp and delivery status. See [Read answers](../how-to/read-answers.md) for examples. |
-| `remove` | Deletes an item and its saved images. Its ID is never used again. |
+| `remove` | Deletes an item. Its ID is never used again. See [image removal](item-store.md#store-layout). |
 
 ### Pages
 
 | Command | What it does |
 | --- | --- |
-| `render` | Writes `index.html` (Saved) and one `q<N>.html` page per item. `--output PATH` names the Saved page and puts the item pages beside it. Otherwise the pages go to `output_dir`. The names `q<N>.html` and `images` are reserved. Existing destination pages must carry Quarterdeck's generated-page marker. Render uses the live images in the default state directory and copies images to `images/<id>/` for external output. It retires obsolete marked item pages. It never deletes an image, so an external output keeps the copies of removed items. Separately named Saved pages are kept and share the item pages in that directory. The output must be outside the Quarterdeck checkout. |
+| `render` | Writes `index.html` (Saved) and one `q<N>.html` page per item. `--output PATH` names the Saved page and puts the item pages beside it. Otherwise the pages go to `output_dir`. The names `q<N>.html` and `images` are reserved regardless of capitalization. Existing destination pages must carry Quarterdeck's generated-page marker. Render retires obsolete marked item pages. Separately named Saved pages are kept and share the item pages in that directory. The output must be outside the Quarterdeck checkout. See [rendered images](#rendered-images). |
 | `serve` | Serves the Saved page and item pages over HTTP, or HTTPS with `--tls-cert` and `--tls-key`. Page requests read the store, so a new item shows on the next load. Open item Q7 at `/q7.html`. `--host` may be repeated. `--port` defaults to 8765. See [serving security](../how-to/serve-the-page.md#security-loopback-by-default) for the default bind and browser access rules. |
 | `service` | Prints a systemd user unit with the supplied serving options, or writes it to `${XDG_CONFIG_HOME:-~/.config}/systemd/user/quarterdeck.service` with `--write`. |
 | `url` | Prints the address the installed unit serves, or the default address when no unit is installed. |
-
-Capitalization variants of `images` are reserved on all filesystems.
 
 Rendered item pages include any saved answers and their timestamps and
 delivery status. Answer controls are available on served pages.
@@ -48,13 +46,28 @@ delivery status. Answer controls are available on served pages.
 If `XDG_STATE_HOME` is set when you run `service`, the generated unit includes
 that setting so it reads the same [item store](item-store.md).
 
-`--base-path /qd` (or `base_path` in the config) serves every page under that
-prefix for a reverse proxy. A request for the bare prefix is redirected (308)
+`--base-path /qd` (or `base_path` in the config) serves pages and their images
+under that prefix for a reverse proxy. A request for the bare prefix is redirected (308)
 to `/qd/`, and a path outside the prefix to the same path beneath it, such as
 `/q3.html` to `/qd/q3.html`. `--base-path /` turns a configured prefix off.
 
 `serve` still accepts `--allow-marks`, `--watch-waits`, `--no-snapshot` and
 `--home`, which older service units pass, and ignores them with a notice.
+
+### Rendered images
+
+Pages link to `images/<id>/<file>` relative to themselves. When rendering
+into the current store's state directory, pages use its saved images. When
+rendering elsewhere, Quarterdeck copies images beside the pages, reuses
+identical files already there, and refuses to overwrite other files at
+those paths. Keep the `images` folder with the exported pages.
+
+External exports keep image copies of removed items until you delete
+`<output>/images/<id>/` by hand. A refused render can leave new image copies
+in the output folder. Rendering into another store's state directory can
+replace or retire that store's generated pages and add image files. Use a
+separate export directory to keep that store's `remove` command from
+deleting images the export reuses. See the [image removal rules](item-store.md#store-layout).
 
 ### Workers endpoint
 

@@ -19,11 +19,11 @@ parts of a list or a set of questions are cited as Q7.1, Q7.2, so you can say
 | --- | --- | --- |
 | `resource` | A link you want to get back to, with link text. | A Lavish page, a pull request, a preview. |
 | `list` | An ordered list of entries, numbered Q7.1, Q7.2, ... | A shopping list, the steps left in a launch. |
-| `questions` | Numbered questions, each with its context and the options or a suggestion to decide from. | The open questions Firstmate is waiting on, including [questions with a review link](docs/how-to/save-items.md#a-question-that-points-to-a-review-page). |
+| `questions` | Numbered questions with context, options or a suggestion, and optional [mockups](docs/how-to/save-items.md#questions-with-images). | The open questions Firstmate is waiting on, including [questions with a review link](docs/how-to/save-items.md#a-question-that-points-to-a-review-page). |
 
 Every item also has a title, a one-or-two-sentence description of what it is
-and why it was saved, and its saved date. Its content is copied in when it is
-saved; Quarterdeck never reads it again from another file.
+and why it was saved, and its saved date. Quarterdeck keeps its own copy of
+the saved content.
 
 ## Features
 
