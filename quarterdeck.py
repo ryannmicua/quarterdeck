@@ -1538,11 +1538,12 @@ table.items td.project { white-space:normal; }
 .sendbar output { margin:.4rem 0 0; }
 .sendbar output:empty { display:none; }
 details.done { margin:.6rem 0; max-width:52rem; border:1px solid var(--rule); border-radius:8px; background:var(--raised); }
-details.done > summary { display:flex; flex-wrap:wrap; gap:.15rem .8rem; align-items:baseline; padding:.7rem 1rem; min-height:var(--tap); cursor:pointer;
-  font-family:var(--sans); }
+details.done > summary { display:grid; grid-template-columns:auto minmax(0, 7fr) minmax(0, 5fr); gap:.8rem; align-items:baseline;
+  padding:.7rem 1rem; min-height:var(--tap); cursor:pointer; font-family:var(--sans); }
 details.done > summary:focus-visible { outline:3px solid var(--focus); outline-offset:-3px; }
-details.done .sum-q { font-weight:700; flex:1 1 14rem; min-width:0; }
-details.done .sum-a { color:var(--soft); flex:1 1 10rem; min-width:0; }
+details.done .sum-q, details.done .sum-a { white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+details.done .sum-q { font-weight:700; }
+details.done .sum-a { color:var(--soft); }
 details.done > .decision { margin:0; border:0; border-top:1px solid var(--rule); border-radius:0 0 8px 8px; max-width:none; }
 .library { padding:0; border:0; background:var(--raised); color:var(--ink); font-family:var(--sans); max-width:none; max-height:none; overflow:hidden; }
 .library::backdrop { background:color-mix(in srgb, var(--ink) 55%, transparent); }
@@ -2135,12 +2136,13 @@ if (send) {
       (history.length ? undo : send.disabled ? fields[0] : send).focus();
     }
   });
+  const questionNumber = section => Number(section.id.split('.')[1]);
   function updateFold(section, record) {
+    const number = questionNumber(section);
     let box = section.closest('details.done');
     if (record.state !== 'answered' || record.delivery !== 'sent') {
       if (box) {
-        const number = Number(section.id.split('.')[1]);
-        const next = [...list.children].find(child => child.matches('details.done') || Number(child.id.split('.')[1]) > number);
+        const next = [...list.children].find(child => child.matches('details.done') || questionNumber(child) > number);
         list.insertBefore(section, next);
         box.remove();
       }
@@ -2158,9 +2160,12 @@ if (send) {
       const summary = document.createElement('summary');
       summary.append(part('span', 'id', section.id), part('span', 'sum-q', section.querySelector('h2').textContent), part('span', 'sum-a', ''));
       box.append(summary, section);
-      list.append(box);
+      const next = [...list.querySelectorAll(':scope > details.done')]
+        .find(child => questionNumber(child.lastElementChild) > number);
+      list.insertBefore(box, next ?? null);
     }
     box.querySelector('.sum-a').textContent = record.answer;
+    box.open = false;
   }
   function showAnswer(section, field, record) {
     section.dataset.state = record.state;

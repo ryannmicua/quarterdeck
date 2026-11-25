@@ -26,6 +26,7 @@ import zlib
 from concurrent.futures import ThreadPoolExecutor
 from configparser import ConfigParser
 from contextlib import contextmanager, redirect_stderr, redirect_stdout, suppress
+from html.parser import HTMLParser
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 from urllib.parse import urljoin
@@ -253,6 +254,19 @@ class PageTests(StoreCase):
     def pages(self) -> dict[str, str]:
         return quarterdeck.site_pages(quarterdeck.read_store(quarterdeck.store_path()), "Quarterdeck", "index.html")
 
+    def assert_no_library_controls(self, page: str) -> None:
+        class Controls(HTMLParser):
+            def handle_starttag(parser, tag, attrs):
+                attributes = dict(attrs)
+                self.assertNotEqual(tag, "dialog")
+                self.assertNotEqual(attributes.get("id"), "open-library")
+                if tag == "input":
+                    self.assertNotEqual(attributes.get("type"), "search")
+
+        parser = Controls()
+        parser.feed(page)
+        parser.close()
+
     def test_empty_quarterdeck_shows_a_plain_empty_state(self) -> None:
         pages = self.pages()
         self.assertEqual(set(pages), {"index.html"})
@@ -290,8 +304,7 @@ class PageTests(StoreCase):
         self.assertEqual(index.count('href="q3.html#Q3.1"'), 1)
         self.assertIn("Two open questions, saved to decide later.", index)
         self.assertIn("<li>Merge the tide tables now?</li><li>Which colour for the quay?</li>", index)
-        self.assertNotIn("<dialog", index)
-        self.assertNotIn("open-library", index)
+        self.assert_no_library_controls(index)
         self.assertIn("<h2>Answered</h2>", index)
         self.assertIn("Nothing is answered yet.", index)
 
@@ -371,8 +384,6 @@ class PageTests(StoreCase):
             self.answer_all("Q4", 1)
         pages = self.pages()
         index = pages["index.html"]
-        for needle in ("<dialog", "open-library", 'type="search"'):
-            self.assertNotIn(needle, index)
         self.assertIn('<section class="page-section"><h2>References</h2>', index)
         self.assertIn('<section class="page-section"><h2>Answered</h2>', index)
         self.assertLess(index.index("<h2>References</h2>"), index.index("<h2>Answered</h2>"))
@@ -382,7 +393,7 @@ class PageTests(StoreCase):
                          '<a class="lib-title" href="q4.html">Pier lights</a></li></ul>')
         self.assertIn("Answer 1", pages["q4.html"])
         for page in pages.values():
-            self.assertNotIn("<dialog", page)
+            self.assert_no_library_controls(page)
 
     def test_item_page_lists_open_questions_first_and_folds_answered_ones(self) -> None:
         self.add("questions", "Pier lights", "Pick the lamp colour.", "--body-file", "-", stdin=json.dumps(QUESTIONS))
@@ -985,34 +996,75 @@ check(button('suggest').disabled, 'Bulk suggestions remained available with noth
 """)
 
     def test_an_answered_question_folds_to_one_line_below_the_open_ones(self):
-        self.add("questions", "Tide decisions", "Decide the launch plan.", "--body-file", "-", stdin=json.dumps(QUESTIONS))
-        self.check_answer_page(self.start("/qd"), r"""
+        question = {**QUESTIONS[0], "question": "Merge the tide tables now? " * 8}
+        self.add("questions", "Tide decisions", "Decide the launch plan.", "--body-file", "-",
+                 stdin=json.dumps([question, QUESTIONS[1], question]))
+        home = self.root / "home"
+        script = home / "bin" / "fm-inbox.sh"
+        script.parent.mkdir(parents=True)
+        script.write_text("#!/bin/sh\nexit 0\n")
+        script.chmod(0o700)
+        port = self.start("/qd", home=home)
+        self.assertEqual(self.post_answer(port, "Q1.3", "Wait for the harbourmaster. " * 8)[1]["delivery"], "sent")
+        self.check_answer_page(port, r"""
 const list = document.querySelector('#questions');
-check(list.children.length === 2 && !list.querySelector('details'), 'Open questions should not be folded');
-typeAnswer(1, 'Hold');
-let delivery = 'pending';
+const order = () => [...list.children].map(row => row.id || row.lastElementChild.id).join();
+const checkSummary = summary => {
+  const question = summary.querySelector('.sum-q');
+  const answer = summary.querySelector('.sum-a');
+  for (const width of [300, 650]) {
+    list.style.maxWidth = width + 'px';
+    check(question.offsetTop === answer.offsetTop && summary.scrollWidth === summary.clientWidth,
+          'Summary text did not fit on one row at width ' + width);
+    for (const text of [question, answer]) {
+      const style = getComputedStyle(text);
+      check(style.whiteSpace === 'nowrap' && style.textOverflow === 'ellipsis' &&
+            style.overflowX === 'hidden' && text.scrollWidth > text.clientWidth,
+            'Long summary text was not shortened with an ellipsis at width ' + width);
+    }
+  }
+  list.style.maxWidth = '';
+};
+check(card(1).parentElement === list && card(2).parentElement === list, 'Open questions should not be folded');
+const initiallyFolded = card(3).closest('details');
+check(initiallyFolded && !initiallyFolded.open, 'A previously delivered question did not start folded');
+checkSummary(initiallyFolded.querySelector('summary'));
+let delivery = 'sent';
 window.fetch = async (url, options) => {
   const {answer} = JSON.parse(options.body);
   return {ok: true, json: async () => ({answer, state: 'answered', revision: 'saved-revision',
     answered_at: '2026-01-12T15:00:00Z', delivery})};
 };
+typeAnswer(2, 'Blue');
+await sendBatch();
+check(order() === 'Q1.1,Q1.2,Q1.3', 'The later question was not inserted before a higher-numbered folded question');
+check(document.querySelector('.progress').textContent === '1 of 3 open', 'Progress was stale');
+const longAnswer = 'Wait for confirmation from the harbourmaster. '.repeat(8).trim();
+typeAnswer(1, longAnswer);
+delivery = 'pending';
 await sendBatch();
 check(list.children[0] === card(1) && card(1).querySelector('.delivery').textContent === 'Not delivered',
       'The pending answer moved or hid its delivery status');
 delivery = 'sent';
 await sendBatch();
-check(list.children.length === 2 && list.children[0].id === 'Q1.2', 'The open question did not move up');
-const folded = list.children[1];
+check(order() === 'Q1.1,Q1.2,Q1.3', 'Delivery order changed the order of the folded questions');
+const folded = list.children[0];
 check(folded.matches('details.done') && !folded.open, 'The answered question was not folded');
-check(folded.querySelector('summary').textContent.includes('Merge the tide tables now?') &&
-      folded.querySelector('.sum-a').textContent === 'Hold', 'The folded line lacks the question or answer');
-folded.querySelector('summary').click();
-check(folded.open && folded.querySelector('textarea').value === 'Hold', 'The folded question did not open to its answer');
-check(document.querySelector('.progress').textContent === '1 of 2 open', 'Progress was stale');
+const summary = folded.querySelector('summary');
+checkSummary(summary);
+summary.click();
+check(folded.open && field(1).value === longAnswer &&
+      card(1).querySelector('h2').textContent === 'Merge the tide tables now? '.repeat(8).trim(),
+      'Opening the folded row did not reveal the full question and answer');
+typeAnswer(1, 'Hold for the pilot');
+await sendBatch();
+check(!folded.open && folded.querySelector('.sum-a').textContent === 'Hold for the pilot',
+      'The delivered correction did not close the row with the corrected answer');
+summary.click();
 typeAnswer(1, 'Use the next tide');
 delivery = 'pending';
 await sendBatch();
-check(list.children.length === 2 && list.children[0] === card(1) && !list.querySelector('details'),
+check(order() === 'Q1.1,Q1.2,Q1.3' && card(1).parentElement === list,
       'The pending correction did not return to its place among expanded questions');
 check(card(1).querySelector('.delivery').textContent === 'Not delivered', 'The pending correction lost its delivery status');
 """)

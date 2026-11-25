@@ -23,7 +23,8 @@ The serve group uses headless `google-chrome` when available to verify bulk
 suggestions, undo, and that conflicts and validation errors preserve drafts while the other
 answers in the batch are sent. The browser checks also cover retrying a reopened
 answer, exact answer times in a fixed locale and time zone, and sending suggestions
-in place while preserving their text. They also cover folding after delivery,
+in place while preserving their text. They also cover one-line summaries,
+numeric order after out-of-order delivery, refolding a delivered correction,
 expanding a pending correction, and finding archived items by text and exact
 question IDs without revealing answer previews.
 
