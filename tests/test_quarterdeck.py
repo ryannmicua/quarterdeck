@@ -989,7 +989,7 @@ const sendBatch = () => new Promise(resolve => {
         timing = []
         if viewport:
             width, height = viewport
-            page = (f'<iframe width="{width}" height="{height}" style="border:0" srcdoc="{escape(page)}"></iframe>'
+            page = (f'<iframe style="width:{width}px;height:{height}px;border:0" srcdoc="{escape(page)}"></iframe>'
                     '<output id="browser-result">Incomplete</output>')
             # Give resize observers a rendered frame before headless Chrome dumps the fixture.
             timing = ["--run-all-compositor-stages-before-draw", "--virtual-time-budget=1000"]
@@ -1339,6 +1339,30 @@ check(tabs[1].getAttribute('aria-selected') === 'true', 'Answered did not open')
 close.click();
 check(!dialog.open, 'Close library did not dismiss the sheet');
 """, path="/qd/", viewport=(320, 800))
+
+    def test_library_layout_covers_fractional_breakpoint_widths(self):
+        port = self.start("/qd")
+        for width in (639.875, 640, 640.125, 641):
+            with self.subTest(width=width):
+                self.check_answer_page(port, r"""
+const width = frameElement.getBoundingClientRect().width;
+const drawer = matchMedia('(width > 640px)').matches;
+button('open-library').click();
+const dialog = button('library');
+for (const animation of dialog.getAnimations()) animation.finish();
+const bounds = dialog.getBoundingClientRect();
+const near = (actual, expected) => Math.abs(actual - expected) < 1;
+check(near(bounds.right, width) && near(bounds.bottom, innerHeight), 'The library lost its viewport anchoring');
+check(drawer ? near(bounds.top, 0) && bounds.left > 0 : bounds.top > 0 && near(bounds.left, 0),
+      'The library used the wrong layout at ' + width + 'px');
+for (const tab of dialog.querySelectorAll('[role="tab"]')) {
+  tab.click();
+  const search = button(tab.getAttribute('aria-controls')).querySelector('input[type="search"]');
+  const target = search.getBoundingClientRect();
+  check(search === document.elementFromPoint(target.left + target.width / 2, target.top + target.height / 2),
+        'The search field was hidden at ' + width + 'px');
+}
+""", path="/qd/", viewport=(width, 800))
 
     def test_short_library_viewports_keep_search_results_and_header_reachable(self):
         self.add("resource", "Harbor chart", "Review the route.", "--url", "https://example.org/chart",

@@ -1407,7 +1407,7 @@ PAGE_CSS = """
     --signal: #ff8c6e; --signal-ground: #3a211b; --focus: #8ec5ec; }
 }
 @media (max-width: 30rem) { :root { --text-body: 17px; } }
-@media (min-width: 40.01rem) { :root { --gutter: 2rem; --page: 64rem; } }
+@media (width > 40rem) { :root { --gutter: 2rem; --page: 64rem; } }
 @media (min-width: 90rem) { :root { --gutter: 3rem; --page: 150rem; --side: 20rem; } }
 
 * { box-sizing: border-box; }
@@ -1549,20 +1549,19 @@ details.done .sum-a { display:flex; color:var(--soft); }
 details.done .sum-source { flex:none; white-space:pre; }
 details.done > .decision { margin:0; border:0; border-top:1px solid var(--rule); border-radius:0 0 8px 8px; max-width:none; }
 .library { position:fixed; inset-block:auto var(--visible-bottom, 0px); padding:0; border:0; background:var(--raised); color:var(--ink);
-  font-family:var(--sans); max-width:none; max-height:none; overflow:hidden; }
+  font-family:var(--sans); max-width:none; max-height:none; overflow:hidden;
+  width:100%; height:min(calc(var(--visible-height, 100vh) * .88), calc(var(--visible-height, 100vh) - 2.5rem));
+  margin:0; border-radius:14px 14px 0 0; border-top:1px solid var(--rule); }
 .library::backdrop { background:color-mix(in srgb, var(--ink) 55%, transparent); }
 .library[open] { display:flex; flex-direction:column; }
-@media (min-width: 40.01rem) {
-  .library { width:min(36rem, 100vw); height:var(--visible-height, 100vh); margin:0 0 0 auto; border-left:1px solid var(--rule); }
-}
-@media (max-width: 40rem) {
-  .library { width:100%; height:min(calc(var(--visible-height, 100vh) * .88), calc(var(--visible-height, 100vh) - 2.5rem));
-    margin:0; border-radius:14px 14px 0 0; border-top:1px solid var(--rule); }
+@media (width > 40rem) {
+  .library { width:min(36rem, 100vw); height:var(--visible-height, 100vh); margin:0 0 0 auto;
+    border-radius:0; border-top:0; border-left:1px solid var(--rule); }
 }
 @media (prefers-reduced-motion: no-preference) {
   .library[open] { animation:lib-in .18s ease-out; }
   @keyframes lib-in { from { transform:translateY(1.5rem); opacity:0; } }
-  @media (min-width: 40.01rem) { @keyframes lib-in { from { transform:translateX(2rem); opacity:0; } } }
+  @media (width > 40rem) { @keyframes lib-in { from { transform:translateX(2rem); opacity:0; } } }
 }
 body:has(dialog[open]) { overflow:hidden; }
 .lib-top { display:flex; flex-wrap:wrap; gap:.4rem 1rem; align-items:center; justify-content:space-between; padding:.7rem var(--gutter) 0; border-bottom:1px solid var(--rule); }
