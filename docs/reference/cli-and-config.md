@@ -27,7 +27,7 @@ Item commands report validation errors on stderr and exit with status 2.
 | --- | --- |
 | `add` | Saves a new item and prints its ID. A `resource` needs `--url` and `--link-text`. A `list` or `questions` item needs `--body-file`. See [the input formats and examples](../how-to/save-items.md#add-an-item). |
 | `list` | Prints saved items, newest first, with ID, kind, saved date and title. |
-| `show` | Prints one item in full, numbering list entries and questions as `Q7.1`, `Q7.2`. |
+| `show` | Prints one item in full, numbering list entries and questions as `Q7.1`, `Q7.2`. Each question link is printed with its text and URL. |
 | `mark` | Sets the state of one question or every question in a questions item. It preserves any saved answer, timestamp and delivery status. See [Read answers](../how-to/read-answers.md) for examples. |
 | `remove` | Deletes an item. Its ID is never used again. |
 

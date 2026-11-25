@@ -45,14 +45,32 @@ Readers validate the records without taking the lock.
 
 | Kind | `body` |
 | --- | --- |
-| `resource` | A `url` and `link_text`. The URL must use `http` or `https`, include a hostname, and pass port validation. |
+| `resource` | A `url` and `link_text`. |
 | `list` | `{"entries": ["...", "..."]}`, at least one. |
-| `questions` | A nonempty `questions` array of objects. `question` and `context` are required text fields. `options` is an array of text and can be empty when the object has a `suggestion`. |
+| `questions` | A nonempty `questions` array of objects. `question` and `context` are required text fields. `options` is an array of text and can be empty when the object has a `suggestion`. Each question may include `links`, an array of objects with exactly two fields, `text` and `url`. |
+
+Resource and question link URLs must use `http` or `https`, include a hostname,
+and pass port validation. After trimming, a URL may contain at most 2,000
+characters and cannot contain whitespace or backslashes.
+Question link `text` must be nonempty and is limited to 200 characters after
+whitespace is collapsed to single spaces. Quarterdeck omits an empty `links`
+array when saving.
+
+## Inline web addresses
 
 Quarterdeck trims text when saving it and escapes it when building pages.
-On the Saved page and individual item pages, standalone `http://` and
-`https://` addresses in descriptions become links if they pass the same URL
-validation as resource URLs. Quarterdeck uses the address as the link text.
+Standalone `http://` and `https://` addresses become links in the following
+fields if they pass the same validation as resource URLs.
+
+| Where | Fields |
+| --- | --- |
+| Saved page | Item descriptions and the open question prompts shown on Desk cards |
+| Item page | Item descriptions, question prompts, context, options and suggested answers |
+
+Quarterdeck uses the address as the link text. Inline links open in a new tab
+so you can keep a draft answer open while following a link. Selecting an option
+or using a suggestion still fills the answer with its plain text.
+
 Separate multiple addresses with spaces so they are recognized individually.
 Bare addresses lose trailing punctuation such as periods and exclamation
 marks. Enclose an address in angle brackets, as in

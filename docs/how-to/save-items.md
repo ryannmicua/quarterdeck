@@ -11,8 +11,8 @@ Every item needs a kind, a title that says what it is about, and a one-or-two
 sentence description: what it is and why it was saved, so the captain
 recognises it later. `add` prints the new ID.
 
-See [description links](../reference/item-store.md#format-version-1) for ways
-to include web addresses in a description.
+See [inline web addresses](../reference/item-store.md#inline-web-addresses) for
+where pasted URLs become clickable.
 
 ### A resource (a link)
 
@@ -36,8 +36,8 @@ printf '%s\n' "Buy rope" "Paint the hull" "Check the sails" | quarterdeck add --
 
 ### Open questions
 
-Save questions so the captain can decide from the item alone. Each question
-needs `question` and `context`, and `options`, a `suggestion`, or both:
+Give the captain enough context to decide. Each question needs `question` and
+`context`, and `options`, a `suggestion`, or both:
 
 ```json
 [
@@ -55,11 +55,31 @@ quarterdeck add --kind questions --title "Tide launch decisions" \
   --description "The two questions holding the tide launch." --body-file questions.json
 ```
 
-The questions are numbered on the page, for example Q3.1 and Q3.2.
+`--body-file -` reads standard input. Quarterdeck copies the body when you
+save it. The questions are numbered on the page, for example Q3.1 and Q3.2.
 See [Answer questions](answer-questions.md) to send decisions.
 
-`--body-file -` reads standard input. Quarterdeck copies the body when you
-save it.
+### A question that points to a review page
+
+When a question is easier to decide with a picture or a mock-up, add `links` to
+that question. Use descriptive link text so the reader knows what they will
+see. For field requirements, see the
+[item store reference](../reference/item-store.md#format-version-1).
+
+```json
+[
+  {"question": "How should the pop-up show up?",
+   "context": "The review page shows the centered and docked layouts.",
+   "options": ["Centered", "Docked"], "suggestion": "Docked",
+   "links": [{"text": "See the mock-ups", "url": "https://example.org/review/popup"}]}
+]
+```
+
+The question page shows the links above the options and suggested answer.
+If any open question has links, the Saved card shows the first link from
+the first such question, prefixed with that question's ID, as in
+`Q6.2 See the mock-ups`.
+On both surfaces, the links open in a new tab.
 
 ## Find, read and remove items
 

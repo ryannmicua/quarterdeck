@@ -274,9 +274,10 @@ class PageTests(StoreCase):
                  "--url", "https://example.com/n", "--link-text", "Notes")
         pages = self.pages()
         for name in ("q1.html", "index.html"):
-            self.assertIn('See <a href="https://example.com/notes/1" rel="noopener noreferrer">'
+            self.assertIn('See <a href="https://example.com/notes/1" target="_blank" rel="noopener noreferrer">'
                           'https://example.com/notes/1</a>, then &lt;b&gt;', pages[name])
-            self.assertIn('<a href="https://example.org/a?x=1&amp;y=2" rel="noopener noreferrer">', pages[name])
+            self.assertIn('<a href="https://example.org/a?x=1&amp;y=2" target="_blank" rel="noopener noreferrer">',
+                          pages[name])
             self.assertIn('</a> &lt;/b&gt;. Not javascript:alert(1).', pages[name])
             self.assertNotIn("<b>", pages[name])
 
@@ -295,23 +296,26 @@ class PageTests(StoreCase):
         self.add("resource", "Notes", description, "--url", "https://example.org/notes", "--link-text", "Notes")
         self.add("questions", "Decisions", description, "--body-file", "-", stdin=json.dumps(QUESTIONS))
         expected = (
-            'See <a href="https://example.org/Mercury_(planet)" rel="noopener noreferrer">'
+            'See <a href="https://example.org/Mercury_(planet)" target="_blank" rel="noopener noreferrer">'
             'https://example.org/Mercury_(planet)</a>. '
             'Skip https://example.org:99999/?x=1&amp;y=2. '
-            'Try <a href="http://[2001:db8::1]" rel="noopener noreferrer">http://[2001:db8::1]</a>! Or &lt;'
-            '<a href="HTTPS://example.org/?q=go!" rel="noopener noreferrer">HTTPS://example.org/?q=go!</a>&gt;. '
-            'Compare <a href="https://example.org/Alzheimer&#x27;s_disease" rel="noopener noreferrer">'
+            'Try <a href="http://[2001:db8::1]" target="_blank" rel="noopener noreferrer">'
+            'http://[2001:db8::1]</a>! Or &lt;'
+            '<a href="HTTPS://example.org/?q=go!" target="_blank" rel="noopener noreferrer">'
+            'HTTPS://example.org/?q=go!</a>&gt;. '
+            'Compare <a href="https://example.org/Alzheimer&#x27;s_disease" target="_blank" rel="noopener noreferrer">'
             'https://example.org/Alzheimer&#x27;s_disease</a>. '
-            'Use &quot;<a href="https://example.org/?tag=red;" rel="noopener noreferrer">'
+            'Use &quot;<a href="https://example.org/?tag=red;" target="_blank" rel="noopener noreferrer">'
             'https://example.org/?tag=red;</a>&quot;. '
-            'See (details: <a href="https://example.org/docs#setup" rel="noopener noreferrer">'
+            'See (details: <a href="https://example.org/docs#setup" target="_blank" rel="noopener noreferrer">'
             'https://example.org/docs#setup</a>)! '
-            'Docs: &#x27;<a href="https://example.org/docs" rel="noopener noreferrer">'
-            'https://example.org/docs</a>&#x27;,<a href="https://example.org/runbook" rel="noopener noreferrer">'
+            'Docs: &#x27;<a href="https://example.org/docs" target="_blank" rel="noopener noreferrer">'
+            'https://example.org/docs</a>&#x27;,<a href="https://example.org/runbook" '
+            'target="_blank" rel="noopener noreferrer">'
             'https://example.org/runbook</a>. '
-            'Compare &lt;<a href="https://example.org/search?q=(" rel="noopener noreferrer">'
+            'Compare &lt;<a href="https://example.org/search?q=(" target="_blank" rel="noopener noreferrer">'
             'https://example.org/search?q=(</a>&gt; and <a href="https://example.org/search?q=bug)fix" '
-            'rel="noopener noreferrer">https://example.org/search?q=bug)fix</a>. '
+            'target="_blank" rel="noopener noreferrer">https://example.org/search?q=bug)fix</a>. '
             'Install from git+https://example.org/tools.git@v2.'
         )
         pages = self.pages()
@@ -345,6 +349,107 @@ class PageTests(StoreCase):
             self.assertNotIn(str(self.root), page)
             self.assertNotIn(str(Path.home()), page)
         self.assertIn("&lt;b&gt;bold&lt;/b&gt;", pages["q1.html"])
+
+
+LINKED = [
+    {"question": "How should the pop-up show up?", "context": "Three layouts are drawn on the review page.",
+     "options": ["Centered", "Docked"], "suggestion": "Docked",
+     "links": [{"text": "See the mock-ups", "url": "https://example.org/review/popup"},
+               {"text": "Second view", "url": "https://example.org/review/two"}]},
+    {"question": "Which colour?", "context": "Plain.", "options": ["Red"]},
+]
+
+
+class QuestionAddressTests(StoreCase):
+    def test_web_addresses_in_question_text_become_links_but_answers_do_not_change(self) -> None:
+        prompt_url, context_url, option_url, suggestion_url = (
+            f"https://example.org/{name}" for name in ("ask", "why", "opt", "tip")
+        )
+        questions = [{"question": f"Does {prompt_url} look right?", "context": f"See {context_url}, then decide.",
+                      "options": [f"Use {option_url}", "Hold"], "suggestion": f"Try {suggestion_url}"}]
+        code, _out, err = self.run_cli("add", "--kind", "questions", "--title", "T", "--description", "D",
+                                       "--body-file", "-", stdin=json.dumps(questions))
+        self.assertEqual(code, 0, err)
+        data = quarterdeck.read_store(quarterdeck.store_path())
+        pages = quarterdeck.site_pages(data, "Quarterdeck", "index.html")
+        served = quarterdeck.item_page(data["items"][0], "Quarterdeck", served=True)
+        prompt_link = f'<a href="{prompt_url}" target="_blank" rel="noopener noreferrer">{prompt_url}</a>'
+        self.assertIn(prompt_link, pages["index.html"])
+        for page in (pages["q1.html"], served):
+            self.assertIn(prompt_link, page)
+            for url in (context_url, option_url):
+                self.assertIn(f'<a href="{url}" target="_blank" rel="noopener noreferrer">{url}</a>', page)
+        suggestion_link = (f'<a href="{suggestion_url}" target="_blank" '
+                           f'rel="noopener noreferrer">{suggestion_url}</a>')
+        self.assertIn(f'<p><strong>Suggested answer</strong><br>Try {suggestion_link}</p>', pages["q1.html"])
+        self.assertIn(f'data-choice="Try {suggestion_url}" data-suggested> '
+                      f'Try {suggestion_link} <small>Suggested</small></label>', served)
+        self.assertIn(f'data-choice="Use {option_url}"', served, "the answer value stays plain text")
+
+
+class QuestionLinkTests(StoreCase):
+    def save(self, questions: object) -> tuple[int, str, str]:
+        return self.run_cli("add", "--kind", "questions", "--title", "Pop-up", "--description", "Layout choice.",
+                            "--body-file", "-", stdin=json.dumps(questions))
+
+    def test_links_are_stored_shown_by_show_and_rendered(self) -> None:
+        self.assertEqual(self.save(LINKED)[0], 0)
+        stored = self.store()["items"][0]["body"]["questions"]
+        expected_links = LINKED[0]["links"]
+        self.assertEqual(stored[0]["links"], expected_links)
+        self.assertNotIn("links", stored[1])
+        code, shown, err = self.run_cli("show", "Q1")
+        self.assertEqual(code, 0, err)
+        data = quarterdeck.read_store(quarterdeck.store_path())
+        pages = quarterdeck.site_pages(data, "Quarterdeck", "index.html")
+        served_page = quarterdeck.item_page(data["items"][0], "Quarterdeck", served=True)
+        for link in expected_links:
+            text, url = link["text"], link["url"]
+            with self.subTest(text=text):
+                self.assertIn(f"      Link: {text}: {url}", shown)
+                anchor = (f'<a class="ref-link" href="{url}" target="_blank" '
+                          f'rel="noopener noreferrer">{text}</a>')
+                self.assertLess(pages["q1.html"].index(anchor), pages["q1.html"].index("<li>Centered</li>"))
+                self.assertLess(served_page.index(anchor), served_page.index('<div class="choices">'))
+        card_link = ('<a class="ref-link" href="https://example.org/review/popup" target="_blank" '
+                     'rel="noopener noreferrer">Q1.1 See the mock-ups</a>')
+        self.assertEqual(pages["index.html"].count(card_link), 1)
+        self.assertNotIn("Second view", pages["index.html"])
+
+    def test_card_preview_uses_first_open_question_with_links(self) -> None:
+        later_question = {"question": "Where should the button go?", "context": "Review the placements.",
+                          "options": ["Top", "Bottom"],
+                          "links": [{"text": "See the placements", "url": "https://example.org/review/placements"}]}
+        self.assertEqual(self.save([{**LINKED[1], "links": []}, LINKED[0], later_question])[0], 0)
+        self.assertNotIn("links", self.store()["items"][0]["body"]["questions"][0])
+        first = "Q1.2 See the mock-ups"
+        later = "Q1.3 See the placements"
+        cases = [("Q1.2", "open", first), ("Q1.2", "answered", later), ("Q1.2", "closed", later),
+                 ("Q1.3", "closed", None), ("Q1.3", "open", later), ("Q1.2", "open", first)]
+        for part, state, expected in cases:
+            with self.subTest(part=part, state=state):
+                self.assertEqual(self.run_cli("mark", part, state)[0], 0)
+                data = quarterdeck.read_store(quarterdeck.store_path())
+                page = quarterdeck.site_pages(data, "Quarterdeck", "index.html")["index.html"]
+                for label in (first, later):
+                    self.assertEqual(page.count(f">{label}</a>"), int(label == expected))
+
+    def test_bad_links_are_refused(self) -> None:
+        base = {"question": "Q?", "context": "C", "options": ["A"]}
+        cases = [
+            ([{"text": "x", "url": "javascript:alert(1)"}], "link 1 url must be an http:// or https://"),
+            ([{"text": "x", "url": "ftp://example.org/a"}], "link 1 url"),
+            ([{"text": "x"}], "link 1 must be an object with text and url"),
+            ([{"url": "https://example.org"}], "link 1 must be an object with text and url"),
+            ([{"text": " ", "url": "https://example.org"}], "link 1 text must not be empty"),
+            ("https://example.org", "links must be a list"),
+            *((value, "links must be a list") for value in ({}, False, 0, None, "")),
+        ]
+        for links, message in cases:
+            code, _out, err = self.save([{**base, "links": links}])
+            self.assertEqual(code, 2, links)
+            self.assertIn(message, err)
+        self.assertFalse(quarterdeck.store_path().exists())
 
 
 class RenderTests(StoreCase):
