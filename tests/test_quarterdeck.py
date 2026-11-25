@@ -2401,13 +2401,16 @@ class WorkersTests(StoreCase):
 
     def test_suspend_time_expires_the_reading_for_lookup_and_automatic_refresh(self) -> None:
         port = self.start("/qd", workers_home=self.make_home([snapshot_task("Wren")]))
-        clock = SimpleNamespace(CLOCK_BOOTTIME=7, clock_gettime=MagicMock(return_value=100), monotonic=lambda: 100)
+        clock = SimpleNamespace(CLOCK_BOOTTIME=7, CLOCK_MONOTONIC=1)
+        times = {clock.CLOCK_BOOTTIME: 100, clock.CLOCK_MONOTONIC: 100}
+        clock.clock_gettime = times.__getitem__
+        clock.monotonic = lambda: times[clock.CLOCK_MONOTONIC]
         saved_path = "/qd/workers-saved.json"
         with patch.object(quarterdeck, "time", clock):
             status, initial = self.workers(port)
             self.assertEqual(status, 200)
             self.assertEqual(self.workers(port, saved_path), (200, {"snapshot": initial, "stale": False}))
-            clock.clock_gettime.return_value += 3601
+            times[clock.CLOCK_BOOTTIME] += 3601
             self.assertEqual(self.workers(port, saved_path), (200, {"snapshot": initial, "stale": True}))
             self.make_home([snapshot_task("Bracken")])
             status, refreshed = self.workers(port, "/qd/workers.json?reuse=1")
