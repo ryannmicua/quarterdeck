@@ -5874,12 +5874,13 @@ class TalkToFirstmateTests(ImageCase):
                          [f"CONVERSATION Q1 {second['id']} Topic: Harbor lamp colours", "Also, which green?"])
         self.assertEqual(self.run_cli("reply", "Q1", "--ask", second["id"], "--text", "Sea green.")[0], 0)
         self.assertEqual(self.run_cli("reply", "Q1", "--ask", first["id"], "--text", "Warm amber.")[0], 0)
+        self.assertEqual(self.run_cli("post", "Q1", "--text", "The lamps are installed."), (0, "Q1 Updated\n", ""))
         self.assertEqual(self.run_cli("reply", "Q1", "--ask", "f" * 32, "--text", "Lost.")[0], 2)
         self.assertEqual(self.run_cli("reply", "Q1.1", "--ask", first["id"], "--text", "Lost.")[0], 2)
-        text = [m["text"] for m in self.thread()]
-        self.assertEqual(text, ["Which amber suits the pier lamps?", "Also, which green?", "Sea green.", "Warm amber."])
+        text = ["Which amber suits the pier lamps?", "Also, which green?", "Sea green.", "Warm amber.",
+                "The lamps are installed."]
+        self.assertEqual([m["text"] for m in self.thread()], text)
         page = self.fetch(port, "/qd/q1.html")[1]
-        self.assertEqual([page.index(t) for t in text], sorted(page.index(t) for t in text))
         status, transcript, err = self.run_cli("show", "Q1")
         self.assertEqual(status, 0, err)
         self.assertEqual([transcript.index(t) for t in text], sorted(transcript.index(t) for t in text))
@@ -5887,6 +5888,7 @@ class TalkToFirstmateTests(ImageCase):
         self.assertIn(f"{second['id']}  Message 2\n  {second['text']}", transcript)
         self.assertIn("In reply to message 2\n  Sea green.", transcript)
         self.assertIn("In reply to message 1\n  Warm amber.", transcript)
+        self.assertIn("Update\n  The lamps are installed.", transcript)
         self.assertIn("Content-Security-Policy", self.fetch(port, "/qd/q1.html")[2])
         self.assertIn('id="send-message"', page)
         self.assertNotIn('class="lead"', page)
@@ -5904,10 +5906,13 @@ class TalkToFirstmateTests(ImageCase):
         self.assertEqual((status, retried["message"]), (200, "Message sent."))
         for path, markup in (("open", page), ("send", sent["thread"]), ("retry", retried["thread"])):
             with self.subTest(path=path):
+                self.assertEqual([markup.index(t) for t in text], sorted(markup.index(t) for t in text))
                 self.assertRegex(markup, rf'data-ask-id="{first["id"]}" id="message-1"[^>]*>[^\n]*<span>Message 1</span>')
                 self.assertRegex(markup, rf'data-ask-id="{second["id"]}" id="message-2"[^>]*>[^\n]*<span>Message 2</span>')
                 self.assertIn('<a href="#message-2">In reply to message 2</a></p><p class="record">Sea green.</p>', markup)
                 self.assertIn('<a href="#message-1">In reply to message 1</a></p><p class="record">Warm amber.</p>', markup)
+                self.assertIn('<span>Firstmate update</span></p><p class="record">The lamps are installed.</p>', markup)
+                self.assertEqual(markup.count(">In reply to message "), 2)
 
     def test_a_conversation_cannot_send_messages_to_a_replacement_home(self) -> None:
         home = self.inbox()

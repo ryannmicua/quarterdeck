@@ -1245,6 +1245,15 @@ def ask_message(store, home, binding, payload, *, home_available=True, include_t
         return ask_result(item, part, message, include_thread=include_thread)
 
 
+def append_conversation(data, title, message):
+    item_id = f"Q{data['next_id']}"
+    data["next_id"] = int(data["next_id"]) + 1
+    data["items"].append({"id": item_id, "kind": "conversation", "title": title,
+                          "description": "Conversation with Firstmate.", "saved_at": now_text(), "body": {},
+                          "conversation": {"item": [message]}})
+    return item_id
+
+
 def start_conversation(store, home, binding, payload):
     """Save a new conversation item holding its first message, then deliver that message like any ask."""
     if not isinstance(payload, dict) or set(payload) != {"id", "title", "text", "home"}:
@@ -1268,11 +1277,7 @@ def start_conversation(store, home, binding, payload):
         else:
             if payload["home"] != binding:
                 raise AnswerConflict("Firstmate home changed. This message belongs to the original home.")
-            item_id = f"Q{data['next_id']}"
-            data["next_id"] = int(data["next_id"]) + 1
-            data["items"].append({"id": item_id, "kind": "conversation", "title": title,
-                                  "description": "Conversation with Firstmate.", "saved_at": now_text(), "body": {},
-                                  "conversation": {"item": [new_ask(message_id, text, binding)]}})
+            item_id = append_conversation(data, title, new_ask(message_id, text, binding))
             write_store(store, data)
     result = ask_message(store, home, binding, {"part": item_id, "id": message_id, "action": "retry"},
                          include_thread=False)
@@ -1736,11 +1741,7 @@ def converse(args: argparse.Namespace) -> int:
         store = store_path()
         with locked_store(store):
             data = read_store(store)
-            item_id = f"Q{data['next_id']}"
-            data["next_id"] = int(data["next_id"]) + 1  # type: ignore[call-overload]
-            data["items"].append({"id": item_id, "kind": "conversation", "title": title,  # type: ignore[union-attr]
-                                  "description": "Conversation with Firstmate.", "saved_at": now_text(), "body": {},
-                                  "conversation": {"item": [message]}})
+            item_id = append_conversation(data, title, message)
             save_images(store, item_id, pending, tree=REPLY_IMAGES)
             write_store(store, data)
         print(item_id)

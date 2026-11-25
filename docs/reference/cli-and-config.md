@@ -36,8 +36,9 @@ uppercase form.
 
 `reply`, `post`, and `converse` need the same
 [item store](item-store.md) as the live server. Match the server's
-`XDG_STATE_HOME` if it uses a custom state directory. For `converse`,
-`--config FILE` selects the settings file, and `XDG_STATE_HOME` selects the state directory.
+`XDG_STATE_HOME` if it uses a custom state directory. For `converse`, also
+pass the live config with `--config FILE` or match the server's
+`XDG_CONFIG_HOME` when it uses the [default config lookup](#json-configuration).
 
 Before using `post` or `converse`, [update Quarterdeck and restart the live server](../how-to/update.md)
 so it can read standalone updates in the item store.
@@ -254,7 +255,7 @@ the documentation to read; `help --json` prints a machine-readable index.
 
 ## JSON configuration
 
-The config is optional. `render`, `serve` and `service` read `--config FILE`,
+The config is optional. `converse`, `render`, `serve` and `service` read `--config FILE`,
 or `${XDG_CONFIG_HOME:-~/.config}/quarterdeck.json` when it exists.
 
 | Key | Type | Default | Meaning |
@@ -262,7 +263,7 @@ or `${XDG_CONFIG_HOME:-~/.config}/quarterdeck.json` when it exists.
 | `page_title` | string | `Quarterdeck` | The site name in the navigation bar and browser title. `--title` overrides it for `render` and `serve`. |
 | `output_dir` | string path | `${XDG_STATE_HOME:-~/.local/state}/quarterdeck` | Where `render` writes the pages. |
 | `base_path` | string | none | The URL prefix described above. |
-| `firstmate_home` | absolute path after expanding `~` | unset | Local destination for answers, asks and conversation messages submitted to `serve`, and the home whose workers the page lists. |
+| `firstmate_home` | absolute path after expanding `~` | unset | Local destination for answers, asks and conversation messages submitted to `serve`, and the home whose workers the page lists. When set, `converse` binds the new conversation to this home. |
 
 When `firstmate_home` is absent, `serve` uses a legacy `homes` list only for
 answer delivery and only if it contains exactly one object with a valid
