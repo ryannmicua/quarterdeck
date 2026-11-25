@@ -1,6 +1,6 @@
 # Your first Quarterdeck page
 
-Save a link and a list, then open them on the Desk. These examples start
+Save a link and a list, then open them from the library. These examples start
 with an empty store.
 
 1. Install Quarterdeck; see [Install Quarterdeck](../how-to/install.md).

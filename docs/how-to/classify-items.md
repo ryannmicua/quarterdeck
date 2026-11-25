@@ -47,12 +47,11 @@ options and answers are never touched.
 
 ## See it on the page
 
-Projects appear on reference and conversation rows and in the Desk table's
-Project column on both desktop and phone. Tags show on
-item pages and in the library, not on the Desk. On an item page, each question shows
-its own kind and tags. In the library tabs, the project
-filter appears when project assignments differ, including when some entries
-have no project.
+Projects appear on library reference and conversation rows. See the
+[Desk table columns](answer-questions.md) for the main view. Tags show on
+item pages and in the library. On an item page, each question shows its own
+kind and tags. In the library tabs, the project filter appears when project
+assignments differ, including when some entries have no project.
 Each list with at least one tag shows a tag filter. It offers every tag in that
 list, including tags shared by all entries.
 

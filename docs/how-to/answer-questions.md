@@ -1,10 +1,12 @@
 # Answer questions
 
-Each row on the served **Desk** shows the item's title, project, open question
-count, and status. Select the title or tap anywhere on the row to open the
-item. If a question is open, the page jumps to the first one. Question wording,
-options, and suggestions are on the item page. Each question has an ID you can
-cite later.
+The **Desk** table shows items newest first. The **Item** column links the
+saved ID and title, **Project** shows the assigned project, **Questions**
+shows the open count, and **Latest** shows the current status. Select the
+item link or tap anywhere on its row. The link jumps to the first open
+question when there is one and opens the top of the item page otherwise.
+The item page has the question wording, options, and suggestions. Each
+question has an ID you can cite later.
 
 Items with open questions show **Asked**. If no questions are open and an
 answer still needs delivery, the row shows **None open** and **Answered**.
@@ -63,7 +65,7 @@ to the whole question or appears on a read-only option.
 
 ## Known limits
 
-- If the saved-items file becomes unreadable or the disk fills, Send can report an error after saving the answer. Restore access or free space, reopen the card, and retry any answer marked **Not delivered**.
+- If the saved-items file becomes unreadable or the disk fills, Send can report an error after saving the answer. Restore access or free space, reopen the item page, and retry any answer marked **Not delivered**.
 - If two tabs edit the same answer while delivery is down, a retry can send the newer submission when both texts match. Reload one tab and check the saved text before retrying.
-- If someone removes the item while its question page is open, Send reports an error. Copy your draft before reloading. If the decision is still needed, save the questions again and send the answer from the new card.
+- If someone removes the item while its question page is open, Send reports an error. Copy your draft before reloading. If the decision is still needed, save the questions again and send the answer from the new item page.
 - The send bar can show an earlier send result. Check the delivery status beside the question before sending again.

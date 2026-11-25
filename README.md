@@ -28,7 +28,8 @@ own copy of the saved content.
 ## Features
 
 - **Desk** shows questions that need attention and conversations with unread
-  replies. Tap a card to open its item.
+  replies in one table. See
+  [how to open and answer questions](docs/how-to/answer-questions.md).
 - **Open library** gives you searchable access to saved links, lists, and
   answered items and conversations on the served Desk. See
   [Find references and answered questions](docs/how-to/use-the-library.md).

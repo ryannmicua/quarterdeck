@@ -9,7 +9,7 @@ Run one group while changing it, then the whole suite before a pull request
 | Classification, answer history, reports, and list filters | `PYTHONPATH=tests python3 -m unittest -v test_classification` |
 | Page content | `PYTHONPATH=tests python3 -m unittest -v test_quarterdeck.PageTests` |
 | Inline question addresses and plain-text choice values | `PYTHONPATH=tests python3 -m unittest -v test_quarterdeck.QuestionAddressTests` |
-| Question link validation and Desk rows leaving links off | `PYTHONPATH=tests python3 -m unittest -v test_quarterdeck.QuestionLinkTests` |
+| Question link validation and placement | `PYTHONPATH=tests python3 -m unittest -v test_quarterdeck.QuestionLinkTests` |
 | `render` | `PYTHONPATH=tests python3 -m unittest -v test_quarterdeck.RenderTests` |
 | Question image import, serving, and export | `PYTHONPATH=tests python3 -m unittest -v test_quarterdeck.QuestionImageTests test_quarterdeck.QuestionImagePageTests` |
 | `serve`, base path and host checks | `PYTHONPATH=tests python3 -m unittest -v test_quarterdeck.ServeTests` |
@@ -53,8 +53,8 @@ in the sheet and drawer with 60 pixels visible, then restores the full height.
 The Desk history check opens a library item, updates answers, then goes Back,
 Forward, and Back again. Both returns verify the same tab and search against a
 fresh Desk and archive, including filters whose values disappear from the
-refreshed results. After dismissal, returning from a Desk card and
-reloading the Desk both leave the library closed.
+refreshed results. After dismissal, returning from an item opened through
+the Desk table and reloading the Desk both leave the library closed.
 
 The classification tests parse served and exported HTML to verify item and
 project pairs in a single Desk table, including sets with multiple prompts.
