@@ -41,7 +41,7 @@ from urllib.parse import quote, unquote, urlparse
 DEFAULT_TITLE = "Quarterdeck"
 DEFAULT_HOST = "127.0.0.1"
 DEFAULT_PORT = 8765
-ALLOWED_CONFIG_KEYS = {"page_title", "output_dir", "base_path", "firstmate_home", "catch_up_days"}
+ALLOWED_CONFIG_KEYS = {"page_title", "output_dir", "base_path", "firstmate_home", "catch_up_days", "workers_refresh_seconds"}
 # Legacy configuration. Only a sole registered home can supply the note destination.
 LEGACY_CONFIG_KEYS = {"homes", "captain_waits"}
 # Split so the privacy guard, which rejects committed generated pages by this marker, does not flag the source.
@@ -138,11 +138,19 @@ def load_config(path: Path | None) -> dict[str, object]:
         days = config["catch_up_days"]
         if type(days) is not int or not 1 <= days <= 3650:
             raise ValueError("config catch_up_days must be a whole number of days from 1 to 3650")
+    if "workers_refresh_seconds" in config:
+        seconds = config["workers_refresh_seconds"]
+        if type(seconds) is not int or not WORKERS_REFRESH_RANGE[0] <= seconds <= WORKERS_REFRESH_RANGE[1]:
+            raise ValueError("config workers_refresh_seconds must be a whole number of seconds from 30 to 3600")
     return config
 
 
 def catch_up_days(config: dict[str, object]) -> int:
     return config.get("catch_up_days", CATCH_UP_DAYS)  # type: ignore[return-value]
+
+
+def workers_refresh_seconds(config: dict[str, object]) -> int:
+    return config.get("workers_refresh_seconds", WORKERS_REFRESH_SECONDS)  # type: ignore[return-value]
 
 
 def selected_config_path(args: argparse.Namespace) -> Path | None:
@@ -2099,17 +2107,25 @@ def converse(args: argparse.Namespace) -> int:
 
 # --- Workers ------------------------------------------------------------------------------
 # Roster refresh runs only the home's read-only fleet snapshot, without a model.
-# Quarterdeck shows only what the snapshot states outright. The server holds the last reading in memory only.
+# Quarterdeck shows only what the snapshot states outright. `serve` rereads the home on a fixed interval and
+# keeps the last good reading on disk next to the item store, so a page never waits on the fleet snapshot.
 
 SNAPSHOT_COMMAND = ("bin/fm-fleet-snapshot.sh", "--local")
 SNAPSHOT_SECONDS = 60
-WORKERS_FRESH_SECONDS = 3600  # the Workers page reads the home on entry only when the saved reading is older
+WORKERS_FRESH_SECONDS = 3600  # a saved reading older than this is reported as stale
+WORKERS_REFRESH_SECONDS = 1800  # how often `serve` rereads the home in the background (30 minutes)
+WORKERS_REFRESH_RANGE = (30, 3600)
+WORKERS_CACHE_NAME = "workers-saved.json"
 UTC_RE = re.compile(r"[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z")
 WORKER_STATES = {"working": "Working", "done": "Finished", "blocked": "Stuck", "failed": "Stuck"}
 ACTIVITY_UNAVAILABLE = "Activity unavailable"
 
 
 class SnapshotError(Exception):
+    pass
+
+
+class SnapshotBusy(SnapshotError):
     pass
 
 
@@ -2257,13 +2273,46 @@ def workers_snapshot(home: Path) -> dict[str, object]:
     }
 
 
-class SavedWorkers:
-    """The last successful reading, in memory only, shared by every visitor until the server stops."""
+def workers_cache_path(store: Path | None = None) -> Path:
+    """The last good reading is kept next to the item store."""
+    return (store or store_path()).with_name(WORKERS_CACHE_NAME)
 
-    def __init__(self) -> None:
+
+class SavedWorkers:
+    """The last successful reading, shared by every visitor and kept on disk so a restart shows it at once."""
+
+    def __init__(self, path: Path | None = None) -> None:
         self._lock = threading.Lock()
         self._active: Future[dict[str, object]] | None = None
         self._reading: tuple[float, dict[str, object]] | None = None
+        self._failed = False
+        self._path = path
+        self._load()
+
+    def _load(self) -> None:
+        if self._path is None:
+            return
+        try:
+            record = json.loads(self._path.read_text(encoding="utf-8"))
+            checked, snapshot = record["checked_at"], record["snapshot"]
+            if (not UTC_RE.fullmatch(checked) or not isinstance(snapshot, dict)
+                    or not isinstance(snapshot.get("observed_at"), str)
+                    or not isinstance(snapshot.get("workers"), list)
+                    or not isinstance(snapshot.get("second_mates"), list)):
+                return
+            age = datetime.now(timezone.utc) - datetime.strptime(checked, "%Y-%m-%dT%H:%M:%SZ").replace(tzinfo=timezone.utc)
+        except (OSError, ValueError, TypeError, KeyError, RecursionError):
+            return
+        self._reading = (workers_clock() - max(0.0, age.total_seconds()), snapshot)
+
+    def _save(self, snapshot: dict[str, object]) -> None:
+        if self._path is None:
+            return
+        record = {"checked_at": utc_text(datetime.now(timezone.utc)), "snapshot": snapshot}
+        try:
+            write_private(self._path, json.dumps(record))
+        except OSError as exc:  # the reading still serves from memory
+            print(f"quarterdeck: could not save the workers reading: {exc}", file=sys.stderr, flush=True)
 
     @staticmethod
     def _stale(checked_at: float) -> bool:
@@ -2274,7 +2323,7 @@ class SavedWorkers:
             active = self._active
             if active is not None:
                 if not reuse:
-                    raise SnapshotError("the fleet snapshot is already running")
+                    raise SnapshotBusy("the fleet snapshot is already running")
             else:
                 if reuse and self._reading is not None:
                     checked_at, snapshot = self._reading
@@ -2285,8 +2334,11 @@ class SavedWorkers:
             return active.result()
         try:
             snapshot = workers_snapshot(home)
+            self._save(snapshot)
             self._reading = (workers_clock(), snapshot)
+            self._failed = False
         except BaseException as exc:
+            self._failed = True  # the last good reading stays
             pending.set_exception(exc)
             raise
         else:
@@ -2297,12 +2349,24 @@ class SavedWorkers:
                 self._active = None
 
     def view(self) -> dict[str, object]:
-        """The saved reading and whether it is missing or older than WORKERS_FRESH_SECONDS."""
+        """The saved reading, whether it is missing or older than WORKERS_FRESH_SECONDS, and whether the last check failed."""
         reading = self._reading
         if reading is None:
-            return {"snapshot": None, "stale": True}
+            return {"snapshot": None, "stale": True, "failed": self._failed}
         checked_at, snapshot = reading
-        return {"snapshot": snapshot, "stale": self._stale(checked_at)}
+        return {"snapshot": snapshot, "stale": self._stale(checked_at), "failed": self._failed}
+
+
+def keep_workers_fresh(saved: SavedWorkers, home: Path, interval: float, stop: threading.Event) -> None:
+    """Reread the home now and then every `interval` seconds until `stop` is set; a failure keeps the last reading."""
+    while not stop.is_set():
+        try:
+            saved.refresh(home, reuse=False)
+        except SnapshotError:
+            pass  # refresh has already kept the last good reading and marked the failure
+        except Exception as exc:  # never end the loop
+            print(f"quarterdeck: the workers check failed: {exc}", file=sys.stderr, flush=True)
+        stop.wait(interval)
 
 
 # --- Pages ------------------------------------------------------------------------------
@@ -2726,8 +2790,11 @@ WORKERS_SCRIPT = r"""
         show(await read('workers.json'));
       } else {
         const saved = await read('workers-saved.json');
-        if (saved.snapshot) show(saved.snapshot, saved.stale ? 'Refreshing workers. ' : '');
-        if (saved.stale) show(await read('workers.json?reuse=1'));
+        if (!saved.snapshot) show(await read('workers.json?reuse=1'));
+        else {
+          show(saved.snapshot);
+          if (saved.failed) failed();
+        }
       }
     } catch {
       failed();
@@ -5197,10 +5264,12 @@ def ask_destination(ask_home: Path | None, *, require_directory: bool) -> tuple[
 
 def make_handler(site_title: str, base_path: str = "", store: Path | None = None, home: Path | None = None,
                  *, ask_home: Path | None = None, workers_home: Path | None = None,
-                 retention_days: int = CATCH_UP_DAYS) -> type[BaseHTTPRequestHandler]:
+                 retention_days: int = CATCH_UP_DAYS,
+                 saved_workers: SavedWorkers | None = None) -> type[BaseHTTPRequestHandler]:
     """Every page is built from the item store when it is requested."""
     visit_log = VisitLog(visits_path())
-    saved_workers = SavedWorkers()
+    if saved_workers is None:
+        saved_workers = SavedWorkers(workers_cache_path(store) if workers_home is not None else None)
 
     class Handler(BaseHTTPRequestHandler):
         server_version = "Quarterdeck"
@@ -5438,8 +5507,10 @@ def serve(args: argparse.Namespace) -> int:
         tls = tls_context(args)
         base_path = effective_base_path(args, config)
         firstmate = configured_firstmate_home(config)
+        saved_workers = SavedWorkers(workers_cache_path()) if firstmate is not None else None
         handler = make_handler(page_title(args, config), base_path, home=answer_home(config, config_path),
-                               ask_home=firstmate, workers_home=firstmate, retention_days=catch_up_days(config))
+                               ask_home=firstmate, workers_home=firstmate, retention_days=catch_up_days(config),
+                               saved_workers=saved_workers)
         port = args.port
         for host in bind_hosts(args):
             server = make_server(host, port, handler, tls)
@@ -5469,11 +5540,16 @@ def serve(args: argparse.Namespace) -> int:
               file=sys.stderr, flush=True)
     for server in servers[1:]:
         threading.Thread(target=server.serve_forever, daemon=True).start()
+    stop_refreshing = threading.Event()
+    if firstmate is not None and saved_workers is not None:
+        threading.Thread(target=keep_workers_fresh, daemon=True,
+                         args=(saved_workers, firstmate, workers_refresh_seconds(config), stop_refreshing)).start()
     try:
         servers[0].serve_forever()
     except KeyboardInterrupt:
         pass
     finally:
+        stop_refreshing.set()
         for server in servers:
             if server is not servers[0]:
                 server.shutdown()

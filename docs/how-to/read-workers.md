@@ -11,14 +11,15 @@ page shows a setup message. Rendered snapshots have no Workers page.
 
 ## Read the list
 
-1. Select **Workers** on the Desk. If a reading is saved, the page shows it with
-   **Last checked** and its time in your local time zone.
-2. If the saved reading is missing or
-   [has expired](../reference/cli-and-config.md#workers-endpoint), the page
-   requests a check. While refreshing an expired reading, it shows
-   **Refreshing workers** alongside the saved time.
+1. Select **Workers** on the Desk. The page shows the saved reading with
+   **Last checked** and its time in your local time zone. It never waits for a
+   new check. `quarterdeck serve` checks the home in the background every 30
+   minutes, or as often as
+   [`workers_refresh_seconds`](../reference/cli-and-config.md#json-configuration)
+   sets, and keeps the last good reading across restarts.
+2. If the server has no reading yet, the page requests a check.
 3. Select **Check workers** to read the home again once the current request
-   finishes. The page checks automatically only on entry.
+   finishes.
 4. Read each row. The name and status come first, followed by the project,
    activity, time of last activity or contact, and links when available.
    Row times use your local date and time.
@@ -61,8 +62,9 @@ how duplicate rows are selected.
 
 ## If a check fails
 
-The page keeps the last list in the tab and says **Check failed** with the
-time of that list. If there is no list, the page says **Workers could not
+The page keeps the last list and says **Check failed** with the
+time of that list. A failed background check does the same and never empties
+the list. If there is no list, the page says **Workers could not
 be loaded**. Select **Check workers** to try again. See the
 [endpoint reference](../reference/cli-and-config.md#workers-endpoint) for
 timeout and concurrent-read behavior.

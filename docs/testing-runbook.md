@@ -94,7 +94,7 @@ check, verifies the saved roster and time, and counts fleet script calls.
 The Workers tests check for zero Workers requests on the Desk and count
 requests on entry, during a virtual minute of idle time, and after a manual
 check. They cover a click during entry, reuse of fresh saved readings,
-replacement of expired readings on entry, two overlapping views that receive
+a saved reading shown on entry without a check even after it expires, two overlapping views that receive
 the same roster and timestamp from one fleet check, and manual recovery after
 a failed saved lookup. A successful
 manual check replaces the closed worker's row with the new live worker and

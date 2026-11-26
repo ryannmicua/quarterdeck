@@ -19,7 +19,8 @@ and retry them.
 
 **Current work** shows the workers and second mates from the last saved
 reading, with the time it was taken. Watch never runs a check and uses the
-saved reading even after it expires. Select [**Workers**](read-workers.md) to get a new reading or see
+saved reading even after it expires. The server refreshes that reading in the
+background. Select [**Workers**](read-workers.md) to get a new reading or see
 the full roster details. Current work needs
 [`firstmate_home`](read-answers.md#connect-the-inbox).
 
