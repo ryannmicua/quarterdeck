@@ -2377,7 +2377,7 @@ textarea { display:block; width:100%; resize:vertical; background:var(--ground);
 .desk .notice-project { display:none; }
 .desk .notice p { margin:.25rem 0; font-weight:400; }
 .desk .notice a { display:inline-block; margin-right:.65rem; }
-.sr, #desk-status:empty { position:absolute; width:1px; height:1px; overflow:hidden; clip-path:inset(50%); white-space:nowrap; }
+.sr, .desk-feedback:empty { position:absolute; width:1px; height:1px; overflow:hidden; clip-path:inset(50%); white-space:nowrap; }
 .button-link, .work-action { display:inline-flex; align-items:center; min-height:44px; padding:.5rem .85rem; border-radius:5px; font:600 var(--text-md)/1.3 var(--sans);
   text-decoration:none; border:1px solid var(--soft); background:var(--raised); color:var(--ink); }
 .work-action { background:var(--ink); color:var(--raised); border-color:var(--ink); }
@@ -2554,10 +2554,13 @@ const localizeTimes = root => {
     time.textContent = localTime(time.dateTime);
   }
 };
+const localizeDays = root => {
+  for (const time of root.querySelectorAll('time.day[datetime]:not([datetime=""])')) {
+    time.textContent = new Date(time.dateTime).toLocaleDateString(undefined, {dateStyle:'medium'});
+  }
+};
 localizeTimes(document);
-for (const time of document.querySelectorAll('time.day[datetime]:not([datetime=""])')) {
-  time.textContent = new Date(time.dateTime).toLocaleDateString(undefined, {dateStyle:'medium'});
-}
+localizeDays(document);
 """
 
 
@@ -3539,11 +3542,9 @@ CONVERSATION_SCRIPT = talk_script(r"""
         }
       }
       if (outcome.ok) {
-        const previouslyShown = new Set(unreadReplyIds(messages));
         messages.innerHTML = outcome.result.thread;
         localizeTimes(messages);
         reconcileReplies(section);
-        acknowledgeReplies(section, unreadReplyIds(messages).filter(id => !previouslyShown.has(id)));
         output.textContent = outcome.result.message;
         if (body.text !== undefined) field.value = '';
       } else {
@@ -3606,7 +3607,7 @@ DESK_SCRIPT = talk_script(r"""
   const wanted = tabs.find(tab => tab.dataset.hash && '#' + tab.dataset.hash === location.hash);
   if (wanted) select(wanted, false);
 
-  const status = document.getElementById('desk-status');
+  const startStatus = document.getElementById('desk-status');
   const conversationPanel = document.getElementById('desk-panel-conversations');
   const attentionPanel = document.getElementById('desk-panel-needs-you');
   const attentionRows = attentionPanel.querySelector('tbody');
@@ -3643,6 +3644,7 @@ DESK_SCRIPT = talk_script(r"""
   attentionPanel.addEventListener('click', async event => {
     const button = event.target.closest('button[data-read], button[data-read-all]');
     if (!button || button.disabled) return;
+    const noticeStatus = document.getElementById('notice-status');
     const notices = noticeButtons();
     const selected = button === readAll ? notices : [button];
     const ids = selected.map(control => control.dataset.read);
@@ -3653,8 +3655,8 @@ DESK_SCRIPT = talk_script(r"""
       const response = await fetch('catch-ups/read', {method:'POST', redirect:'error',
         headers:{'Content-Type':'application/json'}, body:JSON.stringify({ids})});
       if (response.status === 409) {
-        status.className = 'meta failed';
-        status.textContent = 'A notice may already be read. Reload the page when ready.';
+        noticeStatus.classList.add('failed');
+        noticeStatus.textContent = 'A notice may already be read. Reload the page when ready.';
         return;
       }
       if (!response.ok) throw new Error('refused');
@@ -3666,14 +3668,14 @@ DESK_SCRIPT = talk_script(r"""
       const hadFocus = attentionPanel.contains(focused);
       selected.forEach(control => control.closest('tr').remove());
       syncAttention();
-      status.className = 'meta';
-      status.textContent = ids.length === 1 ? 'Notice marked read.' : 'Notices marked read.';
+      noticeStatus.classList.remove('failed');
+      noticeStatus.textContent = ids.length === 1 ? 'Notice marked read.' : 'Notices marked read.';
       if (hadFocus && !attentionPanel.hidden && (!focused.isConnected || (focused === readAll && readAll.hidden))) {
         attentionTab.focus();
       }
     } catch {
-      status.className = 'meta failed';
-      status.textContent = 'The notice could not be marked read. Try again.';
+      noticeStatus.classList.add('failed');
+      noticeStatus.textContent = 'The notice could not be marked read. Try again.';
     } finally {
       controls.forEach(control => { control.disabled = false; });
     }
@@ -3699,6 +3701,7 @@ DESK_SCRIPT = talk_script(r"""
     const button = event.target.closest('button.pin');
     if (!button || button.disabled) return;
     const row = button.closest('.topic');
+    const pinStatus = row.querySelector('.pin-status');
     const pinned = row.dataset.pinned !== 'true';
     const hadFocus = document.activeElement === button;
     button.disabled = true;
@@ -3716,11 +3719,11 @@ DESK_SCRIPT = talk_script(r"""
       button.textContent = verb;
       button.setAttribute('aria-label', verb + ' ' + button.dataset.title);
       place(row);
-      status.className = 'meta';
-      status.textContent = button.dataset.title + (pinned ? ' is pinned.' : ' is unpinned.');
+      pinStatus.classList.remove('failed');
+      pinStatus.textContent = button.dataset.title + (pinned ? ' is pinned.' : ' is unpinned.');
     } else {
-      status.className = 'meta failed';
-      status.textContent = 'Quarterdeck could not save the pin. Try again.';
+      pinStatus.classList.add('failed');
+      pinStatus.textContent = 'Quarterdeck could not save the pin. Try again.';
     }
     if (!conversationPanel.hidden && (focused === button || (hadFocus && focused === document.body))) button.focus();
   });
@@ -3739,9 +3742,7 @@ DESK_SCRIPT = talk_script(r"""
     holder.innerHTML = html;
     const row = holder.content.firstElementChild;
     document.querySelector('.topic[data-id="' + row.dataset.id + '"]')?.remove();
-    for (const time of row.querySelectorAll('time.day[datetime]')) {
-      time.textContent = new Date(time.dateTime).toLocaleDateString(undefined, {dateStyle:'medium'});
-    }
+    localizeDays(row);
     place(row);
     return row;
   };
@@ -3755,25 +3756,25 @@ DESK_SCRIPT = talk_script(r"""
     drafts.set(key, id);
     const controls = form.querySelectorAll('button,input,textarea');
     controls.forEach(c => c.disabled = true);
-    status.className = 'meta';
-    status.textContent = 'Starting conversation';
+    startStatus.classList.remove('failed');
+    startStatus.textContent = 'Starting conversation';
     let started = null;
     try {
       const outcome = await postJson('conversations', {id, title, text, home:button.dataset.home});
       if (outcome.ok || outcome.saved === false) drafts.delete(key);
       if (outcome.ok) {
-        status.textContent = outcome.result.message;
+        startStatus.textContent = outcome.result.message;
         started = show(outcome.result.row);
         updateAttention(started.dataset.id, outcome.result.attention);
         topic.value = '';
         message.value = '';
       } else {
-        status.className = 'meta failed';
-        status.textContent = outcome.message;
+        startStatus.classList.add('failed');
+        startStatus.textContent = outcome.message;
       }
     } catch {
-      status.className = 'meta failed';
-      status.textContent = SENDING_FAILED();
+      startStatus.classList.add('failed');
+      startStatus.textContent = SENDING_FAILED();
     }
     controls.forEach(c => c.disabled = false);
     refresh();
@@ -4449,7 +4450,8 @@ def conversation_row(item):
     return (f'<li class="topic" data-id="{item["id"]}" data-activity="{activity}" data-pinned="{"true" if pinned else "false"}">'
             f'<div class="topic-main"><a class="topic-title" href="{href}">{title}</a>'
             f'<p class="topic-latest">{esc(preview)}</p>'
-            f'<p class="meta topic-meta">{project}{status}{day_time(latest["at"])}</p></div>'
+            f'<p class="meta topic-meta">{project}{status}{day_time(latest["at"])}</p>'
+            '<p class="meta desk-feedback pin-status" role="status"></p></div>'
             f'<button type="button" class="pin" data-title="{title}" aria-label="{verb} {title}">{verb}</button></li>')
 
 
@@ -4500,7 +4502,8 @@ def needs_you_panel(attention, notices, items_by_id):
     rows = "".join(catch_up_row(notice, items_by_id) for notice in notices)
     hide_bulk = " hidden" if len(notices) < 2 else ""
     hide_empty = " hidden" if attention or notices else ""
-    return (f'<button type="button" data-read-all{hide_bulk}>Mark all notices read</button>{desk_table(attention, rows)}'
+    return ('<p class="meta desk-feedback" id="notice-status" role="status"></p>'
+            f'<button type="button" data-read-all{hide_bulk}>Mark all notices read</button>{desk_table(attention, rows)}'
             f'<p class="empty"{hide_empty}>Nothing needs you. Questions, unread replies, failed deliveries and notices show here.</p>')
 
 
@@ -4517,7 +4520,7 @@ def desk_tabs(conversations, attention, total):
                    f'{"" if number == 0 else " hidden"}>{content}</section>'
                    for number, (name, _, content) in enumerate(panels))
     return (f'<div class="desk-tabs" role="tablist" aria-label="Desk">{tabs}</div>'
-            f'<p class="meta" id="desk-status" role="status"></p>{body}')
+            f'<p class="meta desk-feedback" id="desk-status" role="status"></p>{body}')
 
 
 def latest_unanswered(thread):
@@ -5081,23 +5084,18 @@ def make_handler(site_title: str, base_path: str = "", store: Path | None = None
                 self.send_text(200, workers_page(site_title, ready=workers_home is not None), "text/html; charset=utf-8")
                 return
             picture = IMAGE_URL_RE.fullmatch(name)
-            if name == "watch.html":
-                try:
-                    data = read_store(store or store_path())
-                except ValueError:
-                    self.send_text(500, "Quarterdeck could not read its item store\n")
-                    return
-                self.send_text(200, watch_page(data, site_title, workers_ready=workers_home is not None),
-                               "text/html; charset=utf-8")
-                return
             discussion = re.fullmatch(r"(q[1-9][0-9]*)[.]discussion[.]json", name)
-            if name != "index.html" and not picture and not discussion and not ITEM_PAGE_RE.fullmatch(name):
+            if name not in ("index.html", "watch.html") and not picture and not discussion and not ITEM_PAGE_RE.fullmatch(name):
                 self.send_text(404, "Not found\n")
                 return
             try:
                 data = read_store(store or store_path())
             except ValueError:
                 self.send_text(500, "Quarterdeck could not read its item store\n")
+                return
+            if name == "watch.html":
+                self.send_text(200, watch_page(data, site_title, workers_ready=workers_home is not None),
+                               "text/html; charset=utf-8")
                 return
             if picture:
                 self.send_image(data, *picture.groups())

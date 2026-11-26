@@ -55,8 +55,8 @@ row in **Conversations**. See [when it also appears in Needs you](use-the-librar
 Opening the row takes you to the unread message and marks that message read.
 The row stays marked while other unread replies remain. The conversation
 keeps its place by activity. Reload, send a message, or retry delivery to
-refresh the conversation. A send or retry acknowledges replies newly shown
-by that refresh. See [how Firstmate replies](reply-from-the-command-line.md#reply-in-a-conversation).
+refresh the conversation. Replies shown after a send or retry stay unread
+until you open them from the Desk. See [how Firstmate replies](reply-from-the-command-line.md#reply-in-a-conversation).
 
 ## Find a conversation later
 

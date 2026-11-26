@@ -63,6 +63,10 @@ The classification browser tests use headless `google-chrome` to select
 filters and check which reference rows, reviewed cards, and empty messages
 are visible in the narrow and desktop layouts.
 
+The Desk replay browser check delays a start until a stale notice has shown
+reload guidance. It verifies that both results stay visible on **Needs you**
+and that the inserted topic shows the same local date as on initial load.
+
 The Catch-up browser check opens **Needs you** with saved notices and an
 open question. At phone width it checks the notice details and links. It
 acknowledges a notice and then acknowledges the remaining notices, checks

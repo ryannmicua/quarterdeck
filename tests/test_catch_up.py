@@ -278,7 +278,7 @@ tab.click();
 const panel = document.getElementById('desk-panel-needs-you');
 const count = tab.querySelector('.tab-count');
 const bulk = panel.querySelector('[data-read-all]');
-const status = document.getElementById('desk-status');
+const status = document.getElementById('notice-status');
 const current = panel.querySelector('[data-read="C2"]');
 const stale = panel.querySelector('[data-read="C1"]');
 const clickAndWait = button => new Promise(resolve => {

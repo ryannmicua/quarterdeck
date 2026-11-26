@@ -2272,7 +2272,7 @@ check(!button('send').disabled && button('send').textContent === 'Send 2 answers
         del damaged["items"][0]["body"]
         path.write_text(json.dumps(damaged))
         port = self.start("/qd")
-        for route in ("/qd/", "/qd/q2.html"):
+        for route in ("/qd/", "/qd/q2.html", "/qd/watch.html"):
             status, body, _headers = self.fetch(port, route)
             self.assertEqual(status, 500)
             self.assertIn("could not read its item store", body)
@@ -6186,7 +6186,7 @@ check(posts.length === 1 && posts[0][0] === 'pins' && posts[0][1].part === 'Q1' 
 check(ids('pinned') === 'Q1' && ids('recent') === 'Q3,Q2' && !document.getElementById('topics-pinned').hidden, 'Pin did not move the row');
 check(pin('Q1').textContent === 'Unpin' && pin('Q1').getAttribute('aria-label') === 'Unpin Harbor lamp colours'
       && document.activeElement === pin('Q1'), 'The control did not become Unpin with focus kept');
-check(document.getElementById('desk-status').textContent === 'Harbor lamp colours is pinned.', 'The pin was not announced');
+check(pin('Q1').closest('.topic').querySelector('[role=status]').textContent === 'Harbor lamp colours is pinned.', 'The pin was not announced');
 delay = true;
 pin('Q3').focus();
 pin('Q3').click();
@@ -6214,7 +6214,7 @@ document.execCommand('insertText', false, 'A message draft');
 complete();
 await settle();
 check(document.activeElement === message && message.value === 'A message draft', 'A refused pin interrupted composition');
-check(ids('pinned') === '' && !pin('Q2').disabled && document.getElementById('desk-status').textContent.includes('could not save'),
+check(ids('pinned') === '' && !pin('Q2').disabled && pin('Q2').closest('.topic').querySelector('[role=status]').textContent.includes('could not save'),
       'A refused pin changed the list or hid the failure');
 """, path="/qd/", viewport=(390, 844))
 
@@ -6243,19 +6243,31 @@ check(button('talk-topic').value === '' && button('talk-message').value === '' &
     def test_replayed_start_retains_order_and_keeps_the_selected_tab(self) -> None:
         port = self.start("/qd", ask_home=self.inbox())
         earliest = self.seed_conversations(port)
+        self.assertEqual(self.run_cli("catch-up", "add", "--title", "Review ready", "--summary", "Open the proof.")[0], 0)
         status, response = self.post(port, "/qd/conversations", earliest)
         self.assertEqual(status, 200)
         self.check_answer_page(port, r"""
 const form = button('talk-form');
 const tab = button('desk-tab-needs-you');
+const initialDate = document.querySelector('.topic[data-id="Q1"] time');
+const expectedDate = initialDate.textContent;
+check(expectedDate !== initialDate.dateTime.slice(0, 10), 'The initial row did not localize the date');
 let complete;
-window.fetch = () => new Promise(resolve => { complete = resolve; });
+window.fetch = path => {
+  if (path === 'catch-ups/read') return Promise.resolve(new Response('', {status:409}));
+  return new Promise(resolve => { complete = resolve; });
+};
 button('talk-topic').value = 'Harbor lamp colours';
 button('talk-message').value = 'Which amber suits the pier lamps?';
 form.dispatchEvent(new Event('input', {bubbles:true}));
 form.requestSubmit();
 tab.click();
+const notice = document.querySelector('[data-read="C1"]');
+notice.click();
 tab.focus();
+await new Promise(resolve => setTimeout(resolve, 50));
+const noticeStatus = button('notice-status');
+check(noticeStatus.checkVisibility() && noticeStatus.textContent.includes('Reload'), 'The stale notice did not show recovery guidance');
 complete({ok:true, json:async () => (""" + json.dumps(response) + r""")});
 await new Promise(resolve => setTimeout(resolve, 50));
 const selected = tab.getAttribute('aria-selected') === 'true';
@@ -6263,9 +6275,14 @@ const confirmation = button('desk-status');
 check(selected && confirmation.checkVisibility() && confirmation.textContent === 'Message sent.',
       'Completion switched tabs or hid the confirmation');
 check(document.activeElement === tab, 'Completion stole focus');
+check(notice.isConnected && noticeStatus.checkVisibility() && noticeStatus.textContent.includes('Reload'),
+      'Completing the start erased recovery guidance for the stale notice');
 button('desk-tab-conversations').click();
 const ids = [...button('topics-recent').querySelectorAll('.topic')].map(row => row.dataset.id);
 check(ids.join() === 'Q3,Q2,Q1', 'The replay jumped ahead of newer activity');
+const insertedDate = document.querySelector('.topic[data-id="Q1"] time');
+check(insertedDate !== initialDate && insertedDate.textContent === expectedDate,
+      'The replayed row displayed a different date from the same row on page load');
 """, path="/qd/", viewport=(390, 844))
 
     def test_start_and_replay_update_only_the_started_topic_attention(self) -> None:
@@ -6727,18 +6744,12 @@ check(document.querySelector('.thread-messages').textContent === 'stub', 'The co
 check(document.querySelector('output').textContent === 'Message sent.', 'The status was not shown');
 """, path="/qd/q1.html", viewport=(390, 844))
         self.check_answer_page(port, r"""
-const seen = [];
+const requests = [];
 const posts = [];
 window.fetch = async (path, init) => {
+  requests.push(path);
   const payload = JSON.parse(init.body);
-  if (path === 'replies/read') {
-    check(payload.part === 'Q1', 'The reply acknowledgment targeted the wrong conversation');
-    check(document.querySelector('.badge').textContent === 'Unread reply', 'The badge missed a newly visible reply');
-    seen.push(...payload.ids);
-    const unseen = seen.length === 1 ? 'reply-two' : 'reply-three';
-    return {ok:true, json:async () => ({replies:{[unseen]:false, ...Object.fromEntries(seen.map(id => [id, true]))}})};
-  }
-  check(path === 'asks', 'Unexpected conversation request');
+  if (path !== 'asks') return new Response('', {status:500});
   posts.push(payload);
   const reply = id => `<p data-reply-id="${id}" data-unread>Firstmate replied.</p>`;
   const retry = '<button data-retry-ask="saved-message">Send message again</button>';
@@ -6750,13 +6761,15 @@ field.value = 'A follow-up';
 field.dispatchEvent(new Event('input', {bubbles:true}));
 button('send-message').click();
 await new Promise(resolve => setTimeout(resolve, 50));
-check(seen.join(',') === 'reply-one', 'Sending did not acknowledge the newly displayed reply');
-check(document.querySelector('.badge').hidden, 'The badge stayed visible even after acknowledgment');
+check(requests.join() === 'asks', 'Sending submitted a reply acknowledgment');
+check(document.querySelectorAll('[data-reply-id][data-unread]').length === 1 &&
+      document.querySelector('.badge').textContent === 'Unread reply', 'Sending cleared the unread marker');
 document.querySelector('[data-retry-ask]').click();
 await new Promise(resolve => setTimeout(resolve, 50));
 check(posts[1].action === 'retry' && posts[1].id === 'saved-message', 'The saved message was not retried');
-check(seen.join(',') === 'reply-one,reply-two', 'Retry did not acknowledge only the newly displayed reply');
-check(document.querySelector('.badge').hidden, 'The badge stayed visible after retry acknowledgment');
+check(requests.join() === 'asks,asks', 'Retry submitted a reply acknowledgment');
+check(document.querySelectorAll('[data-reply-id][data-unread]').length === 2 &&
+      document.querySelector('.badge').textContent === 'Unread reply', 'Retry cleared an unread marker');
 """, path="/qd/q1.html", viewport=(390, 844))
         self.check_answer_page(port, r"""
 const sent = [];
