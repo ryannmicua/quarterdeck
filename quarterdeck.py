@@ -4048,7 +4048,7 @@ def reference_row(item, *, served):
     item_ref = (f'<a class="lib-title ref-id" href="{page}">{item_id}</a>' if kind == "resource"
                 else f'<span class="ref-id">{item_id}</span>')
     small = project + day_time(item["saved_at"]) + item_ref
-    return (f'<li class="lib-item ref-row"{attributes} title="{esc(item["description"])}">'
+    return (f'<li class="lib-item ref-row"{attributes}>'
             f'{title}{f"<span class=ref-more>{extra}</span>" if extra else ""}<span class="ref-meta">{small}</span></li>')
 
 
