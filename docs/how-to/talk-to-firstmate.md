@@ -14,7 +14,7 @@ words the Desk uses.
 2. Select **New conversation**. The cursor moves to **Topic**.
 3. Type a short **Topic** and your **Message**, then select **Start conversation**.
 
-The form stays open while it holds unsent text and closes after Quarterdeck starts the conversation.
+Select **New conversation** again to hide the form. Unsent text stays in the hidden form, and the form closes after Quarterdeck starts the conversation.
 
 Quarterdeck saves the conversation under a new ID such as Q12 and attempts
 delivery to Firstmate's inbox. The new topic joins the top of **Recent

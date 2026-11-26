@@ -2562,7 +2562,6 @@ body:has(dialog[open]) { overflow:hidden; }
 .talk output:empty { display:none; }
 .talk[hidden] { display:none; }
 .talk-open { margin:1rem 0 0; }
-.talk-open[aria-disabled="true"] { opacity:.6; cursor:not-allowed; }
 .talk-field { display:flex; flex-direction:column; }
 .talk-field input { flex:1; }
 @media (width > 48rem) {
@@ -3897,16 +3896,12 @@ DESK_SCRIPT = talk_script(r"""
   };
   const refresh = () => {
     button.disabled = !(normalizeTopic(topic.value) && trimmed(message.value));
-    opener.setAttribute('aria-disabled', String(hasDraft() && !form.hidden));
     if (hasDraft()) setOpen(true);
   };
   opener.addEventListener('click', () => {
-    if (form.hidden) {
-      setOpen(true);
-      topic.focus();
-    } else if (!hasDraft()) {
-      setOpen(false);
-    }
+    const open = form.hidden;
+    setOpen(open);
+    if (open) topic.focus();
   });
   const show = html => {
     const holder = document.createElement('template');
