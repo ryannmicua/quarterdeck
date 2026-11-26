@@ -6117,7 +6117,7 @@ class TalkToFirstmateTests(ImageCase):
                          [("conversations", "true"), ("needs-you", "false"), ("archived", "false")])
         self.assertIn('>Needs you <span class="tab-count" hidden></span></button>', page)
         self.assertLess(page.index('<form id="talk-form"'), page.index('id="topics-recent"'))
-        self.assertIn("No conversations yet. A topic you start with Firstmate shows here.", page)
+        self.assertIn("No conversations yet. A conversation you start with Firstmate shows here.", page)
         self.assertIn("Nothing needs you.", page)
         self.assertIn('<section class="desk-panel" role="tabpanel" id="desk-panel-needs-you"'
                       ' aria-labelledby="desk-tab-needs-you" hidden>', page)
@@ -7474,6 +7474,458 @@ check(posts.length === 7 && posts[6].id === posts[0].id, 'Submitting a different
             damage(data["items"][0])
             quarterdeck.store_path().write_text(json.dumps(data))
             self.assertEqual(self.fetch(port, "/qd/")[0], 500)
+
+
+class ConversationGroupingTests(ImageCase):
+    """A conversation has one optional project and one optional topic in it. The owner creates, renames and assigns them."""
+
+    start = ServeTests.start
+    fetch = ServeTests.fetch
+    post = ConversationTests.post
+    inbox = ConversationTests.inbox
+    begin = TalkToFirstmateTests.begin
+    desk_topics = TalkToFirstmateTests.desk_topics
+    check_answer_page = ServeTests.check_answer_page
+
+    def group(self, port, **payload):
+        status, result = self.post(port, "/qd/groups", payload)
+        self.assertEqual(status, 200, result)
+        return result
+
+    def atlas(self, port):
+        """Field Atlas with the topics Wayfinding (T1) and Printing (T2), and Harbor with Tides (T3)."""
+        self.group(port, name="Field Atlas")
+        self.group(port, project="P1", name="Wayfinding")
+        self.group(port, project="P1", name="Printing")
+        self.group(port, name="Harbor")
+        self.group(port, project="P2", name="Tides")
+
+    def row(self, port, item="Q1"):
+        return re.search(rf'<li class="topic" data-id="{item}".*?</li>', self.fetch(port, "/qd/")[1], re.DOTALL)[0]
+
+    def test_the_owner_creates_and_renames_projects_and_topics_with_stable_IDs(self) -> None:
+        port = self.start("/qd")
+        self.assertEqual(self.group(port, name="  Field   Atlas "),
+                         {"id": "P1", "projects": [{"id": "P1", "name": "Field Atlas", "topics": []}]})
+        self.assertEqual(self.group(port, project="P1", name="Wayfinding")["id"], "T1")
+        self.assertEqual(self.group(port, name="Harbor")["id"], "P2")
+        result = self.group(port, project="P2", name="Tides")
+        self.assertEqual(result["id"], "T2")
+        self.assertEqual([project["name"] for project in result["projects"]], ["Field Atlas", "Harbor"])
+        renamed = self.group(port, id="T1", name="Signs")
+        self.assertEqual(renamed["projects"][0]["topics"], [{"id": "T1", "name": "Signs"}])
+        self.assertEqual(self.group(port, id="P1", name="Atlas")["projects"][0]["id"], "P1")
+        self.assertEqual(self.group(port, id="P1", name="ATLAS")["projects"][0]["name"], "ATLAS")
+        self.assertTrue(quarterdeck.check_store(self.store()))
+        self.assertEqual(self.store()["projects"][0], {"id": "P1", "name": "ATLAS", "topics": [{"id": "T1", "name": "Signs"}]})
+
+    def test_a_project_or_topic_name_must_be_new_and_valid(self) -> None:
+        port = self.start("/qd")
+        self.atlas(port)
+        before = self.store()
+        for payload, message in (({"name": "field atlas"}, "A project named field atlas already exists"),
+                                 ({"project": "P1", "name": "PRINTING"}, "Field Atlas already has a topic named PRINTING"),
+                                 ({"id": "P2", "name": "Field Atlas"}, "A project named Field Atlas already exists"),
+                                 ({"id": "T2", "name": "Wayfinding"}, "Field Atlas already has a topic named Wayfinding")):
+            with self.subTest(payload=payload):
+                status, result = self.post(port, "/qd/groups", payload)
+                self.assertEqual(status, 409)
+                self.assertIn(message, result["message"])
+        self.assertEqual(self.group(port, project="P2", name="Wayfinding")["id"], "T4")
+        before = self.store()
+        for payload in ({"name": ""}, {"name": "   "}, {"name": "x" * 61}, {"name": 4}, {"name": "A\u0007B"}, {},
+                        {"name": "Atlas", "extra": 1}, {"project": "P9", "name": "Signs"}, {"project": "Harbor", "name": "Signs"},
+                        {"id": "P9", "name": "Signs"}, {"id": "T9", "name": "Signs"}, {"id": "Q1", "name": "Signs"},
+                        {"id": ["P1"], "name": "Signs"}, ["Atlas"]):
+            with self.subTest(payload=payload):
+                self.assertEqual(self.post(port, "/qd/groups", payload)[0], 400)
+        self.assertEqual(self.post(port, "/qd/groups", {"name": "Quay"}, origin="http://example.test")[0], 403)
+        self.assertEqual(self.store(), before)
+
+    def test_a_project_named_like_another_projects_ID_is_not_taken_for_it(self) -> None:
+        port = self.start("/qd")
+        self.group(port, name="P2")
+        self.group(port, name="Harbor")
+        self.assertEqual(self.group(port, id="P2", name="Quay")["id"], "P2")
+        self.assertEqual(self.group(port, project="P2", name="Tides")["id"], "T1")
+        self.assertEqual(self.store()["projects"], [{"id": "P1", "name": "P2", "topics": []},
+                                                    {"id": "P2", "name": "Quay", "topics": [{"id": "T1", "name": "Tides"}]}])
+        self.assertEqual(self.post(port, "/qd/groups", {"id": "P3", "name": "Other"})[0], 400)
+        self.assertEqual(self.post(port, "/qd/groups", {"project": "P3", "name": "Other"})[0], 400)
+        self.assertEqual(self.post(port, "/qd/groups", {"project": "p2", "name": "Other"})[0], 400)
+        self.assertEqual(self.run_cli("converse", "--title", "T", "--text", "x", "--project", "p2")[0], 0)
+        self.assertEqual(self.store()["items"][0]["placement"], {"project": "P2"})
+
+    def test_a_conversation_started_in_a_project_or_topic_is_filed_there(self) -> None:
+        port = self.start("/qd", ask_home=self.inbox())
+        self.atlas(port)
+        self.begin(port, "Plain start")
+        self.begin(port, "In a project", project="P1")
+        _, (status, result) = self.begin(port, "In a topic", project="P1", topic="T1")
+        self.assertEqual(status, 200)
+        items = self.store()["items"]
+        self.assertNotIn("placement", items[0])
+        self.assertEqual(items[1]["placement"], {"project": "P1"})
+        self.assertEqual(items[2]["placement"], {"project": "P1", "topic": "T1"})
+        self.assertIn(' data-project="P1" data-topic="T1">', result["row"])
+        self.assertIn('<span class="placement">Field Atlas / Wayfinding</span>', result["row"])
+        self.assertIn('<span class="placement" hidden></span>', self.row(port, "Q1"))
+        self.assertNotIn("data-project", self.row(port, "Q1"))
+        self.assertIn("Conversation · Field Atlas / Wayfinding · saved", self.fetch(port, "/qd/q3.html")[1])
+
+    def test_a_scoped_start_refuses_a_project_or_topic_that_does_not_fit(self) -> None:
+        port = self.start("/qd", ask_home=self.inbox())
+        self.atlas(port)
+        before = self.store()
+        for placement in ({"project": "P9"}, {"project": "Field Atlas"}, {"project": "P1", "topic": "T3"},
+                          {"project": "P1", "topic": "T9"}, {"topic": "T1"}, {"project": None, "topic": "T1"},
+                          {"project": ["P1"]}, {"project": "P1", "topic": 1}):
+            with self.subTest(placement=placement):
+                self.assertEqual(self.begin(port, **placement)[1][0], 400)
+        self.assertEqual(self.store(), before)
+        status, result = self.begin(port, project=None, topic=None)[1]
+        self.assertEqual(status, 200, result)
+        self.assertNotIn("placement", self.store()["items"][0])
+
+    def test_a_replayed_start_keeps_the_conversation_where_it_was_filed(self) -> None:
+        port = self.start("/qd", ask_home=self.inbox())
+        self.atlas(port)
+        body, (status, _) = self.begin(port, project="P1", topic="T1")
+        self.assertEqual(status, 200)
+        self.assertEqual(self.post(port, "/qd/moves", {"part": "Q1", "project": "P2", "topic": None})[0], 200)
+        self.assertEqual(self.post(port, "/qd/conversations", {**body, "project": "P1", "topic": "T1"})[0], 200)
+        self.assertEqual(len(self.store()["items"]), 1)
+        self.assertEqual(self.store()["items"][0]["placement"], {"project": "P2"})
+
+    def test_move_changes_only_the_placement_and_can_return_a_conversation_to_ungrouped(self) -> None:
+        port = self.start("/qd", ask_home=self.inbox())
+        self.atlas(port)
+        for title in ("Proof the pocket map", "Price the second run"):
+            self.begin(port, title)
+        self.assertEqual(self.post(port, "/qd/pins", {"part": "Q1", "pinned": True})[0], 200)
+        self.assertEqual(self.run_cli("post", "Q2", "--text", "Two quotes are in.")[0], 0)
+        before = self.store()
+        self.assertEqual(self.post(port, "/qd/moves", {"part": "Q1", "project": "P1", "topic": "T1"}),
+                         (200, {"project": "P1", "topic": "T1"}))
+        moved = self.store()
+        self.assertEqual(moved["items"][0].pop("placement"), {"project": "P1", "topic": "T1"})
+        self.assertEqual(moved, before)
+        order = self.desk_topics(port)[1]
+        self.assertEqual(order, {"pinned": (False, ["Q1"]), "recent": (False, ["Q2"])})
+        self.assertEqual(self.post(port, "/qd/moves", {"part": "Q1", "project": "P2", "topic": None})[0], 200)
+        self.assertEqual(self.store()["items"][0]["placement"], {"project": "P2"})
+        self.assertEqual(self.post(port, "/qd/moves", {"part": "Q1", "project": None, "topic": None})[0], 200)
+        self.assertEqual(self.store(), before)
+        self.assertNotIn("data-project", self.row(port, "Q1"))
+        self.assertEqual(self.post(port, "/qd/moves", {"part": "Q2", "project": "P1", "topic": "T2"})[0], 200)
+        self.assertEqual(self.post(port, "/qd/moves", {"part": "Q2", "project": "P1", "topic": "T2"})[0], 200)
+        self.assertEqual(self.store()["items"][1]["placement"], {"project": "P1", "topic": "T2"})
+
+    def test_move_refuses_other_items_unknown_places_bad_fields_and_other_origins(self) -> None:
+        port = self.start("/qd", ask_home=self.inbox())
+        self.atlas(port)
+        self.begin(port)
+        self.add("questions", "Pier lights", "Pick the lamp colour.", "--body-file", "-", stdin=json.dumps(QUESTIONS))
+        before = self.store()
+        for payload in ({"part": "Q2", "project": "P1", "topic": None}, {"part": "Q9", "project": "P1", "topic": None},
+                        {"part": "q1", "project": "P1", "topic": None}, {"part": "Q1.1", "project": "P1", "topic": None},
+                        {"part": "Q1", "project": "P9", "topic": None}, {"part": "Q1", "project": "P1", "topic": "T3"},
+                        {"part": "Q1", "project": None, "topic": "T1"}, {"part": "Q1", "project": "P1"},
+                        {"part": "Q1", "topic": None}, {"part": "Q1", "project": "P1", "topic": None, "extra": 1}, ["Q1"]):
+            with self.subTest(payload=payload):
+                self.assertEqual(self.post(port, "/qd/moves", payload)[0], 400)
+        origin = self.post(port, "/qd/moves", {"part": "Q1", "project": "P1", "topic": None}, origin="http://example.test")
+        self.assertEqual(origin[0], 403)
+        self.assertEqual(self.store(), before)
+
+    def test_renaming_keeps_the_placement_the_links_and_the_activity(self) -> None:
+        port = self.start("/qd", ask_home=self.inbox())
+        self.atlas(port)
+        self.begin(port, project="P1", topic="T1")
+        self.assertEqual(self.run_cli("post", "Q1", "--text", "Arrows are right.")[0], 0)
+        before = self.store()
+        self.group(port, id="P1", name="Pocket Atlas")
+        self.group(port, id="T1", name="Signs")
+        after = self.store()
+        self.assertEqual(after["items"], before["items"])
+        self.assertEqual(after["items"][0]["placement"], {"project": "P1", "topic": "T1"})
+        row = self.row(port)
+        self.assertIn("Pocket Atlas / Signs", row)
+        self.assertRegex(row, r'href="q1\.html#reply-[0-9a-f]{32}"')
+        self.assertIn("Conversation · Pocket Atlas / Signs · saved", self.fetch(port, "/qd/q1.html")[1])
+        self.assertEqual(quarterdeck.conversation_activity(after["items"][0]),
+                         quarterdeck.conversation_activity(before["items"][0]))
+
+    def test_an_older_store_with_no_projects_lists_its_conversations_in_all(self) -> None:
+        port = self.start("/qd", ask_home=self.inbox())
+        self.begin(port, "Harbor lamp colours")
+        legacy = self.store()
+        self.assertNotIn("projects", legacy)
+        desk = self.fetch(port, "/qd/")[1]
+        self.assertIn('id="scope" data-projects="no"', desk)
+        self.assertEqual(self.desk_topics(port)[1]["recent"][1], ["Q1"])
+        self.assertIn('<option value="">All</option><option value="-">Ungrouped</option>', desk)
+        self.assertEqual(self.store(), legacy)
+        self.atlas(port)
+        self.begin(port, "Plain start")
+        self.begin(port, "In a topic", project="P1", topic="T1")
+        desk = self.fetch(port, "/qd/")[1]
+        self.assertIn('id="scope" data-projects="yes"', desk)
+        self.assertEqual(self.desk_topics(port)[1]["recent"][1], ["Q3", "Q2", "Q1"])
+        legacy_row = self.row(port, "Q1")
+        self.assertNotIn("data-project", legacy_row)
+        self.assertEqual(self.store()["items"][0], legacy["items"][0])
+        self.assertTrue(quarterdeck.check_store(self.store()))
+
+    def test_the_desk_lists_projects_and_topics_for_the_filter_and_the_scripts(self) -> None:
+        port = self.start("/qd", ask_home=self.inbox())
+        self.atlas(port)
+        desk = self.fetch(port, "/qd/")[1]
+        self.assertIn('<option value="P1">Field Atlas</option><option value="P2">Harbor</option>', desk)
+        data = json.loads(re.search(r'<script type="application/json" id="groups-data">(.*?)</script>', desk)[1])
+        self.assertEqual([(p["id"], [t["name"] for t in p["topics"]]) for p in data],
+                         [("P1", ["Printing", "Wayfinding"]), ("P2", ["Tides"])])
+        self.assertLess(desk.index('<form id="talk-form"'), desk.index('id="scope"'))
+        self.assertLess(desk.index('id="scope"'), desk.index('id="topics-recent"'))
+        self.assertIn('<label for="talk-topic">Conversation title</label>', desk)
+
+    def test_group_names_cannot_break_out_of_the_page(self) -> None:
+        port = self.start("/qd", ask_home=self.inbox())
+        self.group(port, name="</script><b>Atlas</b>")
+        self.begin(port, project="P1")
+        desk = self.fetch(port, "/qd/")[1]
+        self.assertNotIn("</script><b>", desk)
+        self.assertIn("&lt;/script&gt;&lt;b&gt;Atlas&lt;/b&gt;", desk)
+        data = re.search(r'<script type="application/json" id="groups-data">(.*?)</script>', desk)[1]
+        self.assertEqual(json.loads(data)[0]["name"], "</script><b>Atlas</b>")
+
+    def test_the_command_line_lists_projects_files_a_new_conversation_and_moves_one(self) -> None:
+        port = self.start("/qd")
+        self.atlas(port)
+        code, out, _ = self.run_cli("projects")
+        self.assertEqual((code, out.splitlines()),
+                         (0, ["P1     Field Atlas", "  T2     Printing", "  T1     Wayfinding", "P2     Harbor", "  T3     Tides"]))
+        self.assertEqual(self.run_cli("converse", "--title", "In a topic", "--text", "Update.",
+                                      "--project", "P1", "--topic", "T1")[1].strip(), "Q1")
+        self.assertEqual(self.run_cli("converse", "--title", "By ID", "--text", "Update.", "--project", "p2", "--topic", "t3")[1].strip(), "Q2")
+        self.assertEqual(self.run_cli("converse", "--title", "Alone", "--text", "Update.")[1].strip(), "Q3")
+        self.assertEqual([item.get("placement") for item in self.store()["items"]],
+                         [{"project": "P1", "topic": "T1"}, {"project": "P2", "topic": "T3"}, None])
+        self.assertIn("Placement: Field Atlas / Wayfinding", self.run_cli("show", "Q1")[1])
+        self.assertNotIn("Placement", self.run_cli("show", "Q3")[1])
+        self.assertEqual(self.run_cli("move", "q3", "--project", "P2")[1].strip(), "Q3 Moved")
+        self.assertEqual(self.store()["items"][2]["placement"], {"project": "P2"})
+        before = self.store()
+        self.assertEqual(self.run_cli("move", "Q1", "--ungrouped")[1].strip(), "Q1 Moved")
+        self.assertNotIn("placement", self.store()["items"][0])
+        self.assertEqual(self.run_cli("move", "Q1", "--project", "P1", "--topic", "t1")[0], 0)
+        self.assertEqual(self.store(), before)
+
+    def test_the_command_line_refuses_unknown_places_and_other_items(self) -> None:
+        port = self.start("/qd")
+        self.assertEqual(self.run_cli("projects")[1], "No projects.\n")
+        self.atlas(port)
+        self.add("list", "Harbor chores", "Chores.", "--body-file", "-", stdin="Buy rope\n")
+        self.assertEqual(self.run_cli("converse", "--title", "T", "--text", "x")[0], 0)
+        before = self.store()
+        for argv, message in ((("converse", "--title", "T", "--text", "x", "--project", "P9"), "no project with ID 'P9'; the projects are: P1 Field Atlas, P2 Harbor"),
+                              (("converse", "--title", "T", "--text", "x", "--project", "Harbor"), "no project with ID 'Harbor'; the projects are: P1 Field Atlas, P2 Harbor"),
+                              (("converse", "--title", "T", "--text", "x", "--project", "P2", "--topic", "T1"), "no topic with ID 'T1' in P2 Harbor; its topics are: T3 Tides"),
+                              (("converse", "--title", "T", "--text", "x", "--project", "P2", "--topic", "Tides"), "no topic with ID 'Tides' in P2 Harbor"),
+                              (("converse", "--title", "T", "--text", "x", "--topic", "T3"), "--topic needs --project"),
+                              (("move", "Q1", "--project", "P2"), "move a conversation"),
+                              (("move", "Q2", "--project", "Nowhere"), "no project with ID 'Nowhere'"),
+                              (("move", "Q2"), "give --project"),
+                              (("move", "Q2", "--project", "P2", "--ungrouped"), "give --project"),
+                              (("move", "Q2", "--ungrouped", "--topic", "T3"), "--topic needs --project"),
+                              (("move", "Q9", "--ungrouped"), "no item Q9")):
+            with self.subTest(argv=argv):
+                code, _, err = self.run_cli(*argv)
+                self.assertEqual(code, 2)
+                self.assertIn(message, err)
+        with redirect_stderr(io.StringIO()), self.assertRaises(SystemExit):
+            self.run_cli("projects", "--json")
+        self.assertEqual(self.store(), before)
+
+    def test_a_damaged_placement_or_project_list_is_refused(self) -> None:
+        port = self.start("/qd", ask_home=self.inbox())
+        self.atlas(port)
+        self.begin(port, project="P1", topic="T1")
+        self.add("list", "Harbor chores", "Chores.", "--body-file", "-", stdin="Buy rope\n")
+        good = self.store()
+        self.assertTrue(quarterdeck.check_store(good))
+
+        def damaged(change):
+            data = json.loads(json.dumps(good))
+            change(data)
+            with self.assertRaises(ValueError):
+                quarterdeck.check_store(data)
+
+        damaged(lambda data: data["items"][0].update(placement={"project": "P9"}))
+        damaged(lambda data: data["items"][0].update(placement={"project": "P1", "topic": "T3"}))
+        damaged(lambda data: data["items"][0].update(placement={"topic": "T1"}))
+        damaged(lambda data: data["items"][0].update(placement={}))
+        damaged(lambda data: data["items"][0].update(placement="P1"))
+        damaged(lambda data: data["items"][0].update(placement={"project": "P1", "extra": 1}))
+        damaged(lambda data: data["items"][1].update(placement={"project": "P1"}))
+        damaged(lambda data: data.update(projects={}))
+        damaged(lambda data: data["projects"].append({"id": "P1", "name": "Again", "topics": []}))
+        damaged(lambda data: data["projects"].append({"id": "P3", "name": "field atlas", "topics": []}))
+        damaged(lambda data: data["projects"].append({"id": "P3", "name": " Spaced ", "topics": []}))
+        damaged(lambda data: data["projects"].append({"id": "3", "name": "Bad ID", "topics": []}))
+        damaged(lambda data: data["projects"].append({"id": "P3", "name": "No topics"}))
+        damaged(lambda data: data["projects"][0]["topics"].append({"id": "T1", "name": "Repeat ID"}))
+        damaged(lambda data: data["projects"][1]["topics"].append({"id": "T1", "name": "Other"}))
+        damaged(lambda data: data["projects"][0]["topics"].append({"id": "T7", "name": "wayfinding"}))
+        damaged(lambda data: data["projects"][0]["topics"].append({"id": "T7", "name": "Extra", "more": 1}))
+
+    def test_the_conversation_filter_start_destination_and_move_work_in_a_browser(self) -> None:
+        port = self.start("/qd", ask_home=self.inbox())
+        self.atlas(port)
+        self.begin(port, "Proof the pocket map", project="P1", topic="T1")
+        self.begin(port, "Price the second run", project="P1", topic="T2")
+        self.begin(port, "Check the tide table", project="P2")
+        self.begin(port, "Pier lamp colours")
+        self.check_answer_page(port, r"""
+const posts = [];
+let fail = false;
+let tree = JSON.parse(button('groups-data').textContent);
+window.fetch = async (path, init) => {
+  const body = JSON.parse(init.body);
+  posts.push([path, body]);
+  if (fail) return {ok:false, status:500};
+  if (path === 'groups') {
+    if (body.name === 'Harbor') return {ok:false, status:409, json: async () => ({message:'A project named Harbor already exists. Choose another name.', saved:false})};
+    if (body.id) { const entry = tree.find(p => p.id === body.id) || tree.flatMap(p => p.topics).find(t => t.id === body.id); entry.name = body.name; }
+    else if (body.project) tree.find(p => p.id === body.project).topics.push({id:'T9', name:body.name});
+    else tree.push({id:'P9', name:body.name, topics:[]});
+    return {ok:true, status:200, json: async () => ({id: body.id || (body.project ? 'T9' : 'P9'), projects: structuredClone(tree)})};
+  }
+  return {ok:true, status:200, json: async () => ({project: body.project, topic: body.topic})};
+};
+const settle = () => new Promise(resolve => setTimeout(resolve, 20));
+const shown = () => [...document.querySelectorAll('.topic:not([hidden])')].map(row => row.dataset.id).sort().join();
+const choose = (id, value) => { const select = button(id); select.value = value; select.dispatchEvent(new Event('change', {bubbles:true})); };
+const submit = id => button(id).requestSubmit();
+const typeInto = (id, text) => { const field = button(id); field.value = text; field.dispatchEvent(new Event('input', {bubbles:true})); };
+const destination = document.querySelector('.talk-destination');
+sessionStorage.clear();
+check(shown() === 'Q1,Q2,Q3,Q4' && button('scope-project').value === '' && button('scope-topic-field').hidden, 'The Desk did not open on All');
+check(destination.textContent === 'Starts ungrouped.' && !destination.hidden, 'All did not say a start is ungrouped');
+check(button('new-project').checkVisibility() && button('new-topic').hidden && button('rename-project').hidden, 'All offered project actions');
+choose('scope-project', 'P1');
+check(shown() === 'Q1,Q2' && !button('scope-topic-field').hidden && destination.textContent === 'Starts in Field Atlas.', 'A project did not show its conversations');
+check([...button('scope-topic').options].map(o => o.text).join() === 'All topics,Printing,Wayfinding', 'The topic filter lost its topics');
+choose('scope-topic', 'T1');
+check(shown() === 'Q1' && destination.textContent === 'Starts in Field Atlas / Wayfinding.' && !button('rename-topic').hidden, 'A topic did not narrow the list');
+check(JSON.parse(sessionStorage.getItem('quarterdeck-scope')).topic === 'T1', 'The choice was not kept for Back');
+choose('scope-project', 'P2');
+check(shown() === 'Q3' && button('scope-topic').value === '', 'Another project kept the old topic');
+choose('scope-project', '-');
+check(shown() === 'Q4' && button('scope-topic-field').hidden && destination.textContent === 'Starts ungrouped.', 'Ungrouped did not show the legacy conversation');
+choose('scope-project', '');
+check(shown() === 'Q1,Q2,Q3,Q4' && document.querySelector('.topic[data-id="Q4"] .placement').hidden, 'All did not show every conversation');
+button('new-project').click();
+check(!button('group-form').hidden && button('group-label').textContent === 'Project name' && document.activeElement === button('group-name')
+      && button('group-form').querySelector('[type=submit]').disabled, 'New project did not open its field');
+typeInto('group-name', 'Harbor');
+submit('group-form');
+await settle();
+check(button('group-status').textContent.startsWith('A project named Harbor already exists') && !button('group-form').hidden
+      && button('group-status').classList.contains('failed'), 'A refused name was not explained beside the field');
+typeInto('group-name', '  Quay  walk ');
+submit('group-form');
+await settle();
+check(posts.at(-1)[1].name === 'Quay walk' && button('group-form').hidden && button('scope-project').value === 'P9'
+      && button('group-status').textContent === 'Quay walk saved.' && shown() === '', 'A new project was not saved and selected');
+check(button('no-scoped-conversations').textContent === 'No conversations in Quay walk yet. A conversation you start or move into it shows here.'
+      && !button('no-scoped-conversations').hidden && button('topics-recent').hidden, 'An empty project did not say what fills it');
+button('new-topic').click();
+typeInto('group-name', 'Bridges');
+submit('group-form');
+await settle();
+check(posts.at(-1)[1].project === 'P9' && button('scope-topic').value === 'T9' && destination.textContent === 'Starts in Quay walk / Bridges.', 'A new topic was not saved and selected');
+button('rename-topic').click();
+check(button('group-label').textContent === 'Topic name' && button('group-name').value === 'Bridges', 'Rename topic did not offer the current name');
+typeInto('group-name', 'Footbridges');
+submit('group-form');
+await settle();
+check(posts.at(-1)[1].id === 'T9' && button('scope-topic').selectedOptions[0].text === 'Footbridges', 'A topic was not renamed');
+button('rename-project').click();
+button('group-cancel').click();
+check(button('group-form').hidden && document.activeElement === button('rename-project'), 'Cancel did not close the form and return focus');
+choose('scope-project', '');
+check(button('rename-project').hidden, 'All offered Rename project');
+// Move
+const rowOf = id => document.querySelector('.topic[data-id="' + id + '"]');
+rowOf('Q4').querySelector('button.move').click();
+check(rowOf('Q4').contains(button('move-form')) && !button('move-form').hidden && document.activeElement === button('move-project')
+      && button('move-project').value === '' && button('move-topic-field').hidden, 'Move did not open under its conversation');
+check([...button('move-project').options].map(o => o.text).join() === 'Ungrouped,Field Atlas,Harbor,Quay walk', 'Move lost a project');
+choose('move-project', 'P1');
+check([...button('move-topic').options].map(o => o.text).join() === 'No topic,Printing,Wayfinding', 'Move offered the wrong topics');
+button('move-topic').value = 'T2';
+submit('move-form');
+await settle();
+check(posts.at(-1)[0] === 'moves' && JSON.stringify(posts.at(-1)[1]) === '{"part":"Q4","project":"P1","topic":"T2"}', 'Move posted the wrong request');
+check(rowOf('Q4').dataset.project === 'P1' && rowOf('Q4').dataset.topic === 'T2'
+      && rowOf('Q4').querySelector('.placement').textContent === 'Field Atlas / Printing' && button('move-form').hidden
+      && rowOf('Q4').querySelector('.desk-feedback').textContent === 'Pier lamp colours moved to Field Atlas / Printing.'
+      && document.activeElement === rowOf('Q4').querySelector('button.move'), 'Move did not update the row');
+choose('scope-project', '-');
+check(shown() === '' && !button('no-scoped-conversations').hidden, 'Ungrouped still showed a moved conversation');
+choose('scope-project', 'P1');
+rowOf('Q2').querySelector('button.move').click();
+choose('move-project', '');
+submit('move-form');
+await settle();
+check(!('project' in rowOf('Q2').dataset) && !('topic' in rowOf('Q2').dataset) && rowOf('Q2').hidden && shown() === 'Q1,Q4'
+      && button('desk-status').textContent === 'Price the second run moved to Ungrouped.', 'Moving to Ungrouped did not take the row out of the project');
+check(document.activeElement.classList.contains('topic-title') && document.activeElement.checkVisibility(), 'Focus was lost with the moved row');
+choose('scope-project', '');
+check(rowOf('Q2').querySelector('.placement').hidden && !rowOf('Q2').hidden, 'All lost the conversation moved to Ungrouped');
+fail = true;
+rowOf('Q1').querySelector('button.move').click();
+submit('move-form');
+await settle();
+check(!button('move-form').hidden && rowOf('Q1').dataset.project === 'P1'
+      && rowOf('Q1').querySelector('.desk-feedback').textContent === 'Quarterdeck could not move Proof the pocket map. Try again.', 'A refused move changed the row or hid the failure');
+button('move-cancel').click();
+check(button('move-form').hidden && !rowOf('Q1').contains(button('move-form')), 'Cancel move left the form in the row');
+fail = false;
+const started = posts.length;
+choose('scope-project', 'P1');
+choose('scope-topic', 'T2');
+button('talk-topic').value = 'Lamp tests';
+button('talk-message').value = 'Which lamp?';
+button('talk-form').dispatchEvent(new Event('input', {bubbles:true}));
+button('talk-form').requestSubmit();
+await settle();
+check(posts.length === started + 1 && posts.at(-1)[0] === 'conversations' && posts.at(-1)[1].project === 'P1' && posts.at(-1)[1].topic === 'T2'
+      && posts.at(-1)[1].title === 'Lamp tests', 'A scoped start did not carry its project and topic');
+""", path="/qd/", viewport=(1440, 900))
+
+    def test_the_project_filter_and_forms_fit_a_phone_in_a_browser(self) -> None:
+        port = self.start("/qd", ask_home=self.inbox())
+        self.atlas(port)
+        self.begin(port, "A very long conversation title that has to wrap across several lines on a phone", project="P1", topic="T1")
+        self.check_answer_page(port, r"""
+const fits = () => document.documentElement.scrollWidth <= innerWidth;
+check(fits(), 'The Desk scrolled sideways');
+const choose = (id, value) => { const select = button(id); select.value = value; select.dispatchEvent(new Event('change', {bubbles:true})); };
+choose('scope-project', 'P1');
+choose('scope-topic', 'T1');
+button('new-topic').click();
+button('group-name').value = 'A topic name that is quite long indeed for sure';
+check(fits(), 'The name form scrolled sideways');
+button('group-cancel').click();
+document.querySelector('.topic button.move').click();
+check(fits(), 'The move form scrolled sideways');
+for (const control of [...document.querySelectorAll('#scope select, #scope button, #move-form select, #move-form button, .topic button')].filter(c => c.checkVisibility())) {
+  const box = control.getBoundingClientRect();
+  check(box.width >= 44 && box.height >= 44 && box.right <= innerWidth + 1 && box.left >= -1, 'A control was too small or off the screen: ' + control.id + control.textContent);
+}
+""", path="/qd/", viewport=(390, 844))
 
 
 class PrivacyGuardTests(unittest.TestCase):

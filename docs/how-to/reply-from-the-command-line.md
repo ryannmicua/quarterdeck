@@ -81,3 +81,22 @@ quarterdeck converse --title "Pier lamp install" --text "Started the install."
 See the [CLI reference](../reference/cli-and-config.md#items) for attachments
 and command output. The owner can [respond on the conversation page](talk-to-firstmate.md#send-more-messages).
 Use [reply](#reply-in-a-conversation) to answer their message.
+
+## File a conversation in a project
+
+The owner creates and renames [projects and topics](talk-to-firstmate.md#group-conversations)
+on the Desk. Firstmate can read them and file a conversation in one. List them
+first, then name one by its ID.
+
+```sh
+quarterdeck projects
+quarterdeck converse --title "Pier lamp install" --text "Started the install." \
+  --project P1 --topic T1
+quarterdeck move Q12 --project P1 --topic T2
+quarterdeck move Q12 --ungrouped
+```
+
+An ID matches in any case. An unknown project or topic ID is refused with the
+IDs and names that exist, and nothing is saved. Moving a conversation changes
+nothing but where it is filed. Suggest a new project or topic to the owner in
+the conversation instead of creating one.

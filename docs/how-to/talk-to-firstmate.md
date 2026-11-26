@@ -1,34 +1,34 @@
 # Talk to Firstmate
 
-You or Firstmate can start a conversation about any topic. Each conversation
-is its own saved item, with the topic as its title. To send a message, use the
+You or Firstmate can start a conversation about anything. Each conversation
+is its own saved item, with the conversation title as its name. To send a message, use the
 served page with [`firstmate_home` configured](read-answers.md#connect-the-inbox)
 to point to an existing directory. The Desk opens on **Conversations**. Its
-**Topic** and **Message** fields sit directly above the list once that
+**Conversation title** and **Message** fields sit directly above the list once that
 directory is available. Switching tabs keeps the same page address. See the [glossary](../reference/glossary.md) for the
 words the Desk uses.
 
 ## Start a conversation
 
 1. On the Desk, stay on **Conversations**.
-2. Select **New conversation**. The cursor moves to **Topic**.
-3. Type a short **Topic** and your **Message**, then select **Start conversation**.
+2. Select **New conversation**. The cursor moves to **Conversation title**.
+3. Type a short **Conversation title** and your **Message**, then select **Start conversation**.
 
 Select **New conversation** again to hide the form. Unsent text stays in the hidden form, and the form closes after Quarterdeck starts the conversation.
 
 Quarterdeck saves the conversation under a new ID such as Q12 and attempts
-delivery to Firstmate's inbox. The new topic joins the top of **Recent
+delivery to Firstmate's inbox. The new conversation joins the top of **Recent
 conversations** and takes keyboard focus if **Conversations** is visible.
 The result appears above the selected tab's contents. If you switch tabs while
 the request is in progress, the selected tab stays open. A refused request
-keeps the draft in the form. If Quarterdeck saves the topic but delivery
-fails, the topic shows **Not delivered** and you can retry from its page.
+keeps the draft in the form. If Quarterdeck saves the conversation but delivery
+fails, it shows **Not delivered** and you can retry from its page.
 An unsent draft stays in the fields when you switch to **Needs you** and back.
 Conversations leave question answers and states unchanged.
 
 ## Order and pins
 
-Each group lists its conversations by latest activity. A new topic, message or
+Each group lists its conversations by latest activity. A new conversation, message or
 reply brings a conversation to the front of its group, and quiet ones sink.
 Each row shows the date and time of that latest activity in your time zone.
 Select **Pin** on a row to move it into **Pinned**. Select **Unpin** to return
@@ -52,11 +52,46 @@ or reopen it yourself when you want it to change.
 Select **Archive** on a row, or on the conversation page, to move a
 conversation out of **Pinned** and **Recent conversations** and into the
 **Archived** tab. Select **Unarchive** to return it. An archived conversation
-keeps its **Resolved** mark and its pin, and it returns to **Pinned** if you
-pinned it. You can still open it and send messages, and Firstmate can still
+keeps its **Resolved** mark, its pin, and its project and topic, and it
+returns to **Pinned** if you pinned it. You can still open it and send messages, and Firstmate can still
 reply. An unread reply on an archived conversation still shows in
 **Needs you**. Firstmate can archive with `quarterdeck archive` and
 `quarterdeck unarchive`. [Hold](use-the-library.md) leaves out archived conversations.
+
+## Group conversations
+
+A conversation is in at most one [project](../reference/glossary.md#conversations),
+and in at most one topic inside that project. You create, rename and assign
+both. Conversations you already had stay **Ungrouped** until you move them, and
+**All** still lists them.
+
+The **Project** filter sits between the form and the list. It opens on **All**.
+Choose a project to see its conversations, including those filed directly in
+it. Then choose a **Topic** to narrow the list. Choose **Ungrouped** to see
+conversations that are in no project. Archived conversations stay in
+**Archived** and leave the filter's lists. Within the filter, **Pinned** comes first
+and each group keeps its order by latest activity. The filter stays when you
+open a conversation and go back. **Needs you**, **Watch** and **Open Hold** do
+not change with it.
+
+- To make a project, select **New project**, type its name and select **Save
+  name**. With a project chosen, **New topic** adds a topic to it.
+- To change a name, choose the project or topic and select **Rename project**
+  or **Rename topic**. The conversations stay where they are, and links to
+  them keep working.
+- To start a conversation inside a project or topic, choose it in the filter
+  first. The line under the form says where the conversation will start, such
+  as "Starts in Field Atlas / Wayfinding." From **All** or **Ungrouped**, it
+  starts ungrouped.
+- To change where a conversation is, select **Move** on its row, choose the
+  project and topic, and select **Save move**. Choose **Ungrouped** to
+  take it out of its project. Moving changes nothing else about the
+  conversation: its messages, pin, unread reply and place by latest activity stay.
+
+Firstmate can file a conversation in a project or topic by its ID when it
+opens the conversation, and can move one, from the [command line](reply-from-the-command-line.md#file-a-conversation-in-a-project).
+It cannot create or rename a project or topic. Being in a project gives a
+conversation no access to the others and shares no context with them.
 
 ## Send more messages
 

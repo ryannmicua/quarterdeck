@@ -226,6 +226,16 @@ store saved before these fields existed needs no change. A conversation's latest
 which orders the Desk, is the time of its newest message or its `saved_at`,
 whichever is later.
 
+A conversation item may also carry `placement`, an object with `project` (a
+project ID such as `P1`) and optionally `topic` (a topic ID such as `T2` in
+that project). Absent means ungrouped, and only a conversation may have it.
+The store lists the owner's projects in an optional top-level `projects` array
+of `{"id": "P1", "name": "Field Atlas", "topics": [{"id": "T1", "name": "Wayfinding"}]}`.
+Names are up to 60 characters, and no two projects, or two topics in one
+project, share a name when case is ignored. A project or topic keeps its ID when
+renamed, and nothing deletes one. Moving or renaming changes nothing else about
+a conversation, and an older store needs no change.
+
 Each thread stores messages in the order they were saved. Every reply
 names the earlier ask or message it answers.
 

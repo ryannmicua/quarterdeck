@@ -12,11 +12,14 @@ quarterdeck show ID
 quarterdeck reply ID[.PART] --ask ID --text TEXT [--link-text TEXT --url URL]... [--image PATH --alt TEXT]...
                    [--clarify ID.PART=TEXT]... [--option-changed ID.PART]...
 quarterdeck post ID --text TEXT [--link-text TEXT --url URL]... [--image PATH --alt TEXT]...
-quarterdeck converse --title TITLE --text TEXT [--config FILE] [--link-text TEXT --url URL]... [--image PATH --alt TEXT]...
+quarterdeck converse --title TITLE --text TEXT [--config FILE] [--project ID [--topic ID]]
+                     [--link-text TEXT --url URL]... [--image PATH --alt TEXT]...
 quarterdeck resolve ID
 quarterdeck reopen ID
 quarterdeck archive ID
 quarterdeck unarchive ID
+quarterdeck projects
+quarterdeck move ID (--project ID [--topic ID] | --ungrouped)
 quarterdeck mark ID[.PART] answered --via WHERE
 quarterdeck mark ID[.PART] closed|open
 quarterdeck classify ID[.PART] [--project NAME] [--tag TAG ...] [--kind KIND]
@@ -55,7 +58,9 @@ as `reply`.
 | `show` | Prints the item's text, numbering list entries and questions as `Q7.1`, `Q7.2`. Includes question links, stored states, and saved answers with their timestamps and delivery status. For a standalone conversation, prints the transcript in saved order with timestamps, IDs, delivery status for outgoing messages, and attachments. A standalone Firstmate message is marked `Update`. Image references are paths relative to the served site or the item store directory. |
 | `reply` | Adds Firstmate's reply to an existing ask on a whole question item (`Q7`) or one question (`Q7.1`), or to an owner's message in a [conversation](../how-to/talk-to-firstmate.md) (`Q12`). It preserves saved answers and question states. Supply the required `--ask ID` from the inbox note and the reply in `--text`. Pair `--link-text` with `--url` and `--image` with `--alt` in the order given. See [Reply from the command line](../how-to/reply-from-the-command-line.md). |
 | `post` | Adds a standalone update from Firstmate. Accepts a conversation item ID such as `Q12` and prints `Q12 Updated`. |
-| `converse` | Opens a conversation with a title and an update from Firstmate, then prints the new item ID. See [`firstmate_home`](#json-configuration) for home selection. |
+| `converse` | Opens a conversation with a title and an update from Firstmate, then prints the new item ID. `--project` and `--topic` file it in a project and a topic of that project, each by ID such as `P1` or `T2`, in any case. `--topic` needs `--project`, and an unknown ID is refused with the IDs and names that exist. See [`firstmate_home`](#json-configuration) for home selection. |
+| `projects` | Prints each project and its topics with their IDs, topics indented under their project, in name order. Prints `No projects.` when the owner has made none. Only the owner creates and renames them, on the Desk. |
+| `move` | Files a conversation in a project and optionally a topic, by ID, or returns it to Ungrouped with `--ungrouped`. Give exactly one of `--project` and `--ungrouped`. Prints `Q12 Moved`. Items that are not conversations are refused. It changes only the conversation's [`placement`](item-store.md#conversations). |
 | `resolve`, `reopen` | Marks a conversation resolved or not resolved and prints `Q12 Resolved` or `Q12 Reopened`. Only a conversation item is accepted. Messages and updates leave the mark as it is. See [resolve a conversation](../how-to/talk-to-firstmate.md#resolve-a-conversation). |
 | `archive`, `unarchive` | Moves a conversation to the Archived tab or back to the Desk and prints `Q12 Archived` or `Q12 Unarchived`. Only a conversation item is accepted. The resolved and pinned marks stay, and replies still work. See [archive a conversation](../how-to/talk-to-firstmate.md#archive-a-conversation). |
 | `mark` | Sets question state, optionally for a whole questions item. `--via` is required with `answered` and accepted only with that state. Skips exit with status 0. See [Read answers](../how-to/read-answers.md) for which questions are marked. |
@@ -181,15 +186,19 @@ as `/answers`. If the directory is unavailable, the request returns 403.
 Send
 `{"id": "<message id>", "title": "...", "text": "...", "home": "<home binding>"}`
 to save a new conversation item and deliver its first message. The title is the
-topic, up to 200 characters. The page generates the 32-character lowercase
+conversation title, up to 200 characters. Add `"project": "P1"` to file it in a
+project, and `"topic": "T2"` as well to file it in a topic of that project.
+Unknown IDs, a topic outside the project, and a topic without a project return
+400 and save nothing. A repeated request ignores both fields, so a conversation
+the owner has since moved stays where it is. The page generates the 32-character lowercase
 hexadecimal ID. Repeating the same request reuses the saved conversation
 instead of creating another, and retries delivery of the first message while it
-is pending. The same ID with a different topic or text returns 409. A successful
+is pending. The same ID with a different title or text returns 409. A successful
 response contains `message` (delivery status), `href` (the relative URL of
 the conversation card), `row` (the conversation row HTML), `hold` (the Hold
 result row HTML), and `attention`
-(the started topic’s Needs you row HTML, or `null` if it needs no attention).
-The browser updates that topic's rows and derives the tab count from the
+(the started conversation’s Needs you row HTML, or `null` if it needs no attention).
+The browser updates that conversation's rows and derives the tab count from the
 current Needs you table.
 
 On an existing conversation, the owner's messages use the
@@ -199,8 +208,8 @@ The directory requirement applies to both sends and retries. If the
 conversation is [bound to a home](item-store.md#conversations), a different
 resolved path results in 409 before saving or delivering the message.
 The inbox note for each message sent by the owner is
-`CONVERSATION Q12 <message id> Topic: <topic>`, a line break, then the message
-text. See [Reply in a conversation](../how-to/reply-from-the-command-line.md#reply-in-a-conversation).
+`CONVERSATION Q12 <message id> Topic: <conversation title>`, a line break, then the message
+text. The note keeps the label `Topic` so existing readers of the inbox keep working. See [Reply in a conversation](../how-to/reply-from-the-command-line.md#reply-in-a-conversation).
 
 ### Pin endpoint
 
@@ -225,6 +234,30 @@ It adds no message, keeps the other marks and never refuses a later message.
 The response repeats the field, such as `{"resolved": true}`, and carries
 `hold`, the conversation's row for the Hold list, which is empty when the
 conversation is archived.
+
+### Project endpoint
+
+`POST /groups` (under any `base_path`) uses the same origin check as `/answers`
+and needs no `firstmate_home`. It takes one of three bodies. `{"name": "Field Atlas"}`
+creates a project. `{"project": "P1", "name": "Wayfinding"}` creates a topic in
+that project. `{"id": "P1", "name": "Atlas"}` renames the project or topic with that
+ID, which keeps its ID and every conversation filed in it. A name is up to 60
+characters, trimmed, on one line. A name that another project (or another
+topic in the same project) already has, ignoring case, returns 409 with a JSON
+`message`. Anything else that does not fit returns 400. The response is
+`{"id": "P1", "projects": [...]}`, with the new or renamed ID and every project and its
+topics in name order.
+
+### Move endpoint
+
+`POST /moves` (under any `base_path`) uses the same origin check and needs no
+`firstmate_home`. Send `{"part": "Q12", "project": "P1", "topic": "T2"}`, with
+`"topic": null` for a project only, or both `null` to return the conversation to
+Ungrouped. Only a conversation can be moved, and an unknown ID, a topic outside
+the project, or a topic without a project returns 400. The request changes the
+conversation's [`placement`](item-store.md#conversations) and nothing else. It adds no
+message, keeps the pin and the unread reply, and leaves the latest activity alone.
+The response repeats `project` and `topic`.
 
 ### Watch page
 

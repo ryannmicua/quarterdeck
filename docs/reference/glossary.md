@@ -7,7 +7,7 @@ These are terms Quarterdeck uses on its pages and in the CLI.
 | Word | Meaning |
 |---|---|
 | Desk | The landing page. It has three tabs. |
-| Conversations | The Desk tab that opens first. It holds the form to start a conversation and every saved conversation. |
+| Conversations | The Desk tab that opens first. It holds the form to start a conversation, the Project filter and every saved conversation. |
 | New conversation | The button that shows the form to start a conversation. The form stays hidden until you select it or the browser restores unsent text, and selecting it again hides the form and keeps unsent text. |
 | Needs you | The [Desk tab for items and notices that need attention](../how-to/answer-questions.md). |
 | Watch | A read-only page for what Firstmate has yet to reply to and what its workers are doing. |
@@ -18,14 +18,19 @@ These are terms Quarterdeck uses on its pages and in the CLI.
 
 | Word | Meaning |
 |---|---|
-| Topic | The title of a conversation. |
+| Conversation title | The short name of a conversation, set when you start it. |
 | Message | The text you send. |
+| Project | A group you create for related conversations. A conversation is in at most one project. |
+| Topic | A subject inside one project. A conversation is in at most one topic, and that topic belongs to its project. |
+| Ungrouped | A conversation that is in no project. Every conversation starts there unless you start it inside a project or topic. |
+| Move | Change which project and topic a conversation is in, or return it to Ungrouped. |
+| All | The default Project filter. It shows every conversation, grouped or not. |
 | Pinned | The group above Recent conversations for conversations you chose to keep in view. |
 | Recent conversations | Every conversation that is not pinned, newest activity first. |
-| Pin, Unpin | [Move a conversation between groups](../how-to/talk-to-firstmate.md#order-and-pins). |
+| Pin, Unpin | [Keep a conversation in Pinned, or return it to its place by activity](../how-to/talk-to-firstmate.md#order-and-pins). |
 | Resolved | The mark on a conversation that you or Firstmate marked settled. It shows as a check with the word. A message does not clear it. |
 | Resolve, Reopen | [Mark a conversation resolved, or clear the mark](../how-to/talk-to-firstmate.md#resolve-a-conversation). |
-| Archived | The Desk tab that holds archived conversations. They are out of Pinned and Recent conversations. |
+| Archived | The Desk tab that holds archived conversations. They are out of Pinned, Recent conversations and the Project filter. |
 | Archive, Unarchive | [Move a conversation into Archived, or return it](../how-to/talk-to-firstmate.md#archive-a-conversation). |
 
 ## Status words
