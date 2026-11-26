@@ -272,7 +272,8 @@ leaves the fleet snapshot untouched.
 `/answers`. The served page sends `{"part": "Q7.1", "ids": ["<reply id>"]}`
 when the user opens a notice for that reply. A reply in a whole-item
 discussion or standalone conversation uses the item ID as `part`. Explicitly
-opening **Messages** acknowledges all unread replies it shows. Sending,
+opening **Messages**, or the page opening a collapsed **Messages** on load to
+show its first unread reply, acknowledges all unread replies it shows. Sending,
 retrying, and a GET alone leave read records intact. Every ID must identify a
 Firstmate message in the named thread. The response field `replies` maps each Firstmate message ID in that
 thread to its current read status (`true` for read).

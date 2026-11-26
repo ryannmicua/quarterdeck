@@ -115,7 +115,9 @@ A conversation with an unread Firstmate message shows **Unread reply** on its
 row in **Conversations**. See [when it also appears in Needs you](use-the-library.md#when-an-item-moves).
 Opening the row takes you to the unread message and marks that message read.
 The row stays marked while other unread replies remain. The conversation
-keeps its place by activity. Reload, send a message, or retry delivery to
+keeps its place by activity. A conversation page opened without a link to a
+message starts at its first unread message, or at the latest message when all
+are read. Reload, send a message, or retry delivery to
 refresh the conversation. Replies shown after a send or retry stay unread
 until you open them from the Desk. See [how Firstmate replies](reply-from-the-command-line.md#reply-in-a-conversation).
 

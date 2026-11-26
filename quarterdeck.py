@@ -2790,6 +2790,7 @@ button.primary { color:var(--raised); background:var(--ink); }
 button:disabled, button[aria-disabled="true"] { opacity:.55; cursor:default; }
 :focus-visible { outline:3px solid var(--focus); outline-offset:2px; }
 .decision,button,textarea { scroll-margin-top:2rem; }
+.msg { scroll-margin-top:1rem; }
 output { display:block; margin:.4rem 0; }
 .choices { display:flex; flex-wrap:wrap; gap:.5rem; margin-bottom:.8rem; }
 .choice { display:inline-flex; gap:.4em; align-items:baseline; flex-wrap:wrap; padding:.5rem .75rem; min-height:44px; border:1px solid var(--soft); border-radius:5px; cursor:pointer; font:1rem/1.5 var(--sans); }
@@ -4225,6 +4226,40 @@ if (whole) {
   if (document.readyState === 'complete') focusReply();
   else addEventListener('load', focusReply, {once:true});
   if (target.hasAttribute('data-unread')) acknowledgeReplies(section, [target.dataset.replyId]);
+})();
+(() => {
+  // Without a #fragment that names something on the page, open on the first unread message, else the latest, among those shown.
+  if (document.getElementById(location.hash.slice(1))) return;
+  const navigation = performance.getEntriesByType?.('navigation')[0]?.type;
+  if (navigation === 'reload' || navigation === 'back_forward') return;
+  const hidden = document.querySelector('[data-reply-id][data-unread]');
+  if (hidden) {
+    const section = hidden.closest('[data-conversation]');
+    expandAnswer(section);
+    const thread = hidden.closest('details.thread');
+    if (thread && !thread.open) {
+      thread.open = true;
+      acknowledgeReplies(section, unreadReplyIds(thread));
+    }
+  }
+  const shown = [...document.querySelectorAll('.msg')].filter(message => message.getClientRects().length);
+  const unread = shown.find(message => message.hasAttribute('data-unread'));
+  const stamp = message => Date.parse(message.querySelector('time')?.dateTime) || 0;
+  const latest = shown.reduce((best, message) => !best || stamp(message) >= stamp(best) ? message : best, null);
+  const target = unread || latest;
+  if (!target) return;
+  let moved = false;
+  const land = () => {
+    if (moved) return;
+    const box = target.getBoundingClientRect();
+    if (box.top >= 0 && box.bottom <= innerHeight) return;
+    target.scrollIntoView({block:'start', behavior:'instant'});
+  };
+  for (const name of ['wheel', 'touchstart', 'keydown', 'pointerdown']) {
+    addEventListener(name, () => { moved = true; }, {once:true, passive:true});
+  }
+  land();
+  if (document.readyState !== 'complete') addEventListener('load', land, {once:true});
 })();
 document.addEventListener('click', event => {
   const summary = event.target.closest('.thread > summary');
