@@ -2603,7 +2603,7 @@ def keep_workers_fresh(saved: SavedWorkers, interval: float, stop: threading.Eve
 # The reading carries one row per ship or scout with a live terminal, plus the ones merged today.
 
 UNDERWAY_KINDS = {"ship", "scout"}
-UNDERWAY_ORDER = ("Ready to merge", "In review", "Building", "Working", "Question asked", "Stuck", "Unknown",
+UNDERWAY_ORDER = ("Question asked", "Ready to merge", "In review", "Building", "Working", "Stuck", "Unknown",
                   "Finished", "Merged today")
 TASK_LINKS_DEFAULT = Path("data") / "qd-threads" / "links.tsv"
 TASK_LINKS_MAX_BYTES = 1 << 20
@@ -2612,6 +2612,15 @@ TASK_LINKS_MAX_BYTES = 1 << 20
 def local_today() -> str:
     """The date on the machine that serves Quarterdeck, which is also the home's date for merge records."""
     return datetime.now().astimezone().date().isoformat()
+
+
+def question_href(task: dict) -> str | None:
+    """The first http(s) address in the first open decision's summary, else None. The summary text is never shown."""
+    hints = snapshot_field(task, "hints", dict) or {}
+    decisions = snapshot_field(hints, "open_decisions", list) or []
+    summary = decisions[0].get("summary") if decisions and isinstance(decisions[0], dict) else None
+    found = re.search(r"https?://[^\s<>\"')\]]+", summary) if isinstance(summary, str) else None
+    return pull_request_href(found[0].rstrip(".,;:!?")) if found else None
 
 
 def underway_status(task: dict, kind: str, has_pull_request: bool) -> str:
@@ -2666,7 +2675,8 @@ def underway_rows(data: dict, tasks: dict[str, dict], observed: datetime) -> lis
         status = "Merged today" if merged_on else underway_status(task, kind, bool(links))
         title = snapshot_text(snapshot_field(snapshot_field(task, "backlog", dict) or {}, "title", str))
         rows.append({"id": key, "title": title or key, "project": row["project"], "status": status,
-                     "pr": links[0]["href"] if links else None, "merged_on": merged_on})
+                     "pr": links[0]["href"] if links else None, "merged_on": merged_on,
+                     **({"question": question_href(task)} if status == "Question asked" else {})})
     for record in records:
         found = merge_record(record)
         if found is None or found[1] != today or found[0] in tasks or record.get("kind") not in UNDERWAY_KINDS:
@@ -2675,7 +2685,9 @@ def underway_rows(data: dict, tasks: dict[str, dict], observed: datetime) -> lis
         rows.append({"id": found[0], "title": snapshot_text(title if isinstance(title, str) else None) or found[0],
                      "project": snapshot_text(repo if isinstance(repo, str) else None), "status": "Merged today",
                      "pr": pull_request_href(record.get("pr_url")), "merged_on": found[1]})
-    return sorted(rows, key=lambda row: UNDERWAY_ORDER.index(row["status"]) if row["status"] in UNDERWAY_ORDER else 0)
+    order = UNDERWAY_ORDER[:-1]
+    return sorted(rows, key=lambda row: (row["status"] == "Merged today",
+                                         order.index(row["status"]) if row["status"] in order else len(order)))
 
 
 def read_task_links(path: Path) -> dict[str, str]:
@@ -2852,17 +2864,32 @@ textarea { display:block; width:100%; resize:vertical; background:var(--ground);
 .desk .card-link { display:inline-block; padding:.35rem 0; }
 .desk .card-link::after { content:""; position:absolute; inset:0; }
 .desk .notice-project { display:none; }
-.desk.underway td.project { min-width:8rem; }
-.desk.underway th { overflow-wrap:anywhere; }
-.underway-links { white-space:nowrap; }
+.underway-group { margin:0 0 1.5rem; }
+.underway-group h2 { margin:1rem 0 .4rem; font:600 var(--text-lead)/1.3 var(--sans); }
+.desk.underway table { table-layout:fixed; width:100%; }
+.desk.underway th, .desk.underway td { white-space:nowrap; }
+.desk.underway th[scope="row"], .desk.underway td.project { font-weight:400; }
+.desk.underway .clip { display:block; overflow:hidden; text-overflow:ellipsis; }
+.desk.underway thead th:first-child { width:auto; }
+.desk.underway th.project, .desk.underway td.project { width:9rem; }
+.desk.underway th.state, .desk.underway td.state { width:11rem; }
+.desk.underway thead th:last-child, .desk.underway td.underway-links { width:13rem; }
+.desk.underway td.underway-links { white-space:normal; }
+.desk.underway.merged td, .desk.underway.merged th[scope="row"] { color:var(--soft); }
 .underway-links a { display:inline-block; margin-right:.9rem; padding:.35rem 0; }
 @media (max-width: 40rem) {
   .desk.underway thead { position:absolute; width:1px; height:1px; overflow:hidden; clip-path:inset(50%); }
-  .desk.underway tbody tr { display:grid; grid-template-columns:auto 1fr; gap:.2rem .9rem; align-items:center;
-    padding:.7rem .3rem; border-bottom:1px solid var(--rule); }
-  .desk.underway tbody th { grid-column:1 / -1; padding:0; border:0; }
-  .desk.underway tbody td { padding:0; border:0; }
-  .underway-links { white-space:normal; }
+  .desk.underway table, .desk.underway tbody { display:block; }
+  .desk.underway tbody tr { display:grid; grid-template-columns:auto minmax(0,1fr); gap:.3rem .7rem;
+    align-items:center; padding:.6rem .3rem; border-bottom:1px solid var(--rule); }
+  .desk.underway tbody th { grid-column:1 / -1; padding:0; border:0; width:auto; min-width:0; white-space:normal; }
+  .desk.underway tbody th .clip { display:-webkit-box; -webkit-box-orient:vertical; -webkit-line-clamp:2; line-clamp:2; white-space:normal; overflow-wrap:anywhere; }
+  .desk.underway tbody td { padding:0; border:0; width:auto; min-width:0; }
+  .desk.underway table { table-layout:auto; }
+  .desk-panel .desk.underway td.project { display:block; width:auto; grid-column:2; grid-row:2; font-size:var(--text-sm); color:var(--soft); }
+  .desk.underway td.state { grid-column:1; grid-row:2; width:auto; }
+  .desk.underway td.underway-links { grid-column:1 / -1; grid-row:3; width:auto; }
+  .desk-panel .desk.underway.merged td.project { grid-column:1 / -1; }
 }
 .underway-status { margin:0 0 .5rem; }
 .desk .notice p { margin:.25rem 0; font-weight:400; }
@@ -5743,19 +5770,53 @@ def needs_you_panel(attention, notices, items_by_id):
             f'<p class="empty"{hide_empty}>Nothing needs you. Questions, unread replies, failed deliveries and notices show here.</p>')
 
 
-def underway_row(row):
-    title, project = esc(row["title"]), esc(row.get("project") or "")
+def underway_title(title, project):
+    """The title without a leading project name the Project column already shows, such as "Quarterdeck: "."""
+    wanted = re.sub(r"[^0-9a-z]", "", (project or "").casefold())
+    if not wanted:
+        return title
+    matched = 0
+    for index, char in enumerate(title):
+        if matched == len(wanted):
+            rest = title[index:].lstrip(" :-\u2013\u2014")
+            return rest if rest and rest != title[index:] else title
+        if char.casefold() == wanted[matched]:
+            matched += 1
+        elif char.isalnum() or matched == 0:
+            return title
+    return title
+
+
+def underway_row(row, merged=False):
+    full, project = row["title"], row.get("project") or ""
+    shown = esc(underway_title(full, project))
     status = row["status"]
     state = "status exception" if status in ("Question asked", "Stuck") else "status"
     links = []
-    if row.get("conversation"):
-        links.append(f'<a href="{esc(row["conversation"])}" aria-label="Conversation for {title}">Conversation</a>')
+    question = row.get("question") or (row.get("conversation") if status == "Question asked" else None)
+    if question:
+        external = ' rel="noopener noreferrer"' if question != row.get("conversation") else ""
+        links.append(f'<a href="{esc(question)}"{external} aria-label="Question for {esc(full)}">Question</a>')
+    if row.get("conversation") and row["conversation"] != question:
+        links.append(f'<a href="{esc(row["conversation"])}" aria-label="Conversation for {esc(full)}">Conversation</a>')
     if row.get("pr"):
-        links.append(f'<a href="{esc(row["pr"])}" rel="noopener noreferrer" aria-label="Pull request for {title}">'
+        links.append(f'<a href="{esc(row["pr"])}" rel="noopener noreferrer" aria-label="Pull request for {esc(full)}">'
                      'Pull request</a>')
-    phone_project = f'<p class="meta notice-project">{project}</p>' if project else ""
-    return (f'<tr><th scope="row">{title}{phone_project}</th><td class="project">{project}</td>'
-            f'<td><span class="{state}">{esc(status)}</span></td><td class="underway-links">{"".join(links)}</td></tr>')
+    chip = "" if merged else f'<td class="state"><span class="{state}">{esc(status)}</span></td>'
+    return (f'<tr><th scope="row" title="{esc(full)}"><span class="clip">{shown}</span></th>'
+            f'<td class="project" title="{esc(project)}"><span class="clip">{esc(project)}</span></td>'
+            f'{chip}<td class="underway-links">{"".join(links)}</td></tr>')
+
+
+def underway_group(heading, rows, merged=False):
+    if not rows:
+        return ""
+    state = "" if merged else '<th scope="col" class="state">Status</th>'
+    body = "".join(underway_row(row, merged) for row in rows)
+    return (f'<div class="underway-group"><h2>{heading}</h2><div class="desk underway{" merged" if merged else ""}">'
+            f'<table><caption class="sr">{heading}</caption><thead><tr><th scope="col">Work</th>'
+            f'<th scope="col" class="project">Project</th>{state}<th scope="col">Links</th></tr></thead>'
+            f'<tbody>{body}</tbody></table></div></div>')
 
 
 def underway_panel(view):
@@ -5771,10 +5832,9 @@ def underway_panel(view):
     note = f'<p class="meta underway-status" role="status">{status}</p>'
     if not view["rows"]:
         return (f'{note}<p class="empty">No work is under way. Work that is being built, reviewed or merged shows here.</p>')
-    rows = "".join(underway_row(row) for row in view["rows"])
-    return (f'{note}<div class="desk underway"><table><caption class="sr">Work under way</caption><thead><tr>'
-            '<th scope="col">Work</th><th scope="col" class="project">Project</th><th scope="col">Status</th>'
-            f'<th scope="col">Links</th></tr></thead><tbody>{rows}</tbody></table></div>')
+    active = [row for row in view["rows"] if row["status"] != "Merged today"]
+    done = [row for row in view["rows"] if row["status"] == "Merged today"]
+    return note + underway_group("In progress", active) + underway_group("Merged today", done, merged=True)
 
 
 def desk_tabs(conversations, attention, underway, archived, total):

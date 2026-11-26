@@ -2293,7 +2293,7 @@ def snapshot_task(key, *, kind="ship", state="working", exists=True, title="Mapp
     return {"id": key, "kind": kind, "project": f"/projects/{project}",
             "current_state": {"state": state, "freshness": freshness},
             "endpoint": {"exists": exists, "agent_alive": alive},
-            "hints": {"open_decisions": [{"key": d} for d in decisions]},
+            "hints": {"open_decisions": [d if isinstance(d, dict) else {"key": d} for d in decisions]},
             "paths": {"status_log": {"last_event": {"age_seconds": age}}},
             "pr": {"url": pr}, "backlog": {"title": title, "repo": project}}
 
