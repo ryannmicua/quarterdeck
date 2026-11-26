@@ -2202,7 +2202,7 @@ textarea { display:block; width:100%; resize:vertical; background:var(--ground);
 .ref-links li { margin:0; }
 .ref-link { display:inline-block; padding:.6rem 0; min-height:44px; box-sizing:border-box; font-size:1.1rem; font-weight:600; text-decoration:underline; color:var(--ink); }
 .visual { margin:.2rem 0 1rem; font-family:var(--sans); }
-.decision img,.thread img { display:block; width:100%; height:auto; max-height:30rem; object-fit:contain; background:var(--faint);
+.decision img,.thread img,.msg img { display:block; width:100%; height:auto; max-height:30rem; object-fit:contain; background:var(--faint);
   border:1px solid var(--rule); border-radius:4px; }
 .shots,.has-images { list-style:none; margin:.2rem 0 1rem; padding:0; display:grid; gap:1rem;
   grid-template-columns:repeat(auto-fit,minmax(min(100%,13rem),1fr)); align-items:start; }

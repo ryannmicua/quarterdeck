@@ -5118,6 +5118,35 @@ check(whole.querySelector('.thread-messages').textContent.includes('Show another
 await checkImage(whole);
 """, setup=f"const replacement = {json.dumps(replacement)};", page=page, viewport_width=390)
 
+    def test_conversation_message_images_fit_inside_the_message(self) -> None:
+        wide = self.picture("wide.png", tiny_png((40, 160, 40), 1200))
+        tall = self.picture("tall.png", tiny_png((40, 40, 160), 800))
+        code, out, err = self.run_cli("converse", "--title", "Shots", "--text", "Two screens.",
+                                      "--image", str(wide), "--alt", "Wide screen", "--image", str(tall), "--alt", "Tall screen")
+        self.assertEqual((code, out, err), (0, "Q5\n", ""))
+        port = self.start("/qd", ask_home=self.inbox())
+        page = self.fetch(port, "/qd/q5.html")[1]
+        self.assertEqual(page.count('<ul class="shots">'), 1)
+        self.assertIn(".decision img,.thread img,.msg img {", page)
+        pixel = "data:image/png;base64," + base64.b64encode(tiny_png((40, 160, 40), 1200)).decode("ascii")
+        page = re.sub(r'(?<=src=")reply-images/q5/[^"]+', pixel, page).replace('loading="lazy"', 'loading="eager"')
+        self.check_page(port, r"""
+check(matchMedia('(width: 390px)').matches, 'Expected a 390px browser viewport, got ' + innerWidth);
+const message = document.querySelector('.thread-messages .msg');
+const images = [...message.querySelectorAll('img')];
+check(images.length === 2, 'Expected two images in the message');
+for (const image of images) {
+  if (!image.complete) await new Promise(resolve => image.addEventListener('load', resolve, {once: true}));
+}
+const box = message.getBoundingClientRect();
+const [first, second] = images.map(image => image.getBoundingClientRect());
+for (const shot of [first, second]) {
+  check(shot.left >= box.left && shot.right <= box.right && shot.bottom <= box.bottom, 'An image spilled out of its message');
+}
+check(first.bottom <= second.top, 'The images should stack on a phone without overlapping');
+check(document.documentElement.scrollWidth <= innerWidth, 'The page scrolls sideways');
+""", page=page, viewport_width=390)
+
     def test_confirmed_ask_conflicts_restore_local_drafts_and_keep_saved_asks(self) -> None:
         port = self.start("/qd", ask_home=self.inbox(accept=False))
         self.assertEqual(self.ask(port, "Q4.2", "A saved preview request.")[0], 200)
