@@ -31,7 +31,10 @@ the server if you changed the setting.
 ## Read replies
 
 The card labels a standalone message **Firstmate update**. A reply links to
-the message it answers. Reload, send a message, or retry delivery to refresh
+the message it answers. Attached images fit inside their message. Select an
+image to open it at full size in a new tab.
+
+Reload, send a message, or retry delivery to refresh
 the conversation. The card acknowledges replies and updates when it displays
 them. See
 [where unread replies and updates appear](use-the-library.md#when-an-item-moves)

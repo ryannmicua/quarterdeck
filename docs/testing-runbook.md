@@ -95,7 +95,9 @@ The set discussion checks cover mixed and message-only sends, the inbox target
 and retry ID, separate reply acknowledgment for the item and each question,
 and private reply images. The browser checks a 1200-pixel reply image in both
 threads inside an iframe with a 390 CSS-pixel viewport and checks the set image
-again after a thread refresh. The conversation group also checks that confirmed
+again after a thread refresh. The standalone conversation image regression
+(`test_conversation_message_images_fit_inside_the_message`) runs at phone
+width. The conversation group also checks that confirmed
 conflicts return local drafts to their editors, preserve saved asks, and keep
 reference items outside the conversation workflow. The closed-item check closes
 the questions between saving an ask and delivering it, then verifies that the
