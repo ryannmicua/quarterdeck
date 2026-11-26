@@ -1181,6 +1181,11 @@ window.fetch = async () => ({ok: false, status: 502, text: async () => error});
 card(1).querySelector('[data-choice="Hold"]').click();
 await sendBatch();
 const bar = button('send').closest('.sendbar');
+// Wait until the page has reserved the grown bar's height, so scrolling accounts for it.
+for (let tries = 0; Math.abs(parseFloat(getComputedStyle(document.documentElement).getPropertyValue('--sendbar-height'))
+                              - bar.getBoundingClientRect().height) >= 1 && tries < 100; tries++) {
+  await new Promise(resolve => setTimeout(resolve, 10));
+}
 const status = bar.querySelector('output');
 check(status.textContent.endsWith('End of response.') && status.scrollHeight > status.clientHeight,
       'A long error was lost or did not fit in its own scroll area');
@@ -6899,7 +6904,9 @@ check(!failed.isConnected && count.textContent === '1' && notice.isConnected && 
         self.assertEqual(self.run_cli("post", "Q1", "--text", "Second update.")[0], 0)
         first, second = [m for m in self.thread() if m["author"] == "firstmate"]
         desk = self.fetch(port, "/qd/")[1]
-        self.assertEqual(desk.split("<dialog", 1)[0].count(f'href="q1.html#reply-{first["id"]}"'), 2)
+        before_dialog = desk.split("<dialog", 1)[0]
+        for source in ("conversations", "needs-you"):
+            self.assertEqual(before_dialog.count(f'href="q1.html?from={source}#reply-{first["id"]}"'), 1)
         steps = f"""
   await quiet();
   const target = document.getElementById('reply-{second["id"]}');

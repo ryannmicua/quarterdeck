@@ -3009,7 +3009,7 @@ body:has(dialog[open]) { overflow:hidden; }
 }
 .desk-tabs { margin:1rem 0 1.2rem; border-bottom:1px solid var(--rule); }
 .desk-tabs [role="tab"] { font-size:var(--text-md); margin-bottom:-1px; }
-@media (max-width: 30rem) { .desk-tabs { flex-wrap:wrap; } .desk-tabs [role="tab"] { padding:.5rem .3rem; font-size:var(--text-sm); }
+@media (max-width: 40rem) { .desk-tabs { flex-wrap:wrap; } .desk-tabs [role="tab"] { padding:.5rem .3rem; font-size:var(--text-sm); }
   .desk-tabs .tab-count { min-width:0; margin-left:.2rem; padding:0 .35rem; } }
 .tab-count { display:inline-block; min-width:1.6em; margin-left:.3rem; padding:0 .45rem; border-radius:1em; text-align:center;
   font:600 var(--text-sm)/1.5 var(--sans); color:var(--signal); background:var(--signal-ground); }
