@@ -3,6 +3,8 @@ from __future__ import annotations
 import json
 import re
 import shutil
+import socket
+import subprocess
 import sys
 import uuid
 from pathlib import Path
@@ -525,6 +527,77 @@ class MailboxBrowserTests(MailboxCase):
             outcome, stderr = base.WorkersTests.browser_page(self, self.port, route, window_size=window_size)
         self.assertEqual(outcome, "PASS", stderr)
 
+    def check_reference_description_drags(self) -> None:
+        chrome = shutil.which("google-chrome")
+        if not chrome:
+            self.skipTest("google-chrome is required for the mailbox browser tests")
+        launch = "import os, sys; fd = int(sys.argv[1]); os.dup2(fd, 3); os.dup2(fd, 4); os.execv(sys.argv[2], sys.argv[2:])"
+        connection, child = socket.socketpair()
+        with connection, child, subprocess.Popen(
+            [sys.executable, "-c", launch, str(child.fileno()), chrome, "--headless", "--disable-background-networking",
+             "--no-first-run", "--remote-debugging-pipe", "--window-size=1000,900",
+             f"--user-data-dir={self.root / 'drag-browser'}", "about:blank"],
+            pass_fds=(child.fileno(),), stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+        ) as browser:
+            child.close()
+            connection.settimeout(10)
+
+            def messages():
+                pending = b""
+                while chunk := connection.recv(65536):
+                    parts = (pending + chunk).split(b"\0")
+                    pending = parts.pop()
+                    yield from map(json.loads, parts)
+
+            responses = messages()
+            session_id = None
+            sequence = 0
+            loaded = False
+
+            def command(method, **params):
+                nonlocal sequence, loaded
+                sequence += 1
+                request = {"id": sequence, "method": method, "params": params}
+                if session_id:
+                    request["sessionId"] = session_id
+                connection.sendall(json.dumps(request).encode() + b"\0")
+                for response in responses:
+                    if response.get("id") == sequence:
+                        self.assertNotIn("error", response, response)
+                        return response["result"]
+                    loaded |= response.get("method") == "Page.loadEventFired"
+                self.fail(f"Chrome closed its debugging pipe during {method}")
+
+            def evaluate(expression):
+                result = command("Runtime.evaluate", expression=expression, returnByValue=True)
+                self.assertNotIn("exceptionDetails", result, result)
+                return result["result"].get("value")
+
+            try:
+                target = command("Target.createTarget", url="about:blank")["targetId"]
+                session_id = command("Target.attachToTarget", targetId=target, flatten=True)["sessionId"]
+                command("Page.enable")
+                command("Page.navigate", url=f"http://127.0.0.1:{self.port}/qd/?tab=references")
+                if not loaded:
+                    self.assertTrue(any(response.get("method") == "Page.loadEventFired" for response in responses))
+                for item_id, expected in (("Q5", "The official tables."), ("Q4", "What to check before the proof run.")):
+                    start, end, y = evaluate(f"""(() => {{
+  const text = document.querySelector('#topics-references [data-id="{item_id}"] .topic-latest');
+  const range = document.createRange();
+  range.selectNodeContents(text);
+  const box = range.getBoundingClientRect();
+  return [box.left + 1, box.right + 2, box.top + box.height / 2];
+}})()""")
+                    command("Input.dispatchMouseEvent", type="mouseMoved", x=start, y=y)
+                    command("Input.dispatchMouseEvent", type="mousePressed", x=start, y=y, button="left", buttons=1, clickCount=1)
+                    command("Input.dispatchMouseEvent", type="mouseMoved", x=(start + end) / 2, y=y, button="left", buttons=1)
+                    command("Input.dispatchMouseEvent", type="mouseMoved", x=end, y=y, button="left", buttons=1)
+                    command("Input.dispatchMouseEvent", type="mouseReleased", x=end, y=y, button="left", clickCount=1)
+                    self.assertEqual(evaluate("window.getSelection().toString()"), expected, item_id)
+                    self.assertEqual(evaluate("getComputedStyle(document.getElementById('pane-frame')).display"), "none", item_id)
+            finally:
+                browser.terminate()
+
     def setUp(self) -> None:
         super().setUp()
         self.port = self.start("/qd", ask_home=self.inbox())
@@ -755,20 +828,16 @@ const hit = (id, selector) => {
   const box = row(id).querySelector(selector).getBoundingClientRect();
   return document.elementFromPoint(box.left + box.width / 2, box.top + box.height / 2);
 };
-check(hit('Q5', '.bookmark-title').closest('a')?.href === 'https://example.com/tides', 'The title did not link to the resource');
-check(hit('Q5', '.notice-links a').closest('a')?.href === 'https://example.com/datum', 'The extra link did not link to its destination');
-for (const [id, expected] of [['Q5', 'The official tables.'], ['Q4', 'What to check before the proof run.']]) {
-  const description = row(id).querySelector('.topic-latest');
-  const range = document.createRange();
-  range.selectNodeContents(description);
-  const box = range.getBoundingClientRect();
-  const target = document.elementFromPoint(box.left + box.width / 2, box.top + box.height / 2);
-  check(target === description, 'The description text was covered in ' + id);
-  const selection = window.getSelection();
-  selection.addRange(range);
-  target.click();
-  check(selection.toString() === expected && !shown('pane-frame'), 'Selecting the description opened ' + id);
-  selection.removeAllRanges();
+for (const [selector, url] of [['.bookmark-title', 'https://example.com/tides'], ['.notice-links a', 'https://example.com/datum']]) {
+  const link = hit('Q5', selector).closest('a');
+  check(link?.href === url, 'The external link did not point to ' + url);
+  let allowed = false;
+  document.addEventListener('click', event => {
+    allowed = !event.defaultPrevented;
+    event.preventDefault();
+  }, {once:true});
+  link.click();
+  check(allowed && !shown('pane-frame'), 'The Desk intercepted the external link to ' + url);
 }
 hit('Q5', '.topic-latest').click();
 await until(() => pane()?.querySelector('h1')?.textContent === 'Port tide tables', 'Clicking the description did not open the saved item');
@@ -788,6 +857,7 @@ for (const link of [...row('Q5').querySelectorAll('a'), row('Q4').querySelector(
         'The focused link had no individual focus indicator: ' + link.textContent);
 }
 """, window_size="1000,900")
+        self.check_reference_description_drags()
         item_page = base.WorkersTests.instrumented_page(quarterdeck.item_page, r"""
 check(window === window.top && location.pathname === '/qd/q5.html' && location.search === '?from=desk-references',
       'The saved item did not open as the top-level page');
