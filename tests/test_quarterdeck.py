@@ -6238,6 +6238,14 @@ await settle();
 check(document.activeElement === message && message.value === 'A message draft', 'A refused pin interrupted composition');
 check(ids('pinned') === '' && !pin('Q2').disabled && pin('Q2').nextElementSibling.textContent.includes('could not save'),
       'A refused pin changed the list or hid the failure');
+const shared = button('desk-status');
+pin('Q1').click();
+button('desk-tab-needs-you').click();
+complete();
+await settle();
+check(shared.checkVisibility() && shared.textContent.includes('could not save the pin for Harbor lamp colours'),
+      'A pin failure that arrived on Needs you was not shown there');
+button('desk-tab-conversations').click();
 const space = document.createElement('div');
 space.style.height = '1800px';
 button('topics-recent').before(space);
@@ -6322,6 +6330,9 @@ refuseNotice(new Response('', {status:409}));
 await new Promise(resolve => setTimeout(resolve, 50));
 const noticeStatus = notice.nextElementSibling;
 check(document.activeElement === conversations, 'Notice failure changed focus on Conversations');
+const shared = button('desk-status');
+check(shared.checkVisibility() && shared.textContent.includes('Reload'),
+      'A stale notice result that arrived on Conversations was not shown there');
 tab.click();
 tab.focus();
 complete({ok:true, json:async () => (""" + json.dumps(response) + r""")});

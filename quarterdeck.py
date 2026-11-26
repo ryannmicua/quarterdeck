@@ -3613,6 +3613,12 @@ DESK_SCRIPT = talk_script(r"""
     });
   }
   const startStatus = document.getElementById('desk-status');
+  const report = (target, panel, text, failed) => {
+    for (const node of panel.hidden ? [target, startStatus] : [target]) {
+      node.classList.toggle('failed', failed);
+      node.textContent = text;
+    }
+  };
   const conversationPanel = document.getElementById('desk-panel-conversations');
   const attentionPanel = document.getElementById('desk-panel-needs-you');
   const attentionRows = attentionPanel.querySelector('tbody');
@@ -3663,7 +3669,7 @@ DESK_SCRIPT = talk_script(r"""
       const response = await fetch('catch-ups/read', {method:'POST', redirect:'error',
         headers:{'Content-Type':'application/json'}, body:JSON.stringify({ids})});
       if (response.status === 409) {
-        noticeStatus.textContent = 'A notice may already be read. Reload the page when ready.';
+        report(noticeStatus, attentionPanel, 'A notice may already be read. Reload the page when ready.', false);
         return;
       }
       if (!response.ok) throw new Error('refused');
@@ -3675,12 +3681,12 @@ DESK_SCRIPT = talk_script(r"""
       const hadFocus = attentionPanel.contains(focused);
       selected.forEach(control => control.closest('tr').remove());
       syncAttention();
-      noticeAnnouncement.textContent = ids.length === 1 ? 'Notice marked read.' : 'Notices marked read.';
+      report(noticeAnnouncement, attentionPanel, ids.length === 1 ? 'Notice marked read.' : 'Notices marked read.', false);
       if (hadFocus && !attentionPanel.hidden && (!focused.isConnected || (focused === readAll && readAll.hidden))) {
         attentionTab.focus();
       }
     } catch {
-      noticeStatus.textContent = 'The notice could not be marked read. Try again.';
+      report(noticeStatus, attentionPanel, 'The notice could not be marked read. Try again.', true);
     } finally {
       controls.forEach(control => { control.disabled = false; });
     }
@@ -3724,11 +3730,9 @@ DESK_SCRIPT = talk_script(r"""
       button.textContent = verb;
       button.setAttribute('aria-label', verb + ' ' + button.dataset.title);
       place(row);
-      pinStatus.classList.remove('failed');
-      pinStatus.textContent = button.dataset.title + (pinned ? ' is pinned.' : ' is unpinned.');
+      report(pinStatus, conversationPanel, button.dataset.title + (pinned ? ' is pinned.' : ' is unpinned.'), false);
     } else {
-      pinStatus.classList.add('failed');
-      pinStatus.textContent = 'Quarterdeck could not save the pin for ' + button.dataset.title + '. Try again.';
+      report(pinStatus, conversationPanel, 'Quarterdeck could not save the pin for ' + button.dataset.title + '. Try again.', true);
     }
     if (!conversationPanel.hidden && (focused === button || (hadFocus && focused === document.body))) button.focus();
   });
