@@ -4289,6 +4289,8 @@ THREAD_SCRIPT = r"""
   };
   const open = li => set(li, true);
   document.addEventListener('click', event => {
+    const link = event.target.closest('a[href^="#"]');
+    if (link && link.hash === location.hash) { reveal(); return; }
     const fold = event.target.closest('button.fold');
     if (fold) {
       const li = fold.closest('li');

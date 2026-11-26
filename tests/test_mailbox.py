@@ -464,6 +464,10 @@ check(state().startsWith('open'), 'Selecting text folded the message');
 getSelection().removeAllRanges();
 text.click();
 check(state().startsWith('open'), 'Clicking the message text folded the message');
+text.click();
+text.click();
+text.dispatchEvent(new MouseEvent('dblclick', {bubbles: true, detail: 2}));
+check(state().startsWith('open'), 'Double-clicking the message text folded the message');
 body.querySelector(':scope > .who').click();
 check(state().startsWith('folded') && fold.getAttribute('aria-expanded') === 'false', 'Clicking the header line did not fold the message');
 fold.focus();
@@ -478,6 +482,13 @@ fold.click();
 location.hash = '#message-2';
 await new Promise(resolve => setTimeout(resolve, 50));
 check(!document.getElementById('message-2').classList.contains('folded'), 'An address did not open the message it names');
+const second = document.getElementById('message-2');
+second.querySelector(':scope > .fold').click();
+check(second.classList.contains('folded'), 'The named message did not fold back');
+const again = [...document.querySelectorAll('a[href="#message-2"]')].find(a => !second.contains(a));
+check(again && location.hash === '#message-2', 'The thread has no other link to message 2');
+again.click();
+check(!second.classList.contains('folded'), 'A link to the address already shown did not reopen its message');
 """, viewport=(390, 844))
 
     def test_an_opened_message_folds_back_in_the_wide_reading_pane(self) -> None:
