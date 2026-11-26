@@ -5140,8 +5140,9 @@ check(calls[2][1].id === calls[1][1].id && calls[2][1].action === 'retry',
         self.assertEqual(self.run_cli("mark", "Q4", "answered", "--via", "elsewhere")[0], 0)
         index = self.fetch(port, "/qd/")[1]
         answered = index.split('id="panel-answered"', 1)[1].split("</section>", 1)[0]
+        (reply,) = [m for m in self.messages("item", 3) if m["author"] == "firstmate"]
         self.assertEqual(re.findall(r'<a [^>]*href="(q4\.html[^"]*)"[^>]*>([^<]*)</a>', answered),
-                         [("q4.html", "Two decisions")])
+                         [(f"q4.html#reply-{reply['id']}", "Two decisions")])
         page = self.fetch(port, "/qd/q4.html")[1]
         self.assertIn("Discuss this set", page)
         self.assertIn("Can the quantity wait?", page)
