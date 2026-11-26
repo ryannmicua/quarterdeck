@@ -3387,8 +3387,8 @@ body:has(dialog[open]) { overflow:hidden; }
 .topic-title:focus-visible { outline:none; }
 .topic:has(.topic-title:focus-visible) { outline:3px solid var(--focus); outline-offset:-3px; }
 .topic[aria-current="true"] { background:var(--faint); border-left-color:var(--signal); }
-@media (hover: hover) and (pointer: fine) { .topic:not(.notice, .bookmark):hover { background:var(--faint); } }
-.topic:not(.notice, .bookmark):active { background:var(--faint); }
+@media (hover: hover) and (pointer: fine) { .topic:not(.notice):hover { background:var(--faint); } }
+.topic:not(.notice):active { background:var(--faint); }
 .topic-latest { margin:.05rem 0 .2rem; color:var(--soft); font-size:var(--text-sm); display:-webkit-box; -webkit-line-clamp:2; -webkit-box-orient:vertical; overflow:hidden; }
 .topic-meta { display:flex; flex-wrap:wrap; gap:0 1rem; margin:0; }
 .topic-meta .badge { font-size:var(--text-sm); }
@@ -3399,6 +3399,10 @@ body:has(dialog[open]) { overflow:hidden; }
 .topic.notice button { margin-top:.3rem; }
 .bookmark-title { display:inline-block; padding:.1rem 0; font:500 var(--text-md)/1.35 var(--sans); }
 .topic.bookmark a { display:inline-block; padding:.3rem 0; }
+.topic.bookmark a[data-pane]::after { content:""; position:absolute; inset:0; }
+.topic.bookmark a:not([data-pane]) { position:relative; z-index:1; }
+.topic.bookmark a:focus-visible { outline:none; }
+.topic.bookmark:has(a:focus-visible) { outline:3px solid var(--focus); outline-offset:-3px; }
 .topic.bookmark .notice-links { font-size:var(--text-sm); }
 .bookmark-id { font:700 var(--text-sm)/1.4 var(--mono); }
 .topic.notice .desk-feedback { margin:.2rem 0 0; }
