@@ -7823,7 +7823,7 @@ const choose = (id, value) => { const select = button(id); select.value = value;
 const submit = id => button(id).requestSubmit();
 const typeInto = (id, text) => { const field = button(id); field.value = text; field.dispatchEvent(new Event('input', {bubbles:true})); };
 const destination = document.querySelector('.talk-destination');
-sessionStorage.clear();
+sessionStorage.clear(); localStorage.clear();
 check(shown() === 'Q1,Q2,Q3,Q4' && button('scope-project').value === '' && button('scope-topic-field').hidden, 'The Desk did not open on All');
 check(destination.textContent === 'Starts ungrouped.' && !destination.hidden, 'All did not say a start is ungrouped');
 check(button('new-project').checkVisibility() && button('new-topic').hidden && button('rename-project').hidden, 'All offered project actions');
@@ -7832,7 +7832,7 @@ check(shown() === 'Q1,Q2' && !button('scope-topic-field').hidden && destination.
 check([...button('scope-topic').options].map(o => o.text).join() === 'All topics,Printing,Wayfinding', 'The topic filter lost its topics');
 choose('scope-topic', 'T1');
 check(shown() === 'Q1' && destination.textContent === 'Starts in Field Atlas / Wayfinding.' && !button('rename-topic').hidden, 'A topic did not narrow the list');
-check(JSON.parse(sessionStorage.getItem('quarterdeck-scope')).topic === 'T1', 'The choice was not kept for Back');
+check(JSON.parse(localStorage.getItem('quarterdeck-project')).topic === 'T1', 'The choice was not kept for Back');
 choose('scope-project', 'P2');
 check(shown() === 'Q3' && button('scope-topic').value === '', 'Another project kept the old topic');
 choose('scope-project', '-');
