@@ -3399,8 +3399,6 @@ body:has(dialog[open]) { overflow:hidden; }
 .topic.notice button { margin-top:.3rem; }
 .bookmark-title { display:inline-block; padding:.1rem 0; font:500 var(--text-md)/1.35 var(--sans); }
 .topic.bookmark a { display:inline-block; padding:.3rem 0; }
-.topic.bookmark a[data-pane]::after { content:""; position:absolute; inset:0; }
-.topic.bookmark a:not([data-pane]) { position:relative; z-index:1; }
 .topic.bookmark .notice-links { font-size:var(--text-sm); }
 .bookmark-id { font:700 var(--text-sm)/1.4 var(--mono); }
 .topic.notice .desk-feedback { margin:.2rem 0 0; }
@@ -5463,10 +5461,17 @@ DESK_SCRIPT = talk_script(r"""
     } catch {}
   };
   document.getElementById('mail-list').addEventListener('click', event => {
-    const link = event.target.closest('a.topic-title, a[data-pane]');
-    if (!link || !wide.matches || event.button || event.metaKey || event.ctrlKey || event.shiftKey || event.altKey) return;
-    event.preventDefault();
-    openInPane(link.getAttribute('href'), link.closest('.topic').dataset.id);
+    if (event.button || event.metaKey || event.ctrlKey || event.shiftKey || event.altKey) return;
+    const anchor = event.target.closest('a');
+    const link = anchor ?? event.target.closest('.topic.bookmark')?.querySelector('a[data-pane]');
+    if (!link?.matches('.topic-title, [data-pane]')) return;
+    if (!anchor && window.getSelection()?.isCollapsed === false) return;
+    if (wide.matches) {
+      event.preventDefault();
+      openInPane(link.getAttribute('href'), link.closest('.topic').dataset.id);
+    } else if (!anchor) {
+      location.assign(link.href);
+    }
   });
 
   const LISTS = ['topics-unread', 'topics-pinned', 'topics-recent', 'topics-archived', 'review-waiting', 'review-later', 'topics-references'];

@@ -743,7 +743,7 @@ check(document.activeElement === document.querySelector('#topics-references .top
 check(document.documentElement.scrollWidth <= innerWidth, 'The Desk scrolled sideways');
 """, window_size="390,844", route="/qd/?tab=references&row=Q4")
 
-    def test_a_reference_row_opens_its_item_from_anywhere_but_the_title_link(self) -> None:
+    def test_a_reference_row_opens_its_item_and_keeps_its_text_selectable(self) -> None:
         self.add("list", "Proof run checklist", "What to check before the proof run.", "--body-file", "-",
                  stdin="- Confirm the paper\n")  # Q4
         self.add("resource", "Port tide tables", "The official tables.", "--url", "https://example.com/tides", "--link-text", "Tide tables",
@@ -757,6 +757,19 @@ const hit = (id, selector) => {
 };
 check(hit('Q5', '.bookmark-title').closest('a')?.href === 'https://example.com/tides', 'The title did not link to the resource');
 check(hit('Q5', '.notice-links a').closest('a')?.href === 'https://example.com/datum', 'The extra link did not link to its destination');
+for (const [id, expected] of [['Q5', 'The official tables.'], ['Q4', 'What to check before the proof run.']]) {
+  const description = row(id).querySelector('.topic-latest');
+  const range = document.createRange();
+  range.selectNodeContents(description);
+  const box = range.getBoundingClientRect();
+  const target = document.elementFromPoint(box.left + box.width / 2, box.top + box.height / 2);
+  check(target === description, 'The description text was covered in ' + id);
+  const selection = window.getSelection();
+  selection.addRange(range);
+  target.click();
+  check(selection.toString() === expected && !shown('pane-frame'), 'Selecting the description opened ' + id);
+  selection.removeAllRanges();
+}
 hit('Q5', '.topic-latest').click();
 await until(() => pane()?.querySelector('h1')?.textContent === 'Port tide tables', 'Clicking the description did not open the saved item');
 check(row('Q5').getAttribute('aria-current') === 'true', 'The open reference was not marked');
@@ -766,6 +779,9 @@ hit('Q5', 'time').click();
 await until(() => pane()?.querySelector('h1')?.textContent === 'Port tide tables', 'Clicking the date did not open the saved item');
 hit('Q4', 'time').click();
 await until(() => pane()?.querySelector('h1')?.textContent === 'Proof run checklist', 'Clicking the date did not open the list');
+const box = row('Q5').getBoundingClientRect();
+document.elementFromPoint(box.right - 4, box.top + box.height / 2).click();
+await until(() => pane()?.querySelector('h1')?.textContent === 'Port tide tables', 'Clicking the row whitespace did not open the saved item');
 for (const link of [...row('Q5').querySelectorAll('a'), row('Q4').querySelector('.bookmark-title')]) {
   link.focus();
   check(document.activeElement === link && link.matches(':focus-visible') && getComputedStyle(link).outlineStyle !== 'none',
