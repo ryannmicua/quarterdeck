@@ -6776,7 +6776,8 @@ def archived_panel(items, projects=()):
 
 def bookmark_row(item):
     """One saved resource or list on the References tab. A resource's title goes straight to what it saves, and its ID
-    opens the saved item; a list's title opens the list."""
+    opens the saved item; a list's title opens the list. The Desk script opens that same `data-pane` link when the rest
+    of the row is clicked."""
     item_id, kind = item["id"], item["kind"]
     page = esc(item_link(item_id, "desk-references"))
     if kind == "resource":
