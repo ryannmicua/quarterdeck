@@ -1820,7 +1820,8 @@ check(![...document.querySelectorAll('#panel-references .lib-item')].some(row =>
 references.value = 'chart';
 references.dispatchEvent(new Event('input', {bubbles: true}));
 const bookmark = dialog.querySelector('#panel-references a[href="https://example.org/map"]');
-check(bookmark && !dialog.querySelector('#panel-references').innerText.includes('A chart of the quay'),
+check(bookmark && bookmark.checkVisibility() && bookmark.closest('.lib-item').innerText.includes('Harbour map')
+      && !dialog.querySelector('#panel-references').innerText.includes('A chart of the quay'),
       'A bookmark should link out and show no description');
 references.value = 'q3.1';
 references.dispatchEvent(new Event('input', {bubbles: true}));
