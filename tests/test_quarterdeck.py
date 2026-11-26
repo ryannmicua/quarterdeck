@@ -1929,7 +1929,7 @@ check(!error.hidden && field(2).value === 'Red', 'Closing the row discarded its 
         self.assertEqual(self.run_cli("mark", "Q1.4", "open")[0], 0)
         self.check_answer_page(port, r"""
 const savedDay = document.querySelector('main > .meta time');
-check(savedDay.textContent === 'Jan 11, 2026', 'The saved date was not shown in local time');
+check(savedDay.textContent.replace(/\s+/g, ' ') === 'Jan 11, 2026, 1:25 AM', 'The saved date was not shown in local time');
 const originalAnswerTime = card(4).querySelector('.saved-answer time');
 check(originalAnswerTime.textContent.replace(/\s+/g, ' ') === 'Jan 11, 2026, 1:25 AM',
       'Wrong local time for the saved answer');
@@ -6217,6 +6217,22 @@ class TalkToFirstmateTests(ImageCase):
         self.assertIn('<time class="stamp" datetime="2026-11-05T14:07:09Z">2026-11-05</time>', row)
         quiet = re.search(r'<li class="topic" data-id="Q2".*?</li>', page, re.DOTALL)[0]
         self.assertIn('datetime="2026-10-02T09:00:00Z"', quiet)
+
+    def test_list_rows_show_the_local_date_and_time_saved(self) -> None:
+        port = self.start("/qd", ask_home=self.inbox())
+        self.seed_conversations(port)
+        with quarterdeck.changing_store(quarterdeck.store_path()) as data:
+            data["items"][2]["saved_at"] = "2026-01-10T16:25:00Z"
+            data["items"][2]["conversation"]["item"][0]["at"] = "2026-01-10T16:25:00Z"
+        for path, row in (("/qd/", '[data-id="Q3"]'), ("/qd/watch.html", "#watch-Q3")):
+            self.check_answer_page(port, f"""
+const times = [...document.querySelectorAll('{row} time.day')];
+check(times.length > 0, 'No saved time on the Q3 row of {path}');
+for (const time of times) {{
+  check(time.textContent.replace(/\\s+/g, ' ') === 'Jan 11, 2026, 1:25 AM',
+        'The Q3 row of {path} showed ' + time.textContent);
+}}
+""", path=path)
 
     def test_pinning_groups_a_conversation_and_changes_nothing_else(self) -> None:
         port = self.start("/qd", ask_home=self.inbox())

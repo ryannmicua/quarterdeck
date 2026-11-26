@@ -3074,18 +3074,12 @@ const localizeTimes = root => {
     time.textContent = localTime(time.dateTime);
   }
 };
-const localizeDays = root => {
-  for (const time of root.querySelectorAll('time.day[datetime]:not([datetime=""])')) {
-    time.textContent = new Date(time.dateTime).toLocaleDateString(undefined, {dateStyle:'medium'});
-  }
-};
 const localizeStamps = root => {
-  for (const time of root.querySelectorAll('time.stamp[datetime]:not([datetime=""])')) {
+  for (const time of root.querySelectorAll('time.stamp[datetime]:not([datetime=""]), time.day[datetime]:not([datetime=""])')) {
     time.textContent = localTime(time.dateTime);
   }
 };
 localizeTimes(document);
-localizeDays(document);
 localizeStamps(document);
 """
 
@@ -3407,7 +3401,7 @@ LIBRARY_SCRIPT = r"""
       const next = [...list.children].find(row => BigInt(row.dataset.id.slice(1)) < BigInt(id.slice(1)));
       if (next) next.insertAdjacentHTML('beforebegin', html);
       else list.insertAdjacentHTML('beforeend', html);
-      localizeDays(list.querySelector('[data-id="' + id + '"]'));
+      localizeStamps(list.querySelector('[data-id="' + id + '"]'));
       run();
     });
     search.addEventListener('input', run);
@@ -4903,7 +4897,6 @@ DESK_SCRIPT = talk_script(r"""
     const replaced = document.querySelector('.topic[data-id="' + row.dataset.id + '"]');
     if (replaced?.contains(moveForm)) closeMove(false);
     replaced?.remove();
-    localizeDays(row);
     localizeStamps(row);
     labelRow(row);
     row.hidden = !inScope(row);
@@ -5944,7 +5937,7 @@ def item_page(item: dict[str, object], site_title: str, *, served: bool, saved_n
         f'<p class="id">{esc(item_id)}</p><h1>{esc(item["title"])}</h1>'
         f'<p class="meta">{esc(KIND_LABELS[str(item["kind"])])}{" · " + esc(placed) if placed else ""}'
         f'{" · " + esc(item["project"]) if item.get("project") else ""}'
-        f' · saved <time class="day" datetime="{esc(item["saved_at"])}">{esc(saved_day(item))}</time></p>'
+        f' · saved {day_time(item["saved_at"])}</p>'
         f'{tag_labels(list(item.get("tags", [])))}'
         f'{conversation_state(item) if talking and served else ""}'
         f'{lead}{content}{list_nav(item, data, context, end=True) if served else ""}'
