@@ -35,7 +35,8 @@ from contextlib import contextmanager
 from datetime import datetime, timedelta, timezone
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
-from urllib.parse import quote, unquote, urlparse
+from typing import NamedTuple
+from urllib.parse import parse_qs, quote, unquote, urlencode, urlparse
 
 
 DEFAULT_TITLE = "Quarterdeck"
@@ -1560,7 +1561,7 @@ def start_conversation(store, home, binding, payload):
     summary = attention_summary(item, served=True)
     return {**result, "href": item_page_name(item_id), "row": conversation_row(item, data.get("projects", [])),
             "hold": library_row(item, served=True),
-            "attention": desk_row(item, summary, primary=False) if summary else None}
+            "attention": desk_row(item, summary, primary=False, context="needs-you") if summary else None}
 
 
 CONVERSATION_FLAGS = ("pinned", "resolved", "archived")
@@ -2754,6 +2755,15 @@ h2 { font: 700 var(--text-lg)/1.3 var(--sans); margin: 2rem 0 .6rem; }
 .id { font: 700 var(--text-sm)/1.4 var(--mono); white-space: nowrap; }
 .open-link { display: inline-block; min-height: var(--tap); padding: .7rem 1.1rem; border: 2px solid var(--ink); border-radius: 6px;
   font: 700 var(--text-md)/1.3 var(--sans); text-decoration: none; }
+.list-nav { display: flex; flex-wrap: wrap; gap: .5rem; align-items: center; margin: 0 0 1.2rem; font-family: var(--sans); }
+.list-nav.end { margin: 2rem 0 .75rem; }
+.list-nav a { display: inline-flex; align-items: center; min-height: var(--tap); padding: .5rem .8rem; border: 1px solid var(--soft);
+  border-radius: 6px; background: var(--raised); font: 600 var(--text-md)/1.3 var(--sans); text-decoration: none; }
+.list-nav .next-link { border: 2px solid var(--ink); }
+@media (hover: hover) { .list-nav a:hover { background: var(--faint); } }
+.list-nav a:active { background: var(--faint); }
+tr[id^="watch-"] { scroll-margin-top: 2rem; }
+tr[id^="watch-"]:target { background: var(--faint); }
 ol.numbered { list-style: none; padding: 0; margin: 0; max-width: var(--measure); }
 ol.numbered > li { display: grid; grid-template-columns: 4.5rem 1fr; gap: .2rem .8rem; padding: .8rem 0; border-bottom: 1px solid var(--rule); }
 ol.numbered > li > .id { padding-top: .2rem; }
@@ -3221,6 +3231,24 @@ def library_case_folds() -> str:
     return json.dumps(folds, ensure_ascii=False, separators=(",", ":"))
 
 
+# A list's Back link opens the Desk with the list named in the address: ?tab= for a Desk tab, ?hold= for a Hold tab,
+# and ?row= for the item whose row comes into view. The address is cleaned once the scripts have read it.
+ARRIVAL_SCRIPT = r"""
+const arrival = new URLSearchParams(location.search);
+const arrivalRow = (rows, id) => rows.find(row => row.dataset.id === id) ?? rows.find(row => row.dataset.item === id);
+const showArrivalRow = (row, link) => {
+  if (!row) return;
+  row.scrollIntoView({block: 'center'});
+  link?.focus({preventScroll: true});
+};
+"""
+
+ARRIVAL_END_SCRIPT = r"""
+if (['tab', 'hold', 'row'].some(name => arrival.has(name))) {
+  history.replaceState(history.state, '', location.pathname + location.hash);
+}
+"""
+
 LIBRARY_SCRIPT = r"""
 (() => {
   window.addEventListener('pageshow', event => {
@@ -3235,7 +3263,9 @@ LIBRARY_SCRIPT = r"""
   const searchOf = tab => panelOf(tab).querySelector('input[type="search"]');
   const filtersOf = tab => [...panelOf(tab).querySelectorAll('.filters select')];
   const selectedTab = () => tabs.find(tab => tab.getAttribute('aria-selected') === 'true');
-  const libraryLookup = history.state?.libraryLookup;
+  const arrivingTab = tabs.find(tab => tab.id === 'tab-' + arrival.get('hold'));
+  const libraryLookup = arrivingTab ? {tab: arrivingTab.id, query: arrival.get('search') ?? '',
+    filters: {project: arrival.get('project') ?? '', tag: arrival.get('tag') ?? ''}} : history.state?.libraryLookup;
   const restoredTab = tabs.find(tab => tab.id === libraryLookup?.tab);
   const updateScrollMode = () => {
     if (!dialog.open) return;
@@ -3325,6 +3355,19 @@ LIBRARY_SCRIPT = r"""
     }
     const status = panel.querySelector('[data-status]');
     const none = panel.querySelector('[data-none]');
+    const linkContext = () => {
+      const params = {project: '', tag: '', search: (topics ? normalizeTopic(search.value) : search.value.trim()).slice(0, 200)};
+      for (const select of filters) params[select.name] = select.value;
+      for (const link of panel.querySelectorAll('a[data-detail]')) {
+        const [address, hash] = link.getAttribute('href').split('#');
+        const [path, query] = address.split('?');
+        const next = new URLSearchParams(query);
+        for (const [name, value] of Object.entries(params)) {
+          if (value) next.set(name, value); else next.delete(name);
+        }
+        link.setAttribute('href', path + '?' + next + (hash === undefined ? '' : '#' + hash));
+      }
+    };
     const run = () => {
       const rows = panel.querySelectorAll('.lib-item');
       const query = topics ? normalizeTopic(search.value) : search.value.trim();
@@ -3342,6 +3385,7 @@ LIBRARY_SCRIPT = r"""
       const active = query || filters.some(select => select.value);
       none.hidden = Boolean(active) || rows.length > 0;
       status.textContent = active && !hasMatch ? 'No results match your search.' : '';
+      linkContext();
       if (!panel.hidden) updateScrollMode();
     };
     if (topics) panel.addEventListener('conversation-saved', event => {
@@ -3365,6 +3409,10 @@ LIBRARY_SCRIPT = r"""
   if (restoredTab) {
     select(restoredTab, false);
     openLibrary();
+    if (arrivingTab) {
+      const row = arrivalRow([...panelOf(arrivingTab).querySelectorAll('.lib-item:not([hidden])')], arrival.get('row'));
+      showArrivalRow(row, row?.querySelector('a[data-detail]'));
+    }
   }
 })();
 """
@@ -3484,6 +3532,168 @@ def item_page_name(item_id: str) -> str:
     return f"{item_id.lower()}.html"
 
 
+# --- List context ------------------------------------------------------------------------
+# A detail page opened from a list carries that list in its address, so Back and Next unread need no session.
+
+
+class ListKind(NamedTuple):
+    label: str  # the list's name, as the Back link says it
+    page: str   # the page that shows the list: "desk", "hold" or "watch"
+    tab: str    # its tab on that page
+    filters: tuple[str, ...] = ()  # the list's filters, which its links carry
+
+
+HOLD_FILTERS = ("project", "tag", "search")
+DESK_SCOPE = ("project", "topic")
+LIST_KINDS = {
+    "needs-you": ListKind("Needs you", "desk", "needs-you"),
+    "conversations": ListKind("Conversations", "desk", "conversations", DESK_SCOPE),
+    "archived": ListKind("Archived", "desk", "archived"),
+    "watch": ListKind("Watch", "watch", ""),
+    "references": ListKind("References", "hold", "references", HOLD_FILTERS),
+    "answered": ListKind("Answered", "hold", "answered", HOLD_FILTERS),
+    "hold-conversations": ListKind("Hold conversations", "hold", "conversations", HOLD_FILTERS),
+}
+FILTER_VALUE_LIMIT = 200
+
+
+def parse_list_context(query: str) -> dict[str, str] | None:
+    """The list a page was opened from, read from its address. None when the address names no list that exists."""
+    try:
+        fields = parse_qs(query, max_num_fields=12)
+    except ValueError:
+        return None
+    name = fields.get("from", [""])[0]
+    kind = LIST_KINDS.get(name)
+    if kind is None:
+        return None
+    context = {"from": name}
+    for key in kind.filters:
+        value = fields.get(key, [""])[0][:FILTER_VALUE_LIMIT]
+        if value:
+            context[key] = value
+    return context
+
+
+def item_link(item_id: str, context: dict[str, str] | str | None = None, target: str | None = None) -> str:
+    """The address of an item's page. With a list it names, the page can send the owner back to that list."""
+    href = item_page_name(item_id)
+    if context:
+        href += "?" + urlencode({"from": context} if isinstance(context, str) else context)
+    return href + (f"#{target}" if target else "")
+
+
+def back_link_href(context: dict[str, str], item_id: str) -> str:
+    """The address of the list a page was opened from, with the item's row in view."""
+    kind = LIST_KINDS[context["from"]]
+    if kind.page == "watch":
+        return f"watch.html#watch-{item_id}"
+    filters = {key: context[key] for key in kind.filters if key in context}
+    return "index.html?" + urlencode({"tab" if kind.page == "desk" else "hold": kind.tab, **filters, "row": item_id})
+
+
+ID_QUERY_RE = re.compile(r"(q[0-9]+)(?:[.]([0-9]+))?", re.IGNORECASE)
+
+
+def library_search_text(item) -> str:
+    """The folded words that a search in a Hold list matches an item on."""
+    search = [item["title"]]
+    if item["kind"] != "conversation":
+        search.append(item["description"])
+    if item["kind"] == "questions":
+        search.extend(q["question"] for q in item["body"]["questions"])
+        search.extend(part_record(item, n).get("answer", "") for n in question_parts(item))
+    return " ".join(search).casefold()
+
+
+def library_matches(item, filters: dict[str, str], *, topics: bool) -> bool:
+    """Whether an item shows in a Hold list under these filters, as the list's own script decides it."""
+    if filters.get("project") and item.get("project", "") != filters["project"]:
+        return False
+    if filters.get("tag") and filters["tag"] not in all_tags(item):
+        return False
+    query = " ".join(filters.get("search", "").split()) if topics else filters.get("search", "").strip()
+    if not query:
+        return True
+    id_match = ID_QUERY_RE.fullmatch(query)
+    if id_match and item["id"].lower() == id_match[1].lower():
+        number = id_match[2]
+        if number is None or (item["kind"] == "questions" and number.isdigit() and 1 <= int(number) <= len(question_parts(item))):
+            return True
+    return (not id_match or topics) and all(term in library_search_text(item) for term in query.casefold().split())
+
+
+def list_members(data: dict[str, object], context: dict[str, str]) -> list[dict[str, object]]:
+    """The items a list shows, in the order it shows them."""
+    items = newest_first(data["items"])  # type: ignore[arg-type]
+    name = context["from"]
+    if name == "needs-you":
+        return [item for item in items if attention_summary(item, served=True)]
+    if name == "watch":
+        return [row[0] for row in watch_requests(data)]
+    if name in ("conversations", "archived"):
+        wanted = name == "archived"
+        members = [item for item in items if item["kind"] == "conversation" and is_archived(item) == wanted]
+        return list_sorter(name)([item for item in members if in_desk_scope(data, context, item)])
+    kinds = {"references": ("resource", "list"), "answered": ("questions",), "hold-conversations": ("conversation",)}[name]
+    members = [item for item in items if item["kind"] in kinds and (
+        name != "answered" or not desk_item(item)) and not (name == "hold-conversations" and is_archived(item))]
+    return [item for item in members if library_matches(item, context, topics=name == "hold-conversations")]
+
+
+def in_desk_scope(data: dict[str, object], context: dict[str, str], item) -> bool:
+    """Whether a conversation shows under the Desk's project and topic scope, as the Desk's script decides it."""
+    project = context.get("project", "")
+    if project == "-":
+        return not item.get("placement")
+    found = find_project(data.get("projects", []), project)  # type: ignore[arg-type]
+    if found is None:
+        return True
+    placement = item.get("placement") or {}
+    topic = context.get("topic", "")
+    if not any(entry["id"] == topic for entry in found["topics"]):  # type: ignore[attr-defined]
+        topic = ""
+    return placement.get("project") == project and (not topic or placement.get("topic") == topic)
+
+
+def list_sorter(name: str):
+    """How a list orders items, or None when it orders them by something an item does not carry on its own."""
+    if name in ("conversations", "archived"):
+        def sort_conversations(items):
+            ordered = by_activity(items)
+            return [i for i in ordered if is_pinned(i)] + [i for i in ordered if not is_pinned(i)] if name == "conversations" else ordered
+        return sort_conversations
+    return None if name == "watch" else newest_first
+
+
+def list_unread(name: str, item) -> bool:
+    """Needs you holds only what still needs the owner; every other list counts an unread reply."""
+    return name == "needs-you" or unread_target(item) is not None
+
+
+def attention_target(item, summary) -> str | None:
+    """Where an item's page opens: its first unread reply, else its first open question."""
+    state, open_parts, _ = summary
+    if state == "Replied":
+        return unread_target(item)
+    return f'{item["id"]}.{open_parts[0]}' if open_parts else None
+
+
+def next_unread(data: dict[str, object], context: dict[str, str], current) -> tuple[dict[str, object], str | None] | None:
+    """The next unread item after the current one in its list, wrapping to the start, and where its page opens."""
+    name = context["from"]
+    line = list_members(data, context)
+    if all(item["id"] != current["id"] for item in line):
+        sorter = list_sorter(name)
+        line = sorter([*line, current]) if sorter else [current, *line]
+    at = next(number for number, item in enumerate(line) if item["id"] == current["id"])
+    for item in (*line[at + 1:], *line[:at]):
+        if list_unread(name, item):
+            summary = attention_summary(item, served=True) if name == "needs-you" else None
+            return item, attention_target(item, summary) if summary else unread_target(item)
+    return None
+
+
 CONVERSATION_TEXT_SCRIPT = r"""
 const trimmed = value => value.replace(/^[\p{White_Space}\u001c-\u001f]+|[\p{White_Space}\u001c-\u001f]+$/gu, '');
 const normalizeTopic = value => trimmed(value.replace(/[\p{White_Space}\u001c-\u001f]+/gu, ' '));
@@ -3514,12 +3724,13 @@ def page_shell(title: str, site_title: str, body: str, *, served: bool, saved_na
         f"  {GENERATED_MARKER}\n  <title>{esc(title)}</title>\n  {links}<style>{PAGE_CSS}</style>\n</head>\n<body>\n"
         f'<header class="bar"><a class="mark" href="{saved_href}">{esc(site_title)}</a>'
         f'<nav>{nav_links(saved_href, current, served)}{opener}</nav></header>\n'
-        f"<main>\n{body}\n</main>\n{library}<script>{TIME_SCRIPT}{VIEWPORT_SCRIPT if interactive or library else ''}{QUESTION_SCRIPT if conversations else ''}"
+        f"<main>\n{body}\n</main>\n{library}<script>{ARRIVAL_SCRIPT if library or starting else ''}{TIME_SCRIPT}{VIEWPORT_SCRIPT if interactive or library else ''}{QUESTION_SCRIPT if conversations else ''}"
         f"{CONVERSATION_TEXT_SCRIPT if library or talking or starting else ''}"
         f"{ANSWER_SCRIPT if interactive else ''}{CONVERSATION_SCRIPT if talking else ''}{DESK_SCRIPT if starting else ''}"
         f"{WORKER_SUMMARY_SCRIPT if workers or watching else ''}"
         f"{WORKERS_SCRIPT if workers else ''}{WATCH_SCRIPT if watching else ''}{FILTER_SCRIPT if filters or library else ''}"
-        f"{f'const libraryCaseFolds = {library_case_folds()};' + LIBRARY_SCRIPT if library else ''}</script>\n</body>\n</html>\n"
+        f"{f'const libraryCaseFolds = {library_case_folds()};' + LIBRARY_SCRIPT if library else ''}"
+        f"{ARRIVAL_END_SCRIPT if library or starting else ''}</script>\n</body>\n</html>\n"
     )
 
 
@@ -3546,13 +3757,9 @@ def progress_text(item, summary):
     return remaining or state
 
 
-def desk_row(item, summary, *, primary):
+def desk_row(item, summary, *, primary, context=None):
     state, open_parts, pending = summary
-    href = item_page_name(item["id"])
-    if state == "Replied":
-        href += f'#{unread_target(item)}'
-    elif open_parts:
-        href += f'#{item["id"]}.{open_parts[0]}'
+    href = esc(item_link(item["id"], context, attention_target(item, summary)))
     title = esc(item["title"])
     project = esc(item["project"]) if item.get("project") else ""
     remaining = len(open_parts)
@@ -3562,7 +3769,7 @@ def desk_row(item, summary, *, primary):
     if pending:
         failure = '<span>Not delivered</span>'
         latest = failure if state == "Messaged" else f'{latest} {failure}'
-    return (f'<tr class="work{' next' if primary else ''}"><th scope="row">'
+    return (f'<tr class="work{' next' if primary else ''}"{f' data-id="{item["id"]}"' if context else ""}><th scope="row">'
             f'<a class="card-link" href="{href}"><span class="id">{item["id"]}</span> {title}</a></th>'
             f'<td class="project">{project}</td><td>{count}</td><td>{latest}</td></tr>')
 
@@ -4302,8 +4509,21 @@ DESK_SCRIPT = talk_script(r"""
     if (!noneInScope.hidden) noneInScope.textContent = scopeEmptyText();
     noneArchived.hidden = !groups.archived.hidden;
   };
+  const linkRow = row => {
+    const link = row.querySelector('.topic-title');
+    const archived = row.dataset.archived === 'true';
+    const [address, hash] = link.getAttribute('href').split('#');
+    const [path, query] = address.split('?');
+    const params = new URLSearchParams(query);
+    params.set('from', archived ? 'archived' : 'conversations');
+    for (const [name, value] of [['project', scopeProject.value], ['topic', scopeTopic.value]]) {
+      if (value && !archived) params.set(name, value); else params.delete(name);
+    }
+    link.setAttribute('href', path + '?' + params + (hash === undefined ? '' : '#' + hash));
+  };
   const place = row => {
     const name = row.dataset.archived === 'true' ? 'archived' : row.dataset.pinned === 'true' ? 'pinned' : 'recent';
+    linkRow(row);
     const list = groups[name].querySelector('.topic-list');
     // The filter applies only outside Archived, and before the row takes its place by pin and activity.
     row.hidden = name !== 'archived' && !inScope(row);
@@ -4332,6 +4552,7 @@ DESK_SCRIPT = talk_script(r"""
     for (const row of conversationPanel.querySelectorAll('.topic')) {
       row.hidden = !inScope(row);
       labelRow(row);
+      linkRow(row);
     }
     syncGroups();
     groupStatus.textContent = '';
@@ -4478,7 +4699,8 @@ DESK_SCRIPT = talk_script(r"""
     moveProject.focus();
   });
   try {
-    const saved = JSON.parse(sessionStorage.getItem(SCOPE_KEY)) || {};
+    const saved = arrival.get('tab') === 'conversations'
+      ? {project: arrival.get('project'), topic: arrival.get('topic')} : JSON.parse(sessionStorage.getItem(SCOPE_KEY)) || {};
     syncScope({project: saved.project || '', topic: saved.topic || ''});
   } catch {
     syncScope({project: '', topic: ''});
@@ -4539,6 +4761,17 @@ DESK_SCRIPT = talk_script(r"""
   };
   conversationPanel.addEventListener('click', onRowClick);
   document.getElementById('desk-panel-archived').addEventListener('click', onRowClick);
+
+  const arrivingDeskTab = tabs.find(tab => tab.id === 'desk-tab-' + arrival.get('tab'));
+  if (arrivingDeskTab) {
+    select(arrivingDeskTab, false);
+    const wanted = arrival.get('row') ?? '';
+    const rows = [...panelOf(arrivingDeskTab).querySelectorAll('tr.work, tr.notice, li.topic')];
+    // A question answered meanwhile has left Needs you; its place is taken by the next one down.
+    const below = row => row.classList.contains('work') && BigInt(row.dataset.id.slice(1)) < BigInt(wanted.slice(1) || '0');
+    const row = arrivalRow(rows, wanted) ?? (/^Q[1-9][0-9]*$/.test(wanted) ? rows.find(below) : undefined);
+    showArrivalRow(row, row?.querySelector('.card-link, .topic-title, a'));
+  }
 
   const form = document.querySelector('#talk-form');
   if (!form) return;
@@ -5140,20 +5373,20 @@ def day_time(moment: object) -> str:
 def reference_row(item, *, served):
     """A bookmark: the title links straight to the resource, extra links follow inline, details stay on the item's page."""
     item_id, kind = item["id"], item["kind"]
-    page = item_page_name(item_id)
+    page = esc(item_link(item_id, "references" if served else None))
+    detail = " data-detail" if served else ""
     if kind == "resource":
         first, *more = resource_links(item["body"])
         title = (f'<a class="ref-title" href="{esc(first["url"])}" rel="noopener noreferrer">{esc(item["title"])}</a>')
         extra = "".join(f'<a class="ref-extra" href="{esc(link["url"])}" rel="noopener noreferrer">{esc(link["text"])}</a>'
                         for link in more)
     else:
-        title, extra = f'<a class="ref-title" href="{page}">{esc(item["title"])}</a>', ""
+        title, extra = f'<a class="ref-title" href="{page}"{detail}>{esc(item["title"])}</a>', ""
     project = f'<span>{esc(item["project"])}</span>' if item.get("project") else ""
     attributes = filter_data(item)
     if served:
-        search = f'{item["title"]} {item["description"]}'
-        attributes += f' data-id="{item_id}" data-search="{esc(search.casefold())}"'
-    item_ref = (f'<a class="lib-title ref-id" href="{page}">{item_id}</a>' if kind == "resource"
+        attributes += f' data-id="{item_id}" data-search="{esc(library_search_text(item))}"'
+    item_ref = (f'<a class="lib-title ref-id" href="{page}"{detail}>{item_id}</a>' if kind == "resource"
                 else f'<span class="ref-id">{item_id}</span>')
     small = project + day_time(item["saved_at"]) + item_ref
     return (f'<li class="lib-item ref-row"{attributes}>'
@@ -5163,8 +5396,9 @@ def reference_row(item, *, served):
 def library_row(item, *, served):
     item_id, kind = item["id"], item["kind"]
     target = unread_target(item) if served and kind in ("questions", "conversation") else None
-    href = item_page_name(item_id) + (f"#{target}" if target else "")
-    title = f'<a class="lib-title" href="{href}">{esc(item["title"])}</a>'
+    context = ("hold-conversations" if kind == "conversation" else "answered") if served else None
+    href = esc(item_link(item_id, context, target))
+    title = f'<a class="lib-title" href="{href}"{" data-detail" if served else ""}>{esc(item["title"])}</a>'
     project = f'<span class="project-name">{esc(item["project"])}</span>' if item.get("project") else ""
     tags = tag_labels(all_tags(item))
     attributes = filter_data(item)
@@ -5173,15 +5407,9 @@ def library_row(item, *, served):
     unread = served and thread_unread(item, None)
 
     if served:
-        search = [item["title"]]
-        if kind != "conversation":
-            search.append(item["description"])
         if kind == "questions":
-            parts = question_parts(item)
-            search.extend(q["question"] for q in item["body"]["questions"])
-            search.extend(part_record(item, n).get("answer", "") for n in parts)
-            attributes += f' data-questions="{len(parts)}"'
-        attributes += f' data-id="{item_id}" data-search="{esc(" ".join(search).casefold())}"'
+            attributes += f' data-questions="{len(question_parts(item))}"'
+        attributes += f' data-id="{item_id}" data-search="{esc(library_search_text(item))}"'
     if kind == "questions":
         state, _, _ = question_summary(item, replies=served)
         label = f'<span class="badge">{UNREAD_REPLY}</span>' if state == "Replied" else state
@@ -5294,7 +5522,7 @@ def flag_button(name, on, off, active, title):
 def conversation_row(item, projects=()):
     latest = part_thread(item, None)[-1]
     target = unread_target(item)
-    href = item_page_name(item["id"]) + (f'#{target}' if target else "")
+    href = esc(item_link(item["id"], "archived" if is_archived(item) else "conversations", target))
     status = f'<span class="badge">{UNREAD_REPLY}</span>' if target else ""
     if has_pending_ask(item):
         status += '<span>Not delivered</span>'
@@ -5390,19 +5618,19 @@ def catch_up_row(notice, items_by_id):
     links = []
     item = items_by_id.get(notice.get("item"))
     if item is not None:
-        links.append(f'<a href="{item_page_name(item["id"])}">{esc(item["title"])}</a>')
+        links.append(f'<a href="{esc(item_link(item["id"], "needs-you"))}">{esc(item["title"])}</a>')
     if "url" in notice:
         links.append(f'<a href="{esc(notice["url"])}" rel="noopener noreferrer">{esc(notice["link_text"])}</a>')
-    return (f'<tr class="notice"><th scope="row"><span class="id">{notice["id"]}</span> {title}'
+    return (f'<tr class="notice"{f' data-item="{item["id"]}"' if item is not None else ""}><th scope="row"><span class="id">{notice["id"]}</span> {title}'
             f'{phone_project}<p>{esc(notice["summary"])}</p>{"".join(links)}</th>'
             f'<td class="project">{project}</td><td></td><td>{day_time(notice["saved_at"])}<br>'
             f'<button type="button" data-read="{notice["id"]}" aria-label="Mark read, {title}">Mark read</button>'
             '<p class="meta desk-feedback failed" role="status"></p></td></tr>')
 
 
-def desk_table(attention, notice_rows=""):
+def desk_table(attention, notice_rows="", context=None):
     primary = next((item for item, summary in attention if summary[1]), None)
-    rows = "".join(desk_row(item, summary, primary=item is primary) for item, summary in attention)
+    rows = "".join(desk_row(item, summary, primary=item is primary, context=context) for item, summary in attention)
     hidden = "" if rows or notice_rows else " hidden"
     return (f'<div class="desk"{hidden}><table><caption class="sr">Items that need you</caption><thead><tr>'
             '<th scope="col">Item</th><th scope="col" class="project">Project</th>'
@@ -5416,7 +5644,7 @@ def needs_you_panel(attention, notices, items_by_id):
     return (f'<button type="button" data-read-all{hide_bulk}>Mark all notices read</button>'
             '<p class="meta desk-feedback failed" role="status"></p>'
             '<p class="sr" id="notice-announcement" role="status"></p>'
-            f'{desk_table(attention, rows)}'
+            f'{desk_table(attention, rows, "needs-you")}'
             f'<p class="empty"{hide_empty}>Nothing needs you. Questions, unread replies, failed deliveries and notices show here.</p>')
 
 
@@ -5506,9 +5734,9 @@ def watch_requests(data):
 def watch_page(data, site_title, *, workers_ready):
     rows = []
     for item, status, at, target in watch_requests(data):
-        href = item_page_name(item["id"]) + (f"#{target}" if target else "")
+        href = esc(item_link(item["id"], "watch", target))
         project = esc(item["project"]) if item.get("project") else ""
-        rows.append(f'<tr><th scope="row"><a href="{href}"><span class="id">{item["id"]}</span> {esc(item["title"])}</a></th>'
+        rows.append(f'<tr id="watch-{item["id"]}"><th scope="row"><a href="{href}"><span class="id">{item["id"]}</span> {esc(item["title"])}</a></th>'
                     f'<td class="project">{project}</td><td>{status}</td><td>{day_time(at)}</td></tr>')
     if rows:
         waiting = ('<div class="desk"><table><caption class="sr">Requests Firstmate has not replied to, newest first</caption>'
@@ -5585,23 +5813,39 @@ def item_body_html(item: dict[str, object]) -> str:
             for number, entry in enumerate(entries, 1)) + "</ol>"
 
 
+def list_nav(item, data, context, *, end=False) -> str:
+    """Back to the list the page was opened from (the Desk when it names none), and the next unread item in that list."""
+    if context is None:
+        label, href, following = "Desk", "index.html", None
+    else:
+        label, href = LIST_KINDS[context["from"]].label, back_link_href(context, item["id"])
+        following = next_unread(data, context, item) if data is not None else None
+    links = f'<a class="back-link" href="{esc(href)}">Back to {label}</a>'
+    if following:
+        target_item, target = following
+        links += f'<a class="next-link" href="{esc(item_link(target_item["id"], context, target))}">Next unread</a>'
+    return f'<nav class="list-nav{" end" if end else ""}" aria-label="List links{" at the end of the page" if end else ""}">{links}</nav>'
+
+
 def item_page(item: dict[str, object], site_title: str, *, served: bool, saved_name: str = "index.html",
-              ask_binding: str | None = None, projects: list[dict[str, object]] | None = None) -> str:
+              ask_binding: str | None = None, data: dict[str, object] | None = None, query: str = "") -> str:
     item_id = str(item["id"])
     questions = item["kind"] == "questions"
     talking = item["kind"] == "conversation"
     content = (question_form(item, served, ask_binding=ask_binding) if questions
                else conversation_page(item, ask_binding) if talking else item_body_html(item))
     lead = "" if talking else f'<p class="lead">{linked_text(item["description"])}</p>'
-    placed = placement_label(item, projects or []) if talking else ""
+    placed = placement_label(item, (data or {}).get("projects", [])) if talking else ""
+    context = parse_list_context(query) if served else None
     body = (
+        f'{list_nav(item, data, context) if served else ""}'
         f'<p class="id">{esc(item_id)}</p><h1>{esc(item["title"])}</h1>'
         f'<p class="meta">{esc(KIND_LABELS[str(item["kind"])])}{" · " + esc(placed) if placed else ""}'
         f'{" · " + esc(item["project"]) if item.get("project") else ""}'
         f' · saved <time class="day" datetime="{esc(item["saved_at"])}">{esc(saved_day(item))}</time></p>'
         f'{tag_labels(list(item.get("tags", [])))}'
         f'{conversation_state(item) if talking and served else ""}'
-        f'{lead}{content}'
+        f'{lead}{content}{list_nav(item, data, context, end=True) if served else ""}'
     )
     return page_shell(f"{item_id} {item['title']} · {site_title}", site_title, body,
                       served=served, saved_name=saved_name,
@@ -6085,7 +6329,7 @@ def make_handler(site_title: str, base_path: str = "", store: Path | None = None
             ask_binding = None
             if item["kind"] in ("questions", "conversation"):
                 _, ask_binding = ask_destination(ask_home, require_directory=item["kind"] == "conversation")
-            content = item_page(item, site_title, served=True, ask_binding=ask_binding, projects=data.get("projects", []))
+            content = item_page(item, site_title, served=True, ask_binding=ask_binding, data=data, query=request.query)
             prevent_framing = has_answer_controls(item) or item["kind"] == "conversation" or (
                 item["kind"] == "questions" and (bool(part_thread(item, None)) or question_summary(item)[0] == "Replied"))
             self.send_text(200, content, "text/html; charset=utf-8", prevent_framing=prevent_framing)

@@ -14,6 +14,9 @@ These are terms Quarterdeck uses on its pages and in the CLI.
 | Watch | A read-only page for what Firstmate has yet to reply to and what its workers are doing. |
 | Workers | The [roster page](../how-to/read-workers.md) that reads the workers of the configured Firstmate home and refreshes the reading. |
 | Hold | The pop-out with References, Answered and Conversations, opened with **Open Hold**. |
+| Hold conversations | The Conversations tab inside Hold, as a Back to link names it. |
+| Back to | The link on an item page, followed by the name of the list the page was opened from. With no list it reads Back to Desk. See [Go back to the list](../how-to/go-back-to-the-list.md). |
+| Next unread | The link on an item page that opens the next unread item in the same list. |
 
 ## Conversations
 

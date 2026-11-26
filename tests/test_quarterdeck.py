@@ -341,7 +341,7 @@ class PageTests(StoreCase):
         references = page.split('id="panel-references"')[1].split('id="panel-answered"')[0]
         self.assertLess(references.index('data-id="Q2"'), references.index('data-id="Q1"'))
         self.assertIn('href="https://example.com/lavish/calls" rel="noopener noreferrer">Calls redesign</a>', references)
-        self.assertIn('href="q1.html">Q1</a>', references)
+        self.assertIn('href="q1.html?from=references" data-detail>Q1</a>', references)
 
     def test_a_question_item_moves_between_desk_and_answered_by_itself(self) -> None:
         self.add_all_kinds()
@@ -368,7 +368,7 @@ class PageTests(StoreCase):
         quarterdeck.send_answer(quarterdeck.store_path(), None, {"part": "Q1.2", "answer": "Blue", "revision": ""})
         page, _ = self.served_pages()
         self.assertIn('<td>None open</td><td>Answered <span>Not delivered</span></td>', page.split("<dialog", 1)[0])
-        self.assertIn('<a class="card-link" href="q1.html"><span class="id">Q1</span> Pier lights</a>', page)
+        self.assertIn('<a class="card-link" href="q1.html?from=needs-you"><span class="id">Q1</span> Pier lights</a>', page)
         for part in (1, 2):
             record = quarterdeck.read_store(quarterdeck.store_path())["items"][0]["answers"][str(part)]
             quarterdeck.send_answer(quarterdeck.store_path(), self.inbox_home(),
@@ -378,7 +378,7 @@ class PageTests(StoreCase):
         self.assertNotIn("Pier lights", desk)
         self.assertIn("Nothing needs you.", desk)
         answered = library.split('id="panel-answered"')[1]
-        self.assertIn('href="q1.html">Pier lights</a></div><p class="meta">Answered</p></li>', answered)
+        self.assertIn('href="q1.html?from=answered" data-detail>Pier lights</a></div><p class="meta">Answered</p></li>', answered)
         self.assertNotIn('>Which colour for the quay?', answered)
         self.assertNotIn('>Blue<', answered)
         self.assertEqual(quarterdeck.read_store(quarterdeck.store_path())["items"][0]["answers"]["2"]["answer"], "Blue")
@@ -391,7 +391,7 @@ class PageTests(StoreCase):
                 self.answer_all(f"Q{number}", 1)
         page, _ = self.served_pages()
         answered = page.split('id="panel-answered"')[1]
-        self.assertEqual(re.findall(r'<a class="lib-title" href="(q\d.html)"', answered), ["q3.html", "q2.html", "q1.html"])
+        self.assertEqual(re.findall(r'<a class="lib-title" href="(q\d.html)[?]from=answered" data-detail', answered), ["q3.html", "q2.html", "q1.html"])
         self.assertNotIn("<time", answered)
         static_answered = self.pages()["index.html"].split("<h2>Answered</h2>")[1]
         self.assertEqual(re.findall(r'<a class="lib-title" href="(q\d.html)"', static_answered), ["q3.html", "q2.html", "q1.html"])
@@ -882,7 +882,7 @@ class ServeTests(StoreCase):
         self.assertNotIn("Which colour for the quay?", desk)
         self.assertNotIn("Merge the tide tables now?", desk)
         self.assertIn('<td>1 of 2 open</td>', desk)
-        self.assertIn('<a class="card-link" href="q3.html#Q3.2"><span class="id">Q3</span> Tide launch decisions</a>', desk)
+        self.assertIn('<a class="card-link" href="q3.html?from=needs-you#Q3.2"><span class="id">Q3</span> Tide launch decisions</a>', desk)
         question_page = self.fetch(port, "/qd/q3.html")[1]
         self.assertIn('<section class="decision" id="Q3.2"', question_page)
         self.assertIn('<p class="progress">1 of 2 open</p>', question_page)
@@ -895,8 +895,8 @@ class ServeTests(StoreCase):
         port = self.start("/qd")
         self.assertEqual(self.post_answer(port, "Q2.1", "Yes")[0], 200)
         desk = self.fetch(port, "/qd/")[1].split("<h1>Desk</h1>", 1)[1]
-        self.assertIn('<tr class="work"><th scope="row"><a class="card-link" href="q2.html"', desk)
-        self.assertIn('<tr class="work next"><th scope="row"><a class="card-link" href="q1.html#Q1.1"', desk)
+        self.assertIn('<tr class="work" data-id="Q2"><th scope="row"><a class="card-link" href="q2.html?from=needs-you"', desk)
+        self.assertIn('<tr class="work next" data-id="Q1"><th scope="row"><a class="card-link" href="q1.html?from=needs-you#Q1.1"', desk)
         self.assertNotIn("Merge the tide tables now?", desk)
         self.assertNotIn("Deliver the harbour chart?", desk)
 
@@ -1086,7 +1086,7 @@ check(document.activeElement === search && searchBounds.top >= bounds.top && sea
       'The focused search was clipped when the keyboard opened');
 search.value = 'harbor';
 search.dispatchEvent(new Event('input', {bubbles:true}));
-const resultLink = dialog.querySelector('a[href="q2.html"]');
+const resultLink = dialog.querySelector('a[href^="q2.html"]');
 resultLink.scrollIntoView({block:'center'});
 bounds = dialog.getBoundingClientRect();
 const linkBounds = resultLink.getBoundingClientRect();
@@ -1430,7 +1430,7 @@ for (const [index, query, href] of [[0, 'harbor', 'q1.html'], [1, 'tide', 'q2.ht
   search.focus();
   search.value = query;
   search.dispatchEvent(new Event('input', {bubbles:true}));
-  reach(panel.querySelector('a[href="' + href + '"]'));
+  reach(panel.querySelector('a[href^="' + href + '"]'));
 }
 const close = dialog.querySelector('[data-close]');
 reach(close);
@@ -1469,13 +1469,13 @@ reach(tag);
 project.selectedIndex = 1;
 project.dispatchEvent(new Event('change', {bubbles:true}));
 const links = [...panel.querySelectorAll('.lib-item:not([hidden]) .lib-title')];
-check(links.length === 1 && links[0].getAttribute('href') === 'q3.html', 'The project filter did not select the Harbor item');
+check(links.length === 1 && links[0].getAttribute('href').split('?')[0] === 'q3.html', 'The project filter did not select the Harbor item');
 reach(links[0]);
 check(dialog.scrollTop > 0, 'The results were not reachable by scrolling the whole library');
 const references = button('tab-references');
 reach(references);
 references.click();
-reach(button('panel-references').querySelector('a[href="q1.html"]'));
+reach(button('panel-references').querySelector('a[href^="q1.html"]'));
 """, path="/qd/", viewport=(320, 355))
 
     def test_desk_row_stretches_its_one_link_across_the_row(self):
@@ -1510,7 +1510,8 @@ const hit = node => {
   return document.elementFromPoint(rect.left + rect.width / 2, rect.top + rect.height / 2)?.closest('a');
 };
 for (const [row, destination, label] of [
-  [pending, 'q3.html', 'Q3'], [first, 'q2.html#Q2.1', 'Q2 Tide tables'], [second, 'q1.html#Q1.2', 'Q1 Pier lights']
+  [pending, 'q3.html?from=needs-you', 'Q3'], [first, 'q2.html?from=needs-you#Q2.1', 'Q2 Tide tables'],
+  [second, 'q1.html?from=needs-you#Q1.2', 'Q1 Pier lights']
 ]) {
   const links = [...row.querySelectorAll('a')];
   const action = links[0];
@@ -1584,7 +1585,7 @@ const choose = (filter, value) => {
   filter.value = value;
   filter.dispatchEvent(new Event('change', {bubbles:true}));
 };
-const shown = () => [...panel.querySelectorAll('.lib-item:not([hidden]) .lib-title')].map(link => link.getAttribute('href')).join();
+const shown = () => [...panel.querySelectorAll('.lib-item:not([hidden]) .lib-title')].map(link => link.getAttribute('href').split('?')[0]).join();
 const find = text => {
   search.value = text;
   search.dispatchEvent(new Event('input', {bubbles:true}));
@@ -1600,7 +1601,7 @@ try {
     choose(project, 'Alpha');
     choose(tag, 'product-design');
     check(find('saffron') === 'q2.html', 'The original answer did not match its search');
-    panel.querySelector('a[href="q2.html"]').click();
+    panel.querySelector('a[href^="q2.html"]').click();
   } else if (visits <= 2) {
     check(!desk.textContent.includes('Pier lights'), 'The restored Desk still showed the completed item');
     check(dialog.open && tab.getAttribute('aria-selected') === 'true' && !panel.hidden,
@@ -1609,7 +1610,7 @@ try {
     check(tag?.value === 'product-design' && tag.checkVisibility() && tag.selectedOptions[0].text === 'product design',
           'The missing tag choice was not restored');
     check(search.value === 'saffron' && shown() === '', 'The saved search was lost or still used the old answer');
-    check(panel.querySelector('a[href="q1.html"]'), 'The completed item was missing from Answered');
+    check(panel.querySelector('a[href^="q1.html"]'), 'The completed item was missing from Answered');
     check(find('') === '' && panel.querySelector('[role="status"]').textContent.includes('No results'),
           'The unavailable filters admitted unrelated results');
     choose(project, '');
@@ -1620,7 +1621,7 @@ try {
     if (visits === 1) window.addEventListener('pageshow', () => setTimeout(() => history.forward(), 0), {once:true});
     else window.addEventListener('pageshow', () => {
       dialog.addEventListener('close', () => {
-        desk.querySelector('a[href="q3.html#Q3.1"]').click();
+        desk.querySelector('a[href="q3.html?from=needs-you#Q3.1"]').click();
       }, {once:true});
       dialog.querySelector('[data-close]').click();
     }, {once:true});
@@ -1793,7 +1794,7 @@ window.addEventListener('pageshow', () => {
             self.assertEqual(status, 200)
             self.assertNotIn("<dialog", page)
             self.assertNotIn("Open library</button>", page)
-            self.assertEqual(page.count('href="index.html"'), 2)
+            self.assertEqual(page.count('href="index.html"'), 4)  # the mark and Desk, and Back to Desk at each end
         self.check_answer_page(port, r"""
 const opener = document.getElementById('open-library');
 const dialog = document.getElementById('library');
@@ -1808,7 +1809,7 @@ check(tabs[1].getAttribute('aria-selected') === 'true' && document.activeElement
 const panel = document.getElementById('panel-answered');
 check(!panel.hidden && document.getElementById('panel-references').hidden, 'The tab did not switch panels');
 const search = document.getElementById('search-answered');
-const shown = () => [...panel.querySelectorAll('li:not([hidden]) a')].map(link => link.getAttribute('href'));
+const shown = () => [...panel.querySelectorAll('li:not([hidden]) a')].map(link => link.getAttribute('href').split('?')[0]);
 const type = text => { search.value = text; search.dispatchEvent(new Event('input', {bubbles: true})); };
 check(shown().join() === 'q2.html', 'The answered list was wrong');
 check(dialog.querySelectorAll('input[type="search"]').length === 3 && !dialog.querySelector('input[type="date"]'),
@@ -4156,7 +4157,7 @@ class ConversationTests(ImageCase):
         for _ in range(2):
             desk = self.fetch(port, "/qd/")[1].split("<h1>Desk</h1>", 1)[1]
             self.assertIn('<td>2 of 2 open</td><td><span class="badge">Unread reply</span></td>', desk)
-            self.assertIn(f'<tr class="work next"><th scope="row"><a class="card-link" href="q4.html#reply-{reply["id"]}"', desk)
+            self.assertIn(f'<tr class="work next" data-id="Q4"><th scope="row"><a class="card-link" href="q4.html?from=needs-you#reply-{reply["id"]}"', desk)
             page = self.fetch(port, "/qd/q4.html")[1]
             self.assertRegex(page, r'id="Q4.2".*?<span class="badge">Unread reply</span>')
             self.assertIn('<p class="progress">Unread reply, 2 of 2 open</p>', page)
@@ -4197,9 +4198,9 @@ class ConversationTests(ImageCase):
         links = re.findall(r'<a class="card-link" href="[^"]+"><span class="id">(Q\d+)</span> ([^<]+)</a>', desk)
         self.assertEqual(links, [("Q5", "Newest decision"), ("Q4", "Two decisions"), ("Q3", "Tide launch decisions")])
         self.assertEqual(desk.count('<tr class="work next"'), 1)
-        self.assertIn('<tr class="work next"><th scope="row"><a class="card-link" href="q5.html#Q5.1"', desk)
+        self.assertIn('<tr class="work next" data-id="Q5"><th scope="row"><a class="card-link" href="q5.html?from=needs-you#Q5.1"', desk)
         reply = self.messages("2", 2)[1]
-        self.assertIn(f'<tr class="work"><th scope="row"><a class="card-link" href="q3.html#reply-{reply["id"]}"', desk)
+        self.assertIn(f'<tr class="work" data-id="Q3"><th scope="row"><a class="card-link" href="q3.html?from=needs-you#reply-{reply["id"]}"', desk)
 
     def test_reply_and_pending_ask_leave_answered_items_in_the_library(self) -> None:
         port = self.start("/qd", ask_home=self.inbox(accept=False))
@@ -4211,12 +4212,12 @@ class ConversationTests(ImageCase):
         desk, library = self.fetch(port, "/qd/")[1].split('<dialog', 1)
         reply = self.messages("2", 3)[1]
         self.assertIn('<span class="tab-count">2</span>', desk)
-        self.assertEqual(desk.count('href="q4.html#reply-'), 1)
-        self.assertEqual(desk.count('href="q3.html"'), 1)
+        self.assertEqual(desk.count('href="q4.html?from=needs-you#reply-'), 1)
+        self.assertEqual(desk.count('href="q3.html?from=needs-you"'), 1)
         self.assertIn('Unread reply</span> <span>Not delivered</span>', desk)
         answered = library.split('id="panel-answered"', 1)[1]
-        self.assertIn(f'href="q4.html#reply-{reply["id"]}">Two decisions</a>', answered)
-        self.assertRegex(answered, r'href="q3\.html"[^<]*</a></div><p class="meta">Answered</p>')
+        self.assertIn(f'href="q4.html?from=answered#reply-{reply["id"]}" data-detail>Two decisions</a>', answered)
+        self.assertRegex(answered, r'href="q3\.html[?]from=answered"[^<]*</a></div><p class="meta">Answered</p>')
 
     def test_whole_item_replies_are_private_and_acknowledged_separately(self) -> None:
         home = self.inbox(accept=False)
@@ -4595,7 +4596,7 @@ check(!card(1).querySelector('[data-retry-ask]'), 'A delivered ask can still be 
         self.assertEqual(self.run_cli("reply", "Q4.2", "--ask", self.messages("2", 3)[0]["id"], "--text", "Navy.")[0], 0)
         needs = self.fetch(port, "/qd/")[1].partition('id="desk-panel-needs-you"')[2]
         reply = self.messages("2", 3)[1]
-        self.assertIn(f'href="q4.html#reply-{reply["id"]}"', needs)
+        self.assertIn(f'href="q4.html?from=needs-you#reply-{reply["id"]}"', needs)
         self.check_page(port, r"""
 await settled();
 check(card(2).querySelector('details').open, 'The messages did not open');
@@ -5280,7 +5281,7 @@ check(calls[2][1].id === calls[1][1].id && calls[2][1].action === 'retry',
         answered = index.split('id="panel-answered"', 1)[1].split("</section>", 1)[0]
         (reply,) = [m for m in self.messages("item", 3) if m["author"] == "firstmate"]
         self.assertEqual(re.findall(r'<a [^>]*href="(q4\.html[^"]*)"[^>]*>([^<]*)</a>', answered),
-                         [(f"q4.html#reply-{reply['id']}", "Two decisions")])
+                         [(f"q4.html?from=answered#reply-{reply['id']}", "Two decisions")])
         page = self.fetch(port, "/qd/q4.html")[1]
         self.assertIn("Discuss this set", page)
         self.assertIn("Can the quantity wait?", page)
@@ -5366,7 +5367,7 @@ window.setInterval = callback => {{ refreshDiscussion = callback; }};
         self.assertEqual(self.run_cli("mark", "Q4", "answered", "--via", "elsewhere")[0], 0)
         self.assertEqual(self.store()["items"][3]["answers"]["1"]["earlier_answers"], [old_entry])
         self.assertNotIn(old_entry["request_id"], corrected["earlier_answers_html"])
-        self.assertIn(f'<a class="lib-title" href="q4.html#reply-{option_revision}">Two decisions</a>', self.fetch(port, "/qd/")[1])
+        self.assertIn(f'<a class="lib-title" href="q4.html?from=answered#reply-{option_revision}" data-detail>Two decisions</a>', self.fetch(port, "/qd/")[1])
 
         check_history = r"""
 const outer = card(1).closest('details.done');
@@ -6133,11 +6134,11 @@ class TalkToFirstmateTests(ImageCase):
         row = re.search(r'<li class="topic" data-id="Q1".*?</li>', page, re.DOTALL)[0]
         self.assertIn('<span class="badge">Unread reply</span>', row)
         unread = self.thread()[-1]["id"]
-        self.assertIn(f'href="q1.html#reply-{unread}"', row)
+        self.assertIn(f'href="q1.html?from=conversations#reply-{unread}"', row)
         self.assertIn(f'id="reply-{unread}" tabindex="-1"', self.fetch(port, "/qd/q1.html")[1])
         needs = page.partition('id="desk-panel-needs-you"')[2].partition("</section>")[0]
         self.assertIn('<span class="tab-count">1</span>', page)
-        self.assertEqual(needs.count(f'href="q1.html#reply-{unread}"'), 1)
+        self.assertEqual(needs.count(f'href="q1.html?from=needs-you#reply-{unread}"'), 1)
 
     def test_a_conversation_row_shows_the_time_of_its_latest_activity(self) -> None:
         port = self.start("/qd", ask_home=self.inbox())
@@ -6373,7 +6374,7 @@ class TalkToFirstmateTests(ImageCase):
         _, (status, result) = self.begin(port)
         self.assertEqual(status, 200)
         self.assertIn("<span>Not delivered</span>", result["row"])
-        self.assertIn('class="card-link" href="q1.html"', result["attention"])
+        self.assertIn('class="card-link" href="q1.html?from=needs-you"', result["attention"])
         self.assertIn("<span>Not delivered</span>", result["attention"])
 
     def test_watch_lists_what_firstmate_has_yet_to_reply_to(self) -> None:
@@ -6387,9 +6388,9 @@ class TalkToFirstmateTests(ImageCase):
         ask = self.ask(port, "Q4.2", "Which blue?")
         self.assertEqual(ask[0], 200)
         page = self.fetch(port, "/qd/watch.html")[1]
-        rows = re.findall(r'<tr><th scope="row"><a href="([^"]+)">.*?</a></th><td class="project">(.*?)</td><td>(.*?)</td>', page)
+        rows = re.findall(r'<tr id="watch-Q\d+"><th scope="row"><a href="([^"]+)">.*?</a></th><td class="project">(.*?)</td><td>(.*?)</td>', page)
         self.assertEqual([(href, status) for href, _, status in rows],
-                         [("q4.html#Q4.2", "Asked"), ("q2.html", "Messaged"), ("q1.html", "Messaged")])
+                         [("q4.html?from=watch#Q4.2", "Asked"), ("q2.html?from=watch", "Messaged"), ("q1.html?from=watch", "Messaged")])
         self.assertIn('aria-current="page">Watch</a>', page)
         self.assertNotIn("Ring at nine", page)
         self.assertNotIn("Navy or black", page)
@@ -6410,13 +6411,13 @@ class TalkToFirstmateTests(ImageCase):
         ask = {"part": "Q1", "id": uuid.uuid4().hex, "text": "Any other colours?", "home": first["home"]}
         self.assertEqual(self.post(port, "/qd/asks", ask)[1]["message"], "Message saved. Not delivered.")
         watch = self.fetch(port, "/qd/watch.html")[1]
-        self.assertIn('href="q1.html"', watch)
+        self.assertIn('href="q1.html?from=watch"', watch)
         self.assertIn("<td>Messaged</td>", watch)
         self.assertEqual(self.run_cli("post", "Q1", "--text", "Amber.")[0], 0)
         self.assertIn("Firstmate owes you nothing.", self.fetch(port, "/qd/watch.html")[1])
         desk = self.fetch(port, "/qd/")[1].split("<dialog", 1)[0]
         self.assertIn('<span class="tab-count">1</span>', desk)
-        self.assertEqual(desk.count('class="card-link" href="q1.html#reply-'), 1)
+        self.assertEqual(desk.count('class="card-link" href="q1.html?from=needs-you#reply-'), 1)
         self.assertEqual(desk.count("<span>Not delivered</span>"), 2)
 
     def test_watch_keeps_delivered_messages_until_their_own_replies(self) -> None:
@@ -6430,12 +6431,12 @@ class TalkToFirstmateTests(ImageCase):
         last = {**pending, "id": uuid.uuid4().hex, "text": "When will the lamps arrive?"}
         self.assertEqual(self.post(port, "/qd/asks", last)[1]["message"], "Message sent.")
         self.assertEqual(self.run_cli("reply", "Q1", "--ask", first["id"], "--text", "Amber.")[0], 0)
-        self.assertIn('href="q1.html"', self.fetch(port, "/qd/watch.html")[1])
+        self.assertIn('href="q1.html?from=watch"', self.fetch(port, "/qd/watch.html")[1])
         self.assertEqual(self.run_cli("reply", "Q1", "--ask", last["id"], "--text", "Tomorrow.")[0], 0)
         self.assertIn("Firstmate owes you nothing.", self.fetch(port, "/qd/watch.html")[1])
         retry = {"part": "Q1", "id": pending["id"], "action": "retry"}
         self.assertEqual(self.post(port, "/qd/asks", retry)[1]["message"], "Message sent.")
-        self.assertIn('href="q1.html"', self.fetch(port, "/qd/watch.html")[1])
+        self.assertIn('href="q1.html?from=watch"', self.fetch(port, "/qd/watch.html")[1])
         self.assertEqual(self.run_cli("post", "Q1", "--text", "All done.")[0], 0)
         self.assertIn("Firstmate owes you nothing.", self.fetch(port, "/qd/watch.html")[1])
 
@@ -6694,7 +6695,7 @@ for (const query of ['', 'bell schedule', 'Q1']) {
   search.value = query;
   search.dispatchEvent(new Event('input', {bubbles:true}));
   const rows = [...held.querySelectorAll('.lib-item:not([hidden]) .lib-title')];
-  check(rows.length === 1 && rows[0].getAttribute('href') === 'q1.html' && rows[0].textContent === 'Bell schedule',
+  check(rows.length === 1 && rows[0].getAttribute('href').split('?')[0] === 'q1.html' && rows[0].textContent === 'Bell schedule',
         'Hold did not find the started conversation');
   check(held.querySelector('[data-none]').hidden, 'Hold still showed the empty state');
 }
@@ -6774,7 +6775,7 @@ check(held.map(row => row.dataset.id).join() === 'Q3,Q2,Q1', 'Replay duplicated 
         self.inbox(accept=False)
         draft, (status, pending) = self.begin(port, "Quay signs", "Navy or black?")
         self.assertEqual(status, 200)
-        self.assertIn('href="q2.html"', pending["attention"])
+        self.assertIn('href="q2.html?from=needs-you"', pending["attention"])
         self.assertNotIn('href="q1.html', pending["attention"])
         self.inbox()
         status, sent = self.post(port, "/qd/conversations", draft)
@@ -6795,7 +6796,7 @@ const submit = async () => {
   await new Promise(resolve => setTimeout(resolve, 50));
 };
 await submit();
-const failed = document.querySelector('#desk-panel-needs-you a[href="q2.html"]');
+const failed = document.querySelector('#desk-panel-needs-you a[href^="q2.html"]');
 check(count.textContent === '2' && failed?.closest('tr').textContent.includes('Not delivered'),
       'The failed start did not add its own Needs you row');
 check(notice.isConnected && unrelated.isConnected && !document.querySelector('#desk-panel-needs-you a[href^="q1.html"]'),
@@ -6864,7 +6865,7 @@ check(!failed.isConnected && count.textContent === '1' && notice.isConnected && 
             status, page, _ = self.fetch(port, "/qd/")
             self.assertEqual(status, 200)
             desk = page.partition('<div class="desk"><table>')[2].partition("</table>")[0]
-            rows = [row for row in re.findall(r"<tr\b[^>]*>.*?</tr>", desk, re.DOTALL) if 'href="q1.html#reply-' in row]
+            rows = [row for row in re.findall(r"<tr\b[^>]*>.*?</tr>", desk, re.DOTALL) if 'href="q1.html?from=needs-you#reply-' in row]
             self.assertEqual(len(rows), 1)
             self.assertIn('<span class="badge">Unread reply</span>', rows[0])
 
@@ -6873,7 +6874,7 @@ check(!failed.isConnected && count.textContent === '1' && notice.isConnected && 
         status, page, _ = self.fetch(port, "/qd/")
         self.assertEqual(status, 200)
         self.assertNotIn('<div class="desk"><table>', page)
-        self.assertIn('href="q1.html"', page)  # still listed in Conversations
+        self.assertIn('href="q1.html?from=conversations"', page)  # still listed in Conversations
 
         code, out, err = self.run_cli("post", "q1", "--text", "Halfway there.",
                                       "--link-text", "Progress", "--url", "https://example.com/progress",
@@ -7453,7 +7454,7 @@ check(posts.length === 7 && posts[6].id === posts[0].id, 'Submitting a different
         self.assertIn(f"  See this.\n  Link: Lamp chart: {chart}\n  Image: A red lamp: {image}", transcript)
         status, replay = self.post(port, "/qd/conversations", body)
         self.assertEqual((status, replay), (200, {"href": "q1.html", "message": "Message sent.", "row": ANY_ROW, "hold": ANY, "attention": ANY}))
-        self.assertIn(f'href="q1.html#reply-{reply["id"]}"', replay["attention"])
+        self.assertIn(f'href="q1.html?from=needs-you#reply-{reply["id"]}"', replay["attention"])
 
     def test_add_cannot_save_a_conversation_and_help_names_the_conversation_note(self) -> None:
         with redirect_stderr(io.StringIO()), self.assertRaises(SystemExit):
@@ -7651,7 +7652,7 @@ class ConversationGroupingTests(ImageCase):
         self.assertEqual(after["items"][0]["placement"], {"project": "P1", "topic": "T1"})
         row = self.row(port)
         self.assertIn("Pocket Atlas / Signs", row)
-        self.assertRegex(row, r'href="q1\.html#reply-[0-9a-f]{32}"')
+        self.assertRegex(row, r'href="q1\.html\?from=conversations#reply-[0-9a-f]{32}"')
         self.assertIn("Conversation · Pocket Atlas / Signs · saved", self.fetch(port, "/qd/q1.html")[1])
         self.assertEqual(quarterdeck.conversation_activity(after["items"][0]),
                          quarterdeck.conversation_activity(before["items"][0]))

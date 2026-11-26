@@ -44,6 +44,8 @@ own copy of the saved content.
   [Catch up on finished work](docs/how-to/catch-up.md).
 - **Workers** is its own page, linked from the header. See
   [how to enable and check the roster](docs/how-to/read-workers.md).
+- **Back to** the list and **Next unread** on an item page return you to the list you opened it from, and on to the next unread item. See
+  [Go back to the list](docs/how-to/go-back-to-the-list.md).
 - The served Desk gives each item a page with its ID and title at the top.
   A resource's link opens the saved address. List entries and questions
   are numbered.

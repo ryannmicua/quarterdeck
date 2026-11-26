@@ -679,7 +679,7 @@ const choose = (bar, name, value) => {
   select.dispatchEvent(new Event('change', {bubbles: true}));
 };
 const links = list => [...document.querySelectorAll('#' + list + ' > li:not([hidden]) .lib-title')]
-  .map(element => element.getAttribute('href')).join(',');
+  .map(element => element.getAttribute('href').split('?')[0]).join(',');
 const referenceLinks = () => links('references-list');
 const answeredLinks = () => links('answered-list');
 check(!references.querySelector('[name="project"]'), 'References should only offer a tag filter');
