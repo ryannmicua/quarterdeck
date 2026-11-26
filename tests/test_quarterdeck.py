@@ -7542,6 +7542,20 @@ class ConversationGroupingTests(ImageCase):
         self.assertEqual(self.post(port, "/qd/groups", {"name": "Quay"}, origin="http://example.test")[0], 403)
         self.assertEqual(self.store(), before)
 
+    def test_a_project_named_like_another_projects_ID_is_not_taken_for_it(self) -> None:
+        port = self.start("/qd")
+        self.group(port, name="P2")
+        self.group(port, name="Harbor")
+        self.assertEqual(self.group(port, id="P2", name="Quay")["id"], "P2")
+        self.assertEqual(self.group(port, project="P2", name="Tides")["id"], "T1")
+        self.assertEqual(self.store()["projects"], [{"id": "P1", "name": "P2", "topics": []},
+                                                    {"id": "P2", "name": "Quay", "topics": [{"id": "T1", "name": "Tides"}]}])
+        self.assertEqual(self.post(port, "/qd/groups", {"id": "P3", "name": "Other"})[0], 400)
+        self.assertEqual(self.post(port, "/qd/groups", {"project": "P3", "name": "Other"})[0], 400)
+        self.assertEqual(self.post(port, "/qd/groups", {"project": "p2", "name": "Other"})[0], 400)
+        self.assertEqual(self.run_cli("converse", "--title", "T", "--text", "x", "--project", "p2")[0], 0)
+        self.assertEqual(self.store()["items"][0]["placement"], {"project": "P2"})
+
     def test_a_conversation_started_in_a_project_or_topic_is_filed_there(self) -> None:
         port = self.start("/qd", ask_home=self.inbox())
         self.atlas(port)
@@ -7691,22 +7705,20 @@ class ConversationGroupingTests(ImageCase):
         code, out, _ = self.run_cli("projects")
         self.assertEqual((code, out.splitlines()),
                          (0, ["P1     Field Atlas", "  T2     Printing", "  T1     Wayfinding", "P2     Harbor", "  T3     Tides"]))
-        self.assertEqual(json.loads(self.run_cli("projects", "--json")[1])[1],
-                         {"id": "P2", "name": "Harbor", "topics": [{"id": "T3", "name": "Tides"}]})
         self.assertEqual(self.run_cli("converse", "--title", "In a topic", "--text", "Update.",
-                                      "--project", "field atlas", "--topic", "Wayfinding")[1].strip(), "Q1")
+                                      "--project", "P1", "--topic", "T1")[1].strip(), "Q1")
         self.assertEqual(self.run_cli("converse", "--title", "By ID", "--text", "Update.", "--project", "p2", "--topic", "t3")[1].strip(), "Q2")
         self.assertEqual(self.run_cli("converse", "--title", "Alone", "--text", "Update.")[1].strip(), "Q3")
         self.assertEqual([item.get("placement") for item in self.store()["items"]],
                          [{"project": "P1", "topic": "T1"}, {"project": "P2", "topic": "T3"}, None])
         self.assertIn("Placement: Field Atlas / Wayfinding", self.run_cli("show", "Q1")[1])
         self.assertNotIn("Placement", self.run_cli("show", "Q3")[1])
-        self.assertEqual(self.run_cli("move", "q3", "--project", "Harbor")[1].strip(), "Q3 Moved")
+        self.assertEqual(self.run_cli("move", "q3", "--project", "P2")[1].strip(), "Q3 Moved")
         self.assertEqual(self.store()["items"][2]["placement"], {"project": "P2"})
         before = self.store()
         self.assertEqual(self.run_cli("move", "Q1", "--ungrouped")[1].strip(), "Q1 Moved")
         self.assertNotIn("placement", self.store()["items"][0])
-        self.assertEqual(self.run_cli("move", "Q1", "--project", "Field Atlas", "--topic", "T1")[0], 0)
+        self.assertEqual(self.run_cli("move", "Q1", "--project", "P1", "--topic", "t1")[0], 0)
         self.assertEqual(self.store(), before)
 
     def test_the_command_line_refuses_unknown_places_and_other_items(self) -> None:
@@ -7716,19 +7728,23 @@ class ConversationGroupingTests(ImageCase):
         self.add("list", "Harbor chores", "Chores.", "--body-file", "-", stdin="Buy rope\n")
         self.assertEqual(self.run_cli("converse", "--title", "T", "--text", "x")[0], 0)
         before = self.store()
-        for argv, message in ((("converse", "--title", "T", "--text", "x", "--project", "Nowhere"), "no project 'Nowhere'; the projects are: Field Atlas, Harbor"),
-                              (("converse", "--title", "T", "--text", "x", "--project", "Harbor", "--topic", "Signs"), "no topic 'Signs' in Harbor; its topics are: Tides"),
-                              (("converse", "--title", "T", "--text", "x", "--topic", "Tides"), "--topic needs --project"),
-                              (("move", "Q1", "--project", "Harbor"), "move a conversation"),
-                              (("move", "Q2", "--project", "Nowhere"), "no project 'Nowhere'"),
+        for argv, message in ((("converse", "--title", "T", "--text", "x", "--project", "P9"), "no project with ID 'P9'; the projects are: P1 Field Atlas, P2 Harbor"),
+                              (("converse", "--title", "T", "--text", "x", "--project", "Harbor"), "no project with ID 'Harbor'; the projects are: P1 Field Atlas, P2 Harbor"),
+                              (("converse", "--title", "T", "--text", "x", "--project", "P2", "--topic", "T1"), "no topic with ID 'T1' in P2 Harbor; its topics are: T3 Tides"),
+                              (("converse", "--title", "T", "--text", "x", "--project", "P2", "--topic", "Tides"), "no topic with ID 'Tides' in P2 Harbor"),
+                              (("converse", "--title", "T", "--text", "x", "--topic", "T3"), "--topic needs --project"),
+                              (("move", "Q1", "--project", "P2"), "move a conversation"),
+                              (("move", "Q2", "--project", "Nowhere"), "no project with ID 'Nowhere'"),
                               (("move", "Q2"), "give --project"),
-                              (("move", "Q2", "--project", "Harbor", "--ungrouped"), "give --project"),
-                              (("move", "Q2", "--ungrouped", "--topic", "Tides"), "--topic needs --project"),
+                              (("move", "Q2", "--project", "P2", "--ungrouped"), "give --project"),
+                              (("move", "Q2", "--ungrouped", "--topic", "T3"), "--topic needs --project"),
                               (("move", "Q9", "--ungrouped"), "no item Q9")):
             with self.subTest(argv=argv):
                 code, _, err = self.run_cli(*argv)
                 self.assertEqual(code, 2)
                 self.assertIn(message, err)
+        with redirect_stderr(io.StringIO()), self.assertRaises(SystemExit):
+            self.run_cli("projects", "--json")
         self.assertEqual(self.store(), before)
 
     def test_a_damaged_placement_or_project_list_is_refused(self) -> None:

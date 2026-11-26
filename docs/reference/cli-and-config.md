@@ -12,14 +12,14 @@ quarterdeck show ID
 quarterdeck reply ID[.PART] --ask ID --text TEXT [--link-text TEXT --url URL]... [--image PATH --alt TEXT]...
                    [--clarify ID.PART=TEXT]... [--option-changed ID.PART]...
 quarterdeck post ID --text TEXT [--link-text TEXT --url URL]... [--image PATH --alt TEXT]...
-quarterdeck converse --title TITLE --text TEXT [--config FILE] [--project NAME [--topic NAME]]
+quarterdeck converse --title TITLE --text TEXT [--config FILE] [--project ID [--topic ID]]
                      [--link-text TEXT --url URL]... [--image PATH --alt TEXT]...
 quarterdeck resolve ID
 quarterdeck reopen ID
 quarterdeck archive ID
 quarterdeck unarchive ID
-quarterdeck projects [--json]
-quarterdeck move ID (--project NAME [--topic NAME] | --ungrouped)
+quarterdeck projects
+quarterdeck move ID (--project ID [--topic ID] | --ungrouped)
 quarterdeck mark ID[.PART] answered --via WHERE
 quarterdeck mark ID[.PART] closed|open
 quarterdeck classify ID[.PART] [--project NAME] [--tag TAG ...] [--kind KIND]
@@ -58,10 +58,9 @@ as `reply`.
 | `show` | Prints the item's text, numbering list entries and questions as `Q7.1`, `Q7.2`. Includes question links, stored states, and saved answers with their timestamps and delivery status. For a standalone conversation, prints the transcript in saved order with timestamps, IDs, delivery status for outgoing messages, and attachments. A standalone Firstmate message is marked `Update`. Image references are paths relative to the served site or the item store directory. |
 | `reply` | Adds Firstmate's reply to an existing ask on a whole question item (`Q7`) or one question (`Q7.1`), or to an owner's message in a [conversation](../how-to/talk-to-firstmate.md) (`Q12`). It preserves saved answers and question states. Supply the required `--ask ID` from the inbox note and the reply in `--text`. Pair `--link-text` with `--url` and `--image` with `--alt` in the order given. See [Reply from the command line](../how-to/reply-from-the-command-line.md). |
 | `post` | Adds a standalone update from Firstmate. Accepts a conversation item ID such as `Q12` and prints `Q12 Updated`. |
-| `converse` | Opens a conversation with a title and an update from Firstmate, then prints the new item ID. `--project` and `--topic` file it in a project and a topic of that project, each by name (ignoring case) or ID. `--topic` needs `--project`, and an unknown name is refused with the names that exist. See [`firstmate_home`](#json-configuration) for home selection. |
-| `projects` | Prints each project and its topics with their IDs, topics indented under their project, in name order. `--json` prints a list of `{"id", "name", "topics": [{"id", "name"}]}` objects. Prints `No projects.` when the owner has made none. Only the owner creates and renames them, on the Desk. |
-| `move` | Files a conversation in a project and optionally a topic, by name or ID, or returns it to Ungrouped with `--ungrouped`. Give exactly one of `--project` and `--ungrouped`. Prints `Q12 Moved`. Items that are not conversations are refused. It changes only the conversation's [`placement`](item-store.md#conversations). |
-| `converse` | Opens a conversation with a title and an update from Firstmate, then prints the new item ID. See [`firstmate_home`](#json-configuration) for home selection. |
+| `converse` | Opens a conversation with a title and an update from Firstmate, then prints the new item ID. `--project` and `--topic` file it in a project and a topic of that project, each by ID such as `P1` or `T2`, in any case. `--topic` needs `--project`, and an unknown ID is refused with the IDs and names that exist. See [`firstmate_home`](#json-configuration) for home selection. |
+| `projects` | Prints each project and its topics with their IDs, topics indented under their project, in name order. Prints `No projects.` when the owner has made none. Only the owner creates and renames them, on the Desk. |
+| `move` | Files a conversation in a project and optionally a topic, by ID, or returns it to Ungrouped with `--ungrouped`. Give exactly one of `--project` and `--ungrouped`. Prints `Q12 Moved`. Items that are not conversations are refused. It changes only the conversation's [`placement`](item-store.md#conversations). |
 | `resolve`, `reopen` | Marks a conversation resolved or not resolved and prints `Q12 Resolved` or `Q12 Reopened`. Only a conversation item is accepted. Messages and updates leave the mark as it is. See [resolve a conversation](../how-to/talk-to-firstmate.md#resolve-a-conversation). |
 | `archive`, `unarchive` | Moves a conversation to the Archived tab or back to the Desk and prints `Q12 Archived` or `Q12 Unarchived`. Only a conversation item is accepted. The resolved and pinned marks stay, and replies still work. See [archive a conversation](../how-to/talk-to-firstmate.md#archive-a-conversation). |
 | `mark` | Sets question state, optionally for a whole questions item. `--via` is required with `answered` and accepted only with that state. Skips exit with status 0. See [Read answers](../how-to/read-answers.md) for which questions are marked. |

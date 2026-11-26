@@ -88,8 +88,8 @@ not change with it.
   take it out of its project. Moving changes nothing else about the
   conversation: its messages, pin, unread reply and place by latest activity stay.
 
-Firstmate can name a project or topic when it opens a conversation, and can
-move one, from the [command line](reply-from-the-command-line.md#file-a-conversation-in-a-project).
+Firstmate can file a conversation in a project or topic by its ID when it
+opens the conversation, and can move one, from the [command line](reply-from-the-command-line.md#file-a-conversation-in-a-project).
 It cannot create or rename a project or topic. Being in a project gives a
 conversation no access to the others and shares no context with them.
 

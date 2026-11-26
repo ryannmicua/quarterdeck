@@ -749,35 +749,27 @@ def placement_label(item: dict[str, object], projects: list[dict[str, object]]) 
     return " / ".join(names)
 
 
-def find_project(projects: list[dict[str, object]], reference: str) -> dict[str, object]:
-    """A project by its ID or its name, ignoring case."""
-    found = next((entry for entry in projects if reference.upper() == entry["id"]
-                  or reference.casefold() == str(entry["name"]).casefold()), None)
-    if found is None:
-        known = ", ".join(str(entry["name"]) for entry in projects) or "none yet"
-        raise ValueError(f"no project {reference!r}; the projects are: {known}")
-    return found
-
-
-def find_topic(project: dict[str, object], reference: str) -> dict[str, object]:
-    found = next((entry for entry in project["topics"]  # type: ignore[attr-defined]
-                  if reference.upper() == entry["id"] or reference.casefold() == entry["name"].casefold()), None)
-    if found is None:
-        known = ", ".join(entry["name"] for entry in project["topics"]) or "none yet"  # type: ignore[attr-defined]
-        raise ValueError(f"no topic {reference!r} in {project['name']}; its topics are: {known}")
-    return found
+def find_project(projects: list[dict[str, object]], project_id: object) -> dict[str, object] | None:
+    return next((entry for entry in projects if entry["id"] == project_id), None)
 
 
 def named_placement(data: dict[str, object], project: str | None, topic: str | None) -> dict[str, str] | None:
-    """The placement that --project and --topic name, by ID or by name. None means Ungrouped."""
+    """The placement that --project and --topic name by ID, in any case. None means Ungrouped."""
     if project is None:
         if topic is not None:
             raise ValueError("--topic needs --project")
         return None
-    found = find_project(data.get("projects", []), project)  # type: ignore[arg-type]
+    projects = data.get("projects", [])
+    found = find_project(projects, project.upper())  # type: ignore[arg-type]
+    if found is None:
+        known = ", ".join(f"{entry['id']} {entry['name']}" for entry in projects) or "none yet"  # type: ignore[attr-defined]
+        raise ValueError(f"no project with ID {project!r}; the projects are: {known}")
     placement = {"project": str(found["id"])}
     if topic is not None:
-        placement["topic"] = str(find_topic(found, topic)["id"])
+        if not any(entry["id"] == topic.upper() for entry in found["topics"]):  # type: ignore[attr-defined]
+            known = ", ".join(f"{entry['id']} {entry['name']}" for entry in found["topics"]) or "none yet"  # type: ignore[attr-defined]
+            raise ValueError(f"no topic with ID {topic!r} in {found['id']} {found['name']}; its topics are: {known}")
+        placement["topic"] = topic.upper()
     return placement
 
 
@@ -795,8 +787,8 @@ def change_projects(store: Path, payload: object) -> dict[str, object]:
             new_id = f"P{max((int(project['id'][1:]) for project in projects), default=0) + 1}"  # type: ignore[attr-defined]
             projects.append({"id": new_id, "name": name, "topics": []})  # type: ignore[attr-defined]
         elif fields == {"project", "name"}:
-            project = find_project(projects, str(payload["project"]))  # type: ignore[arg-type]
-            if payload["project"] != project["id"]:
+            project = find_project(projects, payload["project"])  # type: ignore[arg-type]
+            if project is None:
                 raise ValueError("Unknown project.")
             name = clean_group_name(payload["name"], "Topic name")
             if any(name.casefold() == topic["name"].casefold() for topic in project["topics"]):  # type: ignore[attr-defined]
@@ -810,6 +802,8 @@ def change_projects(store: Path, payload: object) -> dict[str, object]:
                 raise ValueError("Unknown project or topic.")
             if PROJECT_ID_RE.fullmatch(target):
                 project = find_project(projects, target)  # type: ignore[arg-type]
+                if project is None:
+                    raise ValueError("Unknown project or topic.")
                 name = clean_group_name(payload["name"], "Project name")
                 if any(name.casefold() == str(other["name"]).casefold() for other in projects if other is not project):  # type: ignore[attr-defined]
                     raise AnswerConflict(f"A project named {name} already exists. Choose another name.")
@@ -2307,11 +2301,9 @@ def list_projects(args: argparse.Namespace) -> int:
     """Print the owner's projects and the topics in each, so Firstmate can name one when it opens a conversation."""
     def action() -> int:
         tree = project_tree(read_store(store_path()))
-        if args.json:
-            print(json.dumps(tree, indent=2, ensure_ascii=False))
-        elif not tree:
+        if not tree:
             print("No projects.")
-        for project in tree if not args.json else ():
+        for project in tree:
             print(f"{project['id']:<6} {project['name']}")
             for topic in project["topics"]:  # type: ignore[attr-defined]
                 print(f"  {topic['id']:<6} {topic['name']}")
@@ -6384,21 +6376,20 @@ def make_parser() -> argparse.ArgumentParser:
     converse_cmd.add_argument("--title", required=True, help="a short topic that says what the conversation is about")
     converse_cmd.add_argument("--config", type=Path, help="use the same JSON config file as serve")
     converse_cmd.add_argument("--text", required=True, help="the message")
-    converse_cmd.add_argument("--project", metavar="NAME", help="file the conversation in this project, by name or ID such as P1; see quarterdeck projects")
-    converse_cmd.add_argument("--topic", metavar="NAME", help="with --project: file it in this topic of the project, by name or ID such as T2")
+    converse_cmd.add_argument("--project", metavar="ID", help="file the conversation in this project, by ID such as P1; see quarterdeck projects")
+    converse_cmd.add_argument("--topic", metavar="ID", help="with --project: file it in this topic of the project, by ID such as T2")
     attachment_options(converse_cmd)
 
-    projects_cmd = command("projects", "list the projects and topics a conversation can be filed in",
+    command("projects", "list the projects and topics a conversation can be filed in",
                            "List the owner's projects and the topic in each, with their IDs. The owner creates and renames "
-                           "them on the Desk; use a name or ID with converse or move.", list_projects)
-    projects_cmd.add_argument("--json", action="store_true", help="print the projects and topics as JSON")
+                           "them on the Desk; use an ID with converse or move.", list_projects)
 
     move_cmd = command("move", "move a conversation to a project and topic, or back to Ungrouped",
                        "Change which project and topic a conversation is filed in. The conversation keeps its ID, messages, "
                        "pin and latest activity.", move_item)
     move_cmd.add_argument("id", help="a conversation's item ID, such as Q12")
-    move_cmd.add_argument("--project", metavar="NAME", help="the project, by name or ID such as P1")
-    move_cmd.add_argument("--topic", metavar="NAME", help="with --project: a topic of that project, by name or ID such as T2")
+    move_cmd.add_argument("--project", metavar="ID", help="the project, by ID such as P1")
+    move_cmd.add_argument("--topic", metavar="ID", help="with --project: a topic of that project, by ID such as T2")
     move_cmd.add_argument("--ungrouped", action="store_true", help="return the conversation to Ungrouped")
 
     mark = command("mark", "mark questions answered, closed or open",
