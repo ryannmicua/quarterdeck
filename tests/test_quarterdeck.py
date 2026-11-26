@@ -1180,8 +1180,12 @@ const error = 'Gateway failure. '.repeat(1500) + 'End of response.';
 window.fetch = async () => ({ok: false, status: 502, text: async () => error});
 card(1).querySelector('[data-choice="Hold"]').click();
 await sendBatch();
-await new Promise(resolve => setTimeout(resolve, 50));
 const bar = button('send').closest('.sendbar');
+// Wait until the page has reserved the grown bar's height, so scrolling accounts for it.
+for (let tries = 0; Math.abs(parseFloat(getComputedStyle(document.documentElement).getPropertyValue('--sendbar-height'))
+                              - bar.getBoundingClientRect().height) >= 1 && tries < 100; tries++) {
+  await new Promise(resolve => setTimeout(resolve, 10));
+}
 const status = bar.querySelector('output');
 check(status.textContent.endsWith('End of response.') && status.scrollHeight > status.clientHeight,
       'A long error was lost or did not fit in its own scroll area');
