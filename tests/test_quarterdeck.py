@@ -7652,7 +7652,7 @@ class ConversationGroupingTests(ImageCase):
         self.assertEqual(after["items"][0]["placement"], {"project": "P1", "topic": "T1"})
         row = self.row(port)
         self.assertIn("Pocket Atlas / Signs", row)
-        self.assertRegex(row, r'href="q1\.html#reply-[0-9a-f]{32}"')
+        self.assertRegex(row, r'href="q1\.html\?from=conversations#reply-[0-9a-f]{32}"')
         self.assertIn("Conversation · Pocket Atlas / Signs · saved", self.fetch(port, "/qd/q1.html")[1])
         self.assertEqual(quarterdeck.conversation_activity(after["items"][0]),
                          quarterdeck.conversation_activity(before["items"][0]))
