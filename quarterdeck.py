@@ -3411,6 +3411,9 @@ body:has(dialog[open]) { overflow:hidden; }
 .fold .snip { color:var(--soft); white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
 .fold time { color:var(--soft); font-size:var(--text-sm); white-space:nowrap; }
 .fold:active { background:var(--faint); }
+.fold[aria-expanded="true"] { display:block; padding:0 0 .1rem; }
+.fold[aria-expanded="true"] .snip, .fold[aria-expanded="true"] time { display:none; }
+.fold[aria-expanded="true"] + .msg-body .who > strong { display:none; }
 @media (hover: hover) and (pointer: fine) { .fold:hover { background:var(--faint); } }
 @media (max-width: 30rem) { .fold { grid-template-columns:auto minmax(0,1fr); } .fold time { display:none; } }
 .mail-pane { display:none; }
@@ -4276,26 +4279,33 @@ if (document.documentElement.classList.contains('in-pane')) {
 # A conversation reads as a stacked thread, and an item that waits for the owner can be kept for later.
 THREAD_SCRIPT = r"""
 (() => {
-  const open = li => {
-    if (!li.classList.contains('folded')) return;
-    li.classList.remove('folded');
-    li.querySelector('.fold').remove();
-    const body = li.querySelector('.msg-body');
-    body.replaceWith(...body.childNodes);
+  const set = (li, show) => {
+    const fold = li.querySelector(':scope > button.fold');
+    const body = li.querySelector(':scope > .msg-body');
+    if (!fold || !body) return;
+    li.classList.toggle('folded', !show);
+    body.hidden = !show;
+    fold.setAttribute('aria-expanded', String(show));
   };
+  const open = li => set(li, true);
   document.addEventListener('click', event => {
     const fold = event.target.closest('button.fold');
-    if (!fold) return;
-    const li = fold.closest('li');
-    open(li);
-    li.tabIndex = -1;
-    li.focus({preventScroll: true});
+    if (fold) {
+      const li = fold.closest('li');
+      set(li, fold.getAttribute('aria-expanded') !== 'true');
+      return;
+    }
+    const li = event.target.closest('li.msg');
+    if (!li || li.classList.contains('folded') || !li.querySelector(':scope > button.fold')) return;
+    if (event.target.closest('a, button, input, textarea, select, summary, label')) return;
+    if (!getSelection().isCollapsed) return;
+    set(li, false);
   });
   const reveal = () => {
     let target = null;
     try { target = location.hash.length > 1 ? document.getElementById(decodeURIComponent(location.hash.slice(1))) : null; } catch {}
     const li = target?.closest('li.msg');
-    if (!li || !li.classList.contains('folded')) return;
+    if (!li || !li.querySelector(':scope > button.fold')) return;
     open(li);
     li.scrollIntoView({block: 'center'});
   };
