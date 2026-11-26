@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import re
+import shutil
 import sys
 from datetime import datetime, timezone
 from pathlib import Path
@@ -271,12 +272,28 @@ class UnderwayTests(base.ImageCase):
         self.assertNotIn("Conversation</a>", wharf)
         self.assertNotIn("Question</a>", pier)
 
-    def test_the_phone_layout_is_a_two_line_card_with_no_sideways_scroll(self) -> None:
-        css = quarterdeck.PAGE_CSS
-        phone = css[css.index("@media (max-width: 40rem) {\n  .desk.underway thead"):]
-        phone = phone[:phone.index("\n}\n")]
-        for rule in ("display:grid", "grid-template-columns:auto minmax(0,1fr) auto", "td.project { display:block; width:auto; grid-column:2; grid-row:2",
-                     "td.state { grid-column:1; grid-row:2; width:auto", "table, .desk.underway tbody { display:block"):
-            self.assertIn(rule, phone)
-        self.assertNotIn("overflow-x", phone)
-        self.assertIn("text-overflow:ellipsis", css)
+    def test_the_phone_layout_wraps_the_title_and_shows_the_project_with_no_sideways_scroll(self) -> None:
+        if not shutil.which("google-chrome"):
+            self.skipTest("google-chrome is required for the Under way browser test")
+        title = "Quarterdeck: group the Under way tab into in progress and merged, and link each question asked"
+        home = self.make_home(body=reading([snapshot_task("Wharf", title=title, pr=PULL + "4")]))
+        port = self.start("/qd", workers_home=home)
+        self.assertEqual(self.fetch(port, "/qd/workers.json")[0], 200)
+        steps = """
+document.getElementById('desk-tab-under-way').click();
+const table = document.querySelector('#desk-panel-under-way table');
+const row = table.querySelector('tbody tr');
+const title = row.querySelector('th .clip');
+const project = row.querySelector('td.project');
+const lineHeight = parseFloat(getComputedStyle(title).lineHeight);
+check(innerWidth <= 640, 'The window is wider than a phone: ' + innerWidth);
+check(table.scrollWidth <= table.clientWidth, 'The Under way table scrolls sideways');
+check(document.documentElement.scrollWidth <= innerWidth, 'The page scrolls sideways');
+check(project.checkVisibility() && project.textContent === 'Copper Orchard', 'The phone layout hid the project');
+const lines = Math.round(title.getBoundingClientRect().height / lineHeight);
+check(lines === 2, 'The long title takes ' + lines + ' lines instead of two');
+"""
+        page = base.WorkersTests.instrumented_page(quarterdeck.list_page, steps)
+        with patch.object(quarterdeck, "list_page", page):
+            outcome, stderr = base.WorkersTests.browser_page(self, port, "/qd/", window_size="390,844")
+        self.assertEqual(outcome, "PASS", stderr)

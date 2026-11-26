@@ -2882,7 +2882,8 @@ textarea { display:block; width:100%; resize:vertical; background:var(--ground);
   .desk.underway table, .desk.underway tbody { display:block; }
   .desk.underway tbody tr { display:grid; grid-template-columns:auto minmax(0,1fr) auto; gap:.3rem .7rem;
     align-items:center; padding:.6rem .3rem; border-bottom:1px solid var(--rule); }
-  .desk.underway tbody th { grid-column:1 / -1; padding:0; border:0; width:auto; min-width:0; }
+  .desk.underway tbody th { grid-column:1 / -1; padding:0; border:0; width:auto; min-width:0; white-space:normal; }
+  .desk.underway tbody th .clip { display:-webkit-box; -webkit-box-orient:vertical; -webkit-line-clamp:2; line-clamp:2; white-space:normal; overflow-wrap:anywhere; }
   .desk.underway tbody td { padding:0; border:0; width:auto; min-width:0; }
   .desk.underway table { table-layout:auto; }
   .desk-panel .desk.underway td.project { display:block; width:auto; grid-column:2; grid-row:2; font-size:var(--text-sm); color:var(--soft); }

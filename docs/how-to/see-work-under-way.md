@@ -21,8 +21,9 @@ where to set it. Rendered snapshots have no Under way tab.
    **Question asked** first, then **Ready to merge**, then the rest.
    **Merged today** lists merged work below it.
 3. Read each row. It shows the work's title, its project, one status word,
-   and links. Merged rows have no status word. A long title is cut short
-   and shows in full when you point at it. The title leaves out a project name
+   and links. Merged rows have no status word. On a computer, a long title
+   is cut short and shows in full when you point at it. On a phone, a long
+   title wraps to two lines. The title leaves out a project name
    at its start when the Project column shows it.
 4. Select **Question** on a **Question asked** row to open the question. It
    opens the first address in the question, such as a review board, or the
