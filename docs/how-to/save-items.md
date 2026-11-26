@@ -23,7 +23,23 @@ quarterdeck add --kind resource --title "Calls redesign" \
 ```
 
 Only `http://` and `https://` addresses are accepted. Use link text that says
-where the link goes.
+where the link goes. Repeat `--link-text` and `--url` to give a resource several
+links; each link has its own text, and they show in the order given.
+
+### Edit a saved item
+
+Change a resource or question item's title, description or, for a resource, its
+links without saving it again:
+
+```sh
+quarterdeck edit Q15 --description "The design review, now with its board." \
+  --link-text "Design review" --url https://example.com/review \
+  --link-text "Review board" --url https://example.com/board
+```
+
+The ID, saved date, answers and messages stay. Links are replaced as a set, so
+repeat every link you want to keep. Editing questions or answers is not
+supported, and lists and conversations cannot be edited.
 
 ### A list
 
@@ -120,8 +136,12 @@ quarterdeck show Q3      # read Q3
 quarterdeck remove Q3    # delete Q3 and retire its ID
 ```
 
-Use the displayed ID, such as `Q3` or `q3`. To correct an item you saved with
-`add`, remove it and add it again. The new item gets a new ID.
+Use the displayed ID, such as `Q3` or `q3`. To correct a resource or question
+item's title, description or resource links, use [`edit`](#edit-a-saved-item),
+which keeps the ID. To change a list's entries or a question, remove the item
+and add it again with `add`. Removing deletes its answers and messages, and the
+new item gets a new ID. A conversation cannot be recreated with `add`, so
+removing one deletes its messages and images for good.
 
 ## See them
 

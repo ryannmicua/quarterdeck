@@ -593,12 +593,41 @@ def question_entries(raw: object, pending: dict[str, bytes] | None = None, *,
     return questions
 
 
+def resource_links(body: dict[str, object]) -> list[dict[str, str]]:
+    """A resource's links in order. The older single-link body reads as a list of one."""
+    if "links" in body:
+        if set(body) != {"links"}:
+            raise ValueError("a resource has either url and link_text or links, not both")
+        links = question_links(body["links"], "resource")
+        if not links:
+            raise ValueError("a resource needs at least one link")
+        return links
+    if set(body) != {"url", "link_text"}:
+        raise ValueError("a resource needs a url and link_text, or a list of links")
+    return [{"text": clean_text(body.get("link_text"), "link text", TITLE_LIMIT), "url": clean_url(body.get("url"))}]
+
+
+def resource_body(body: dict[str, object]) -> dict[str, object]:
+    """One link keeps the original body shape so saved items need no rewrite; more links use a links list."""
+    links = resource_links(body)
+    if len(links) == 1:
+        return {"url": links[0]["url"], "link_text": links[0]["text"]}
+    return {"links": links}
+
+
+def paired_links(texts: list[str] | None, urls: list[str] | None) -> list[dict[str, str]]:
+    texts, urls = texts or [], urls or []
+    if len(texts) != len(urls):
+        raise ValueError("each --link-text needs its own --url")
+    return [{"text": text, "url": url} for text, url in zip(texts, urls)]
+
+
 def validated_body(kind: str, body: object, pending: dict[str, bytes] | None = None, *,
                    stored: bool = False) -> dict[str, object]:
     if not isinstance(body, dict):
         raise ValueError("body must be an object")
     if kind == "resource":
-        return {"url": clean_url(body.get("url")), "link_text": clean_text(body.get("link_text"), "link text", TITLE_LIMIT)}
+        return resource_body(body)
     if kind == "list":
         return {"entries": list_entries(body.get("entries"))}
     if kind == "conversation":
@@ -608,14 +637,14 @@ def validated_body(kind: str, body: object, pending: dict[str, bytes] | None = N
     return {"questions": question_entries(body.get("questions"), pending, stored=stored)}
 
 
-def make_body(kind: str, *, url: str | None, link_text: str | None, body: str | None,
+def make_body(kind: str, *, url: list[str] | None, link_text: list[str] | None, body: str | None,
               images: dict[str, bytes]) -> dict[str, object]:
     if kind == "resource":
-        if url is None or link_text is None:
+        if not url or not link_text:
             raise ValueError("a resource needs --url and --link-text")
         if body is not None:
             raise ValueError("a resource takes --url and --link-text, not a body")
-        return validated_body(kind, {"url": url, "link_text": link_text})
+        return validated_body(kind, {"links": paired_links(link_text, url)})
     if url is not None or link_text is not None:
         raise ValueError("--url and --link-text are only for a resource")
     if body is None:
@@ -1336,7 +1365,7 @@ def item_text(item: dict[str, object]) -> str:
     if item.get("tags"):
         lines.insert(3 if item.get("project") else 2, "Tags: " + ", ".join(item["tags"]))
     if item["kind"] == "resource":
-        lines.append(f"{body['link_text']}: {body['url']}")  # type: ignore[index]
+        lines.extend(f"{link['text']}: {link['url']}" for link in resource_links(body))  # type: ignore[arg-type]
     elif item["kind"] == "list":
         lines.extend(f"{item_id}.{number}  {entry}" for number, entry in enumerate(body["entries"], 1))  # type: ignore[index]
     elif item["kind"] == "conversation":
@@ -1465,6 +1494,29 @@ def add_item(args: argparse.Namespace) -> int:
             save_images(store, item_id, images)
             write_store(store, data)
         print(item_id)
+        return 0
+    return run_item_command(action)
+
+
+def edit_item(args: argparse.Namespace) -> int:
+    def action() -> int:
+        if args.title is None and args.description is None and not args.url and not args.link_text:
+            raise ValueError("nothing to change: give --title, --description, or --link-text with --url")
+        links = paired_links(args.link_text, args.url) if args.url or args.link_text else None
+        store = store_path()
+        with changing_store(store) as data:
+            item = find_item(data, args.id)
+            if item["kind"] not in ("resource", "questions"):
+                raise ValueError(f"{item['id']} is a {item['kind']}; edit changes only resources and question items")
+            if links is not None and item["kind"] != "resource":
+                raise ValueError(f"{item['id']} is not a resource, so it has no links to edit")
+            if args.title is not None:
+                item["title"] = clean_text(args.title, "title", TITLE_LIMIT)
+            if args.description is not None:
+                item["description"] = clean_text(args.description, "description", DESCRIPTION_LIMIT, multiline=True)
+            if links is not None:
+                item["body"] = validated_body("resource", {"links": links})
+        print(f"Edited {item['id']}")
         return 0
     return run_item_command(action)
 
@@ -1795,10 +1847,7 @@ def clarify_arguments(clarified, changed, item_id, part):
 
 def reply_text_and_links(args: argparse.Namespace):
     text = clean_text(args.text, "reply text", TEXT_LIMIT, multiline=True)
-    link_texts, urls = args.link_text or [], args.url or []
-    if len(link_texts) != len(urls):
-        raise ValueError("each --link-text needs its own --url")
-    links = question_links([{"text": t, "url": u} for t, u in zip(link_texts, urls)], "reply")
+    links = question_links(paired_links(args.link_text, args.url), "reply")
     return text, links
 
 
@@ -2352,7 +2401,11 @@ body:has(dialog[open]) { overflow:hidden; }
 .lib-item p { margin:.2rem 0 0; }
 .lib-head { display:flex; gap:.2rem .8rem; align-items:baseline; }
 .lib-title { font:700 var(--text-lg)/1.3 var(--sans); }
-.lib-desc { font-size:var(--text-md); color:var(--soft); }
+.lib-item.ref-row { display:flex; flex-wrap:wrap; align-items:baseline; gap:0 .9rem; padding:.4rem 0; }
+.ref-title { font:500 var(--text-md)/1.4 var(--sans); }
+.ref-more { display:inline-flex; flex-wrap:wrap; gap:0 .8rem; font-size:var(--text-sm); }
+.ref-meta { display:inline-flex; flex-wrap:wrap; gap:0 .8rem; margin-left:auto; font-size:var(--text-sm); color:var(--soft); }
+.ref-meta a, .ref-id { color:var(--soft); font:400 var(--text-sm)/1.4 var(--sans); }
 .lib-item .meta { display:flex; flex-wrap:wrap; gap:0 1rem; font-size:var(--text-md); }
 .page-section { margin:2rem 0 0; }
 .page-head { display:flex; flex-wrap:wrap; gap:.6rem 1.5rem; align-items:center; justify-content:space-between; max-width:52rem; }
@@ -2667,7 +2720,7 @@ LIBRARY_SCRIPT = r"""
     if (e.target === dialog || e.target.closest('[data-close]')) {
       dialog.close();
     } else if (!e.defaultPrevented && e.button === 0 && !e.altKey && !e.ctrlKey && !e.metaKey && !e.shiftKey
-               && e.target.closest('a.lib-title')) {
+               && e.target.closest('a.lib-title, a.ref-title, a.ref-extra')) {
       const tab = selectedTab();
       const filters = Object.fromEntries(filtersOf(tab).map(select => [select.name, select.value]));
       history.replaceState({...history.state, libraryLookup:{tab:tab.id, query:searchOf(tab).value, filters}}, '');
@@ -3976,6 +4029,29 @@ def day_time(moment: object) -> str:
     return f'<time class="day" datetime="{esc(moment)}">{esc(str(moment)[:10])}</time>'
 
 
+def reference_row(item, *, served):
+    """A bookmark: the title links straight to the resource, extra links follow inline, details stay on the item's page."""
+    item_id, kind = item["id"], item["kind"]
+    page = item_page_name(item_id)
+    if kind == "resource":
+        first, *more = resource_links(item["body"])
+        title = (f'<a class="ref-title" href="{esc(first["url"])}" rel="noopener noreferrer">{esc(item["title"])}</a>')
+        extra = "".join(f'<a class="ref-extra" href="{esc(link["url"])}" rel="noopener noreferrer">{esc(link["text"])}</a>'
+                        for link in more)
+    else:
+        title, extra = f'<a class="ref-title" href="{page}">{esc(item["title"])}</a>', ""
+    project = f'<span>{esc(item["project"])}</span>' if item.get("project") else ""
+    attributes = filter_data(item)
+    if served:
+        search = f'{item["title"]} {item["description"]}'
+        attributes += f' data-id="{item_id}" data-search="{esc(search.casefold())}"'
+    item_ref = (f'<a class="lib-title ref-id" href="{page}">{item_id}</a>' if kind == "resource"
+                else f'<span class="ref-id">{item_id}</span>')
+    small = project + day_time(item["saved_at"]) + item_ref
+    return (f'<li class="lib-item ref-row"{attributes}>'
+            f'{title}{f"<span class=ref-more>{extra}</span>" if extra else ""}<span class="ref-meta">{small}</span></li>')
+
+
 def library_row(item, *, served):
     item_id, kind = item["id"], item["kind"]
     title = f'<a class="lib-title" href="{item_page_name(item_id)}">{esc(item["title"])}</a>'
@@ -4002,8 +4078,7 @@ def library_row(item, *, served):
         detail = f'<p class="meta">{label}</p>'
     else:
         replied = '<span class="badge">Replied</span>' if unread else ""
-        description = '' if kind == "conversation" else f'<p class="lib-desc">{linked_text(item["description"])}</p>'
-        detail = description + f'<p class="meta"><span>{KIND_LABELS[kind]}</span>{replied}{day_time(item["saved_at"])}</p>'
+        detail = f'<p class="meta"><span>{KIND_LABELS[kind]}</span>{replied}{day_time(item["saved_at"])}</p>'
     return (f'<li class="lib-item"{attributes}>'
             f'<div class="lib-head"><span class="id">{item_id}</span>'
             f'{title}{project}</div>{detail}{tags}</li>')
@@ -4012,7 +4087,8 @@ def library_row(item, *, served):
 def library_panel(name: str, items: list[dict[str, object]], empty: str, *, served: bool) -> str:
     list_id = f"{name}-list"
     filters = filter_bar(list_id, items, restorable=served)
-    rows = "".join(library_row(item, served=served) for item in items)
+    row = reference_row if name == "references" else library_row
+    rows = "".join(row(item, served=served) for item in items)
     listing = f'<ul class="lib-list" id="{list_id}">{rows}</ul>' if rows else ""
     if not served:
         return (filters + listing + (no_match(list_id) if filters else "")) if rows else f'<p class="empty">{esc(empty)}</p>'
@@ -4155,8 +4231,8 @@ def list_page(data: dict[str, object], site_title: str, *, served: bool, saved_n
 def item_body_html(item: dict[str, object]) -> str:
     item_id, body, kind = str(item["id"]), item["body"], item["kind"]
     if kind == "resource":
-        url = str(body["url"])  # type: ignore[index]
-        return f'<p><a class="open-link" href="{esc(url)}" rel="noopener noreferrer">{esc(body["link_text"])}</a></p>'  # type: ignore[index]
+        return "".join(f'<p><a class="open-link" href="{esc(link["url"])}" rel="noopener noreferrer">{esc(link["text"])}</a></p>'
+                       for link in resource_links(body))  # type: ignore[arg-type]
     if kind == "list":
         entries = body["entries"]  # type: ignore[index]
         return '<ol class="numbered">' + "".join(
@@ -4934,6 +5010,7 @@ COMMAND_DOCS = {
     "catch-up": ["how-to/catch-up.md", "reference/cli-and-config.md", "reference/item-store.md"],
     "stats": ["how-to/read-the-report.md", "reference/cli-and-config.md"],
     "add": ["how-to/save-items.md", "how-to/classify-items.md", "reference/cli-and-config.md", "reference/item-store.md"],
+    "edit": ["how-to/save-items.md", "reference/cli-and-config.md", "reference/item-store.md"],
     "list": ["how-to/save-items.md", "reference/cli-and-config.md"],
     "show": ["how-to/read-answers.md", "how-to/save-items.md", "reference/cli-and-config.md"],
     "reply": ["how-to/reply-from-the-command-line.md", "how-to/talk-to-firstmate.md", "reference/cli-and-config.md", "reference/item-store.md"],
@@ -5025,13 +5102,23 @@ def make_parser() -> argparse.ArgumentParser:
     add.add_argument("--kind", required=True, choices=ADD_KINDS, help="what the item is")
     add.add_argument("--title", required=True, help="a short title that says what it is about")
     add.add_argument("--description", required=True, help="one or two sentences: what it is and why it was saved")
-    add.add_argument("--url", help="a resource's http(s) address")
-    add.add_argument("--link-text", help="a resource's link text")
+    add.add_argument("--url", action="append", metavar="URL", help="a resource's http(s) address; repeat with --link-text for more links")
+    add.add_argument("--link-text", action="append", metavar="TEXT", help="the words of a resource's link")
     add.add_argument("--project", help="the item's project name or owner/name repository")
     add.add_argument("--tag", dest="tags", action="append", metavar="TAG",
                      help=f"a lowercase topic tag, repeatable, up to {TAG_LIMIT}; allowed: {', '.join(CLASSIFICATION['tag'])}")
     add.add_argument("--body-file", metavar="PATH", help="the body of a list or questions; - reads standard input. Questions may carry PNG, JPEG or still WebP images "
                                                           "(up to 5 MB each) that are copied in when saved")
+
+    edit = command("edit", "change a resource or question item's title, description or links",
+                   "Change a resource or question item's title, description or, for a resource, its links, in place. "
+                   "The ID, saved date, answers and messages stay. Giving --link-text and --url replaces all of a "
+                   "resource's links. Lists and conversations cannot be edited.", edit_item)
+    edit.add_argument("id", help="item ID, such as Q7")
+    edit.add_argument("--title", help="the new title")
+    edit.add_argument("--description", help="the new description")
+    edit.add_argument("--url", action="append", metavar="URL", help="the http(s) address for the matching --link-text")
+    edit.add_argument("--link-text", action="append", metavar="TEXT", help="the words of a link; repeat for more links. All links are replaced")
 
     command("list", "list saved items, newest first", "List saved items, newest first.", list_items)
 

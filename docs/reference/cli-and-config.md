@@ -4,8 +4,9 @@
 
 ```text
 quarterdeck add --kind resource|list|questions --title TEXT --description TEXT
-                [--url URL --link-text TEXT] [--body-file PATH|-]
+                [--url URL --link-text TEXT]... [--body-file PATH|-]
                 [--project NAME] [--tag TAG ...]
+quarterdeck edit ID [--title TEXT] [--description TEXT] [--link-text TEXT --url URL]...
 quarterdeck list
 quarterdeck show ID
 quarterdeck reply ID[.PART] --ask ID --text TEXT [--link-text TEXT --url URL]... [--image PATH --alt TEXT]...
@@ -44,7 +45,8 @@ as `reply`.
 
 | Command | What it does |
 | --- | --- |
-| `add` | Saves a new item and prints its ID. A `resource` needs `--url` and `--link-text`. A `list` or `questions` item needs `--body-file`. See [the input formats and examples](../how-to/save-items.md#add-an-item) and [how to classify items and questions when saving](../how-to/classify-items.md#classify-when-you-save). |
+| `edit` | Changes a resource or question item's title, description or, for a resource, links, in place. Lists and conversations are refused. The ID, saved date, answers and messages stay. Giving `--link-text` and `--url` replaces all of a resource's links, so repeat the pair for each link to keep. Prints `Edited ID`. See [edit a saved item](../how-to/save-items.md#edit-a-saved-item). |
+| `add` | Saves a new item and prints its ID. A `resource` needs `--url` and `--link-text`; repeat the pair for more links. A `list` or `questions` item needs `--body-file`. See [the input formats and examples](../how-to/save-items.md#add-an-item) and [how to classify items and questions when saving](../how-to/classify-items.md#classify-when-you-save). |
 | `list` | Prints saved items, newest first, with ID, kind, saved date and title. |
 | `show` | Prints the item's text, numbering list entries and questions as `Q7.1`, `Q7.2`. Includes question links, stored states, and saved answers with their timestamps and delivery status. For a standalone conversation, prints the transcript in saved order with timestamps, IDs, delivery status for outgoing messages, and attachments. A standalone Firstmate message is marked `Update`. Image references are paths relative to the served site or the item store directory. |
 | `reply` | Adds Firstmate's reply to an existing ask on a whole question item (`Q7`) or one question (`Q7.1`), or to an owner's message in a [conversation](../how-to/talk-to-firstmate.md) (`Q12`). It preserves saved answers and question states. Supply the required `--ask ID` from the inbox note and the reply in `--text`. Pair `--link-text` with `--url` and `--image` with `--alt` in the order given. See [Reply from the command line](../how-to/reply-from-the-command-line.md). |

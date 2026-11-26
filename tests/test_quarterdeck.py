@@ -327,8 +327,8 @@ class PageTests(StoreCase):
         self.assertNotIn("<h2>Answered</h2>", page)
         references = page.split('id="panel-references"')[1].split('id="panel-answered"')[0]
         self.assertLess(references.index('data-id="Q2"'), references.index('data-id="Q1"'))
-        self.assertIn('href="q1.html">Calls redesign</a>', references)
-        self.assertNotIn('href="https://example.com/lavish/calls"', references)
+        self.assertIn('href="https://example.com/lavish/calls" rel="noopener noreferrer">Calls redesign</a>', references)
+        self.assertIn('href="q1.html">Q1</a>', references)
 
     def test_a_question_item_moves_between_desk_and_answered_by_itself(self) -> None:
         self.add_all_kinds()
@@ -393,7 +393,8 @@ class PageTests(StoreCase):
         self.assertIn('<section class="page-section"><h2>References</h2>', index)
         self.assertIn('<section class="page-section"><h2>Answered</h2>', index)
         self.assertLess(index.index("<h2>References</h2>"), index.index("<h2>Answered</h2>"))
-        self.assertIn('href="q1.html">Calls redesign</a>', index.split("<h2>References</h2>")[1].split("</section>")[0])
+        self.assertIn('href="https://example.com/lavish/calls" rel="noopener noreferrer">Calls redesign</a>',
+                      index.split("<h2>References</h2>")[1].split("</section>")[0])
         answered = index.split("<h2>Answered</h2>")[1].split("</section>")[0]
         self.assertEqual(re.findall(r'<a class="lib-title" href="([^"]+)">([^<]+)</a>', answered),
                          [("q4.html", "Pier lights")])
@@ -450,7 +451,7 @@ class PageTests(StoreCase):
         self.add("resource", "Notes", "See https://example.com/notes/1, then <b> https://example.org/a?x=1&y=2 </b>. Not javascript:alert(1).",
                  "--url", "https://example.com/n", "--link-text", "Notes")
         pages = self.pages()
-        for name in ("q1.html", "index.html"):
+        for name in ("q1.html",):
             self.assertIn('See <a href="https://example.com/notes/1" target="_blank" rel="noopener noreferrer">'
                           'https://example.com/notes/1</a>, then &lt;b&gt;', pages[name])
             self.assertIn('<a href="https://example.org/a?x=1&amp;y=2" target="_blank" rel="noopener noreferrer">',
@@ -496,7 +497,16 @@ class PageTests(StoreCase):
             'Install from git+https://example.org/tools.git@v2.'
         )
         pages = self.pages()
-        self.assertIn(f'<p class="lib-desc">{expected}</p>', pages["index.html"])
+        class Visible(HTMLParser):
+            text = ""
+
+            def handle_data(parser, data):
+                parser.text += data
+
+        visible = Visible()
+        visible.feed(pages["index.html"].split("<h2>References</h2>")[1].split("<h2>Answered")[0])
+        self.assertIn("Notes", visible.text)
+        self.assertNotIn("Install from git+https://example.org/tools.git@v2.", visible.text)
         self.assertNotIn(expected, pages["index.html"].split("<h2>References</h2>")[0])
         for name in ("q1.html", "q2.html"):
             self.assertIn(f'<p class="lead">{expected}</p>', pages[name])
@@ -1646,6 +1656,106 @@ window.addEventListener('pageshow', async () => {
                     browser.terminate()
         self.assertEqual(results, ["PASS"])
 
+    def test_following_a_bookmark_and_going_back_restores_the_references_lookup(self):
+        chrome = shutil.which("google-chrome")
+        if not chrome:
+            self.skipTest("google-chrome is required for the bookmark history browser test")
+        finished = threading.Event()
+        results = []
+        handler = quarterdeck.make_handler("Quarterdeck", "/qd")
+
+        class HistoryTestHandler(handler):
+            def do_POST(self):
+                if self.path == "/qd/history-test-result":
+                    results.append(self.rfile.read(int(self.headers["Content-Length"])).decode())
+                    self.send_text(200, "")
+                    finished.set()
+                else:
+                    super().do_POST()
+
+        with patch.object(quarterdeck, "make_handler", return_value=HistoryTestHandler):
+            port = self.start("/qd")
+        local = f"http://127.0.0.1:{port}/qd"
+        self.add("resource", "Harbor chart", "The quay chart.", "--project", "Beta", "--tag", "research",
+                 "--link-text", "Chart", "--url", f"{local}/q3.html",
+                 "--link-text", "Tide board", "--url", f"{local}/q4.html")
+        self.add("resource", "Harbor notes", "Notes on the quay.", "--project", "Alpha", "--tag", "research",
+                 "--link-text", "Notes", "--url", "https://example.org/notes")
+        for title in ("First stop", "Second stop"):
+            self.add("list", title, "A local destination.", "--body-file", "-", stdin="Stop\n")
+        self.add("resource", "Harbor lights", "Lamp colours.", "--project", "Beta", "--tag", "product-design",
+                 "--link-text", "Lights", "--url", "https://example.org/lights")
+
+        list_page = quarterdeck.list_page
+        item_page = quarterdeck.item_page
+
+        def instrumented_page(*args, **kwargs):
+            return list_page(*args, **kwargs).replace("</body>", """
+<script>
+const report = message => fetch('history-test-result', {method:'POST', body:message});
+const check = (condition, message) => { if (!condition) throw new Error(message); };
+const dialog = document.getElementById('library');
+const tab = document.getElementById('tab-references');
+const panel = document.getElementById('panel-references');
+const search = panel.querySelector('input');
+const project = panel.querySelector('select[name="project"]');
+const tagFilter = panel.querySelector('select[name="tag"]');
+const shown = () => [...panel.querySelectorAll('.lib-item:not([hidden]) .ref-title')].map(link => link.textContent).join();
+try {
+  const visits = Number(sessionStorage.getItem('bookmark-visits'));
+  const reached = sessionStorage.getItem('bookmark-destination');
+  if (!visits) {
+    document.getElementById('open-library').click();
+    tab.click();
+    project.value = 'Beta';
+    project.dispatchEvent(new Event('change', {bubbles:true}));
+    search.value = 'harbor';
+    search.dispatchEvent(new Event('input', {bubbles:true}));
+    check(shown() === 'Harbor lights,Harbor chart', 'The project and search did not match both Beta harbor items');
+    tagFilter.value = 'research';
+    tagFilter.dispatchEvent(new Event('change', {bubbles:true}));
+    check(shown() === 'Harbor chart', 'The tag did not narrow the lookup to the Harbor chart');
+    panel.querySelector('.lib-item:not([hidden]) a.ref-title').click();
+  } else {
+    check(dialog.open && tab.getAttribute('aria-selected') === 'true' && !panel.hidden,
+          'The library did not reopen on References after bookmark visit ' + visits);
+    const query = visits === 1 ? 'harbor' : 'quay chart';
+    check(reached === (visits === 1 ? '/qd/q3.html' : '/qd/q4.html'),
+          'Bookmark visit ' + visits + ' reached ' + reached);
+    check(project.value === 'Beta' && tagFilter.value === 'research' && search.value === query && shown() === 'Harbor chart',
+          'The References search, project or tag filter was not restored after bookmark visit ' + visits);
+    if (visits === 1) {
+      search.value = 'quay chart';
+      search.dispatchEvent(new Event('input', {bubbles:true}));
+      check(shown() === 'Harbor chart', 'The second lookup did not select the Harbor chart');
+      panel.querySelector('.lib-item:not([hidden]) a.ref-extra').click();
+    } else report('PASS');
+  }
+} catch (error) { report(error.message); }
+</script>
+</body>""")
+
+        def instrumented_item(*args, **kwargs):
+            return item_page(*args, **kwargs).replace("</body>", """
+<script>
+window.addEventListener('pageshow', () => {
+  sessionStorage.setItem('bookmark-visits', Number(sessionStorage.getItem('bookmark-visits')) + 1);
+  sessionStorage.setItem('bookmark-destination', location.pathname);
+  history.back();
+});
+</script>
+</body>""")
+
+        with patch.object(quarterdeck, "list_page", instrumented_page), patch.object(quarterdeck, "item_page", instrumented_item):
+            with subprocess.Popen([chrome, "--headless", "--disable-background-networking", "--no-first-run",
+                                   f"--user-data-dir={self.root / 'browser'}", f"{local}/"],
+                                  stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL) as browser:
+                try:
+                    self.assertTrue(finished.wait(10), "The browser did not complete the bookmark history checks")
+                finally:
+                    browser.terminate()
+        self.assertEqual(results, ["PASS"])
+
     def test_the_library_pop_out_searches_and_returns_focus(self):
         self.add("questions", "Tide decisions", "Decide the launch plan.", "--body-file", "-", stdin=json.dumps(QUESTIONS))
         self.add("questions", "Pier lights", "Pick the lamp colour.", "--body-file", "-", stdin=json.dumps(QUESTIONS))
@@ -1709,10 +1819,10 @@ check(![...document.querySelectorAll('#panel-references .lib-item')].some(row =>
       'A regular expression metacharacter matched as a pattern');
 references.value = 'chart';
 references.dispatchEvent(new Event('input', {bubbles: true}));
-const notes = dialog.querySelector('a[href="https://example.org/notes"]');
-notes.scrollIntoView({block: 'nearest'});
-const rect = notes.getClientRects()[0];
-check(notes.contains(document.elementFromPoint(rect.left + 2, rect.top + 2)), 'A long description clipped its link');
+const bookmark = dialog.querySelector('#panel-references a[href="https://example.org/map"]');
+check(bookmark && bookmark.checkVisibility() && bookmark.closest('.lib-item').innerText.includes('Harbour map')
+      && !dialog.querySelector('#panel-references').innerText.includes('A chart of the quay'),
+      'A bookmark should link out and show no description');
 references.value = 'q3.1';
 references.dispatchEvent(new Event('input', {bubbles: true}));
 check(![...document.querySelectorAll('#panel-references li')].some(row => !row.hidden), 'A reference matched a question ID');
@@ -2780,7 +2890,7 @@ class ServiceAndHelpTests(StoreCase):
         names = [command["name"] for command in index["commands"]]
         for name in ("add", "list", "show", "remove", "render", "serve"):
             self.assertIn(name, names)
-        for old in ("board", "reports", "topics", "waits", "attention", "export", "edit", "done", "reopen"):
+        for old in ("board", "reports", "topics", "waits", "attention", "export", "done", "reopen"):
             self.assertNotIn(old, names)
         for command in index["commands"]:
             for doc in command["docs"]:

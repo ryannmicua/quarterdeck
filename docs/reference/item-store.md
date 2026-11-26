@@ -55,9 +55,13 @@ the browser's local time zone when JavaScript is enabled.
 
 | Kind | `body` |
 | --- | --- |
-| `resource` | A `url` and `link_text`. |
+| `resource` | A `url` and `link_text`, or for two or more links `{"links": [{"text": "...", "url": "..."}, ...]}`. One link keeps the `url` and `link_text` shape, so older saved items need no rewrite. |
 | `list` | `{"entries": ["...", "..."]}`, at least one. |
 | `questions` | A nonempty `questions` array of objects. `question` and `context` are required text fields. `options` can be empty when the object has a `suggestion`. Each question may include `links`, an array of objects with exactly two fields, `text` and `url`. See [question images](#question-images) for option and attachment fields. |
+
+After updating Quarterdeck, restart the service before saving a resource with
+several links: an older running service cannot read the `links` shape. Rolling
+back to an older version after saving such a resource is not supported.
 
 A question may also carry `kind` (one word) and its own `tags`, which follow
 the same list rules as item tags. An unclassified question omits `kind`.
@@ -126,7 +130,6 @@ fields if they pass the same validation as resource URLs.
 
 | Where | Fields |
 | --- | --- |
-| References | Item descriptions on served and rendered pages |
 | Item page | Item descriptions, question prompts, context, options and suggested answers |
 | Served item page | Ask and reply text in question threads, clarification text on question cards, and all messages in standalone conversations |
 

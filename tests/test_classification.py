@@ -637,9 +637,29 @@ class PageTests(ClassificationCase):
         page = self.pages()["index.html"]
         self.assertNotIn("<li>process</li>", page.split("<h2>References</h2>")[0])
         self.assertIn("<li>process</li>", self.pages()["q1.html"])
-        self.assertIn("<li>security privacy</li>", page)
-        self.assertIn('<span class="project-name">Harbor</span>',
-                      page.split("<h2>References</h2>")[1].split("</section>")[0])
+        references = page.split("<h2>References</h2>")[1].split("</section>")[0]
+        self.assertIn('data-tags="security-privacy"', references)
+        (row,) = re.findall(r'<li class="lib-item ref-row".*?</li>', references)
+
+        class Row(HTMLParser):
+            text, links = "", []
+
+            def handle_starttag(parser, tag, attrs):
+                if tag == "a":
+                    parser.links = [*parser.links, dict(attrs)["href"]]
+
+            def handle_data(parser, data):
+                parser.text += f" {data}"
+
+        visible = Row()
+        visible.feed(row)
+        words = visible.text.split()
+        self.assertEqual(visible.links[0], "https://example.com/t")
+        self.assertIn("Harbor", words)
+        self.assertIn("Tide", words)
+        self.assertNotIn("security", words)
+        self.assertNotIn("privacy", words)
+        self.assertNotIn("A chart.", visible.text)
 
     def test_filters_apply_to_references_and_answered(self) -> None:
         for number, tag in enumerate(("research", "bug"), 1):
