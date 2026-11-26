@@ -142,7 +142,10 @@ On a wide screen the row keeps its place under **Unread** until you select
 another row, then takes its place by activity. A reply alone does not put a
 conversation in **For review**. See [what does](answer-questions.md#what-for-review-holds). A conversation page opened without a link to a
 message starts at its first unread message, or at the latest message when all
-are read. Reload, send a message, or retry delivery to
+are read. While the Desk is visible, its lists and counts update on their own
+within about ten seconds, and a conversation open beside them loads a new reply
+unless you have typed in it. See [how the Desk checks](../reference/cli-and-config.md#conversation-endpoint).
+Otherwise, reload, send a message, or retry delivery to
 refresh the conversation. Replies shown after a send or retry stay unread
 until you open them from the Desk. See [how Firstmate replies](reply-from-the-command-line.md#reply-in-a-conversation).
 
