@@ -8,6 +8,7 @@ These are terms Quarterdeck uses on its pages and in the CLI.
 |---|---|
 | Desk | The landing page. It has three tabs. |
 | Conversations | The Desk tab that opens first. It holds the form to start a conversation and every saved conversation. |
+| New conversation | The button that shows the form to start a conversation. The form stays hidden until you select it or the browser restores unsent text, and selecting it again hides the form and keeps unsent text. |
 | Needs you | The [Desk tab for items and notices that need attention](../how-to/answer-questions.md). |
 | Watch | A read-only page for what Firstmate has yet to reply to and what its workers are doing. |
 | Workers | The [roster page](../how-to/read-workers.md) that reads the workers of the configured Firstmate home and refreshes the reading. |

@@ -6370,6 +6370,7 @@ check(pin('Q1').closest('.topic').querySelector('.desk-feedback').textContent ==
 delay = true;
 pin('Q3').focus();
 pin('Q3').click();
+document.getElementById('talk-open').click();
 const topic = button('talk-topic');
 topic.focus();
 document.execCommand('insertText', false, 'A topic draft');
@@ -6831,6 +6832,30 @@ check(!failed.isConnected && count.textContent === '1' && notice.isConnected && 
         self.assertNotIn('<form id="talk-form"', page)
         self.assertEqual(headers.get("Content-Security-Policy"), "frame-ancestors 'none'")
 
+    def test_the_conversation_form_starts_collapsed_and_keeps_a_closed_draft(self) -> None:
+        port = self.start("/qd", ask_home=self.inbox())
+        self.check_answer_page(port, r"""
+const form = document.getElementById('talk-form');
+const opener = document.getElementById('talk-open');
+check(form.hidden && !form.getClientRects().length, 'The form was open by default');
+check(opener.textContent === 'New conversation' && opener.getAttribute('aria-expanded') === 'false', 'The opener was wrong');
+opener.click();
+check(!form.hidden && opener.getAttribute('aria-expanded') === 'true', 'The opener did not open the form');
+check(document.activeElement === document.getElementById('talk-topic'), 'Topic did not take focus');
+opener.click();
+check(form.hidden, 'An empty form did not close');
+opener.click();
+const topic = document.getElementById('talk-topic');
+topic.value = 'Quay sign colours';
+form.dispatchEvent(new Event('input', {bubbles: true}));
+opener.click();
+check(form.hidden && opener.getAttribute('aria-expanded') === 'false', 'A form with a draft did not close');
+check(!opener.hasAttribute('aria-disabled'), 'The opener was marked disabled');
+check(topic.value === 'Quay sign colours', 'Closing the form lost the draft');
+form.dispatchEvent(new Event('input', {bubbles: true}));
+check(!form.hidden && opener.getAttribute('aria-expanded') === 'true', 'A draft did not reopen the form on input');
+""", path="/qd/", viewport=(390, 844))
+
     def test_a_conversation_replays_once_and_retries_with_the_same_note(self) -> None:
         home = self.inbox(accept=False)
         port = self.start("/qd", ask_home=home)
@@ -7107,6 +7132,7 @@ window.fetch = async (path, init) => {
   return {ok:false, status:409, json:async () => ({message:'Firstmate home changed.', saved:false})};
 };
 const form = document.getElementById('talk-form');
+document.getElementById('talk-open').click();
 check(!form.hidden && form.getClientRects().length, 'The form was not shown on Conversations');
 const submit = form.querySelector('button[type="submit"]');
 check(submit.disabled, 'Start conversation was ready with nothing typed');
