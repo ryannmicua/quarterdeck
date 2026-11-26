@@ -746,33 +746,45 @@ check(document.documentElement.scrollWidth <= innerWidth, 'The Desk scrolled sid
     def test_a_reference_row_opens_its_item_from_anywhere_but_the_title_link(self) -> None:
         self.add("list", "Proof run checklist", "What to check before the proof run.", "--body-file", "-",
                  stdin="- Confirm the paper\n")  # Q4
-        self.add("resource", "Port tide tables", "The official tables.", "--url", "https://example.com/tides", "--link-text", "Tide tables")  # Q5
+        self.add("resource", "Port tide tables", "The official tables.", "--url", "https://example.com/tides", "--link-text", "Tide tables",
+                 "--url", "https://example.com/datum", "--link-text", "Datum notes")  # Q5
         self.run_in_desk(r"""
 document.getElementById('desk-tab-references').click();
 const row = id => document.querySelector('#topics-references .topic[data-id="' + id + '"]');
 const hit = (id, selector) => {
   const box = row(id).querySelector(selector).getBoundingClientRect();
-  return document.elementFromPoint(box.left + 4, box.top + box.height / 2);
+  return document.elementFromPoint(box.left + box.width / 2, box.top + box.height / 2);
 };
-check(hit('Q5', '.topic-latest').closest('a')?.classList.contains('bookmark-id'), 'The description of a saved link did not open its item');
-check(hit('Q5', '.topic-meta').closest('a')?.classList.contains('bookmark-id'), 'The date line of a saved link did not open its item');
-check(hit('Q5', '.bookmark-title').closest('a')?.classList.contains('bookmark-title'), 'The title stopped being a link to the saved link');
+check(hit('Q5', '.bookmark-title').closest('a')?.href === 'https://example.com/tides', 'The title did not link to the resource');
+check(hit('Q5', '.notice-links a').closest('a')?.href === 'https://example.com/datum', 'The extra link did not link to its destination');
 hit('Q5', '.topic-latest').click();
 await until(() => pane()?.querySelector('h1')?.textContent === 'Port tide tables', 'Clicking the description did not open the saved item');
 check(row('Q5').getAttribute('aria-current') === 'true', 'The open reference was not marked');
 hit('Q4', '.topic-latest').click();
 await until(() => pane()?.querySelector('h1')?.textContent === 'Proof run checklist', 'Clicking the description did not open the list');
-row('Q5').querySelector('.bookmark-id').focus();
-check(getComputedStyle(row('Q5')).outlineStyle !== 'none' || row('Q5').matches(':has(:focus-visible)'), 'The row showed no focus');
+hit('Q5', 'time').click();
+await until(() => pane()?.querySelector('h1')?.textContent === 'Port tide tables', 'Clicking the date did not open the saved item');
+hit('Q4', 'time').click();
+await until(() => pane()?.querySelector('h1')?.textContent === 'Proof run checklist', 'Clicking the date did not open the list');
+for (const link of [...row('Q5').querySelectorAll('a'), row('Q4').querySelector('.bookmark-title')]) {
+  link.focus();
+  check(document.activeElement === link && link.matches(':focus-visible') && getComputedStyle(link).outlineStyle !== 'none',
+        'The focused link had no individual focus indicator: ' + link.textContent);
+}
+""", window_size="1000,900")
+        item_page = base.WorkersTests.instrumented_page(quarterdeck.item_page, r"""
+check(window === window.top && location.pathname === '/qd/q5.html' && location.search === '?from=desk-references',
+      'The saved item did not open as the top-level page');
+check(document.querySelector('h1')?.textContent === 'Port tide tables', 'The phone opened the wrong item');
 """)
-        self.run_in_desk(r"""
-let opened = null;
-document.addEventListener('click', event => { opened = event.target.closest('a')?.getAttribute('href'); event.preventDefault(); });
+        with patch.object(quarterdeck, "item_page", item_page):
+            self.run_in_desk(r"""
 document.getElementById('desk-tab-references').click();
-const box = document.querySelector('#topics-references .topic[data-id="Q5"] .topic-latest').getBoundingClientRect();
-document.elementFromPoint(box.left + 4, box.top + box.height / 2).click();
-check(opened === 'q5.html?from=desk-references', 'A phone did not open the item page from the row: ' + opened);
 check(document.documentElement.scrollWidth <= innerWidth, 'The Desk scrolled sideways');
+const box = document.querySelector('#topics-references .topic[data-id="Q5"] .topic-latest').getBoundingClientRect();
+document.elementFromPoint(box.left + box.width / 2, box.top + box.height / 2).click();
+await quiet();
+throw new Error('The phone stayed on the Desk');
 """, window_size="390,844")
 
     def test_under_way_keeps_the_reading_pane_beside_the_list(self) -> None:

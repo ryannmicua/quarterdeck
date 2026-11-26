@@ -3401,8 +3401,6 @@ body:has(dialog[open]) { overflow:hidden; }
 .topic.bookmark a { display:inline-block; padding:.3rem 0; }
 .topic.bookmark a[data-pane]::after { content:""; position:absolute; inset:0; }
 .topic.bookmark a:not([data-pane]) { position:relative; z-index:1; }
-.topic.bookmark a:focus-visible { outline:none; }
-.topic.bookmark:has(a:focus-visible) { outline:3px solid var(--focus); outline-offset:-3px; }
 .topic.bookmark .notice-links { font-size:var(--text-sm); }
 .bookmark-id { font:700 var(--text-sm)/1.4 var(--mono); }
 .topic.notice .desk-feedback { margin:.2rem 0 0; }
