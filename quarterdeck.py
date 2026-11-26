@@ -6688,7 +6688,7 @@ def notice_row(notice, items_by_id):
     links = []
     item = items_by_id.get(notice.get("item"))
     if item is not None:
-        links.append(f'<a href="{esc(item_link(item["id"], "conversations"))}">{esc(item["title"])}</a>')
+        links.append(f'<a href="{esc(item_link(item["id"], "conversations"))}" data-pane>{esc(item["title"])}</a>')
     if "url" in notice:
         links.append(f'<a href="{esc(notice["url"])}" rel="noopener noreferrer">{esc(notice["link_text"])}</a>')
     return (f'<li class="topic notice" data-notice="{notice["id"]}" data-unread="true"'

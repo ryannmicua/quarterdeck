@@ -178,7 +178,7 @@ class MembershipTests(MailboxCase):
         self.assertEqual(self.group(page, "topics-unread"), ["C2", "C1"])
         self.assertEqual(self.counts(page), {"Conversations": "2", "For review": "1"})
         self.assertNotIn("notice", page.split('id="desk-panel-needs-you"')[1].split('id="desk-panel-under-way"')[0])
-        self.assertIn('<a href="q1.html?from=conversations">Pocket guide paper</a>'
+        self.assertIn('<a href="q1.html?from=conversations" data-pane>Pocket guide paper</a>'
                       '<a href="https://example.com/timetable" rel="noopener noreferrer">Open the timetable</a>', page)
         self.assertIn('<button type="button" data-read="C1" aria-label="Mark read, Ferry timetable is published">Mark read</button>', page)
         self.assertRegex(page, r'<button type="button" data-read-all>Mark all notices read</button>')
