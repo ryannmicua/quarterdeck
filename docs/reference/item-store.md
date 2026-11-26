@@ -55,7 +55,7 @@ the browser's local time zone when JavaScript is enabled.
 
 | Kind | `body` |
 | --- | --- |
-| `resource` | A `url` and `link_text`. |
+| `resource` | A `url` and `link_text`, or for two or more links (up to 12) `{"links": [{"text": "...", "url": "..."}, ...]}`. One link keeps the `url` and `link_text` shape, so older saved items need no rewrite. |
 | `list` | `{"entries": ["...", "..."]}`, at least one. |
 | `questions` | A nonempty `questions` array of objects. `question` and `context` are required text fields. `options` can be empty when the object has a `suggestion`. Each question may include `links`, an array of objects with exactly two fields, `text` and `url`. See [question images](#question-images) for option and attachment fields. |
 

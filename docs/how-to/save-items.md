@@ -23,7 +23,23 @@ quarterdeck add --kind resource --title "Calls redesign" \
 ```
 
 Only `http://` and `https://` addresses are accepted. Use link text that says
-where the link goes.
+where the link goes. Repeat `--link-text` and `--url` to give a resource several
+links; each link has its own text, and they show in the order given.
+
+### Edit a saved item
+
+Change a saved item's title, description or, for a resource, its links without
+saving it again:
+
+```sh
+quarterdeck edit Q15 --description "The design review, now with its board." \
+  --link-text "Design review" --url https://example.com/review \
+  --link-text "Review board" --url https://example.com/board
+```
+
+The ID, saved date, answers and messages stay. Links are replaced as a set, so
+repeat every link you want to keep. Editing questions or answers is not
+supported.
 
 ### A list
 
