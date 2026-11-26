@@ -6226,18 +6226,21 @@ class TalkToFirstmateTests(ImageCase):
         page = self.fetch(port, "/qd/q1.html")[1]
         self.assertIn(' · saved <time class="day" datetime="2026-11-26T09:15:30Z">2026-11-26</time></p>', page)
 
-    def test_every_saved_moment_is_shown_in_local_date_and_time(self) -> None:
+    def test_list_rows_show_the_local_date_and_time_saved(self) -> None:
         port = self.start("/qd", ask_home=self.inbox())
         self.seed_conversations(port)
-        script = self.fetch(port, "/qd/")[1]
-        self.assertIn("time.day[datetime]", script)
-        self.assertNotIn("toLocaleDateString", script)
-        self.assertNotIn("localizeDays", script)
-        self.assertIn("{dateStyle:'medium', timeStyle:'short'}", script)
-        row = quarterdeck.day_time("2026-11-26T09:15:30Z")
-        self.assertEqual(row, '<time class="day" datetime="2026-11-26T09:15:30Z">2026-11-26</time>')
-        for page in ("/qd/", "/qd/watch.html"):
-            self.assertIn("time.day[datetime]", self.fetch(port, page)[1])
+        with quarterdeck.changing_store(quarterdeck.store_path()) as data:
+            data["items"][2]["saved_at"] = "2026-01-10T16:25:00Z"
+            data["items"][2]["conversation"]["item"][0]["at"] = "2026-01-10T16:25:00Z"
+        for path, row in (("/qd/", '[data-id="Q3"]'), ("/qd/watch.html", "#watch-Q3")):
+            self.check_answer_page(port, f"""
+const times = [...document.querySelectorAll('{row} time.day')];
+check(times.length > 0, 'No saved time on the Q3 row of {path}');
+for (const time of times) {{
+  check(time.textContent.replace(/\\s+/g, ' ') === 'Jan 11, 2026, 1:25 AM',
+        'The Q3 row of {path} showed ' + time.textContent);
+}}
+""", path=path)
 
     def test_pinning_groups_a_conversation_and_changes_nothing_else(self) -> None:
         port = self.start("/qd", ask_home=self.inbox())
