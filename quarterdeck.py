@@ -4295,8 +4295,9 @@ THREAD_SCRIPT = r"""
       set(li, fold.getAttribute('aria-expanded') !== 'true');
       return;
     }
-    const li = event.target.closest('li.msg');
-    if (!li || li.classList.contains('folded') || !li.querySelector(':scope > button.fold')) return;
+    const who = event.target.closest('li.msg > .msg-body > .who');
+    const li = who?.closest('li.msg');
+    if (!li || li.classList.contains('folded')) return;
     if (event.target.closest('a, button, input, textarea, select, summary, label')) return;
     if (!getSelection().isCollapsed) return;
     set(li, false);
