@@ -2824,7 +2824,14 @@ textarea { display:block; width:100%; resize:vertical; background:var(--ground);
 .msg.firstmate { background:var(--raised); border-left-color:var(--focus); }
 .msg .who { display:flex; flex-wrap:wrap; gap:.2rem .8rem; align-items:baseline; margin:0 0 .3rem; color:var(--soft); font-size:var(--text-md); }
 .msg .who strong { color:var(--ink); }
-.msg .record { margin:0; font-family:var(--serif); }
+.msg .record { margin:0; font-family:var(--serif); overflow-wrap:anywhere; }
+.msg .rich { white-space:normal; max-width:var(--measure); }
+.msg .rich p, .msg .rich li { white-space:pre-wrap; }
+.msg .rich p { margin:0 0 .9rem; }
+.msg .rich ul, .msg .rich ol { margin:0 0 .9rem; padding-left:1.4rem; }
+.msg .rich ul { list-style:disc; }
+.msg .rich li { margin:0 0 .4rem; padding-left:.2rem; }
+.msg .rich > :last-child { margin-bottom:0; }
 .msg .ref-links, .msg .shots { margin-top:.5rem; }
 .msg .actions { margin-top:.5rem; }
 .desk { margin:0 0 1rem; overflow-x:auto; font-family:var(--sans); }
@@ -3465,6 +3472,62 @@ def linked_text(value: object) -> str:
     return "".join(parts) + esc(text[last:])
 
 
+MESSAGE_MARKER = re.compile(r"^ {0,3}(?:([-*])|(\d{1,3})\.)[ \t]+(\S.*)$")
+MESSAGE_BOLD = re.compile(r"\*\*(?=\S)([^\n]*?\S)\*\*")
+
+
+def message_inline(value: str) -> str:
+    """Escape one run of message text, bolding **lead words** and linking web addresses."""
+    parts, last = [], 0
+    for match in MESSAGE_BOLD.finditer(value):
+        parts.append(linked_text(value[last:match.start()]))
+        parts.append(f"<strong>{linked_text(match.group(1))}</strong>")
+        last = match.end()
+    return "".join(parts) + linked_text(value[last:])
+
+
+def message_blocks(text: str) -> list[tuple[str, list[str]]]:
+    """Split message text into paragraph, bullet and numbered blocks of raw lines."""
+    blocks: list[tuple[str, list[str]]] = []
+    current: tuple[str, list[str]] | None = None
+    for line in text.replace("\r\n", "\n").replace("\r", "\n").split("\n"):
+        if not line.strip():
+            current = None
+            continue
+        marker = MESSAGE_MARKER.match(line)
+        if marker:
+            kind = "ul" if marker.group(1) else "ol"
+            if current is None or current[0] != kind:
+                current = (kind, [])
+                blocks.append(current)
+            current[1].append(marker.group(3))
+        elif current is not None and current[0] != "p" and line[:1] in " \t":
+            current[1][-1] += "\n" + line.strip()
+        else:
+            if current is None or current[0] != "p":
+                current = ("p", [])
+                blocks.append(current)
+            current[1].append(line.rstrip())
+    return blocks
+
+
+def message_text_html(value: object) -> str:
+    """Render stored message text as paragraphs, lists and bold lead words; everything else stays plain."""
+    blocks = message_blocks(str(value))
+    if not blocks:
+        return '<p class="record"></p>'
+    if len(blocks) == 1 and blocks[0][0] == "p":
+        return f'<p class="record">{message_inline(chr(10).join(blocks[0][1]))}</p>'
+    parts = []
+    for kind, lines in blocks:
+        if kind == "p":
+            parts.append(f"<p>{message_inline(chr(10).join(lines))}</p>")
+        else:
+            items = "".join(f"<li>{message_inline(line)}</li>" for line in lines)
+            parts.append(f"<{kind}>{items}</{kind}>")
+    return f'<div class="record rich">{"".join(parts)}</div>'
+
+
 FILTER_SCRIPT = """
 const matchesClassification = (entry, filters) => filters.every(select =>
   !select.value || (select.name === 'project' ? entry.dataset.project === select.value
@@ -3858,7 +3921,7 @@ def message_html(item, message, *, editable, message_number=None):
         reference = ' <span>Firstmate update</span>'
     unread = " data-unread" if unread_reply(message) else ""
     return (f'<li class="msg {message["author"]}"{identity}{unread}><p class="who"><strong>{AUTHOR_LABELS[message["author"]]}</strong> '
-            f'<time datetime="{when}">{when}</time>{delivery}{reference}</p><p class="record">{linked_text(message["text"])}</p>'
+            f'<time datetime="{when}">{when}</time>{delivery}{reference}</p>{message_text_html(message["text"])}'
             f'{links_html(message)}{shots_html(item, message, tree=REPLY_IMAGES)}{controls}</li>')
 
 
