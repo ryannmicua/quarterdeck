@@ -142,6 +142,22 @@ Bare addresses lose trailing punctuation such as periods and exclamation
 marks. Enclose an address in angle brackets, as in
 `<https://example.com/?q=go!>`, to keep that punctuation in the destination.
 
+## Message formatting
+
+Message text is stored as written. On the served item page, messages in
+question threads and standalone conversations show a few marks as formatting:
+
+- A blank line starts a new paragraph.
+- A line starting with `- ` or `* ` is a bullet, and a line starting with a
+  number and a period, such as `2. `, is a numbered item. An indented line
+  continues the item above it.
+- A numbered list keeps the number written on its first item. It continues
+  across blank lines while the numbers follow on, and a number that does not
+  follow on starts a new list.
+- `**words**` on one line shows in bold.
+
+Everything else, including other Markdown, shows as plain text.
+
 ## Question images
 
 A question's optional `images` field is an array of attachments. An option

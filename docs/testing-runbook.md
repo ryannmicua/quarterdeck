@@ -15,6 +15,7 @@ Run one group while changing it, then the whole suite before a pull request
 | `serve`, base path, host checks and the visit log | `PYTHONPATH=tests python3 -m unittest -v test_quarterdeck.ServeTests` |
 | Back to the list and Next unread, and the Desk tab and Hold filters they return to | `PYTHONPATH=tests python3 -m unittest -v test_list_context` |
 | Card asks, replies, and acknowledgment | `PYTHONPATH=tests python3 -m unittest -v test_quarterdeck.ConversationTests` |
+| Paragraphs, lists and bold in message text | `PYTHONPATH=tests python3 -m unittest -v test_message_format` |
 | Desk conversations, home binding, and export exclusion | `PYTHONPATH=tests python3 -m unittest -v test_quarterdeck.TalkToFirstmateTests` |
 | Workers snapshot and refresh | `PYTHONPATH=tests python3 -m unittest -v test_quarterdeck.WorkersTests` |
 | Catch-up store, CLI and owner acknowledgment endpoint | `PYTHONPATH=tests python3 -m unittest -v test_catch_up` |
