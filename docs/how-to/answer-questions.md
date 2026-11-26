@@ -31,7 +31,7 @@ correction awaiting delivery returns to the expanded questions. The
 so you can compare answers and send them together.
 
 After you answer, **Back to Needs you** returns you to the table and **Next unread**
-opens the next row. See [Go back to the list](go-back-to-the-list.md).
+opens the next item, skipping Catch-up notices. See [Go back to the list](go-back-to-the-list.md).
 
 If the question has [review links](save-items.md#a-question-that-points-to-a-review-page),
 open them for context before choosing an answer.

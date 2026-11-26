@@ -15,7 +15,8 @@ are reading. When you reach the end of the list it continues from the start.
 The link is missing when no other item in the list is unread.
 
 - In **Needs you**, every item in the list counts, because each one needs you.
-  The link opens the first unread reply, or the first open question.
+  Catch-up notices do not count. The link opens the first unread reply, or the
+  first open question.
 - In every other list, an item is unread when it has an
   [Unread reply](../reference/glossary.md#status-words).
 - In Hold, **Next unread** follows the project, tag and search of the list you
