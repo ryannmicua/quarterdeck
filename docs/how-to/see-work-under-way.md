@@ -17,15 +17,22 @@ where to set it. Rendered snapshots have no Under way tab.
    finishes, the tab says so and lists nothing. `quarterdeck serve` checks the
    home every 30 minutes, and **Check workers** on the Workers page checks it
    at once.
-2. Read each row. It shows the work's title, its project, one status word,
-   and links.
-3. Select **Pull request** to open the pull request. Select **Conversation**
+2. Read the two groups. **In progress** lists work that is not merged, with
+   **Question asked** first, then **Ready to merge**, then the rest.
+   **Merged today** lists merged work below it.
+3. Read each row. It shows the work's title, its project, one status word,
+   and links. Merged rows have no status word. A long title is cut short
+   and shows in full when you point at it. The title leaves out a project name
+   at its start when the Project column shows it.
+4. Select **Question** on a **Question asked** row to open the question. It
+   opens the first address in the question, such as a review board, or the
+   Quarterdeck conversation when the question has no address.
+5. Select **Pull request** to open the pull request. Select **Conversation**
    to open the Quarterdeck conversation about the work.
 
 A row is one ship or scout with an open terminal. A second mate has no row.
 Work the home recorded as merged today also has a row until the day ends,
-even when its terminal has closed. The list shows **Ready to merge** first and
-**Merged today** last.
+even when its terminal has closed. 
 
 ## What the statuses mean
 

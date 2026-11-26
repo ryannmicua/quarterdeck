@@ -62,9 +62,12 @@ These words show on **Under way**. The Workers page uses the same words that
 | Merged today | The home recorded the work as merged on today's date. |
 | Working, Question asked, Stuck, Finished, Unknown | The Workers page word, shown when none of the words above fits. |
 
-The **Under way** columns are Work (the title of the work), Project, Status and
-Links. Links holds **Conversation**, which opens the Quarterdeck conversation
-about the work, and **Pull request**. **Last checked** is the time of the saved
+**Under way** has two groups. **In progress** holds all work that is not merged.
+**Merged today** holds the rest and shows no Status column. The columns are
+Work (the title of the work), Project, Status and Links. Links holds
+**Question**, which opens the question a **Question asked** row waits on,
+**Conversation**, which opens the Quarterdeck conversation about the work, and
+**Pull request**. **Last checked** is the time of the saved
 reading, in your local time zone.
 
 ## Catch-up

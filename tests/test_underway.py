@@ -75,7 +75,7 @@ class UnderwayTests(base.ImageCase):
                          {"Dock": "Building", "Pier": "In review", "Quay": "Ready to merge", "Slip": "Finished",
                           "Jetty": "Stuck", "Wharf": "Question asked", "Mole": "Unknown", "Berth": "Unknown",
                           "Buoy": "Working", "Marker": "In review"})
-        self.assertEqual(list(rows), ["Quay", "Pier", "Marker", "Dock", "Buoy", "Wharf", "Jetty", "Mole", "Berth", "Slip"])
+        self.assertEqual(list(rows), ["Wharf", "Quay", "Pier", "Marker", "Dock", "Buoy", "Jetty", "Mole", "Berth", "Slip"])
         self.assertEqual(rows["Dock"], {"id": "Dock", "title": "Sanding the dock", "project": "Copper Orchard",
                                         "status": "Building", "pr": None, "merged_on": None})
         self.assertEqual(rows["Quay"]["pr"], PULL + "2")
@@ -110,6 +110,7 @@ class UnderwayTests(base.ImageCase):
         self.assertIn('<th scope="col">Work</th>', panel)
         self.assertIn("Tarring the quay", panel)
         self.assertLess(panel.index("Tarring the quay"), panel.index("Sanding the dock"))
+        self.assertIn('title="Tarring the quay"', panel)
         self.assertIn(">Ready to merge</span>", panel)
         self.assertIn(">Building</span>", panel)
         self.assertIn(f'<a href="{PULL}2" rel="noopener noreferrer" aria-label="Pull request for Tarring the quay">', panel)
@@ -204,3 +205,78 @@ class UnderwayTests(base.ImageCase):
         self.assertNotIn("<b>", panel)
         self.assertNotIn("<i>", panel)
         self.assertIn("&lt;b&gt;Sanding&lt;/b&gt;", panel)
+
+    def test_groups_put_work_in_progress_first_and_merged_work_below_without_a_status_chip(self) -> None:
+        home = self.make_home(body=reading(
+            [snapshot_task("Dock", title="Sanding the dock"), snapshot_task("Quay", title="Tarring the quay", state="done",
+                                                                           pr=PULL + "2"),
+             snapshot_task("Wharf", title="Painting the wharf", decisions=["colour"]),
+             snapshot_task("Mole", title="Pausing the mole", state="paused")],
+            [merged("Closed", READING_DAY, title="Painting the hull")]))
+        with patch.object(quarterdeck, "local_today", return_value=READING_DAY):
+            panel, _ = self.served_panel(home)
+        self.assertLess(panel.index("<h2>In progress</h2>"), panel.index("<h2>Merged today</h2>"))
+        names = ["Painting the wharf", "Tarring the quay", "Sanding the dock", "Pausing the mole", "Painting the hull"]
+        positions = [panel.index(f'<span class="clip">{name}') for name in names]
+        self.assertEqual(positions, sorted(positions))
+        done = panel[panel.index("<h2>Merged today</h2>"):]
+        self.assertNotIn('class="status', done)
+        self.assertNotIn(">Status</th>", done)
+        self.assertNotIn(">Merged today</span>", panel)
+
+    def test_a_title_drops_a_leading_project_name_the_project_column_shows(self) -> None:
+        drop = quarterdeck.underway_title
+        self.assertEqual(drop("Quarterdeck: Show the list", "quarterdeck"), "Show the list")
+        self.assertEqual(drop("RMS Cares reconciliation page", "rms-cares"), "reconciliation page")
+        self.assertEqual(drop("RMS Cares - Sort rows", "RMS Cares"), "Sort rows")
+        self.assertEqual(drop("Quarterdeckhand: Show", "quarterdeck"), "Quarterdeckhand: Show")
+        self.assertEqual(drop("Quarterdeck", "quarterdeck"), "Quarterdeck")
+        self.assertEqual(drop("Mapping the trail", "quarterdeck"), "Mapping the trail")
+        self.assertEqual(drop("Quarterdeck: Show", None), "Quarterdeck: Show")
+        home = self.make_home([snapshot_task("Dock", title="Copper Orchard: Sanding the dock")])
+        panel, _ = self.served_panel(home)
+        self.assertIn('title="Copper Orchard: Sanding the dock"><span class="clip">Sanding the dock</span>', panel)
+
+    def test_a_question_row_links_to_the_first_address_in_the_first_open_decision(self) -> None:
+        board = "https://example.com/review/board.html"
+        decisions = [{"key": "a", "summary": f"Pick the colour on the board ({board}), then reply. https://example.com/other"},
+                     {"key": "b", "summary": "https://example.com/second"}]
+        rows = self.work([snapshot_task("Wharf", decisions=decisions),
+                          snapshot_task("Pier", decisions=[{"key": "a", "summary": "No address here"}]),
+                          snapshot_task("Slip", decisions=[{"key": "a", "summary": "ftp://example.com/x"}]),
+                          snapshot_task("Dock")])
+        self.assertEqual(rows["Wharf"]["question"], board)
+        self.assertIsNone(rows["Pier"]["question"])
+        self.assertIsNone(rows["Slip"]["question"])
+        self.assertNotIn("question", rows["Dock"])
+        panel, _ = self.served_panel(self.make_home(body=reading([snapshot_task("Wharf", title="Painting the wharf",
+                                                                             decisions=decisions)])))
+        self.assertIn(f'<a href="{board}" rel="noopener noreferrer" aria-label="Question for Painting the wharf">Question</a>',
+                      panel)
+        self.assertNotIn("Pick the colour", panel)
+
+    def test_a_question_row_without_an_address_links_its_conversation(self) -> None:
+        home = self.make_home(body=reading([snapshot_task("Wharf", title="Painting the wharf",
+                                                          decisions=[{"key": "a", "summary": "Pick the colour"}]),
+                                            snapshot_task("Pier", title="Mending the pier",
+                                                          decisions=[{"key": "a", "summary": "Pick"}])]))
+        (home / "data" / "qd-threads").mkdir(parents=True)
+        (home / "data" / "qd-threads" / "links.tsv").write_text("Wharf\tQ1\n")
+        port = self.start("/qd", workers_home=home, ask_home=self.inbox())
+        self.begin(port, "Harbor lamp colours")
+        self.assertEqual(self.fetch(port, "/qd/workers.json")[0], 200)
+        panel = self.panel(self.fetch(port, "/qd/")[1])
+        wharf, pier = [row for row in re.findall(r"<tr>.*?</tr>", panel, re.S)[1:]]
+        self.assertIn('<a href="q1.html" aria-label="Question for Painting the wharf">Question</a>', wharf)
+        self.assertNotIn("Conversation</a>", wharf)
+        self.assertNotIn("Question</a>", pier)
+
+    def test_the_phone_layout_is_a_two_line_card_with_no_sideways_scroll(self) -> None:
+        css = quarterdeck.PAGE_CSS
+        phone = css[css.index("@media (max-width: 40rem) {\n  .desk.underway thead"):]
+        phone = phone[:phone.index("\n}\n")]
+        for rule in ("display:grid", "grid-template-columns:auto minmax(0,1fr) auto", "td.project { display:block; width:auto; grid-column:2; grid-row:2",
+                     "td.state { grid-column:1; grid-row:2; width:auto", "table, .desk.underway tbody { display:block"):
+            self.assertIn(rule, phone)
+        self.assertNotIn("overflow-x", phone)
+        self.assertIn("text-overflow:ellipsis", css)
