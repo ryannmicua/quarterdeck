@@ -182,7 +182,7 @@ class MembershipTests(MailboxCase):
         self.assertEqual(self.counts(page), {"Conversations": "2", "For review": "1"})
         self.assertNotIn("notice", page.split('id="desk-panel-needs-you"')[1].split('id="desk-panel-under-way"')[0])
         self.assertIn('<a href="q1.html?from=conversations" data-pane>Pocket guide paper</a>'
-                      '<a href="https://example.com/timetable" rel="noopener noreferrer">Open the timetable</a>', page)
+                      '<a href="https://example.com/timetable" target="_blank" rel="noopener noreferrer">Open the timetable</a>', page)
         self.assertIn('<button type="button" data-read="C1" aria-label="Mark read, Ferry timetable is published">Mark read</button>', page)
         self.assertRegex(page, r'<button type="button" data-read-all>Mark all notices read</button>')
         self.assertIn('id="no-conversations" hidden', page)  # a notice is something to read, so the list is not empty
@@ -207,6 +207,22 @@ class ReferencesTests(MailboxCase):
         super().setUp()
         self.port = self.start("/qd", ask_home=self.inbox())
 
+    def test_links_leaving_the_desk_open_in_a_new_tab_and_links_inside_it_do_not(self) -> None:
+        self.add("resource", "Port tide tables", "See https://example.com/notes for more.",
+                 "--url", "https://example.com/tides", "--link-text", "Tide tables",
+                 "--url", "https://example.com/datum", "--link-text", "Datum")  # Q1
+        self.add("list", "Proof run checklist", "What to check.", "--body-file", "-", stdin="- Confirm the paper\n")  # Q2
+        for page in (self.desk(self.port), self.fetch(self.port, "/qd/q1.html")[1]):
+            anchors = re.findall(r"<a\b[^>]*>", page)
+            external = [a for a in anchors if re.search(r'href="https?://', a)]
+            internal = [a for a in anchors if re.search(r'href="(?!https?://)', a)]
+            self.assertTrue(external and internal)
+            for anchor in external:
+                self.assertIn('target="_blank"', anchor)
+                self.assertIn('rel="noopener noreferrer"', anchor)
+            for anchor in internal:
+                self.assertNotIn("_blank", anchor)
+
     def test_references_have_their_own_tab_beside_conversations_and_for_review(self) -> None:
         page = self.desk(self.port)
         self.assertEqual(re.findall(r'role="tab" id="desk-tab-([a-z-]+)"', page),
@@ -225,8 +241,8 @@ class ReferencesTests(MailboxCase):
         self.assertIn('id="no-references" hidden', page)
         panel = page.split('id="desk-panel-references"')[1].split('id="desk-panel-under-way"')[0]
         # A resource's title goes straight to what it saves; its ID opens the saved item. A list's title opens the list.
-        self.assertIn('<a class="bookmark-title" href="https://example.com/tides" rel="noopener noreferrer">Port tide tables</a>', panel)
-        self.assertIn('<p class="notice-links"><a href="https://example.com/datum" rel="noopener noreferrer">Datum &lt;notes&gt;</a></p>', panel)
+        self.assertIn('<a class="bookmark-title" href="https://example.com/tides" target="_blank" rel="noopener noreferrer">Port tide tables</a>', panel)
+        self.assertIn('<p class="notice-links"><a href="https://example.com/datum" target="_blank" rel="noopener noreferrer">Datum &lt;notes&gt;</a></p>', panel)
         self.assertIn('<a class="bookmark-id" href="q1.html?from=desk-references" data-pane aria-label="Q1, the saved item">Q1</a>'
                       '<span class="project-name">Harbor</span>', panel)
         self.assertIn('<a class="bookmark-title" href="q2.html?from=desk-references" data-pane>Proof run checklist</a>', panel)

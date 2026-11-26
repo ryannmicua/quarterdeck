@@ -340,7 +340,7 @@ class PageTests(StoreCase):
         self.assertNotIn("<h2>Answered</h2>", page)
         references = page.split('id="panel-references"')[1].split('id="panel-answered"')[0]
         self.assertLess(references.index('data-id="Q2"'), references.index('data-id="Q1"'))
-        self.assertIn('href="https://example.com/lavish/calls" rel="noopener noreferrer">Calls redesign</a>', references)
+        self.assertIn('href="https://example.com/lavish/calls" target="_blank" rel="noopener noreferrer">Calls redesign</a>', references)
         self.assertIn('href="q1.html?from=references" data-detail>Q1</a>', references)
 
     def test_a_question_item_moves_between_desk_and_answered_by_itself(self) -> None:
@@ -406,7 +406,7 @@ class PageTests(StoreCase):
         self.assertIn('<section class="page-section"><h2>References</h2>', index)
         self.assertIn('<section class="page-section"><h2>Answered</h2>', index)
         self.assertLess(index.index("<h2>References</h2>"), index.index("<h2>Answered</h2>"))
-        self.assertIn('href="https://example.com/lavish/calls" rel="noopener noreferrer">Calls redesign</a>',
+        self.assertIn('href="https://example.com/lavish/calls" target="_blank" rel="noopener noreferrer">Calls redesign</a>',
                       index.split("<h2>References</h2>")[1].split("</section>")[0])
         answered = index.split("<h2>Answered</h2>")[1].split("</section>")[0]
         self.assertEqual(re.findall(r'<a class="lib-title" href="([^"]+)">([^<]+)</a>', answered),
@@ -528,7 +528,7 @@ class PageTests(StoreCase):
         self.add_all_kinds()
         pages = self.pages()
         self.assertIn('<p class="id">Q1</p><h1>Calls redesign</h1>', pages["q1.html"])
-        self.assertIn('<a class="open-link" href="https://example.com/lavish/calls" rel="noopener noreferrer">'
+        self.assertIn('<a class="open-link" href="https://example.com/lavish/calls" target="_blank" rel="noopener noreferrer">'
                       "Calls redesign (Lavish)</a>", pages["q1.html"])
         self.assertIn('<li id="Q2.3"><span class="id">Q2.3</span><span>3. Check the sails</span></li>', pages["q2.html"])
         questions = pages["q3.html"]
@@ -1736,7 +1736,9 @@ try {
     tagFilter.value = 'research';
     tagFilter.dispatchEvent(new Event('change', {bubbles:true}));
     check(shown() === 'Harbor chart', 'The tag did not narrow the lookup to the Harbor chart');
-    panel.querySelector('.lib-item:not([hidden]) a.ref-title').click();
+    const first = panel.querySelector('.lib-item:not([hidden]) a.ref-title');
+    first.removeAttribute('target');  // reference links open a new tab; this checks same-tab history
+    first.click();
   } else {
     check(dialog.open && tab.getAttribute('aria-selected') === 'true' && !panel.hidden,
           'The library did not reopen on References after bookmark visit ' + visits);
@@ -1749,7 +1751,9 @@ try {
       search.value = 'quay chart';
       search.dispatchEvent(new Event('input', {bubbles:true}));
       check(shown() === 'Harbor chart', 'The second lookup did not select the Harbor chart');
-      panel.querySelector('.lib-item:not([hidden]) a.ref-extra').click();
+      const extra = panel.querySelector('.lib-item:not([hidden]) a.ref-extra');
+      extra.removeAttribute('target');
+      extra.click();
     } else report('PASS');
   }
 } catch (error) { report(error.message); }

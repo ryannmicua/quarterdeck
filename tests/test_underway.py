@@ -114,7 +114,7 @@ class UnderwayTests(base.ImageCase):
         self.assertIn('title="Tarring the quay"', panel)
         self.assertIn(">Ready to merge</span>", panel)
         self.assertIn(">Building</span>", panel)
-        self.assertIn(f'<a href="{PULL}2" rel="noopener noreferrer" aria-label="Pull request for Tarring the quay">', panel)
+        self.assertIn(f'<a href="{PULL}2" target="_blank" rel="noopener noreferrer" aria-label="Pull request for Tarring the quay">', panel)
         self.assertEqual(panel.count("Pull request</a>"), 1)
         self.assertNotIn("Conversation</a>", panel)
         self.assertIn(f'Last checked <time datetime="{SNAPSHOT_TIME}">', panel)
@@ -252,7 +252,7 @@ class UnderwayTests(base.ImageCase):
         self.assertNotIn("question", rows["Dock"])
         panel, _ = self.served_panel(self.make_home(body=reading([snapshot_task("Wharf", title="Painting the wharf",
                                                                              decisions=decisions)])))
-        self.assertIn(f'<a href="{board}" rel="noopener noreferrer" aria-label="Question for Painting the wharf">Question</a>',
+        self.assertIn(f'<a href="{board}" target="_blank" rel="noopener noreferrer" aria-label="Question for Painting the wharf">Question</a>',
                       panel)
         self.assertNotIn("Pick the colour", panel)
 

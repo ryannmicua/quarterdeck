@@ -3586,6 +3586,10 @@ WORKERS_SCRIPT = r"""
       for (const link of worker.links) {
         const anchor = make('a', '', link.text);
         anchor.href = link.href;
+        if (new URL(anchor.href, location.href).origin !== location.origin) {
+          anchor.target = '_blank';
+          anchor.rel = 'noopener noreferrer';
+        }
         links.append(anchor);
       }
       item.append(links);
@@ -3886,6 +3890,9 @@ def esc(value: object) -> str:
     return html.escape(str(value), quote=True)
 
 
+# Every link that leaves Quarterdeck opens in a new tab, so the Desk stays open where the owner left it.
+NEW_TAB = ' target="_blank" rel="noopener noreferrer"'
+
 URL_PATTERN = re.compile(r"(?<![\w+.-])https?://\S+", re.IGNORECASE)
 URL_DELIMITERS = {'"': '"', "'": "'", "<": ">"}
 URL_PUNCTUATION = ".,;:!?"
@@ -3923,7 +3930,7 @@ def linked_text(value: object) -> str:
         except ValueError:
             continue
         parts.append(esc(text[last:start]))
-        parts.append(f'<a href="{esc(url)}" target="_blank" rel="noopener noreferrer">{esc(url)}</a>')
+        parts.append(f'<a href="{esc(url)}"{NEW_TAB}>{esc(url)}</a>')
         last = position
     return "".join(parts) + esc(text[last:])
 
@@ -4437,7 +4444,7 @@ def desk_row(item, summary, *, primary):
 
 
 def link_html(link, *, prefix=""):
-    return (f'<a class="ref-link" href="{esc(link["url"])}" target="_blank" rel="noopener noreferrer">'
+    return (f'<a class="ref-link" href="{esc(link["url"])}"{NEW_TAB}>'
             f'{esc(prefix + link["text"])}</a>')
 
 
@@ -6478,8 +6485,8 @@ def reference_row(item, *, served):
     detail = " data-detail" if served else ""
     if kind == "resource":
         first, *more = resource_links(item["body"])
-        title = (f'<a class="ref-title" href="{esc(first["url"])}" rel="noopener noreferrer">{esc(item["title"])}</a>')
-        extra = "".join(f'<a class="ref-extra" href="{esc(link["url"])}" rel="noopener noreferrer">{esc(link["text"])}</a>'
+        title = (f'<a class="ref-title" href="{esc(first["url"])}"{NEW_TAB}>{esc(item["title"])}</a>')
+        extra = "".join(f'<a class="ref-extra" href="{esc(link["url"])}"{NEW_TAB}>{esc(link["text"])}</a>'
                         for link in more)
     else:
         title, extra = f'<a class="ref-title" href="{page}"{detail}>{esc(item["title"])}</a>', ""
@@ -6697,7 +6704,7 @@ def notice_row(notice, items_by_id):
     if item is not None:
         links.append(f'<a href="{esc(item_link(item["id"], "conversations"))}" data-pane>{esc(item["title"])}</a>')
     if "url" in notice:
-        links.append(f'<a href="{esc(notice["url"])}" rel="noopener noreferrer">{esc(notice["link_text"])}</a>')
+        links.append(f'<a href="{esc(notice["url"])}"{NEW_TAB}>{esc(notice["link_text"])}</a>')
     return (f'<li class="topic notice" data-notice="{notice["id"]}" data-unread="true"'
             f'{f' data-item="{item["id"]}"' if item is not None else ""}>'
             f'<div class="topic-main"><p class="notice-title"><span class="id">{notice["id"]}</span> {title}</p>'
@@ -6782,8 +6789,8 @@ def bookmark_row(item):
     page = esc(item_link(item_id, "desk-references"))
     if kind == "resource":
         first, *more = resource_links(item["body"])
-        title = f'<a class="bookmark-title" href="{esc(first["url"])}" rel="noopener noreferrer">{esc(item["title"])}</a>'
-        extra = "".join(f'<a href="{esc(link["url"])}" rel="noopener noreferrer">{esc(link["text"])}</a>' for link in more)
+        title = f'<a class="bookmark-title" href="{esc(first["url"])}"{NEW_TAB}>{esc(item["title"])}</a>'
+        extra = "".join(f'<a href="{esc(link["url"])}"{NEW_TAB}>{esc(link["text"])}</a>' for link in more)
         saved = f'<a class="bookmark-id" href="{page}" data-pane aria-label="{item_id}, the saved item">{item_id}</a>'
     else:
         title = f'<a class="bookmark-title" href="{page}" data-pane>{esc(item["title"])}</a>'
@@ -6878,12 +6885,12 @@ def underway_row(row, merged=False):
     links = []
     question = row.get("question") or (row.get("conversation") if status == "Question asked" else None)
     if question:
-        external = ' rel="noopener noreferrer"' if question != row.get("conversation") else ""
+        external = NEW_TAB if question != row.get("conversation") else ""
         links.append(f'<a href="{esc(question)}"{external} aria-label="Question for {esc(full)}">Question</a>')
     if row.get("conversation") and row["conversation"] != question:
         links.append(f'<a href="{esc(row["conversation"])}" aria-label="Conversation for {esc(full)}">Conversation</a>')
     if row.get("pr"):
-        links.append(f'<a href="{esc(row["pr"])}" rel="noopener noreferrer" aria-label="Pull request for {esc(full)}">'
+        links.append(f'<a href="{esc(row["pr"])}"{NEW_TAB} aria-label="Pull request for {esc(full)}">'
                      'Pull request</a>')
     chip = "" if merged else f'<td class="state"><span class="{state}">{esc(status)}</span></td>'
     return (f'<tr><th scope="row" title="{esc(full)}"><span class="clip">{shown}</span></th>'
@@ -7084,7 +7091,7 @@ def list_page(data: dict[str, object], site_title: str, *, served: bool, saved_n
 def item_body_html(item: dict[str, object]) -> str:
     item_id, body, kind = str(item["id"]), item["body"], item["kind"]
     if kind == "resource":
-        return "".join(f'<p><a class="open-link" href="{esc(link["url"])}" rel="noopener noreferrer">{esc(link["text"])}</a></p>'
+        return "".join(f'<p><a class="open-link" href="{esc(link["url"])}"{NEW_TAB}>{esc(link["text"])}</a></p>'
                        for link in resource_links(body))  # type: ignore[arg-type]
     if kind == "list":
         entries = body["entries"]  # type: ignore[index]
