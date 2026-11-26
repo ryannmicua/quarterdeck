@@ -92,7 +92,7 @@ disabled control and refusal feedback. The checks cover **Unread only**, the
 destination of a saved link opened from **References**, and the pane beside
 **Under way**. At 390 pixels wide they open the dedicated compose view and
 return to the list, then reopen the unsent draft. A fixture check opens
-folded messages in a conversation thread.
+folded messages in a conversation thread and folds them back.
 
 The grouping browser checks fill the **Project** filter with invented
 projects and topics and verify which rows each choice shows, including
