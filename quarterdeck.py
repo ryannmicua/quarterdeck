@@ -41,7 +41,7 @@ from urllib.parse import quote, unquote, urlparse
 DEFAULT_TITLE = "Quarterdeck"
 DEFAULT_HOST = "127.0.0.1"
 DEFAULT_PORT = 8765
-ALLOWED_CONFIG_KEYS = {"page_title", "output_dir", "base_path", "firstmate_home", "catch_up_days", "task_links_path"}
+ALLOWED_CONFIG_KEYS = {"page_title", "output_dir", "base_path", "firstmate_home", "catch_up_days"}
 # Legacy configuration. Only a sole registered home can supply the note destination.
 LEGACY_CONFIG_KEYS = {"homes", "captain_waits"}
 # Split so the privacy guard, which rejects committed generated pages by this marker, does not flag the source.
@@ -125,14 +125,6 @@ def load_config(path: Path | None) -> dict[str, object]:
         if not home.is_absolute():
             raise ValueError("config firstmate_home must be a valid absolute path")
         config["firstmate_home"] = str(home)
-    if "task_links_path" in config:
-        try:
-            links = inbox_path(config["task_links_path"])
-        except ValueError as exc:
-            raise ValueError("config task_links_path must be a valid absolute path") from exc
-        if not links.is_absolute():
-            raise ValueError("config task_links_path must be a valid absolute path")
-        config["task_links_path"] = str(links)
     if "page_title" in config and not isinstance(config["page_title"], str):
         raise ValueError("config page_title must be a string")
     if "base_path" in config:
@@ -2685,15 +2677,8 @@ def underway_rows(data: dict, tasks: dict[str, dict], observed: datetime) -> lis
     return sorted(rows, key=lambda row: UNDERWAY_ORDER.index(row["status"]) if row["status"] in UNDERWAY_ORDER else 0)
 
 
-def task_links_path(config: dict[str, object], home: Path) -> Path:
-    configured = config.get("task_links_path")
-    return Path(configured) if isinstance(configured, str) else home / TASK_LINKS_DEFAULT
-
-
-def read_task_links(path: Path | None) -> dict[str, str]:
+def read_task_links(path: Path) -> dict[str, str]:
     """Task id to Quarterdeck item id from Firstmate's map. A missing or unreadable file means no links. The last line wins."""
-    if path is None:
-        return {}
     try:
         with path.open("rb") as handle:
             text = handle.read(TASK_LINKS_MAX_BYTES).decode("utf-8", errors="replace")
@@ -5973,7 +5958,7 @@ def ask_destination(ask_home: Path | None, *, require_directory: bool) -> tuple[
 
 def make_handler(site_title: str, base_path: str = "", store: Path | None = None, home: Path | None = None,
                  *, ask_home: Path | None = None, workers_home: Path | None = None,
-                 retention_days: int = CATCH_UP_DAYS, task_links: Path | None = None,
+                 retention_days: int = CATCH_UP_DAYS,
                  saved_workers: SavedWorkers | None = None) -> type[BaseHTTPRequestHandler]:
     """Every page is built from the item store when it is requested."""
     visit_log = VisitLog(visits_path())
@@ -6078,7 +6063,7 @@ def make_handler(site_title: str, base_path: str = "", store: Path | None = None
                 except (OSError, ValueError) as exc:  # a visit that cannot be logged must never stop the page
                     print(f"quarterdeck: could not log the visit: {exc}", file=sys.stderr, flush=True)
                 _, ask_binding = ask_destination(ask_home, require_directory=True)
-                underway = (underway_view(saved_workers, read_task_links(task_links or task_links_path({}, workers_home)),
+                underway = (underway_view(saved_workers, read_task_links(workers_home / TASK_LINKS_DEFAULT),
                                           data["items"]) if workers_home is not None else None)
                 self.send_text(200, list_page(data, site_title, served=True, ask_binding=ask_binding, underway=underway),
                                "text/html; charset=utf-8",
@@ -6227,7 +6212,6 @@ def serve(args: argparse.Namespace) -> int:
         saved_workers = SavedWorkers(firstmate, workers_cache_path()) if firstmate is not None else None
         handler = make_handler(page_title(args, config), base_path, home=answer_home(config, config_path),
                                ask_home=firstmate, workers_home=firstmate, retention_days=catch_up_days(config),
-                               task_links=(task_links_path(config, firstmate) if firstmate is not None else None),
                                saved_workers=saved_workers)
         port = args.port
         for host in bind_hosts(args):

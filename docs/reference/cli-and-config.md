@@ -379,7 +379,6 @@ reading the file.
 | `base_path` | string | none | The URL prefix described above. |
 | `catch_up_days` | whole number from 1 to 3650 | `7` | Retention period for [read Catch-up notices](../how-to/catch-up.md#how-long-a-notice-stays). |
 | `firstmate_home` | absolute path after expanding `~` | unset | Local destination for answers, asks and conversation messages submitted to `serve`, and the home whose workers the page lists. When set, `converse` requires it to resolve to an existing directory. See [how the store records the binding](item-store.md#conversations). |
-| `task_links_path` | absolute path after expanding `~` | `data/qd-threads/links.tsv` in `firstmate_home` | The tab-separated map from task name to conversation ID that the [Under way tab](../how-to/see-work-under-way.md#link-to-a-conversation) reads. Quarterdeck never writes it. |
 
 `serve` reads `firstmate_home` at startup. `converse` reads it each time it runs.
 Changes to this setting require a server restart before `converse` can open

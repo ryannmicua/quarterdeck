@@ -174,24 +174,12 @@ class UnderwayTests(base.ImageCase):
         self.assertEqual(quarterdeck.read_task_links(home / "data" / "qd-threads" / "links.tsv"), {})
         self.assertNotIn("Conversation</a>", self.panel(self.fetch(port, "/qd/")[1]))
 
-    def test_the_map_file_comes_from_config_and_is_never_written(self) -> None:
-        custom = self.root / "map.tsv"
-        custom.write_text("Dock\tq3\nDock\tQ4\nPier\tQ5\n")
-        before = custom.read_bytes()
-        self.assertEqual(quarterdeck.read_task_links(custom), {"Dock": "Q4", "Pier": "Q5"})
-        self.assertEqual(quarterdeck.read_task_links(None), {})
-        self.assertEqual(custom.read_bytes(), before)
-        home = Path("/firstmate")
-        self.assertEqual(quarterdeck.task_links_path({}, home), home / "data" / "qd-threads" / "links.tsv")
-        self.assertEqual(quarterdeck.task_links_path({"task_links_path": str(custom)}, home), custom)
-        config = self.root / "config.json"
-        config.write_text(json.dumps({"task_links_path": str(custom)}))
-        self.assertEqual(quarterdeck.load_config(config)["task_links_path"], str(custom))
-        for bad in ("map.tsv", 7, ""):
-            with self.subTest(bad=bad):
-                config.write_text(json.dumps({"task_links_path": bad}))
-                with self.assertRaisesRegex(ValueError, "task_links_path"):
-                    quarterdeck.load_config(config)
+    def test_the_map_file_is_read_and_never_written(self) -> None:
+        links = self.root / "map.tsv"
+        links.write_text("Dock\tq3\nDock\tQ4\nPier\tQ5\n")
+        before = links.read_bytes()
+        self.assertEqual(quarterdeck.read_task_links(links), {"Dock": "Q4", "Pier": "Q5"})
+        self.assertEqual(links.read_bytes(), before)
 
     def test_merged_work_leaves_the_tab_after_the_day_ends(self) -> None:
         home = self.make_home(body=reading([snapshot_task("Dock")], [merged("Closed", READING_DAY, title="Painting the hull")]))

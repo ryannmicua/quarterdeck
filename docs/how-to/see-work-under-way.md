@@ -50,9 +50,7 @@ pull request is open.
 Firstmate keeps a map from each piece of work to its Quarterdeck conversation
 in `data/qd-threads/links.tsv` inside the home. Each line has two columns
 separated by a tab: the work's task name, then the conversation ID such as
-`Q29`. When a task appears more than once, the last line wins. Set
-[`task_links_path`](../reference/cli-and-config.md#json-configuration) to read
-the map from another file.
+`Q29`. When a task appears more than once, the last line wins.
 
 Quarterdeck only reads this file. A row has no **Conversation** link when the
 file is missing or unreadable, names no such conversation, or has no line for
