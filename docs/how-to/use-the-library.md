@@ -28,6 +28,8 @@ first. The tab sits beside **Conversations** and **For review**.
   it holds sit under it. Its ID, such as Q7, opens the saved item with its
   description.
 - A saved list shows its title, which opens the list.
+- Selecting anywhere else on a row, such as its description or date, opens
+  the saved item or the list. Selecting text there does not open it.
 
 On a wide screen a saved item or a list opens beside the tab. The tab has no
 search. To search references, or to filter them by project or tag, select

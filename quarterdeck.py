@@ -3387,8 +3387,8 @@ body:has(dialog[open]) { overflow:hidden; }
 .topic-title:focus-visible { outline:none; }
 .topic:has(.topic-title:focus-visible) { outline:3px solid var(--focus); outline-offset:-3px; }
 .topic[aria-current="true"] { background:var(--faint); border-left-color:var(--signal); }
-@media (hover: hover) and (pointer: fine) { .topic:not(.notice, .bookmark):hover { background:var(--faint); } }
-.topic:not(.notice, .bookmark):active { background:var(--faint); }
+@media (hover: hover) and (pointer: fine) { .topic:not(.notice):hover { background:var(--faint); } }
+.topic:not(.notice):active { background:var(--faint); }
 .topic-latest { margin:.05rem 0 .2rem; color:var(--soft); font-size:var(--text-sm); display:-webkit-box; -webkit-line-clamp:2; -webkit-box-orient:vertical; overflow:hidden; }
 .topic-meta { display:flex; flex-wrap:wrap; gap:0 1rem; margin:0; }
 .topic-meta .badge { font-size:var(--text-sm); }
@@ -5461,10 +5461,17 @@ DESK_SCRIPT = talk_script(r"""
     } catch {}
   };
   document.getElementById('mail-list').addEventListener('click', event => {
-    const link = event.target.closest('a.topic-title, a[data-pane]');
-    if (!link || !wide.matches || event.button || event.metaKey || event.ctrlKey || event.shiftKey || event.altKey) return;
-    event.preventDefault();
-    openInPane(link.getAttribute('href'), link.closest('.topic').dataset.id);
+    if (event.button || event.metaKey || event.ctrlKey || event.shiftKey || event.altKey) return;
+    const anchor = event.target.closest('a');
+    const link = anchor ?? event.target.closest('.topic.bookmark')?.querySelector('a[data-pane]');
+    if (!link?.matches('.topic-title, [data-pane]')) return;
+    if (!anchor && window.getSelection()?.isCollapsed === false) return;
+    if (wide.matches) {
+      event.preventDefault();
+      openInPane(link.getAttribute('href'), link.closest('.topic').dataset.id);
+    } else if (!anchor) {
+      location.assign(link.href);
+    }
   });
 
   const LISTS = ['topics-unread', 'topics-pinned', 'topics-recent', 'topics-archived', 'review-waiting', 'review-later', 'topics-references'];
@@ -6769,7 +6776,8 @@ def archived_panel(items, projects=()):
 
 def bookmark_row(item):
     """One saved resource or list on the References tab. A resource's title goes straight to what it saves, and its ID
-    opens the saved item; a list's title opens the list."""
+    opens the saved item; a list's title opens the list. The Desk script opens that same `data-pane` link when the rest
+    of the row is clicked."""
     item_id, kind = item["id"], item["kind"]
     page = esc(item_link(item_id, "desk-references"))
     if kind == "resource":

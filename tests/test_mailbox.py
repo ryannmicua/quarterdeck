@@ -3,8 +3,11 @@ from __future__ import annotations
 import json
 import re
 import shutil
+import socket
+import subprocess
 import sys
 import uuid
+from itertools import chain
 from pathlib import Path
 from unittest.mock import patch
 
@@ -525,6 +528,108 @@ class MailboxBrowserTests(MailboxCase):
             outcome, stderr = base.WorkersTests.browser_page(self, self.port, route, window_size=window_size)
         self.assertEqual(outcome, "PASS", stderr)
 
+    def check_reference_pointer_gestures(self) -> None:
+        chrome = shutil.which("google-chrome")
+        if not chrome:
+            self.skipTest("google-chrome is required for the mailbox browser tests")
+        launch = "import os, sys; fd = int(sys.argv[1]); os.dup2(fd, 3); os.dup2(fd, 4); os.execv(sys.argv[2], sys.argv[2:])"
+        connection, child = socket.socketpair()
+        with connection, child, subprocess.Popen(
+            [sys.executable, "-c", launch, str(child.fileno()), chrome, "--headless", "--disable-background-networking",
+             "--no-first-run", "--remote-debugging-pipe", "--window-size=1000,900",
+             f"--user-data-dir={self.root / 'drag-browser'}", "about:blank"],
+            pass_fds=(child.fileno(),), stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+        ) as browser:
+            child.close()
+            connection.settimeout(10)
+
+            def messages():
+                pending = b""
+                while chunk := connection.recv(65536):
+                    parts = (pending + chunk).split(b"\0")
+                    pending = parts.pop()
+                    yield from map(json.loads, parts)
+
+            responses = messages()
+            events = []
+            session_id = None
+            sequence = 0
+
+            def command(method, **params):
+                nonlocal sequence
+                sequence += 1
+                request = {"id": sequence, "method": method, "params": params}
+                if session_id:
+                    request["sessionId"] = session_id
+                connection.sendall(json.dumps(request).encode() + b"\0")
+                for response in responses:
+                    if response.get("id") == sequence:
+                        self.assertNotIn("error", response, response)
+                        return response["result"]
+                    events.append(response)
+                self.fail(f"Chrome closed its debugging pipe during {method}")
+
+            def wait_for_event(method, matches):
+                for event in chain(events, responses):
+                    if event.get("method") == method and matches(event["params"]):
+                        return event["params"]
+                self.fail(f"Chrome closed its debugging pipe while waiting for {method}")
+
+            def evaluate(expression):
+                result = command("Runtime.evaluate", expression=expression, returnByValue=True)
+                self.assertNotIn("exceptionDetails", result, result)
+                return result["result"].get("value")
+
+            def mouse(event_type, x, y, **params):
+                command("Input.dispatchMouseEvent", type=event_type, x=x, y=y, **params)
+
+            pane_display = "getComputedStyle(document.getElementById('pane-frame')).display"
+            try:
+                command("Target.setDiscoverTargets", discover=True)
+                target = wait_for_event("Target.targetCreated", lambda event: event["targetInfo"]["type"] == "page")["targetInfo"]["targetId"]
+                session_id = command("Target.attachToTarget", targetId=target, flatten=True)["sessionId"]
+                command("Page.enable")
+                command("Page.setLifecycleEventsEnabled", enabled=True)
+                navigation = command("Page.navigate", url=f"http://127.0.0.1:{self.port}/qd/?tab=references")
+                self.assertIn("loaderId", navigation, navigation)
+                wait_for_event("Page.lifecycleEvent", lambda event: event["name"] == "load"
+                               and event["frameId"] == navigation["frameId"] and event["loaderId"] == navigation["loaderId"])
+                self.assertTrue(evaluate("!document.getElementById('desk-panel-references').hidden"))
+                for selector, url in ((".bookmark-title", "https://example.com/tides"),
+                                      (".notice-links a", "https://example.com/datum")):
+                    x, y = evaluate(f"""(() => {{
+  const link = document.querySelector('#topics-references [data-id="Q5"] {selector}');
+  const box = link.getBoundingClientRect();
+  window.referenceClick = null;
+  document.addEventListener('click', event => {{
+    window.referenceClick = [event.target.closest('a')?.href, !event.defaultPrevented];
+    event.preventDefault();
+  }}, {{once:true}});
+  return [box.left + box.width / 2, box.top + box.height / 2];
+}})()""")
+                    mouse("mouseMoved", x, y)
+                    mouse("mousePressed", x, y, button="left", buttons=1, clickCount=1)
+                    mouse("mouseReleased", x, y, button="left", clickCount=1)
+                    self.assertEqual(evaluate("window.referenceClick"), [url, True])
+                    self.assertEqual(evaluate(pane_display), "none", url)
+                for item_id, expected in (("Q5", "The official tables."), ("Q4", "What to check before the proof run.")):
+                    start, end, y = evaluate(f"""(() => {{
+  const text = document.querySelector('#topics-references [data-id="{item_id}"] .topic-latest');
+  const range = document.createRange();
+  range.selectNodeContents(text);
+  const box = range.getBoundingClientRect();
+  return [box.left + 1, box.right + 2, box.top + box.height / 2];
+}})()""")
+                    mouse("mouseMoved", start, y)
+                    mouse("mousePressed", start, y, button="left", buttons=1, clickCount=1)
+                    mouse("mouseMoved", (start + end) / 2, y, button="left", buttons=1)
+                    mouse("mouseMoved", end, y, button="left", buttons=1)
+                    mouse("mouseReleased", end, y, button="left", clickCount=1)
+                    self.assertEqual(evaluate("window.getSelection().toString()"), expected, item_id)
+                    self.assertEqual(evaluate(pane_display), "none", item_id)
+            finally:
+                browser.terminate()
+
     def setUp(self) -> None:
         super().setUp()
         self.port = self.start("/qd", ask_home=self.inbox())
@@ -742,6 +847,52 @@ check(document.getElementById('desk-tab-references').getAttribute('aria-selected
 check(document.activeElement === document.querySelector('#topics-references .topic[data-id="Q4"] .bookmark-title'), 'The row did not take focus');
 check(document.documentElement.scrollWidth <= innerWidth, 'The Desk scrolled sideways');
 """, window_size="390,844", route="/qd/?tab=references&row=Q4")
+
+    def test_a_reference_row_opens_its_item_and_keeps_its_text_selectable(self) -> None:
+        self.add("list", "Proof run checklist", "What to check before the proof run.", "--body-file", "-",
+                 stdin="- Confirm the paper\n")  # Q4
+        self.add("resource", "Port tide tables", "The official tables.", "--url", "https://example.com/tides", "--link-text", "Tide tables",
+                 "--url", "https://example.com/datum", "--link-text", "Datum notes")  # Q5
+        self.run_in_desk(r"""
+document.getElementById('desk-tab-references').click();
+const row = id => document.querySelector('#topics-references .topic[data-id="' + id + '"]');
+const hit = (id, selector) => {
+  const box = row(id).querySelector(selector).getBoundingClientRect();
+  return document.elementFromPoint(box.left + box.width / 2, box.top + box.height / 2);
+};
+hit('Q5', '.topic-latest').click();
+await until(() => pane()?.querySelector('h1')?.textContent === 'Port tide tables', 'Clicking the description did not open the saved item');
+check(row('Q5').getAttribute('aria-current') === 'true', 'The open reference was not marked');
+hit('Q4', '.topic-latest').click();
+await until(() => pane()?.querySelector('h1')?.textContent === 'Proof run checklist', 'Clicking the description did not open the list');
+hit('Q5', 'time').click();
+await until(() => pane()?.querySelector('h1')?.textContent === 'Port tide tables', 'Clicking the date did not open the saved item');
+hit('Q4', 'time').click();
+await until(() => pane()?.querySelector('h1')?.textContent === 'Proof run checklist', 'Clicking the date did not open the list');
+const box = row('Q5').getBoundingClientRect();
+document.elementFromPoint(box.right - 4, box.top + box.height / 2).click();
+await until(() => pane()?.querySelector('h1')?.textContent === 'Port tide tables', 'Clicking the row whitespace did not open the saved item');
+for (const link of [...row('Q5').querySelectorAll('a'), row('Q4').querySelector('.bookmark-title')]) {
+  link.focus();
+  check(document.activeElement === link && link.matches(':focus-visible') && getComputedStyle(link).outlineStyle !== 'none',
+        'The focused link had no individual focus indicator: ' + link.textContent);
+}
+""", window_size="1000,900")
+        self.check_reference_pointer_gestures()
+        item_page = base.WorkersTests.instrumented_page(quarterdeck.item_page, r"""
+check(window === window.top && location.pathname === '/qd/q5.html' && location.search === '?from=desk-references',
+      'The saved item did not open as the top-level page');
+check(document.querySelector('h1')?.textContent === 'Port tide tables', 'The phone opened the wrong item');
+""")
+        with patch.object(quarterdeck, "item_page", item_page):
+            self.run_in_desk(r"""
+document.getElementById('desk-tab-references').click();
+check(document.documentElement.scrollWidth <= innerWidth, 'The Desk scrolled sideways');
+const box = document.querySelector('#topics-references .topic[data-id="Q5"] .topic-latest').getBoundingClientRect();
+document.elementFromPoint(box.left + box.width / 2, box.top + box.height / 2).click();
+await quiet();
+throw new Error('The phone stayed on the Desk');
+""", window_size="390,844")
 
     def test_under_way_keeps_the_reading_pane_beside_the_list(self) -> None:
         self.run_in_desk(r"""
