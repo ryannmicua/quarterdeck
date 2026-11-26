@@ -5613,6 +5613,8 @@ COMMAND_DOCS = {
     "show": ["how-to/read-answers.md", "how-to/save-items.md", "reference/cli-and-config.md"],
     "reply": ["how-to/reply-from-the-command-line.md", "how-to/talk-to-firstmate.md", "reference/cli-and-config.md", "reference/item-store.md"],
     "post": ["how-to/reply-from-the-command-line.md", "reference/cli-and-config.md", "reference/item-store.md"],
+    **dict.fromkeys(("resolve", "reopen", "archive", "unarchive"),
+                    ["how-to/talk-to-firstmate.md", "reference/cli-and-config.md", "reference/item-store.md"]),
     "converse": ["how-to/reply-from-the-command-line.md", "how-to/talk-to-firstmate.md", "reference/cli-and-config.md", "reference/item-store.md"],
     "remove": ["how-to/save-items.md", "reference/cli-and-config.md"],
     "render": ["how-to/serve-the-page.md", "reference/cli-and-config.md", "explanation/privacy-and-architecture.md"],

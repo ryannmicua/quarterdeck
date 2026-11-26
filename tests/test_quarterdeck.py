@@ -2941,7 +2941,7 @@ class ServiceAndHelpTests(StoreCase):
         names = [command["name"] for command in index["commands"]]
         for name in ("add", "list", "show", "remove", "render", "serve"):
             self.assertIn(name, names)
-        for old in ("board", "reports", "topics", "waits", "attention", "export", "done", "reopen"):
+        for old in ("board", "reports", "topics", "waits", "attention", "export", "done"):
             self.assertNotIn(old, names)
         for command in index["commands"]:
             for doc in command["docs"]:
