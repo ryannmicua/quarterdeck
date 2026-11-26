@@ -65,7 +65,10 @@ are visible in the narrow and desktop layouts.
 
 The Desk replay browser check delays a start until a stale notice has shown
 reload guidance. It verifies that both results stay visible on **Needs you**
-and that the inserted topic shows the same local date as on initial load.
+and checks that the initial and inserted rows show October 2 in Tokyo for a
+message saved at 18:30 UTC on October 1. The Desk tab check uses the old
+bookmark fragment to verify that Conversations still opens first and that
+clicking or using the keyboard leaves the address unchanged.
 
 The Catch-up browser check opens **Needs you** with saved notices and an
 open question. At phone width it checks the notice details and links. It

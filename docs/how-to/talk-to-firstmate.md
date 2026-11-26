@@ -5,7 +5,7 @@ is its own saved item, with the topic as its title. To send a message, use the
 served page with [`firstmate_home` configured](read-answers.md#connect-the-inbox)
 to point to an existing directory. The Desk opens on **Conversations**. Its
 **Topic** and **Message** fields sit directly above the list once that
-directory is available. See the [glossary](../reference/glossary.md) for the
+directory is available. Switching tabs keeps the same page address. See the [glossary](../reference/glossary.md) for the
 words the Desk uses.
 
 ## Start a conversation

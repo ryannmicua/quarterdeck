@@ -6162,6 +6162,28 @@ check(button('talk-topic').value === 'Draft topic' && button('talk-message').val
       'Switching tabs lost the unsent draft');
 """, path="/qd/", viewport=(390, 844))
 
+    def test_desk_tabs_leave_the_address_unchanged(self) -> None:
+        if not shutil.which("google-chrome"):
+            self.skipTest("google-chrome is required for Desk tab navigation")
+        port = self.start("/qd")
+        steps = """
+const conversations = document.getElementById('desk-tab-conversations');
+const needs = document.getElementById('desk-tab-needs-you');
+const address = location.href;
+check(location.hash === '#needs-you' && conversations.getAttribute('aria-selected') === 'true',
+      'A fresh visit to the old fragment did not open Conversations');
+needs.click();
+check(needs.getAttribute('aria-selected') === 'true' && location.href === address,
+      'Clicking Needs you changed the address');
+needs.dispatchEvent(new KeyboardEvent('keydown', {key:'Home', bubbles:true, cancelable:true}));
+check(conversations.getAttribute('aria-selected') === 'true' && location.href === address,
+      'Keyboard tab selection changed the address');
+"""
+        page = WorkersTests.instrumented_page(quarterdeck.list_page, steps)
+        with patch.object(quarterdeck, "list_page", page):
+            outcome, stderr = WorkersTests.browser_page(self, port, "/qd/?from=desk#needs-you")
+        self.assertEqual(outcome, "PASS", stderr)
+
     def test_pin_and_unpin_move_a_row_between_groups_in_a_browser(self) -> None:
         port = self.start("/qd", ask_home=self.inbox())
         self.seed_conversations(port)
@@ -6186,7 +6208,7 @@ check(posts.length === 1 && posts[0][0] === 'pins' && posts[0][1].part === 'Q1' 
 check(ids('pinned') === 'Q1' && ids('recent') === 'Q3,Q2' && !document.getElementById('topics-pinned').hidden, 'Pin did not move the row');
 check(pin('Q1').textContent === 'Unpin' && pin('Q1').getAttribute('aria-label') === 'Unpin Harbor lamp colours'
       && document.activeElement === pin('Q1'), 'The control did not become Unpin with focus kept');
-check(pin('Q1').closest('.topic').querySelector('[role=status]').textContent === 'Harbor lamp colours is pinned.', 'The pin was not announced');
+check(button('pin-status-Q1').textContent === 'Harbor lamp colours is pinned.', 'The pin was not announced');
 delay = true;
 pin('Q3').focus();
 pin('Q3').click();
@@ -6214,8 +6236,17 @@ document.execCommand('insertText', false, 'A message draft');
 complete();
 await settle();
 check(document.activeElement === message && message.value === 'A message draft', 'A refused pin interrupted composition');
-check(ids('pinned') === '' && !pin('Q2').disabled && pin('Q2').closest('.topic').querySelector('[role=status]').textContent.includes('could not save'),
+check(ids('pinned') === '' && !pin('Q2').disabled && button('pin-status-Q2').textContent.includes('could not save'),
       'A refused pin changed the list or hid the failure');
+pin('Q2').click();
+const needs = button('desk-tab-needs-you');
+needs.click();
+needs.focus();
+complete();
+await settle();
+const failure = button('pin-status-Q2');
+check(failure.checkVisibility() && failure.textContent.includes('Try again') && document.activeElement === needs,
+      'Switching tabs hid the pin refusal or changed focus');
 """, path="/qd/", viewport=(390, 844))
 
     def test_a_started_conversation_joins_the_top_of_the_list_with_focus_in_a_browser(self) -> None:
@@ -6243,6 +6274,8 @@ check(button('talk-topic').value === '' && button('talk-message').value === '' &
     def test_replayed_start_retains_order_and_keeps_the_selected_tab(self) -> None:
         port = self.start("/qd", ask_home=self.inbox())
         earliest = self.seed_conversations(port)
+        with quarterdeck.changing_store(quarterdeck.store_path()) as data:
+            data["items"][0]["conversation"]["item"][0]["at"] = "2026-10-01T18:30:00Z"
         self.assertEqual(self.run_cli("catch-up", "add", "--title", "Review ready", "--summary", "Open the proof.")[0], 0)
         status, response = self.post(port, "/qd/conversations", earliest)
         self.assertEqual(status, 200)
@@ -6250,11 +6283,12 @@ check(button('talk-topic').value === '' && button('talk-message').value === '' &
 const form = button('talk-form');
 const tab = button('desk-tab-needs-you');
 const initialDate = document.querySelector('.topic[data-id="Q1"] time');
-const expectedDate = initialDate.textContent;
-check(expectedDate !== initialDate.dateTime.slice(0, 10), 'The initial row did not localize the date');
+const expectedDate = 'Oct 2, 2026';
+check(initialDate.textContent === expectedDate, 'The initial row did not show the next date in Tokyo');
 let complete;
+let refuseNotice;
 window.fetch = path => {
-  if (path === 'catch-ups/read') return Promise.resolve(new Response('', {status:409}));
+  if (path === 'catch-ups/read') return new Promise(resolve => { refuseNotice = resolve; });
   return new Promise(resolve => { complete = resolve; });
 };
 button('talk-topic').value = 'Harbor lamp colours';
@@ -6264,10 +6298,16 @@ form.requestSubmit();
 tab.click();
 const notice = document.querySelector('[data-read="C1"]');
 notice.click();
-tab.focus();
+const conversations = button('desk-tab-conversations');
+conversations.click();
+conversations.focus();
+refuseNotice(new Response('', {status:409}));
 await new Promise(resolve => setTimeout(resolve, 50));
 const noticeStatus = button('notice-status');
-check(noticeStatus.checkVisibility() && noticeStatus.textContent.includes('Reload'), 'The stale notice did not show recovery guidance');
+check(noticeStatus.checkVisibility() && noticeStatus.textContent.includes('Reload') &&
+      document.activeElement === conversations, 'Switching tabs hid stale notice guidance or changed focus');
+tab.click();
+tab.focus();
 complete({ok:true, json:async () => (""" + json.dumps(response) + r""")});
 await new Promise(resolve => setTimeout(resolve, 50));
 const selected = tab.getAttribute('aria-selected') === 'true';

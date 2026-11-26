@@ -3587,11 +3587,6 @@ DESK_SCRIPT = talk_script(r"""
       other.tabIndex = on ? 0 : -1;
       panelOf(other).hidden = !on;
     }
-    try {
-      history.replaceState(history.state, '', tab.dataset.hash ? '#' + tab.dataset.hash : location.pathname + location.search);
-    } catch {
-      // A page that cannot rewrite its address still switches tabs.
-    }
     if (focus) tab.focus();
   };
   for (const tab of tabs) {
@@ -3604,10 +3599,9 @@ DESK_SCRIPT = talk_script(r"""
       if (next) { event.preventDefault(); select(next, true); }
     });
   }
-  const wanted = tabs.find(tab => tab.dataset.hash && '#' + tab.dataset.hash === location.hash);
-  if (wanted) select(wanted, false);
-
   const startStatus = document.getElementById('desk-status');
+  const noticeStatus = document.getElementById('notice-status');
+  const pinFeedback = document.getElementById('pin-feedback');
   const conversationPanel = document.getElementById('desk-panel-conversations');
   const attentionPanel = document.getElementById('desk-panel-needs-you');
   const attentionRows = attentionPanel.querySelector('tbody');
@@ -3644,7 +3638,6 @@ DESK_SCRIPT = talk_script(r"""
   attentionPanel.addEventListener('click', async event => {
     const button = event.target.closest('button[data-read], button[data-read-all]');
     if (!button || button.disabled) return;
-    const noticeStatus = document.getElementById('notice-status');
     const notices = noticeButtons();
     const selected = button === readAll ? notices : [button];
     const ids = selected.map(control => control.dataset.read);
@@ -3701,7 +3694,15 @@ DESK_SCRIPT = talk_script(r"""
     const button = event.target.closest('button.pin');
     if (!button || button.disabled) return;
     const row = button.closest('.topic');
-    const pinStatus = row.querySelector('.pin-status');
+    const statusId = 'pin-status-' + row.dataset.id;
+    let pinStatus = document.getElementById(statusId);
+    if (!pinStatus) {
+      pinStatus = document.createElement('p');
+      pinStatus.id = statusId;
+      pinStatus.className = 'meta desk-feedback';
+      pinStatus.setAttribute('role', 'status');
+      pinFeedback.append(pinStatus);
+    }
     const pinned = row.dataset.pinned !== 'true';
     const hadFocus = document.activeElement === button;
     button.disabled = true;
@@ -3723,7 +3724,7 @@ DESK_SCRIPT = talk_script(r"""
       pinStatus.textContent = button.dataset.title + (pinned ? ' is pinned.' : ' is unpinned.');
     } else {
       pinStatus.classList.add('failed');
-      pinStatus.textContent = 'Quarterdeck could not save the pin. Try again.';
+      pinStatus.textContent = 'Quarterdeck could not save the pin for ' + button.dataset.title + '. Try again.';
     }
     if (!conversationPanel.hidden && (focused === button || (hadFocus && focused === document.body))) button.focus();
   });
@@ -4450,8 +4451,7 @@ def conversation_row(item):
     return (f'<li class="topic" data-id="{item["id"]}" data-activity="{activity}" data-pinned="{"true" if pinned else "false"}">'
             f'<div class="topic-main"><a class="topic-title" href="{href}">{title}</a>'
             f'<p class="topic-latest">{esc(preview)}</p>'
-            f'<p class="meta topic-meta">{project}{status}{day_time(latest["at"])}</p>'
-            '<p class="meta desk-feedback pin-status" role="status"></p></div>'
+            f'<p class="meta topic-meta">{project}{status}{day_time(latest["at"])}</p></div>'
             f'<button type="button" class="pin" data-title="{title}" aria-label="{verb} {title}">{verb}</button></li>')
 
 
@@ -4502,8 +4502,7 @@ def needs_you_panel(attention, notices, items_by_id):
     rows = "".join(catch_up_row(notice, items_by_id) for notice in notices)
     hide_bulk = " hidden" if len(notices) < 2 else ""
     hide_empty = " hidden" if attention or notices else ""
-    return ('<p class="meta desk-feedback" id="notice-status" role="status"></p>'
-            f'<button type="button" data-read-all{hide_bulk}>Mark all notices read</button>{desk_table(attention, rows)}'
+    return (f'<button type="button" data-read-all{hide_bulk}>Mark all notices read</button>{desk_table(attention, rows)}'
             f'<p class="empty"{hide_empty}>Nothing needs you. Questions, unread replies, failed deliveries and notices show here.</p>')
 
 
@@ -4513,14 +4512,16 @@ def desk_tabs(conversations, attention, total):
     panels = (("conversations", "Conversations", conversations),
               ("needs-you", "Needs you", attention))
     tabs = "".join(f'<button type="button" role="tab" id="desk-tab-{name}" aria-controls="desk-panel-{name}" '
-                   f'aria-selected="{"true" if number == 0 else "false"}" tabindex="{0 if number == 0 else -1}"'
-                   f'{f" data-hash={name}" if number else ""}>{label}{count if number else ""}</button>'
+                   f'aria-selected="{"true" if number == 0 else "false"}" tabindex="{0 if number == 0 else -1}">'
+                   f'{label}{count if number else ""}</button>'
                    for number, (name, label, _) in enumerate(panels))
     body = "".join(f'<section class="desk-panel" role="tabpanel" id="desk-panel-{name}" aria-labelledby="desk-tab-{name}"'
                    f'{"" if number == 0 else " hidden"}>{content}</section>'
                    for number, (name, _, content) in enumerate(panels))
     return (f'<div class="desk-tabs" role="tablist" aria-label="Desk">{tabs}</div>'
-            f'<p class="meta desk-feedback" id="desk-status" role="status"></p>{body}')
+            '<p class="meta desk-feedback" id="desk-status" role="status"></p>'
+            '<p class="meta desk-feedback" id="notice-status" role="status"></p>'
+            f'<div id="pin-feedback"></div>{body}')
 
 
 def latest_unanswered(thread):
