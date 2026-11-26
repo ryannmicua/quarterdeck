@@ -53,7 +53,7 @@ as `reply`.
 | `mark` | Sets question state, optionally for a whole questions item. `--via` is required with `answered` and accepted only with that state. Skips exit with status 0. See [Read answers](../how-to/read-answers.md) for which questions are marked. |
 | `classify` | Requires at least one classification option. Use `--project` for an item ID, `--kind` for a question ID, and `--tag` for either. See [how to change classification](../how-to/classify-items.md#change-it-later). |
 | `stats` | Prints a question activity table by default or JSON with `--json`. See [Read the report](../how-to/read-the-report.md) for date filtering and field definitions. |
-| `catch-up` | `catch-up add` prints the new notice ID, such as `C4`. `catch-up list` prints the ID, UTC saved date and title of each unread notice, newest first. `catch-up read` accepts notice IDs or `--all` for every unread notice. It prints a line such as `C4 Read` for each acknowledgment. If any supplied ID is missing from the store, the command leaves all notices unchanged. See [Catch up on finished work](../how-to/catch-up.md). |
+| `catch-up` | `catch-up add` prints the new notice ID, such as `C4`. `catch-up list` prints the ID, UTC saved date and title of each unread notice, newest first. `catch-up read` accepts notice IDs or `--all` for every unread notice. It prints a line such as `C4 Read` for each acknowledgment. If any supplied ID is missing from the store, the command leaves all notices unchanged. `--all` skips the store write when no notices are unread. See [Catch up on finished work](../how-to/catch-up.md). |
 | `remove` | Deletes an item. Its ID is never used again. See [image removal](item-store.md#store-layout). |
 
 ### Pages
@@ -205,12 +205,13 @@ thread to its current read status (`true` for read).
 ### Catch-up endpoint
 
 `POST /catch-ups/read` (under any `base_path`) uses the same origin check as
-`/answers`. Send a JSON object with a single `ids` field, such as
+`/answers`. It works without a Firstmate home. The request uses
+`Content-Type: application/json` and a single `ids` field, such as
 `{"ids": ["C4"]}`. The field must contain a nonempty array of
 [canonical notice IDs](item-store.md#catch-up-notices). If any ID is missing
-from the store, the endpoint returns 409 without changing the store. The
-response field `read` lists the acknowledged IDs in request order. See
-[notice retention](../how-to/catch-up.md#how-long-a-notice-stays).
+from the store, the endpoint returns 409 without changing the store. On
+success, the JSON response field `read` lists the acknowledged IDs in request
+order. See [notice retention](../how-to/catch-up.md#how-long-a-notice-stays).
 
 ### Workers endpoint
 
@@ -269,8 +270,11 @@ the documentation to read; `help --json` prints a machine-readable index.
 
 The config is optional. `converse`, `render`, `serve` and `service` read `--config FILE`,
 or `${XDG_CONFIG_HOME:-~/.config}/quarterdeck.json` when it exists.
+`url` uses the installed unit's config path or the default file to look up
+`base_path` when the unit supplies no `--base-path`.
 `catch-up add` and `catch-up read` use the default file, if present, on each
-invocation.
+invocation. `catch-up list` reads only the store. Commands that load the
+config validate the entire file, including `catch_up_days` when present.
 `serve` loads its selected file at startup and uses those settings until it
 restarts. When the selected path is a symlink, `serve` resolves it before
 reading the file.
