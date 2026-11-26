@@ -52,7 +52,7 @@ keeps its **Resolved** mark and its pin, and it returns to **Pinned** if you
 pinned it. You can still open it and send messages, and Firstmate can still
 reply. An unread reply on an archived conversation still shows in
 **Needs you**. Firstmate can archive with `quarterdeck archive` and
-`quarterdeck unarchive`. Hold lists only conversations that are not archived.
+`quarterdeck unarchive`. [Hold](use-the-library.md) leaves out archived conversations.
 
 ## Send more messages
 
