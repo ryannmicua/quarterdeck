@@ -72,6 +72,10 @@ reply on a folded answer, the question expands and its **Messages** panel stays
 open if you already opened it.
 
 Open a row marked **Unread reply** to go to that message and mark it read.
+An item page opened without a link to a message opens the collapsed
+**Messages** that holds the first unread reply, marks the replies it shows
+read, and starts at the first unread message shown. With none unread, it
+starts at the latest message shown. Reloading or going back keeps your place.
 Select **Messages** on the question to acknowledge the replies shown there.
 If it is already open, close and reopen it to acknowledge the replies it shows. A
 closed question can also show **Unread reply**. See

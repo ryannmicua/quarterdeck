@@ -10,7 +10,8 @@ open count, and **Latest** shows the current status. On wider screens,
 **Project** shows the assigned project. Select the item link or tap its row
 to open the first open question. If there is an unread reply, the link
 [opens that message](ask-firstmate.md#read-replies). If there are no open
-questions or unread replies, the link opens the top of the item page.
+questions or unread replies, the link opens the item page. See
+[where the page opens](ask-firstmate.md#read-replies).
 The item page has the question wording, options, and suggestions. Each
 question has an ID you can cite later.
 
