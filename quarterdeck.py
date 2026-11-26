@@ -1853,13 +1853,13 @@ def conversation_message_numbers(messages):
             for number, message in enumerate((m for m in messages if m["author"] == "you"), 1)}
 
 
-def item_text(item: dict[str, object], projects: list[dict[str, object]] | None = None) -> str:
+def item_text(item: dict[str, object], data: dict[str, object]) -> str:
     """One item as plain text, numbered the way the page numbers it."""
     item_id, body = str(item["id"]), item["body"]
     lines = [f"{item_id} · {item['title']}", f"{KIND_LABELS[str(item['kind'])]} · saved {saved_day(item)}",
              "", str(item["description"]), ""]
     if item.get("placement"):
-        lines.insert(2, f"Placement: {placement_label(item, projects or [])}")
+        lines.insert(2, f"Placement: {placement_label(item, data.get("projects", []))}")
     if item.get("project"):
         lines.insert(2, f"Project: {item['project']}")
     if item.get("tags"):
@@ -1876,7 +1876,7 @@ def item_text(item: dict[str, object], projects: list[dict[str, object]] | None 
         if is_task(item):
             task = item["task"]
             about = [f"Task: {TASK_STATES[task['state']]}"]
-            if task.get("source"):
+            if any(other["id"] == task.get("source") for other in data["items"]):
                 about.append(f"Related conversation: {task['source']}")
             if task.get("result"):
                 about.append(f"Result: {task['result']['text']}: {task['result']['url']}")
@@ -2047,7 +2047,7 @@ def list_items(_args: argparse.Namespace) -> int:
 def show_item(args: argparse.Namespace) -> int:
     def action() -> int:
         data = read_store(store_path())
-        print(item_text(find_item(data, args.id), data.get("projects", [])), end="")
+        print(item_text(find_item(data, args.id), data), end="")
         return 0
     return run_item_command(action)
 
