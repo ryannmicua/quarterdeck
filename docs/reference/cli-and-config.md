@@ -234,6 +234,7 @@ It adds no message, keeps the other marks and never refuses a later message.
 The response repeats the field, such as `{"resolved": true}`, and carries
 `hold`, the conversation's row for the Hold list, which is empty when the
 conversation is archived.
+
 ### Project endpoint
 
 `POST /groups` (under any `base_path`) uses the same origin check as `/answers`
