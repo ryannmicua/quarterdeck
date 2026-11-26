@@ -121,6 +121,10 @@ are read. Reload, send a message, or retry delivery to
 refresh the conversation. Replies shown after a send or retry stay unread
 until you open them from the Desk. See [how Firstmate replies](reply-from-the-command-line.md#reply-in-a-conversation).
 
+## Create a task
+
+A conversation can hold work for Firstmate. See [create a task](create-a-task.md).
+
 ## Find a conversation later
 
 Every conversation stays in **Conversations** on the Desk. To search them,

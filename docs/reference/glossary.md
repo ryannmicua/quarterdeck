@@ -37,6 +37,42 @@ These are terms Quarterdeck uses on its pages and in the CLI.
 | Archived | The Desk tab that holds archived conversations. They are out of Pinned, Recent conversations and the Project filter. |
 | Archive, Unarchive | [Move a conversation into Archived, or return it](../how-to/talk-to-firstmate.md#archive-a-conversation). |
 
+## Tasks
+
+A [task](../how-to/create-a-task.md) is a conversation that holds work for Firstmate.
+Its page shows the task state and the Description, and the Desk shows a Task mark beside its title.
+
+| Word | Meaning |
+|---|---|
+| Task | A conversation that holds work for Firstmate. The work can end in a pull request, a page, a report, a mockup, an image or anything else. |
+| Task mark | The word Task beside a task's title on the Desk. |
+| Create a task | The button, on a conversation page and on the Desk, that shows the form for a new task. On a conversation page the new task is related to that conversation. |
+| Title | The short name of a task, a field of the task form. |
+| Description | What the task should do, a field of the task form. Quarterdeck sends it to Firstmate when the task starts. |
+| Start | Save the task and send Firstmate one message, "Task started.", with the Description. On a draft it starts the task. |
+| Save draft | Save the task without telling Firstmate. A draft shows the button Start on its page. |
+| Related tasks | The list on a conversation of the tasks created from it. |
+| Related conversation | The link on a task to the conversation it was created from. |
+| Tasks only | The Desk filter, beside Project, that hides conversations that are not tasks. |
+| Approve | Resolve a task that is In review. Firstmate's updates on it count as read. |
+| Changes needed | Send Firstmate a note on a task that is In review and return the task to Started. Firstmate's updates on it count as read. |
+| Note | The field under Changes needed. What it says goes to Firstmate as your message. |
+| Send note, Cancel note | Send the note, or close the field and keep the task In review. |
+| Result | The link to what a task produced, shown on a task that is In review. |
+
+### Task states
+
+A task has one state. **Resolved** is the existing [Resolved](#conversations) mark and wins over the others.
+**In review** here means the result waits for your review. It is a different record from the
+[work status](#work-status-words) of the same name.
+
+| State | Meaning |
+|---|---|
+| Draft | You saved the task and have not started it. Firstmate has heard nothing. |
+| Started | You started the task. Firstmate has the Description. |
+| In review | Firstmate posted the result and waits for you. The task shows in **Needs you**. |
+| Resolved | You approved the task, or you or Firstmate resolved it. |
+
 ## Status words
 
 | Word | Meaning |
@@ -57,7 +93,7 @@ These words show on **Under way**. The Workers page uses the same words that
 | Word | Meaning |
 |---|---|
 | Building | The work is under way and the reading names no pull request yet. |
-| In review | The work is under way and the reading names its pull request. |
+| In review | The work is under way and the reading names its pull request. A [task](#task-states) uses the same words for its own state. |
 | Ready to merge | The worker reported it is done and the reading names its pull request. |
 | Merged today | The home recorded the work as merged on today's date. |
 | Working, Question asked, Stuck, Finished, Unknown | The Workers page word, shown when none of the words above fits. |

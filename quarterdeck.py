@@ -874,6 +874,12 @@ def check_store(data: object) -> dict[str, object]:
                 if item["kind"] != "conversation":
                     raise ValueError("only a conversation can be placed in a project")
                 check_placement(data.get("projects", []), item["placement"])
+            if "task" in item:
+                if item["kind"] != "conversation":
+                    raise ValueError("only a conversation can be a task")
+                validate_task(item["task"])
+                if item["task"].get("source") == item_id:
+                    raise ValueError("a task cannot be related to itself")
             if "answers" in item:
                 validate_records(item)
             if "conversation" in item:
@@ -1066,7 +1072,7 @@ def validate_conversation(item):
     seen = set()
     for part, messages in conversation.items():
         if ((part != "item" and (not re.fullmatch(r"[1-9][0-9]*", part) or int(part) not in parts))
-                or not isinstance(messages, list) or not messages):
+                or not isinstance(messages, list) or (not messages and not (part == "item" and task_state(item) == "draft"))):
             raise ValueError("invalid conversation")
         asks = set()
         for index, message in enumerate(messages):
@@ -1195,6 +1201,54 @@ def is_resolved(item):
 
 def is_archived(item):
     return item.get("archived") is True
+
+
+# A task is a conversation that holds work for Firstmate. Its optional `task` field carries the state, the owner's
+# Description, the conversation it was created from and, while it waits for review, a link to the result.
+TASK_STATES = {"draft": "Draft", "started": "Started", "review": "In review"}
+TASK_STARTED = "Task started."
+TASK_CHANGES = "Changes needed."
+
+
+def task_of(item):
+    task = item.get("task")
+    return task if isinstance(task, dict) else None
+
+
+def is_task(item):
+    return task_of(item) is not None
+
+
+def task_state(item):
+    task = task_of(item)
+    return task["state"] if task else None
+
+
+def in_review(item):
+    """A task whose result waits for the owner; resolving it, by anyone, ends the wait."""
+    return task_state(item) == "review" and not is_resolved(item)
+
+
+def task_label(item):
+    """The one word for a task: Resolved wins over its state."""
+    return "Resolved" if is_resolved(item) else TASK_STATES[task_state(item)]
+
+
+def validate_task(task):
+    if (not isinstance(task, dict) or not {"state", "description"} <= set(task) <= {"state", "description", "source", "result", "draft_id"}
+            or not isinstance(task["state"], str) or task["state"] not in TASK_STATES):
+        raise ValueError("invalid task")
+    if clean_text(task["description"], "Description", TEXT_LIMIT, multiline=True) != task["description"]:
+        raise ValueError("invalid task description")
+    if "source" in task and (not isinstance(task["source"], str) or parse_id(task["source"]) != task["source"]):
+        raise ValueError("invalid task source")
+    if "draft_id" in task and (not isinstance(task["draft_id"], str) or not re.fullmatch(r"[0-9a-f]{32}", task["draft_id"])):
+        raise ValueError("invalid task draft ID")
+    if "result" in task:
+        result = task["result"]
+        if (task["state"] != "review" or not isinstance(result, dict) or set(result) != {"text", "url"}
+                or question_links([result], "result") != [result]):
+            raise ValueError("invalid task result")
 
 
 def part_state(item, part, *, replies=True):
@@ -1440,7 +1494,10 @@ def new_ask(message_id, text, binding):
 def ask_note(item, target, message):
     """The inbox note: a card ask names its question; a conversation message names the item and its topic."""
     if item["kind"] == "conversation":
-        return f"CONVERSATION {item['id']} {message['id']} Topic: {item['title']}\n{message['text']}"
+        text = message["text"]
+        if is_task(item) and text == TASK_STARTED:  # the fixed message carries what Firstmate is to do
+            text += "\n\nDescription:\n" + item["task"]["description"]
+        return f"CONVERSATION {item['id']} {message['id']} Topic: {item['title']}\n{text}"
     return f"ASK {target} {message['id']} {message['text']}"
 
 
@@ -1516,13 +1573,14 @@ def ask_message(store, home, binding, payload, *, home_available=True, include_t
         return ask_result(item, part, message, include_thread=include_thread)
 
 
-def append_conversation(data, title, message, placement=None):
+def append_conversation(data, title, message, placement=None, task=None):
     item_id = f"Q{data['next_id']}"
     data["next_id"] = int(data["next_id"]) + 1
     data["items"].append({"id": item_id, "kind": "conversation", "title": title,
                           "description": "Conversation with Firstmate.", "saved_at": now_text(), "body": {},
                           **({"placement": placement} if placement else {}),
-                          "conversation": {"item": [message]}})
+                          **({"task": task} if task else {}),
+                          "conversation": {"item": [message] if message else []}})
     return item_id
 
 
@@ -1539,7 +1597,7 @@ def start_conversation(store, home, binding, payload):
     with locked_store(store):
         data = read_store(store)
         for item in data["items"]:
-            first = item.get("conversation", {}).get("item", [None])[0] if item["kind"] == "conversation" else None
+            first = (item.get("conversation", {}).get("item") or [None])[0] if item["kind"] == "conversation" else None
             if first and first["author"] == "you" and first["id"] == message_id:
                 if (item["title"], first["text"]) != (title, text):
                     raise AnswerConflict("Message ID already in use. Reload the Desk.")
@@ -1562,6 +1620,164 @@ def start_conversation(store, home, binding, payload):
     return {**result, "href": item_page_name(item_id), "row": conversation_row(item, data.get("projects", [])),
             "hold": library_row(item, served=True),
             "attention": desk_row(item, summary, primary=False, context="needs-you") if summary else None}
+
+
+def conversation_result(data, item_id, result):
+    """What the Desk needs to show one conversation again after it changed: its row, its Hold row and its Needs you row."""
+    item = find_item(data, item_id)
+    summary = attention_summary(item, served=True)
+    return {**result, "href": item_page_name(item_id), "row": conversation_row(item, data.get("projects", [])),
+            "hold": library_row(item, served=True),
+            "attention": desk_row(item, summary, primary=False, context="needs-you") if summary else None}
+
+
+def read_firstmate_updates(item):
+    """Deciding on a task's result counts as reading what Firstmate posted with it."""
+    for message in part_thread(item, None):
+        if message["author"] == "firstmate":
+            message["read"] = True
+
+
+def read_message_id(value):
+    if not isinstance(value, str) or not re.fullmatch(r"[0-9a-f]{32}", value):
+        raise ValueError("Invalid message ID.")
+    return value
+
+
+def deliver_task_message(store, home, binding, item_id, message_id, sent, held):
+    """Deliver the saved message through the ask path and report it; the page keeps the retry when delivery fails."""
+    if home is None:
+        raise AskHomeUnavailable
+    result = ask_message(store, home, binding, {"part": item_id, "id": message_id, "action": "retry"},
+                         include_thread=False)
+    with locked_store(store, read_only=True):
+        data = read_store(store)
+    delivered = result["message"] == "Message sent."
+    return conversation_result(data, item_id, {"message": sent if delivered else held})
+
+
+def create_task(store, home, binding, payload):
+    """Save a new task, as a draft or started at once. A started task is a conversation whose first message is
+    "Task started."; the note to Firstmate carries the Description. A task created from a conversation is related to it."""
+    required = {"id", "title", "description", "action", "home"}
+    if not isinstance(payload, dict) or not required <= set(payload) <= required | {"source", "project", "topic"}:
+        raise ValueError("Invalid task fields.")
+    message_id = read_message_id(payload["id"])
+    if payload["action"] not in ("start", "draft"):
+        raise ValueError("Invalid task action.")
+    start = payload["action"] == "start"
+    title = clean_text(payload["title"], "Title", TITLE_LIMIT)
+    description = clean_text(payload["description"], "Description", TEXT_LIMIT, multiline=True)
+    source = payload.get("source")
+    if source is not None:
+        if not isinstance(source, str) or source != source.upper() or not ID_RE.fullmatch(source):
+            raise ValueError("Unknown conversation.")
+    with locked_store(store):
+        data = read_store(store)
+        for item in data["items"]:
+            first = (item.get("conversation", {}).get("item") or [None])[0] if item["kind"] == "conversation" else None
+            if (start and first and first["author"] == "you" and first["id"] == message_id
+                    or not start and is_task(item) and item["task"].get("draft_id") == message_id):
+                if not is_task(item) or (item["title"], item["task"]["description"]) != (title, description):
+                    raise AnswerConflict("Message ID already in use. Reload the Desk.")
+                if start and (payload["home"] != binding or first["home"] != binding):
+                    raise SavedAskConflict("Firstmate home changed. This message belongs to the original home.")
+                item_id = item["id"]
+                break
+        else:
+            if start and (home is None or payload["home"] != binding):
+                raise AskHomeUnavailable if home is None else AnswerConflict(
+                    "Firstmate home changed. This message belongs to the original home.")
+            if source is not None:
+                parent = find_item(data, source)
+                if parent["kind"] != "conversation":
+                    raise ValueError("Unknown conversation.")
+            if "project" in payload or "topic" in payload or source is None:
+                placement = new_placement(data.get("projects", []), payload.get("project"), payload.get("topic"))
+            else:
+                placement = parent.get("placement")
+            task = {"state": "started" if start else "draft", "description": description,
+                    **({"source": source} if source else {}), **({} if start else {"draft_id": message_id})}
+            item_id = append_conversation(data, title, new_ask(message_id, TASK_STARTED, binding) if start else None,
+                                          dict(placement) if placement else None, task)
+            write_store(store, data)
+    if not start:
+        with locked_store(store, read_only=True):
+            data = read_store(store)
+        return conversation_result(data, item_id, {"message": "Draft saved."})
+    return deliver_task_message(store, home, binding, item_id, message_id, "Task started.", "Task saved. Not delivered.")
+
+
+def start_task(store, home, binding, payload):
+    """Start a draft task: the state changes and the fixed message is saved, then delivered like any message."""
+    if not isinstance(payload, dict) or set(payload) != {"part", "id", "action", "home"} or payload["action"] != "start":
+        raise ValueError("Invalid task fields.")
+    item_id = payload["part"]
+    if not isinstance(item_id, str) or item_id != item_id.upper() or not ID_RE.fullmatch(item_id):
+        raise ValueError("Unknown conversation.")
+    message_id = read_message_id(payload["id"])
+    if home is None:
+        raise AskHomeUnavailable
+    with changing_store(store) as data:
+        item = find_answer_item(data, item_id)
+        if not is_task(item):
+            raise ValueError("Only a task can be started.")
+        thread = part_thread(item, None)
+        replay = next((m for m in thread if m["id"] == message_id), None)
+        if replay is not None:
+            if replay["author"] != "you" or replay["text"] != TASK_STARTED:
+                raise AnswerConflict("Message ID already in use. Reload the page.")
+        else:
+            if item["task"]["state"] != "draft":
+                raise AnswerConflict("This task is already started. Reload the page.")
+            if payload["home"] != binding or not conversation_home_matches(item, binding):
+                raise AnswerConflict("Firstmate home changed. This message belongs to the original home.")
+            item["task"]["state"] = "started"
+            thread.append(new_ask(message_id, TASK_STARTED, binding))
+    return deliver_task_message(store, home, binding, item_id, message_id, "Task started.", "Task saved. Not delivered.")
+
+
+def review_task(store, home, binding, payload):
+    """The owner's decision on a task that is In review: approve it, or send a note and return it to Started."""
+    if not isinstance(payload, dict) or payload.get("decision") not in ("approve", "changes"):
+        raise ValueError("Invalid review fields.")
+    approve = payload["decision"] == "approve"
+    if set(payload) != ({"part", "decision"} if approve else {"part", "decision", "id", "note", "home"}):
+        raise ValueError("Invalid review fields.")
+    item_id = payload["part"]
+    if not isinstance(item_id, str) or item_id != item_id.upper() or not ID_RE.fullmatch(item_id):
+        raise ValueError("Unknown conversation.")
+    if approve:
+        with changing_store(store) as data:
+            item = find_answer_item(data, item_id)
+            if not in_review(item):
+                raise AnswerConflict("This task is no longer in review. Reload the page.")
+            item["task"]["state"] = "started"
+            item["task"].pop("result", None)
+            item["resolved"] = True
+            read_firstmate_updates(item)
+            return conversation_result(data, item_id, {"message": "Task approved."})
+    message_id = read_message_id(payload["id"])
+    note = clean_text(payload["note"], "Note", TEXT_LIMIT - len(TASK_CHANGES) - 2, multiline=True)
+    text = f"{TASK_CHANGES}\n\n{note}"
+    if home is None:
+        raise AskHomeUnavailable
+    with changing_store(store) as data:
+        item = find_answer_item(data, item_id)
+        replay = next((m for m in part_thread(item, None) if m["id"] == message_id), None)
+        if replay is not None:
+            if replay["author"] != "you" or replay["text"] != text:
+                raise AnswerConflict("Message ID already in use. Reload the page.")
+        else:
+            if not in_review(item):
+                raise AnswerConflict("This task is no longer in review. Reload the page.")
+            if payload["home"] != binding or not conversation_home_matches(item, binding):
+                raise AnswerConflict("Firstmate home changed. This message belongs to the original home.")
+            item["task"]["state"] = "started"
+            item["task"].pop("result", None)
+            read_firstmate_updates(item)
+            part_thread(item, None).append(new_ask(message_id, text, binding))
+    return deliver_task_message(store, home, binding, item_id, message_id, "Note sent.", "Note saved. Not delivered.")
 
 
 CONVERSATION_FLAGS = ("pinned", "resolved", "archived")
@@ -1637,13 +1853,13 @@ def conversation_message_numbers(messages):
             for number, message in enumerate((m for m in messages if m["author"] == "you"), 1)}
 
 
-def item_text(item: dict[str, object], projects: list[dict[str, object]] | None = None) -> str:
+def item_text(item: dict[str, object], data: dict[str, object]) -> str:
     """One item as plain text, numbered the way the page numbers it."""
     item_id, body = str(item["id"]), item["body"]
     lines = [f"{item_id} · {item['title']}", f"{KIND_LABELS[str(item['kind'])]} · saved {saved_day(item)}",
              "", str(item["description"]), ""]
     if item.get("placement"):
-        lines.insert(2, f"Placement: {placement_label(item, projects or [])}")
+        lines.insert(2, f"Placement: {placement_label(item, data.get("projects", []))}")
     if item.get("project"):
         lines.insert(2, f"Project: {item['project']}")
     if item.get("tags"):
@@ -1657,6 +1873,15 @@ def item_text(item: dict[str, object], projects: list[dict[str, object]] | None 
         states = [name for name, on in (("Resolved", is_resolved(item)), ("Archived", is_archived(item))) if on]
         if states:
             lines.insert(len(lines) - 1, "Status: " + ", ".join(states))
+        if is_task(item):
+            task = item["task"]
+            about = [f"Task: {TASK_STATES[task['state']]}"]
+            if any(other["id"] == task.get("source") for other in data["items"]):
+                about.append(f"Related conversation: {task['source']}")
+            if task.get("result"):
+                about.append(f"Result: {task['result']['text']}: {task['result']['url']}")
+            lines[len(lines) - 1:len(lines) - 1] = about
+            lines.extend(["Description:", *("  " + line for line in task["description"].splitlines()), ""])
         messages = part_thread(item, None)
         numbers = conversation_message_numbers(messages)
         for message in messages:
@@ -1822,7 +2047,7 @@ def list_items(_args: argparse.Namespace) -> int:
 def show_item(args: argparse.Namespace) -> int:
     def action() -> int:
         data = read_store(store_path())
-        print(item_text(find_item(data, args.id), data.get("projects", [])), end="")
+        print(item_text(find_item(data, args.id), data), end="")
         return 0
     return run_item_command(action)
 
@@ -2272,6 +2497,35 @@ resolve_conversation = set_flag_command("resolved", True, "Resolved")
 reopen_conversation = set_flag_command("resolved", False, "Reopened")
 archive_conversation = set_flag_command("archived", True, "Archived")
 unarchive_conversation = set_flag_command("archived", False, "Unarchived")
+
+
+def review_task_command(args: argparse.Namespace) -> int:
+    """Firstmate posts a task's result and asks for the owner's review: the task goes In review and shows in Needs you."""
+    def action() -> int:
+        target = args.id.upper()
+        text = clean_text(args.text, "text", TEXT_LIMIT, multiline=True)
+        if args.link_text and not args.url:
+            raise ValueError("--link-text needs --url")
+        links = question_links([{"text": args.link_text or "Result", "url": args.url}], "result") if args.url else []
+        store = store_path()
+        with locked_store(store):
+            data = read_store(store)
+            item = find_item(data, target)
+            if item["kind"] != "conversation" or not is_task(item):
+                raise ValueError(f"use a task, such as Q12: {args.id!r}")
+            if is_resolved(item):
+                raise ValueError(f"{target} is resolved; reopen it before asking for a review")
+            if item["task"]["state"] == "draft":
+                raise ValueError(f"{target} is a draft; the owner has not started it")
+            item["task"]["state"] = "review"
+            item["task"].pop("result", None)
+            if links:
+                item["task"]["result"] = links[0]
+            part_thread(item, None).append(firstmate_message(text, links, []))
+            write_store(store, data)
+        print(f"{target} In review")
+        return 0
+    return run_item_command(action)
 
 
 def converse(args: argparse.Namespace) -> int:
@@ -2891,6 +3145,14 @@ textarea { display:block; width:100%; resize:vertical; background:var(--ground);
   .desk.underway td.underway-links { grid-column:1 / -1; grid-row:3; width:auto; }
   .desk-panel .desk.underway.merged td.project { grid-column:1 / -1; }
 }
+@media (max-width: 40rem) {
+  .desk:has(.review-row) thead { position:absolute; width:1px; height:1px; overflow:hidden; clip-path:inset(50%); }
+  .desk:has(.review-row) table, .desk:has(.review-row) tbody { display:block; }
+  .desk tr.review-row { display:grid; grid-template-columns:auto minmax(0,1fr); gap:.3rem .7rem; align-items:center; padding:.6rem .3rem; }
+  .desk tr.review-row th { grid-column:1 / -1; padding:0; border:0; }
+  .desk tr.review-row td { padding:0; border:0; }
+  .desk tr.review-row td.project { display:none; }
+}
 .underway-status { margin:0 0 .5rem; }
 .desk .notice p { margin:.25rem 0; font-weight:400; }
 .desk .notice a { display:inline-block; margin-right:.65rem; }
@@ -3091,6 +3353,39 @@ body:has(dialog[open]) { overflow:hidden; }
 .clarified p { margin:.3rem 0; }
 .clarified .who { font-family:var(--sans); }
 .review { font-family:var(--sans); }
+.task-mark { font:600 var(--text-sm)/1.5 var(--sans); color:var(--ink); border:1px solid var(--rule); border-radius:5px; padding:0 .45rem; }
+.task-state { font:600 var(--text-sm)/1.5 var(--sans); color:var(--ink); }
+.conversation-state + .task-form { margin:0 0 1rem; }
+.talk-open + .talk-open { margin-left:.6rem; }
+.task-form .task-status { margin:0; }
+.task-form .task-status:empty { display:none; }
+.task-form .task-status.failed, .task-review .review-status.failed, .task-start output.failed { color:var(--signal); font-weight:600; }
+.task-form.talk { grid-template-columns:minmax(0, 1fr); max-width:40rem; }
+.task-form .talk-field input { flex:none; }
+.task-form textarea { min-height:calc(var(--tap) * 2); }
+.task-description, .related, .review-panel { max-width:52rem; margin:1rem 0; font-family:var(--sans); }
+.task-description h2, .related h2, .review-panel h2 { font:700 var(--text-lg)/1.3 var(--sans); margin:0 0 .4rem; }
+.task-description .msg-text, .task-description p { margin:.3rem 0; overflow-wrap:anywhere; }
+.task-start { margin-top:.8rem; }
+.task-start output:empty, .task-review .review-status:empty { display:none; }
+.related p, .related-list { margin:.2rem 0; }
+.related-list { padding:0; list-style:none; }
+.related-list li { padding:.3rem 0; overflow-wrap:anywhere; }
+.desk .task-review, .desk .review-result { position:relative; z-index:1; cursor:auto; }
+.review-result .ref-link { padding:.3rem 0; min-height:0; font-size:var(--text-md); font-weight:400; }
+.review-result { margin:.4rem 0; font:400 var(--text-md)/1.4 var(--sans); overflow-wrap:anywhere; }
+.task-review { margin:.4rem 0 0; font-family:var(--sans); }
+.task-review .actions button { min-width:5rem; }
+.review-note { margin:.6rem 0 0; display:grid; gap:.4rem; max-width:40rem; }
+.review-note[hidden] { display:none; }
+.review-note label { margin:0; }
+.review-note textarea { min-height:var(--tap); }
+.talk-open:active, .conversation-state #task-open:active, .task-form button:not(.primary):active,
+.task-review button:not(.primary):active, .task-start button:not(.primary):active { background:var(--faint); }
+.task-form button.primary:active, .task-review button.primary:active, .task-start button.primary:active { opacity:.85; }
+.scope-check { display:flex; align-items:center; gap:.5rem; min-height:var(--tap); }
+.scope-check input { width:1.25rem; height:1.25rem; margin:0; }
+.scope-check label { margin:0; font-size:var(--text-md); font-weight:400; color:var(--ink); }
 """
 
 
@@ -3633,7 +3928,7 @@ class ListKind(NamedTuple):
 
 
 HOLD_FILTERS = ("project", "tag", "search")
-DESK_SCOPE = ("project", "topic")
+DESK_SCOPE = ("project", "topic", "tasks")
 LIST_KINDS = {
     "needs-you": ListKind("Needs you", "desk", "needs-you"),
     "conversations": ListKind("Conversations", "desk", "conversations", DESK_SCOPE),
@@ -3731,7 +4026,9 @@ def list_members(data: dict[str, object], context: dict[str, str]) -> list[dict[
 
 
 def in_desk_scope(data: dict[str, object], context: dict[str, str], item) -> bool:
-    """Whether a conversation shows under the Desk's project and topic scope, as the Desk's script decides it."""
+    """Whether a conversation shows under the Desk's project, topic and Tasks only scope, as the Desk's script decides it."""
+    if context.get("tasks") and not is_task(item):
+        return False
     project = context.get("project", "")
     if project == "-":
         return not item.get("placement")
@@ -3815,7 +4112,7 @@ def page_shell(title: str, site_title: str, body: str, *, served: bool, saved_na
         f'<nav>{nav_links(saved_href, current, served)}{opener}</nav></header>\n'
         f"<main>\n{body}\n</main>\n{library}<script>{ARRIVAL_SCRIPT if library or starting else ''}{TIME_SCRIPT}{VIEWPORT_SCRIPT if interactive or library else ''}{QUESTION_SCRIPT if conversations else ''}"
         f"{CONVERSATION_TEXT_SCRIPT if library or talking or starting else ''}"
-        f"{ANSWER_SCRIPT if interactive else ''}{CONVERSATION_SCRIPT if talking else ''}{DESK_SCRIPT if starting else ''}"
+        f"{ANSWER_SCRIPT if interactive else ''}{CONVERSATION_SCRIPT if talking else ''}{DESK_SCRIPT if starting else ''}{TASK_SCRIPT if talking or starting else ''}"
         f"{WORKER_SUMMARY_SCRIPT if workers or watching else ''}"
         f"{WORKERS_SCRIPT if workers else ''}{WATCH_SCRIPT if watching else ''}{FILTER_SCRIPT if filters or library else ''}"
         f"{f'const libraryCaseFolds = {library_case_folds()};' + LIBRARY_SCRIPT if library else ''}"
@@ -3846,20 +4143,39 @@ def progress_text(item, summary):
     return remaining or state
 
 
-def desk_row(item, summary, *, primary, context=None):
+def review_actions(item, ask_binding, *, primary):
+    """The result link and the two decisions on a task that is In review, for the Desk row and for the task page."""
+    result = task_of(item).get("result")
+    link = f'<p class="review-result">{link_html(result)}</p>' if result else ""
+    approve = f'<button type="button" class="approve{" primary" if primary else ""}">Approve</button>'
+    changes = ('<button type="button" class="changes" aria-expanded="false">Changes needed</button>'
+               if ask_binding else "")
+    note = (f'<div class="review-note" hidden><label for="review-note-{item["id"]}">Note</label>'
+            f'<textarea id="review-note-{item["id"]}" maxlength="{TEXT_LIMIT}" rows="2"></textarea>'
+            '<div class="actions"><button type="button" class="send-note" disabled>Send note</button>'
+            '<button type="button" class="cancel-note">Cancel note</button></div></div>') if ask_binding else ""
+    return (f'{link}<div class="task-review" data-id="{item["id"]}" data-home="{esc(ask_binding or "")}">'
+            f'<div class="actions">{approve}{changes}</div>{note}'
+            '<p class="meta review-status" role="status"></p></div>')
+
+
+def desk_row(item, summary, *, primary, context=None, ask_binding=None):
     state, open_parts, pending = summary
     href = esc(item_link(item["id"], context, attention_target(item, summary)))
+    review = review_actions(item, ask_binding, primary=False) if context and in_review(item) else ""
     title = esc(item["title"])
     project = esc(item["project"]) if item.get("project") else ""
     remaining = len(open_parts)
     count = f'{remaining} of {len(question_parts(item))} open' if remaining else "None open"
     latest = (f'<span class="badge">{UNREAD_REPLY}</span>' if state == "Replied" else
               "Asked" if remaining else esc(state))
+    if review and state == "Replied":
+        latest += f' <span>{TASK_STATES["review"]}</span>'
     if pending:
         failure = '<span>Not delivered</span>'
         latest = failure if state == "Messaged" else f'{latest} {failure}'
-    return (f'<tr class="work{' next' if primary else ''}"{f' data-id="{item["id"]}"' if context else ""}><th scope="row">'
-            f'<a class="card-link" href="{href}"><span class="id">{item["id"]}</span> {title}</a></th>'
+    return (f'<tr class="work{' next' if primary else ''}{' review-row' if review else ''}"{f' data-id="{item["id"]}"' if context else ""}><th scope="row">'
+            f'<a class="card-link" href="{href}"><span class="id">{item["id"]}</span> {title}</a>{review}</th>'
             f'<td class="project">{project}</td><td>{count}</td><td>{latest}</td></tr>')
 
 
@@ -4018,16 +4334,52 @@ def item_conversation(item, ask_binding):
             f'{editor}{thread}</section>')
 
 
-def conversation_state(item):
+def conversation_state(item, ask_binding=None):
     """The resolved mark and the controls that resolve, reopen, archive and unarchive one conversation."""
     resolved, archived = is_resolved(item), is_archived(item)
     title = esc(item["title"])
+    state = (f'<span class="task-state"{" hidden" if resolved else ""}>{TASK_STATES[task_state(item)]}</span>'
+             if is_task(item) else "")
     return (f'<div class="conversation-state" data-id="{item["id"]}" data-title="{title}" '
             f'data-resolved="{"true" if resolved else "false"}" data-archived="{"true" if archived else "false"}">'
-            f'{resolved_mark(item)}<span class="archived-mark"{"" if archived else " hidden"}>Archived</span>'
+            f'{state}{resolved_mark(item)}<span class="archived-mark"{"" if archived else " hidden"}>Archived</span>'
             f'<button type="button" class="resolve">{"Reopen" if resolved else "Resolve"}</button>'
             f'<button type="button" class="archive">{"Unarchive" if archived else "Archive"}</button>'
+            f'{task_opener("") if ask_binding else ""}'
             '<p class="meta state-status" role="status"></p></div>')
+
+
+def related_link(item):
+    return f'<a href="{esc(item_link(item["id"]))}"><span class="id">{item["id"]}</span> {esc(item["title"])}</a>'
+
+
+def task_blocks(item, data, ask_binding):
+    """What a conversation page adds for tasks: the form to create one, and for a task its Description, its review and
+    the conversations and tasks related to it."""
+    items = list((data or {}).get("items", []))
+    task = task_of(item)
+    blocks = [task_form(ask_binding, item["id"])] if ask_binding else []
+    if task:
+        start = ""
+        if task["state"] == "draft" and ask_binding:
+            start = (f'<div class="actions task-start" data-id="{item["id"]}" data-home="{esc(ask_binding)}">'
+                     '<button type="button" class="primary" id="start-task">Start</button>'
+                     '<output role="status" tabindex="0"></output></div>')
+        if in_review(item):
+            blocks.append('<section class="review-panel" aria-labelledby="review-title"><h2 id="review-title">Result</h2>'
+                          f'{review_actions(item, ask_binding, primary=True)}</section>')
+        blocks.append('<section class="task-description" aria-labelledby="task-description-title">'
+                      f'<h2 id="task-description-title">Description</h2>{message_text_html(task["description"])}{start}</section>')
+        source = next((other for other in items if other["id"] == task.get("source")), None)
+        if source:
+            blocks.append('<section class="related" aria-labelledby="related-source">'
+                          f'<h2 id="related-source">Related conversation</h2><p>{related_link(source)}</p></section>')
+    children = by_activity(other for other in items if is_task(other) and other["task"].get("source") == item["id"])
+    if children:
+        rows = "".join(f'<li>{related_link(child)} <span class="meta">{task_label(child)}</span></li>' for child in children)
+        blocks.append('<section class="related" aria-labelledby="related-tasks"><h2 id="related-tasks">Related tasks</h2>'
+                      f'<ul class="related-list">{rows}</ul></section>')
+    return "".join(blocks)
 
 
 def conversation_page(item, ask_binding):
@@ -4037,7 +4389,9 @@ def conversation_page(item, ask_binding):
     thread = thread_html(item, None, editable=editable)
     unread = thread_unread(item, None)
     badge = f'<span class="badge">{UNREAD_REPLY}</span>' if unread else '<span class="badge" hidden></span>'
-    if editable:
+    if editable and task_state(item) == "draft":
+        composer = ""
+    elif editable:
         composer = (f'<div class="composer"><label for="message-{target}">Your message</label>'
                     f'<textarea id="message-{target}" maxlength="{TEXT_LIMIT}" rows="3" aria-describedby="error-{target}"></textarea>'
                     f'<p id="error-{target}" hidden></p><div class="actions"><button type="button" class="primary" id="send-message" '
@@ -4046,6 +4400,8 @@ def conversation_page(item, ask_binding):
         composer = '<p class="empty">Restore the original firstmate_home to send or retry messages.</p>'
     else:
         composer = '<p class="empty">Set firstmate_home to send Firstmate more messages.</p>'
+    if not thread and not composer:  # a draft task has nothing to show until it starts
+        return ""
     return (f'<section id="{target}" class="work item-conversation conversation" data-conversation>'
             f'<div class="eyebrow">{badge}</div><div class="thread-messages">{thread}</div>{composer}</section>')
 
@@ -4451,7 +4807,7 @@ CONVERSATION_SCRIPT = talk_script(r"""
     archived: {labels: ['Archive', 'Unarchive'], done: ['is unarchived.', 'is archived.']}
   };
   bar.addEventListener('click', async event => {
-    const button = event.target.closest('button');
+    const button = event.target.closest('button.resolve, button.archive');
     if (!button || button.disabled) return;
     const key = button.classList.contains('archive') ? 'archived' : 'resolved';
     const value = bar.dataset[key] !== 'true';
@@ -4590,6 +4946,7 @@ DESK_SCRIPT = talk_script(r"""
   const rowsOf = group => [...group.querySelectorAll('.topic')];
   const scope = document.getElementById('scope');
   const scopeProject = document.getElementById('scope-project');
+  const tasksOnly = document.getElementById('scope-tasks');
   const scopeTopic = document.getElementById('scope-topic');
   const scopeTopicField = document.getElementById('scope-topic-field');
   const newProject = document.getElementById('new-project');
@@ -4614,14 +4971,22 @@ DESK_SCRIPT = talk_script(r"""
   };
   const inScope = row => {
     const project = scopeProject.value, topic = scopeTopic.value;
+    if (tasksOnly.checked && row.dataset.task !== 'true') return false;
     if (!project) return true;
     if (project === '-') return !row.dataset.project;
     return row.dataset.project === project && (!topic || row.dataset.topic === topic);
   };
   const scopeEmptyText = () => {
-    if (scopeProject.value === '-') return 'Every conversation is in a project. A conversation you move out of a project shows here.';
+    const tasks = tasksOnly.checked;
+    if (scopeProject.value === '-') {
+      return tasks ? 'No task is outside a project. A task you move out of a project shows here.'
+        : 'Every conversation is in a project. A conversation you move out of a project shows here.';
+    }
     const project = projectOf(scopeProject.value);
-    return 'No conversations in ' + (topicOf(project, scopeTopic.value) ?? project).name + ' yet. A conversation you start or move into it shows here.';
+    if (!project) return 'No tasks yet. A task you create shows here.';
+    const name = (topicOf(project, scopeTopic.value) ?? project).name;
+    return tasks ? 'No tasks in ' + name + ' yet. A task you create or move into it shows here.'
+      : 'No conversations in ' + name + ' yet. A conversation you start or move into it shows here.';
   };
   const syncGroups = () => {
     for (const group of Object.values(groups)) group.hidden = !rowsOf(group).some(row => !row.hidden);
@@ -4639,7 +5004,7 @@ DESK_SCRIPT = talk_script(r"""
     const [path, query] = address.split('?');
     const params = new URLSearchParams(query);
     params.set('from', archived ? 'archived' : 'conversations');
-    for (const [name, value] of [['project', scopeProject.value], ['topic', scopeTopic.value]]) {
+    for (const [name, value] of [['project', scopeProject.value], ['topic', scopeTopic.value], ['tasks', tasksOnly.checked ? '1' : '']]) {
       if (value && !archived) params.set(name, value); else params.delete(name);
     }
     link.setAttribute('href', path + '?' + params + (hash === undefined ? '' : '#' + hash));
@@ -4664,6 +5029,7 @@ DESK_SCRIPT = talk_script(r"""
   };
   const SCOPE_KEY = 'quarterdeck-scope';
   const syncScope = (next = {project: scopeProject.value, topic: scopeTopic.value}) => {
+    if (next.tasks !== undefined) tasksOnly.checked = Boolean(next.tasks);
     fillSelect(scopeProject, [['', 'All'], ['-', 'Ungrouped']], tree, next.project);
     const project = projectOf(scopeProject.value);
     fillSelect(scopeTopic, [['', 'All topics']], project ? project.topics : [], project ? next.topic : '');
@@ -4684,7 +5050,7 @@ DESK_SCRIPT = talk_script(r"""
       destination.hidden = !tree.length;
       destination.textContent = label ? 'Starts in ' + label + '.' : 'Starts ungrouped.';
     }
-    try { sessionStorage.setItem(SCOPE_KEY, JSON.stringify({project: scopeProject.value, topic: scopeTopic.value})); } catch {}
+    try { sessionStorage.setItem(SCOPE_KEY, JSON.stringify({project: scopeProject.value, topic: scopeTopic.value, tasks: tasksOnly.checked})); } catch {}
   };
   const startPlacement = () => {
     const project = projectOf(scopeProject.value);
@@ -4692,6 +5058,9 @@ DESK_SCRIPT = talk_script(r"""
   };
   scopeProject.addEventListener('change', () => syncScope({project: scopeProject.value, topic: ''}));
   scopeTopic.addEventListener('change', () => syncScope());
+  tasksOnly.addEventListener('change', () => syncScope());
+  const taskForm = document.getElementById('task-form');
+  if (taskForm) taskForm.taskPlacement = startPlacement;
 
   const groupForm = document.getElementById('group-form');
   const groupName = document.getElementById('group-name');
@@ -4823,10 +5192,11 @@ DESK_SCRIPT = talk_script(r"""
   });
   try {
     const saved = arrival.get('tab') === 'conversations'
-      ? {project: arrival.get('project'), topic: arrival.get('topic')} : JSON.parse(sessionStorage.getItem(SCOPE_KEY)) || {};
-    syncScope({project: saved.project || '', topic: saved.topic || ''});
+      ? {project: arrival.get('project'), topic: arrival.get('topic'), tasks: arrival.get('tasks') === '1'}
+      : JSON.parse(sessionStorage.getItem(SCOPE_KEY)) || {};
+    syncScope({project: saved.project || '', topic: saved.topic || '', tasks: saved.tasks === true});
   } catch {
-    syncScope({project: '', topic: ''});
+    syncScope({project: '', topic: '', tasks: false});
   }
 
   const flags = {
@@ -4930,6 +5300,18 @@ DESK_SCRIPT = talk_script(r"""
     place(row);
     return row;
   };
+  document.addEventListener('task-saved', event => {
+    const result = event.detail;
+    result.handled = true;
+    startStatus.classList.remove('failed');
+    startStatus.textContent = result.message;
+    const row = show(result.row);
+    updateAttention(row.dataset.id, result.attention);
+    document.getElementById('panel-conversations').dispatchEvent(new CustomEvent('conversation-saved', {
+      detail: {id: row.dataset.id, html: result.hold}
+    }));
+    if (result.created && !conversationPanel.hidden) row.querySelector('.topic-title').focus();
+  });
   form.addEventListener('input', refresh);
   form.addEventListener('submit', async event => {
     event.preventDefault();
@@ -4971,6 +5353,185 @@ DESK_SCRIPT = talk_script(r"""
   refresh();
 })();
 """)
+
+
+TASK_SCRIPT = r"""
+(() => {
+  const saved = (result, extra) => {
+    const detail = {...result, ...extra, handled: false};
+    document.dispatchEvent(new CustomEvent('task-saved', {detail}));
+    return detail.handled;
+  };
+  const form = document.getElementById('task-form');
+  const opener = document.getElementById('task-open');
+  if (form && opener) {
+    const title = form.querySelector('#task-title');
+    const description = form.querySelector('#task-description');
+    const status = form.querySelector('.task-status');
+    const buttons = [...form.querySelectorAll('button')];
+    const ids = new Map();
+    const say = (text, failed) => {
+      status.textContent = text;
+      status.classList.toggle('failed', Boolean(failed));
+    };
+    const refresh = () => {
+      const ready = Boolean(normalizeTopic(title.value) && trimmed(description.value));
+      buttons.forEach(button => { button.disabled = !ready; });
+    };
+    const setOpen = open => {
+      form.hidden = !open;
+      opener.setAttribute('aria-expanded', String(open));
+    };
+    opener.addEventListener('click', () => {
+      const open = form.hidden;
+      setOpen(open);
+      if (open) title.focus();
+    });
+    form.addEventListener('input', () => { say(''); refresh(); });
+    form.addEventListener('submit', event => event.preventDefault());
+    form.addEventListener('keydown', event => {
+      if (event.key !== 'Escape') return;
+      setOpen(false);
+      opener.focus();
+    });
+    const save = async action => {
+      const name = normalizeTopic(title.value), text = trimmed(description.value);
+      if (!name || !text) return;
+      const key = JSON.stringify([action, name, text]);
+      const id = ids.get(key) ?? messageId();
+      ids.set(key, id);
+      const controls = form.querySelectorAll('button,input,textarea');
+      controls.forEach(control => { control.disabled = true; });
+      say(action === 'start' ? 'Starting task' : 'Saving draft');
+      const place = form.taskPlacement ? form.taskPlacement() : {};
+      let done = false;
+      try {
+        const body = {id, title: name, description: text, action, home: form.dataset.home, ...place,
+          ...(form.dataset.source ? {source: form.dataset.source} : {})};
+        const outcome = await postJson('tasks', body);
+        if (outcome.ok || outcome.saved === false) ids.delete(key);
+        if (outcome.ok) {
+          done = true;
+          title.value = '';
+          description.value = '';
+          say('');
+          setOpen(false);
+          if (!saved(outcome.result, {created: true})) location.assign(outcome.result.href);
+        } else {
+          say(outcome.message, true);
+        }
+      } catch {
+        say(navigator.onLine ? 'The task could not be saved. Try again.' : 'Offline. Reconnect and try again.', true);
+      }
+      controls.forEach(control => { control.disabled = false; });
+      refresh();
+      if (done) opener.focus();
+    };
+    for (const button of buttons) button.addEventListener('click', () => save(button.dataset.action));
+    refresh();
+  }
+
+  const start = document.getElementById('start-task');
+  if (start) {
+    const box = start.closest('.task-start');
+    const output = box.querySelector('output');
+    let id = null;
+    start.addEventListener('click', async () => {
+      id = id ?? messageId();
+      start.disabled = true;
+      output.classList.remove('failed');
+      output.textContent = 'Starting task';
+      try {
+        const outcome = await postJson('tasks', {part: box.dataset.id, id, action: 'start', home: box.dataset.home});
+        if (outcome.ok) {
+          location.reload();
+          return;
+        }
+        if (outcome.saved === false) id = null;
+        output.classList.add('failed');
+        output.textContent = outcome.message;
+      } catch {
+        output.classList.add('failed');
+        output.textContent = navigator.onLine ? 'The task could not be started. Try again.' : 'Offline. Reconnect and try again.';
+      }
+      start.disabled = false;
+    });
+  }
+
+  const notes = new Map();
+  document.addEventListener('keydown', event => {
+    const note = event.key === 'Escape' && event.target.closest('.review-note');
+    if (!note || note.hidden) return;
+    note.hidden = true;
+    const changes = note.closest('.task-review').querySelector('.changes');
+    changes.setAttribute('aria-expanded', 'false');
+    changes.focus();
+  });
+  document.addEventListener('input', event => {
+    const field = event.target.closest('.review-note textarea');
+    if (field) field.closest('.review-note').querySelector('.send-note').disabled = !trimmed(field.value);
+  });
+  document.addEventListener('click', async event => {
+    const box = event.target.closest('.task-review');
+    const button = box && event.target.closest('button');
+    if (!button || button.disabled) return;
+    const note = box.querySelector('.review-note');
+    const field = note && note.querySelector('textarea');
+    const status = box.querySelector('.review-status');
+    const say = (text, failed) => {
+      status.textContent = text;
+      status.classList.toggle('failed', Boolean(failed));
+    };
+    const changes = box.querySelector('.changes');
+    if (button.classList.contains('changes')) {
+      note.hidden = !note.hidden;
+      button.setAttribute('aria-expanded', String(!note.hidden));
+      if (!note.hidden) field.focus();
+      return;
+    }
+    if (button.classList.contains('cancel-note')) {
+      note.hidden = true;
+      changes.setAttribute('aria-expanded', 'false');
+      changes.focus();
+      return;
+    }
+    let body, key = null;
+    if (button.classList.contains('approve')) {
+      body = {part: box.dataset.id, decision: 'approve'};
+      say('Approving task');
+    } else if (button.classList.contains('send-note')) {
+      const text = trimmed(field.value);
+      if (!text) return;
+      key = box.dataset.id + '\n' + text;
+      const id = notes.get(key) ?? messageId();
+      notes.set(key, id);
+      body = {part: box.dataset.id, decision: 'changes', id, note: text, home: box.dataset.home};
+      say('Sending note');
+    } else {
+      return;
+    }
+    const controls = box.querySelectorAll('button,textarea');
+    controls.forEach(control => { control.disabled = true; });
+    let done = false;
+    try {
+      const outcome = await postJson('reviews', body);
+      if (key && (outcome.ok || outcome.saved === false)) notes.delete(key);
+      if (outcome.ok) {
+        done = true;
+        if (!saved(outcome.result, {created: false})) location.reload();
+      } else {
+        say(outcome.message, true);
+      }
+    } catch {
+      say(navigator.onLine ? 'The review could not be saved. Try again.' : 'Offline. Reconnect and try again.', true);
+    }
+    if (!done && box.isConnected) {
+      controls.forEach(control => { control.disabled = false; });
+      if (field) note.querySelector('.send-note').disabled = !trimmed(field.value);
+    }
+  });
+})();
+"""
 
 
 WATCH_SCRIPT = r"""
@@ -5610,9 +6171,27 @@ def workers_page(site_title: str, *, ready: bool) -> str:
                       served=True, saved_name="index.html", workers=ready, current="workers")
 
 
+def task_form(binding, source=None):
+    """The small form that creates a task: a title and a Description, then Start or Save draft."""
+    return ('<form id="task-form" class="talk task-form" novalidate aria-label="Create a task" hidden '
+            f'data-home="{esc(binding)}"{f' data-source="{source}"' if source else ""}>'
+            '<div class="talk-field"><label for="task-title">Title</label>'
+            f'<input id="task-title" maxlength="{TITLE_LIMIT}" autocomplete="off"></div>'
+            '<div class="talk-field"><label for="task-description">Description</label>'
+            f'<textarea id="task-description" maxlength="{TEXT_LIMIT}" rows="3"></textarea></div>'
+            '<div class="actions"><button type="button" class="primary" data-action="start" disabled>Start</button>'
+            '<button type="button" data-action="draft" disabled>Save draft</button></div>'
+            '<p class="meta task-status" role="status"></p></form>')
+
+
+def task_opener(css="talk-open"):
+    return (f'<button type="button" id="task-open" class="{css}" aria-expanded="false" aria-controls="task-form">'
+            'Create a task</button>')
+
+
 def talk_form(binding):
     return ('<button type="button" id="talk-open" class="talk-open" aria-expanded="false" aria-controls="talk-form">'
-            'New conversation</button>'
+            'New conversation</button>' + task_opener() +
             '<form id="talk-form" class="talk" novalidate aria-label="New conversation" hidden>'
             '<div class="talk-field"><label for="talk-topic">Conversation title</label>'
             f'<input id="talk-topic" maxlength="{TITLE_LIMIT}" autocomplete="off"></div>'
@@ -5620,7 +6199,7 @@ def talk_form(binding):
             f'<textarea id="talk-message" maxlength="{TEXT_LIMIT}" rows="2"></textarea></div>'
             '<div class="actions"><button type="submit" class="primary" disabled '
             f'data-home="{esc(binding)}">Start conversation</button></div>'
-            '<p class="meta talk-destination" hidden></p></form>')
+            '<p class="meta talk-destination" hidden></p></form>' + task_form(binding))
 
 
 PREVIEW_LIMIT = 200
@@ -5641,18 +6220,29 @@ def flag_button(name, on, off, active, title):
     return f'<button type="button" class="{name}" data-title="{title}" aria-label="{verb} {title}">{verb}</button>'
 
 
+def task_mark(item):
+    return '<span class="task-mark">Task</span>' if is_task(item) else ""
+
+
 def conversation_row(item, projects=()):
-    latest = part_thread(item, None)[-1]
+    thread = part_thread(item, None)
+    latest = thread[-1] if thread else None
     target = unread_target(item)
     href = esc(item_link(item["id"], "archived" if is_archived(item) else "conversations", target))
     status = f'<span class="badge">{UNREAD_REPLY}</span>' if target else ""
     if has_pending_ask(item):
         status += '<span>Not delivered</span>'
-    if not status:
+    if in_review(item) and status:
+        status += f'<span>{TASK_STATES["review"]}</span>'
+    if not status and is_task(item):
+        status = f'<span>{TASK_STATES[task_state(item)]}</span>'
+    elif not status:
         status = '<span>Messaged</span>' if latest["author"] == "you" else "<span>Replied</span>"
     activity = conversation_activity(item).isoformat(timespec="microseconds")
     project = f'<span class="project-name">{esc(item["project"])}</span>' if item.get("project") else ""
-    preview = " ".join(str(latest["text"]).split())[:PREVIEW_LIMIT]
+    said = next((m["text"] for m in reversed(thread) if m["author"] == "firstmate"), None) if is_task(item) else None
+    preview = " ".join(str(item["task"]["description"] if said is None and is_task(item) else
+                           said if said is not None else latest["text"]).split())[:PREVIEW_LIMIT]
     pinned, resolved, archived = is_pinned(item), is_resolved(item), is_archived(item)
     title = esc(item["title"])
     pin = flag_button("pin", "Unpin", "Pin", pinned, title)
@@ -5662,6 +6252,7 @@ def conversation_row(item, projects=()):
         move = move.replace('<button ', '<button hidden ', 1)
     flags = " ".join(f'data-{name}="{"true" if on else "false"}"' for name, on in
                      (("pinned", pinned), ("resolved", resolved), ("archived", archived)))
+    flags += ' data-task="true"' if is_task(item) else ""
     placement = item.get("placement", {})
     where = "".join(f' data-{name}="{esc(placement[name])}"' for name in ("project", "topic") if name in placement)
     label = placement_label(item, projects)  # type: ignore[arg-type]
@@ -5669,7 +6260,7 @@ def conversation_row(item, projects=()):
             f'<div class="topic-main"><a class="topic-title" href="{href}">{title}</a>'
             f'<p class="topic-latest">{esc(preview)}</p>'
             f'<p class="meta topic-meta"><span class="placement"{"" if label else " hidden"}>{esc(label)}</span>'
-            f'{project}{resolved_mark(item)}{status}{activity_time(item)}</p></div>'
+            f'{task_mark(item)}{project}{resolved_mark(item)}{status}{activity_time(item)}</p></div>'
             f'<div class="topic-actions">{pin}{move}{flag_button("resolve", "Reopen", "Resolve", resolved, title)}'
             f'{flag_button("archive", "Unarchive", "Archive", archived, title)}</div>'
             '<p class="meta desk-feedback" role="status"></p></li>')
@@ -5697,6 +6288,7 @@ def scope_bar(tree):
             f'<select id="scope-project"><option value="">All</option><option value="-">Ungrouped</option>{projects}</select></div>'
             '<div class="scope-field" id="scope-topic-field" hidden><label for="scope-topic">Topic</label>'
             '<select id="scope-topic"><option value="">All topics</option></select></div>'
+            '<div class="scope-check"><input type="checkbox" id="scope-tasks"><label for="scope-tasks">Tasks only</label></div>'
             '<div class="scope-actions"><button type="button" id="new-project">New project</button>'
             '<button type="button" id="new-topic" hidden>New topic</button>'
             '<button type="button" id="rename-project" hidden>Rename project</button>'
@@ -5750,24 +6342,25 @@ def catch_up_row(notice, items_by_id):
             '<p class="meta desk-feedback failed" role="status"></p></td></tr>')
 
 
-def desk_table(attention, notice_rows="", context=None):
+def desk_table(attention, notice_rows="", context=None, ask_binding=None):
     primary = next((item for item, summary in attention if summary[1]), None)
-    rows = "".join(desk_row(item, summary, primary=item is primary, context=context) for item, summary in attention)
+    rows = "".join(desk_row(item, summary, primary=item is primary, context=context, ask_binding=ask_binding)
+                   for item, summary in attention)
     hidden = "" if rows or notice_rows else " hidden"
     return (f'<div class="desk"{hidden}><table><caption class="sr">Items that need you</caption><thead><tr>'
             '<th scope="col">Item</th><th scope="col" class="project">Project</th>'
             f'<th scope="col">Questions</th><th scope="col">Latest</th></tr></thead><tbody>{notice_rows}{rows}</tbody></table></div>')
 
 
-def needs_you_panel(attention, notices, items_by_id):
+def needs_you_panel(attention, notices, items_by_id, ask_binding=None):
     rows = "".join(catch_up_row(notice, items_by_id) for notice in notices)
     hide_bulk = " hidden" if len(notices) < 2 else ""
     hide_empty = " hidden" if attention or notices else ""
     return (f'<button type="button" data-read-all{hide_bulk}>Mark all notices read</button>'
             '<p class="meta desk-feedback failed" role="status"></p>'
             '<p class="sr" id="notice-announcement" role="status"></p>'
-            f'{desk_table(attention, rows, "needs-you")}'
-            f'<p class="empty"{hide_empty}>Nothing needs you. Questions, unread replies, failed deliveries and notices show here.</p>')
+            f'{desk_table(attention, rows, "needs-you", ask_binding)}'
+            f'<p class="empty"{hide_empty}>Nothing needs you. Questions, unread replies, failed deliveries, tasks to review and notices show here.</p>')
 
 
 def underway_title(title, project):
@@ -5918,10 +6511,12 @@ def attention_summary(item, *, served):
         state, open_parts, pending = question_summary(item, replies=served)
     elif served and kind == "conversation":
         state, open_parts, pending = ("Replied" if thread_unread(item, None) else "Messaged"), [], False
+        if state == "Messaged" and in_review(item):
+            state = TASK_STATES["review"]
     else:
         return None
     pending = pending or (served and has_pending_ask(item))
-    return (state, open_parts, pending) if open_parts or pending or state == "Replied" else None
+    return (state, open_parts, pending) if open_parts or pending or state == "Replied" or in_review(item) else None
 
 
 def list_page(data: dict[str, object], site_title: str, *, served: bool, saved_name: str = "index.html",
@@ -5934,7 +6529,7 @@ def list_page(data: dict[str, object], site_title: str, *, served: bool, saved_n
         notices = unread_catch_ups(data)
         body = "<h1>Desk</h1>" + desk_tabs(
             conversations_panel(conversations, ask_binding, data.get("projects", [])),
-            needs_you_panel(attention, notices, {item["id"]: item for item in items}),
+            needs_you_panel(attention, notices, {item["id"]: item for item in items}, ask_binding),
             underway_panel(underway),
             archived_panel(conversations, data.get("projects", [])),
             len(attention) + len(notices),
@@ -5995,11 +6590,12 @@ def item_page(item: dict[str, object], site_title: str, *, served: bool, saved_n
     body = (
         f'{list_nav(item, data, context) if served else ""}'
         f'<p class="id">{esc(item_id)}</p><h1>{esc(item["title"])}</h1>'
-        f'<p class="meta">{esc(KIND_LABELS[str(item["kind"])])}{" · " + esc(placed) if placed else ""}'
+        f'<p class="meta">{"Task" if is_task(item) else esc(KIND_LABELS[str(item["kind"])])}{" · " + esc(placed) if placed else ""}'
         f'{" · " + esc(item["project"]) if item.get("project") else ""}'
         f' · saved {day_time(item["saved_at"])}</p>'
         f'{tag_labels(list(item.get("tags", [])))}'
-        f'{conversation_state(item) if talking and served else ""}'
+        f'{conversation_state(item, ask_binding) if talking and served else ""}'
+        f'{task_blocks(item, data, ask_binding) if talking and served else ""}'
         f'{lead}{content}{list_nav(item, data, context, end=True) if served else ""}'
     )
     return page_shell(f"{item_id} {item['title']} · {site_title}", site_title, body,
@@ -6493,7 +7089,7 @@ def make_handler(site_title: str, base_path: str = "", store: Path | None = None
             endpoint = self.path.removeprefix(base_path)
             subjects = {"/answers": "answer", "/asks": "ask", "/conversations": "conversation", "/replies/read": "reply acknowledgment",
                         "/pins": "pin", "/resolutions": "resolution", "/archives": "archive",
-                        "/groups": "project", "/moves": "move",
+                        "/groups": "project", "/moves": "move", "/tasks": "task", "/reviews": "review",
                         "/catch-ups/read": "catch-up read"}
             if not self.path.startswith(base_path) or endpoint not in subjects:
                 self.send_text(405, "Use the question page.")
@@ -6514,6 +7110,8 @@ def make_handler(site_title: str, base_path: str = "", store: Path | None = None
                 if ask_path is None:
                     self.send_text(403, "Configure an available firstmate_home to ask Firstmate.")
                     return
+            if endpoint in ("/tasks", "/reviews"):  # only starting a task or sending a note needs the home
+                ask_path, ask_binding = ask_destination(ask_home, require_directory=True)
             if self.headers.get_content_type() != "application/json":
                 self.send_text(415, f"Expected {subject} data in JSON.")
                 return
@@ -6529,6 +7127,11 @@ def make_handler(site_title: str, base_path: str = "", store: Path | None = None
                     record = ask_message(active_store, ask_path, ask_binding, payload, home_available=home_available)
                 elif endpoint == "/conversations":
                     record = start_conversation(active_store, ask_path, ask_binding, payload)
+                elif endpoint == "/tasks":
+                    task_action = start_task if isinstance(payload, dict) and "part" in payload else create_task
+                    record = task_action(active_store, ask_path, ask_binding, payload)
+                elif endpoint == "/reviews":
+                    record = review_task(active_store, ask_path, ask_binding, payload)
                 elif endpoint == "/pins":
                     record = pin_conversation(active_store, payload)
                 elif endpoint == "/resolutions":
@@ -6559,7 +7162,7 @@ def make_handler(site_title: str, base_path: str = "", store: Path | None = None
             except CatchUpConflict as exc:
                 self.send_text(409, str(exc))
             except AnswerConflict as exc:
-                if endpoint in ("/asks", "/conversations", "/groups"):
+                if endpoint in ("/asks", "/conversations", "/groups", "/tasks", "/reviews"):
                     record = {"message": str(exc), "saved": isinstance(exc, SavedAskConflict)}
                     self.send_text(409, json.dumps(record), "application/json")
                 else:
@@ -6569,6 +7172,8 @@ def make_handler(site_title: str, base_path: str = "", store: Path | None = None
             except (ValueError, RecursionError):
                 self.send_text(400, f"Check the conversation and {subject}." if endpoint in ("/pins", "/resolutions", "/archives", "/moves")
                                else "Check the name and try again." if endpoint == "/groups"
+                               else "Check the title and description, then try again." if endpoint == "/tasks"
+                               else "Check the note and try again." if endpoint == "/reviews"
                                else f"Check the question and {subject}.")
             else:
                 self.send_text(200, json.dumps(record), "application/json")
@@ -6793,6 +7398,7 @@ COMMAND_DOCS = {
     **dict.fromkeys(("resolve", "reopen", "archive", "unarchive"),
                     ["how-to/talk-to-firstmate.md", "reference/cli-and-config.md", "reference/item-store.md"]),
     "converse": ["how-to/reply-from-the-command-line.md", "how-to/talk-to-firstmate.md", "reference/cli-and-config.md", "reference/item-store.md"],
+    "task": ["how-to/create-a-task.md", "reference/cli-and-config.md", "reference/item-store.md"],
     "remove": ["how-to/save-items.md", "reference/cli-and-config.md"],
     "render": ["how-to/serve-the-page.md", "reference/cli-and-config.md", "explanation/privacy-and-architecture.md"],
     "serve": ["how-to/catch-up.md", "how-to/answer-questions.md", "how-to/use-the-library.md", "how-to/ask-firstmate.md", "how-to/talk-to-firstmate.md", "how-to/read-workers.md", "how-to/serve-the-page.md", "reference/cli-and-config.md", "explanation/privacy-and-architecture.md"],
@@ -6938,6 +7544,20 @@ def make_parser() -> argparse.ArgumentParser:
                              "replies still work and the other flags are kept.", handler)
         sub_parser.add_argument("id", help="a conversation's item ID, such as Q12")
 
+    task_cmd = command("task", "ask the owner to review a task's result",
+                       "Commands on a task, a conversation the owner created to hold work. Resolve a finished task with "
+                       "quarterdeck resolve.", None)
+    task_actions = task_cmd.add_subparsers(dest="task_action", required=True)
+    task_review = task_actions.add_parser(
+        "review", help="post a task's result and put the task In review",
+        description="Post Firstmate's update with the result and put the task In review. It shows in Needs you with "
+                    "Approve and Changes needed. Approving resolves it; a note returns it to Started.")
+    task_review.set_defaults(handler=review_task_command)
+    task_review.add_argument("id", help="a task's item ID, such as Q12")
+    task_review.add_argument("--text", required=True, help="what was done and what to check")
+    task_review.add_argument("--url", help="the http(s) address of the result, shown as a link")
+    task_review.add_argument("--link-text", help="the words of that link; Result when left out")
+
     converse_cmd = command("converse", "open a conversation in Firstmate's name and print its ID",
                            "Open a conversation with a title and a first message from Firstmate, shown as a Firstmate update "
                            "and as Unread reply until the owner opens it. Sends no inbox note; the owner and Firstmate continue "
@@ -7022,7 +7642,7 @@ def make_parser() -> argparse.ArgumentParser:
                            "Anyone who can reach the service can read saved items, answers, conversations and reply images. "
                            "They can read unread Catch-up notices, including their details and links. They can submit answers, pin, resolve and archive topics, acknowledge replies, and mark Catch-up notices read by ID "
                            "as the owner. With firstmate_home set, they can also "
-                           "send asks, start conversations, send messages and read or check that home's workers "
+                           "send asks, start conversations, create and start tasks, send messages and read or check that home's workers "
                            "and second mates from the Workers page or workers.json. Browser "
                            "writes require the same origin as the served page.", serve)
     add_serve_options(serve_parser)

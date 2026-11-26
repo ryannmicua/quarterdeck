@@ -243,6 +243,18 @@ store saved before these fields existed needs no change. A conversation's latest
 which orders the Desk, is the time of its newest message or its `saved_at`,
 whichever is later.
 
+A conversation item may also carry `task`, which makes it a task. It is an object
+with `state` (`draft`, `started` or `review`), `description` (plain text, up to 20,000
+characters) and optionally `source` (the ID of the conversation it was created from),
+`draft_id` (the 32 hexadecimal character ID of the request that saved it as a draft, so a repeated Save draft
+returns the same task) and `result`. `result` is `{"text": "...", "url": "..."}`, the link to what the task produced, and only a task
+that is `review` may have it. Absent `task` means the conversation is not a task, only a conversation may have it,
+and an older store needs no change. The tasks' state changes are the owner's Start, Approve and Changes needed
+and Firstmate's `task review`; the `resolved` field stays separate, so a resolved task shows Resolved whatever its state.
+A task in `draft` may have no messages yet, and `started` is set when the owner starts it and the message
+`Task started.` is saved. A `source` names a conversation other than the task itself; once that
+conversation is removed, the task keeps the `source` and shows no related conversation.
+
 A conversation item may also carry `placement`, an object with `project` (a
 project ID such as `P1`) and optionally `topic` (a topic ID such as `T2` in
 that project). Absent means ungrouped, and only a conversation may have it.

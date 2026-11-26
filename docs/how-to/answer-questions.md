@@ -3,7 +3,9 @@
 Select **Needs you** on the Desk to reach the table. The tab shows the number
 of rows when any need attention. Each question set counts once, regardless of
 how many questions are open. [Catch-up notices](catch-up.md#read-the-notices-on-the-desk)
-appear first, followed by saved items, newest saved first.
+appear first, followed by saved items, newest saved first. A task that waits for
+your review shows here with its result and two choices, as
+[create a task](create-a-task.md#review-a-task) describes.
 
 The **Item** column links the saved ID and title, **Questions** shows the
 open count, and **Latest** shows the current status. On wider screens,

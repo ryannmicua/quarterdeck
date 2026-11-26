@@ -8,6 +8,7 @@ Guides are grouped by purpose, following Diataxis:
   [going back to a list and on to the next unread item](how-to/go-back-to-the-list.md),
   [asking Firstmate from a card](how-to/ask-firstmate.md),
   [talking to Firstmate and grouping conversations](how-to/talk-to-firstmate.md),
+  [creating a task](how-to/create-a-task.md),
   [watching what Firstmate owes](how-to/watch-firstmate.md),
   [replying from the command line](how-to/reply-from-the-command-line.md),
   [reading the Workers page](how-to/read-workers.md),
