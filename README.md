@@ -4,7 +4,7 @@
 
 ## What it is
 
-Quarterdeck shows saved items, including topic-based conversations, and
+Quarterdeck shows saved items, including conversations, and
 Catch-up notices saved by hand. The Workers page shows the Firstmate worker
 roster when enabled. When you tell Firstmate "send this to Quarterdeck" or
 "save this Lavish page to Quarterdeck", Firstmate runs `quarterdeck add`,
@@ -28,8 +28,9 @@ own copy of the saved content.
 
 ## Features
 
-- **Desk** opens on **Conversations**, where you start a conversation and keep
-  [pinned topics](docs/how-to/talk-to-firstmate.md#order-and-pins) in view. Its
+- **Desk** opens on **Conversations**, where you start a conversation, keep
+  [pinned conversations](docs/how-to/talk-to-firstmate.md#order-and-pins) in view and
+  [group conversations](docs/how-to/talk-to-firstmate.md#group-conversations) by project and topic. Its
   **Needs you** tab holds [questions to answer](docs/how-to/answer-questions.md)
   and [unread replies](docs/how-to/use-the-library.md#when-an-item-moves).
 - **Watch** lists what Firstmate has yet to reply to and shows its current work.
@@ -58,7 +59,7 @@ own copy of the saved content.
 - `quarterdeck render` writes [HTML exports](docs/reference/cli-and-config.md#pages).
 - [Answer questions](docs/how-to/answer-questions.md) or
   [ask Firstmate about a question or a whole set](docs/how-to/ask-firstmate.md) or
-  [talk to Firstmate about any topic](docs/how-to/talk-to-firstmate.md) in the browser.
+  [talk to Firstmate](docs/how-to/talk-to-firstmate.md) in the browser.
 - Python 3 standard library only.
 
 ## Quick start

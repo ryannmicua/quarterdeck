@@ -81,6 +81,15 @@ message saved at 18:30 UTC on October 1. The Desk tab check uses the old
 bookmark fragment to verify that Conversations still opens first and that
 clicking or using the keyboard leaves the address unchanged.
 
+The grouping browser checks fill the **Project** filter with invented
+projects and topics and verify which rows each choice shows, including
+**Ungrouped** and an empty project. They create, rename and cancel a project
+and a topic, move a conversation into a topic and back to **Ungrouped**, and
+check that a refused move keeps the row and says so beside it. A scoped start
+must carry its project and topic. A phone-width check verifies that the
+filter, the name form and the move form never scroll the page sideways and that
+every control is at least 44 pixels tall.
+
 The Catch-up browser check opens **Needs you** with saved notices and an
 open question. At phone width it checks the notice details and links. It
 acknowledges a notice and then acknowledges the remaining notices, checks

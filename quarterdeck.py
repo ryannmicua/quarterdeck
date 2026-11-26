@@ -658,6 +658,180 @@ def make_body(kind: str, *, url: list[str] | None, link_text: list[str] | None, 
     return validated_body(kind, {"questions": questions}, images)
 
 
+# --- Projects and topics --------------------------------------------------------------
+# The owner files a conversation under one optional project and, within it, one optional topic. A project or topic
+# keeps its ID when renamed, so a placement and every link to a conversation stay valid. Nothing is ever deleted.
+
+GROUP_NAME_LIMIT = 60
+PROJECT_ID_RE = re.compile(r"P[1-9][0-9]*")
+TOPIC_ID_RE = re.compile(r"T[1-9][0-9]*")
+
+
+def clean_group_name(value: object, what: str) -> str:
+    return clean_text(value, what, GROUP_NAME_LIMIT)
+
+
+def validate_projects(data: dict[str, object]) -> None:
+    if "projects" not in data:
+        return
+    projects, topic_ids, project_ids, names = data["projects"], set(), set(), set()
+    damaged = "the item store is damaged: its projects are not in the saved format"
+    if not isinstance(projects, list):
+        raise ValueError(damaged)
+    for project in projects:
+        if not isinstance(project, dict) or set(project) != {"id", "name", "topics"}:
+            raise ValueError(damaged)
+        topics = project["topics"]
+        if (not isinstance(project["id"], str) or not PROJECT_ID_RE.fullmatch(project["id"]) or project["id"] in project_ids
+                or not isinstance(topics, list)):
+            raise ValueError(damaged)
+        project_ids.add(project["id"])
+        try:
+            name = clean_group_name(project["name"], "project name")
+        except ValueError as exc:
+            raise ValueError(damaged) from exc
+        if name != project["name"] or name.casefold() in names:
+            raise ValueError(damaged)
+        names.add(name.casefold())
+        topic_names = set()
+        for topic in topics:
+            if not isinstance(topic, dict) or set(topic) != {"id", "name"} or not isinstance(topic["id"], str) \
+                    or not TOPIC_ID_RE.fullmatch(topic["id"]) or topic["id"] in topic_ids:
+                raise ValueError(damaged)
+            topic_ids.add(topic["id"])
+            try:
+                name = clean_group_name(topic["name"], "topic name")
+            except ValueError as exc:
+                raise ValueError(damaged) from exc
+            if name != topic["name"] or name.casefold() in topic_names:
+                raise ValueError(damaged)
+            topic_names.add(name.casefold())
+
+
+def check_placement(projects: list[dict[str, object]], placement: object) -> dict[str, str]:
+    """Raise ValueError unless the placement names a project and, optionally, a topic inside that project."""
+    if not isinstance(placement, dict) or "project" not in placement or set(placement) - {"project", "topic"}:
+        raise ValueError("a placement is a project and an optional topic")
+    project = next((entry for entry in projects if entry["id"] == placement["project"]), None)
+    if project is None:
+        raise ValueError("the placement names a project that does not exist")
+    if "topic" in placement and not any(topic["id"] == placement["topic"] for topic in project["topics"]):  # type: ignore[attr-defined]
+        raise ValueError("the placement names a topic that is not in its project")
+    return placement  # type: ignore[return-value]
+
+
+def new_placement(projects: list[dict[str, object]], project: object, topic: object) -> dict[str, str] | None:
+    """The placement a request names by ID. None means Ungrouped."""
+    if project is None:
+        if topic is not None:
+            raise ValueError("a topic needs its project")
+        return None
+    return check_placement(projects, {"project": project, **({} if topic is None else {"topic": topic})})
+
+
+def project_tree(data: dict[str, object]) -> list[dict[str, object]]:
+    """Projects and their topics by name, in the shape the Desk script and the CLI read."""
+    by_name = lambda entry: (str(entry["name"]).casefold(), str(entry["id"]))  # noqa: E731
+    return [{"id": project["id"], "name": project["name"],
+             "topics": [{"id": topic["id"], "name": topic["name"]} for topic in sorted(project["topics"], key=by_name)]}
+            for project in sorted(data.get("projects", []), key=by_name)]  # type: ignore[attr-defined,arg-type]
+
+
+def placement_label(item: dict[str, object], projects: list[dict[str, object]]) -> str:
+    """The project and topic of a conversation as the Desk shows them, or empty when it is ungrouped."""
+    placement = item.get("placement")
+    if not placement:
+        return ""
+    project = next(entry for entry in projects if entry["id"] == placement["project"])  # type: ignore[index]
+    names = [str(project["name"])]
+    if "topic" in placement:  # type: ignore[operator]
+        names.append(next(str(topic["name"]) for topic in project["topics"] if topic["id"] == placement["topic"]))  # type: ignore[attr-defined,index]
+    return " / ".join(names)
+
+
+def find_project(projects: list[dict[str, object]], reference: str) -> dict[str, object]:
+    """A project by its ID or its name, ignoring case."""
+    found = next((entry for entry in projects if reference.upper() == entry["id"]
+                  or reference.casefold() == str(entry["name"]).casefold()), None)
+    if found is None:
+        known = ", ".join(str(entry["name"]) for entry in projects) or "none yet"
+        raise ValueError(f"no project {reference!r}; the projects are: {known}")
+    return found
+
+
+def find_topic(project: dict[str, object], reference: str) -> dict[str, object]:
+    found = next((entry for entry in project["topics"]  # type: ignore[attr-defined]
+                  if reference.upper() == entry["id"] or reference.casefold() == entry["name"].casefold()), None)
+    if found is None:
+        known = ", ".join(entry["name"] for entry in project["topics"]) or "none yet"  # type: ignore[attr-defined]
+        raise ValueError(f"no topic {reference!r} in {project['name']}; its topics are: {known}")
+    return found
+
+
+def named_placement(data: dict[str, object], project: str | None, topic: str | None) -> dict[str, str] | None:
+    """The placement that --project and --topic name, by ID or by name. None means Ungrouped."""
+    if project is None:
+        if topic is not None:
+            raise ValueError("--topic needs --project")
+        return None
+    found = find_project(data.get("projects", []), project)  # type: ignore[arg-type]
+    placement = {"project": str(found["id"])}
+    if topic is not None:
+        placement["topic"] = str(find_topic(found, topic)["id"])
+    return placement
+
+
+def change_projects(store: Path, payload: object) -> dict[str, object]:
+    """Create a project or a topic, or rename one. The Desk sends one of three shapes."""
+    if not isinstance(payload, dict):
+        raise ValueError("Invalid project fields.")
+    fields = set(payload)
+    with changing_store(store) as data:
+        projects = data.setdefault("projects", [])
+        if fields == {"name"}:
+            name = clean_group_name(payload["name"], "Project name")
+            if any(name.casefold() == str(project["name"]).casefold() for project in projects):  # type: ignore[attr-defined]
+                raise AnswerConflict(f"A project named {name} already exists. Choose another name.")
+            new_id = f"P{max((int(project['id'][1:]) for project in projects), default=0) + 1}"  # type: ignore[attr-defined]
+            projects.append({"id": new_id, "name": name, "topics": []})  # type: ignore[attr-defined]
+        elif fields == {"project", "name"}:
+            project = find_project(projects, str(payload["project"]))  # type: ignore[arg-type]
+            if payload["project"] != project["id"]:
+                raise ValueError("Unknown project.")
+            name = clean_group_name(payload["name"], "Topic name")
+            if any(name.casefold() == topic["name"].casefold() for topic in project["topics"]):  # type: ignore[attr-defined]
+                raise AnswerConflict(f"{project['name']} already has a topic named {name}. Choose another name.")
+            new_id = "T" + str(max((int(topic["id"][1:]) for entry in projects for topic in entry["topics"]),  # type: ignore[attr-defined,index]
+                                   default=0) + 1)
+            project["topics"].append({"id": new_id, "name": name})  # type: ignore[attr-defined]
+        elif fields == {"id", "name"}:
+            target = payload["id"]
+            if not isinstance(target, str):
+                raise ValueError("Unknown project or topic.")
+            if PROJECT_ID_RE.fullmatch(target):
+                project = find_project(projects, target)  # type: ignore[arg-type]
+                name = clean_group_name(payload["name"], "Project name")
+                if any(name.casefold() == str(other["name"]).casefold() for other in projects if other is not project):  # type: ignore[attr-defined]
+                    raise AnswerConflict(f"A project named {name} already exists. Choose another name.")
+                project["name"] = name
+            elif TOPIC_ID_RE.fullmatch(target):
+                found = next(((project, topic) for project in projects for topic in project["topics"]  # type: ignore[attr-defined,index]
+                              if topic["id"] == target), None)
+                if found is None:
+                    raise ValueError("Unknown project or topic.")
+                project, topic = found
+                name = clean_group_name(payload["name"], "Topic name")
+                if any(name.casefold() == other["name"].casefold() for other in project["topics"] if other is not topic):  # type: ignore[attr-defined,index]
+                    raise AnswerConflict(f"{project['name']} already has a topic named {name}. Choose another name.")
+                topic["name"] = name
+            else:
+                raise ValueError("Unknown project or topic.")
+            new_id = target
+        else:
+            raise ValueError("Invalid project fields.")
+        return {"id": new_id, "projects": project_tree(data)}
+
+
 def utc_stamp(value: object, name: str) -> datetime:
     try:
         if not isinstance(value, str):
@@ -677,6 +851,7 @@ def check_store(data: object) -> dict[str, object]:
     items, next_id = data.get("items"), data.get("next_id")
     if not isinstance(items, list) or type(next_id) is not int or next_id < 1:
         raise ValueError("the item store is damaged: it lacks items or next_id")
+    validate_projects(data)
     seen = set()
     for item in items:
         if not isinstance(item, dict) or item.get("kind") not in KINDS or not isinstance(item.get("id"), str):
@@ -700,6 +875,10 @@ def check_store(data: object) -> dict[str, object]:
             for flag in CONVERSATION_FLAGS:
                 if flag in item and (item[flag] is not True or item["kind"] != "conversation"):
                     raise ValueError(f"only a conversation can be {flag}")
+            if "placement" in item:
+                if item["kind"] != "conversation":
+                    raise ValueError("only a conversation can be placed in a project")
+                check_placement(data.get("projects", []), item["placement"])
             if "answers" in item:
                 validate_records(item)
             if "conversation" in item:
@@ -1342,23 +1521,25 @@ def ask_message(store, home, binding, payload, *, home_available=True, include_t
         return ask_result(item, part, message, include_thread=include_thread)
 
 
-def append_conversation(data, title, message):
+def append_conversation(data, title, message, placement=None):
     item_id = f"Q{data['next_id']}"
     data["next_id"] = int(data["next_id"]) + 1
     data["items"].append({"id": item_id, "kind": "conversation", "title": title,
                           "description": "Conversation with Firstmate.", "saved_at": now_text(), "body": {},
+                          **({"placement": placement} if placement else {}),
                           "conversation": {"item": [message]}})
     return item_id
 
 
 def start_conversation(store, home, binding, payload):
     """Save a new conversation item holding its first message, then deliver that message like any ask."""
-    if not isinstance(payload, dict) or set(payload) != {"id", "title", "text", "home"}:
+    required = {"id", "title", "text", "home"}
+    if not isinstance(payload, dict) or not required <= set(payload) <= required | {"project", "topic"}:
         raise ValueError("Invalid conversation fields.")
     message_id = payload["id"]
     if not isinstance(message_id, str) or not re.fullmatch(r"[0-9a-f]{32}", message_id):
         raise ValueError("Invalid message ID.")
-    title = clean_text(payload["title"], "Topic", TITLE_LIMIT)
+    title = clean_text(payload["title"], "Conversation title", TITLE_LIMIT)
     text = clean_text(payload["text"], "Message", TEXT_LIMIT, multiline=True)
     with locked_store(store):
         data = read_store(store)
@@ -1374,14 +1555,17 @@ def start_conversation(store, home, binding, payload):
         else:
             if payload["home"] != binding:
                 raise AnswerConflict("Firstmate home changed. This message belongs to the original home.")
-            item_id = append_conversation(data, title, new_ask(message_id, text, binding))
+            placement = new_placement(data.get("projects", []), payload.get("project"), payload.get("topic"))
+            item_id = append_conversation(data, title, new_ask(message_id, text, binding), placement)
             write_store(store, data)
     result = ask_message(store, home, binding, {"part": item_id, "id": message_id, "action": "retry"},
                          include_thread=False)
     with locked_store(store, read_only=True):
-        item = find_item(read_store(store), item_id)
+        data = read_store(store)
+    item = find_item(data, item_id)
     summary = attention_summary(item, served=True)
-    return {**result, "href": item_page_name(item_id), "row": conversation_row(item), "hold": library_row(item, served=True),
+    return {**result, "href": item_page_name(item_id), "row": conversation_row(item, data.get("projects", [])),
+            "hold": library_row(item, served=True),
             "attention": desk_row(item, summary, primary=False) if summary else None}
 
 
@@ -1415,6 +1599,25 @@ def pin_conversation(store, payload):
     return set_conversation_flag(store, payload, "pinned")
 
 
+def move_conversation(store, payload):
+    """Change which project and topic a conversation is in, or return it to Ungrouped. Nothing else about it changes."""
+    if not isinstance(payload, dict) or set(payload) != {"part", "project", "topic"}:
+        raise ValueError("Invalid move fields.")
+    item_id = payload["part"]
+    if not isinstance(item_id, str) or item_id != item_id.upper() or not ID_RE.fullmatch(item_id):
+        raise ValueError("Unknown conversation.")
+    with changing_store(store) as data:
+        item = find_item(data, item_id)
+        if item["kind"] != "conversation":
+            raise ValueError("Only a conversation can be moved.")
+        placement = new_placement(data.get("projects", []), payload["project"], payload["topic"])
+        if placement:
+            item["placement"] = placement
+        else:
+            item.pop("placement", None)
+        return {"project": payload["project"], "topic": payload["topic"]}
+
+
 def mark_replies_read(store, payload):
     if not isinstance(payload, dict) or set(payload) != {"part", "ids"}:
         raise ValueError("Invalid reply acknowledgment.")
@@ -1439,11 +1642,13 @@ def conversation_message_numbers(messages):
             for number, message in enumerate((m for m in messages if m["author"] == "you"), 1)}
 
 
-def item_text(item: dict[str, object]) -> str:
+def item_text(item: dict[str, object], projects: list[dict[str, object]] | None = None) -> str:
     """One item as plain text, numbered the way the page numbers it."""
     item_id, body = str(item["id"]), item["body"]
     lines = [f"{item_id} · {item['title']}", f"{KIND_LABELS[str(item['kind'])]} · saved {saved_day(item)}",
              "", str(item["description"]), ""]
+    if item.get("placement"):
+        lines.insert(2, f"Placement: {placement_label(item, projects or [])}")
     if item.get("project"):
         lines.insert(2, f"Project: {item['project']}")
     if item.get("tags"):
@@ -1621,8 +1826,8 @@ def list_items(_args: argparse.Namespace) -> int:
 
 def show_item(args: argparse.Namespace) -> int:
     def action() -> int:
-        item = find_item(read_store(store_path()), args.id)
-        print(item_text(item), end="")
+        data = read_store(store_path())
+        print(item_text(find_item(data, args.id), data.get("projects", [])), end="")
         return 0
     return run_item_command(action)
 
@@ -2089,10 +2294,46 @@ def converse(args: argparse.Namespace) -> int:
         store = store_path()
         with locked_store(store):
             data = read_store(store)
-            item_id = append_conversation(data, title, message)
+            placement = named_placement(data, args.project, args.topic)
+            item_id = append_conversation(data, title, message, placement)
             save_images(store, item_id, pending, tree=REPLY_IMAGES)
             write_store(store, data)
         print(item_id)
+        return 0
+    return run_item_command(action)
+
+
+def list_projects(args: argparse.Namespace) -> int:
+    """Print the owner's projects and the topics in each, so Firstmate can name one when it opens a conversation."""
+    def action() -> int:
+        tree = project_tree(read_store(store_path()))
+        if args.json:
+            print(json.dumps(tree, indent=2, ensure_ascii=False))
+        elif not tree:
+            print("No projects.")
+        for project in tree if not args.json else ():
+            print(f"{project['id']:<6} {project['name']}")
+            for topic in project["topics"]:  # type: ignore[attr-defined]
+                print(f"  {topic['id']:<6} {topic['name']}")
+        return 0
+    return run_item_command(action)
+
+
+def move_item(args: argparse.Namespace) -> int:
+    """Move a conversation into a project and topic, or back to Ungrouped. Nothing else about it changes."""
+    def action() -> int:
+        if args.ungrouped == (args.project is not None):
+            raise ValueError("give --project, with --topic if you want one, or --ungrouped")
+        with changing_store(store_path()) as data:
+            item = find_item(data, args.id)
+            if item["kind"] != "conversation":
+                raise ValueError(f"move a conversation, such as Q12: {args.id!r}")
+            placement = named_placement(data, args.project, args.topic)
+            if placement:
+                item["placement"] = placement
+            else:
+                item.pop("placement", None)
+        print(f"{item['id']} Moved")
         return 0
     return run_item_command(action)
 
@@ -2651,6 +2892,21 @@ body:has(dialog[open]) { overflow:hidden; }
 .conversation-state .state-status { flex-basis:100%; margin:0; }
 .conversation-state .state-status:empty { display:none; }
 .conversation-state .state-status.failed { color:var(--signal); font-weight:600; }
+.topic > .move-form { grid-column:1 / -1; padding:.4rem 0 0; }
+#scope[data-projects="no"] ~ .topics .move { display:none; }
+.topic-meta .placement { color:var(--ink); font-weight:600; }
+.scope { max-width:52rem; margin:1rem 0; display:flex; flex-wrap:wrap; gap:.6rem 1rem; align-items:end; font-family:var(--sans); }
+.scope-field { display:flex; flex-direction:column; gap:.2rem; min-width:0; flex:1 1 9rem; max-width:18rem; }
+.scope-field label { margin:0; font-size:var(--text-sm); color:var(--soft); }
+.scope select, .move-form select, .group-form input { box-sizing:border-box; min-height:var(--tap); width:100%; padding:.4rem .6rem; font:var(--text-md)/1.3 var(--sans);
+  background:var(--raised); color:var(--ink); border:1px solid var(--soft); border-radius:5px; }
+.scope-actions, .group-form, .move-form { display:flex; flex-wrap:wrap; gap:.5rem 1rem; align-items:end; }
+.group-form { flex:1 1 100%; }
+.group-form .scope-field { flex:1 1 14rem; max-width:24rem; }
+.move-form .actions { margin:0; }
+.scope > .desk-feedback { flex:1 1 100%; margin:0; }
+.talk-destination { margin:0; }
+@media (width > 48rem) { .talk-destination { grid-column:1 / -1; } }
 #desk-status { margin:.6rem 0 0; }
 .tab-count[hidden] { display:none; }
 .bar nav a[aria-current="page"] { font-weight:700; text-decoration-thickness:2px; }
@@ -3876,15 +4132,57 @@ DESK_SCRIPT = talk_script(r"""
     archived: document.querySelector('#topics-archived')};
   const none = document.getElementById('no-conversations');
   const noneArchived = document.getElementById('no-archived');
+  const noneInScope = document.getElementById('no-scoped-conversations');
   const rowsOf = group => [...group.querySelectorAll('.topic')];
+  const scope = document.getElementById('scope');
+  const scopeProject = document.getElementById('scope-project');
+  const scopeTopic = document.getElementById('scope-topic');
+  const scopeTopicField = document.getElementById('scope-topic-field');
+  const newProject = document.getElementById('new-project');
+  const newTopic = document.getElementById('new-topic');
+  const renameProject = document.getElementById('rename-project');
+  const renameTopic = document.getElementById('rename-topic');
+  const destination = document.querySelector('.talk-destination');
+  const groupStatus = document.getElementById('group-status');
+  let tree = JSON.parse(document.getElementById('groups-data').textContent);
+  const projectOf = id => tree.find(project => project.id === id);
+  const topicOf = (project, id) => project?.topics.find(topic => topic.id === id);
+  const labelOf = (projectId, topicId) => {
+    const project = projectOf(projectId);
+    const topic = topicOf(project, topicId);
+    return !project ? '' : topic ? project.name + ' / ' + topic.name : project.name;
+  };
+  const labelRow = row => {
+    const label = labelOf(row.dataset.project, row.dataset.topic);
+    const span = row.querySelector('.placement');
+    span.textContent = label;
+    span.hidden = !label;
+  };
+  const inScope = row => {
+    const project = scopeProject.value, topic = scopeTopic.value;
+    if (!project) return true;
+    if (project === '-') return !row.dataset.project;
+    return row.dataset.project === project && (!topic || row.dataset.topic === topic);
+  };
+  const scopeEmptyText = () => {
+    if (scopeProject.value === '-') return 'Every conversation is in a project. A conversation you move out of a project shows here.';
+    const project = projectOf(scopeProject.value);
+    return 'No conversations in ' + (topicOf(project, scopeTopic.value) ?? project).name + ' yet. A conversation you start or move into it shows here.';
+  };
   const syncGroups = () => {
-    for (const group of Object.values(groups)) group.hidden = !rowsOf(group).length;
-    none.hidden = Boolean(document.querySelector('#topics-pinned .topic, #topics-recent .topic'));
+    for (const group of Object.values(groups)) group.hidden = !rowsOf(group).some(row => !row.hidden);
+    // Archived rows live in their own tab and never count toward the filtered Conversations list.
+    const any = Boolean(document.querySelector('#topics-pinned .topic, #topics-recent .topic'));
+    none.hidden = any;
+    noneInScope.hidden = !any || Boolean(document.querySelector('#topics-pinned .topic:not([hidden]), #topics-recent .topic:not([hidden])'));
+    if (!noneInScope.hidden) noneInScope.textContent = scopeEmptyText();
     noneArchived.hidden = !groups.archived.hidden;
   };
   const place = row => {
     const name = row.dataset.archived === 'true' ? 'archived' : row.dataset.pinned === 'true' ? 'pinned' : 'recent';
     const list = groups[name].querySelector('.topic-list');
+    // The filter applies only outside Archived, and before the row takes its place by pin and activity.
+    row.hidden = name !== 'archived' && !inScope(row);
     const {activity, id} = row.dataset;
     const next = rowsOf(list.parentElement).find(other => other !== row && (
       other.dataset.activity < activity ||
@@ -3893,6 +4191,175 @@ DESK_SCRIPT = talk_script(r"""
     list.insertBefore(row, next || null);
     syncGroups();
   };
+  const fillSelect = (select, first, entries, value) => {
+    select.replaceChildren(...first.map(([id, name]) => new Option(name, id)), ...entries.map(entry => new Option(entry.name, entry.id)));
+    select.value = [...select.options].some(option => option.value === value) ? value : '';
+  };
+  const SCOPE_KEY = 'quarterdeck-scope';
+  const syncScope = (next = {project: scopeProject.value, topic: scopeTopic.value}) => {
+    fillSelect(scopeProject, [['', 'All'], ['-', 'Ungrouped']], tree, next.project);
+    const project = projectOf(scopeProject.value);
+    fillSelect(scopeTopic, [['', 'All topics']], project ? project.topics : [], project ? next.topic : '');
+    document.getElementById('scope-project-field').hidden = !tree.length;
+    scope.dataset.projects = tree.length ? 'yes' : 'no';
+    scopeTopicField.hidden = !project;
+    newTopic.hidden = renameProject.hidden = !project;
+    renameTopic.hidden = !scopeTopic.value;
+    for (const row of conversationPanel.querySelectorAll('.topic')) {
+      row.hidden = !inScope(row);
+      labelRow(row);
+    }
+    syncGroups();
+    groupStatus.textContent = '';
+    if (destination) {
+      const label = project ? labelOf(project.id, scopeTopic.value) : '';
+      destination.hidden = !tree.length;
+      destination.textContent = label ? 'Starts in ' + label + '.' : 'Starts ungrouped.';
+    }
+    try { sessionStorage.setItem(SCOPE_KEY, JSON.stringify({project: scopeProject.value, topic: scopeTopic.value})); } catch {}
+  };
+  const startPlacement = () => {
+    const project = projectOf(scopeProject.value);
+    return !project ? {} : scopeTopic.value ? {project: project.id, topic: scopeTopic.value} : {project: project.id};
+  };
+  scopeProject.addEventListener('change', () => syncScope({project: scopeProject.value, topic: ''}));
+  scopeTopic.addEventListener('change', () => syncScope());
+
+  const groupForm = document.getElementById('group-form');
+  const groupName = document.getElementById('group-name');
+  const groupSave = groupForm.querySelector('button[type="submit"]');
+  const moveForm = document.getElementById('move-form');
+  const moveProject = document.getElementById('move-project');
+  const moveTopic = document.getElementById('move-topic');
+  let naming = null;
+  let moving = null;
+  const openGroup = (trigger, mode) => {
+    closeMove(false);
+    naming = {...mode, trigger};
+    document.getElementById('group-label').textContent = (mode.kind === 'project' ? 'Project' : 'Topic') + ' name';
+    groupName.value = mode.name || '';
+    groupStatus.classList.remove('failed');
+    groupStatus.textContent = '';
+    groupForm.hidden = false;
+    groupSave.disabled = !normalizeTopic(groupName.value);
+    groupName.focus();
+    groupName.select();
+  };
+  const closeGroup = refocus => {
+    if (!naming) return;
+    const {trigger} = naming;
+    naming = null;
+    groupForm.hidden = true;
+    if (refocus) (trigger.hidden ? scopeProject : trigger).focus();
+  };
+  newProject.addEventListener('click', () => openGroup(newProject, {kind: 'project'}));
+  newTopic.addEventListener('click', () => openGroup(newTopic, {kind: 'topic', parent: scopeProject.value}));
+  renameProject.addEventListener('click', () => openGroup(renameProject, {kind: 'project', id: scopeProject.value, name: projectOf(scopeProject.value).name}));
+  renameTopic.addEventListener('click', () => openGroup(renameTopic, {kind: 'topic', id: scopeTopic.value,
+    name: topicOf(projectOf(scopeProject.value), scopeTopic.value).name}));
+  groupName.addEventListener('input', () => { groupSave.disabled = !normalizeTopic(groupName.value); });
+  document.getElementById('group-cancel').addEventListener('click', () => closeGroup(true));
+  groupForm.addEventListener('keydown', event => { if (event.key === 'Escape') closeGroup(true); });
+  groupForm.addEventListener('submit', async event => {
+    event.preventDefault();
+    const name = normalizeTopic(groupName.value);
+    if (!name || !naming) return;
+    const body = naming.id ? {id: naming.id, name} : naming.parent ? {project: naming.parent, name} : {name};
+    groupSave.disabled = true;
+    groupStatus.classList.remove('failed');
+    groupStatus.textContent = 'Saving name';
+    try {
+      const outcome = await postJson('groups', body);
+      if (outcome.ok) {
+        tree = outcome.result.projects;
+        const {kind, id} = naming;
+        const next = {project: scopeProject.value, topic: scopeTopic.value};
+        if (!id && kind === 'project') Object.assign(next, {project: outcome.result.id, topic: ''});
+        if (!id && kind === 'topic') next.topic = outcome.result.id;
+        closeGroup(false);
+        syncScope(next);
+        groupStatus.textContent = name + ' saved.';
+        (kind === 'project' ? scopeProject : scopeTopic).focus();
+      } else {
+        groupStatus.classList.add('failed');
+        groupStatus.textContent = outcome.message;
+        groupSave.disabled = false;
+      }
+    } catch {
+      groupStatus.classList.add('failed');
+      groupStatus.textContent = 'Quarterdeck could not save the name. Try again.';
+      groupSave.disabled = false;
+    }
+  });
+
+  const syncMoveTopics = value => {
+    const project = projectOf(moveProject.value);
+    fillSelect(moveTopic, [['', 'No topic']], project ? project.topics : [], value);
+    document.getElementById('move-topic-field').hidden = !project;
+  };
+  const closeMove = refocus => {
+    if (!moving) return;
+    const row = moving;
+    moving = null;
+    moveForm.hidden = true;
+    scope.after(moveForm);
+    if (refocus) row.querySelector('button.move').focus();
+  };
+  const note = (row, text, failed) => report(row.hidden ? startStatus : row.querySelector('.desk-feedback'), conversationPanel, text, failed);
+  moveProject.addEventListener('change', () => syncMoveTopics(''));
+  document.getElementById('move-cancel').addEventListener('click', () => closeMove(true));
+  moveForm.addEventListener('keydown', event => { if (event.key === 'Escape') closeMove(true); });
+  moveForm.addEventListener('submit', async event => {
+    event.preventDefault();
+    const row = moving;
+    const title = row.querySelector('.pin').dataset.title;
+    const project = moveProject.value || null;
+    const topic = project && moveTopic.value || null;
+    const controls = moveForm.querySelectorAll('select,button');
+    controls.forEach(control => { control.disabled = true; });
+    let saved = false;
+    try {
+      saved = (await postJson('moves', {part: row.dataset.id, project, topic})).ok;
+    } catch {
+      saved = false;
+    }
+    controls.forEach(control => { control.disabled = false; });
+    if (!saved) {
+      note(row, 'Quarterdeck could not move ' + title + '. Try again.', true);
+      return;
+    }
+    for (const [name, value] of [['project', project], ['topic', topic]]) {
+      if (value) row.dataset[name] = value; else delete row.dataset[name];
+    }
+    closeMove(false);
+    labelRow(row);
+    row.hidden = !inScope(row);
+    syncGroups();
+    note(row, title + ' moved to ' + (labelOf(project, topic) || 'Ungrouped') + '.', false);
+    if (!row.hidden) row.querySelector('button.move').focus();
+    else (document.querySelector('.topic:not([hidden]) .topic-title') || scopeProject).focus();
+  });
+  conversationPanel.addEventListener('click', event => {
+    const button = event.target.closest('button.move');
+    if (!button || button.disabled) return;
+    const row = button.closest('.topic');
+    if (moving === row) { closeMove(true); return; }
+    closeMove(false);
+    closeGroup(false);
+    moving = row;
+    fillSelect(moveProject, [['', 'Ungrouped']], tree, row.dataset.project || '');
+    syncMoveTopics(row.dataset.topic || '');
+    row.append(moveForm);
+    moveForm.hidden = false;
+    moveProject.focus();
+  });
+  try {
+    const saved = JSON.parse(sessionStorage.getItem(SCOPE_KEY)) || {};
+    syncScope({project: saved.project || '', topic: saved.topic || ''});
+  } catch {
+    syncScope({project: '', topic: ''});
+  }
+
   const flags = {
     pin: {path:'pins', key:'pinned', labels:['Pin', 'Unpin'], done:['is unpinned.', 'is pinned.'], failed:'the pin for '},
     resolve: {path:'resolutions', key:'resolved', labels:['Resolve', 'Reopen'], done:['is reopened.', 'is resolved.'], failed:'the resolution for '},
@@ -3924,6 +4391,8 @@ DESK_SCRIPT = talk_script(r"""
       button.setAttribute('aria-label', flag.labels[value ? 1 : 0] + ' ' + title);
       row.querySelector('.resolved-mark').hidden = row.dataset.resolved !== 'true';
       row.querySelector('button.pin').hidden = row.dataset.archived === 'true';
+      row.querySelector('button.move').hidden = row.dataset.archived === 'true';
+      if (flag.key === 'archived' && row.contains(moveForm)) closeMove(false);
       const neighbour = row.nextElementSibling || row.previousElementSibling
         || [...panel.querySelectorAll('.topic')].find(other => other !== row && !other.closest('[hidden]'));
       place(row);
@@ -3972,9 +4441,13 @@ DESK_SCRIPT = talk_script(r"""
     const holder = document.createElement('template');
     holder.innerHTML = html;
     const row = holder.content.firstElementChild;
-    document.querySelector('.topic[data-id="' + row.dataset.id + '"]')?.remove();
+    const replaced = document.querySelector('.topic[data-id="' + row.dataset.id + '"]');
+    if (replaced?.contains(moveForm)) closeMove(false);
+    replaced?.remove();
     localizeDays(row);
     localizeStamps(row);
+    labelRow(row);
+    row.hidden = !inScope(row);
     place(row);
     return row;
   };
@@ -3992,7 +4465,7 @@ DESK_SCRIPT = talk_script(r"""
     startStatus.textContent = 'Starting conversation';
     let started = null;
     try {
-      const outcome = await postJson('conversations', {id, title, text, home:button.dataset.home});
+      const outcome = await postJson('conversations', {id, title, text, home:button.dataset.home, ...startPlacement()});
       if (outcome.ok || outcome.saved === false) drafts.delete(key);
       if (outcome.ok) {
         startStatus.textContent = outcome.result.message;
@@ -4667,12 +5140,13 @@ def talk_form(binding):
     return ('<button type="button" id="talk-open" class="talk-open" aria-expanded="false" aria-controls="talk-form">'
             'New conversation</button>'
             '<form id="talk-form" class="talk" novalidate aria-label="New conversation" hidden>'
-            '<div class="talk-field"><label for="talk-topic">Topic</label>'
+            '<div class="talk-field"><label for="talk-topic">Conversation title</label>'
             f'<input id="talk-topic" maxlength="{TITLE_LIMIT}" autocomplete="off"></div>'
             '<div class="talk-field"><label for="talk-message">Message</label>'
             f'<textarea id="talk-message" maxlength="{TEXT_LIMIT}" rows="2"></textarea></div>'
             '<div class="actions"><button type="submit" class="primary" disabled '
-            f'data-home="{esc(binding)}">Start conversation</button></div></form>')
+            f'data-home="{esc(binding)}">Start conversation</button></div>'
+            '<p class="meta talk-destination" hidden></p></form>')
 
 
 PREVIEW_LIMIT = 200
@@ -4693,7 +5167,7 @@ def flag_button(name, on, off, active, title):
     return f'<button type="button" class="{name}" data-title="{title}" aria-label="{verb} {title}">{verb}</button>'
 
 
-def conversation_row(item):
+def conversation_row(item, projects=()):
     latest = part_thread(item, None)[-1]
     target = unread_target(item)
     href = item_page_name(item["id"]) + (f'#{target}' if target else "")
@@ -4708,41 +5182,77 @@ def conversation_row(item):
     pinned, resolved, archived = is_pinned(item), is_resolved(item), is_archived(item)
     title = esc(item["title"])
     pin = flag_button("pin", "Unpin", "Pin", pinned, title)
+    move = f'<button type="button" class="move" aria-label="Move {title}">Move</button>'
     if archived:
         pin = pin.replace('<button ', '<button hidden ', 1)
+        move = move.replace('<button ', '<button hidden ', 1)
     flags = " ".join(f'data-{name}="{"true" if on else "false"}"' for name, on in
                      (("pinned", pinned), ("resolved", resolved), ("archived", archived)))
-    return (f'<li class="topic" data-id="{item["id"]}" data-activity="{activity}" {flags}>'
+    placement = item.get("placement", {})
+    where = "".join(f' data-{name}="{esc(placement[name])}"' for name in ("project", "topic") if name in placement)
+    label = placement_label(item, projects)  # type: ignore[arg-type]
+    return (f'<li class="topic" data-id="{item["id"]}" data-activity="{activity}" {flags}{where}>'
             f'<div class="topic-main"><a class="topic-title" href="{href}">{title}</a>'
             f'<p class="topic-latest">{esc(preview)}</p>'
-            f'<p class="meta topic-meta">{project}{resolved_mark(item)}{status}{activity_time(item)}</p></div>'
-            f'<div class="topic-actions">{pin}{flag_button("resolve", "Reopen", "Resolve", resolved, title)}'
+            f'<p class="meta topic-meta"><span class="placement"{"" if label else " hidden"}>{esc(label)}</span>'
+            f'{project}{resolved_mark(item)}{status}{activity_time(item)}</p></div>'
+            f'<div class="topic-actions">{pin}{move}{flag_button("resolve", "Reopen", "Resolve", resolved, title)}'
             f'{flag_button("archive", "Unarchive", "Archive", archived, title)}</div>'
             '<p class="meta desk-feedback" role="status"></p></li>')
 
 
-def conversation_groups(items):
+def conversation_groups(items, projects=()):
     """The Pinned and Recent groups. Each is a list kept in newest-activity order; the script moves rows between them."""
     ordered = by_activity(item for item in items if not is_archived(item))
     groups = []
     for name, heading, pinned in (("pinned", "Pinned", True), ("recent", "Recent conversations", False)):
-        rows = "".join(conversation_row(item) for item in ordered if is_pinned(item) == pinned)
+        rows = "".join(conversation_row(item, projects) for item in ordered if is_pinned(item) == pinned)
         groups.append(f'<section class="topics" id="topics-{name}"{"" if rows else " hidden"}><h2>{heading}</h2>'
                       f'<ul class="topic-list">{rows}</ul></section>')
     return "".join(groups)
 
 
-def conversations_panel(items, ask_binding):
+def scope_bar(tree):
+    """The project filter above the list, the forms that create and rename projects and topics, and the one Move form."""
+    projects = "".join(f'<option value="{esc(project["id"])}">{esc(project["name"])}</option>' for project in tree)
+    data = json.dumps(tree, ensure_ascii=False).replace("<", "\\u003c")
+    shown = "" if tree else " hidden"
+    return (f'<div class="scope" id="scope" data-projects="{"yes" if tree else "no"}">'
+            f'<script type="application/json" id="groups-data">{data}</script>'
+            f'<div class="scope-field" id="scope-project-field"{shown}><label for="scope-project">Project</label>'
+            f'<select id="scope-project"><option value="">All</option><option value="-">Ungrouped</option>{projects}</select></div>'
+            '<div class="scope-field" id="scope-topic-field" hidden><label for="scope-topic">Topic</label>'
+            '<select id="scope-topic"><option value="">All topics</option></select></div>'
+            '<div class="scope-actions"><button type="button" id="new-project">New project</button>'
+            '<button type="button" id="new-topic" hidden>New topic</button>'
+            '<button type="button" id="rename-project" hidden>Rename project</button>'
+            '<button type="button" id="rename-topic" hidden>Rename topic</button></div>'
+            '<form id="group-form" class="group-form" hidden novalidate>'
+            '<div class="scope-field"><label for="group-name" id="group-label">Project name</label>'
+            f'<input id="group-name" maxlength="{GROUP_NAME_LIMIT}" autocomplete="off"></div>'
+            '<div class="actions"><button type="submit" disabled>Save name</button>'
+            '<button type="button" id="group-cancel">Discard name</button></div></form>'
+            '<p class="meta desk-feedback" id="group-status" role="status"></p></div>'
+            '<form id="move-form" class="move-form" hidden novalidate aria-label="Move conversation">'
+            '<div class="scope-field"><label for="move-project">Project</label><select id="move-project"></select></div>'
+            '<div class="scope-field" id="move-topic-field"><label for="move-topic">Topic</label><select id="move-topic"></select></div>'
+            '<div class="actions"><button type="submit">Save move</button>'
+            '<button type="button" id="move-cancel">Cancel move</button></div></form>')
+
+
+def conversations_panel(items, ask_binding, projects=()):
     form = talk_form(ask_binding) if ask_binding else ""
     live = [item for item in items if not is_archived(item)]
     empty = (f'<p class="empty" id="no-conversations"{" hidden" if live else ""}>'
-             'No conversations yet. A topic you start with Firstmate shows here.</p>')
-    return f'{form}{empty}{conversation_groups(items)}'
+             'No conversations yet. A conversation you start with Firstmate shows here.</p>')
+    scoped = '<p class="empty" id="no-scoped-conversations" hidden></p>'
+    tree = project_tree({"projects": projects})
+    return f'{form}{scope_bar(tree)}{empty}{scoped}{conversation_groups(items, projects)}'
 
 
-def archived_panel(items):
+def archived_panel(items, projects=()):
     """Archived conversations, newest activity first. Replying still works from each one's page."""
-    rows = "".join(conversation_row(item) for item in by_activity(item for item in items if is_archived(item)))
+    rows = "".join(conversation_row(item, projects) for item in by_activity(item for item in items if is_archived(item)))
     return (f'<p class="empty" id="no-archived"{" hidden" if rows else ""}>'
             'No conversations are archived. A conversation you archive shows here.</p>'
             f'<section class="topics" id="topics-archived"{"" if rows else " hidden"}>'
@@ -4881,9 +5391,9 @@ def list_page(data: dict[str, object], site_title: str, *, served: bool, saved_n
         conversations = [item for item in items if item["kind"] == "conversation"]
         notices = unread_catch_ups(data)
         body = "<h1>Desk</h1>" + desk_tabs(
-            conversations_panel(conversations, ask_binding),
+            conversations_panel(conversations, ask_binding, data.get("projects", [])),
             needs_you_panel(attention, notices, {item["id"]: item for item in items}),
-            archived_panel(conversations),
+            archived_panel(conversations, data.get("projects", [])),
             len(attention) + len(notices),
         )
         return page_shell(site_title, site_title, body, served=True, saved_name=saved_name,
@@ -4916,16 +5426,18 @@ def item_body_html(item: dict[str, object]) -> str:
 
 
 def item_page(item: dict[str, object], site_title: str, *, served: bool, saved_name: str = "index.html",
-              ask_binding: str | None = None) -> str:
+              ask_binding: str | None = None, projects: list[dict[str, object]] | None = None) -> str:
     item_id = str(item["id"])
     questions = item["kind"] == "questions"
     talking = item["kind"] == "conversation"
     content = (question_form(item, served, ask_binding=ask_binding) if questions
                else conversation_page(item, ask_binding) if talking else item_body_html(item))
     lead = "" if talking else f'<p class="lead">{linked_text(item["description"])}</p>'
+    placed = placement_label(item, projects or []) if talking else ""
     body = (
         f'<p class="id">{esc(item_id)}</p><h1>{esc(item["title"])}</h1>'
-        f'<p class="meta">{esc(KIND_LABELS[str(item["kind"])])}{" · " + esc(item["project"]) if item.get("project") else ""}'
+        f'<p class="meta">{esc(KIND_LABELS[str(item["kind"])])}{" · " + esc(placed) if placed else ""}'
+        f'{" · " + esc(item["project"]) if item.get("project") else ""}'
         f' · saved <time class="day" datetime="{esc(item["saved_at"])}">{esc(saved_day(item))}</time></p>'
         f'{tag_labels(list(item.get("tags", [])))}'
         f'{conversation_state(item) if talking and served else ""}'
@@ -5411,7 +5923,7 @@ def make_handler(site_title: str, base_path: str = "", store: Path | None = None
             ask_binding = None
             if item["kind"] in ("questions", "conversation"):
                 _, ask_binding = ask_destination(ask_home, require_directory=item["kind"] == "conversation")
-            content = item_page(item, site_title, served=True, ask_binding=ask_binding)
+            content = item_page(item, site_title, served=True, ask_binding=ask_binding, projects=data.get("projects", []))
             prevent_framing = has_answer_controls(item) or item["kind"] == "conversation" or (
                 item["kind"] == "questions" and (bool(part_thread(item, None)) or question_summary(item)[0] == "Replied"))
             self.send_text(200, content, "text/html; charset=utf-8", prevent_framing=prevent_framing)
@@ -5420,6 +5932,7 @@ def make_handler(site_title: str, base_path: str = "", store: Path | None = None
             endpoint = self.path.removeprefix(base_path)
             subjects = {"/answers": "answer", "/asks": "ask", "/conversations": "conversation", "/replies/read": "reply acknowledgment",
                         "/pins": "pin", "/resolutions": "resolution", "/archives": "archive",
+                        "/groups": "project", "/moves": "move",
                         "/catch-ups/read": "catch-up read"}
             if not self.path.startswith(base_path) or endpoint not in subjects:
                 self.send_text(405, "Use the question page.")
@@ -5461,6 +5974,10 @@ def make_handler(site_title: str, base_path: str = "", store: Path | None = None
                     record = set_conversation_flag(active_store, payload, "resolved")
                 elif endpoint == "/archives":
                     record = set_conversation_flag(active_store, payload, "archived")
+                elif endpoint == "/groups":
+                    record = change_projects(active_store, payload)
+                elif endpoint == "/moves":
+                    record = move_conversation(active_store, payload)
                 elif endpoint == "/catch-ups/read":
                     if not isinstance(payload, dict) or set(payload) != {"ids"}:
                         raise ValueError("Invalid catch-up read.")
@@ -5481,7 +5998,7 @@ def make_handler(site_title: str, base_path: str = "", store: Path | None = None
             except CatchUpConflict as exc:
                 self.send_text(409, str(exc))
             except AnswerConflict as exc:
-                if endpoint in ("/asks", "/conversations"):
+                if endpoint in ("/asks", "/conversations", "/groups"):
                     record = {"message": str(exc), "saved": isinstance(exc, SavedAskConflict)}
                     self.send_text(409, json.dumps(record), "application/json")
                 else:
@@ -5489,7 +6006,8 @@ def make_handler(site_title: str, base_path: str = "", store: Path | None = None
             except (OSError, StoreReadError):
                 self.send_text(500, f"Could not save the {subject}.")
             except (ValueError, RecursionError):
-                self.send_text(400, f"Check the conversation and {subject}." if endpoint in ("/pins", "/resolutions", "/archives")
+                self.send_text(400, f"Check the conversation and {subject}." if endpoint in ("/pins", "/resolutions", "/archives", "/moves")
+                               else "Check the name and try again." if endpoint == "/groups"
                                else f"Check the question and {subject}.")
             else:
                 self.send_text(200, json.dumps(record), "application/json")
@@ -5866,7 +6384,22 @@ def make_parser() -> argparse.ArgumentParser:
     converse_cmd.add_argument("--title", required=True, help="a short topic that says what the conversation is about")
     converse_cmd.add_argument("--config", type=Path, help="use the same JSON config file as serve")
     converse_cmd.add_argument("--text", required=True, help="the message")
+    converse_cmd.add_argument("--project", metavar="NAME", help="file the conversation in this project, by name or ID such as P1; see quarterdeck projects")
+    converse_cmd.add_argument("--topic", metavar="NAME", help="with --project: file it in this topic of the project, by name or ID such as T2")
     attachment_options(converse_cmd)
+
+    projects_cmd = command("projects", "list the projects and topics a conversation can be filed in",
+                           "List the owner's projects and the topic in each, with their IDs. The owner creates and renames "
+                           "them on the Desk; use a name or ID with converse or move.", list_projects)
+    projects_cmd.add_argument("--json", action="store_true", help="print the projects and topics as JSON")
+
+    move_cmd = command("move", "move a conversation to a project and topic, or back to Ungrouped",
+                       "Change which project and topic a conversation is filed in. The conversation keeps its ID, messages, "
+                       "pin and latest activity.", move_item)
+    move_cmd.add_argument("id", help="a conversation's item ID, such as Q12")
+    move_cmd.add_argument("--project", metavar="NAME", help="the project, by name or ID such as P1")
+    move_cmd.add_argument("--topic", metavar="NAME", help="with --project: a topic of that project, by name or ID such as T2")
+    move_cmd.add_argument("--ungrouped", action="store_true", help="return the conversation to Ungrouped")
 
     mark = command("mark", "mark questions answered, closed or open",
                    "Set the state of a question (Q7.3) or every question in an item (Q7). Marking answered records an "
