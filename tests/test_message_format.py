@@ -46,6 +46,16 @@ class MessageFormatTests(unittest.TestCase):
     def test_item_continuation_line(self):
         self.assertIn("<li>a\nmore</li>", render("- a\n  more\n- b"))
 
+    def test_numbered_list_continues_across_blank_lines(self):
+        out = render("Questions:\n\n1. a\n\n2. b\n\n3. c")
+        self.assertEqual(out, '<div class="record rich"><p>Questions:</p><ol><li>a</li><li>b</li><li>c</li></ol></div>')
+
+    def test_numbered_list_resumes_at_its_written_number(self):
+        out = render("1. a\n2. b\nmid\n3. c")
+        self.assertEqual(out, '<div class="record rich"><ol><li>a</li><li>b</li></ol><p>mid</p><ol start="3"><li>c</li></ol></div>')
+
+    def test_paragraph_after_blank_line_ends_the_list(self):
+        self.assertEqual(render("- a\n\n  later"), '<div class="record rich"><ul><li>a</li></ul><p>  later</p></div>')
 
 if __name__ == "__main__":
     unittest.main()

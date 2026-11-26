@@ -3486,28 +3486,30 @@ def message_inline(value: str) -> str:
     return "".join(parts) + linked_text(value[last:])
 
 
-def message_blocks(text: str) -> list[tuple[str, list[str]]]:
-    """Split message text into paragraph, bullet and numbered blocks of raw lines."""
-    blocks: list[tuple[str, list[str]]] = []
-    current: tuple[str, list[str]] | None = None
+def message_blocks(text: str) -> list[tuple[str, int, list[str]]]:
+    """Split message text into paragraph, bullet and numbered blocks of raw lines, with each list's first number."""
+    blocks: list[tuple[str, int, list[str]]] = []
+    current: tuple[str, int, list[str]] | None = None
+    gap = False
     for line in text.replace("\r\n", "\n").replace("\r", "\n").split("\n"):
         if not line.strip():
-            current = None
+            gap = True
             continue
         marker = MESSAGE_MARKER.match(line)
         if marker:
             kind = "ul" if marker.group(1) else "ol"
             if current is None or current[0] != kind:
-                current = (kind, [])
+                current = (kind, int(marker.group(2) or 1), [])
                 blocks.append(current)
-            current[1].append(marker.group(3))
-        elif current is not None and current[0] != "p" and line[:1] in " \t":
-            current[1][-1] += "\n" + line.strip()
+            current[2].append(marker.group(3))
+        elif not gap and current is not None and current[0] != "p" and line[:1] in " \t":
+            current[2][-1] += "\n" + line.strip()
         else:
-            if current is None or current[0] != "p":
-                current = ("p", [])
+            if gap or current is None or current[0] != "p":
+                current = ("p", 1, [])
                 blocks.append(current)
-            current[1].append(line.rstrip())
+            current[2].append(line.rstrip())
+        gap = False
     return blocks
 
 
@@ -3517,14 +3519,15 @@ def message_text_html(value: object) -> str:
     if not blocks:
         return '<p class="record"></p>'
     if len(blocks) == 1 and blocks[0][0] == "p":
-        return f'<p class="record">{message_inline(chr(10).join(blocks[0][1]))}</p>'
+        return f'<p class="record">{message_inline(chr(10).join(blocks[0][2]))}</p>'
     parts = []
-    for kind, lines in blocks:
+    for kind, start, lines in blocks:
         if kind == "p":
             parts.append(f"<p>{message_inline(chr(10).join(lines))}</p>")
         else:
             items = "".join(f"<li>{message_inline(line)}</li>" for line in lines)
-            parts.append(f"<{kind}>{items}</{kind}>")
+            opening = f'<ol start="{start}">' if kind == "ol" and start != 1 else f"<{kind}>"
+            parts.append(f"{opening}{items}</{kind}>")
     return f'<div class="record rich">{"".join(parts)}</div>'
 
 
