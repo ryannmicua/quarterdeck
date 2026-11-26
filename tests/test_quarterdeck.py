@@ -2795,14 +2795,16 @@ class ServiceAndHelpTests(StoreCase):
         self.assertIn("No saved items.", result.stdout)
 
 
-def tiny_png(color: tuple[int, int, int], size: int = 4, *, comment: bytes | None = None) -> bytes:
+def tiny_png(color: tuple[int, int, int], width: int = 4, *,
+             height: int | None = None, comment: bytes | None = None) -> bytes:
     """A small invented PNG: one flat colour."""
     def chunk(kind: bytes, data: bytes) -> bytes:
         body = kind + data
         return struct.pack(">I", len(data)) + body + struct.pack(">I", zlib.crc32(body))
-    rows = b"".join(b"\x00" + bytes(color) * size for _ in range(size))
+    height = width if height is None else height
+    rows = (b"\x00" + bytes(color) * width) * height
     text = chunk(b"tEXt", b"Comment\0" + comment) if comment is not None else b""
-    return (b"\x89PNG\r\n\x1a\n" + chunk(b"IHDR", struct.pack(">IIBBBBB", size, size, 8, 2, 0, 0, 0))
+    return (b"\x89PNG\r\n\x1a\n" + chunk(b"IHDR", struct.pack(">IIBBBBB", width, height, 8, 2, 0, 0, 0))
             + chunk(b"IDAT", zlib.compress(rows)) + text + chunk(b"IEND", b""))
 
 
@@ -5119,29 +5121,50 @@ await checkImage(whole);
 """, setup=f"const replacement = {json.dumps(replacement)};", page=page, viewport_width=390)
 
     def test_conversation_message_images_fit_inside_the_message(self) -> None:
-        wide = self.picture("wide.png", tiny_png((40, 160, 40), 1200))
-        tall = self.picture("tall.png", tiny_png((40, 40, 160), 800))
-        code, out, err = self.run_cli("converse", "--title", "Shots", "--text", "Two screens.",
+        wide = self.picture("wide.png", tiny_png((40, 160, 40), 1440, height=900))
+        tall = self.picture("tall.png", tiny_png((40, 40, 160), 390, height=844))
+        self.assertEqual(self.run_cli("converse", "--title", "Shots", "--text", "Work started."), (0, "Q5\n", ""))
+        code, out, err = self.run_cli("post", "Q5", "--text", "Two screens.",
                                       "--image", str(wide), "--alt", "Wide screen", "--image", str(tall), "--alt", "Tall screen")
-        self.assertEqual((code, out, err), (0, "Q5\n", ""))
+        self.assertEqual((code, out, err), (0, "Q5 Updated\n", ""))
+        self.assertEqual(self.run_cli("post", "Q5", "--text", "Work finished."), (0, "Q5 Updated\n", ""))
         port = self.start("/qd", ask_home=self.inbox())
-        page = self.fetch(port, "/qd/q5.html")[1]
-        self.assertEqual(page.count('<ul class="shots">'), 1)
-        self.assertIn(".decision img,.thread img,.msg img {", page)
-        pixel = "data:image/png;base64," + base64.b64encode(tiny_png((40, 160, 40), 1200)).decode("ascii")
-        page = re.sub(r'(?<=src=")reply-images/q5/[^"]+', pixel, page).replace('loading="lazy"', 'loading="eager"')
+        path = "/qd/q5.html"
+        status, page, _ = self.fetch(port, path)
+        self.assertEqual(status, 200)
+
+        def embed_attachment(match):
+            url = urljoin(f"http://127.0.0.1:{port}{path}", match[0])
+            with urllib.request.urlopen(url, timeout=5) as response:
+                self.assertEqual(response.status, 200)
+                self.assertEqual(response.headers.get_content_type(), "image/png")
+                return "data:image/png;base64," + base64.b64encode(response.read()).decode("ascii")
+
+        page = re.sub(r'(?<=src=")reply-images/q5/[^"]+', embed_attachment, page).replace('loading="lazy"', 'loading="eager"')
         self.check_page(port, r"""
 check(matchMedia('(width: 390px)').matches, 'Expected a 390px browser viewport, got ' + innerWidth);
-const message = document.querySelector('.thread-messages .msg');
+const [, message, following] = document.querySelectorAll('.thread-messages .msg');
 const images = [...message.querySelectorAll('img')];
 check(images.length === 2, 'Expected two images in the message');
-for (const image of images) {
-  if (!image.complete) await new Promise(resolve => image.addEventListener('load', resolve, {once: true}));
+const expectedSizes = [[1440, 900], [390, 844]];
+for (const [index, image] of images.entries()) {
+  if (!image.complete) {
+    await new Promise((resolve, reject) => {
+      image.addEventListener('load', resolve, {once: true});
+      image.addEventListener('error', () => reject(new Error('Could not load ' + image.alt)), {once: true});
+    });
+  }
+  const [width, height] = expectedSizes[index];
+  check(image.naturalWidth === width && image.naturalHeight === height, 'Wrong dimensions for ' + image.alt);
 }
 const box = message.getBoundingClientRect();
+const nextBox = following.getBoundingClientRect();
 const [first, second] = images.map(image => image.getBoundingClientRect());
 for (const shot of [first, second]) {
-  check(shot.left >= box.left && shot.right <= box.right && shot.bottom <= box.bottom, 'An image spilled out of its message');
+  check(shot.width > 0 && shot.height > 0, 'An image has no rendered area');
+  check(shot.left >= box.left && shot.right <= box.right && shot.top >= box.top && shot.bottom <= box.bottom,
+        'An image spilled out of its message');
+  check(shot.bottom <= nextBox.top, 'An image overlapped the following message');
 }
 check(first.bottom <= second.top, 'The images should stack on a phone without overlapping');
 check(document.documentElement.scrollWidth <= innerWidth, 'The page scrolls sideways');
