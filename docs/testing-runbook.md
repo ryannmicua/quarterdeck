@@ -68,7 +68,10 @@ reload guidance. It verifies that the start result and the inline notice
 guidance are available on **Needs you**, and that replay keeps one Hold result
 per topic. The first-start check searches Hold by both title and item ID
 without reloading. The pin check scrolls beyond the first phone viewport and
-checks that a refusal appears beside the acted-on topic. The replay check
+checks that a refusal appears beside the acted-on topic. A pin refusal that
+arrives on **Needs you**, and stale notice guidance that arrives on
+**Conversations**, must also show in the shared result above the open tab.
+The replay check
 verifies that the initial and inserted rows show October 2 in Tokyo for a
 message saved at 18:30 UTC on October 1. The Desk tab check uses the old
 bookmark fragment to verify that Conversations still opens first and that
