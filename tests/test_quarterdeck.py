@@ -1180,6 +1180,7 @@ const error = 'Gateway failure. '.repeat(1500) + 'End of response.';
 window.fetch = async () => ({ok: false, status: 502, text: async () => error});
 card(1).querySelector('[data-choice="Hold"]').click();
 await sendBatch();
+await new Promise(resolve => setTimeout(resolve, 50));
 const bar = button('send').closest('.sendbar');
 const status = bar.querySelector('output');
 check(status.textContent.endsWith('End of response.') && status.scrollHeight > status.clientHeight,
@@ -6883,7 +6884,9 @@ check(!failed.isConnected && count.textContent === '1' && notice.isConnected && 
         self.assertEqual(self.run_cli("post", "Q1", "--text", "Second update.")[0], 0)
         first, second = [m for m in self.thread() if m["author"] == "firstmate"]
         desk = self.fetch(port, "/qd/")[1]
-        self.assertEqual(desk.split("<dialog", 1)[0].count(f'href="q1.html#reply-{first["id"]}"'), 2)
+        before_dialog = desk.split("<dialog", 1)[0]
+        for source in ("conversations", "needs-you"):
+            self.assertEqual(before_dialog.count(f'href="q1.html?from={source}#reply-{first["id"]}"'), 1)
         steps = f"""
   await quiet();
   const target = document.getElementById('reply-{second["id"]}');
