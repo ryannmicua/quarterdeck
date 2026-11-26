@@ -5,6 +5,7 @@ Guides are grouped by purpose, following Diataxis:
 - The [tutorial](tutorials/first-render.md) saves a link and a list and opens the page.
 - [How-to guides](how-to/) cover installing, updating and removing Quarterdeck,
   [saving items](how-to/save-items.md), [serving the page](how-to/serve-the-page.md),
+  [going back to a list and on to the next unread item](how-to/go-back-to-the-list.md),
   [asking Firstmate from a card](how-to/ask-firstmate.md),
   [talking to Firstmate and grouping conversations](how-to/talk-to-firstmate.md),
   [watching what Firstmate owes](how-to/watch-firstmate.md),

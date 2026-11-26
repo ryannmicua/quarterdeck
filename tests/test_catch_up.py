@@ -231,7 +231,7 @@ class CatchUpPageTests(CatchUpCase):
 const tab = document.getElementById('desk-tab-needs-you');
 const count = tab.querySelector('.tab-count');
 const panel = document.getElementById('desk-panel-needs-you');
-const question = panel.querySelector('a[href="q1.html#Q1.1"]');
+const question = panel.querySelector('a[href="q1.html?from=needs-you#Q1.1"]');
 const notice = panel.querySelector('button[data-read="C1"]').closest('tr');
 const waitForCount = expected => new Promise(resolve => {
   const observer = new MutationObserver(() => {
@@ -245,7 +245,7 @@ check(notice.textContent.includes('Quay review') && notice.textContent.includes(
       'The notice missed its title or summary');
 check(innerWidth <= 640 && notice.querySelector('.notice-project').checkVisibility() &&
       notice.querySelector('.notice-project').textContent === 'harbour', 'The phone layout hid the notice project');
-check(notice.querySelector('a[href="q1.html"]').textContent === 'Tide launch decisions' &&
+check(notice.querySelector('a[href="q1.html?from=needs-you"]').textContent === 'Tide launch decisions' &&
       notice.querySelector('a[href="https://example.com/review"]').textContent === 'Open the review',
       'The notice links missed their destinations');
 let changed = waitForCount('3');
@@ -332,7 +332,7 @@ const count = tab.querySelector('.tab-count');
 const notice = panel.querySelector('tr.notice');
 const guidance = panel.querySelector('.empty');
 const table = panel.querySelector('.desk');
-check(!notice.querySelector('a[href="q1.html"]') &&
+check(!notice.querySelector('a[href^="q1.html"]') &&
       notice.querySelector('a[href="https://example.com/review"]').textContent === 'Open review',
       'Deleting the linked item broke the notice links');
 check(notice.textContent.includes('<b>Review</b>') && notice.textContent.includes('Tom & <i>Jerry</i>') &&

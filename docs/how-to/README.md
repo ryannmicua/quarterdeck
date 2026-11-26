@@ -8,6 +8,7 @@
 - [Read the Workers page](read-workers.md)
 - [Catch up on finished work](catch-up.md)
 - [Answer questions](answer-questions.md)
+- [Go back to the list](go-back-to-the-list.md)
 - [Ask Firstmate from a card](ask-firstmate.md)
 - [Talk to Firstmate](talk-to-firstmate.md)
 - [Watch Firstmate](watch-firstmate.md)
