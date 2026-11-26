@@ -24,9 +24,9 @@ References, and End opens Conversations.
 Select **References** on the Desk to see every saved link and list, newest
 first. The tab sits beside **Conversations** and **For review**.
 
-- A saved link shows its title, which opens what it saves. Any further links
-  it holds sit under it. Its ID, such as Q7, opens the saved item with its
-  description.
+- A saved link shows its title, which opens what it saves in a new tab. Any
+  further links it holds sit under it and also open in a new tab. Its ID,
+  such as Q7, opens the saved item with its description.
 - A saved list shows its title, which opens the list.
 - Selecting anywhere else on a row, such as its description or date, opens
   the saved item or the list. Selecting text there does not open it.
