@@ -323,7 +323,11 @@ The page displays the fleet's
 `GET /workers.json` runs and saves a new reading.
 With the exact query `?reuse=1`, it shares the result of a check already in
 progress or reuses a fresh saved reading. Otherwise it starts a new check.
-A failed read keeps the previous reading. The
+A failed read keeps the previous reading. The reading also holds a `work` list
+that the Desk's [Under way tab](../how-to/see-work-under-way.md) shows. The Desk
+renders that tab from the saved reading on every request and never starts a
+check. A saved reading without `work`, from an earlier version, is ignored until
+the next check. The
 [snapshot command](../explanation/privacy-and-architecture.md#what-quarterdeck-reads-and-writes)
 runs with `FM_HOME` set to the configured home. Other inherited `FM_` variables
 are removed. The endpoint returns 404 when `firstmate_home` is absent.
@@ -375,6 +379,7 @@ reading the file.
 | `base_path` | string | none | The URL prefix described above. |
 | `catch_up_days` | whole number from 1 to 3650 | `7` | Retention period for [read Catch-up notices](../how-to/catch-up.md#how-long-a-notice-stays). |
 | `firstmate_home` | absolute path after expanding `~` | unset | Local destination for answers, asks and conversation messages submitted to `serve`, and the home whose workers the page lists. When set, `converse` requires it to resolve to an existing directory. See [how the store records the binding](item-store.md#conversations). |
+| `task_links_path` | absolute path after expanding `~` | `data/qd-threads/links.tsv` in `firstmate_home` | The tab-separated map from task name to conversation ID that the [Under way tab](../how-to/see-work-under-way.md#link-to-a-conversation) reads. Quarterdeck never writes it. |
 
 `serve` reads `firstmate_home` at startup. `converse` reads it each time it runs.
 Changes to this setting require a server restart before `converse` can open
