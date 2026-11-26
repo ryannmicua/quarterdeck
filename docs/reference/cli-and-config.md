@@ -255,7 +255,8 @@ latest activity. The response is `{"pinned": true}` or `{"pinned": false}`.
 `POST /laters` (under any `base_path`) uses the same origin check as `/pins`
 and needs no `firstmate_home`. Send `{"part": "Q7", "later": true}` to keep a
 question item or a conversation for later, or `"later": false` to take it out.
-Any other item, ID or field returns 400. The request changes the item's
+Any other item, ID or field returns 400. Keeping an item for later after it
+no longer waits for the owner returns 409. The request changes the item's
 [`later` field](item-store.md#later) and nothing else. The response is
 `{"later": true}` or `{"later": false}`.
 
