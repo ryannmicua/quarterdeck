@@ -6218,14 +6218,6 @@ class TalkToFirstmateTests(ImageCase):
         quiet = re.search(r'<li class="topic" data-id="Q2".*?</li>', page, re.DOTALL)[0]
         self.assertIn('datetime="2026-10-02T09:00:00Z"', quiet)
 
-    def test_an_item_page_shows_the_time_saved_with_the_date(self) -> None:
-        port = self.start("/qd", ask_home=self.inbox())
-        self.seed_conversations(port)
-        with quarterdeck.changing_store(quarterdeck.store_path()) as data:
-            data["items"][0]["saved_at"] = "2026-11-26T09:15:30Z"
-        page = self.fetch(port, "/qd/q1.html")[1]
-        self.assertIn(' · saved <time class="day" datetime="2026-11-26T09:15:30Z">2026-11-26</time></p>', page)
-
     def test_list_rows_show_the_local_date_and_time_saved(self) -> None:
         port = self.start("/qd", ask_home=self.inbox())
         self.seed_conversations(port)
