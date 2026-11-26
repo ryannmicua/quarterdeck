@@ -29,13 +29,15 @@ summarize the result in one sentence. See
 
 Unread notices show on the served Desk, above the questions, newest first.
 Each row shows the title, summary, saved date, and any links or project name.
-The section appears only when there is an unread notice.
+Reload the Desk to see notices saved since you opened it.
 
 - Select **Mark read** on a row to read that notice.
 - When multiple notices are shown, the heading includes a count and
   **Mark all read** acknowledges every notice shown.
 
 A notice leaves the Desk as soon as the page confirms it was marked read.
+When the last notice leaves, the Catch-up section closes. If the Desk has no
+items that need attention, its usual empty-state message appears.
 If the page cannot confirm the change, the rows and any unsent draft stay in
 place. If Catch-up says it could not mark the notice read, retry from the same
 page. If it says a notice may already be read, reload when ready to see the
