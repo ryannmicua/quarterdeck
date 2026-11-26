@@ -50,8 +50,9 @@ a read-only store. Other readers validate records without taking the lock.
 | `body` | Depends on the kind; see below. |
 
 Item and Catch-up timestamps (`saved_at` and, for notices, `read_at`) use
-`YYYY-MM-DDTHH:MM:SSZ`. Served pages and rendered HTML display saved dates in
-the browser's local time zone when JavaScript is enabled.
+`YYYY-MM-DDTHH:MM:SSZ`. Served pages and rendered HTML display saved moments as
+a date and time in the browser's local time zone when JavaScript is enabled;
+without it they show the UTC date.
 
 | Kind | `body` |
 | --- | --- |
