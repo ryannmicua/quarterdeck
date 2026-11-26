@@ -848,7 +848,6 @@ def check_store(data: object) -> dict[str, object]:
         raise ValueError("the item store is damaged: it lacks items or next_id")
     validate_projects(data)
     seen = set()
-    sources: list[tuple[str, str]] = []
     for item in items:
         if not isinstance(item, dict) or item.get("kind") not in KINDS or not isinstance(item.get("id"), str):
             raise ValueError("the item store is damaged: an item has no id or an unknown kind")
@@ -879,8 +878,8 @@ def check_store(data: object) -> dict[str, object]:
                 if item["kind"] != "conversation":
                     raise ValueError("only a conversation can be a task")
                 validate_task(item["task"])
-                if "source" in item["task"]:
-                    sources.append((item_id, item["task"]["source"]))
+                if item["task"].get("source") == item_id:
+                    raise ValueError("a task cannot be related to itself")
             if "answers" in item:
                 validate_records(item)
             if "conversation" in item:
@@ -889,10 +888,6 @@ def check_store(data: object) -> dict[str, object]:
                 raise ValueError("a conversation needs its messages")
         except ValueError as exc:
             raise ValueError(f"the item store is damaged: {item_id}: {exc}") from exc
-    kinds = {item["id"]: item["kind"] for item in items}
-    for item_id, source in sources:
-        if source == item_id or kinds.get(source) != "conversation":
-            raise ValueError(f"the item store is damaged: {item_id}: a task is related to a conversation that does not exist")
     validate_catch_ups(data)
     return data
 
@@ -1240,13 +1235,15 @@ def task_label(item):
 
 
 def validate_task(task):
-    if (not isinstance(task, dict) or not {"state", "description"} <= set(task) <= {"state", "description", "source", "result"}
+    if (not isinstance(task, dict) or not {"state", "description"} <= set(task) <= {"state", "description", "source", "result", "draft_id"}
             or not isinstance(task["state"], str) or task["state"] not in TASK_STATES):
         raise ValueError("invalid task")
     if clean_text(task["description"], "Description", TEXT_LIMIT, multiline=True) != task["description"]:
         raise ValueError("invalid task description")
     if "source" in task and (not isinstance(task["source"], str) or parse_id(task["source"]) != task["source"]):
         raise ValueError("invalid task source")
+    if "draft_id" in task and (not isinstance(task["draft_id"], str) or not re.fullmatch(r"[0-9a-f]{32}", task["draft_id"])):
+        raise ValueError("invalid task draft ID")
     if "result" in task:
         result = task["result"]
         if (task["state"] != "review" or not isinstance(result, dict) or set(result) != {"text", "url"}
@@ -1679,10 +1676,11 @@ def create_task(store, home, binding, payload):
         data = read_store(store)
         for item in data["items"]:
             first = (item.get("conversation", {}).get("item") or [None])[0] if item["kind"] == "conversation" else None
-            if start and first and first["author"] == "you" and first["id"] == message_id:
+            if (start and first and first["author"] == "you" and first["id"] == message_id
+                    or not start and is_task(item) and item["task"].get("draft_id") == message_id):
                 if not is_task(item) or (item["title"], item["task"]["description"]) != (title, description):
                     raise AnswerConflict("Message ID already in use. Reload the Desk.")
-                if payload["home"] != binding or first["home"] != binding:
+                if start and (payload["home"] != binding or first["home"] != binding):
                     raise SavedAskConflict("Firstmate home changed. This message belongs to the original home.")
                 item_id = item["id"]
                 break
@@ -1699,7 +1697,7 @@ def create_task(store, home, binding, payload):
             else:
                 placement = parent.get("placement")
             task = {"state": "started" if start else "draft", "description": description,
-                    **({"source": source} if source else {})}
+                    **({"source": source} if source else {}), **({} if start else {"draft_id": message_id})}
             item_id = append_conversation(data, title, new_ask(message_id, TASK_STARTED, binding) if start else None,
                                           dict(placement) if placement else None, task)
             write_store(store, data)

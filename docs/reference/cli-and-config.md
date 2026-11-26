@@ -226,7 +226,7 @@ and `"project"` and `"topic"` as for [a conversation](#conversation-endpoint). A
 `project` or `topic` is filed where its source is. The title is up to 200 characters.
 A started task is saved with one message, `Task started.`, delivered like any message. Its inbox note is
 `CONVERSATION Q12 <message id> Topic: <title>`, a line break, `Task started.`, a blank line, `Description:` and the
-description. A draft has no message and sends no note. Repeating a start with the same `id` reuses the saved task,
+description. A draft has no message and sends no note. Repeating a start or a draft with the same `id` reuses the saved task,
 and the same `id` with a different title or description returns 409.
 
 To start a draft, send `{"part": "Q12", "id": "<message id>", "action": "start", "home": "<home binding>"}`.

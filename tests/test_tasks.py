@@ -98,6 +98,16 @@ class CreateTaskTests(TaskCase):
         quarterdeck.check_store(self.store())
         self.assertIn("Task: Draft", self.run_cli("show", "Q1")[1])
 
+    def test_saving_a_draft_again_with_the_same_id_returns_the_saved_draft(self) -> None:
+        port = self.start("/qd", ask_home=self.inbox())
+        body, _ = self.create(port, "draft")
+        status, result = self.post(port, "/qd/tasks", body)
+        self.assertEqual((status, result["message"], result["href"]), (200, "Draft saved.", "q1.html"))
+        self.assertEqual(len(self.store()["items"]), 1)
+        self.assertEqual(self.post(port, "/qd/tasks", {**body, "title": "Something else"})[0], 409)
+        self.assertEqual(self.create(port, "draft")[1][0], 200)
+        self.assertEqual(len(self.store()["items"]), 2)
+
     def test_a_draft_page_offers_start_and_no_composer_then_start_begins_the_task(self) -> None:
         home = self.inbox()
         port = self.start("/qd", ask_home=home)
@@ -146,6 +156,14 @@ class CreateTaskTests(TaskCase):
             self.assertNotIn("Started from", page)
             self.assertNotIn("Tasks started here", page)
         self.assertEqual(self.create(port, source="Q9")[1][0], 400)
+        code, _, err = self.run_cli("remove", "Q1")
+        self.assertEqual(code, 0, err)
+        self.assertEqual(self.task("Q2")["task"]["source"], "Q1")
+        code, _, err = self.run_cli("show", "Q2")
+        self.assertEqual(code, 0, err)
+        status, task_page = self.fetch(port, "/qd/q2.html")[:2]
+        self.assertEqual(status, 200)
+        self.assertNotIn("Related conversation", task_page)
         self.assertEqual(self.create(port, source="q1")[1][0], 400)
 
     def test_a_task_created_on_the_desk_takes_the_chosen_placement(self) -> None:
@@ -370,18 +388,11 @@ class LegacyStoreTests(TaskCase):
             return str(caught.exception)
 
         self.assertIn("only a conversation can be a task", damaged(1, good))
-        for task in ({**good, "state": "done"}, {"state": "started"}, {**good, "extra": 1}, {**good, "source": "Q9"},
+        for task in ({**good, "state": "done"}, {"state": "started"}, {**good, "extra": 1}, {**good, "draft_id": "ABC"}, {**good, "draft_id": 7},
                      {**good, "source": "Q1"}, {**good, "source": "q2"}, {**good, "result": {"text": "R", "url": "https://example.com"}},
                      {"state": "review", "description": "Do it.", "result": {"text": "R", "url": "ftp://example.com"}},
                      {**good, "description": " padded "}, {**good, "state": ["started"]}, "started"):
             self.assertIn("damaged", damaged(0, task), task)
-        data = self.store()
-        data["items"][0]["task"] = {"state": "review", "description": "Do it.", "result": {"text": "R", "url": "https://example.com"},
-                                    "source": "Q2"}
-        # a source must be a conversation
-        data["items"][1]["kind"] = "resource"
-        with self.assertRaises(ValueError):
-            quarterdeck.check_store(data)
         data = self.store()
         data["items"][0]["conversation"]["item"] = []
         with self.assertRaises(ValueError):
