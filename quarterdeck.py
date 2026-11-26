@@ -1506,6 +1506,8 @@ def edit_item(args: argparse.Namespace) -> int:
         store = store_path()
         with changing_store(store) as data:
             item = find_item(data, args.id)
+            if item["kind"] not in ("resource", "questions"):
+                raise ValueError(f"{item['id']} is a {item['kind']}; edit changes only resources and question items")
             if links is not None and item["kind"] != "resource":
                 raise ValueError(f"{item['id']} is not a resource, so it has no links to edit")
             if args.title is not None:
@@ -1845,10 +1847,7 @@ def clarify_arguments(clarified, changed, item_id, part):
 
 def reply_text_and_links(args: argparse.Namespace):
     text = clean_text(args.text, "reply text", TEXT_LIMIT, multiline=True)
-    link_texts, urls = args.link_text or [], args.url or []
-    if len(link_texts) != len(urls):
-        raise ValueError("each --link-text needs its own --url")
-    links = question_links([{"text": t, "url": u} for t, u in zip(link_texts, urls)], "reply")
+    links = question_links(paired_links(args.link_text, args.url), "reply")
     return text, links
 
 

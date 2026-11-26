@@ -126,7 +126,12 @@ class ResourceLinkTests(_Base):
     def test_edit_refusals_change_nothing(self) -> None:
         self.add_review()
         self.add("list", "Chores", "Chores.", "--body-file", "-", stdin="Buy rope\n")
+        self.assertEqual(self.run_cli("converse", "--title", "Tide work", "--text", "Started.")[:2], (0, "Q3\n"))
         saved = quarterdeck.store_path().read_text()
+        for item_id, kind in (("Q2", "list"), ("Q3", "conversation")):
+            code, _out, err = self.run_cli("edit", item_id, "--title", "Renamed")
+            self.assertEqual(code, 2)
+            self.assertIn(f"{item_id} is a {kind}", err)
         cases = (("Q1",), ("Q9", "--title", "x"), ("Q1", "--title", " "), ("Q1", "--url", "https://example.com/x"),
                  ("Q1", "--link-text", "x", "--url", "javascript:alert(1)"), ("Q2", "--link-text", "x", "--url", "https://example.com/x"))
         for argv in cases:

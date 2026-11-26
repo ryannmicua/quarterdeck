@@ -7,9 +7,10 @@ to the Desk.
 
 The pop-out has three tabs.
 
-- **References** lists saved links and lists, newest first, as a compact bookmark list. Each row is the
-  title as a link to the resource's main link, any extra links beside it, then the project, saved date and
-  item ID (which opens the item's own page with the description). Hover a row to see its description.
+- **References** lists saved links and lists, newest first, as a compact bookmark list. Each row shows the
+  title, any extra links beside it, then the project, saved date and item ID. A resource's title opens its
+  main link and its ID opens the item's own page with the description. A list's title opens its page, and
+  its ID is plain text. Hover a row to see its description.
 - **Answered** lists question items that have left the Desk, newest saved items
   first. Select an item title to read its questions and saved answers.
 - **Conversations** lists conversations started by you or Firstmate, newest

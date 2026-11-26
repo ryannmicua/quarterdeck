@@ -1656,6 +1656,96 @@ window.addEventListener('pageshow', async () => {
                     browser.terminate()
         self.assertEqual(results, ["PASS"])
 
+    def test_following_a_bookmark_and_going_back_restores_the_references_lookup(self):
+        chrome = shutil.which("google-chrome")
+        if not chrome:
+            self.skipTest("google-chrome is required for the bookmark history browser test")
+        finished = threading.Event()
+        results = []
+        handler = quarterdeck.make_handler("Quarterdeck", "/qd")
+
+        class HistoryTestHandler(handler):
+            def do_POST(self):
+                if self.path == "/qd/history-test-result":
+                    results.append(self.rfile.read(int(self.headers["Content-Length"])).decode())
+                    self.send_text(200, "")
+                    finished.set()
+                else:
+                    super().do_POST()
+
+        with patch.object(quarterdeck, "make_handler", return_value=HistoryTestHandler):
+            port = self.start("/qd")
+        local = f"http://127.0.0.1:{port}/qd"
+        self.add("resource", "Harbor chart", "The quay chart.", "--project", "Beta", "--tag", "research",
+                 "--link-text", "Chart", "--url", f"{local}/q3.html",
+                 "--link-text", "Tide board", "--url", f"{local}/q4.html")
+        self.add("resource", "Harbor notes", "Notes on the quay.", "--project", "Alpha", "--tag", "research",
+                 "--link-text", "Notes", "--url", "https://example.org/notes")
+        for title in ("First stop", "Second stop"):
+            self.add("list", title, "A local destination.", "--body-file", "-", stdin="Stop\n")
+
+        list_page = quarterdeck.list_page
+        item_page = quarterdeck.item_page
+
+        def instrumented_page(*args, **kwargs):
+            return list_page(*args, **kwargs).replace("</body>", """
+<script>
+const report = message => fetch('history-test-result', {method:'POST', body:message});
+const check = (condition, message) => { if (!condition) throw new Error(message); };
+const dialog = document.getElementById('library');
+const tab = document.getElementById('tab-references');
+const panel = document.getElementById('panel-references');
+const search = panel.querySelector('input');
+const project = panel.querySelector('select[name="project"]');
+const shown = () => [...panel.querySelectorAll('.lib-item:not([hidden]) .ref-title')].map(link => link.textContent).join();
+try {
+  const visits = Number(sessionStorage.getItem('bookmark-visits'));
+  if (!visits) {
+    document.getElementById('open-library').click();
+    tab.click();
+    project.value = 'Beta';
+    project.dispatchEvent(new Event('change', {bubbles:true}));
+    search.value = 'harbor';
+    search.dispatchEvent(new Event('input', {bubbles:true}));
+    check(shown() === 'Harbor chart', 'The fixture lookup did not select the Harbor chart');
+    panel.querySelector('a.ref-title').click();
+  } else {
+    check(dialog.open && tab.getAttribute('aria-selected') === 'true' && !panel.hidden,
+          'The library did not reopen on References after bookmark visit ' + visits);
+    const query = visits === 1 ? 'harbor' : 'quay chart';
+    check(project.value === 'Beta' && search.value === query && shown() === 'Harbor chart',
+          'The References search or project filter was not restored after bookmark visit ' + visits);
+    if (visits === 1) {
+      search.value = 'quay chart';
+      search.dispatchEvent(new Event('input', {bubbles:true}));
+      check(shown() === 'Harbor chart', 'The second lookup did not select the Harbor chart');
+      panel.querySelector('a.ref-extra').click();
+    } else report('PASS');
+  }
+} catch (error) { report(error.message); }
+</script>
+</body>""")
+
+        def instrumented_item(*args, **kwargs):
+            return item_page(*args, **kwargs).replace("</body>", """
+<script>
+window.addEventListener('pageshow', () => {
+  sessionStorage.setItem('bookmark-visits', Number(sessionStorage.getItem('bookmark-visits')) + 1);
+  history.back();
+});
+</script>
+</body>""")
+
+        with patch.object(quarterdeck, "list_page", instrumented_page), patch.object(quarterdeck, "item_page", instrumented_item):
+            with subprocess.Popen([chrome, "--headless", "--disable-background-networking", "--no-first-run",
+                                   f"--user-data-dir={self.root / 'browser'}", f"{local}/"],
+                                  stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL) as browser:
+                try:
+                    self.assertTrue(finished.wait(10), "The browser did not complete the bookmark history checks")
+                finally:
+                    browser.terminate()
+        self.assertEqual(results, ["PASS"])
+
     def test_the_library_pop_out_searches_and_returns_focus(self):
         self.add("questions", "Tide decisions", "Decide the launch plan.", "--body-file", "-", stdin=json.dumps(QUESTIONS))
         self.add("questions", "Pier lights", "Pick the lamp colour.", "--body-file", "-", stdin=json.dumps(QUESTIONS))

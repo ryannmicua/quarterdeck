@@ -45,7 +45,7 @@ as `reply`.
 
 | Command | What it does |
 | --- | --- |
-| `edit` | Changes a saved item's title, description or, for a resource, links, in place. The ID, saved date, answers and messages stay. Giving `--link-text` and `--url` replaces all of a resource's links, so repeat the pair for each link to keep. Prints `Edited ID`. See [edit a saved item](../how-to/save-items.md#edit-a-saved-item). |
+| `edit` | Changes a resource or question item's title, description or, for a resource, links, in place. Lists and conversations are refused. The ID, saved date, answers and messages stay. Giving `--link-text` and `--url` replaces all of a resource's links, so repeat the pair for each link to keep. Prints `Edited ID`. See [edit a saved item](../how-to/save-items.md#edit-a-saved-item). |
 | `add` | Saves a new item and prints its ID. A `resource` needs `--url` and `--link-text`; repeat the pair for more links. A `list` or `questions` item needs `--body-file`. See [the input formats and examples](../how-to/save-items.md#add-an-item) and [how to classify items and questions when saving](../how-to/classify-items.md#classify-when-you-save). |
 | `list` | Prints saved items, newest first, with ID, kind, saved date and title. |
 | `show` | Prints the item's text, numbering list entries and questions as `Q7.1`, `Q7.2`. Includes question links, stored states, and saved answers with their timestamps and delivery status. For a standalone conversation, prints the transcript in saved order with timestamps, IDs, delivery status for outgoing messages, and attachments. A standalone Firstmate message is marked `Update`. Image references are paths relative to the served site or the item store directory. |
