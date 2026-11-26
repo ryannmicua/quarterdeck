@@ -2560,6 +2560,9 @@ body:has(dialog[open]) { overflow:hidden; }
 .talk p[id] { margin:0; }
 .talk output { margin:0; }
 .talk output:empty { display:none; }
+.talk[hidden] { display:none; }
+.talk-open { margin:1rem 0 0; }
+.talk-open[aria-disabled="true"] { opacity:.6; cursor:not-allowed; }
 .talk-field { display:flex; flex-direction:column; }
 .talk-field input { flex:1; }
 @media (width > 48rem) {
@@ -3885,10 +3888,26 @@ DESK_SCRIPT = talk_script(r"""
   const topic = form.querySelector('#talk-topic');
   const message = form.querySelector('#talk-message');
   const button = form.querySelector('button[type="submit"]');
+  const opener = document.querySelector('#talk-open');
   const drafts = new Map();
+  const hasDraft = () => Boolean(topic.value.trim() || message.value.trim());
+  const setOpen = open => {
+    form.hidden = !open;
+    opener.setAttribute('aria-expanded', String(open));
+  };
   const refresh = () => {
     button.disabled = !(normalizeTopic(topic.value) && trimmed(message.value));
+    opener.setAttribute('aria-disabled', String(hasDraft() && !form.hidden));
+    if (hasDraft()) setOpen(true);
   };
+  opener.addEventListener('click', () => {
+    if (form.hidden) {
+      setOpen(true);
+      topic.focus();
+    } else if (!hasDraft()) {
+      setOpen(false);
+    }
+  });
   const show = html => {
     const holder = document.createElement('template');
     holder.innerHTML = html;
@@ -3923,6 +3942,7 @@ DESK_SCRIPT = talk_script(r"""
         }));
         topic.value = '';
         message.value = '';
+        setOpen(false);
       } else {
         startStatus.classList.add('failed');
         startStatus.textContent = outcome.message;
@@ -4577,7 +4597,9 @@ def workers_page(site_title: str, *, ready: bool) -> str:
 
 
 def talk_form(binding):
-    return ('<form id="talk-form" class="talk" novalidate aria-label="New conversation">'
+    return ('<button type="button" id="talk-open" class="talk-open" aria-expanded="false" aria-controls="talk-form">'
+            'New conversation</button>'
+            '<form id="talk-form" class="talk" novalidate aria-label="New conversation" hidden>'
             '<div class="talk-field"><label for="talk-topic">Topic</label>'
             f'<input id="talk-topic" maxlength="{TITLE_LIMIT}" autocomplete="off"></div>'
             '<div class="talk-field"><label for="talk-message">Message</label>'
