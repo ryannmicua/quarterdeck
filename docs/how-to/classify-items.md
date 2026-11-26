@@ -49,7 +49,8 @@ options and answers are never touched.
 
 Projects appear on library reference and conversation rows. See the
 [Desk table columns](answer-questions.md) for the main view. Tags show on
-item pages and in the library. On an item page, each question shows its own
+item pages and on library Answered and Conversations rows; compact References
+rows leave them out but still filter by them. On an item page, each question shows its own
 kind and tags. In the library tabs, the project filter appears when project
 assignments differ, including when some entries have no project.
 Each list with at least one tag shows a tag filter. It offers every tag in that
