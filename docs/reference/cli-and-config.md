@@ -180,7 +180,8 @@ hexadecimal ID. Repeating the same request reuses the saved conversation
 instead of creating another, and retries delivery of the first message while it
 is pending. The same ID with a different topic or text returns 409. A successful
 response contains `message` (delivery status), `href` (the relative URL of
-the conversation card), `row` (the conversation row HTML) and `attention`
+the conversation card), `row` (the conversation row HTML), `hold` (the Hold
+result row HTML), and `attention`
 (the started topic’s Needs you row HTML, or `null` if it needs no attention).
 The browser updates that topic's rows and derives the tab count from the
 current Needs you table.

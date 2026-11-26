@@ -6208,7 +6208,7 @@ check(posts.length === 1 && posts[0][0] === 'pins' && posts[0][1].part === 'Q1' 
 check(ids('pinned') === 'Q1' && ids('recent') === 'Q3,Q2' && !document.getElementById('topics-pinned').hidden, 'Pin did not move the row');
 check(pin('Q1').textContent === 'Unpin' && pin('Q1').getAttribute('aria-label') === 'Unpin Harbor lamp colours'
       && document.activeElement === pin('Q1'), 'The control did not become Unpin with focus kept');
-check(button('pin-status-Q1').textContent === 'Harbor lamp colours is pinned.', 'The pin was not announced');
+check(pin('Q1').nextElementSibling.textContent === 'Harbor lamp colours is pinned.', 'The pin was not announced');
 delay = true;
 pin('Q3').focus();
 pin('Q3').click();
@@ -6236,26 +6236,29 @@ document.execCommand('insertText', false, 'A message draft');
 complete();
 await settle();
 check(document.activeElement === message && message.value === 'A message draft', 'A refused pin interrupted composition');
-check(ids('pinned') === '' && !pin('Q2').disabled && button('pin-status-Q2').textContent.includes('could not save'),
+check(ids('pinned') === '' && !pin('Q2').disabled && pin('Q2').nextElementSibling.textContent.includes('could not save'),
       'A refused pin changed the list or hid the failure');
-pin('Q2').click();
-const needs = button('desk-tab-needs-you');
-needs.click();
-needs.focus();
+const space = document.createElement('div');
+space.style.height = '1800px';
+button('topics-recent').before(space);
+pin('Q3').scrollIntoView({block:'center'});
+check(scrollY > innerHeight, 'The deep pin control did not require scrolling');
+pin('Q3').click();
 complete();
 await settle();
-const failure = button('pin-status-Q2');
-check(failure.checkVisibility() && failure.textContent.includes('Try again') && document.activeElement === needs,
-      'Switching tabs hid the pin refusal or changed focus');
+const failure = pin('Q3').nextElementSibling;
+const bounds = failure.getBoundingClientRect();
+check(failure.textContent.includes('Bell schedule') && bounds.top >= 0 && bounds.bottom <= innerHeight,
+      'The second refusal was missing beside the pin or outside the phone viewport');
 """, path="/qd/", viewport=(390, 844))
 
     def test_a_started_conversation_joins_the_top_of_the_list_with_focus_in_a_browser(self) -> None:
         port = self.start("/qd", ask_home=self.inbox())
-        self.check_answer_page(port, r"""
-const row = '<li class="topic" data-id="Q9" data-activity="2026-10-03T09:00:00.000000+00:00" data-pinned="false"><div class="topic-main">'
-  + '<a class="topic-title" href="q9.html">Bell schedule</a></div><button type="button" class="pin" data-title="Bell schedule">Pin</button></li>';
-window.fetch = async () => ({ok:true, status:200, json: async () => ({message:'Message sent.', href:'q9.html', row,
-  attention: null})});
+        empty = self.fetch(port, "/qd/")[1]
+        _, (status, response) = self.begin(port, "Bell schedule", "When does the bell ring?")
+        self.assertEqual(status, 200)
+        steps = r"""
+window.fetch = async () => ({ok:true, status:200, json:async () => (""" + json.dumps(response) + r""")});
 const none = document.getElementById('no-conversations');
 check(!none.hidden && document.getElementById('topics-recent').hidden, 'The empty list did not say so');
 const form = document.getElementById('talk-form');
@@ -6269,7 +6272,21 @@ check(link && link.textContent === 'Bell schedule' && document.activeElement ===
 check(none.hidden && !document.getElementById('topics-recent').hidden, 'The list still looked empty');
 check(button('talk-topic').value === '' && button('talk-message').value === '' && button('desk-status').textContent === 'Message sent.',
       'The form kept the sent draft or lost its status');
-""", path="/qd/", viewport=(390, 844))
+button('open-library').click();
+button('tab-conversations').click();
+const held = button('panel-conversations');
+const search = button('search-conversations');
+for (const query of ['', 'bell schedule', 'Q1']) {
+  search.value = query;
+  search.dispatchEvent(new Event('input', {bubbles:true}));
+  const rows = [...held.querySelectorAll('.lib-item:not([hidden]) .lib-title')];
+  check(rows.length === 1 && rows[0].getAttribute('href') === 'q1.html' && rows[0].textContent === 'Bell schedule',
+        'Hold did not find the started conversation');
+  check(held.querySelector('[data-none]').hidden, 'Hold still showed the empty state');
+}
+"""
+        with patch.object(quarterdeck, "list_page", return_value=empty):
+            self.check_answer_page(port, steps, path="/qd/", viewport=(390, 844))
 
     def test_replayed_start_retains_order_and_keeps_the_selected_tab(self) -> None:
         port = self.start("/qd", ask_home=self.inbox())
@@ -6303,9 +6320,8 @@ conversations.click();
 conversations.focus();
 refuseNotice(new Response('', {status:409}));
 await new Promise(resolve => setTimeout(resolve, 50));
-const noticeStatus = button('notice-status');
-check(noticeStatus.checkVisibility() && noticeStatus.textContent.includes('Reload') &&
-      document.activeElement === conversations, 'Switching tabs hid stale notice guidance or changed focus');
+const noticeStatus = notice.nextElementSibling;
+check(document.activeElement === conversations, 'Notice failure changed focus on Conversations');
 tab.click();
 tab.focus();
 complete({ok:true, json:async () => (""" + json.dumps(response) + r""")});
@@ -6315,14 +6331,21 @@ const confirmation = button('desk-status');
 check(selected && confirmation.checkVisibility() && confirmation.textContent === 'Message sent.',
       'Completion switched tabs or hid the confirmation');
 check(document.activeElement === tab, 'Completion stole focus');
-check(notice.isConnected && noticeStatus.checkVisibility() && noticeStatus.textContent.includes('Reload'),
-      'Completing the start erased recovery guidance for the stale notice');
+notice.scrollIntoView({block:'center'});
+const guidance = noticeStatus.getBoundingClientRect();
+check(notice.isConnected && noticeStatus.textContent.includes('Reload') &&
+      guidance.top >= 0 && guidance.bottom <= innerHeight,
+      'Completing the start erased or hid the stale notice guidance');
 button('desk-tab-conversations').click();
 const ids = [...button('topics-recent').querySelectorAll('.topic')].map(row => row.dataset.id);
 check(ids.join() === 'Q3,Q2,Q1', 'The replay jumped ahead of newer activity');
 const insertedDate = document.querySelector('.topic[data-id="Q1"] time');
 check(insertedDate !== initialDate && insertedDate.textContent === expectedDate,
       'The replayed row displayed a different date from the same row on page load');
+button('open-library').click();
+button('tab-conversations').click();
+const held = [...button('conversations-list').querySelectorAll('.lib-item')];
+check(held.map(row => row.dataset.id).join() === 'Q3,Q2,Q1', 'Replay duplicated or reordered a Hold topic');
 """, path="/qd/", viewport=(390, 844))
 
     def test_start_and_replay_update_only_the_started_topic_attention(self) -> None:
@@ -6394,7 +6417,7 @@ check(!failed.isConnected && count.textContent === '1' && notice.isConnected && 
         port = self.start("/qd", ask_home=home)
         body, (status, result) = self.begin(port)
         self.assertEqual(status, 200)
-        self.assertEqual(result, {"href": "q1.html", "message": "Message sent.", "row": ANY_ROW, "attention": None})
+        self.assertEqual(result, {"href": "q1.html", "message": "Message sent.", "row": ANY_ROW, "hold": ANY, "attention": None})
         (item,) = self.store()["items"]
         self.assertEqual((item["kind"], item["title"], item["body"]), ("conversation", "Harbor lamp colours", {}))
         self.assertNotIn(body["text"], item["description"])
@@ -6546,7 +6569,7 @@ check(!failed.isConnected && count.textContent === '1' && notice.isConnected && 
         home = self.inbox(accept=False)
         port = self.start("/qd", ask_home=home)
         body, (status, result) = self.begin(port)
-        self.assertEqual((status, result), (200, {"href": "q1.html", "message": "Message saved. Not delivered.", "row": ANY_ROW, "attention": ANY}))
+        self.assertEqual((status, result), (200, {"href": "q1.html", "message": "Message saved. Not delivered.", "row": ANY_ROW, "hold": ANY, "attention": ANY}))
         (first,) = self.thread()
         self.assertIn("Send message again", self.fetch(port, "/qd/q1.html")[1])
         self.assertEqual(self.post(port, "/qd/conversations", body), (status, result))
@@ -6555,7 +6578,7 @@ check(!failed.isConnected && count.textContent === '1' && notice.isConnected && 
         self.assertEqual(self.post(port, "/qd/conversations", {**body, "title": "Another"})[0], 409)
         self.inbox()
         self.assertEqual(self.post(port, "/qd/conversations", body),
-                         (200, {"href": "q1.html", "message": "Message sent.", "row": ANY_ROW, "attention": None}))
+                         (200, {"href": "q1.html", "message": "Message sent.", "row": ANY_ROW, "hold": ANY, "attention": None}))
         self.assertEqual(self.thread(), [{**first, "delivery": "sent"}])
         self.assertEqual((home / "notes").read_text(), f"CONVERSATION Q1 {body['id']} Topic: {body['title']}\n{body['text']}\n")
         retry = {"part": "Q1", "id": body["id"], "action": "retry"}
@@ -6575,7 +6598,7 @@ check(!failed.isConnected && count.textContent === '1' && notice.isConnected && 
 
         alias.symlink_to(home, target_is_directory=True)
         body, result = self.begin(port)
-        self.assertEqual(result, (200, {"href": "q1.html", "message": "Message saved. Not delivered.", "row": ANY_ROW, "attention": ANY}))
+        self.assertEqual(result, (200, {"href": "q1.html", "message": "Message saved. Not delivered.", "row": ANY_ROW, "hold": ANY, "attention": ANY}))
         (first,) = self.thread()
         before = quarterdeck.store_path().read_bytes()
         alias.unlink()
@@ -6597,7 +6620,7 @@ check(!failed.isConnected && count.textContent === '1' && notice.isConnected && 
         alias.symlink_to(home, target_is_directory=True)
         self.assertIn('id="send-message"', self.fetch(port, "/qd/q1.html")[1])
         self.assertEqual(self.post(port, "/qd/conversations", body),
-                         (200, {"href": "q1.html", "message": "Message sent.", "row": ANY_ROW, "attention": None}))
+                         (200, {"href": "q1.html", "message": "Message sent.", "row": ANY_ROW, "hold": ANY, "attention": None}))
         self.assertEqual(self.thread(), [{**first, "delivery": "sent"}])
         self.assertEqual((home / "attempts").read_text().splitlines(), [first["request_id"]])
 
@@ -6987,7 +7010,7 @@ check(posts.length === 7 && posts[6].id === posts[0].id, 'Submitting a different
         self.assertEqual(status, 0, err)
         self.assertIn(f"  See this.\n  Link: Lamp chart: {chart}\n  Image: A red lamp: {image}", transcript)
         status, replay = self.post(port, "/qd/conversations", body)
-        self.assertEqual((status, replay), (200, {"href": "q1.html", "message": "Message sent.", "row": ANY_ROW, "attention": ANY}))
+        self.assertEqual((status, replay), (200, {"href": "q1.html", "message": "Message sent.", "row": ANY_ROW, "hold": ANY, "attention": ANY}))
         self.assertIn(f'href="q1.html#reply-{reply["id"]}"', replay["attention"])
 
     def test_add_cannot_save_a_conversation_and_help_names_the_conversation_note(self) -> None:

@@ -278,7 +278,7 @@ tab.click();
 const panel = document.getElementById('desk-panel-needs-you');
 const count = tab.querySelector('.tab-count');
 const bulk = panel.querySelector('[data-read-all]');
-const status = document.getElementById('notice-status');
+const status = bulk.nextElementSibling;
 const current = panel.querySelector('[data-read="C2"]');
 const stale = panel.querySelector('[data-read="C1"]');
 const clickAndWait = button => new Promise(resolve => {
@@ -295,7 +295,9 @@ check(status.textContent.includes('Try again') && count.textContent === '2' &&
       current.isConnected && stale.isConnected, 'Incomplete success removed a notice or changed the count');
 window.fetch = realFetch;
 await clickAndWait(bulk);
+const bounds = status.getBoundingClientRect();
 check(status.textContent.includes('Reload') && count.textContent === '2' &&
+      bounds.top >= 0 && bounds.bottom <= innerHeight &&
       current.isConnected && stale.isConnected && !current.disabled && !stale.disabled,
       'A stale batch removed or disabled a notice');
 await clickAndWait(current);
@@ -309,7 +311,7 @@ check(!current.isConnected && stale.isConnected && count.textContent === '1' && 
 
         page = base.WorkersTests.instrumented_page(stale_page, steps)
         with patch.object(quarterdeck, "list_page", page):
-            outcome, stderr = base.WorkersTests.browser_page(self, self.start(), "/qd/")
+            outcome, stderr = base.WorkersTests.browser_page(self, self.start(), "/qd/", window_size="560,900")
         self.assertEqual(outcome, "PASS", stderr)
         current, new = self.store()["catch_ups"]
         self.assertIn("read_at", current)

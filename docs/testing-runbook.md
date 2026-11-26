@@ -64,8 +64,12 @@ filters and check which reference rows, reviewed cards, and empty messages
 are visible in the narrow and desktop layouts.
 
 The Desk replay browser check delays a start until a stale notice has shown
-reload guidance. It verifies that both results stay visible on **Needs you**
-and checks that the initial and inserted rows show October 2 in Tokyo for a
+reload guidance. It verifies that the start result and the inline notice
+guidance are available on **Needs you**, and that replay keeps one Hold result
+per topic. The first-start check searches Hold by both title and item ID
+without reloading. The pin check scrolls beyond the first phone viewport and
+checks that a refusal appears beside the acted-on topic. The replay check
+verifies that the initial and inserted rows show October 2 in Tokyo for a
 message saved at 18:30 UTC on October 1. The Desk tab check uses the old
 bookmark fragment to verify that Conversations still opens first and that
 clicking or using the keyboard leaves the address unchanged.

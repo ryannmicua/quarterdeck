@@ -1372,7 +1372,7 @@ def start_conversation(store, home, binding, payload):
     with locked_store(store, read_only=True):
         item = find_item(read_store(store), item_id)
     summary = attention_summary(item, served=True)
-    return {**result, "href": item_page_name(item_id), "row": conversation_row(item),
+    return {**result, "href": item_page_name(item_id), "row": conversation_row(item), "hold": library_row(item, served=True),
             "attention": desk_row(item, summary, primary=False) if summary else None}
 
 
@@ -2377,6 +2377,8 @@ textarea { display:block; width:100%; resize:vertical; background:var(--ground);
 .desk .notice-project { display:none; }
 .desk .notice p { margin:.25rem 0; font-weight:400; }
 .desk .notice a { display:inline-block; margin-right:.65rem; }
+.desk .notice .desk-feedback { max-width:16ch; overflow-wrap:anywhere; }
+[data-read-all][hidden] + .desk-feedback { display:none; }
 .sr, .desk-feedback:empty { position:absolute; width:1px; height:1px; overflow:hidden; clip-path:inset(50%); white-space:nowrap; }
 .button-link, .work-action { display:inline-flex; align-items:center; min-height:44px; padding:.5rem .85rem; border-radius:5px; font:600 var(--text-md)/1.3 var(--sans);
   text-decoration:none; border:1px solid var(--soft); background:var(--raised); color:var(--ink); }
@@ -2521,7 +2523,8 @@ body:has(dialog[open]) { overflow:hidden; }
 .topics { max-width:52rem; }
 .topics h2 { margin:1.6rem 0 .5rem; }
 .topic-list { list-style:none; margin:0; padding:0; border-top:1px solid var(--rule); font-family:var(--sans); }
-.topic { display:flex; gap:1rem; align-items:center; justify-content:space-between; padding:.8rem 0; border-bottom:1px solid var(--rule); }
+.topic { display:grid; grid-template-columns:minmax(0,1fr) auto; gap:.4rem 1rem; align-items:center; padding:.8rem 0; border-bottom:1px solid var(--rule); }
+.topic > .desk-feedback { grid-column:1 / -1; margin:0; }
 .topic-main { min-width:0; flex:1; }
 .topic-title { display:inline-block; padding:.2rem 0; font:700 var(--text-lg)/1.3 var(--serif); }
 .topic-latest { margin:.1rem 0 .3rem; color:var(--soft); display:-webkit-box; -webkit-line-clamp:2; -webkit-box-orient:vertical; overflow:hidden; }
@@ -2814,8 +2817,8 @@ LIBRARY_SCRIPT = r"""
     }
     const status = panel.querySelector('[data-status]');
     const none = panel.querySelector('[data-none]');
-    const rows = [...panel.querySelectorAll('.lib-item')];
     const run = () => {
+      const rows = panel.querySelectorAll('.lib-item');
       const query = topics ? normalizeTopic(search.value) : search.value.trim();
       const id = idQuery.exec(query);
       const terms = caseFold(query).split(topics ? ' ' : /\s+/);
@@ -2833,6 +2836,16 @@ LIBRARY_SCRIPT = r"""
       status.textContent = active && !hasMatch ? 'No results match your search.' : '';
       if (!panel.hidden) updateScrollMode();
     };
+    if (topics) panel.addEventListener('conversation-saved', event => {
+      const list = panel.querySelector('.lib-list');
+      const {id, html} = event.detail;
+      list.querySelector('[data-id="' + id + '"]')?.remove();
+      const next = [...list.children].find(row => BigInt(row.dataset.id.slice(1)) < BigInt(id.slice(1)));
+      if (next) next.insertAdjacentHTML('beforebegin', html);
+      else list.insertAdjacentHTML('beforeend', html);
+      localizeDays(list.querySelector('[data-id="' + id + '"]'));
+      run();
+    });
     search.addEventListener('input', run);
     for (const select of filters) select.addEventListener('change', run);
     run();
@@ -3600,8 +3613,6 @@ DESK_SCRIPT = talk_script(r"""
     });
   }
   const startStatus = document.getElementById('desk-status');
-  const noticeStatus = document.getElementById('notice-status');
-  const pinFeedback = document.getElementById('pin-feedback');
   const conversationPanel = document.getElementById('desk-panel-conversations');
   const attentionPanel = document.getElementById('desk-panel-needs-you');
   const attentionRows = attentionPanel.querySelector('tbody');
@@ -3638,6 +3649,10 @@ DESK_SCRIPT = talk_script(r"""
   attentionPanel.addEventListener('click', async event => {
     const button = event.target.closest('button[data-read], button[data-read-all]');
     if (!button || button.disabled) return;
+    const noticeStatus = button.nextElementSibling;
+    const noticeAnnouncement = document.getElementById('notice-announcement');
+    noticeStatus.textContent = '';
+    noticeAnnouncement.textContent = '';
     const notices = noticeButtons();
     const selected = button === readAll ? notices : [button];
     const ids = selected.map(control => control.dataset.read);
@@ -3648,7 +3663,6 @@ DESK_SCRIPT = talk_script(r"""
       const response = await fetch('catch-ups/read', {method:'POST', redirect:'error',
         headers:{'Content-Type':'application/json'}, body:JSON.stringify({ids})});
       if (response.status === 409) {
-        noticeStatus.classList.add('failed');
         noticeStatus.textContent = 'A notice may already be read. Reload the page when ready.';
         return;
       }
@@ -3661,13 +3675,11 @@ DESK_SCRIPT = talk_script(r"""
       const hadFocus = attentionPanel.contains(focused);
       selected.forEach(control => control.closest('tr').remove());
       syncAttention();
-      noticeStatus.classList.remove('failed');
-      noticeStatus.textContent = ids.length === 1 ? 'Notice marked read.' : 'Notices marked read.';
+      noticeAnnouncement.textContent = ids.length === 1 ? 'Notice marked read.' : 'Notices marked read.';
       if (hadFocus && !attentionPanel.hidden && (!focused.isConnected || (focused === readAll && readAll.hidden))) {
         attentionTab.focus();
       }
     } catch {
-      noticeStatus.classList.add('failed');
       noticeStatus.textContent = 'The notice could not be marked read. Try again.';
     } finally {
       controls.forEach(control => { control.disabled = false; });
@@ -3694,15 +3706,7 @@ DESK_SCRIPT = talk_script(r"""
     const button = event.target.closest('button.pin');
     if (!button || button.disabled) return;
     const row = button.closest('.topic');
-    const statusId = 'pin-status-' + row.dataset.id;
-    let pinStatus = document.getElementById(statusId);
-    if (!pinStatus) {
-      pinStatus = document.createElement('p');
-      pinStatus.id = statusId;
-      pinStatus.className = 'meta desk-feedback';
-      pinStatus.setAttribute('role', 'status');
-      pinFeedback.append(pinStatus);
-    }
+    const pinStatus = button.nextElementSibling;
     const pinned = row.dataset.pinned !== 'true';
     const hadFocus = document.activeElement === button;
     button.disabled = true;
@@ -3767,6 +3771,9 @@ DESK_SCRIPT = talk_script(r"""
         startStatus.textContent = outcome.result.message;
         started = show(outcome.result.row);
         updateAttention(started.dataset.id, outcome.result.attention);
+        document.getElementById('panel-conversations').dispatchEvent(new CustomEvent('conversation-saved', {
+          detail: {id: started.dataset.id, html: outcome.result.hold}
+        }));
         topic.value = '';
         message.value = '';
       } else {
@@ -4361,7 +4368,7 @@ def library_panel(name: str, items: list[dict[str, object]], empty: str, *, serv
     filters = filter_bar(list_id, items, restorable=served)
     row = reference_row if name == "references" else library_row
     rows = "".join(row(item, served=served) for item in items)
-    listing = f'<ul class="lib-list" id="{list_id}">{rows}</ul>' if rows else ""
+    listing = f'<ul class="lib-list" id="{list_id}">{rows}</ul>' if rows or (served and name == "conversations") else ""
     if not served:
         return (filters + listing + (no_match(list_id) if filters else "")) if rows else f'<p class="empty">{esc(empty)}</p>'
     return (f'<div class="lib-tools"><label for="search-{name}">Search</label>'
@@ -4452,7 +4459,8 @@ def conversation_row(item):
             f'<div class="topic-main"><a class="topic-title" href="{href}">{title}</a>'
             f'<p class="topic-latest">{esc(preview)}</p>'
             f'<p class="meta topic-meta">{project}{status}{day_time(latest["at"])}</p></div>'
-            f'<button type="button" class="pin" data-title="{title}" aria-label="{verb} {title}">{verb}</button></li>')
+            f'<button type="button" class="pin" data-title="{title}" aria-label="{verb} {title}">{verb}</button>'
+            '<p class="meta desk-feedback" role="status"></p></li>')
 
 
 def conversation_groups(items):
@@ -4486,7 +4494,8 @@ def catch_up_row(notice, items_by_id):
     return (f'<tr class="notice"><th scope="row"><span class="id">{notice["id"]}</span> {title}'
             f'{phone_project}<p>{esc(notice["summary"])}</p>{"".join(links)}</th>'
             f'<td class="project">{project}</td><td></td><td>{day_time(notice["saved_at"])}<br>'
-            f'<button type="button" data-read="{notice["id"]}" aria-label="Mark read, {title}">Mark read</button></td></tr>')
+            f'<button type="button" data-read="{notice["id"]}" aria-label="Mark read, {title}">Mark read</button>'
+            '<p class="meta desk-feedback failed" role="status"></p></td></tr>')
 
 
 def desk_table(attention, notice_rows=""):
@@ -4502,7 +4511,10 @@ def needs_you_panel(attention, notices, items_by_id):
     rows = "".join(catch_up_row(notice, items_by_id) for notice in notices)
     hide_bulk = " hidden" if len(notices) < 2 else ""
     hide_empty = " hidden" if attention or notices else ""
-    return (f'<button type="button" data-read-all{hide_bulk}>Mark all notices read</button>{desk_table(attention, rows)}'
+    return (f'<button type="button" data-read-all{hide_bulk}>Mark all notices read</button>'
+            '<p class="meta desk-feedback failed" role="status"></p>'
+            '<p class="sr" id="notice-announcement" role="status"></p>'
+            f'{desk_table(attention, rows)}'
             f'<p class="empty"{hide_empty}>Nothing needs you. Questions, unread replies, failed deliveries and notices show here.</p>')
 
 
@@ -4520,8 +4532,7 @@ def desk_tabs(conversations, attention, total):
                    for number, (name, _, content) in enumerate(panels))
     return (f'<div class="desk-tabs" role="tablist" aria-label="Desk">{tabs}</div>'
             '<p class="meta desk-feedback" id="desk-status" role="status"></p>'
-            '<p class="meta desk-feedback" id="notice-status" role="status"></p>'
-            f'<div id="pin-feedback"></div>{body}')
+            f'{body}')
 
 
 def latest_unanswered(thread):
