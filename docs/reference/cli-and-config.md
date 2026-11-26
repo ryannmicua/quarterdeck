@@ -14,6 +14,7 @@ quarterdeck reply ID[.PART] --ask ID --text TEXT [--link-text TEXT --url URL]...
 quarterdeck post ID --text TEXT [--link-text TEXT --url URL]... [--image PATH --alt TEXT]...
 quarterdeck converse --title TITLE --text TEXT [--config FILE] [--project ID [--topic ID]]
                      [--link-text TEXT --url URL]... [--image PATH --alt TEXT]...
+quarterdeck task review ID --text TEXT [--url URL [--link-text TEXT]]
 quarterdeck resolve ID
 quarterdeck reopen ID
 quarterdeck archive ID
@@ -61,6 +62,7 @@ as `reply`.
 | `converse` | Opens a conversation with a title and an update from Firstmate, then prints the new item ID. `--project` and `--topic` file it in a project and a topic of that project, each by ID such as `P1` or `T2`, in any case. `--topic` needs `--project`, and an unknown ID is refused with the IDs and names that exist. See [`firstmate_home`](#json-configuration) for home selection. |
 | `projects` | Prints each project and its topics with their IDs, topics indented under their project, in name order. Prints `No projects.` when the owner has made none. Only the owner creates and renames them, on the Desk. |
 | `move` | Files a conversation in a project and optionally a topic, by ID, or returns it to Ungrouped with `--ungrouped`. Give exactly one of `--project` and `--ungrouped`. Prints `Q12 Moved`. Items that are not conversations are refused. It changes only the conversation's [`placement`](item-store.md#conversations). |
+| `task review` | Puts a task in review and prints `Q12 In review`. It posts `--text` as a Firstmate update, so the task shows **Unread reply**, and with `--url` it keeps that address as the task's result. `--link-text` names the link and reads Result when left out. The task then shows in **Needs you** with **Approve** and **Changes needed**. A conversation that is not a task, a draft and a resolved task are refused. Resolve a finished task with `resolve`. See [create a task](../how-to/create-a-task.md#review-a-task). |
 | `resolve`, `reopen` | Marks a conversation resolved or not resolved and prints `Q12 Resolved` or `Q12 Reopened`. Only a conversation item is accepted. Messages and updates leave the mark as it is. See [resolve a conversation](../how-to/talk-to-firstmate.md#resolve-a-conversation). |
 | `archive`, `unarchive` | Moves a conversation to the Archived tab or back to the Desk and prints `Q12 Archived` or `Q12 Unarchived`. Only a conversation item is accepted. The resolved and pinned marks stay, and replies still work. See [archive a conversation](../how-to/talk-to-firstmate.md#archive-a-conversation). |
 | `mark` | Sets question state, optionally for a whole questions item. `--via` is required with `answered` and accepted only with that state. Skips exit with status 0. See [Read answers](../how-to/read-answers.md) for which questions are marked. |
@@ -210,6 +212,32 @@ resolved path results in 409 before saving or delivering the message.
 The inbox note for each message sent by the owner is
 `CONVERSATION Q12 <message id> Topic: <conversation title>`, a line break, then the message
 text. The note keeps the label `Topic` so existing readers of the inbox keep working. See [Reply in a conversation](../how-to/reply-from-the-command-line.md#reply-in-a-conversation).
+
+### Task endpoints
+
+`POST /tasks` and `POST /reviews` (under any `base_path`) use the same origin
+check as `/answers`. Starting a task and sending a note need a `firstmate_home`
+that resolves to an existing directory; saving a draft and approving do not. Without it, those
+requests return 403.
+
+To create a task, send `{"id": "<message id>", "title": "...", "description": "...", "action": "start", "home": "<home binding>"}`
+with `"action": "draft"` to save a draft instead. Add `"source": "Q12"` to relate the task to that conversation,
+and `"project"` and `"topic"` as for [a conversation](#conversation-endpoint). A task with a `source` and no
+`project` or `topic` is filed where its source is. The title is up to 200 characters.
+A started task is saved with one message, `Task started.`, delivered like any message. Its inbox note is
+`CONVERSATION Q12 <message id> Topic: <title>`, a line break, `Task started.`, a blank line, `Description:` and the
+description. A draft has no message and sends no note. Repeating a start with the same `id` reuses the saved task,
+and the same `id` with a different title or description returns 409.
+
+To start a draft, send `{"part": "Q12", "id": "<message id>", "action": "start", "home": "<home binding>"}`.
+A task that is not a draft returns 409, and a repeat with the same `id` delivers the saved message once.
+
+To decide a review, send `{"part": "Q12", "decision": "approve"}`, which resolves the task and returns it to Started
+without a result, or `{"part": "Q12", "decision": "changes", "id": "<message id>", "note": "...", "home": "<home binding>"}`,
+which sends `Changes needed.`, a blank line and the note as a message and returns the task to Started. A task that is not In review returns 409.
+
+Each response carries `message`, `href`, `row`, `hold` and `attention` as the
+[conversation endpoint](#conversation-endpoint) does.
 
 ### Pin endpoint
 

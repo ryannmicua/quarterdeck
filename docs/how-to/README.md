@@ -12,6 +12,7 @@
 - [Go back to the list](go-back-to-the-list.md)
 - [Ask Firstmate from a card](ask-firstmate.md)
 - [Talk to Firstmate](talk-to-firstmate.md)
+- [Create a task](create-a-task.md)
 - [Watch Firstmate](watch-firstmate.md)
 - [Reply from the command line](reply-from-the-command-line.md)
 - [Find references and answered questions](use-the-library.md)

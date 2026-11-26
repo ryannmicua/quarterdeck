@@ -87,11 +87,11 @@ When `firstmate_home` is set, anyone who can reach the service can view the
 home's worker and second mate roster and run a check from the Workers page
 or `GET /workers.json`. They can also send asks to that home's inbox and, with the
 [conversation prerequisites](talk-to-firstmate.md) met, start conversations
-from the Desk and send messages.
+from the Desk, create and start tasks, and send messages.
 Quarterdeck prints a warning when you bind a non-loopback address. Keep the
 listener and proxy on the trusted network, or protect both with an owner access
 gate. Browser submissions require an `Origin` that matches the public host and
-scheme. Conversation starts, pins, resolutions, archives, project and topic changes,
+scheme. Conversation starts, task creations and reviews, pins, resolutions, archives, project and topic changes,
 moves, asks, reply acknowledgments and Catch-up acknowledgments use the same check. The served Desk and standalone conversation
 pages block framing. Question pages also block framing when they have answer controls,
 unread replies, or an existing set discussion, even if all questions are closed.

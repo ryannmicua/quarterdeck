@@ -18,7 +18,7 @@ for who can start conversations and use the other browser controls.
   them. See the [render reference](../reference/cli-and-config.md#pages) for
   which items are exported.
 - `serve` reads the item store to build pages and writes to it when users
-  submit answers, send asks, start conversations, send messages, acknowledge
+  submit answers, send asks, start conversations, create and start tasks, send messages, acknowledge
   Firstmate messages, [pin, resolve or archive conversations](../reference/cli-and-config.md#pin-endpoint),
   or [acknowledge Catch-up notices](../reference/cli-and-config.md#catch-up-endpoint).
   It also writes the [local visit log](../reference/cli-and-config.md#visit-log).
