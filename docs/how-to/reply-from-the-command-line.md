@@ -67,9 +67,8 @@ so it can read standalone updates in the item store.
 
 For `converse`, use the same configuration as `serve`. Pass the live config
 with `--config FILE`, or match the server's `XDG_CONFIG_HOME` when it uses the
-[default config lookup](../reference/cli-and-config.md#json-configuration).
-If you change `firstmate_home` in the config, restart the live server before
-running `converse` so the owner can respond from the Desk.
+default config lookup. See the [config reference](../reference/cli-and-config.md#json-configuration)
+for the restart requirement after a `firstmate_home` change.
 
 Use `post` to add an update to an existing conversation or `converse` to open
 one with a title and a first message from Firstmate.

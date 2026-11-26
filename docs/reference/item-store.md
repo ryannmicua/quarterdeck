@@ -85,7 +85,7 @@ fields if they pass the same validation as resource URLs.
 | --- | --- |
 | References | Item descriptions on served and rendered pages |
 | Item page | Item descriptions, question prompts, context, options and suggested answers |
-| Served item page | Ask and reply text in whole-item and numbered-question conversations, and clarification text on question cards |
+| Served item page | Ask and reply text in question threads, clarification text on question cards, and all messages in standalone conversations |
 
 Quarterdeck uses the address as the link text. Inline links open in a new tab
 so you can keep a draft answer open while following a link. Selecting an option
