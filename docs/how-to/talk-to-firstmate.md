@@ -27,8 +27,7 @@ Conversations leave question answers and states unchanged.
 
 Each group lists its conversations by latest activity. A new topic, message or
 reply brings a conversation to the front of its group, and quiet ones sink.
-Each row shows the time of that latest activity in your time zone: the time
-alone for today, and the date and time for earlier days.
+Each row shows the date and time of that latest activity in your time zone.
 Select **Pin** on a row to move it into **Pinned**. Select **Unpin** to return
 it to its place by activity. Pinning does not change the messages, the unread
 reply or whose turn it is. Each group keeps its own order, so a pinned

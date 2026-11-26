@@ -2624,12 +2624,8 @@ const localizeDays = root => {
   }
 };
 const localizeStamps = root => {
-  const today = new Date().toDateString();
   for (const time of root.querySelectorAll('time.stamp[datetime]:not([datetime=""])')) {
-    const at = new Date(time.dateTime);
-    time.textContent = at.toDateString() === today
-      ? at.toLocaleTimeString(undefined, {timeStyle:'short'})
-      : localTime(time.dateTime);
+    time.textContent = localTime(time.dateTime);
   }
 };
 localizeTimes(document);
@@ -4461,7 +4457,7 @@ if (send) {
 
 
 def activity_time(item) -> str:
-    """The moment the Desk sorts a conversation by. The browser shows its time today and its date and time before."""
+    """The moment the Desk sorts a conversation by. The browser shows its local date and time."""
     moment = conversation_activity(item).strftime("%Y-%m-%dT%H:%M:%SZ")
     return f'<time class="stamp" datetime="{moment}">{moment[:10]}</time>'
 

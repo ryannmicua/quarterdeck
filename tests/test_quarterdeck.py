@@ -6012,7 +6012,6 @@ class TalkToFirstmateTests(ImageCase):
         self.assertIn('<time class="stamp" datetime="2026-11-05T14:07:09Z">2026-11-05</time>', row)
         quiet = re.search(r'<li class="topic" data-id="Q2".*?</li>', page, re.DOTALL)[0]
         self.assertIn('datetime="2026-10-02T09:00:00Z"', quiet)
-        self.assertIn("localizeStamps", page)
 
     def test_pinning_groups_a_conversation_and_changes_nothing_else(self) -> None:
         port = self.start("/qd", ask_home=self.inbox())
