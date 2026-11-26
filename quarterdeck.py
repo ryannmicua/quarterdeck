@@ -2486,10 +2486,12 @@ def workers_snapshot(home: Path) -> dict[str, object]:
             unresolved_workers.add(key)
     if unresolved_mates - second_mates.keys() or unresolved_workers - workers.keys() - second_mates.keys():
         raise SnapshotError("the fleet snapshot has no reliable terminal state")
+    work_tasks = {key: task for key, task in workers.items() if key not in second_mates}
     return {
         "observed_at": generated,
-        "workers": [roster_row(key, task, observed) for key, task in workers.items() if key not in second_mates],
+        "workers": [roster_row(key, task, observed) for key, task in work_tasks.items()],
         "second_mates": [roster_row(key, task, observed) for key, task in second_mates.items()],
+        "work": underway_rows(data, work_tasks, observed),
     }
 
 
@@ -2521,7 +2523,8 @@ class SavedWorkers:
             if (record.get("home") != self._home_key or not UTC_RE.fullmatch(checked) or not isinstance(snapshot, dict)
                     or not isinstance(snapshot.get("observed_at"), str)
                     or not isinstance(snapshot.get("workers"), list)
-                    or not isinstance(snapshot.get("second_mates"), list)):
+                    or not isinstance(snapshot.get("second_mates"), list)
+                    or not isinstance(snapshot.get("work"), list)):
                 return
             age = datetime.now(timezone.utc) - datetime.strptime(checked, "%Y-%m-%dT%H:%M:%SZ").replace(tzinfo=timezone.utc)
         except (OSError, ValueError, TypeError, KeyError, RecursionError):
@@ -2592,6 +2595,121 @@ def keep_workers_fresh(saved: SavedWorkers, interval: float, stop: threading.Eve
         except Exception as exc:  # never end the loop
             print(f"quarterdeck: the workers check failed: {exc}", file=sys.stderr, flush=True)
         stop.wait(interval)
+
+
+# --- Under way ----------------------------------------------------------------------------
+# The Desk's Under way tab reads only the saved workers reading, so opening it never waits on the fleet snapshot.
+# The reading carries one row per ship or scout with a live terminal, plus the ones merged today.
+
+UNDERWAY_KINDS = {"ship", "scout"}
+UNDERWAY_ORDER = ("Ready to merge", "In review", "Building", "Working", "Question asked", "Stuck", "Unknown",
+                  "Finished", "Merged today")
+TASK_LINKS_DEFAULT = Path("data") / "qd-threads" / "links.tsv"
+TASK_LINKS_MAX_BYTES = 1 << 20
+
+
+def local_today() -> str:
+    """The date on the machine that serves Quarterdeck, which is also the home's date for merge records."""
+    return datetime.now().astimezone().date().isoformat()
+
+
+def underway_status(task: dict, kind: str, has_pull_request: bool) -> str:
+    """The Workers page's word, sharpened only where the reading states a pull request outright."""
+    status = worker_status(task)
+    if status == "Working":
+        return "In review" if has_pull_request else "Building" if kind == "ship" else "Working"
+    if status == "Finished" and has_pull_request:
+        return "Ready to merge"
+    return status
+
+
+def merge_record(record: object) -> tuple[str, str] | None:
+    """The task id and local date of a backlog record that states it was merged, else None."""
+    if not isinstance(record, dict) or record.get("state") != "done":
+        return None
+    completion, key = record.get("completion"), record.get("id")
+    if not isinstance(completion, dict) or completion.get("verb") != "merged":
+        return None
+    date = completion.get("date")
+    if not isinstance(key, str) or not isinstance(date, str) or not re.fullmatch(r"[0-9]{4}-[0-9]{2}-[0-9]{2}", date):
+        return None
+    return key, date
+
+
+def pull_request_href(value: object) -> str | None:
+    if not isinstance(value, str):
+        return None
+    try:
+        return clean_url(value)
+    except ValueError:
+        return None
+
+
+def underway_rows(data: dict, tasks: dict[str, dict], observed: datetime) -> list[dict[str, object]]:
+    """Ships and scouts with a live terminal, then the work merged today, as the Under way tab shows them."""
+    backlog = data.get("backlog")
+    records = backlog.get("records") if isinstance(backlog, dict) else None
+    records = [record for record in records if isinstance(record, dict)] if isinstance(records, list) else []
+    merged = dict(found for record in records if (found := merge_record(record)))
+    today = observed.astimezone().date().isoformat()
+    rows: list[dict[str, object]] = []
+    for key, task in tasks.items():
+        kind = task.get("kind")
+        if kind not in UNDERWAY_KINDS:
+            continue
+        row = roster_row(key, task, observed)
+        links = row["links"]
+        merged_on = merged.get(key)
+        if merged_on is not None and merged_on != today:
+            continue
+        status = "Merged today" if merged_on else underway_status(task, kind, bool(links))
+        title = snapshot_text(snapshot_field(snapshot_field(task, "backlog", dict) or {}, "title", str))
+        rows.append({"id": key, "title": title or key, "project": row["project"], "status": status,
+                     "pr": links[0]["href"] if links else None, "merged_on": merged_on})
+    for record in records:
+        found = merge_record(record)
+        if found is None or found[1] != today or found[0] in tasks or record.get("kind") not in UNDERWAY_KINDS:
+            continue
+        title, repo = record.get("title"), record.get("repo")
+        rows.append({"id": found[0], "title": snapshot_text(title if isinstance(title, str) else None) or found[0],
+                     "project": snapshot_text(repo if isinstance(repo, str) else None), "status": "Merged today",
+                     "pr": pull_request_href(record.get("pr_url")), "merged_on": found[1]})
+    return sorted(rows, key=lambda row: UNDERWAY_ORDER.index(row["status"]) if row["status"] in UNDERWAY_ORDER else 0)
+
+
+def read_task_links(path: Path) -> dict[str, str]:
+    """Task id to Quarterdeck item id from Firstmate's map. A missing or unreadable file means no links. The last line wins."""
+    try:
+        with path.open("rb") as handle:
+            text = handle.read(TASK_LINKS_MAX_BYTES).decode("utf-8", errors="replace")
+    except OSError:
+        return {}
+    links = {}
+    for line in text.splitlines():
+        columns = line.split("\t")
+        if len(columns) >= 2 and columns[0].strip() and ID_RE.fullmatch(columns[1].strip()):
+            links[columns[0].strip()] = columns[1].strip().upper()
+    return links
+
+
+def underway_view(saved: SavedWorkers, links: dict[str, str], items: list[dict[str, object]]) -> dict[str, object]:
+    """The saved reading shaped for the tab. Reading it never runs the snapshot."""
+    view = saved.view()
+    snapshot = view["snapshot"]
+    work = snapshot.get("work") if isinstance(snapshot, dict) else None
+    if not isinstance(work, list):
+        return {"observed_at": None, "failed": view["failed"], "rows": []}
+    conversations = {item["id"] for item in items if item["kind"] == "conversation"}
+    today = local_today()
+    rows = []
+    for row in work:
+        if not isinstance(row, dict) or not isinstance(row.get("id"), str) or not isinstance(row.get("status"), str):
+            continue
+        if row["status"] == "Merged today" and row.get("merged_on") != today:
+            continue
+        target = links.get(row["id"])
+        rows.append({**row, "conversation": item_page_name(target) if target in conversations else None})
+    return {"observed_at": snapshot["observed_at"], "failed": view["failed"], "rows": rows}
 
 
 # --- Pages ------------------------------------------------------------------------------
@@ -2716,6 +2834,19 @@ textarea { display:block; width:100%; resize:vertical; background:var(--ground);
 .desk .card-link { display:inline-block; padding:.35rem 0; }
 .desk .card-link::after { content:""; position:absolute; inset:0; }
 .desk .notice-project { display:none; }
+.desk.underway td.project { min-width:8rem; }
+.desk.underway th { overflow-wrap:anywhere; }
+.underway-links { white-space:nowrap; }
+.underway-links a { display:inline-block; margin-right:.9rem; padding:.35rem 0; }
+@media (max-width: 40rem) {
+  .desk.underway thead { position:absolute; width:1px; height:1px; overflow:hidden; clip-path:inset(50%); }
+  .desk.underway tbody tr { display:grid; grid-template-columns:auto 1fr; gap:.2rem .9rem; align-items:center;
+    padding:.7rem .3rem; border-bottom:1px solid var(--rule); }
+  .desk.underway tbody th { grid-column:1 / -1; padding:0; border:0; }
+  .desk.underway tbody td { padding:0; border:0; }
+  .underway-links { white-space:normal; }
+}
+.underway-status { margin:0 0 .5rem; }
 .desk .notice p { margin:.25rem 0; font-weight:400; }
 .desk .notice a { display:inline-block; margin-right:.65rem; }
 .desk .notice .desk-feedback { max-width:16ch; overflow-wrap:anywhere; }
@@ -2860,7 +2991,8 @@ body:has(dialog[open]) { overflow:hidden; }
 }
 .desk-tabs { margin:1rem 0 1.2rem; border-bottom:1px solid var(--rule); }
 .desk-tabs [role="tab"] { font-size:var(--text-md); margin-bottom:-1px; }
-@media (max-width: 30rem) { .desk-tabs [role="tab"] { padding:.5rem .35rem; font-size:var(--text-sm); } }
+@media (max-width: 30rem) { .desk-tabs { flex-wrap:wrap; } .desk-tabs [role="tab"] { padding:.5rem .3rem; font-size:var(--text-sm); }
+  .desk-tabs .tab-count { min-width:0; margin-left:.2rem; padding:0 .35rem; } }
 .tab-count { display:inline-block; min-width:1.6em; margin-left:.3rem; padding:0 .45rem; border-radius:1em; text-align:center;
   font:600 var(--text-sm)/1.5 var(--sans); color:var(--signal); background:var(--signal-ground); }
 .desk-panel > .empty { margin:1rem 0; }
@@ -2920,7 +3052,7 @@ body:has(dialog[open]) { overflow:hidden; }
 TIME_SCRIPT = """
 const localTime = dateTime => new Date(dateTime).toLocaleString(undefined, {dateStyle:'medium', timeStyle:'short'});
 const localizeTimes = root => {
-  for (const time of root.querySelectorAll('.saved-answer time[datetime]:not([datetime=""]), .earlier-answers time, .answer-source time, .thread time[datetime], .conversation time[datetime]')) {
+  for (const time of root.querySelectorAll('.saved-answer time[datetime]:not([datetime=""]), .earlier-answers time, .answer-source time, .thread time[datetime], .conversation time[datetime], .underway-status time[datetime]')) {
     time.textContent = localTime(time.dateTime);
   }
 };
@@ -5288,11 +5420,46 @@ def needs_you_panel(attention, notices, items_by_id):
             f'<p class="empty"{hide_empty}>Nothing needs you. Questions, unread replies, failed deliveries and notices show here.</p>')
 
 
-def desk_tabs(conversations, attention, archived, total):
+def underway_row(row):
+    title, project = esc(row["title"]), esc(row.get("project") or "")
+    status = row["status"]
+    state = "status exception" if status in ("Question asked", "Stuck") else "status"
+    links = []
+    if row.get("conversation"):
+        links.append(f'<a href="{esc(row["conversation"])}" aria-label="Conversation for {title}">Conversation</a>')
+    if row.get("pr"):
+        links.append(f'<a href="{esc(row["pr"])}" rel="noopener noreferrer" aria-label="Pull request for {title}">'
+                     'Pull request</a>')
+    phone_project = f'<p class="meta notice-project">{project}</p>' if project else ""
+    return (f'<tr><th scope="row">{title}{phone_project}</th><td class="project">{project}</td>'
+            f'<td><span class="{state}">{esc(status)}</span></td><td class="underway-links">{"".join(links)}</td></tr>')
+
+
+def underway_panel(view):
+    """The Under way tab. `view` is None when no Firstmate home is configured."""
+    if view is None:
+        return '<p class="empty">Work under way shows here once firstmate_home names a Firstmate home.</p>'
+    moment = view["observed_at"]
+    if moment is None:
+        return ('<p class="empty">Quarterdeck has not checked the workers yet. '
+                'Work under way shows here after the first check.</p>')
+    time = f'<time datetime="{esc(moment)}">{esc(moment)}</time>'
+    status = (f'Check failed. Showing the reading from {time}.' if view["failed"] else f'Last checked {time}')
+    note = f'<p class="meta underway-status" role="status">{status}</p>'
+    if not view["rows"]:
+        return (f'{note}<p class="empty">No work is under way. Work that is being built, reviewed or merged shows here.</p>')
+    rows = "".join(underway_row(row) for row in view["rows"])
+    return (f'{note}<div class="desk underway"><table><caption class="sr">Work under way</caption><thead><tr>'
+            '<th scope="col">Work</th><th scope="col" class="project">Project</th><th scope="col">Status</th>'
+            f'<th scope="col">Links</th></tr></thead><tbody>{rows}</tbody></table></div>')
+
+
+def desk_tabs(conversations, attention, underway, archived, total):
     hidden = "" if total else " hidden"
     count = f' <span class="tab-count"{hidden}>{total or ""}</span>'
     panels = (("conversations", "Conversations", conversations),
               ("needs-you", "Needs you", attention),
+              ("under-way", "Under way", underway),
               ("archived", "Archived", archived))
     tabs = "".join(f'<button type="button" role="tab" id="desk-tab-{name}" aria-controls="desk-panel-{name}" '
                    f'aria-selected="{"true" if number == 0 else "false"}" tabindex="{0 if number == 0 else -1}">'
@@ -5375,7 +5542,7 @@ def attention_summary(item, *, served):
 
 
 def list_page(data: dict[str, object], site_title: str, *, served: bool, saved_name: str = "index.html",
-              ask_binding: str | None = None) -> str:
+              ask_binding: str | None = None, underway: dict[str, object] | None = None) -> str:
     items = newest_first(data["items"])  # type: ignore[arg-type]
     empty = "Nothing is saved yet. Ask Firstmate to send something to Quarterdeck, such as a link, a list or open questions."
     attention = [(item, summary) for item in items if (summary := attention_summary(item, served=served))]
@@ -5385,6 +5552,7 @@ def list_page(data: dict[str, object], site_title: str, *, served: bool, saved_n
         body = "<h1>Desk</h1>" + desk_tabs(
             conversations_panel(conversations, ask_binding, data.get("projects", [])),
             needs_you_panel(attention, notices, {item["id"]: item for item in items}),
+            underway_panel(underway),
             archived_panel(conversations, data.get("projects", [])),
             len(attention) + len(notices),
         )
@@ -5895,7 +6063,9 @@ def make_handler(site_title: str, base_path: str = "", store: Path | None = None
                 except (OSError, ValueError) as exc:  # a visit that cannot be logged must never stop the page
                     print(f"quarterdeck: could not log the visit: {exc}", file=sys.stderr, flush=True)
                 _, ask_binding = ask_destination(ask_home, require_directory=True)
-                self.send_text(200, list_page(data, site_title, served=True, ask_binding=ask_binding),
+                underway = (underway_view(saved_workers, read_task_links(workers_home / TASK_LINKS_DEFAULT),
+                                          data["items"]) if workers_home is not None else None)
+                self.send_text(200, list_page(data, site_title, served=True, ask_binding=ask_binding, underway=underway),
                                "text/html; charset=utf-8",
                                prevent_framing=True)
                 return

@@ -2384,7 +2384,7 @@ class WorkersTests(StoreCase):
 
     def test_an_empty_snapshot_is_an_empty_list(self) -> None:
         port = self.start("/qd", workers_home=self.make_home([]))
-        self.assertEqual(self.workers(port)[1], {"observed_at": SNAPSHOT_TIME, "workers": [], "second_mates": []})
+        self.assertEqual(self.workers(port)[1], {"observed_at": SNAPSHOT_TIME, "workers": [], "second_mates": [], "work": []})
 
     def test_a_valid_second_mate_resolves_an_unreliable_duplicate_in_either_order(self) -> None:
         valid = snapshot_task("Skerry", kind="secondmate", alive="alive")
@@ -2449,7 +2449,7 @@ class WorkersTests(StoreCase):
                 status, body = self.workers(port)
                 self.assertEqual((status, list(body)), (502, ["error"]))
         self.make_home([snapshot_task("Wren", exists=False)])
-        self.assertEqual(self.workers(port), (200, {"observed_at": SNAPSHOT_TIME, "workers": [], "second_mates": []}))
+        self.assertEqual(self.workers(port), (200, {"observed_at": SNAPSHOT_TIME, "workers": [], "second_mates": [], "work": []}))
 
     def test_a_slow_snapshot_is_stopped(self) -> None:
         home = self.make_home([])
@@ -2651,7 +2651,7 @@ class WorkersTests(StoreCase):
 
     def test_a_cached_reading_is_served_without_running_the_snapshot(self) -> None:
         saved_at = quarterdeck.utc_text(datetime.now(timezone.utc))
-        snapshot = {"observed_at": SNAPSHOT_TIME, "workers": [{"name": "Wren"}], "second_mates": []}
+        snapshot = {"observed_at": SNAPSHOT_TIME, "workers": [{"name": "Wren"}], "second_mates": [], "work": []}
         self.cache_file().parent.mkdir(parents=True, exist_ok=True)
         home = self.make_home([snapshot_task("Heron")])
         self.cache_file().write_text(json.dumps({"home": os.path.realpath(home), "checked_at": saved_at, "snapshot": snapshot}))
@@ -6114,7 +6114,7 @@ class TalkToFirstmateTests(ImageCase):
         port = self.start("/qd", ask_home=self.inbox())
         page = self.fetch(port, "/qd/")[1]
         self.assertEqual(re.findall(r'role="tab" id="desk-tab-([a-z-]+)"[^>]*aria-selected="(\w+)"', page),
-                         [("conversations", "true"), ("needs-you", "false"), ("archived", "false")])
+                         [("conversations", "true"), ("needs-you", "false"), ("under-way", "false"), ("archived", "false")])
         self.assertIn('>Needs you <span class="tab-count" hidden></span></button>', page)
         self.assertLess(page.index('<form id="talk-form"'), page.index('id="topics-recent"'))
         self.assertIn("No conversations yet. A conversation you start with Firstmate shows here.", page)

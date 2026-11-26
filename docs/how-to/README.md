@@ -6,6 +6,7 @@
 - [Save items to Quarterdeck](save-items.md)
 - [Serve the page](serve-the-page.md)
 - [Read the Workers page](read-workers.md)
+- [See work under way](see-work-under-way.md)
 - [Catch up on finished work](catch-up.md)
 - [Answer questions](answer-questions.md)
 - [Ask Firstmate from a card](ask-firstmate.md)

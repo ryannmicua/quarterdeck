@@ -323,7 +323,11 @@ The page displays the fleet's
 `GET /workers.json` runs and saves a new reading.
 With the exact query `?reuse=1`, it shares the result of a check already in
 progress or reuses a fresh saved reading. Otherwise it starts a new check.
-A failed read keeps the previous reading. The
+A failed read keeps the previous reading. The reading also holds a `work` list
+that the Desk's [Under way tab](../how-to/see-work-under-way.md) shows. The Desk
+renders that tab from the saved reading on every request and never starts a
+check. A saved reading without `work`, from an earlier version, is ignored until
+the next check. The
 [snapshot command](../explanation/privacy-and-architecture.md#what-quarterdeck-reads-and-writes)
 runs with `FM_HOME` set to the configured home. Other inherited `FM_` variables
 are removed. The endpoint returns 404 when `firstmate_home` is absent.

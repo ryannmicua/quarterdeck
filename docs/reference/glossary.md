@@ -6,10 +6,11 @@ These are terms Quarterdeck uses on its pages and in the CLI.
 
 | Word | Meaning |
 |---|---|
-| Desk | The landing page. It has three tabs. |
+| Desk | The landing page. It has four tabs. |
 | Conversations | The Desk tab that opens first. It holds the form to start a conversation, the Project filter and every saved conversation. |
 | New conversation | The button that shows the form to start a conversation. The form stays hidden until you select it or the browser restores unsent text, and selecting it again hides the form and keeps unsent text. |
 | Needs you | The [Desk tab for items and notices that need attention](../how-to/answer-questions.md). |
+| Under way | The [Desk tab for work in progress](../how-to/see-work-under-way.md). It lists one row for each piece of work in the saved workers reading. |
 | Watch | A read-only page for what Firstmate has yet to reply to and what its workers are doing. |
 | Workers | The [roster page](../how-to/read-workers.md) that reads the workers of the configured Firstmate home and refreshes the reading. |
 | Hold | The pop-out with References, Answered and Conversations, opened with **Open Hold**. |
@@ -44,6 +45,24 @@ These are terms Quarterdeck uses on its pages and in the CLI.
 | Asked | On the Desk, Firstmate asked a question that is still open. On Watch, you asked Firstmate on a question set and it has yet to reply. |
 | Answered, Closed | The states of a question. See [question states](item-store.md#question-states). |
 | Open | A question that has no answer yet. |
+
+## Work status words
+
+These words show on **Under way**. The Workers page uses the same words that
+[its statuses](../how-to/read-workers.md#what-the-statuses-mean) define.
+
+| Word | Meaning |
+|---|---|
+| Building | The work is under way and the reading names no pull request yet. |
+| In review | The work is under way and the reading names its pull request. |
+| Ready to merge | The worker reported it is done and the reading names its pull request. |
+| Merged today | The home recorded the work as merged on today's date. |
+| Working, Question asked, Stuck, Finished, Unknown | The Workers page word, shown when none of the words above fits. |
+
+The **Under way** columns are Work (the title of the work), Project, Status and
+Links. Links holds **Conversation**, which opens the Quarterdeck conversation
+about the work, and **Pull request**. **Last checked** is the time of the saved
+reading, in your local time zone.
 
 ## Catch-up
 

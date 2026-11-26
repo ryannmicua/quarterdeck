@@ -33,6 +33,8 @@ own copy of the saved content.
   [group conversations](docs/how-to/talk-to-firstmate.md#group-conversations) by project and topic. Its
   **Needs you** tab holds [questions to answer](docs/how-to/answer-questions.md)
   and [unread replies](docs/how-to/use-the-library.md#when-an-item-moves).
+- **Under way** lists the work in progress with its status, pull request and
+  conversation. See [See work under way](docs/how-to/see-work-under-way.md).
 - **Watch** lists what Firstmate has yet to reply to and shows its current work.
   See [Watch Firstmate](docs/how-to/watch-firstmate.md).
 - **Open Hold** gives you searchable access to saved links, lists, and

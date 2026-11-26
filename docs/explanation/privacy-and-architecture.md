@@ -32,9 +32,12 @@ for who can start conversations and use the other browser controls.
 - `service --write` writes the systemd unit. `url` reads it if it exists.
 - `install` and `update` invoke the [user-local installer](../how-to/install.md).
 
-Apart from the explicit file inputs above and the workers snapshot,
-Quarterdeck reads no backlog, board, topic, report, ledger or saved session
-from a Firstmate home, and it does not read terminal text. The
+Apart from the explicit file inputs above, the workers snapshot and the
+read-only [task map](../how-to/see-work-under-way.md#link-to-a-conversation)
+for the Under way tab, Quarterdeck reads no backlog, board, topic, report,
+ledger or saved session from a Firstmate home, and it does not read terminal
+text. It keeps only the work rows the snapshot reports, and never reads the
+backlog itself. The
 [saved workers reading](../reference/cli-and-config.md#workers-endpoint)
 is kept in `workers-saved.json` next to the item store. Quarterdeck saves card asks, conversation
 messages, replies and standalone updates in the [item store](../reference/item-store.md#conversations).
