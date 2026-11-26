@@ -2623,8 +2623,18 @@ const localizeDays = root => {
     time.textContent = new Date(time.dateTime).toLocaleDateString(undefined, {dateStyle:'medium'});
   }
 };
+const localizeStamps = root => {
+  const today = new Date().toDateString();
+  for (const time of root.querySelectorAll('time.stamp[datetime]:not([datetime=""])')) {
+    const at = new Date(time.dateTime);
+    time.textContent = at.toDateString() === today
+      ? at.toLocaleTimeString(undefined, {timeStyle:'short'})
+      : localTime(time.dateTime);
+  }
+};
 localizeTimes(document);
 localizeDays(document);
+localizeStamps(document);
 """
 
 
@@ -3895,6 +3905,7 @@ DESK_SCRIPT = talk_script(r"""
     const row = holder.content.firstElementChild;
     document.querySelector('.topic[data-id="' + row.dataset.id + '"]')?.remove();
     localizeDays(row);
+    localizeStamps(row);
     place(row);
     return row;
   };
@@ -4449,6 +4460,12 @@ if (send) {
 """
 
 
+def activity_time(item) -> str:
+    """The moment the Desk sorts a conversation by. The browser shows its time today and its date and time before."""
+    moment = conversation_activity(item).strftime("%Y-%m-%dT%H:%M:%SZ")
+    return f'<time class="stamp" datetime="{moment}">{moment[:10]}</time>'
+
+
 def day_time(moment: object) -> str:
     return f'<time class="day" datetime="{esc(moment)}">{esc(str(moment)[:10])}</time>'
 
@@ -4626,7 +4643,7 @@ def conversation_row(item):
     return (f'<li class="topic" data-id="{item["id"]}" data-activity="{activity}" {flags}>'
             f'<div class="topic-main"><a class="topic-title" href="{href}">{title}</a>'
             f'<p class="topic-latest">{esc(preview)}</p>'
-            f'<p class="meta topic-meta">{project}{resolved_mark(item)}{status}{day_time(latest["at"])}</p></div>'
+            f'<p class="meta topic-meta">{project}{resolved_mark(item)}{status}{activity_time(item)}</p></div>'
             f'<div class="topic-actions">{pin}{flag_button("resolve", "Reopen", "Resolve", resolved, title)}'
             f'{flag_button("archive", "Unarchive", "Archive", archived, title)}</div>'
             '<p class="meta desk-feedback" role="status"></p></li>')
