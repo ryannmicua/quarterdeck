@@ -13,6 +13,7 @@ Run one group while changing it, then the whole suite before a pull request
 | `render` | `PYTHONPATH=tests python3 -m unittest -v test_quarterdeck.RenderTests` |
 | Question image import, serving, and export | `PYTHONPATH=tests python3 -m unittest -v test_quarterdeck.QuestionImageTests test_quarterdeck.QuestionImagePageTests` |
 | `serve`, base path, host checks and the visit log | `PYTHONPATH=tests python3 -m unittest -v test_quarterdeck.ServeTests` |
+| The Desk updating on its own: version marker, new replies and conversations, hidden page, phone width | `PYTHONPATH=tests python3 -m unittest -v test_mailbox.MailboxBrowserTests test_mailbox.ScopeTests` |
 | Back to the list and Next unread, and the Desk tab and Hold filters they return to | `PYTHONPATH=tests python3 -m unittest -v test_list_context` |
 | Card asks, replies, and acknowledgment | `PYTHONPATH=tests python3 -m unittest -v test_quarterdeck.ConversationTests` |
 | Paragraphs, lists and bold in message text | `PYTHONPATH=tests python3 -m unittest -v test_message_format` |
