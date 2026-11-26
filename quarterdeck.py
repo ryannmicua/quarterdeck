@@ -4705,7 +4705,7 @@ def make_handler(site_title: str, base_path: str = "", store: Path | None = None
                         isinstance(value, str) and CATCH_UP_ID_RE.fullmatch(value) for value in ids
                     ):
                         raise ValueError("Invalid catch-up IDs.")
-                    record = {"read": mark_catch_ups_read(active_store, ids, retention_days)}
+                    record = {"read": mark_catch_ups_read(active_store, list(dict.fromkeys(ids)), retention_days)}
                 else:
                     record = mark_replies_read(active_store, payload)
             except AskHomeUnavailable:

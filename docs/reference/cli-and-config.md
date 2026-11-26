@@ -210,8 +210,8 @@ thread to its current read status (`true` for read).
 `{"ids": ["C4"]}`. The field must contain a nonempty array of
 [canonical notice IDs](item-store.md#catch-up-notices). If any ID is missing
 from the store, the endpoint returns 409 without changing the store. On
-success, the JSON response field `read` lists the acknowledged IDs in request
-order. See [notice retention](../how-to/catch-up.md#how-long-a-notice-stays).
+success, the JSON response field `read` lists each acknowledged ID once, in
+order of first appearance. See [notice retention](../how-to/catch-up.md#how-long-a-notice-stays).
 
 ### Workers endpoint
 
