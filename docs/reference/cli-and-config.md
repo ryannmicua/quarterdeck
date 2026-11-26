@@ -204,6 +204,13 @@ The browser shows that conversation's rows at once, derives the tab counts from 
 lists, and then reads the lists again from `index.html?lists=1`. That request
 returns the Desk page and is not written to the [visit log](#visit-log).
 
+An open, visible Desk also asks `index.html?version=1` about every ten seconds, and
+once when the tab becomes visible again. The answer is `{"version": "..."}`, a short
+marker of what the Desk lists. The Desk reads its lists again only when the marker
+differs, and never while the page is hidden or the pointer is over a row. This
+request is not written to the visit log either. The open item in the reading pane
+loads again when it has a new message, unless text is typed in it.
+
 On an existing conversation, the owner's messages use the
 [ask endpoint](#ask-endpoint) with `"part": "Q12"`, including their first
 message in a conversation opened with `converse`.

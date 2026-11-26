@@ -530,18 +530,34 @@ class ScopeTests(MailboxCase):
         self.fetch(self.port, "/qd/index.html")
         self.assertEqual(len(log.read_text().splitlines()), visits + 1)
 
+    def test_the_version_marker_is_small_changes_with_the_lists_and_is_not_a_visit(self) -> None:
+        log = self.root / "state" / "quarterdeck" / "visits.jsonl"
+        self.assertEqual(self.fetch(self.port, "/qd/")[0], 200)
+        visits = len(log.read_text().splitlines())
+        status, body, headers = self.fetch(self.port, "/qd/index.html?version=1")
+        self.assertEqual(status, 200)
+        first = json.loads(body)
+        self.assertEqual(list(first), ["version"])
+        self.assertLess(len(body), 100)
+        self.assertEqual(headers.get("Content-Type"), "application/json")
+        self.assertEqual(json.loads(self.fetch(self.port, "/qd/index.html?version=1")[1]), first)
+        self.assertIn(f'data-version="{first["version"]}"', self.fetch(self.port, "/qd/")[1])
+        self.firstmate("post", "Q1", "--text", "The west dock is ready too.")
+        self.assertNotEqual(json.loads(self.fetch(self.port, "/qd/index.html?version=1")[1]), first)
+        self.assertEqual(len(log.read_text().splitlines()), visits + 1)  # only the page itself above
+
     def test_an_item_page_may_be_framed_by_quarterdeck_alone(self) -> None:
         status, _, headers = self.fetch(self.port, "/qd/q1.html?from=conversations")
         self.assertEqual((status, headers.get("Content-Security-Policy")), (200, "frame-ancestors 'self'"))
 
 
 class MailboxBrowserTests(MailboxCase):
-    def run_in_desk(self, steps: str, *, window_size: str = "1440,900", route: str = "/qd/") -> None:
+    def run_in_desk(self, steps: str, *, window_size: str = "1440,900", route: str = "/qd/", budget: int = 5000) -> None:
         if not shutil.which("google-chrome"):
             self.skipTest("google-chrome is required for the mailbox browser tests")
         page = base.WorkersTests.instrumented_page(quarterdeck.list_page, HELPERS + steps)
         with patch.object(quarterdeck, "list_page", page):
-            outcome, stderr = base.WorkersTests.browser_page(self, self.port, route, window_size=window_size)
+            outcome, stderr = base.WorkersTests.browser_page(self, self.port, route, window_size=window_size, budget=budget)
         self.assertEqual(outcome, "PASS", stderr)
 
     def check_reference_pointer_gestures(self) -> None:
@@ -676,6 +692,111 @@ check(!pane().querySelector('.next-link'), 'Next unread stayed with nothing left
 check(document.documentElement.scrollWidth <= innerWidth && document.documentElement.scrollHeight <= innerHeight,
       'The mailbox did not fit the window');
 """)
+
+    def after_q2_is_read(self, action):
+        """Run an action from the command line once the open Desk has read Q2, as the owner's Firstmate would."""
+        real = quarterdeck.desk_version
+        done = []
+
+        def version(data, underway):
+            q2 = next(item for item in data["items"] if item["id"] == "Q2")
+            if not done and not quarterdeck.unread_conversation(q2):
+                done.append(1)
+                action()
+            return real(data, underway)
+        return patch.object(quarterdeck, "desk_version", version)
+
+    LIVE_STEPS = r"""
+const checks = () => performance.getEntriesByName(new URL('index.html?version=1', location.href).href).length;
+const lists = () => performance.getEntriesByName(new URL('index.html?lists=1', location.href).href).length;
+const within = async (test, message) => {
+  for (let waited = 0; waited < 40000; waited += 250) {
+    if (test()) return;
+    await new Promise(resolve => setTimeout(resolve, 250));
+  }
+  throw new Error(message);
+};
+"""
+
+    def test_a_new_conversation_reaches_the_open_desk_without_a_reload(self) -> None:
+        with self.after_q2_is_read(lambda: self.firstmate("converse", "--title", "Rope order", "--text", "The rope is on its way.")):
+            self.run_in_desk(self.LIVE_STEPS + r"""
+document.querySelector('#topics-unread .topic[data-id="Q2"] .topic-title').click();
+await until(() => pane()?.querySelector('h1')?.textContent === 'Dock lights', 'The row did not open in the pane');
+const draft = document.getElementById('talk-message');
+draft.value = 'A half written question';
+await new Promise(resolve => setTimeout(resolve, 1000));
+document.querySelector('#desk-tab-conversations').focus();
+const marker = document.createElement('i');
+document.body.append(marker);
+const top = scrollY;
+await within(() => ids('topics-unread').includes('Q4'), 'A new conversation never reached Unread');
+check(count('conversations') === '2' && ids('topics-unread').split(',').sort().join() === 'Q1,Q2,Q4', 'The Unread list did not gain the conversation: ' + ids('topics-unread'));
+check(count('needs-you') === '1', 'The For review count changed');
+check(marker.isConnected, 'The Desk was reloaded');
+check(document.querySelector('.topic[aria-current="true"]')?.dataset.id === 'Q2' && pane().querySelector('h1').textContent === 'Dock lights',
+      'The open item changed');
+check(scrollY === top, 'The scroll position moved');
+check(draft.value === 'A half written question', 'The text being typed was lost');
+check(document.activeElement === document.querySelector('#desk-tab-conversations'), 'Keyboard focus moved');
+const quiet = lists();
+await new Promise(resolve => setTimeout(resolve, 25000));
+check(lists() === quiet, 'The lists were read again although nothing changed');
+""", budget=60000)
+
+    def test_the_open_conversation_picks_up_a_new_reply(self) -> None:
+        with self.after_q2_is_read(lambda: self.firstmate("post", "Q2", "--text", "The west dock is ready too.")):
+            self.run_in_desk(self.LIVE_STEPS + r"""
+document.querySelector('#topics-unread .topic[data-id="Q2"] .topic-title').click();
+await until(() => pane()?.querySelector('h1')?.textContent === 'Dock lights', 'The row did not open in the pane');
+const marker = document.createElement('i');
+document.body.append(marker);
+await within(() => pane()?.body?.textContent.includes('The west dock is ready too.'), 'The open conversation never showed the reply');
+check(marker.isConnected, 'The Desk was reloaded');
+check(document.querySelector('.topic[aria-current="true"]')?.dataset.id === 'Q2', 'The open item changed');
+await within(() => count('conversations') === '2', 'The new reply did not count as unread');
+""", budget=60000)
+
+    def test_an_open_reply_box_with_text_keeps_the_pane_from_loading_again(self) -> None:
+        with self.after_q2_is_read(lambda: self.firstmate("post", "Q2", "--text", "The west dock is ready too.")):
+            self.run_in_desk(self.LIVE_STEPS + r"""
+document.querySelector('#topics-unread .topic[data-id="Q2"] .topic-title').click();
+await until(() => pane()?.querySelector('h1')?.textContent === 'Dock lights', 'The row did not open in the pane');
+const field = pane().querySelector('[data-conversation] textarea');
+field.value = 'Half an answer';
+field.focus();
+const was = pane();
+await new Promise(resolve => setTimeout(resolve, 35000));
+check(pane() === was && pane().querySelector('[data-conversation] textarea').value === 'Half an answer', 'The pane loaded over typed text');
+""", budget=60000)
+
+    def test_a_phone_sized_desk_updates_the_same_way(self) -> None:
+        real = quarterdeck.desk_version
+        calls = []
+
+        def version(data, underway):
+            calls.append(1)
+            if len(calls) == 2:
+                self.firstmate("converse", "--title", "Rope order", "--text", "The rope is on its way.")
+            return real(data, underway)
+        with patch.object(quarterdeck, "desk_version", version):
+            self.run_in_desk(self.LIVE_STEPS + r"""
+check(count('conversations') === '2', 'The phone Desk did not start with two unread');
+await within(() => count('conversations') === '3', 'The phone Desk did not gain the new conversation');
+check(ids('topics-unread').split(',').includes('Q4'), 'The new conversation is not under Unread');
+check(document.documentElement.scrollWidth <= innerWidth, 'The phone Desk scrolls sideways');
+""", window_size="390,844", budget=60000)
+
+    def test_no_check_runs_while_the_page_is_hidden_and_one_runs_on_return(self) -> None:
+        self.run_in_desk(self.LIVE_STEPS + r"""
+let hidden = true;
+Object.defineProperty(document, 'hidden', {configurable: true, get: () => hidden});
+await new Promise(resolve => setTimeout(resolve, 35000));
+check(checks() === 0 && lists() === 0, 'The Desk checked while hidden');
+hidden = false;
+document.dispatchEvent(new Event('visibilitychange'));
+await within(() => checks() === 1, 'The Desk did not check once on return');
+""", budget=60000)
 
     def test_a_question_set_opens_in_the_pane_and_stays_open_when_deferred(self) -> None:
         self.questions("Harbor map first edition", TWO_QUESTIONS)  # Q4

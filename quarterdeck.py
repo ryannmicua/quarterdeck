@@ -5484,6 +5484,8 @@ DESK_SCRIPT = talk_script(r"""
   const LISTS = ['topics-unread', 'topics-pinned', 'topics-recent', 'topics-archived', 'review-waiting', 'review-later', 'topics-references'];
   let refreshing = null;
   let refreshAgain = false;
+  let paneStale = false;  // the open item is looked at again after the lists changed
+  let deskVersion = document.getElementById('desk-version')?.dataset.version;
   // The lists are drawn again from the server after anything changes, so every count and group stays true.
   const refreshLists = () => {
     if (refreshing) { refreshAgain = true; return refreshing; }
@@ -5495,6 +5497,8 @@ DESK_SCRIPT = talk_script(r"""
           if (!response.ok) break;
           const fresh = new DOMParser().parseFromString(await response.text(), 'text/html');
           if (refreshAgain) continue;
+          deskVersion = fresh.getElementById('desk-version')?.dataset.version ?? deskVersion;
+          paneStale = true;
           for (const id of LISTS) {
             const from = fresh.querySelector('#' + id + ' .topic-list');
             const to = document.querySelector('#' + id + ' .topic-list');
@@ -5528,6 +5532,45 @@ DESK_SCRIPT = talk_script(r"""
     })();
     return refreshing;
   };
+  // While the Desk is visible it asks for a small version marker about every ten seconds and reads the lists again only when it changed.
+  // A row under the pointer is left alone until the pointer moves off, so the list never slides away from a click.
+  let checking = false;
+  // The open item takes a new reply by loading its page again, but never while the owner has text in it or the keyboard in a field.
+  const refreshPane = async () => {
+    let current = null;
+    try { current = frame.dataset.open ? frame.contentDocument : null; } catch { return; }
+    if (!current || !ITEM_PAGE.test(new URL(current.URL).pathname)) { paneStale = false; return; }
+    const response = await fetch(current.URL, {cache: 'no-store'});
+    if (!response.ok || current !== frame.contentDocument) return;
+    const fresh = new DOMParser().parseFromString(await response.text(), 'text/html');
+    const messages = doc => [...doc.querySelectorAll('[data-conversation] .thread-messages [id]')].map(node => node.id).join();
+    if (messages(fresh) === messages(current)) { paneStale = false; return; }
+    const typing = [...current.querySelectorAll('textarea, input')].some(field => field.value !== field.defaultValue)
+      || current.activeElement?.matches('textarea, input, select');
+    if (typing) return;
+    paneStale = false;
+    frame.contentWindow.location.reload();
+  };
+  const checkDesk = async () => {
+    if (document.hidden || checking || refreshing || !deskVersion) return;
+    checking = true;
+    try {
+      const response = await fetch('index.html?version=1', {cache: 'no-store'});
+      if (!response.ok) return;
+      const {version} = await response.json();
+      if (version !== deskVersion && !document.hidden && !document.querySelector('#mail-list .topic:hover')) {
+        await refreshLists();
+      }
+      if (paneStale && !document.hidden) await refreshPane();
+    } catch {
+      return;
+    } finally {
+      checking = false;
+    }
+  };
+  setInterval(checkDesk, 10000);
+  document.addEventListener('visibilitychange', () => { if (!document.hidden) checkDesk(); });
+  document.getElementById('mail-list').addEventListener('mouseleave', checkDesk);
   frame.addEventListener('load', () => {
     let address = null;
     try { address = frame.contentWindow.location; } catch { return; }
@@ -7052,6 +7095,12 @@ def desk_conversation(item) -> bool:
         unread_target(item) is not None or question_delivery_pending(item))
 
 
+def desk_version(data: dict[str, object], underway: dict[str, object] | None) -> str:
+    """A short marker that changes when anything the Desk lists changes, so an open Desk can skip reading them again."""
+    state = json.dumps([data, underway], sort_keys=True, default=str)
+    return hashlib.sha1(state.encode("utf-8")).hexdigest()[:16]
+
+
 def list_page(data: dict[str, object], site_title: str, *, served: bool, saved_name: str = "index.html",
               ask_binding: str | None = None, underway: dict[str, object] | None = None) -> str:
     items = newest_first(data["items"])  # type: ignore[arg-type]
@@ -7061,7 +7110,7 @@ def list_page(data: dict[str, object], site_title: str, *, served: bool, saved_n
         conversations = [item for item in items if desk_conversation(item)]
         notices = unread_catch_ups(data)
         unread = sum(1 for item in conversations if unread_conversation(item)) + len(notices)
-        body = '<h1 class="sr">Desk</h1>' + desk_tabs(
+        body = '<h1 class="sr">Desk</h1>' + f'<div id="desk-version" data-version="{desk_version(data, underway)}" hidden></div>' + desk_tabs(
             conversations_panel(conversations, ask_binding, data.get("projects", []), notices,
                                 {item["id"]: item for item in items}),
             review_panel(attention),
@@ -7597,13 +7646,16 @@ def make_handler(site_title: str, base_path: str = "", store: Path | None = None
                 return
             if name == "index.html":
                 try:
-                    if request.query != "lists=1":  # the Desk fetching its own lists again is not a visit
+                    if request.query not in ("lists=1", "version=1"):  # the Desk checking or reading its own lists is not a visit
                         visit_log.record(self.headers.get("User-Agent"))
                 except (OSError, ValueError) as exc:  # a visit that cannot be logged must never stop the page
                     print(f"quarterdeck: could not log the visit: {exc}", file=sys.stderr, flush=True)
                 _, ask_binding = ask_destination(ask_home, require_directory=True)
                 underway = (underway_view(saved_workers, read_task_links(workers_home / TASK_LINKS_DEFAULT),
                                           data["items"]) if workers_home is not None else None)
+                if request.query == "version=1":
+                    self.send_text(200, json.dumps({"version": desk_version(data, underway)}), "application/json")
+                    return
                 self.send_text(200, list_page(data, site_title, served=True, ask_binding=ask_binding, underway=underway),
                                "text/html; charset=utf-8",
                                framing="none")
