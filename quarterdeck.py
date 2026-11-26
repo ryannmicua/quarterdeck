@@ -2880,7 +2880,7 @@ textarea { display:block; width:100%; resize:vertical; background:var(--ground);
 @media (max-width: 40rem) {
   .desk.underway thead { position:absolute; width:1px; height:1px; overflow:hidden; clip-path:inset(50%); }
   .desk.underway table, .desk.underway tbody { display:block; }
-  .desk.underway tbody tr { display:grid; grid-template-columns:auto minmax(0,1fr) auto; gap:.3rem .7rem;
+  .desk.underway tbody tr { display:grid; grid-template-columns:auto minmax(0,1fr); gap:.3rem .7rem;
     align-items:center; padding:.6rem .3rem; border-bottom:1px solid var(--rule); }
   .desk.underway tbody th { grid-column:1 / -1; padding:0; border:0; width:auto; min-width:0; white-space:normal; }
   .desk.underway tbody th .clip { display:-webkit-box; -webkit-box-orient:vertical; -webkit-line-clamp:2; line-clamp:2; white-space:normal; overflow-wrap:anywhere; }
@@ -2888,9 +2888,8 @@ textarea { display:block; width:100%; resize:vertical; background:var(--ground);
   .desk.underway table { table-layout:auto; }
   .desk-panel .desk.underway td.project { display:block; width:auto; grid-column:2; grid-row:2; font-size:var(--text-sm); color:var(--soft); }
   .desk.underway td.state { grid-column:1; grid-row:2; width:auto; }
-  .desk.underway td.underway-links { grid-column:3; grid-row:2; width:auto; text-align:right; }
-  .desk.underway td.underway-links a { margin:0 0 0 .9rem; }
-  .desk-panel .desk.underway.merged td.project { grid-column:1 / 3; }
+  .desk.underway td.underway-links { grid-column:1 / -1; grid-row:3; width:auto; }
+  .desk-panel .desk.underway.merged td.project { grid-column:1 / -1; }
 }
 .underway-status { margin:0 0 .5rem; }
 .desk .notice p { margin:.25rem 0; font-weight:400; }

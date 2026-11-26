@@ -276,13 +276,19 @@ class UnderwayTests(base.ImageCase):
         if not shutil.which("google-chrome"):
             self.skipTest("google-chrome is required for the Under way browser test")
         title = "Quarterdeck: group the Under way tab into in progress and merged, and link each question asked"
-        home = self.make_home(body=reading([snapshot_task("Wharf", title=title, pr=PULL + "4")]))
-        port = self.start("/qd", workers_home=home)
+        question = [{"key": "a", "summary": "Pick on https://example.com/review/board.html"}]
+        home = self.make_home(body=reading([snapshot_task("Wharf", title=title, pr=PULL + "4"),
+                                            snapshot_task("Pier", title="Mending the pier", pr=PULL + "5"),
+                                            snapshot_task("Slip", title="Oiling the slip", decisions=question)]))
+        (home / "data" / "qd-threads").mkdir(parents=True)
+        (home / "data" / "qd-threads" / "links.tsv").write_text("Pier\tQ1\n")
+        port = self.start("/qd", workers_home=home, ask_home=self.inbox())
+        self.assertEqual(self.begin(port, "Harbor lamp colours")[1][0], 200)
         self.assertEqual(self.fetch(port, "/qd/workers.json")[0], 200)
         steps = """
 document.getElementById('desk-tab-under-way').click();
 const table = document.querySelector('#desk-panel-under-way table');
-const row = table.querySelector('tbody tr');
+const row = [...table.querySelectorAll('tbody tr')].find(r => r.querySelector('th').title.endsWith('question asked'));
 const title = row.querySelector('th .clip');
 const project = row.querySelector('td.project');
 const lineHeight = parseFloat(getComputedStyle(title).lineHeight);
@@ -290,6 +296,15 @@ check(innerWidth <= 640, 'The window is wider than a phone: ' + innerWidth);
 check(table.scrollWidth <= table.clientWidth, 'The Under way table scrolls sideways');
 check(document.documentElement.scrollWidth <= innerWidth, 'The page scrolls sideways');
 check(project.checkVisibility() && project.textContent === 'Copper Orchard', 'The phone layout hid the project');
+const rows = [...table.querySelectorAll('tbody tr')];
+check(rows.length === 3, 'The table shows ' + rows.length + ' rows instead of three');
+check(rows.some(r => r.querySelectorAll('td.underway-links a').length === 2), 'No row has two links');
+for (const r of rows) {
+  const cell = r.querySelector('td.project .clip');
+  const name = r.querySelector('th').title;
+  check(cell.getBoundingClientRect().width > 0 && cell.scrollWidth <= cell.clientWidth,
+        'The project is hidden or cut off on the row for ' + name);
+}
 const lines = Math.round(title.getBoundingClientRect().height / lineHeight);
 check(lines === 2, 'The long title takes ' + lines + ' lines instead of two');
 """
