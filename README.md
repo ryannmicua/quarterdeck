@@ -4,10 +4,11 @@
 
 ## What it is
 
-Quarterdeck shows saved items, including topic-based conversations, and the
-Firstmate worker roster when enabled. When you tell Firstmate "send
-this to Quarterdeck" or "save this Lavish page to Quarterdeck", Firstmate
-runs `quarterdeck add`, and the item appears on the page.
+Quarterdeck shows saved items, including topic-based conversations, and
+Catch-up notices saved by hand. The Workers page shows the Firstmate worker
+roster when enabled. When you tell Firstmate "send this to Quarterdeck" or
+"save this Lavish page to Quarterdeck", Firstmate runs `quarterdeck add`,
+and the item appears on the page.
 
 Each item gets an ID that is never reused: Q1, Q2, Q3 and so on. The numbered
 parts of a list or a set of questions are cited as Q7.1, Q7.2, so you can say
@@ -33,6 +34,8 @@ own copy of the saved content.
 - **Open library** gives you searchable access to saved links, lists, and
   answered items and conversations on the served Desk. See
   [Find references and answered questions](docs/how-to/use-the-library.md).
+- **Catch-up** shows notices about finished work. See
+  [Catch up on finished work](docs/how-to/catch-up.md).
 - **Workers** is its own page, linked from **Desk**. See
   [how to enable and check the roster](docs/how-to/read-workers.md).
 - The served Desk gives each item a page with its ID and title at the top.

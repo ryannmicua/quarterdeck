@@ -16,6 +16,9 @@ quarterdeck mark ID[.PART] answered --via WHERE
 quarterdeck mark ID[.PART] closed|open
 quarterdeck classify ID[.PART] [--project NAME] [--tag TAG ...] [--kind KIND]
 quarterdeck stats [--since DATE] [--json]
+quarterdeck catch-up add --title TEXT --summary TEXT [--url URL --link-text TEXT] [--item ID] [--project NAME]
+quarterdeck catch-up list
+quarterdeck catch-up read ID... | --all
 quarterdeck remove ID
 quarterdeck render [--output PATH] [--config FILE] [--title TEXT]
 quarterdeck serve [--host ADDRESS ...] [--port N] [--base-path PATH] [--tls-cert FILE --tls-key FILE] [--config FILE] [--title TEXT]
@@ -50,6 +53,7 @@ as `reply`.
 | `mark` | Sets question state, optionally for a whole questions item. `--via` is required with `answered` and accepted only with that state. Skips exit with status 0. See [Read answers](../how-to/read-answers.md) for which questions are marked. |
 | `classify` | Requires at least one classification option. Use `--project` for an item ID, `--kind` for a question ID, and `--tag` for either. See [how to change classification](../how-to/classify-items.md#change-it-later). |
 | `stats` | Prints a question activity table by default or JSON with `--json`. See [Read the report](../how-to/read-the-report.md) for date filtering and field definitions. |
+| `catch-up` | `catch-up add` prints the new notice ID, such as `C4`. `catch-up list` prints the ID, UTC saved date and title of each unread notice, newest first. `catch-up read` accepts notice IDs in either case or `--all` for every unread notice. It prints a line such as `C4 Read` once per notice, even if the ID was supplied more than once. If any supplied ID is missing from the store, the command leaves all notices unchanged. `--all` skips the store write when no notices are unread. See [Catch up on finished work](../how-to/catch-up.md). |
 | `remove` | Deletes an item. Its ID is never used again. See [image removal](item-store.md#store-layout). |
 
 ### Pages
@@ -66,8 +70,8 @@ on served and rendered pages.
 
 Rendered item pages include current saved answers with their timestamps and
 delivery status. Earlier answers, conversation text, clarifications, reply
-links, reply images, and Replied badges are exclusive to the served site.
-Answer controls are available on served pages.
+links, reply images, and Replied badges are exclusive to the served site,
+along with Catch-up notices and answer controls.
 
 If `XDG_STATE_HOME` is set when you run `service`, the generated unit includes
 that setting so it uses the same [item store](item-store.md) and
@@ -198,6 +202,18 @@ read records intact. Every ID must identify a Firstmate message in the named
 thread. The response field `replies` maps each Firstmate message ID in that
 thread to its current read status (`true` for read).
 
+### Catch-up endpoint
+
+`POST /catch-ups/read` (under any `base_path`) uses the same origin check as
+`/answers`. It works without a Firstmate home. The request uses
+`Content-Type: application/json` and a single `ids` field, such as
+`{"ids": ["C4"]}`. The field must contain a nonempty array of unique
+[canonical notice IDs](item-store.md#catch-up-notices). Duplicate IDs return
+HTTP 400. If any ID is missing from the store, the endpoint returns HTTP 409.
+Both errors leave the store unchanged. On success, the JSON response field
+`read` lists the acknowledged IDs in request order. See
+[notice retention](../how-to/catch-up.md#how-long-a-notice-stays).
+
 ### Workers endpoint
 
 All Workers routes follow the configured `base_path`. `GET /workers.html`
@@ -255,12 +271,21 @@ the documentation to read; `help --json` prints a machine-readable index.
 
 The config is optional. `converse`, `render`, `serve` and `service` read `--config FILE`,
 or `${XDG_CONFIG_HOME:-~/.config}/quarterdeck.json` when it exists.
+`url` uses the installed unit's config path or the default file to look up
+`base_path` when the unit supplies no `--base-path`.
+`catch-up add` and `catch-up read` use the default file, if present, on each
+invocation. `catch-up list` reads only the store. Commands that load the
+config validate the entire file, including `catch_up_days` when present.
+`serve` loads its selected file at startup and uses those settings until it
+restarts. When the selected path is a symlink, `serve` resolves it before
+reading the file.
 
 | Key | Type | Default | Meaning |
 | --- | --- | --- | --- |
 | `page_title` | string | `Quarterdeck` | The site name in the navigation bar and browser title. `--title` overrides it for `render` and `serve`. |
 | `output_dir` | string path | `${XDG_STATE_HOME:-~/.local/state}/quarterdeck` | Where `render` writes the pages. |
 | `base_path` | string | none | The URL prefix described above. |
+| `catch_up_days` | whole number from 1 to 3650 | `7` | Retention period for [read Catch-up notices](../how-to/catch-up.md#how-long-a-notice-stays). |
 | `firstmate_home` | absolute path after expanding `~` | unset | Local destination for answers, asks and conversation messages submitted to `serve`, and the home whose workers the page lists. When set, `converse` requires it to resolve to an existing directory. See [how the store records the binding](item-store.md#conversations). |
 
 `serve` reads `firstmate_home` at startup. `converse` reads it each time it runs.
@@ -269,7 +294,8 @@ a conversation the owner can respond to on that server.
 
 When `firstmate_home` is absent, `serve` uses a legacy `homes` list only for
 answer delivery and only if it contains exactly one object with a valid
-`path`. Relative legacy paths are resolved from the config file's directory.
+`path`. Relative legacy paths are resolved from the directory containing the
+resolved config file.
 Without a destination, Quarterdeck saves answers with delivery pending.
 `captain_waits` is ignored.
 Any other key is an error. See

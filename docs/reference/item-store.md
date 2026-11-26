@@ -1,6 +1,6 @@
 # Item store
 
-Quarterdeck keeps every saved item in one JSON file it owns:
+Quarterdeck keeps saved items and Catch-up notices in one JSON file it owns:
 
 ```text
 ${XDG_STATE_HOME:-~/.local/state}/quarterdeck/items.json
@@ -49,8 +49,9 @@ a read-only store. Other readers validate records without taking the lock.
 | `tags` | Optional list of up to three distinct [classification tags](cli-and-config.md#classification). Repeated tags collapse to one. An empty list is omitted. |
 | `body` | Depends on the kind; see below. |
 
-Served pages and rendered HTML display saved dates in the browser's local
-time zone when JavaScript is enabled.
+Item and Catch-up timestamps (`saved_at` and, for notices, `read_at`) use
+`YYYY-MM-DDTHH:MM:SSZ`. Served pages and rendered HTML display saved dates in
+the browser's local time zone when JavaScript is enabled.
 
 | Kind | `body` |
 | --- | --- |
@@ -61,12 +62,54 @@ time zone when JavaScript is enabled.
 A question may also carry `kind` (one word) and its own `tags`, which follow
 the same list rules as item tags. An unclassified question omits `kind`.
 
-Resource and question link URLs must use `http` or `https`, include a hostname,
-and pass port validation. After trimming, a URL may contain at most 2,000
-characters and cannot contain whitespace or backslashes.
+Resource, question and Catch-up link URLs must use `http` or `https`, include
+a hostname, and pass port validation. After trimming, a URL may contain at most
+2,000 characters and cannot contain whitespace or backslashes.
 Question link `text` must be nonempty and is limited to 200 characters after
 whitespace is collapsed to single spaces. Quarterdeck omits an empty `links`
 array when saving.
+
+## Catch-up notices
+
+Saving the first Catch-up notice adds both `next_catch_up` and the `catch_ups`
+list. Both keys remain even when the list is empty. A notice ID is uppercase
+`C` followed by a positive integer without leading zeros. The integer is
+unique and less than `next_catch_up`, the number assigned to the next notice.
+Quarterdeck never reuses a removed notice's ID.
+
+These are the fields added to the version 1 store shown above:
+
+```json
+{
+  "next_catch_up": 5,
+  "catch_ups": [
+    {
+      "id": "C4",
+      "title": "Tide review is ready",
+      "summary": "The tide chart review is published and saved as a reference.",
+      "saved_at": "2026-11-24T10:00:00Z",
+      "read_at": "2026-11-24T18:30:00Z",
+      "url": "https://example.com/review",
+      "link_text": "Open the review",
+      "item": "Q3",
+      "project": "harbour"
+    }
+  ]
+}
+```
+
+| Field | Meaning |
+| --- | --- |
+| `title` | Nonempty text, up to 200 characters after whitespace is collapsed to single spaces. |
+| `summary` | Nonempty text, up to 300 characters after whitespace is collapsed to single spaces. |
+| `saved_at` | UTC time the notice was saved. |
+| `read_at` | Optional. UTC time the notice was first marked read. A notice without it is unread. |
+| `url` and `link_text` | Optional pair. The link text is nonempty and uses the same length and whitespace rules as the title. |
+| `item` | Optional ID of a saved item. The notice links to the item while it exists. |
+| `project` | Optional, with the same rules as an item's project. |
+
+See [notice retention](../how-to/catch-up.md#how-long-a-notice-stays) for when
+read notices are removed.
 
 ## Classification
 

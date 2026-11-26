@@ -41,7 +41,7 @@ from urllib.parse import quote, unquote, urlparse
 DEFAULT_TITLE = "Quarterdeck"
 DEFAULT_HOST = "127.0.0.1"
 DEFAULT_PORT = 8765
-ALLOWED_CONFIG_KEYS = {"page_title", "output_dir", "base_path", "firstmate_home"}
+ALLOWED_CONFIG_KEYS = {"page_title", "output_dir", "base_path", "firstmate_home", "catch_up_days"}
 # Legacy configuration. Only a sole registered home can supply the note destination.
 LEGACY_CONFIG_KEYS = {"homes", "captain_waits"}
 # Split so the privacy guard, which rejects committed generated pages by this marker, does not flag the source.
@@ -134,7 +134,15 @@ def load_config(path: Path | None) -> dict[str, object]:
             raise ValueError(f"config {exc}") from exc
     if "output_dir" in config and not isinstance(config["output_dir"], str):
         raise ValueError("config output_dir must be a path string")
+    if "catch_up_days" in config:
+        days = config["catch_up_days"]
+        if type(days) is not int or not 1 <= days <= 3650:
+            raise ValueError("config catch_up_days must be a whole number of days from 1 to 3650")
     return config
+
+
+def catch_up_days(config: dict[str, object]) -> int:
+    return config.get("catch_up_days", CATCH_UP_DAYS)  # type: ignore[return-value]
 
 
 def selected_config_path(args: argparse.Namespace) -> Path | None:
@@ -271,6 +279,11 @@ ITEM_PAGE_RE = re.compile(r"q[1-9][0-9]*[.]html")
 TITLE_LIMIT = 200
 DESCRIPTION_LIMIT = 600
 TEXT_LIMIT = 20_000
+
+
+CATCH_UP_DAYS = 7
+CATCH_UP_ID_RE = re.compile(r"C[1-9][0-9]*")
+CATCH_UP_SUMMARY_LIMIT = 300
 
 
 def empty_store() -> dict[str, object]:
@@ -616,6 +629,18 @@ def make_body(kind: str, *, url: str | None, link_text: str | None, body: str | 
     return validated_body(kind, {"questions": questions}, images)
 
 
+def utc_stamp(value: object, name: str) -> datetime:
+    try:
+        if not isinstance(value, str):
+            raise ValueError
+        moment = datetime.strptime(value, "%Y-%m-%dT%H:%M:%SZ")
+        if moment.isoformat() + "Z" != value:
+            raise ValueError
+    except ValueError as exc:
+        raise ValueError(f"{name} must be a UTC timestamp") from exc
+    return moment
+
+
 def check_store(data: object) -> dict[str, object]:
     """Validate a store read from disk; raise ValueError when it is not one Quarterdeck wrote."""
     if not isinstance(data, dict) or type(data.get("version")) is not int or data["version"] != STORE_VERSION:
@@ -636,15 +661,7 @@ def check_store(data: object) -> dict[str, object]:
         try:
             title = clean_text(item.get("title"), "title", TITLE_LIMIT)
             description = clean_text(item.get("description"), "description", DESCRIPTION_LIMIT, multiline=True)
-            saved_at = item.get("saved_at")
-            if not isinstance(saved_at, str):
-                raise ValueError("saved_at must be a UTC timestamp")
-            try:
-                timestamp = datetime.strptime(saved_at, "%Y-%m-%dT%H:%M:%SZ")
-            except ValueError as exc:
-                raise ValueError("saved_at must be a UTC timestamp") from exc
-            if timestamp.isoformat() + "Z" != saved_at:
-                raise ValueError("saved_at must be a UTC timestamp")
+            utc_stamp(item.get("saved_at"), "saved_at")
             body = validated_body(item["kind"], item.get("body"), stored=True)
             if (title, description, body) != (item["title"], item["description"], item["body"]):
                 raise ValueError("item text or body is not in the saved format")
@@ -659,6 +676,7 @@ def check_store(data: object) -> dict[str, object]:
                 raise ValueError("a conversation needs its messages")
         except ValueError as exc:
             raise ValueError(f"the item store is damaged: {item_id}: {exc}") from exc
+    validate_catch_ups(data)
     return data
 
 
@@ -1485,6 +1503,153 @@ def remove_item(args: argparse.Namespace) -> int:
     return run_item_command(action)
 
 
+# --- Catch-up ---------------------------------------------------------------------------
+
+
+def parse_catch_up_id(value: str) -> str:
+    if not CATCH_UP_ID_RE.fullmatch(value.upper()):
+        raise ValueError(f"not a catch-up ID: {value!r} (IDs look like C4)")
+    return value.upper()
+
+
+def catch_up_link(url: object, link_text: object) -> dict[str, str]:
+    if (url is None) != (link_text is None):
+        raise ValueError("a link needs both --url and --link-text")
+    if url is None:
+        return {}
+    return {"url": clean_url(url), "link_text": clean_text(link_text, "link text", TITLE_LIMIT)}
+
+
+def validate_catch_ups(data: dict[str, object]) -> None:
+    if "catch_ups" not in data and "next_catch_up" not in data:
+        return
+    notices, next_id = data.get("catch_ups"), data.get("next_catch_up")
+    if not isinstance(notices, list) or type(next_id) is not int or next_id < 1:
+        raise ValueError("the item store is damaged: it lacks catch_ups or next_catch_up")
+    seen = set()
+    for notice in notices:
+        if not isinstance(notice, dict) or not isinstance(notice.get("id"), str):
+            raise ValueError("the item store is damaged: a catch-up notice has no id")
+        notice_id = notice["id"]
+        try:
+            if parse_catch_up_id(notice_id) != notice_id or notice_id in seen or int(notice_id[1:]) >= next_id:
+                raise ValueError("it is not canonical, is repeated or is above next_catch_up")
+            seen.add(notice_id)
+            allowed = {"id", "title", "summary", "saved_at", "read_at", "url", "link_text", "item", "project"}
+            if set(notice) - allowed:
+                raise ValueError("it has an unknown field")
+            expected = {
+                "title": clean_text(notice.get("title"), "title", TITLE_LIMIT),
+                "summary": clean_text(notice.get("summary"), "summary", CATCH_UP_SUMMARY_LIMIT),
+                **catch_up_link(notice.get("url"), notice.get("link_text")),
+            }
+            if "item" in notice:
+                expected["item"] = parse_id(str(notice["item"]))
+            if "project" in notice:
+                expected["project"] = clean_project(notice["project"])
+            utc_stamp(notice.get("saved_at"), "saved_at")
+            if "read_at" in notice:
+                utc_stamp(notice["read_at"], "read_at")
+            if {k: v for k, v in notice.items() if k not in {"id", "saved_at", "read_at"}} != expected:
+                raise ValueError("its text is not in the saved format")
+        except ValueError as exc:
+            raise ValueError(f"the item store is damaged: {notice_id}: {exc}") from exc
+
+
+def catch_ups(data: dict[str, object]) -> list[dict[str, object]]:
+    return data.get("catch_ups", [])  # type: ignore[return-value]
+
+
+def unread_catch_ups(data: dict[str, object]) -> list[dict[str, object]]:
+    """Unread notices, newest first."""
+    return newest_first([notice for notice in catch_ups(data) if "read_at" not in notice])
+
+
+def prune_catch_ups(data: dict[str, object], days: int) -> None:
+    """Drop read notices at or before the retention cutoff."""
+    cutoff = datetime.now(timezone.utc).replace(tzinfo=None) - timedelta(days=days)
+    data["catch_ups"] = [notice for notice in catch_ups(data)
+                         if "read_at" not in notice or utc_stamp(notice["read_at"], "read_at") > cutoff]
+
+
+class CatchUpConflict(ValueError):
+    pass
+
+
+def mark_catch_ups_read(store: Path, ids: list[str] | None, days: int) -> list[str]:
+    """Mark the named notices, or all unread notices, and return their IDs."""
+    with locked_store(store):
+        data = read_store(store)
+        if ids is None:
+            ids = [str(notice["id"]) for notice in unread_catch_ups(data)]
+            if not ids:
+                return ids
+        notices = {notice["id"]: notice for notice in catch_ups(data)}
+        if not notices.keys() >= set(ids):
+            raise CatchUpConflict("Unknown catch-up notice.")
+        stamp = now_text()
+        for notice_id in ids:
+            notices[notice_id].setdefault("read_at", stamp)
+        prune_catch_ups(data, days)
+        write_store(store, data)
+        return ids
+
+
+def add_catch_up(args: argparse.Namespace) -> int:
+    def action() -> int:
+        days = catch_up_days(selected_config(args))
+        notice: dict[str, object] = {
+            "title": clean_text(args.title, "title", TITLE_LIMIT),
+            "summary": clean_text(args.summary, "summary", CATCH_UP_SUMMARY_LIMIT),
+            **catch_up_link(args.url, args.link_text),
+        }
+        if args.project is not None:
+            notice["project"] = clean_project(args.project)
+        store = store_path()
+        with changing_store(store) as data:
+            if args.item is not None:
+                notice["item"] = find_item(data, args.item)["id"]
+            notice_id = f"C{data.get('next_catch_up', 1)}"
+            data["next_catch_up"] = int(data.get("next_catch_up", 1)) + 1  # type: ignore[call-overload]
+            data.setdefault("catch_ups", [])
+            data["catch_ups"].append({"id": notice_id, **notice, "saved_at": now_text()})  # type: ignore[union-attr]
+            prune_catch_ups(data, days)
+        print(notice_id)
+        return 0
+    return run_item_command(action)
+
+
+def list_catch_ups(args: argparse.Namespace) -> int:
+    def action() -> int:
+        notices = unread_catch_ups(read_store(store_path()))
+        if not notices:
+            print("No unread catch-up notices.")
+        for notice in notices:
+            print(f"{notice['id']:<6} {str(notice['saved_at'])[:10]}  {notice['title']}")
+        return 0
+    return run_item_command(action)
+
+
+def read_catch_up(args: argparse.Namespace) -> int:
+    def action() -> int:
+        store = store_path()
+        if args.all:
+            if args.ids:
+                raise ValueError("give catch-up IDs or --all, not both")
+            ids = None
+        elif args.ids:
+            ids = list(dict.fromkeys(parse_catch_up_id(value) for value in args.ids))
+        else:
+            raise ValueError("give a catch-up ID such as C4, or --all")
+        marked = mark_catch_ups_read(store, ids, catch_up_days(selected_config(args)))
+        if not marked:
+            print("No unread catch-up notices.")
+        for notice_id in marked:
+            print(f"{notice_id} Read")
+        return 0
+    return run_item_command(action)
+
+
 # --- Report -------------------------------------------------------------------------------
 # Counts questions by kind, tag and project. A question's tags are its own plus its item's.
 # It reads only the store and never decides whether anything was answered elsewhere.
@@ -2073,7 +2238,7 @@ textarea { display:block; width:100%; resize:vertical; background:var(--ground);
 .desk .work:has(.card-link:focus-visible) { outline:3px solid var(--focus); outline-offset:-3px; }
 .desk .card-link { display:inline-block; padding:.35rem 0; }
 .desk .card-link::after { content:""; position:absolute; inset:0; }
-.sr { position:absolute; width:1px; height:1px; overflow:hidden; clip-path:inset(50%); white-space:nowrap; }
+.sr, [data-catch-up-status]:empty { position:absolute; width:1px; height:1px; overflow:hidden; clip-path:inset(50%); white-space:nowrap; }
 .button-link, .work-action { display:inline-flex; align-items:center; min-height:44px; padding:.5rem .85rem; border-radius:5px; font:600 var(--text-md)/1.3 var(--sans);
   text-decoration:none; border:1px solid var(--soft); background:var(--raised); color:var(--ink); }
 .work-action { background:var(--ink); color:var(--raised); border-color:var(--ink); }
@@ -2081,6 +2246,16 @@ textarea { display:block; width:100%; resize:vertical; background:var(--ground);
 .section-head h1 { margin:0; }
 .workers-link { margin:1.5rem 0 0; }
 #workers > .section-head:first-child { margin-top:0; }
+.catch-up { margin:0 0 1.5rem; }
+.catch-up + p.empty { display:none; }
+.catch-up .section-head { margin-top:0; }
+.catch-up h2 { margin:0; }
+.notes { list-style:none; margin:.5rem 0 0; padding:0; border-top:1px solid var(--rule); font-family:var(--sans); }
+.note { display:flex; flex-wrap:wrap; gap:.5rem 1rem; align-items:center; justify-content:space-between; padding:.8rem 0; border-bottom:1px solid var(--rule); }
+.note-text { flex:1 1 20rem; min-width:0; }
+.note h3 { font:700 var(--text-md)/1.3 var(--sans); margin:0; }
+.note p { margin:.15rem 0 0; }
+.note .meta { display:flex; flex-wrap:wrap; gap:0 1rem; font-size:var(--text-md); }
 .roster { list-style:none; margin:.5rem 0 0; padding:0; border-top:1px solid var(--rule); font-family:var(--sans); }
 .roster > li { padding:.9rem 0; border-bottom:1px solid var(--rule); }
 .roster p { margin:.15rem 0 0; }
@@ -2323,6 +2498,70 @@ WORKERS_SCRIPT = r"""
   button.addEventListener('click', () => load(true));
   load(false);
 })();
+"""
+
+
+CATCH_UP_SCRIPT = r"""
+{
+  const section = document.querySelector('.catch-up');
+  const focusHeading = heading => {
+    heading.tabIndex = -1;
+    heading.focus();
+  };
+  const finish = (ids, previousFocus) => {
+    const focused = document.activeElement === document.body ? previousFocus : document.activeElement;
+    const hadFocus = section.contains(focused);
+    for (const id of ids) section.querySelector('.note[data-id="' + id + '"]').remove();
+    const left = section.querySelectorAll('.note').length;
+    if (!left) {
+      section.remove();
+      if (hadFocus && !focused.isConnected) focusHeading(document.querySelector('main h1'));
+      return;
+    }
+    const count = section.querySelector('[data-count]');
+    if (left === 1) {
+      count.remove();
+      section.querySelector('[data-read-all]').remove();
+    } else {
+      count.textContent = '(' + left + ')';
+    }
+    if (hadFocus && !focused.isConnected) focusHeading(section.querySelector('h2'));
+  };
+  const markRead = async ids => {
+    const status = section.querySelector('[data-catch-up-status]');
+    const controls = section.querySelectorAll('button');
+    const previousFocus = document.activeElement;
+    controls.forEach(button => { button.disabled = true; });
+    status.textContent = '';
+    try {
+      const response = await fetch('catch-ups/read', {method:'POST', redirect:'error', headers:{'Content-Type':'application/json'},
+                                                      body:JSON.stringify({ids})});
+      if (response.status === 409) {
+        status.textContent = 'A notice may already be read. Reload the page when ready.';
+        return;
+      }
+      if (!response.ok) throw new Error(response.status);
+      const {read} = await response.json();
+      if (!Array.isArray(read) || read.length !== ids.length || !ids.every((id, index) => read[index] === id)) {
+        throw new Error('Unconfirmed acknowledgment');
+      }
+      finish(ids, previousFocus);
+    } catch (error) {
+      status.textContent = 'The notice could not be marked read. Try again.';
+    } finally {
+      controls.forEach(button => { button.disabled = false; });
+    }
+  };
+  section.addEventListener('click', event => {
+    const button = event.target.closest('button');
+    if (!button) return;
+    if (button.hasAttribute('data-read-all')) {
+      markRead([...section.querySelectorAll('.note')].map(note => note.dataset.id));
+    } else if (button.dataset.read) {
+      markRead([button.dataset.read]);
+    }
+  });
+}
 """
 
 
@@ -2615,7 +2854,7 @@ const normalizeTopic = value => trimmed(value.replace(/[\p{White_Space}\u001c-\u
 
 def page_shell(title: str, site_title: str, body: str, *, served: bool, saved_name: str, interactive: bool = False,
                workers: bool = False, library: str = "", conversations: bool = False, filters: bool = False,
-               talking: bool = False, starting: bool = False) -> str:
+               talking: bool = False, starting: bool = False, catch_up: bool = False) -> str:
     saved_href = quote(saved_name, safe="")
     opener = ('<button type="button" id="open-library" aria-haspopup="dialog" aria-controls="library">Open library</button>'
               if library else "")
@@ -2632,7 +2871,7 @@ def page_shell(title: str, site_title: str, body: str, *, served: bool, saved_na
         f"<main>\n{body}\n</main>\n{library}<script>{TIME_SCRIPT}{VIEWPORT_SCRIPT if interactive or library else ''}{QUESTION_SCRIPT if conversations else ''}"
         f"{CONVERSATION_TEXT_SCRIPT if library or talking or starting else ''}"
         f"{ANSWER_SCRIPT if interactive else ''}{CONVERSATION_SCRIPT if talking else ''}{START_SCRIPT if starting else ''}"
-        f"{WORKERS_SCRIPT if workers else ''}{FILTER_SCRIPT if filters or library else ''}"
+        f"{CATCH_UP_SCRIPT if catch_up else ''}{WORKERS_SCRIPT if workers else ''}{FILTER_SCRIPT if filters or library else ''}"
         f"{f'const libraryCaseFolds = {library_case_folds()};' + LIBRARY_SCRIPT if library else ''}</script>\n</body>\n</html>\n"
     )
 
@@ -3817,6 +4056,35 @@ def desk_item(item: dict[str, object]) -> bool:
     return bool(open_parts or pending)
 
 
+def catch_up_note(items_by_id, notice):
+    links = []
+    item = items_by_id.get(notice.get("item"))
+    if item is not None:
+        links.append(f'<a href="{item_page_name(str(item["id"]))}">{esc(item["title"])}</a>')
+    if "url" in notice:
+        links.append(f'<a href="{esc(notice["url"])}" rel="noopener noreferrer">{esc(notice["link_text"])}</a>')
+    project = f' <span class="project-name">{esc(notice["project"])}</span>' if "project" in notice else ""
+    button = (f'<button type="button" data-read="{esc(notice["id"])}" aria-label="Mark read, {esc(notice["title"])}">'
+              "Mark read</button>")
+    return (f'<li class="note" data-id="{esc(notice["id"])}"><div class="note-text"><h3>{esc(notice["title"])}{project}</h3>'
+            f'<p>{esc(notice["summary"])}</p><p class="meta">{"".join(f"<span>{link}</span>" for link in links)}'
+            f'{day_time(notice["saved_at"])}</p></div>{button}</li>')
+
+
+def catch_up_section(data: dict[str, object]) -> str:
+    """Unread notices, newest first. The section is absent when none is unread."""
+    notices = unread_catch_ups(data)
+    if not notices:
+        return ""
+    items_by_id = {item["id"]: item for item in data["items"]}  # type: ignore[union-attr]
+    many = len(notices) > 1
+    count = f' <span data-count>({len(notices)})</span>' if many else ""
+    read_all = '<button type="button" data-read-all>Mark all read</button>' if many else ""
+    status = '<p class="meta failed" role="status" data-catch-up-status></p>'
+    return (f'<section class="catch-up"><div class="section-head"><h2>Catch-up{count}</h2>{read_all}</div>{status}'
+            f'<ul class="notes">{"".join(catch_up_note(items_by_id, notice) for notice in notices)}</ul></section>')
+
+
 def workers_section(ready: bool) -> str:
     if not ready:
         return ('<section id="workers"><h1>Workers</h1><p class="empty">Workers show here once firstmate_home '
@@ -3842,9 +4110,8 @@ def talk_form(binding):
 
 
 def list_page(data: dict[str, object], site_title: str, *, served: bool, saved_name: str = "index.html",
-              ask_binding: str | None = None) -> str:
+              ask_binding: str | None = None, notices: str = "") -> str:
     items = newest_first(data["items"])  # type: ignore[arg-type]
-    empty = "Nothing is saved yet. Ask Firstmate to send something to Quarterdeck, such as a link, a list or open questions."
     attention = []
     for item in items:
         if item["kind"] == "questions" and desk_item(item):
@@ -3853,7 +4120,6 @@ def list_page(data: dict[str, object], site_title: str, *, served: bool, saved_n
         elif served and item["kind"] == "conversation" and thread_unread(item, None):
             attention.append((item, ("Replied", [], False)))
     primary = next((item for item, summary in attention if summary[1]), None)
-    body = ""
 
     def desk() -> str:
         rows = "".join(desk_row(item, summary, primary=item is primary) for item, summary in attention)
@@ -3865,12 +4131,13 @@ def list_page(data: dict[str, object], site_title: str, *, served: bool, saved_n
     if served and ask_binding:
         heading = ('<div class="page-head"><h1>Desk</h1><button type="button" id="open-talk" aria-expanded="false" '
                    'aria-controls="talk-form">Talk to Firstmate</button></div>' + talk_form(ask_binding))
+    body = heading + notices
     if attention:
-        body += heading + desk()
-    elif not items:
-        body = f'{heading}<p class="empty">{esc(empty)}</p>'
+        body += desk()
     else:
-        body = f'{heading}<p class="empty">Nothing is on your Desk. A question that needs an answer shows here.</p>'
+        empty = ("Nothing is on your Desk. A question that needs an answer shows here." if items else
+                 "Nothing is saved yet. Ask Firstmate to send something to Quarterdeck, such as a link, a list or open questions.")
+        body += f'<p class="empty">{esc(empty)}</p>'
     if served:
         body += '<p class="workers-link"><a href="workers.html">Workers</a></p>'
     library = ""
@@ -3882,7 +4149,7 @@ def list_page(data: dict[str, object], site_title: str, *, served: bool, saved_n
                  f'<section class="page-section"><h2>Answered</h2>{answered}</section>')
     return page_shell(site_title, site_title, body, served=served, saved_name=saved_name,
                       library=library, filters=bool(items) and not served,
-                      starting=served and bool(ask_binding))
+                      starting=served and bool(ask_binding), catch_up=bool(notices))
 
 
 def item_body_html(item: dict[str, object]) -> str:
@@ -4136,12 +4403,14 @@ def base_path_option(value: str) -> str:
         raise argparse.ArgumentTypeError(str(exc)) from exc
 
 
-def effective_base_path(args: argparse.Namespace) -> str:
+def effective_base_path(args: argparse.Namespace, config: dict[str, object] | None = None) -> str:
     """--base-path when given (even as "" to switch a configured prefix off), else the config's base_path, else none."""
     given = getattr(args, "base_path", None)
     if given is not None:
         return normalize_base_path(given)
-    return normalize_base_path(selected_config(args).get("base_path"))
+    if config is None:
+        config = selected_config(args)
+    return normalize_base_path(config.get("base_path"))
 
 
 def is_loopback(host: str) -> bool:
@@ -4264,7 +4533,8 @@ def ask_destination(ask_home: Path | None, *, require_directory: bool) -> tuple[
 
 
 def make_handler(site_title: str, base_path: str = "", store: Path | None = None, home: Path | None = None,
-                 *, ask_home: Path | None = None, workers_home: Path | None = None) -> type[BaseHTTPRequestHandler]:
+                 *, ask_home: Path | None = None, workers_home: Path | None = None,
+                 retention_days: int = CATCH_UP_DAYS) -> type[BaseHTTPRequestHandler]:
     """Every page is built from the item store when it is requested."""
     visit_log = VisitLog(visits_path())
     saved_workers = SavedWorkers()
@@ -4363,8 +4633,10 @@ def make_handler(site_title: str, base_path: str = "", store: Path | None = None
                 except (OSError, ValueError) as exc:  # a visit that cannot be logged must never stop the page
                     print(f"quarterdeck: could not log the visit: {exc}", file=sys.stderr, flush=True)
                 _, ask_binding = ask_destination(ask_home, require_directory=True)
-                self.send_text(200, list_page(data, site_title, served=True, ask_binding=ask_binding), "text/html; charset=utf-8",
-                               prevent_framing=bool(ask_binding))
+                notices = catch_up_section(data)
+                self.send_text(200, list_page(data, site_title, served=True, ask_binding=ask_binding, notices=notices),
+                               "text/html; charset=utf-8",
+                               prevent_framing=bool(ask_binding) or bool(notices))
                 return
             try:
                 item = find_item(data, discussion[1] if discussion else name.removesuffix(".html"))
@@ -4389,7 +4661,8 @@ def make_handler(site_title: str, base_path: str = "", store: Path | None = None
 
         def do_POST(self) -> None:  # noqa: N802 - http.server naming
             endpoint = self.path.removeprefix(base_path)
-            subjects = {"/answers": "answer", "/asks": "ask", "/conversations": "conversation", "/replies/read": "reply acknowledgment"}
+            subjects = {"/answers": "answer", "/asks": "ask", "/conversations": "conversation", "/replies/read": "reply acknowledgment",
+                        "/catch-ups/read": "catch-up read"}
             if not self.path.startswith(base_path) or endpoint not in subjects:
                 self.send_text(405, "Use the question page.")
                 return
@@ -4424,12 +4697,25 @@ def make_handler(site_title: str, base_path: str = "", store: Path | None = None
                     record = ask_message(active_store, ask_path, ask_binding, payload, home_available=home_available)
                 elif endpoint == "/conversations":
                     record = start_conversation(active_store, ask_path, ask_binding, payload)
+                elif endpoint == "/catch-ups/read":
+                    if not isinstance(payload, dict) or set(payload) != {"ids"}:
+                        raise ValueError("Invalid catch-up read.")
+                    ids = payload["ids"]
+                    if not isinstance(ids, list) or not ids or not all(
+                        isinstance(value, str) and CATCH_UP_ID_RE.fullmatch(value) for value in ids
+                    ):
+                        raise ValueError("Invalid catch-up IDs.")
+                    if len(set(ids)) != len(ids):
+                        raise ValueError("Duplicate catch-up IDs.")
+                    record = {"read": mark_catch_ups_read(active_store, ids, retention_days)}
                 else:
                     record = mark_replies_read(active_store, payload)
             except AskHomeUnavailable:
                 self.send_text(403, "Configure an available firstmate_home to ask Firstmate.")
             except OptionChanged as exc:
                 self.send_text(409, json.dumps({"clarification": clarified_html(exc.notes, True)}), "application/json")
+            except CatchUpConflict as exc:
+                self.send_text(409, str(exc))
             except AnswerConflict as exc:
                 if endpoint in ("/asks", "/conversations"):
                     record = {"message": str(exc), "saved": isinstance(exc, SavedAskConflict)}
@@ -4459,7 +4745,7 @@ def answer_home(config: dict[str, object], config_path: Path | None) -> Path | N
     homes = config.get("homes")
     if config_path is not None and isinstance(homes, list) and len(homes) == 1 and isinstance(homes[0], dict):
         try:
-            return (config_path.resolve().parent / inbox_path(homes[0].get("path"))).resolve()
+            return (config_path.parent / inbox_path(homes[0].get("path"))).resolve()
         except (OSError, RuntimeError, ValueError):
             return None
     return None
@@ -4469,12 +4755,17 @@ def serve(args: argparse.Namespace) -> int:
     servers: list[ThreadingHTTPServer] = []
     try:
         config_path = selected_config_path(args)
+        if config_path is not None:
+            try:
+                config_path = config_path.resolve(strict=True)
+            except (OSError, RuntimeError) as exc:
+                raise ValueError(f"could not resolve serving config {config_path}: {exc}") from exc
         config = load_config(config_path)
         tls = tls_context(args)
-        base_path = effective_base_path(args)
+        base_path = effective_base_path(args, config)
         firstmate = configured_firstmate_home(config)
         handler = make_handler(page_title(args, config), base_path, home=answer_home(config, config_path),
-                               ask_home=firstmate, workers_home=firstmate)
+                               ask_home=firstmate, workers_home=firstmate, retention_days=catch_up_days(config))
         port = args.port
         for host in bind_hosts(args):
             server = make_server(host, port, handler, tls)
@@ -4497,8 +4788,9 @@ def serve(args: argparse.Namespace) -> int:
     exposed = [host for host in bind_hosts(args) if not is_loopback(host)]
     if exposed:
         print(f"quarterdeck: warning: {', '.join(exposed)} is not a loopback address; anyone who can reach this port can "
-              "read saved items, answers, conversations and images, submit answers, and acknowledge replies. With "
-              "firstmate_home set, they can read or check the worker and second mate roster, "
+              "read saved items, answers, conversations, images, and unread Catch-up notice titles, summaries, links "
+              "and projects. They can submit answers, acknowledge replies, and mark Catch-up notices read. "
+              "With firstmate_home set, they can read or check the worker and second mate roster, "
               "send asks, start conversations and send messages.",
               file=sys.stderr, flush=True)
     for server in servers[1:]:
@@ -4577,7 +4869,8 @@ def service(args: argparse.Namespace) -> int:
     exposed = [host for host in bind_hosts(args) if not is_loopback(host)]
     if exposed:
         print(f"quarterdeck: warning: {', '.join(exposed)} is not a loopback address; anyone who can reach the port can "
-              "read your saved items and send answers as the owner.", file=sys.stderr)
+              "read your saved items and unread Catch-up notice titles, summaries, links and projects. They can send "
+              "answers and mark Catch-up notices read as the owner.", file=sys.stderr)
     return 0
 
 
@@ -4638,6 +4931,7 @@ def url(args: argparse.Namespace) -> int:
 COMMAND_DOCS = {
     "mark": ["how-to/read-answers.md", "how-to/use-the-library.md", "reference/item-store.md"],
     "classify": ["how-to/classify-items.md", "reference/cli-and-config.md", "reference/item-store.md"],
+    "catch-up": ["how-to/catch-up.md", "reference/cli-and-config.md", "reference/item-store.md"],
     "stats": ["how-to/read-the-report.md", "reference/cli-and-config.md"],
     "add": ["how-to/save-items.md", "how-to/classify-items.md", "reference/cli-and-config.md", "reference/item-store.md"],
     "list": ["how-to/save-items.md", "reference/cli-and-config.md"],
@@ -4647,7 +4941,7 @@ COMMAND_DOCS = {
     "converse": ["how-to/reply-from-the-command-line.md", "how-to/talk-to-firstmate.md", "reference/cli-and-config.md", "reference/item-store.md"],
     "remove": ["how-to/save-items.md", "reference/cli-and-config.md"],
     "render": ["how-to/serve-the-page.md", "reference/cli-and-config.md", "explanation/privacy-and-architecture.md"],
-    "serve": ["how-to/answer-questions.md", "how-to/use-the-library.md", "how-to/ask-firstmate.md", "how-to/talk-to-firstmate.md", "how-to/read-workers.md", "how-to/serve-the-page.md", "reference/cli-and-config.md", "explanation/privacy-and-architecture.md"],
+    "serve": ["how-to/catch-up.md", "how-to/answer-questions.md", "how-to/use-the-library.md", "how-to/ask-firstmate.md", "how-to/talk-to-firstmate.md", "how-to/read-workers.md", "how-to/serve-the-page.md", "reference/cli-and-config.md", "explanation/privacy-and-architecture.md"],
     "service": ["how-to/serve-the-page.md", "reference/cli-and-config.md"],
     "url": ["how-to/serve-the-page.md", "reference/cli-and-config.md"],
     "install": ["how-to/install.md", "how-to/update.md", "how-to/uninstall.md"],
@@ -4805,6 +5099,30 @@ def make_parser() -> argparse.ArgumentParser:
     stats.add_argument("--json", dest="as_json", action="store_true",
                        help="print structured counts, including the off-Desk total, and median waits in seconds")
 
+    catch_up = command("catch-up", "save and read catch-up notices",
+                       "Short notices Firstmate saves when finished work is ready. Unread notices show on the Desk above the "
+                       "questions. A read notice leaves the Desk. After catch_up_days days (default "
+                       f"{CATCH_UP_DAYS}), the next save or mark-read removes it. Quarterdeck never saves one by itself.",
+                       None)
+    catch_up_actions = catch_up.add_subparsers(dest="catch_up_action", required=True)
+    catch_up_add = catch_up_actions.add_parser("add", help="save a notice and print its ID",
+                                               description="Save a notice and print its ID, such as C4.")
+    catch_up_add.set_defaults(handler=add_catch_up)
+    catch_up_add.add_argument("--title", required=True, help="a short title that says what is ready")
+    catch_up_add.add_argument("--summary", required=True, help="one sentence about what happened or what to do next")
+    catch_up_add.add_argument("--url", help="the http(s) address of a pull request or a page")
+    catch_up_add.add_argument("--link-text", help="the words of that link; required with --url")
+    catch_up_add.add_argument("--item", metavar="ID", help="a saved item the notice is about, such as Q7")
+    catch_up_add.add_argument("--project", help="the notice's project name or owner/name repository")
+    catch_up_list = catch_up_actions.add_parser("list", help="list unread notices, newest first",
+                                                description="List unread notices, newest first.")
+    catch_up_list.set_defaults(handler=list_catch_ups)
+    catch_up_read = catch_up_actions.add_parser("read", help="mark notices read",
+                                                description="Mark notices read. A read notice leaves the Desk at once.")
+    catch_up_read.set_defaults(handler=read_catch_up)
+    catch_up_read.add_argument("ids", nargs="*", metavar="ID", help="notice IDs, such as C4")
+    catch_up_read.add_argument("--all", action="store_true", help="mark every unread notice read")
+
     remove = command("remove", "delete an item", "Delete an item. Its ID is never given to another item.", remove_item)
     remove.add_argument("id", help="item ID, such as Q7")
 
@@ -4815,9 +5133,10 @@ def make_parser() -> argparse.ArgumentParser:
     render_parser.add_argument("--title", help="override the page title")
 
     serve_parser = command("serve", "serve the page over HTTP",
-                           "Anyone who can reach the service can read saved items, answers, conversations and reply images, "
-                           "and can submit answers or acknowledge replies as the owner. With firstmate_home set, they can "
-                           "also send asks, start conversations, send messages and read or check that home's workers "
+                           "Anyone who can reach the service can read saved items, answers, conversations, reply images, "
+                           "and unread Catch-up notice titles, summaries, links and projects. They can submit answers, acknowledge "
+                           "replies, and mark Catch-up notices read as the owner. With firstmate_home set, they can also "
+                           "send asks, start conversations, send messages and read or check that home's workers "
                            "and second mates from the Workers page or workers.json. Browser "
                            "writes require the same origin as the served page.", serve)
     add_serve_options(serve_parser)
