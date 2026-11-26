@@ -32,6 +32,28 @@ it to its place by activity. Pinning does not change the messages, the unread
 reply or whose turn it is. Each group keeps its own order, so a pinned
 conversation stays above every recent one.
 
+## Resolve a conversation
+
+Select **Resolve** on a row, or on the conversation page, to show that the
+conversation is settled. A resolved conversation shows a check with
+**Resolved**. Select **Reopen** to clear it. Firstmate can do the same with
+`quarterdeck resolve` and `quarterdeck reopen`.
+
+Resolving is only a mark. You and Firstmate can still send messages and
+updates, and a new message leaves the conversation resolved. Resolve it again
+or reopen it yourself when you want it to change.
+
+## Archive a conversation
+
+Select **Archive** on a row, or on the conversation page, to move a
+conversation out of **Pinned** and **Recent conversations** and into the
+**Archived** tab. Select **Unarchive** to return it. An archived conversation
+keeps its **Resolved** mark and its pin, and it returns to **Pinned** if you
+pinned it. You can still open it and send messages, and Firstmate can still
+reply. An unread reply on an archived conversation still shows in
+**Needs you**. Firstmate can archive with `quarterdeck archive` and
+`quarterdeck unarchive`. Hold lists only conversations that are not archived.
+
 ## Send more messages
 
 Type in **Your message** on the conversation and select **Send message**. The

@@ -13,6 +13,10 @@ quarterdeck reply ID[.PART] --ask ID --text TEXT [--link-text TEXT --url URL]...
                    [--clarify ID.PART=TEXT]... [--option-changed ID.PART]...
 quarterdeck post ID --text TEXT [--link-text TEXT --url URL]... [--image PATH --alt TEXT]...
 quarterdeck converse --title TITLE --text TEXT [--config FILE] [--link-text TEXT --url URL]... [--image PATH --alt TEXT]...
+quarterdeck resolve ID
+quarterdeck reopen ID
+quarterdeck archive ID
+quarterdeck unarchive ID
 quarterdeck mark ID[.PART] answered --via WHERE
 quarterdeck mark ID[.PART] closed|open
 quarterdeck classify ID[.PART] [--project NAME] [--tag TAG ...] [--kind KIND]
@@ -52,6 +56,8 @@ as `reply`.
 | `reply` | Adds Firstmate's reply to an existing ask on a whole question item (`Q7`) or one question (`Q7.1`), or to an owner's message in a [conversation](../how-to/talk-to-firstmate.md) (`Q12`). It preserves saved answers and question states. Supply the required `--ask ID` from the inbox note and the reply in `--text`. Pair `--link-text` with `--url` and `--image` with `--alt` in the order given. See [Reply from the command line](../how-to/reply-from-the-command-line.md). |
 | `post` | Adds a standalone update from Firstmate. Accepts a conversation item ID such as `Q12` and prints `Q12 Updated`. |
 | `converse` | Opens a conversation with a title and an update from Firstmate, then prints the new item ID. See [`firstmate_home`](#json-configuration) for home selection. |
+| `resolve`, `reopen` | Marks a conversation resolved or not resolved and prints `Q12 Resolved` or `Q12 Reopened`. Only a conversation item is accepted. Messages and updates leave the mark as it is. See [resolve a conversation](../how-to/talk-to-firstmate.md#resolve-a-conversation). |
+| `archive`, `unarchive` | Moves a conversation to the Archived tab or back to the Desk and prints `Q12 Archived` or `Q12 Unarchived`. Only a conversation item is accepted. The resolved and pinned marks stay, and replies still work. See [archive a conversation](../how-to/talk-to-firstmate.md#archive-a-conversation). |
 | `mark` | Sets question state, optionally for a whole questions item. `--via` is required with `answered` and accepted only with that state. Skips exit with status 0. See [Read answers](../how-to/read-answers.md) for which questions are marked. |
 | `classify` | Requires at least one classification option. Use `--project` for an item ID, `--kind` for a question ID, and `--tag` for either. See [how to change classification](../how-to/classify-items.md#change-it-later). |
 | `stats` | Prints a question activity table by default or JSON with `--json`. See [Read the report](../how-to/read-the-report.md) for date filtering and field definitions. |
@@ -205,6 +211,20 @@ can be pinned, and any other ID returns 400. The request changes the
 conversation's [`pinned` field](item-store.md#conversations) and nothing else.
 It adds no message, leaves unread replies unread and keeps the conversation's
 latest activity. The response is `{"pinned": true}` or `{"pinned": false}`.
+
+### Resolution and archive endpoints
+
+`POST /resolutions` and `POST /archives` (under any `base_path`) use the same
+origin check as `/pins` and need no `firstmate_home`. Send
+`{"part": "Q12", "resolved": true}` to `/resolutions` or
+`{"part": "Q12", "archived": true}` to `/archives`, and `false` to clear the
+mark. Only a standalone conversation is accepted, and any other ID or field
+returns 400. Each request changes the conversation's
+[`resolved` or `archived` field](item-store.md#conversations) and nothing else.
+It adds no message, keeps the other marks and never refuses a later message.
+The response repeats the field, such as `{"resolved": true}`, and carries
+`hold`, the conversation's row for the Hold list, which is empty when the
+conversation is archived.
 
 ### Watch page
 

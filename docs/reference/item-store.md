@@ -216,7 +216,13 @@ first message supplies it.
 A conversation item may also carry `pinned`, which is `true` when the owner
 pinned it. The field is optional, absent means unpinned, and only a
 conversation may have it. Pinning and unpinning change nothing else about the
-item, and an older store needs no change. A conversation's latest activity,
+item, and an older store needs no change.
+
+A conversation item may also carry `resolved` and `archived`, each `true` when
+set. Both are optional, absent means not resolved and not archived, and only a
+conversation may have them. They are independent of each other and of
+`pinned`, and a message, a reply or an update changes none of them. A
+store saved before these fields existed needs no change. A conversation's latest activity,
 which orders the Desk, is the time of its newest message or its `saved_at`,
 whichever is later.
 
