@@ -327,8 +327,8 @@ class PageTests(StoreCase):
         self.assertNotIn("<h2>Answered</h2>", page)
         references = page.split('id="panel-references"')[1].split('id="panel-answered"')[0]
         self.assertLess(references.index('data-id="Q2"'), references.index('data-id="Q1"'))
-        self.assertIn('href="q1.html">Calls redesign</a>', references)
-        self.assertNotIn('href="https://example.com/lavish/calls"', references)
+        self.assertIn('href="https://example.com/lavish/calls" rel="noopener noreferrer">Calls redesign</a>', references)
+        self.assertIn('href="q1.html">Q1</a>', references)
 
     def test_a_question_item_moves_between_desk_and_answered_by_itself(self) -> None:
         self.add_all_kinds()
@@ -393,7 +393,8 @@ class PageTests(StoreCase):
         self.assertIn('<section class="page-section"><h2>References</h2>', index)
         self.assertIn('<section class="page-section"><h2>Answered</h2>', index)
         self.assertLess(index.index("<h2>References</h2>"), index.index("<h2>Answered</h2>"))
-        self.assertIn('href="q1.html">Calls redesign</a>', index.split("<h2>References</h2>")[1].split("</section>")[0])
+        self.assertIn('href="https://example.com/lavish/calls" rel="noopener noreferrer">Calls redesign</a>',
+                      index.split("<h2>References</h2>")[1].split("</section>")[0])
         answered = index.split("<h2>Answered</h2>")[1].split("</section>")[0]
         self.assertEqual(re.findall(r'<a class="lib-title" href="([^"]+)">([^<]+)</a>', answered),
                          [("q4.html", "Pier lights")])
@@ -450,7 +451,7 @@ class PageTests(StoreCase):
         self.add("resource", "Notes", "See https://example.com/notes/1, then <b> https://example.org/a?x=1&y=2 </b>. Not javascript:alert(1).",
                  "--url", "https://example.com/n", "--link-text", "Notes")
         pages = self.pages()
-        for name in ("q1.html", "index.html"):
+        for name in ("q1.html",):
             self.assertIn('See <a href="https://example.com/notes/1" target="_blank" rel="noopener noreferrer">'
                           'https://example.com/notes/1</a>, then &lt;b&gt;', pages[name])
             self.assertIn('<a href="https://example.org/a?x=1&amp;y=2" target="_blank" rel="noopener noreferrer">',
@@ -496,7 +497,7 @@ class PageTests(StoreCase):
             'Install from git+https://example.org/tools.git@v2.'
         )
         pages = self.pages()
-        self.assertIn(f'<p class="lib-desc">{expected}</p>', pages["index.html"])
+        self.assertNotIn('class="lib-desc"', pages["index.html"].split("<h2>References</h2>")[1].split("<h2>Answered")[0])
         self.assertNotIn(expected, pages["index.html"].split("<h2>References</h2>")[0])
         for name in ("q1.html", "q2.html"):
             self.assertIn(f'<p class="lead">{expected}</p>', pages[name])
@@ -1709,10 +1710,8 @@ check(![...document.querySelectorAll('#panel-references .lib-item')].some(row =>
       'A regular expression metacharacter matched as a pattern');
 references.value = 'chart';
 references.dispatchEvent(new Event('input', {bubbles: true}));
-const notes = dialog.querySelector('a[href="https://example.org/notes"]');
-notes.scrollIntoView({block: 'nearest'});
-const rect = notes.getClientRects()[0];
-check(notes.contains(document.elementFromPoint(rect.left + 2, rect.top + 2)), 'A long description clipped its link');
+const bookmark = dialog.querySelector('#panel-references a[href="https://example.org/map"]');
+check(bookmark && !dialog.querySelector('#panel-references .lib-desc'), 'A bookmark should link out and show no description');
 references.value = 'q3.1';
 references.dispatchEvent(new Event('input', {bubbles: true}));
 check(![...document.querySelectorAll('#panel-references li')].some(row => !row.hidden), 'A reference matched a question ID');

@@ -2408,6 +2408,11 @@ body:has(dialog[open]) { overflow:hidden; }
 .lib-head { display:flex; gap:.2rem .8rem; align-items:baseline; }
 .lib-title { font:700 var(--text-lg)/1.3 var(--sans); }
 .lib-desc { font-size:var(--text-md); color:var(--soft); }
+.lib-item.ref-row { display:flex; flex-wrap:wrap; align-items:baseline; gap:0 .9rem; padding:.4rem 0; }
+.ref-title { font:500 var(--text-md)/1.4 var(--sans); }
+.ref-links { display:inline-flex; flex-wrap:wrap; gap:0 .8rem; font-size:var(--text-sm); }
+.ref-meta { display:inline-flex; flex-wrap:wrap; gap:0 .8rem; margin-left:auto; font-size:var(--text-sm); color:var(--soft); }
+.ref-meta a, .lib-title.ref-id { color:var(--soft); font:400 var(--text-sm)/1.4 var(--sans); }
 .lib-item .meta { display:flex; flex-wrap:wrap; gap:0 1rem; font-size:var(--text-md); }
 .page-section { margin:2rem 0 0; }
 .page-head { display:flex; flex-wrap:wrap; gap:.6rem 1.5rem; align-items:center; justify-content:space-between; max-width:52rem; }
@@ -2722,7 +2727,7 @@ LIBRARY_SCRIPT = r"""
     if (e.target === dialog || e.target.closest('[data-close]')) {
       dialog.close();
     } else if (!e.defaultPrevented && e.button === 0 && !e.altKey && !e.ctrlKey && !e.metaKey && !e.shiftKey
-               && e.target.closest('a.lib-title')) {
+               && e.target.closest('a.lib-title, a.ref-page')) {
       const tab = selectedTab();
       const filters = Object.fromEntries(filtersOf(tab).map(select => [select.name, select.value]));
       history.replaceState({...history.state, libraryLookup:{tab:tab.id, query:searchOf(tab).value, filters}}, '');
@@ -4031,6 +4036,27 @@ def day_time(moment: object) -> str:
     return f'<time class="day" datetime="{esc(moment)}">{esc(str(moment)[:10])}</time>'
 
 
+def reference_row(item, *, served):
+    """A bookmark: the title links straight to the resource, extra links follow inline, details stay on the item's page."""
+    item_id, kind = item["id"], item["kind"]
+    page = item_page_name(item_id)
+    if kind == "resource":
+        first, *more = resource_links(item["body"])
+        title = (f'<a class="ref-title" href="{esc(first["url"])}" rel="noopener noreferrer">{esc(item["title"])}</a>')
+        extra = "".join(f'<a class="ref-extra" href="{esc(link["url"])}" rel="noopener noreferrer">{esc(link["text"])}</a>'
+                        for link in more)
+    else:
+        title, extra = f'<a class="ref-title ref-page" href="{page}">{esc(item["title"])}</a>', ""
+    project = f'<span>{esc(item["project"])}</span>' if item.get("project") else ""
+    attributes = filter_data(item)
+    if served:
+        search = f'{item["title"]} {item["description"]}'
+        attributes += f' data-id="{item_id}" data-search="{esc(search.casefold())}"'
+    small = project + day_time(item["saved_at"]) + f'<a class="lib-title ref-id" href="{page}">{item_id}</a>'
+    return (f'<li class="lib-item ref-row"{attributes} title="{esc(item["description"])}">'
+            f'{title}{f"<span class=ref-links>{extra}</span>" if extra else ""}<span class="ref-meta">{small}</span></li>')
+
+
 def library_row(item, *, served):
     item_id, kind = item["id"], item["kind"]
     title = f'<a class="lib-title" href="{item_page_name(item_id)}">{esc(item["title"])}</a>'
@@ -4067,7 +4093,8 @@ def library_row(item, *, served):
 def library_panel(name: str, items: list[dict[str, object]], empty: str, *, served: bool) -> str:
     list_id = f"{name}-list"
     filters = filter_bar(list_id, items, restorable=served)
-    rows = "".join(library_row(item, served=served) for item in items)
+    row = reference_row if name == "references" else library_row
+    rows = "".join(row(item, served=served) for item in items)
     listing = f'<ul class="lib-list" id="{list_id}">{rows}</ul>' if rows else ""
     if not served:
         return (filters + listing + (no_match(list_id) if filters else "")) if rows else f'<p class="empty">{esc(empty)}</p>'
