@@ -36,7 +36,7 @@ Apart from the explicit file inputs above and the workers snapshot,
 Quarterdeck reads no backlog, board, topic, report, ledger or saved session
 from a Firstmate home, and it does not read terminal text. The
 [saved workers reading](../reference/cli-and-config.md#workers-endpoint)
-never goes to disk. Quarterdeck saves card asks, conversation
+is kept in `workers-saved.json` next to the item store. Quarterdeck saves card asks, conversation
 messages, replies and standalone updates in the [item store](../reference/item-store.md#conversations).
 Quarterdeck writes nothing to the home except through the configured home's
 `bin/fm-inbox.sh note` command when a user sends or retries an answer,

@@ -20,6 +20,7 @@ import sys
 import struct
 import tempfile
 import threading
+import time
 import unittest
 import urllib.error
 import urllib.request
@@ -2580,7 +2581,7 @@ class WorkersTests(StoreCase):
     def test_a_reading_is_saved_in_memory_and_goes_stale_after_an_hour(self) -> None:
         port = self.start("/qd", workers_home=self.make_home())
         saved_path = "/qd/workers-saved.json"
-        self.assertEqual(self.workers(port, saved_path), (200, {"snapshot": None, "stale": True}))
+        self.assertEqual(self.workers(port, saved_path), (200, {"snapshot": None, "stale": True, "failed": False}))
         clock = MagicMock()
         with patch.object(quarterdeck, "time", SimpleNamespace(monotonic=clock)):
             for checked_at, source_time in ((100, "2000-01-01T00:00:00Z"), (4000, "2099-01-01T00:00:00Z")):
@@ -2592,7 +2593,7 @@ class WorkersTests(StoreCase):
                     self.assertEqual(snapshot["observed_at"], source_time)
                     for elapsed, stale in ((0, False), (3600, False), (3601, True)):
                         clock.return_value = checked_at + elapsed
-                        self.assertEqual(self.workers(port, saved_path), (200, {"snapshot": snapshot, "stale": stale}))
+                        self.assertEqual(self.workers(port, saved_path), (200, {"snapshot": snapshot, "stale": stale, "failed": False}))
 
     def test_suspend_time_expires_the_reading_for_lookup_and_automatic_refresh(self) -> None:
         port = self.start("/qd", workers_home=self.make_home([snapshot_task("Wren")]))
@@ -2604,14 +2605,14 @@ class WorkersTests(StoreCase):
         with patch.object(quarterdeck, "time", clock):
             status, initial = self.workers(port)
             self.assertEqual(status, 200)
-            self.assertEqual(self.workers(port, saved_path), (200, {"snapshot": initial, "stale": False}))
+            self.assertEqual(self.workers(port, saved_path), (200, {"snapshot": initial, "stale": False, "failed": False}))
             times[clock.CLOCK_BOOTTIME] += 3601
-            self.assertEqual(self.workers(port, saved_path), (200, {"snapshot": initial, "stale": True}))
+            self.assertEqual(self.workers(port, saved_path), (200, {"snapshot": initial, "stale": True, "failed": False}))
             self.make_home([snapshot_task("Bracken")])
             status, refreshed = self.workers(port, "/qd/workers.json?reuse=1")
             self.assertEqual(status, 200)
             self.assertEqual([row["name"] for row in refreshed["workers"]], ["Bracken"])
-            self.assertEqual(self.workers(port, saved_path), (200, {"snapshot": refreshed, "stale": False}))
+            self.assertEqual(self.workers(port, saved_path), (200, {"snapshot": refreshed, "stale": False, "failed": False}))
 
     def test_automatic_refresh_rechecks_freshness_after_another_visitor_refreshes(self) -> None:
         port = self.start("/qd", workers_home=self.make_home([snapshot_task("Wren")]))
@@ -2644,6 +2645,154 @@ class WorkersTests(StoreCase):
         (home / "snapshot.json").write_text("not json")
         self.assertEqual(self.workers(port)[0], 502)
         self.assertEqual(self.workers(port, "/qd/workers-saved.json")[1]["snapshot"], snapshot)
+
+    def cache_file(self) -> Path:
+        return self.root / "state" / "quarterdeck" / "workers-saved.json"
+
+    def test_a_cached_reading_is_served_without_running_the_snapshot(self) -> None:
+        saved_at = quarterdeck.utc_text(datetime.now(timezone.utc))
+        snapshot = {"observed_at": SNAPSHOT_TIME, "workers": [{"name": "Wren"}], "second_mates": []}
+        self.cache_file().parent.mkdir(parents=True, exist_ok=True)
+        home = self.make_home([snapshot_task("Heron")])
+        self.cache_file().write_text(json.dumps({"home": os.path.realpath(home), "checked_at": saved_at, "snapshot": snapshot}))
+        port = self.start("/qd", workers_home=home)
+        with patch.object(quarterdeck, "run_snapshot") as run_snapshot:
+            self.assertEqual(self.workers(port, "/qd/workers-saved.json"),
+                             (200, {"snapshot": snapshot, "stale": False, "failed": False}))
+            self.assertEqual(self.fetch(port, "/qd/workers.html")[0], 200)
+            self.assertEqual(self.workers(port, "/qd/workers.json?reuse=1"), (200, snapshot))
+        run_snapshot.assert_not_called()
+
+    def test_an_unreadable_cache_file_is_ignored(self) -> None:
+        self.cache_file().parent.mkdir(parents=True, exist_ok=True)
+        for text in ("not json", "[]", json.dumps({"checked_at": "yesterday", "snapshot": {}}),
+                     json.dumps({"checked_at": SNAPSHOT_TIME, "snapshot": {"workers": 1}})):
+            with self.subTest(text=text):
+                self.cache_file().write_text(text)
+                port = self.start("/qd", workers_home=self.make_home())
+                self.assertEqual(self.workers(port, "/qd/workers-saved.json"),
+                                 (200, {"snapshot": None, "stale": True, "failed": False}))
+
+    def test_the_reading_survives_a_restart(self) -> None:
+        home = self.make_home([snapshot_task("Wren")])
+        first = self.start("/qd", workers_home=home)
+        status, snapshot = self.workers(first)
+        self.assertEqual(status, 200)
+        self.assertEqual(stat.S_IMODE(self.cache_file().stat().st_mode), 0o600)
+        self.make_home(code=1)  # the fleet is unreachable after the restart
+        second = self.start("/qd", workers_home=home)
+        self.assertEqual(self.workers(second, "/qd/workers-saved.json"),
+                         (200, {"snapshot": snapshot, "stale": False, "failed": False}))
+
+    def test_background_refresh_updates_the_reading(self) -> None:
+        home = self.make_home([snapshot_task("Wren")])
+        saved = quarterdeck.SavedWorkers(home, self.cache_file())
+        stop = threading.Event()
+        thread = threading.Thread(target=quarterdeck.keep_workers_fresh, args=(saved, 0.05, stop), daemon=True)
+        self.addCleanup(thread.join, 5)
+        self.addCleanup(stop.set)
+        thread.start()
+
+        def wait_for(name):
+            deadline = time.monotonic() + 10
+            while time.monotonic() < deadline:
+                names = [row["name"] for row in (saved.view()["snapshot"] or {"workers": []})["workers"]]
+                if names == [name]:
+                    return
+                time.sleep(0.02)
+            self.fail(f"the background refresh never showed {name}")
+
+        wait_for("Wren")
+        self.make_home([snapshot_task("Bracken")])
+        wait_for("Bracken")
+        self.assertFalse(saved.view()["failed"])
+        self.assertEqual(json.loads(self.cache_file().read_text())["snapshot"]["workers"][0]["name"], "Bracken")
+
+    def test_a_failed_background_refresh_keeps_the_last_good_reading(self) -> None:
+        home = self.make_home([snapshot_task("Wren")])
+        saved = quarterdeck.SavedWorkers(home, self.cache_file())
+        stop = threading.Event()
+        calls = []
+        real_refresh = saved.refresh
+
+        def stop_after_first(*, reuse, background=False):
+            calls.append(reuse)
+            try:
+                return real_refresh(reuse=reuse, background=background)
+            finally:
+                if len(calls) == 1:
+                    stop.set()
+
+        saved.refresh = stop_after_first
+        good = real_refresh(reuse=False)
+        self.make_home(code=1)
+        quarterdeck.keep_workers_fresh(saved, 0, stop)
+        view = saved.view()
+        self.assertEqual(calls, [False])
+        self.assertEqual(view, {"snapshot": good, "stale": False, "failed": True})
+        self.assertEqual([row["name"] for row in view["snapshot"]["workers"]], ["Wren"])
+        self.assertEqual(json.loads(self.cache_file().read_text())["snapshot"], good)
+        restarted = quarterdeck.SavedWorkers(home, self.cache_file())
+        self.assertEqual(restarted.view()["snapshot"], good)
+
+    def test_a_reading_from_another_home_is_ignored(self) -> None:
+        first_home = self.root / "first-home"
+        shutil.copytree(self.make_home([snapshot_task("Wren")]), first_home)
+        good = quarterdeck.SavedWorkers(first_home, self.cache_file()).refresh(reuse=False)
+        self.assertEqual(quarterdeck.SavedWorkers(first_home, self.cache_file()).view()["snapshot"], good)
+        other_home = self.make_home([snapshot_task("Bracken")])
+        self.assertNotEqual(first_home, other_home)
+        self.assertEqual(quarterdeck.SavedWorkers(other_home, self.cache_file()).view(),
+                         {"snapshot": None, "stale": True, "failed": False})
+
+    def test_a_manual_check_waits_for_a_background_check(self) -> None:
+        home = self.make_home([snapshot_task("Wren")])
+        saved = quarterdeck.SavedWorkers(home, self.cache_file())
+        started, release = threading.Event(), threading.Event()
+        run_snapshot = quarterdeck.run_snapshot
+
+        def hold_snapshot(home):
+            started.set()
+            self.assertTrue(release.wait(timeout=5))
+            return run_snapshot(home)
+
+        results = {}
+        with patch.object(quarterdeck, "run_snapshot", side_effect=hold_snapshot) as snapshot:
+            background = threading.Thread(target=lambda: results.update(background=saved.refresh(reuse=False, background=True)))
+            background.start()
+            self.assertTrue(started.wait(timeout=5))
+            manual = threading.Thread(target=lambda: results.update(manual=saved.refresh(reuse=False)))
+            manual.start()
+            manual.join(0.2)
+            self.assertTrue(manual.is_alive(), "the manual check returned before the background check finished")
+            release.set()
+            background.join(5)
+            manual.join(5)
+            snapshot.assert_called_once()
+        self.assertEqual([row["name"] for row in results["manual"]["workers"]], ["Wren"])
+        self.assertEqual(results["manual"], results["background"])
+
+    def test_overlapping_manual_checks_reject_the_second(self) -> None:
+        home = self.make_home([snapshot_task("Wren")])
+        saved = quarterdeck.SavedWorkers(home, self.cache_file())
+        started, release = threading.Event(), threading.Event()
+        run_snapshot = quarterdeck.run_snapshot
+
+        def hold_snapshot(home):
+            started.set()
+            self.assertTrue(release.wait(timeout=5))
+            return run_snapshot(home)
+
+        with patch.object(quarterdeck, "run_snapshot", side_effect=hold_snapshot):
+            first = threading.Thread(target=saved.refresh, kwargs={"reuse": False})
+            first.start()
+            self.assertTrue(started.wait(timeout=5))
+            try:
+                with self.assertRaises(quarterdeck.SnapshotError):
+                    saved.refresh(reuse=False)
+            finally:
+                release.set()
+                first.join(5)
 
     def browser_page(self, port, route="/qd/workers.html", *, budget=5000, window_size="1280,900"):
         chrome = shutil.which("google-chrome")
@@ -2729,37 +2878,29 @@ const quiet = () => new Promise(resolve => setTimeout(resolve, 1500));
             outcome, stderr = self.browser_page(port, budget=65000)
         self.assertEqual(outcome, "PASS", stderr)
 
-    def test_an_expired_saved_reading_is_replaced_on_entry(self) -> None:
+    def test_an_expired_or_failed_saved_reading_is_shown_on_entry_without_a_fetch(self) -> None:
         if not shutil.which("google-chrome"):
             self.skipTest("google-chrome is required for the workers browser test")
-        port = self.start("/qd", workers_home=self.make_home([snapshot_task("Wren")]))
+        home = self.make_home([snapshot_task("Wren")])
+        port = self.start("/qd", workers_home=home)
         steps = """
-  const refreshed = settled();
-  await new Promise(resolve => {
-    const watcher = new MutationObserver(() => {
-      if (roster.textContent.includes('Wren')) { watcher.disconnect(); resolve(); }
-    });
-    watcher.observe(roster, {childList: true});
-  });
-  check(statusLine.textContent.startsWith('Refreshing workers.') &&
-        statusLine.querySelector('time')?.dateTime === '2026-03-02T13:40:00Z' &&
-        button.getAttribute('aria-disabled') === 'true', 'The saved time and refresh progress must appear together');
-  await refreshed;
-  check(requestCount('workers-saved.json') === 1 && requestCount('workers.json?reuse=1') === 1 &&
-        requestCount('workers.json') === 0, 'Entry did not request a single automatic check');
-  check(!roster.textContent.includes('Wren') && roster.textContent.includes('Bracken'),
-        'The expired roster was not replaced');
-  check(statusLine.textContent.startsWith('Last checked ') && statusLine.querySelector('time')?.dateTime === '2026-03-02T14:45:00Z',
-        'The completed refresh did not show its new time');
+  await quiet();
+  check(requestCount('workers-saved.json') === 1, 'Expected one saved read on entry');
+  check(requestCount('workers.json') === 0 && requestCount('workers.json?reuse=1') === 0,
+        'Entry waited on the fleet snapshot');
+  check(roster.textContent.includes('Wren'), 'The saved roster did not appear');
+  check(statusLine.textContent.startsWith('Check failed. Showing the list from ') && statusLine.className === 'meta failed',
+        'The failed check was not reported beside the saved list');
 """
         with patch.object(quarterdeck, "workers_clock", return_value=100) as clock:
             self.assertEqual(self.workers(port)[0], 200)
             clock.return_value += 3601
-            self.make_home(body=json.dumps({"generated": "2026-03-02T14:45:00Z", "tasks": [snapshot_task("Bracken")]}))
+            self.make_home(code=1)
+            self.assertEqual(self.workers(port)[0], 502)
             with patch.object(quarterdeck, "workers_page", self.instrumented_page(quarterdeck.workers_page, steps)), \
-                    patch.object(quarterdeck, "run_snapshot", wraps=quarterdeck.run_snapshot) as run_snapshot:
+                    patch.object(quarterdeck, "run_snapshot") as run_snapshot:
                 outcome, stderr = self.browser_page(port)
-                run_snapshot.assert_called_once()
+                run_snapshot.assert_not_called()
         self.assertEqual(outcome, "PASS", stderr)
 
     def test_a_fresh_saved_reading_is_shown_without_a_fetch_until_the_button(self) -> None:
@@ -2802,12 +2943,12 @@ const quiet = () => new Promise(resolve => setTimeout(resolve, 1500));
             second_returned.wait(timeout=0.5)
             return run_snapshot(home)
 
-        def observe_refresh(saved, home, *, reuse):
+        def observe_refresh(saved, *, reuse, background=False):
             overlapping = first_started.is_set()
             if overlapping:
                 second_entered.set()
             try:
-                return refresh(saved, home, reuse=reuse)
+                return refresh(saved, reuse=reuse, background=background)
             finally:
                 if overlapping:
                     second_returned.set()
@@ -2836,18 +2977,15 @@ const quiet = () => new Promise(resolve => setTimeout(resolve, 1500));
           'Expected the refreshed roster and time in the ' + label + ' view. ' + status.textContent);
   }
 """
-        with patch.object(quarterdeck, "workers_clock", return_value=100) as clock:
-            self.assertEqual(self.workers(port)[0], 200)
-            clock.return_value += 3601
-            (home / "snapshot.json").write_text(json.dumps({
-                "generated": "2026-03-02T14:45:00Z", "tasks": [snapshot_task("Bracken")],
-            }))
-            with patch.object(quarterdeck, "workers_page", self.instrumented_page(quarterdeck.workers_page, steps)), \
-                    patch.object(quarterdeck.SavedWorkers, "refresh", observe_refresh), \
-                    patch.object(quarterdeck, "run_snapshot", side_effect=hold_snapshot) as snapshot:
-                outcome, stderr = self.browser_page(port)
-                self.assertEqual(outcome, "PASS", stderr)
-                snapshot.assert_called_once()
+        (home / "snapshot.json").write_text(json.dumps({
+            "generated": "2026-03-02T14:45:00Z", "tasks": [snapshot_task("Bracken")],
+        }))
+        with patch.object(quarterdeck, "workers_page", self.instrumented_page(quarterdeck.workers_page, steps)), \
+                patch.object(quarterdeck.SavedWorkers, "refresh", observe_refresh), \
+                patch.object(quarterdeck, "run_snapshot", side_effect=hold_snapshot) as snapshot:
+            outcome, stderr = self.browser_page(port)
+            self.assertEqual(outcome, "PASS", stderr)
+            snapshot.assert_called_once()
 
     def test_failed_saved_lookup_waits_for_a_manual_check(self) -> None:
         if not shutil.which("google-chrome"):

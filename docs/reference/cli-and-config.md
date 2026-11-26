@@ -260,17 +260,30 @@ Both errors leave the store unchanged. On success, the JSON response field
 
 All Workers routes follow the configured `base_path`. `GET /workers.html`
 serves the Workers page. When `firstmate_home` is set, the page reads
-`GET /workers-saved.json` and calls `GET /workers.json?reuse=1` if that lookup
-succeeds and reports a stale reading. **Check workers** calls
-`GET /workers.json` when the page has no request in progress.
+`GET /workers-saved.json` and shows that reading at once, even when it is
+stale. It calls `GET /workers.json?reuse=1` only when the server has no
+reading. **Check workers** calls `GET /workers.json` when the page has no
+request in progress. If a background check is running, that request waits for
+it and returns its result.
 
-`GET /workers-saved.json` returns `{"snapshot": ..., "stale": ...}` without
-reading the home. `snapshot` is the last reading from `workers.json` in the
-same format, or `null` when the server has none. The server keeps the reading
-in memory until `serve` stops and returns it even when it is stale. `stale` is
-`true` when there is no snapshot or more than one hour has elapsed since the
-last successful check. The server uses `CLOCK_BOOTTIME` where available, which
-includes time spent suspended, and falls back to `time.monotonic()` elsewhere.
+While `serve` runs with `firstmate_home` set, it reads the home when it starts
+and then every 30 minutes. The interval is fixed. The last good reading is
+kept in `workers-saved.json` in the same directory as the item store, with
+mode `0600`, so a restart shows it at once. The file records the home it was
+read from, and a restart with a different `firstmate_home` ignores it. A background check
+that fails or finds a check already running keeps that reading.
+
+`GET /workers-saved.json` returns
+`{"snapshot": ..., "stale": ..., "failed": ...}` without reading the home.
+`snapshot` is the last reading from `workers.json` in the same format, or
+`null` when the server has none. The server returns it even when it is stale.
+`stale` is `true` when there is no snapshot or more than one hour has elapsed
+since the last successful check. `failed` is `true` when the most recent check
+failed since the server started, and the page then says **Check failed** with
+the time of the saved list. The server uses `CLOCK_BOOTTIME` where available,
+which includes time spent suspended, and falls back to `time.monotonic()`
+elsewhere. A reading loaded from disk ages by the wall-clock time since it was
+saved. The server ignores a file it cannot read.
 The page displays the fleet's
 `observed_at` timestamp. The endpoint returns 404 when `firstmate_home` is absent.
 
