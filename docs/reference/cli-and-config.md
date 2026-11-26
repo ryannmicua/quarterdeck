@@ -207,11 +207,12 @@ thread to its current read status (`true` for read).
 `POST /catch-ups/read` (under any `base_path`) uses the same origin check as
 `/answers`. It works without a Firstmate home. The request uses
 `Content-Type: application/json` and a single `ids` field, such as
-`{"ids": ["C4"]}`. The field must contain a nonempty array of
-[canonical notice IDs](item-store.md#catch-up-notices). If any ID is missing
-from the store, the endpoint returns 409 without changing the store. On
-success, the JSON response field `read` lists each acknowledged ID once, in
-order of first appearance. See [notice retention](../how-to/catch-up.md#how-long-a-notice-stays).
+`{"ids": ["C4"]}`. The field must contain a nonempty array of unique
+[canonical notice IDs](item-store.md#catch-up-notices). Duplicate IDs return
+HTTP 400. If any ID is missing from the store, the endpoint returns HTTP 409.
+Both errors leave the store unchanged. On success, the JSON response field
+`read` lists the acknowledged IDs in request order. See
+[notice retention](../how-to/catch-up.md#how-long-a-notice-stays).
 
 ### Workers endpoint
 

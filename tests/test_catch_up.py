@@ -255,8 +255,11 @@ class CatchUpPageTests(CatchUpCase):
         for bad in ({"ids": []}, {"ids": ["Q1"]}, {"ids": ["c1"]}, {"ids": ["C1", "c3"]}, {"ids": "C1"},
                     {"ids": ["C1"], "all": True}, {}, []):
             self.assertEqual(self.post_read(port, bad)[0], 400, bad)
+        before = self.store()
+        self.assertEqual(self.post_read(port, {"ids": ["C1", "C1"]})[0], 400)
+        self.assertEqual(self.store(), before)
         self.assertNotIn("read_at", self.store()["catch_ups"][0])
-        status, record = self.post_read(port, {"ids": ["C3", "C1", "C3"]})
+        status, record = self.post_read(port, {"ids": ["C3", "C1"]})
         self.assertEqual(status, 200)
         self.assertEqual(record, {"read": ["C3", "C1"]})
         read_at = self.store()["catch_ups"][0]["read_at"]
