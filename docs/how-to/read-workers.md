@@ -14,9 +14,7 @@ page shows a setup message. Rendered snapshots have no Workers page.
 1. Select **Workers** on the Desk. The page shows the saved reading with
    **Last checked** and its time in your local time zone. It never waits for a
    new check. `quarterdeck serve` checks the home in the background every 30
-   minutes, or as often as
-   [`workers_refresh_seconds`](../reference/cli-and-config.md#json-configuration)
-   sets, and keeps the last good reading across restarts.
+   minutes and keeps the last good reading across restarts.
 2. If the server has no reading yet, the page requests a check.
 3. Select **Check workers** to read the home again once the current request
    finishes.

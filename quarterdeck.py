@@ -41,7 +41,7 @@ from urllib.parse import quote, unquote, urlparse
 DEFAULT_TITLE = "Quarterdeck"
 DEFAULT_HOST = "127.0.0.1"
 DEFAULT_PORT = 8765
-ALLOWED_CONFIG_KEYS = {"page_title", "output_dir", "base_path", "firstmate_home", "catch_up_days", "workers_refresh_seconds"}
+ALLOWED_CONFIG_KEYS = {"page_title", "output_dir", "base_path", "firstmate_home", "catch_up_days"}
 # Legacy configuration. Only a sole registered home can supply the note destination.
 LEGACY_CONFIG_KEYS = {"homes", "captain_waits"}
 # Split so the privacy guard, which rejects committed generated pages by this marker, does not flag the source.
@@ -138,19 +138,11 @@ def load_config(path: Path | None) -> dict[str, object]:
         days = config["catch_up_days"]
         if type(days) is not int or not 1 <= days <= 3650:
             raise ValueError("config catch_up_days must be a whole number of days from 1 to 3650")
-    if "workers_refresh_seconds" in config:
-        seconds = config["workers_refresh_seconds"]
-        if type(seconds) is not int or not WORKERS_REFRESH_RANGE[0] <= seconds <= WORKERS_REFRESH_RANGE[1]:
-            raise ValueError("config workers_refresh_seconds must be a whole number of seconds from 30 to 3600")
     return config
 
 
 def catch_up_days(config: dict[str, object]) -> int:
     return config.get("catch_up_days", CATCH_UP_DAYS)  # type: ignore[return-value]
-
-
-def workers_refresh_seconds(config: dict[str, object]) -> int:
-    return config.get("workers_refresh_seconds", WORKERS_REFRESH_SECONDS)  # type: ignore[return-value]
 
 
 def selected_config_path(args: argparse.Namespace) -> Path | None:
@@ -2114,7 +2106,6 @@ SNAPSHOT_COMMAND = ("bin/fm-fleet-snapshot.sh", "--local")
 SNAPSHOT_SECONDS = 60
 WORKERS_FRESH_SECONDS = 3600  # a saved reading older than this is reported as stale
 WORKERS_REFRESH_SECONDS = 1800  # how often `serve` rereads the home in the background (30 minutes)
-WORKERS_REFRESH_RANGE = (30, 3600)
 WORKERS_CACHE_NAME = "workers-saved.json"
 UTC_RE = re.compile(r"[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z")
 WORKER_STATES = {"working": "Working", "done": "Finished", "blocked": "Stuck", "failed": "Stuck"}
@@ -2122,10 +2113,6 @@ ACTIVITY_UNAVAILABLE = "Activity unavailable"
 
 
 class SnapshotError(Exception):
-    pass
-
-
-class SnapshotBusy(SnapshotError):
     pass
 
 
@@ -2281,9 +2268,12 @@ def workers_cache_path(store: Path | None = None) -> Path:
 class SavedWorkers:
     """The last successful reading, shared by every visitor and kept on disk so a restart shows it at once."""
 
-    def __init__(self, path: Path | None = None) -> None:
+    def __init__(self, home: Path, path: Path | None = None) -> None:
         self._lock = threading.Lock()
         self._active: Future[dict[str, object]] | None = None
+        self._active_background = False
+        self._home = home
+        self._home_key = os.path.realpath(home)
         self._reading: tuple[float, dict[str, object]] | None = None
         self._failed = False
         self._path = path
@@ -2295,7 +2285,7 @@ class SavedWorkers:
         try:
             record = json.loads(self._path.read_text(encoding="utf-8"))
             checked, snapshot = record["checked_at"], record["snapshot"]
-            if (not UTC_RE.fullmatch(checked) or not isinstance(snapshot, dict)
+            if (record.get("home") != self._home_key or not UTC_RE.fullmatch(checked) or not isinstance(snapshot, dict)
                     or not isinstance(snapshot.get("observed_at"), str)
                     or not isinstance(snapshot.get("workers"), list)
                     or not isinstance(snapshot.get("second_mates"), list)):
@@ -2308,7 +2298,7 @@ class SavedWorkers:
     def _save(self, snapshot: dict[str, object]) -> None:
         if self._path is None:
             return
-        record = {"checked_at": utc_text(datetime.now(timezone.utc)), "snapshot": snapshot}
+        record = {"home": self._home_key, "checked_at": utc_text(datetime.now(timezone.utc)), "snapshot": snapshot}
         try:
             write_private(self._path, json.dumps(record))
         except OSError as exc:  # the reading still serves from memory
@@ -2318,22 +2308,24 @@ class SavedWorkers:
     def _stale(checked_at: float) -> bool:
         return workers_clock() - checked_at > WORKERS_FRESH_SECONDS
 
-    def refresh(self, home: Path, *, reuse: bool) -> dict[str, object]:
+    def refresh(self, *, reuse: bool, background: bool = False) -> dict[str, object]:
+        """A manual check (`reuse` false) joins a running background check but not another manual one."""
         with self._lock:
             active = self._active
             if active is not None:
-                if not reuse:
-                    raise SnapshotBusy("the fleet snapshot is already running")
+                if not reuse and not self._active_background:
+                    raise SnapshotError("the fleet snapshot is already running")
             else:
                 if reuse and self._reading is not None:
                     checked_at, snapshot = self._reading
                     if not self._stale(checked_at):
                         return snapshot
                 self._active = pending = Future()
+                self._active_background = background
         if active is not None:
             return active.result()
         try:
-            snapshot = workers_snapshot(home)
+            snapshot = workers_snapshot(self._home)
             self._save(snapshot)
             self._reading = (workers_clock(), snapshot)
             self._failed = False
@@ -2357,11 +2349,11 @@ class SavedWorkers:
         return {"snapshot": snapshot, "stale": self._stale(checked_at), "failed": self._failed}
 
 
-def keep_workers_fresh(saved: SavedWorkers, home: Path, interval: float, stop: threading.Event) -> None:
+def keep_workers_fresh(saved: SavedWorkers, interval: float, stop: threading.Event) -> None:
     """Reread the home now and then every `interval` seconds until `stop` is set; a failure keeps the last reading."""
     while not stop.is_set():
         try:
-            saved.refresh(home, reuse=False)
+            saved.refresh(reuse=False, background=True)
         except SnapshotError:
             pass  # refresh has already kept the last good reading and marked the failure
         except Exception as exc:  # never end the loop
@@ -5268,8 +5260,8 @@ def make_handler(site_title: str, base_path: str = "", store: Path | None = None
                  saved_workers: SavedWorkers | None = None) -> type[BaseHTTPRequestHandler]:
     """Every page is built from the item store when it is requested."""
     visit_log = VisitLog(visits_path())
-    if saved_workers is None:
-        saved_workers = SavedWorkers(workers_cache_path(store) if workers_home is not None else None)
+    if saved_workers is None and workers_home is not None:
+        saved_workers = SavedWorkers(workers_home, workers_cache_path(store))
 
     class Handler(BaseHTTPRequestHandler):
         server_version = "Quarterdeck"
@@ -5334,7 +5326,7 @@ def make_handler(site_title: str, base_path: str = "", store: Path | None = None
             if name == "workers.json" and workers_home is not None:
                 reuse = request.query == "reuse=1"
                 try:
-                    snapshot = saved_workers.refresh(workers_home, reuse=reuse)
+                    snapshot = saved_workers.refresh(reuse=reuse)
                 except SnapshotError:
                     self.send_text(502, json.dumps({"error": "The workers could not be read."}), "application/json")
                 else:
@@ -5507,7 +5499,7 @@ def serve(args: argparse.Namespace) -> int:
         tls = tls_context(args)
         base_path = effective_base_path(args, config)
         firstmate = configured_firstmate_home(config)
-        saved_workers = SavedWorkers(workers_cache_path()) if firstmate is not None else None
+        saved_workers = SavedWorkers(firstmate, workers_cache_path()) if firstmate is not None else None
         handler = make_handler(page_title(args, config), base_path, home=answer_home(config, config_path),
                                ask_home=firstmate, workers_home=firstmate, retention_days=catch_up_days(config),
                                saved_workers=saved_workers)
@@ -5543,7 +5535,7 @@ def serve(args: argparse.Namespace) -> int:
     stop_refreshing = threading.Event()
     if firstmate is not None and saved_workers is not None:
         threading.Thread(target=keep_workers_fresh, daemon=True,
-                         args=(saved_workers, firstmate, workers_refresh_seconds(config), stop_refreshing)).start()
+                         args=(saved_workers, WORKERS_REFRESH_SECONDS, stop_refreshing)).start()
     try:
         servers[0].serve_forever()
     except KeyboardInterrupt:

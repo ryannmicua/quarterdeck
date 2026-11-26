@@ -2653,8 +2653,9 @@ class WorkersTests(StoreCase):
         saved_at = quarterdeck.utc_text(datetime.now(timezone.utc))
         snapshot = {"observed_at": SNAPSHOT_TIME, "workers": [{"name": "Wren"}], "second_mates": []}
         self.cache_file().parent.mkdir(parents=True, exist_ok=True)
-        self.cache_file().write_text(json.dumps({"checked_at": saved_at, "snapshot": snapshot}))
-        port = self.start("/qd", workers_home=self.make_home([snapshot_task("Heron")]))
+        home = self.make_home([snapshot_task("Heron")])
+        self.cache_file().write_text(json.dumps({"home": os.path.realpath(home), "checked_at": saved_at, "snapshot": snapshot}))
+        port = self.start("/qd", workers_home=home)
         with patch.object(quarterdeck, "run_snapshot") as run_snapshot:
             self.assertEqual(self.workers(port, "/qd/workers-saved.json"),
                              (200, {"snapshot": snapshot, "stale": False, "failed": False}))
@@ -2685,9 +2686,9 @@ class WorkersTests(StoreCase):
 
     def test_background_refresh_updates_the_reading(self) -> None:
         home = self.make_home([snapshot_task("Wren")])
-        saved = quarterdeck.SavedWorkers(self.cache_file())
+        saved = quarterdeck.SavedWorkers(home, self.cache_file())
         stop = threading.Event()
-        thread = threading.Thread(target=quarterdeck.keep_workers_fresh, args=(saved, home, 0.05, stop), daemon=True)
+        thread = threading.Thread(target=quarterdeck.keep_workers_fresh, args=(saved, 0.05, stop), daemon=True)
         self.addCleanup(thread.join, 5)
         self.addCleanup(stop.set)
         thread.start()
@@ -2709,41 +2710,89 @@ class WorkersTests(StoreCase):
 
     def test_a_failed_background_refresh_keeps_the_last_good_reading(self) -> None:
         home = self.make_home([snapshot_task("Wren")])
-        saved = quarterdeck.SavedWorkers(self.cache_file())
+        saved = quarterdeck.SavedWorkers(home, self.cache_file())
         stop = threading.Event()
         calls = []
         real_refresh = saved.refresh
 
-        def stop_after_first(home, *, reuse):
+        def stop_after_first(*, reuse, background=False):
             calls.append(reuse)
             try:
-                return real_refresh(home, reuse=reuse)
+                return real_refresh(reuse=reuse, background=background)
             finally:
                 if len(calls) == 1:
                     stop.set()
 
         saved.refresh = stop_after_first
-        good = real_refresh(home, reuse=False)
+        good = real_refresh(reuse=False)
         self.make_home(code=1)
-        quarterdeck.keep_workers_fresh(saved, home, 0, stop)
+        quarterdeck.keep_workers_fresh(saved, 0, stop)
         view = saved.view()
         self.assertEqual(calls, [False])
         self.assertEqual(view, {"snapshot": good, "stale": False, "failed": True})
         self.assertEqual([row["name"] for row in view["snapshot"]["workers"]], ["Wren"])
         self.assertEqual(json.loads(self.cache_file().read_text())["snapshot"], good)
-        restarted = quarterdeck.SavedWorkers(self.cache_file())
+        restarted = quarterdeck.SavedWorkers(home, self.cache_file())
         self.assertEqual(restarted.view()["snapshot"], good)
 
-    def test_the_refresh_interval_is_a_validated_setting(self) -> None:
-        config = self.root / "config.json"
-        self.assertEqual(quarterdeck.workers_refresh_seconds({}), 1800)
-        config.write_text(json.dumps({"workers_refresh_seconds": 45}))
-        self.assertEqual(quarterdeck.workers_refresh_seconds(quarterdeck.load_config(config)), 45)
-        for bad in (29, 3601, "60", 60.5, True, None):
-            with self.subTest(bad=bad):
-                config.write_text(json.dumps({"workers_refresh_seconds": bad}))
-                with self.assertRaisesRegex(ValueError, "workers_refresh_seconds"):
-                    quarterdeck.load_config(config)
+    def test_a_reading_from_another_home_is_ignored(self) -> None:
+        first_home = self.root / "first-home"
+        shutil.copytree(self.make_home([snapshot_task("Wren")]), first_home)
+        good = quarterdeck.SavedWorkers(first_home, self.cache_file()).refresh(reuse=False)
+        self.assertEqual(quarterdeck.SavedWorkers(first_home, self.cache_file()).view()["snapshot"], good)
+        other_home = self.make_home([snapshot_task("Bracken")])
+        self.assertNotEqual(first_home, other_home)
+        self.assertEqual(quarterdeck.SavedWorkers(other_home, self.cache_file()).view(),
+                         {"snapshot": None, "stale": True, "failed": False})
+
+    def test_a_manual_check_waits_for_a_background_check(self) -> None:
+        home = self.make_home([snapshot_task("Wren")])
+        saved = quarterdeck.SavedWorkers(home, self.cache_file())
+        started, release = threading.Event(), threading.Event()
+        run_snapshot = quarterdeck.run_snapshot
+
+        def hold_snapshot(home):
+            started.set()
+            self.assertTrue(release.wait(timeout=5))
+            return run_snapshot(home)
+
+        results = {}
+        with patch.object(quarterdeck, "run_snapshot", side_effect=hold_snapshot) as snapshot:
+            background = threading.Thread(target=lambda: results.update(background=saved.refresh(reuse=False, background=True)))
+            background.start()
+            self.assertTrue(started.wait(timeout=5))
+            manual = threading.Thread(target=lambda: results.update(manual=saved.refresh(reuse=False)))
+            manual.start()
+            manual.join(0.2)
+            self.assertTrue(manual.is_alive(), "the manual check returned before the background check finished")
+            release.set()
+            background.join(5)
+            manual.join(5)
+            snapshot.assert_called_once()
+        self.assertEqual([row["name"] for row in results["manual"]["workers"]], ["Wren"])
+        self.assertEqual(results["manual"], results["background"])
+
+    def test_overlapping_manual_checks_reject_the_second(self) -> None:
+        home = self.make_home([snapshot_task("Wren")])
+        saved = quarterdeck.SavedWorkers(home, self.cache_file())
+        started, release = threading.Event(), threading.Event()
+        run_snapshot = quarterdeck.run_snapshot
+
+        def hold_snapshot(home):
+            started.set()
+            self.assertTrue(release.wait(timeout=5))
+            return run_snapshot(home)
+
+        with patch.object(quarterdeck, "run_snapshot", side_effect=hold_snapshot):
+            first = threading.Thread(target=saved.refresh, kwargs={"reuse": False})
+            first.start()
+            self.assertTrue(started.wait(timeout=5))
+            try:
+                with self.assertRaises(quarterdeck.SnapshotError):
+                    saved.refresh(reuse=False)
+            finally:
+                release.set()
+                first.join(5)
 
     def browser_page(self, port, route="/qd/workers.html", *, budget=5000, window_size="1280,900"):
         chrome = shutil.which("google-chrome")
@@ -2894,12 +2943,12 @@ const quiet = () => new Promise(resolve => setTimeout(resolve, 1500));
             second_returned.wait(timeout=0.5)
             return run_snapshot(home)
 
-        def observe_refresh(saved, home, *, reuse):
+        def observe_refresh(saved, *, reuse, background=False):
             overlapping = first_started.is_set()
             if overlapping:
                 second_entered.set()
             try:
-                return refresh(saved, home, reuse=reuse)
+                return refresh(saved, reuse=reuse, background=background)
             finally:
                 if overlapping:
                     second_returned.set()

@@ -263,13 +263,14 @@ serves the Workers page. When `firstmate_home` is set, the page reads
 `GET /workers-saved.json` and shows that reading at once, even when it is
 stale. It calls `GET /workers.json?reuse=1` only when the server has no
 reading. **Check workers** calls `GET /workers.json` when the page has no
-request in progress.
+request in progress. If a background check is running, that request waits for
+it and returns its result.
 
 While `serve` runs with `firstmate_home` set, it reads the home when it starts
-and then every
-[`workers_refresh_seconds`](#json-configuration) seconds. The last good
-reading is kept in `workers-saved.json` in the same directory as the item
-store, with mode `0600`, so a restart shows it at once. A background check
+and then every 30 minutes. The interval is fixed. The last good reading is
+kept in `workers-saved.json` in the same directory as the item store, with
+mode `0600`, so a restart shows it at once. The file records the home it was
+read from, and a restart with a different `firstmate_home` ignores it. A background check
 that fails or finds a check already running keeps that reading.
 
 `GET /workers-saved.json` returns
@@ -340,7 +341,6 @@ reading the file.
 | `output_dir` | string path | `${XDG_STATE_HOME:-~/.local/state}/quarterdeck` | Where `render` writes the pages. |
 | `base_path` | string | none | The URL prefix described above. |
 | `catch_up_days` | whole number from 1 to 3650 | `7` | Retention period for [read Catch-up notices](../how-to/catch-up.md#how-long-a-notice-stays). |
-| `workers_refresh_seconds` | whole number from 30 to 3600 | `1800` | How often `serve` rereads the home in the background for the [Workers endpoint](#workers-endpoint). Read at startup. |
 | `firstmate_home` | absolute path after expanding `~` | unset | Local destination for answers, asks and conversation messages submitted to `serve`, and the home whose workers the page lists. When set, `converse` requires it to resolve to an existing directory. See [how the store records the binding](item-store.md#conversations). |
 
 `serve` reads `firstmate_home` at startup. `converse` reads it each time it runs.
