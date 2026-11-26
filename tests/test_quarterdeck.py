@@ -2941,7 +2941,7 @@ class ServiceAndHelpTests(StoreCase):
         names = [command["name"] for command in index["commands"]]
         for name in ("add", "list", "show", "remove", "render", "serve"):
             self.assertIn(name, names)
-        for old in ("board", "reports", "topics", "waits", "attention", "export", "done", "reopen"):
+        for old in ("board", "reports", "topics", "waits", "attention", "export", "done"):
             self.assertNotIn(old, names)
         for command in index["commands"]:
             for doc in command["docs"]:
@@ -5976,7 +5976,7 @@ class TalkToFirstmateTests(ImageCase):
         port = self.start("/qd", ask_home=self.inbox())
         page = self.fetch(port, "/qd/")[1]
         self.assertEqual(re.findall(r'role="tab" id="desk-tab-([a-z-]+)"[^>]*aria-selected="(\w+)"', page),
-                         [("conversations", "true"), ("needs-you", "false")])
+                         [("conversations", "true"), ("needs-you", "false"), ("archived", "false")])
         self.assertIn('>Needs you <span class="tab-count" hidden></span></button>', page)
         self.assertLess(page.index('<form id="talk-form"'), page.index('id="topics-recent"'))
         self.assertIn("No conversations yet. A topic you start with Firstmate shows here.", page)
@@ -6051,11 +6051,168 @@ class TalkToFirstmateTests(ImageCase):
         self.assertIn('data-pinned="true"', desk)
         self.assertEqual(headers.get("Content-Security-Policy"), "frame-ancestors 'none'")
 
+    def desk_panels(self, port):
+        """The ordered IDs in each Desk list, and the Archived list, read from the served page."""
+        page, groups = self.desk_topics(port)
+        archived = re.search(r'<section class="topics" id="topics-archived"([^>]*)>(.*?)</section>', page, re.DOTALL)
+        return page, {**{name: ids for name, (_, ids) in groups.items()}, "archived": re.findall(r'data-id="(Q\d+)"', archived[2])}
+
+    def row(self, page, item="Q1"):
+        return re.search(rf'<li class="topic" data-id="{item}".*?</li>', page, re.DOTALL)[0]
+
+    def test_resolving_marks_a_conversation_and_reopening_clears_it_and_nothing_else_changes(self) -> None:
+        port = self.start("/qd", ask_home=self.inbox())
+        self.seed_conversations(port)
+        before = self.store()
+        self.assertNotIn("resolved", before["items"][0])
+        self.assertNotIn('data-resolved="true"', self.fetch(port, "/qd/")[1])
+        status, result = self.post(port, "/qd/resolutions", {"part": "Q1", "resolved": True})
+        self.assertEqual((status, result["resolved"]), (200, True))
+        self.assertIn("Harbor lamp colours", result["hold"])
+        after = self.store()
+        self.assertIs(after["items"][0]["resolved"], True)
+        del after["items"][0]["resolved"]
+        self.assertEqual(after, before)
+        page, lists = self.desk_panels(port)
+        row = self.row(page)
+        self.assertIn('data-resolved="true"', row)
+        self.assertIn('<span class="resolved-mark">', row)
+        self.assertIn(">Reopen</button>", row)
+        self.assertIn('<span class="resolved-mark" hidden>', self.row(page, "Q2"))
+        self.assertEqual(lists, {"pinned": [], "recent": ["Q3", "Q2", "Q1"], "archived": []})
+        self.assertEqual(self.post(port, "/qd/resolutions", {"part": "Q1", "resolved": False})[1]["resolved"], False)
+        self.assertEqual(self.store(), before)
+        self.assertIn(">Resolve</button>", self.row(self.fetch(port, "/qd/")[1]))
+
+    def test_a_message_or_an_update_leaves_a_resolved_conversation_resolved(self) -> None:
+        port = self.start("/qd", ask_home=self.inbox())
+        self.seed_conversations(port)
+        self.assertEqual(self.post(port, "/qd/resolutions", {"part": "Q1", "resolved": True})[0], 200)
+        page = self.fetch(port, "/qd/q1.html")[1]
+        body = {"part": "Q1", "id": uuid.uuid4().hex, "text": "One more thing.", "home": re.search(r'data-home="([^"]+)"', page)[1]}
+        self.assertEqual(self.post(port, "/qd/asks", body)[0], 200)
+        self.assertEqual(self.run_cli("post", "Q1", "--text", "Noted.")[0], 0)
+        item = self.store()["items"][0]
+        self.assertEqual([m["author"] for m in item["conversation"]["item"]], ["you", "you", "firstmate"])
+        self.assertIs(item["resolved"], True)
+        page = self.fetch(port, "/qd/")[1]
+        self.assertIn('data-resolved="true"', self.row(page))
+        self.assertIn('<span class="badge">Unread reply</span>', self.row(page))
+        self.assertIn('data-resolved="true"', self.fetch(port, "/qd/q1.html")[1])
+        self.assertIn('<textarea id="message-Q1"', self.fetch(port, "/qd/q1.html")[1])
+
+    def test_archiving_moves_a_conversation_to_the_archived_list_and_keeps_its_flags(self) -> None:
+        port = self.start("/qd", ask_home=self.inbox())
+        self.seed_conversations(port)
+        self.assertEqual(self.post(port, "/qd/resolutions", {"part": "Q2", "resolved": True})[0], 200)
+        before = self.store()
+        status, result = self.post(port, "/qd/archives", {"part": "Q2", "archived": True})
+        self.assertEqual((status, result["archived"], result["hold"]), (200, True, ""))
+        after = self.store()
+        self.assertIs(after["items"][1]["archived"], True)
+        self.assertIs(after["items"][1]["resolved"], True)
+        del after["items"][1]["archived"]
+        self.assertEqual(after, before)
+        page, lists = self.desk_panels(port)
+        self.assertEqual(lists, {"pinned": [], "recent": ["Q3", "Q1"], "archived": ["Q2"]})
+        self.assertIn('data-resolved="true" data-archived="true"', self.row(page, "Q2"))
+        self.assertIn(">Unarchive</button>", self.row(page, "Q2"))
+        self.assertIn('<button hidden type="button" class="pin"', self.row(page, "Q2"))
+        self.assertNotIn("Quay sign colours", page.partition('id="library"')[2])
+        self.assertIn('id="no-archived" hidden', page)
+        self.assertEqual(self.post(port, "/qd/archives", {"part": "Q2", "archived": False})[1]["archived"], False)
+        self.assertEqual(self.store(), before)
+        self.assertEqual(self.desk_panels(port)[1], {"pinned": [], "recent": ["Q3", "Q2", "Q1"], "archived": []})
+        self.assertIn("No conversations are archived.", self.fetch(port, "/qd/")[1])
+
+    def test_an_archived_conversation_still_takes_messages_and_replies(self) -> None:
+        port = self.start("/qd", ask_home=self.inbox())
+        self.seed_conversations(port)
+        self.assertEqual(self.post(port, "/qd/archives", {"part": "Q1", "archived": True})[0], 200)
+        page = self.fetch(port, "/qd/q1.html")[1]
+        body = {"part": "Q1", "id": uuid.uuid4().hex, "text": "Still here.", "home": re.search(r'data-home="([^"]+)"', page)[1]}
+        self.assertEqual(self.post(port, "/qd/asks", body)[0], 200)
+        self.assertEqual(self.run_cli("post", "Q1", "--text", "Welcome back.")[0], 0)
+        item = self.store()["items"][0]
+        self.assertEqual(len(item["conversation"]["item"]), 3)
+        self.assertIs(item["archived"], True)
+        self.assertEqual(self.desk_panels(port)[1]["archived"], ["Q1"])
+
+    def test_an_archived_pinned_conversation_leaves_pinned_and_returns_when_unarchived(self) -> None:
+        port = self.start("/qd", ask_home=self.inbox())
+        self.seed_conversations(port)
+        self.assertEqual(self.post(port, "/qd/pins", {"part": "Q1", "pinned": True})[0], 200)
+        self.assertEqual(self.desk_panels(port)[1], {"pinned": ["Q1"], "recent": ["Q3", "Q2"], "archived": []})
+        self.assertEqual(self.post(port, "/qd/archives", {"part": "Q1", "archived": True})[0], 200)
+        self.assertEqual(self.desk_panels(port)[1], {"pinned": [], "recent": ["Q3", "Q2"], "archived": ["Q1"]})
+        self.assertIs(self.store()["items"][0]["pinned"], True)
+        self.assertEqual(self.post(port, "/qd/archives", {"part": "Q1", "archived": False})[0], 200)
+        self.assertEqual(self.desk_panels(port)[1], {"pinned": ["Q1"], "recent": ["Q3", "Q2"], "archived": []})
+
+    def test_a_conversation_page_offers_resolve_and_archive(self) -> None:
+        port = self.start("/qd", ask_home=self.inbox())
+        self.seed_conversations(port)
+        page = self.fetch(port, "/qd/q1.html")[1]
+        self.assertIn('data-resolved="false" data-archived="false"', page)
+        self.assertIn('<button type="button" class="resolve">Resolve</button>', page)
+        self.assertIn('<button type="button" class="archive">Archive</button>', page)
+        self.post(port, "/qd/resolutions", {"part": "Q1", "resolved": True})
+        self.post(port, "/qd/archives", {"part": "Q1", "archived": True})
+        page = self.fetch(port, "/qd/q1.html")[1]
+        self.assertIn('data-resolved="true" data-archived="true"', page)
+        self.assertIn('<span class="resolved-mark">', page)
+        self.assertIn('<span class="archived-mark">Archived</span>', page)
+        self.assertIn('class="resolve">Reopen</button>', page)
+        self.assertIn('class="archive">Unarchive</button>', page)
+        stopped = self.start("/qd")
+        self.assertEqual(self.post(stopped, "/qd/resolutions", {"part": "Q1", "resolved": False})[0], 200)
+
+    def test_resolve_and_archive_refuse_other_items_bad_fields_and_other_origins(self) -> None:
+        port = self.start("/qd", ask_home=self.inbox())
+        self.begin(port)
+        self.add("questions", "Pier lights", "Pick the lamp colour.", "--body-file", "-", stdin=json.dumps(QUESTIONS))
+        before = self.store()
+        for path, field in (("/qd/resolutions", "resolved"), ("/qd/archives", "archived")):
+            for payload in ({"part": "Q2", field: True}, {"part": "Q9", field: True}, {"part": "q1", field: True},
+                            {"part": "Q1.1", field: True}, {"part": "Q1", field: "yes"}, {"part": "Q1"},
+                            {"part": "Q1", field: True, "extra": 1}, ["Q1"]):
+                with self.subTest(path=path, payload=payload):
+                    self.assertEqual(self.post(port, path, payload)[0], 400)
+            self.assertEqual(self.post(port, path, {"part": "Q1", field: True}, origin="http://example.test")[0], 403)
+        self.assertEqual(self.store(), before)
+        for field in ("resolved", "archived"):
+            for index, value in ((1, True), (0, False)):
+                damaged = json.loads(json.dumps(before))
+                damaged["items"][index][field] = value
+                with self.subTest(field=field, index=index), self.assertRaises(ValueError):
+                    quarterdeck.check_store(damaged)
+
+    def test_the_command_line_resolves_reopens_archives_and_unarchives_a_conversation(self) -> None:
+        self.assertEqual(self.run_cli("converse", "--title", "Harbor lamp colours", "--text", "Which amber?")[:2], (0, "Q1\n"))
+        self.add("questions", "Pier lights", "Pick the lamp colour.", "--body-file", "-", stdin=json.dumps(QUESTIONS))
+        before = self.store()
+        self.assertEqual(self.run_cli("resolve", "q1")[:2], (0, "Q1 Resolved\n"))
+        self.assertEqual(self.run_cli("archive", "Q1")[:2], (0, "Q1 Archived\n"))
+        item = self.store()["items"][0]
+        self.assertEqual((item["resolved"], item["archived"]), (True, True))
+        self.assertIn("Status: Resolved, Archived", self.run_cli("show", "Q1")[1])
+        self.assertEqual(self.run_cli("reopen", "Q1")[:2], (0, "Q1 Reopened\n"))
+        self.assertIs(self.store()["items"][0]["archived"], True)
+        self.assertEqual(self.run_cli("unarchive", "Q1")[:2], (0, "Q1 Unarchived\n"))
+        self.assertEqual(self.store(), before)
+        self.assertNotIn("Status:", self.run_cli("show", "Q1")[1])
+        for command in ("resolve", "reopen", "archive", "unarchive"):
+            code, _, err = self.run_cli(command, "Q2")
+            self.assertEqual(code, 2, command)
+            self.assertIn("conversation", err)
+        self.assertEqual(self.run_cli("resolve", "Q9")[0], 2)
+        self.assertEqual(self.store(), before)
+
     def test_starting_a_conversation_returns_its_row_for_the_list(self) -> None:
         port = self.start("/qd", ask_home=self.inbox())
         _, (status, result) = self.begin(port, "Quay <sign> colours", "Navy or <b>black</b>?")
         self.assertEqual(status, 200)
-        self.assertRegex(result["row"], r'^<li class="topic" data-id="Q1" data-activity="[^"]+" data-pinned="false">')
+        self.assertRegex(result["row"], r'^<li class="topic" data-id="Q1" data-activity="[^"]+" data-pinned="false" data-resolved="false" data-archived="false">')
         self.assertIn("Quay &lt;sign&gt; colours", result["row"])
         self.assertIn("Navy or &lt;b&gt;black&lt;/b&gt;?", result["row"])
         self.assertNotIn("<b>", result["row"])
@@ -6209,7 +6366,7 @@ check(posts.length === 1 && posts[0][0] === 'pins' && posts[0][1].part === 'Q1' 
 check(ids('pinned') === 'Q1' && ids('recent') === 'Q3,Q2' && !document.getElementById('topics-pinned').hidden, 'Pin did not move the row');
 check(pin('Q1').textContent === 'Unpin' && pin('Q1').getAttribute('aria-label') === 'Unpin Harbor lamp colours'
       && document.activeElement === pin('Q1'), 'The control did not become Unpin with focus kept');
-check(pin('Q1').nextElementSibling.textContent === 'Harbor lamp colours is pinned.', 'The pin was not announced');
+check(pin('Q1').closest('.topic').querySelector('.desk-feedback').textContent === 'Harbor lamp colours is pinned.', 'The pin was not announced');
 delay = true;
 pin('Q3').focus();
 pin('Q3').click();
@@ -6237,7 +6394,7 @@ document.execCommand('insertText', false, 'A message draft');
 complete();
 await settle();
 check(document.activeElement === message && message.value === 'A message draft', 'A refused pin interrupted composition');
-check(ids('pinned') === '' && !pin('Q2').disabled && pin('Q2').nextElementSibling.textContent.includes('could not save'),
+check(ids('pinned') === '' && !pin('Q2').disabled && pin('Q2').closest('.topic').querySelector('.desk-feedback').textContent.includes('could not save'),
       'A refused pin changed the list or hid the failure');
 const shared = button('desk-status');
 pin('Q1').click();
@@ -6255,11 +6412,108 @@ check(scrollY > innerHeight, 'The deep pin control did not require scrolling');
 pin('Q3').click();
 complete();
 await settle();
-const failure = pin('Q3').nextElementSibling;
+const failure = pin('Q3').closest('.topic').querySelector('.desk-feedback');
 const bounds = failure.getBoundingClientRect();
 check(failure.textContent.includes('Bell schedule') && bounds.top >= 0 && bounds.bottom <= innerHeight,
       'The second refusal was missing beside the pin or outside the phone viewport');
 """, path="/qd/", viewport=(390, 844))
+
+    def test_resolve_and_archive_update_a_row_and_move_it_between_tabs_in_a_browser(self) -> None:
+        port = self.start("/qd", ask_home=self.inbox())
+        self.seed_conversations(port)
+        self.check_answer_page(port, r"""
+const posts = [];
+let refuse = false;
+window.fetch = async (path, init) => {
+  const body = JSON.parse(init.body);
+  posts.push([path, body]);
+  if (refuse) return {ok:false, status:500};
+  return {ok:true, status:200, json: async () => ({...body, hold: ''})};
+};
+const ids = group => [...document.querySelectorAll('#topics-' + group + ' .topic')].map(row => row.dataset.id).join();
+const row = id => document.querySelector('.topic[data-id="' + id + '"]');
+const control = (id, name) => row(id).querySelector('button.' + name);
+const settle = () => new Promise(resolve => setTimeout(resolve, 50));
+const mark = id => row(id).querySelector('.resolved-mark');
+check(mark('Q1').hidden && mark('Q1').textContent === 'Resolved', 'A conversation that is not resolved showed the mark');
+control('Q1', 'resolve').focus();
+control('Q1', 'resolve').click();
+await settle();
+check(posts.length === 1 && posts[0][0] === 'resolutions' && posts[0][1].part === 'Q1' && posts[0][1].resolved === true,
+      'Resolve posted the wrong request');
+check(!mark('Q1').hidden && row('Q1').dataset.resolved === 'true' && ids('recent') === 'Q3,Q2,Q1',
+      'Resolve did not mark the row in place');
+check(control('Q1', 'resolve').textContent === 'Reopen' && control('Q1', 'resolve').getAttribute('aria-label') === 'Reopen Harbor lamp colours'
+      && document.activeElement === control('Q1', 'resolve'), 'The control did not become Reopen with focus kept');
+check(row('Q1').querySelector('.desk-feedback').textContent === 'Harbor lamp colours is resolved.', 'Resolve was not announced');
+control('Q1', 'resolve').click();
+await settle();
+check(mark('Q1').hidden && control('Q1', 'resolve').textContent === 'Resolve', 'Reopen did not clear the mark');
+control('Q1', 'resolve').click();
+await settle();
+control('Q1', 'pin').click();
+await settle();
+check(ids('pinned') === 'Q1', 'The setup did not pin Q1');
+control('Q1', 'archive').focus();
+control('Q1', 'archive').click();
+await settle();
+const last = posts[posts.length - 1];
+check(last[0] === 'archives' && last[1].part === 'Q1' && last[1].archived === true, 'Archive posted the wrong request');
+check(ids('pinned') === '' && document.getElementById('topics-pinned').hidden && ids('recent') === 'Q3,Q2' && ids('archived') === 'Q1',
+      'Archive did not move the pinned row out of the ordinary lists');
+check(!document.getElementById('topics-archived').hidden && document.getElementById('no-archived').hidden, 'The Archived tab still looked empty');
+check(control('Q1', 'pin').hidden && control('Q1', 'archive').textContent === 'Unarchive' && !mark('Q1').hidden,
+      'The archived row kept Pin or lost the resolved mark');
+check(button('desk-status').textContent === 'Harbor lamp colours is archived.', 'Archive was not announced');
+check(document.activeElement === row('Q2').querySelector('.topic-title') || document.activeElement === row('Q3').querySelector('.topic-title'),
+      'Focus did not move to a remaining row');
+button('desk-tab-archived').click();
+control('Q1', 'archive').focus();
+control('Q1', 'archive').click();
+await settle();
+check(ids('pinned') === 'Q1' && ids('archived') === '' && document.getElementById('topics-archived').hidden
+      && !document.getElementById('no-archived').hidden && !control('Q1', 'pin').hidden && control('Q1', 'pin').textContent === 'Unpin',
+      'Unarchive did not return the pinned row to Pinned');
+refuse = true;
+control('Q2', 'archive').click();
+await settle();
+check(ids('recent') === 'Q3,Q2' && row('Q2').querySelector('.desk-feedback').textContent.includes('could not save the archive for Quay sign colours')
+      && !control('Q2', 'archive').disabled, 'A refused archive moved the row or hid the failure');
+""", path="/qd/", viewport=(390, 844))
+
+    def test_the_conversation_page_resolves_and_archives_in_a_browser(self) -> None:
+        port = self.start("/qd", ask_home=self.inbox())
+        self.seed_conversations(port)
+        self.check_answer_page(port, r"""
+const posts = [];
+let refuse = false;
+window.fetch = async (path, init) => {
+  const body = JSON.parse(init.body);
+  posts.push([path, body]);
+  return refuse ? {ok:false, status:500} : {ok:true, status:200, json: async () => body};
+};
+const bar = document.querySelector('.conversation-state');
+const resolve = bar.querySelector('.resolve'), archive = bar.querySelector('.archive');
+const status = bar.querySelector('.state-status');
+const settle = () => new Promise(resolve => setTimeout(resolve, 50));
+check(bar.querySelector('.resolved-mark').hidden && bar.querySelector('.archived-mark').hidden, 'A fresh conversation showed a mark');
+resolve.focus();
+resolve.click();
+await settle();
+check(posts[0][0] === 'resolutions' && posts[0][1].part === 'Q1' && posts[0][1].resolved === true, 'Resolve posted the wrong request');
+check(!bar.querySelector('.resolved-mark').hidden && resolve.textContent === 'Reopen' && document.activeElement === resolve
+      && status.textContent === 'Harbor lamp colours is resolved.', 'The page did not show the resolved state ');
+check(!button('send-message').closest('.composer').hidden && button('message-Q1').disabled === false, 'Resolving locked the message box');
+archive.click();
+await settle();
+check(posts[1][0] === 'archives' && posts[1][1].archived === true && archive.textContent === 'Unarchive'
+      && !bar.querySelector('.archived-mark').hidden, 'Archive did not show on the page');
+refuse = true;
+resolve.click();
+await settle();
+check(resolve.textContent === 'Reopen' && status.classList.contains('failed')
+      && status.textContent.includes('could not save the change'), 'A refused change was not reported');
+""", viewport=(390, 844))
 
     def test_a_started_conversation_joins_the_top_of_the_list_with_focus_in_a_browser(self) -> None:
         port = self.start("/qd", ask_home=self.inbox())

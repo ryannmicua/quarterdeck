@@ -6,7 +6,7 @@ These are terms Quarterdeck uses on its pages and in the CLI.
 
 | Word | Meaning |
 |---|---|
-| Desk | The landing page. It has two tabs. |
+| Desk | The landing page. It has three tabs. |
 | Conversations | The Desk tab that opens first. It holds the form to start a conversation and every saved conversation. |
 | Needs you | The [Desk tab for items and notices that need attention](../how-to/answer-questions.md). |
 | Watch | A read-only page for what Firstmate has yet to reply to and what its workers are doing. |
@@ -22,6 +22,10 @@ These are terms Quarterdeck uses on its pages and in the CLI.
 | Pinned | The group above Recent conversations for conversations you chose to keep in view. |
 | Recent conversations | Every conversation that is not pinned, newest activity first. |
 | Pin, Unpin | [Move a conversation between groups](../how-to/talk-to-firstmate.md#order-and-pins). |
+| Resolved | The mark on a conversation that you or Firstmate marked settled. It shows as a check with the word. A message does not clear it. |
+| Resolve, Reopen | [Mark a conversation resolved, or clear the mark](../how-to/talk-to-firstmate.md#resolve-a-conversation). |
+| Archived | The Desk tab that holds archived conversations. They are out of Pinned and Recent conversations. |
+| Archive, Unarchive | [Move a conversation into Archived, or return it](../how-to/talk-to-firstmate.md#archive-a-conversation). |
 
 ## Status words
 

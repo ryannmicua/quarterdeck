@@ -14,7 +14,7 @@ The pop-out has three tabs.
 - **Answered** lists question items that have left the Desk, newest saved items
   first. Select an item title to read its questions and saved answers.
 - **Conversations** lists conversations started by you or Firstmate, newest
-  first, each under its topic.
+  first, each under its topic. Archived conversations are left out.
 
 With a tab focused, use the left or right arrow to switch tabs. Home opens
 References, and End opens Conversations.
@@ -50,8 +50,8 @@ or a retryable ask also shows the item once in **Needs you**, including when
 the item is filed under **Answered**. Both locations can show **Unread reply**. See
 [how to read question-card replies](ask-firstmate.md#read-replies).
 
-Standalone conversations are always in **Conversations**, on the Desk and in
-Hold. They also appear once in **Needs you** while they have an unread reply
+Standalone conversations are in **Conversations**, on the Desk and in Hold,
+until you [archive one](talk-to-firstmate.md#archive-a-conversation). They also appear once in **Needs you** while they have an unread reply
 or a retryable message. See [how to open a conversation's unread message](talk-to-firstmate.md#read-replies).
 
 Reopen a question with `quarterdeck mark Q5.2 open` to return

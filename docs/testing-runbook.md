@@ -71,6 +71,10 @@ without reloading. The pin check scrolls beyond the first phone viewport and
 checks that a refusal appears beside the acted-on topic. A pin refusal that
 arrives on **Needs you**, and stale notice guidance that arrives on
 **Conversations**, must also show in the shared result above the open tab.
+The resolve and archive checks
+click each row control and the conversation page controls, and verify that a
+pinned row leaves **Pinned** for **Archived** and returns on unarchive, that the
+mark and labels follow the saved state and that a refusal shows beside the row.
 The replay check
 verifies that the initial and inserted rows show October 2 in Tokyo for a
 message saved at 18:30 UTC on October 1. The Desk tab check uses the old

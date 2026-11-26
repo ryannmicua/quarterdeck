@@ -697,8 +697,9 @@ def check_store(data: object) -> dict[str, object]:
             if item_classification(item.get("project"), item.get("tags"), stored=True) != {
                     k: item[k] for k in ("project", "tags") if k in item}:
                 raise ValueError("item project or tags are not in the saved format")
-            if "pinned" in item and (item["pinned"] is not True or item["kind"] != "conversation"):
-                raise ValueError("only a conversation can be pinned")
+            for flag in CONVERSATION_FLAGS:
+                if flag in item and (item[flag] is not True or item["kind"] != "conversation"):
+                    raise ValueError(f"only a conversation can be {flag}")
             if "answers" in item:
                 validate_records(item)
             if "conversation" in item:
@@ -1012,6 +1013,14 @@ def by_activity(items):
 
 def is_pinned(item):
     return item.get("pinned") is True
+
+
+def is_resolved(item):
+    return item.get("resolved") is True
+
+
+def is_archived(item):
+    return item.get("archived") is True
 
 
 def part_state(item, part, *, replies=True):
@@ -1376,22 +1385,34 @@ def start_conversation(store, home, binding, payload):
             "attention": desk_row(item, summary, primary=False) if summary else None}
 
 
-def pin_conversation(store, payload):
-    """Keep a conversation in the Pinned group, or return it to its place by activity. Nothing else about it changes."""
-    if not isinstance(payload, dict) or set(payload) != {"part", "pinned"} or type(payload["pinned"]) is not bool:
-        raise ValueError("Invalid pin fields.")
+CONVERSATION_FLAGS = ("pinned", "resolved", "archived")
+FLAG_SUBJECTS = {"pinned": "pin", "resolved": "resolution", "archived": "archive"}
+
+
+def set_conversation_flag(store, payload, flag):
+    """Set or clear a conversation's pinned, resolved or archived flag. Nothing else about it changes, and no flag locks it."""
+    subject = FLAG_SUBJECTS[flag]
+    if not isinstance(payload, dict) or set(payload) != {"part", flag} or type(payload[flag]) is not bool:
+        raise ValueError(f"Invalid {subject} fields.")
     item_id = payload["part"]
     if not isinstance(item_id, str) or item_id != item_id.upper() or not ID_RE.fullmatch(item_id):
         raise ValueError("Unknown conversation.")
     with changing_store(store) as data:
         item = find_item(data, item_id)
         if item["kind"] != "conversation":
-            raise ValueError("Only a conversation can be pinned.")
-        if payload["pinned"]:
-            item["pinned"] = True
+            raise ValueError(f"Only a conversation can be {flag}.")
+        if payload[flag]:
+            item[flag] = True
         else:
-            item.pop("pinned", None)
-        return {"pinned": payload["pinned"]}
+            item.pop(flag, None)
+        result = {flag: payload[flag]}
+        if flag != "pinned":  # the Hold list keeps its own row for the conversation
+            result["hold"] = "" if is_archived(item) else library_row(item, served=True)
+        return result
+
+
+def pin_conversation(store, payload):
+    return set_conversation_flag(store, payload, "pinned")
 
 
 def mark_replies_read(store, payload):
@@ -1433,6 +1454,9 @@ def item_text(item: dict[str, object]) -> str:
         lines.extend(f"{item_id}.{number}  {entry}" for number, entry in enumerate(body["entries"], 1))  # type: ignore[index]
     elif item["kind"] == "conversation":
         lines = lines[:-2]
+        states = [name for name, on in (("Resolved", is_resolved(item)), ("Archived", is_archived(item))) if on]
+        if states:
+            lines.insert(len(lines) - 1, "Status: " + ", ".join(states))
         messages = part_thread(item, None)
         numbers = conversation_message_numbers(messages)
         for message in messages:
@@ -2022,6 +2046,34 @@ def post_update(args: argparse.Namespace) -> int:
     return run_item_command(action)
 
 
+def set_flag_command(flag: str, value: bool, done: str):
+    """A CLI command that sets or clears a conversation's resolved or archived flag, and reports the new state."""
+    def command(args: argparse.Namespace) -> int:
+        def action() -> int:
+            target = args.id.upper()
+            store = store_path()
+            with locked_store(store):
+                data = read_store(store)
+                item = find_item(data, target)
+                if item["kind"] != "conversation":
+                    raise ValueError(f"use a conversation item, such as Q12: {args.id!r}")
+                if value:
+                    item[flag] = True
+                else:
+                    item.pop(flag, None)
+                write_store(store, data)
+            print(f"{target} {done}")
+            return 0
+        return run_item_command(action)
+    return command
+
+
+resolve_conversation = set_flag_command("resolved", True, "Resolved")
+reopen_conversation = set_flag_command("resolved", False, "Reopened")
+archive_conversation = set_flag_command("archived", True, "Archived")
+unarchive_conversation = set_flag_command("archived", False, "Unarchived")
+
+
 def converse(args: argparse.Namespace) -> int:
     """Open a conversation in Firstmate's own name; its first message is an update, and no inbox note is sent."""
     def action() -> int:
@@ -2517,6 +2569,7 @@ body:has(dialog[open]) { overflow:hidden; }
 }
 .desk-tabs { margin:1rem 0 1.2rem; border-bottom:1px solid var(--rule); }
 .desk-tabs [role="tab"] { font-size:var(--text-md); margin-bottom:-1px; }
+@media (max-width: 30rem) { .desk-tabs [role="tab"] { padding:.5rem .35rem; font-size:var(--text-sm); } }
 .tab-count { display:inline-block; min-width:1.6em; margin-left:.3rem; padding:0 .45rem; border-radius:1em; text-align:center;
   font:600 var(--text-sm)/1.5 var(--sans); color:var(--signal); background:var(--signal-ground); }
 .desk-panel > .empty { margin:1rem 0; }
@@ -2530,8 +2583,16 @@ body:has(dialog[open]) { overflow:hidden; }
 .topic-latest { margin:.1rem 0 .3rem; color:var(--soft); display:-webkit-box; -webkit-line-clamp:2; -webkit-box-orient:vertical; overflow:hidden; }
 .topic-meta { display:flex; flex-wrap:wrap; gap:0 1rem; margin:0; }
 .topic-meta .badge { font-size:var(--text-sm); }
-.pin { flex:none; min-width:5rem; }
-.pin:active { background:var(--faint); }
+.topic-actions { display:flex; flex-wrap:wrap; gap:.4rem; justify-content:flex-end; }
+.topic-actions button { flex:none; min-width:5rem; }
+.topic-actions button:active { background:var(--faint); }
+@media (max-width: 30rem) { .topic { grid-template-columns:minmax(0,1fr); } .topic-actions { justify-content:flex-start; } }
+.resolved-mark, .archived-mark { display:inline-flex; align-items:center; gap:.3rem; font:600 var(--text-sm)/1.5 var(--sans); color:var(--ink); }
+.conversation-state { display:flex; flex-wrap:wrap; align-items:center; gap:.5rem 1rem; margin:.8rem 0 1rem; font-family:var(--sans); }
+.conversation-state button { min-width:5rem; }
+.conversation-state .state-status { flex-basis:100%; margin:0; }
+.conversation-state .state-status:empty { display:none; }
+.conversation-state .state-status.failed { color:var(--signal); font-weight:600; }
 #desk-status { margin:.6rem 0 0; }
 .tab-count[hidden] { display:none; }
 .bar nav a[aria-current="page"] { font-weight:700; text-decoration-thickness:2px; }
@@ -2840,6 +2901,10 @@ LIBRARY_SCRIPT = r"""
       const list = panel.querySelector('.lib-list');
       const {id, html} = event.detail;
       list.querySelector('[data-id="' + id + '"]')?.remove();
+      if (!html) {
+        run();
+        return;
+      }
       const next = [...list.children].find(row => BigInt(row.dataset.id.slice(1)) < BigInt(id.slice(1)));
       if (next) next.insertAdjacentHTML('beforebegin', html);
       else list.insertAdjacentHTML('beforeend', html);
@@ -3208,6 +3273,18 @@ def item_conversation(item, ask_binding):
     return (f'<section id="{target}" class="work item-conversation" data-conversation aria-labelledby="item-conversation-title">'
             f'<div class="eyebrow">{badge}</div><h2 id="item-conversation-title">Discuss this set</h2>'
             f'{editor}{thread}</section>')
+
+
+def conversation_state(item):
+    """The resolved mark and the controls that resolve, reopen, archive and unarchive one conversation."""
+    resolved, archived = is_resolved(item), is_archived(item)
+    title = esc(item["title"])
+    return (f'<div class="conversation-state" data-id="{item["id"]}" data-title="{title}" '
+            f'data-resolved="{"true" if resolved else "false"}" data-archived="{"true" if archived else "false"}">'
+            f'{resolved_mark(item)}<span class="archived-mark"{"" if archived else " hidden"}>Archived</span>'
+            f'<button type="button" class="resolve">{"Reopen" if resolved else "Resolve"}</button>'
+            f'<button type="button" class="archive">{"Unarchive" if archived else "Archive"}</button>'
+            '<p class="meta state-status" role="status"></p></div>')
 
 
 def conversation_page(item, ask_binding):
@@ -3586,6 +3663,43 @@ CONVERSATION_SCRIPT = talk_script(r"""
   });
   refresh();
 })();
+(() => {
+  const bar = document.querySelector('.conversation-state');
+  if (!bar) return;
+  const status = bar.querySelector('.state-status');
+  const mark = bar.querySelector('.resolved-mark');
+  const archivedMark = bar.querySelector('.archived-mark');
+  const words = {
+    resolved: {labels: ['Resolve', 'Reopen'], done: ['is reopened.', 'is resolved.']},
+    archived: {labels: ['Archive', 'Unarchive'], done: ['is unarchived.', 'is archived.']}
+  };
+  bar.addEventListener('click', async event => {
+    const button = event.target.closest('button');
+    if (!button || button.disabled) return;
+    const key = button.classList.contains('archive') ? 'archived' : 'resolved';
+    const value = bar.dataset[key] !== 'true';
+    const done = words[key].done[value ? 1 : 0];
+    const hadFocus = document.activeElement === button;
+    button.disabled = true;
+    let saved = false;
+    try {
+      saved = (await postJson(key === 'archived' ? 'archives' : 'resolutions', {part:bar.dataset.id, [key]:value})).ok;
+    } catch {
+      saved = false;
+    }
+    button.disabled = false;
+    status.classList.toggle('failed', !saved);
+    if (saved) {
+      bar.dataset[key] = String(value);
+      button.textContent = words[key].labels[value ? 1 : 0];
+      mark.hidden = bar.dataset.resolved !== 'true';
+      archivedMark.hidden = bar.dataset.archived !== 'true';
+    }
+    status.textContent = saved ? bar.dataset.title + ' ' + done
+      : 'Quarterdeck could not save the change to ' + bar.dataset.title + '. Try again.';
+    if (hadFocus) button.focus();
+  });
+})();
 """)
 
 
@@ -3691,15 +3805,19 @@ DESK_SCRIPT = talk_script(r"""
       controls.forEach(control => { control.disabled = false; });
     }
   });
-  const groups = {true: document.querySelector('#topics-pinned'), false: document.querySelector('#topics-recent')};
+  const groups = {pinned: document.querySelector('#topics-pinned'), recent: document.querySelector('#topics-recent'),
+    archived: document.querySelector('#topics-archived')};
   const none = document.getElementById('no-conversations');
+  const noneArchived = document.getElementById('no-archived');
   const rowsOf = group => [...group.querySelectorAll('.topic')];
   const syncGroups = () => {
     for (const group of Object.values(groups)) group.hidden = !rowsOf(group).length;
-    none.hidden = Boolean(document.querySelector('.topic'));
+    none.hidden = Boolean(document.querySelector('#topics-pinned .topic, #topics-recent .topic'));
+    noneArchived.hidden = !groups.archived.hidden;
   };
   const place = row => {
-    const list = groups[row.dataset.pinned === 'true'].querySelector('.topic-list');
+    const name = row.dataset.archived === 'true' ? 'archived' : row.dataset.pinned === 'true' ? 'pinned' : 'recent';
+    const list = groups[name].querySelector('.topic-list');
     const {activity, id} = row.dataset;
     const next = rowsOf(list.parentElement).find(other => other !== row && (
       other.dataset.activity < activity ||
@@ -3708,34 +3826,59 @@ DESK_SCRIPT = talk_script(r"""
     list.insertBefore(row, next || null);
     syncGroups();
   };
-  conversationPanel.addEventListener('click', async event => {
-    const button = event.target.closest('button.pin');
+  const flags = {
+    pin: {path:'pins', key:'pinned', labels:['Pin', 'Unpin'], done:['is unpinned.', 'is pinned.'], failed:'the pin for '},
+    resolve: {path:'resolutions', key:'resolved', labels:['Resolve', 'Reopen'], done:['is reopened.', 'is resolved.'], failed:'the resolution for '},
+    archive: {path:'archives', key:'archived', labels:['Archive', 'Unarchive'], done:['is unarchived.', 'is archived.'], failed:'the archive for '}
+  };
+  const holdList = document.getElementById('panel-conversations');
+  const onRowClick = async event => {
+    const button = event.target.closest('button.pin, button.resolve, button.archive');
     if (!button || button.disabled) return;
+    const flag = flags[button.className];
     const row = button.closest('.topic');
-    const pinStatus = button.nextElementSibling;
-    const pinned = row.dataset.pinned !== 'true';
+    const panel = row.closest('.desk-panel');
+    const rowStatus = row.querySelector('.desk-feedback');
+    const value = row.dataset[flag.key] !== 'true';
     const hadFocus = document.activeElement === button;
     button.disabled = true;
-    let saved = false;
+    let outcome = null;
     try {
-      saved = (await postJson('pins', {part: row.dataset.id, pinned})).ok;
+      outcome = await postJson(flag.path, {part: row.dataset.id, [flag.key]: value});
     } catch {
-      saved = false;
+      outcome = null;
     }
     const focused = document.activeElement;
     button.disabled = false;
-    if (saved) {
-      row.dataset.pinned = String(pinned);
-      const verb = pinned ? 'Unpin' : 'Pin';
-      button.textContent = verb;
-      button.setAttribute('aria-label', verb + ' ' + button.dataset.title);
+    if (outcome?.ok) {
+      const title = button.dataset.title;
+      row.dataset[flag.key] = String(value);
+      button.textContent = flag.labels[value ? 1 : 0];
+      button.setAttribute('aria-label', flag.labels[value ? 1 : 0] + ' ' + title);
+      row.querySelector('.resolved-mark').hidden = row.dataset.resolved !== 'true';
+      row.querySelector('button.pin').hidden = row.dataset.archived === 'true';
+      const neighbour = row.nextElementSibling || row.previousElementSibling
+        || [...panel.querySelectorAll('.topic')].find(other => other !== row && !other.closest('[hidden]'));
       place(row);
-      report(pinStatus, conversationPanel, button.dataset.title + (pinned ? ' is pinned.' : ' is unpinned.'), false);
+      if (flag.key === 'archived') {
+        // The row left this tab, so the shared status line carries the news.
+        startStatus.classList.remove('failed');
+        startStatus.textContent = title + ' ' + flag.done[value ? 1 : 0];
+        if (hadFocus) (neighbour?.querySelector('.topic-title') || document.getElementById(panel.getAttribute('aria-labelledby'))).focus();
+      } else {
+        report(rowStatus, panel, title + ' ' + flag.done[value ? 1 : 0], false);
+        if (!panel.hidden && (focused === button || (hadFocus && focused === document.body))) button.focus();
+      }
+      if (flag.key !== 'pinned' && holdList && outcome.result.hold !== undefined) {
+        holdList.dispatchEvent(new CustomEvent('conversation-saved', {detail: {id: row.dataset.id, html: outcome.result.hold}}));
+      }
     } else {
-      report(pinStatus, conversationPanel, 'Quarterdeck could not save the pin for ' + button.dataset.title + '. Try again.', true);
+      report(rowStatus, panel, 'Quarterdeck could not save ' + flag.failed + button.dataset.title + '. Try again.', true);
+      if (!panel.hidden && (focused === button || (hadFocus && focused === document.body))) button.focus();
     }
-    if (!conversationPanel.hidden && (focused === button || (hadFocus && focused === document.body))) button.focus();
-  });
+  };
+  conversationPanel.addEventListener('click', onRowClick);
+  document.getElementById('desk-panel-archived').addEventListener('click', onRowClick);
 
   const form = document.querySelector('#talk-form');
   if (!form) return;
@@ -4361,7 +4504,8 @@ def library_row(item, *, served):
         detail = f'<p class="meta">{label}</p>'
     else:
         replied = f'<span class="badge">{UNREAD_REPLY}</span>' if unread else ""
-        detail = f'<p class="meta"><span>{KIND_LABELS[kind]}</span>{replied}{day_time(item["saved_at"])}</p>'
+        marked = resolved_mark(item) if kind == "conversation" else ""
+        detail = f'<p class="meta"><span>{KIND_LABELS[kind]}</span>{marked}{replied}{day_time(item["saved_at"])}</p>'
     return (f'<li class="lib-item"{attributes}>'
             f'<div class="lib-head"><span class="id">{item_id}</span>'
             f'{title}{project}</div>{detail}{tags}</li>')
@@ -4394,7 +4538,8 @@ def library_lists(data: dict[str, object], *, served: bool) -> tuple[str, str]:
 
 def library_dialog(data: dict[str, object]) -> str:
     references, answered = library_lists(data, served=True)
-    items = [item for item in newest_first(data["items"]) if item["kind"] == "conversation"]  # type: ignore[arg-type]
+    items = [item for item in newest_first(data["items"])  # type: ignore[arg-type]
+             if item["kind"] == "conversation" and not is_archived(item)]
     conversations = library_panel("conversations", items,
                                   "No conversations yet. Start one from the Desk.", served=True)
     names = (("references", "References"), ("answered", "Answered"), ("conversations", "Conversations"))
@@ -4444,6 +4589,21 @@ def talk_form(binding):
 PREVIEW_LIMIT = 200
 
 
+CHECK_ICON = ('<svg class="check" viewBox="0 0 16 16" width="14" height="14" aria-hidden="true" focusable="false">'
+              '<path d="M3 8.5l3.2 3.2L13 4.8" fill="none" stroke="currentColor" stroke-width="2" '
+              'stroke-linecap="round" stroke-linejoin="round"/></svg>')
+
+
+def resolved_mark(item):
+    """The small labelled check on a resolved conversation. It is always present so a script can show or hide it."""
+    return f'<span class="resolved-mark"{"" if is_resolved(item) else " hidden"}>{CHECK_ICON}Resolved</span>'
+
+
+def flag_button(name, on, off, active, title):
+    verb = on if active else off
+    return f'<button type="button" class="{name}" data-title="{title}" aria-label="{verb} {title}">{verb}</button>'
+
+
 def conversation_row(item):
     latest = part_thread(item, None)[-1]
     target = unread_target(item)
@@ -4456,20 +4616,25 @@ def conversation_row(item):
     activity = conversation_activity(item).isoformat(timespec="microseconds")
     project = f'<span class="project-name">{esc(item["project"])}</span>' if item.get("project") else ""
     preview = " ".join(str(latest["text"]).split())[:PREVIEW_LIMIT]
-    pinned = is_pinned(item)
-    verb = "Unpin" if pinned else "Pin"
+    pinned, resolved, archived = is_pinned(item), is_resolved(item), is_archived(item)
     title = esc(item["title"])
-    return (f'<li class="topic" data-id="{item["id"]}" data-activity="{activity}" data-pinned="{"true" if pinned else "false"}">'
+    pin = flag_button("pin", "Unpin", "Pin", pinned, title)
+    if archived:
+        pin = pin.replace('<button ', '<button hidden ', 1)
+    flags = " ".join(f'data-{name}="{"true" if on else "false"}"' for name, on in
+                     (("pinned", pinned), ("resolved", resolved), ("archived", archived)))
+    return (f'<li class="topic" data-id="{item["id"]}" data-activity="{activity}" {flags}>'
             f'<div class="topic-main"><a class="topic-title" href="{href}">{title}</a>'
             f'<p class="topic-latest">{esc(preview)}</p>'
-            f'<p class="meta topic-meta">{project}{status}{day_time(latest["at"])}</p></div>'
-            f'<button type="button" class="pin" data-title="{title}" aria-label="{verb} {title}">{verb}</button>'
+            f'<p class="meta topic-meta">{project}{resolved_mark(item)}{status}{day_time(latest["at"])}</p></div>'
+            f'<div class="topic-actions">{pin}{flag_button("resolve", "Reopen", "Resolve", resolved, title)}'
+            f'{flag_button("archive", "Unarchive", "Archive", archived, title)}</div>'
             '<p class="meta desk-feedback" role="status"></p></li>')
 
 
 def conversation_groups(items):
     """The Pinned and Recent groups. Each is a list kept in newest-activity order; the script moves rows between them."""
-    ordered = by_activity(items)
+    ordered = by_activity(item for item in items if not is_archived(item))
     groups = []
     for name, heading, pinned in (("pinned", "Pinned", True), ("recent", "Recent conversations", False)):
         rows = "".join(conversation_row(item) for item in ordered if is_pinned(item) == pinned)
@@ -4480,9 +4645,19 @@ def conversation_groups(items):
 
 def conversations_panel(items, ask_binding):
     form = talk_form(ask_binding) if ask_binding else ""
-    empty = (f'<p class="empty" id="no-conversations"{" hidden" if items else ""}>'
+    live = [item for item in items if not is_archived(item)]
+    empty = (f'<p class="empty" id="no-conversations"{" hidden" if live else ""}>'
              'No conversations yet. A topic you start with Firstmate shows here.</p>')
     return f'{form}{empty}{conversation_groups(items)}'
+
+
+def archived_panel(items):
+    """Archived conversations, newest activity first. Replying still works from each one's page."""
+    rows = "".join(conversation_row(item) for item in by_activity(item for item in items if is_archived(item)))
+    return (f'<p class="empty" id="no-archived"{" hidden" if rows else ""}>'
+            'No conversations are archived. A conversation you archive shows here.</p>'
+            f'<section class="topics" id="topics-archived"{"" if rows else " hidden"}>'
+            f'<h2 class="sr">Archived conversations</h2><ul class="topic-list">{rows}</ul></section>')
 
 
 def catch_up_row(notice, items_by_id):
@@ -4522,14 +4697,15 @@ def needs_you_panel(attention, notices, items_by_id):
             f'<p class="empty"{hide_empty}>Nothing needs you. Questions, unread replies, failed deliveries and notices show here.</p>')
 
 
-def desk_tabs(conversations, attention, total):
+def desk_tabs(conversations, attention, archived, total):
     hidden = "" if total else " hidden"
     count = f' <span class="tab-count"{hidden}>{total or ""}</span>'
     panels = (("conversations", "Conversations", conversations),
-              ("needs-you", "Needs you", attention))
+              ("needs-you", "Needs you", attention),
+              ("archived", "Archived", archived))
     tabs = "".join(f'<button type="button" role="tab" id="desk-tab-{name}" aria-controls="desk-panel-{name}" '
                    f'aria-selected="{"true" if number == 0 else "false"}" tabindex="{0 if number == 0 else -1}">'
-                   f'{label}{count if number else ""}</button>'
+                   f'{label}{count if name == "needs-you" else ""}</button>'
                    for number, (name, label, _) in enumerate(panels))
     body = "".join(f'<section class="desk-panel" role="tabpanel" id="desk-panel-{name}" aria-labelledby="desk-tab-{name}"'
                    f'{"" if number == 0 else " hidden"}>{content}</section>'
@@ -4618,6 +4794,7 @@ def list_page(data: dict[str, object], site_title: str, *, served: bool, saved_n
         body = "<h1>Desk</h1>" + desk_tabs(
             conversations_panel(conversations, ask_binding),
             needs_you_panel(attention, notices, {item["id"]: item for item in items}),
+            archived_panel(conversations),
             len(attention) + len(notices),
         )
         return page_shell(site_title, site_title, body, served=True, saved_name=saved_name,
@@ -4662,6 +4839,7 @@ def item_page(item: dict[str, object], site_title: str, *, served: bool, saved_n
         f'<p class="meta">{esc(KIND_LABELS[str(item["kind"])])}{" · " + esc(item["project"]) if item.get("project") else ""}'
         f' · saved <time class="day" datetime="{esc(item["saved_at"])}">{esc(saved_day(item))}</time></p>'
         f'{tag_labels(list(item.get("tags", [])))}'
+        f'{conversation_state(item) if talking and served else ""}'
         f'{lead}{content}'
     )
     return page_shell(f"{item_id} {item['title']} · {site_title}", site_title, body,
@@ -5150,7 +5328,7 @@ def make_handler(site_title: str, base_path: str = "", store: Path | None = None
         def do_POST(self) -> None:  # noqa: N802 - http.server naming
             endpoint = self.path.removeprefix(base_path)
             subjects = {"/answers": "answer", "/asks": "ask", "/conversations": "conversation", "/replies/read": "reply acknowledgment",
-                        "/pins": "pin",
+                        "/pins": "pin", "/resolutions": "resolution", "/archives": "archive",
                         "/catch-ups/read": "catch-up read"}
             if not self.path.startswith(base_path) or endpoint not in subjects:
                 self.send_text(405, "Use the question page.")
@@ -5188,6 +5366,10 @@ def make_handler(site_title: str, base_path: str = "", store: Path | None = None
                     record = start_conversation(active_store, ask_path, ask_binding, payload)
                 elif endpoint == "/pins":
                     record = pin_conversation(active_store, payload)
+                elif endpoint == "/resolutions":
+                    record = set_conversation_flag(active_store, payload, "resolved")
+                elif endpoint == "/archives":
+                    record = set_conversation_flag(active_store, payload, "archived")
                 elif endpoint == "/catch-ups/read":
                     if not isinstance(payload, dict) or set(payload) != {"ids"}:
                         raise ValueError("Invalid catch-up read.")
@@ -5216,7 +5398,7 @@ def make_handler(site_title: str, base_path: str = "", store: Path | None = None
             except (OSError, StoreReadError):
                 self.send_text(500, f"Could not save the {subject}.")
             except (ValueError, RecursionError):
-                self.send_text(400, f"Check the conversation and {subject}." if endpoint == "/pins"
+                self.send_text(400, f"Check the conversation and {subject}." if endpoint in ("/pins", "/resolutions", "/archives")
                                else f"Check the question and {subject}.")
             else:
                 self.send_text(200, json.dumps(record), "application/json")
@@ -5280,7 +5462,7 @@ def serve(args: argparse.Namespace) -> int:
     exposed = [host for host in bind_hosts(args) if not is_loopback(host)]
     if exposed:
         print(f"quarterdeck: warning: {', '.join(exposed)} is not a loopback address; anyone who can reach this port can "
-              "read saved items, answers, conversations, images, and unread Catch-up notices. They can submit answers, pin topics, acknowledge "
+              "read saved items, answers, conversations, images, and unread Catch-up notices. They can submit answers, pin, resolve and archive topics, acknowledge "
               "replies, and mark Catch-up notices read by ID. "
               "With firstmate_home set, they can read or check the worker and second mate roster, "
               "send asks, start conversations and send messages.",
@@ -5431,6 +5613,8 @@ COMMAND_DOCS = {
     "show": ["how-to/read-answers.md", "how-to/save-items.md", "reference/cli-and-config.md"],
     "reply": ["how-to/reply-from-the-command-line.md", "how-to/talk-to-firstmate.md", "reference/cli-and-config.md", "reference/item-store.md"],
     "post": ["how-to/reply-from-the-command-line.md", "reference/cli-and-config.md", "reference/item-store.md"],
+    **dict.fromkeys(("resolve", "reopen", "archive", "unarchive"),
+                    ["how-to/talk-to-firstmate.md", "reference/cli-and-config.md", "reference/item-store.md"]),
     "converse": ["how-to/reply-from-the-command-line.md", "how-to/talk-to-firstmate.md", "reference/cli-and-config.md", "reference/item-store.md"],
     "remove": ["how-to/save-items.md", "reference/cli-and-config.md"],
     "render": ["how-to/serve-the-page.md", "reference/cli-and-config.md", "explanation/privacy-and-architecture.md"],
@@ -5569,6 +5753,14 @@ def make_parser() -> argparse.ArgumentParser:
     post.add_argument("--text", required=True, help="the message")
     attachment_options(post)
 
+    for name, handler, verb in (("resolve", resolve_conversation, "mark a conversation resolved"),
+                                ("reopen", reopen_conversation, "mark a resolved conversation not resolved"),
+                                ("archive", archive_conversation, "move a conversation to Archived"),
+                                ("unarchive", unarchive_conversation, "return an archived conversation to the Desk")):
+        sub_parser = command(name, verb, f"{verb[0].upper()}{verb[1:]}. It changes nothing else: messages stay, "
+                             "replies still work and the other flags are kept.", handler)
+        sub_parser.add_argument("id", help="a conversation's item ID, such as Q12")
+
     converse_cmd = command("converse", "open a conversation in Firstmate's name and print its ID",
                            "Open a conversation with a title and a first message from Firstmate, shown as a Firstmate update "
                            "and as Unread reply until the owner opens it. Sends no inbox note; the owner and Firstmate continue "
@@ -5637,7 +5829,7 @@ def make_parser() -> argparse.ArgumentParser:
 
     serve_parser = command("serve", "serve the page over HTTP",
                            "Anyone who can reach the service can read saved items, answers, conversations and reply images. "
-                           "They can read unread Catch-up notices, including their details and links. They can submit answers, pin topics, acknowledge replies, and mark Catch-up notices read by ID "
+                           "They can read unread Catch-up notices, including their details and links. They can submit answers, pin, resolve and archive topics, acknowledge replies, and mark Catch-up notices read by ID "
                            "as the owner. With firstmate_home set, they can also "
                            "send asks, start conversations, send messages and read or check that home's workers "
                            "and second mates from the Workers page or workers.json. Browser "
