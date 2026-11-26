@@ -602,6 +602,20 @@ opened.querySelector('.next-link').click();
 await until(() => pane()?.querySelector('h1')?.textContent === 'Sail inventory', 'The restored link did not open the next reply');
 """)
 
+    def test_an_item_that_loads_with_older_filters_adopts_the_current_ones(self) -> None:
+        # The Desk's filters decide where Back and Next unread lead, also for a pane address rendered before they changed.
+        self.run_in_desk(r"""
+const errors = [];
+addEventListener('error', event => errors.push(event.message));
+document.getElementById('scope-unread').click();
+frame.src = 'q2.html?from=conversations';
+await until(() => pane()?.querySelector('h1')?.textContent === 'Dock lights', 'The conversation did not open');
+await until(() => pane().querySelector('.back-link').href.includes('unread=1'), 'The pane kept the filters it loaded with');
+const following = [...pane().querySelectorAll('.next-link')];
+check(following.length === 2 && following.every(link => link.href.includes('unread=1')), 'Next unread did not follow the current filter');
+check(!errors.length, 'The Desk raised an error while the item loaded: ' + errors[0]);
+""")
+
     def test_pane_writes_update_hold_and_preserve_notice_acknowledgment(self) -> None:
         self.firstmate("catch-up", "add", "--title", "Tide chart published", "--summary", "The chart is ready.")
         self.run_in_desk(r"""

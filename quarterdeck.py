@@ -5522,7 +5522,7 @@ DESK_SCRIPT = talk_script(r"""
     const id = match[1].toUpperCase();
     if (id !== currentId) setCurrent(id);
     refreshLists();
-    if (address.searchParams.get('from') === 'conversations' && scopedAddress(address.href).search !== address.search) changeScope();
+    if (new URLSearchParams(address.search).get('from') === 'conversations' && scopedAddress(address.href).search !== address.search) changeScope();
   });
   addEventListener('message', event => {
     if (event.origin === location.origin && event.source === frame.contentWindow && event.data === 'quarterdeck-changed') refreshLists();
