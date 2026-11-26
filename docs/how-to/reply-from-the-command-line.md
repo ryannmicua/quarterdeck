@@ -82,6 +82,23 @@ See the [CLI reference](../reference/cli-and-config.md#items) for attachments
 and command output. The owner can [respond on the conversation page](talk-to-firstmate.md#send-more-messages).
 Use [reply](#reply-in-a-conversation) to answer their message.
 
+## Mark a message for review
+
+A reply or an update alone shows as unread on **Conversations**, and the owner
+reads it once. When a message needs the owner, such as a question, a decision
+or a result to check, add `--for-review` to `reply`, `post` or `converse`.
+
+```sh
+quarterdeck post Q12 --text "The legend is ready. Tell me if I can merge it." --for-review
+```
+
+The conversation then shows in **For review** with **Asked**. It stays there
+after the owner reads the message. It leaves when the owner sends a message in
+the conversation, or when either of you resolves it. A later message without
+the option does not end the wait. `--for-review` works on a conversation only;
+a question set already shows in **For review** while a question is open. For a
+task's result, use [`task review`](create-a-task.md#review-a-task) instead.
+
 ## File a conversation in a project
 
 The owner creates and renames [projects and topics](talk-to-firstmate.md#group-conversations)

@@ -19,6 +19,20 @@ The pop-out has three tabs.
 With a tab focused, use the left or right arrow to switch tabs. Home opens
 References, and End opens Conversations.
 
+## References on the Desk
+
+Select **References** on the Desk to see every saved link and list, newest
+first. The tab sits beside **Conversations** and **For review**.
+
+- A saved link shows its title, which opens what it saves. Any further links
+  it holds sit under it. Its ID, such as Q7, opens the saved item with its
+  description.
+- A saved list shows its title, which opens the list.
+
+On a wide screen a saved item or a list opens beside the tab. The tab has no
+search. To search references, or to filter them by project or tag, select
+**Open Hold**. Answered question sets are in Hold only.
+
 ## Search
 
 **References** and **Answered** search titles and descriptions. **Answered**
@@ -44,15 +58,15 @@ or **Close Hold**.
 
 ## When an item moves
 
-An item with questions stays in **Needs you** while it has an open question
+An item with questions stays in **For review** while it has an open question
 or a pending answer. Otherwise it is filed under **Answered**. An unread reply
-or a retryable ask also shows the item once in **Needs you**, including when
+or a retryable ask also shows the item once in **For review**, including when
 the item is filed under **Answered**. Both locations can show **Unread reply**. See
 [how to read question-card replies](ask-firstmate.md#read-replies).
 
 Standalone conversations are in **Conversations**, on the Desk and in Hold,
-until you [archive one](talk-to-firstmate.md#archive-a-conversation). They also appear once in **Needs you** while they have an unread reply
-or a retryable message. See [how to open a conversation's unread message](talk-to-firstmate.md#read-replies).
+until you [archive one](talk-to-firstmate.md#archive-a-conversation). One with an unread reply sits under **Unread** there. A conversation also shows in **For review** while a task in it
+waits for your review, Firstmate marked a message in it for you, or a message of yours was not delivered. See [how to open a conversation's unread message](talk-to-firstmate.md#read-replies).
 
 Reopen a question with `quarterdeck mark Q5.2 open` to return
 its item to the Desk. The item stays saved until you remove it with

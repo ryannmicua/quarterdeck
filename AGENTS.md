@@ -8,6 +8,7 @@ This file is the project's committed home for project-intrinsic agent knowledge:
 
 - With Firstmate configured, anyone who can reach the served Desk can start a conversation. The workers section runs only the home's read-only `bin/fm-fleet-snapshot.sh --local`. See `docs/explanation/privacy-and-architecture.md` for the file access and serving boundaries.
 - Validation commands live in `CONTRIBUTING.md`.
+- On a wide screen the Desk shows an item page in a same-origin frame beside its lists. Item pages that take the owner's actions therefore send `frame-ancestors 'self'`, and the Desk itself sends `'none'`. The framed page reports each saved change to the Desk, which then reads its lists again from `index.html?lists=1`.
 
 ## Maintaining this file
 

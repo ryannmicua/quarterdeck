@@ -80,7 +80,7 @@ The default bind is `127.0.0.1`. A loopback listener refuses requests whose
 `Host` is outside loopback. Quarterdeck has no login. Anyone who can reach the
 service can read saved items, their images, answers, conversations, reply
 images, and unread Catch-up notices including their titles, summaries, links
-and projects. They can also send answers, pin, resolve and archive conversations,
+and projects. They can also send answers, pin, resolve and archive conversations, keep items for later,
 create and rename projects and topics, move conversations between them, acknowledge Firstmate
 messages, and mark Catch-up notices read as the owner.
 When `firstmate_home` is set, anyone who can reach the service can view the
@@ -91,7 +91,8 @@ from the Desk, create and start tasks, and send messages.
 Quarterdeck prints a warning when you bind a non-loopback address. Keep the
 listener and proxy on the trusted network, or protect both with an owner access
 gate. Browser submissions require an `Origin` that matches the public host and
-scheme. Conversation starts, task creations and reviews, pins, resolutions, archives, project and topic changes,
-moves, asks, reply acknowledgments and Catch-up acknowledgments use the same check. The served Desk and standalone conversation
-pages block framing. Question pages also block framing when they have answer controls,
-unread replies, or an existing set discussion, even if all questions are closed.
+scheme. Conversation starts, task creations and reviews, pins, resolutions, archives, later marks, project and topic changes,
+moves, asks, reply acknowledgments and Catch-up acknowledgments use the same check. The served Desk
+blocks framing by any page. A standalone conversation page may be framed only by a page
+of the same origin, which is how the Desk shows it beside its lists. So may a question page that has answer controls,
+unread replies, or an existing set discussion, even if all questions are closed. No other site can frame them.

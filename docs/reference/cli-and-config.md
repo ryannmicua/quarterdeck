@@ -9,10 +9,10 @@ quarterdeck add --kind resource|list|questions --title TEXT --description TEXT
 quarterdeck edit ID [--title TEXT] [--description TEXT] [--link-text TEXT --url URL]...
 quarterdeck list
 quarterdeck show ID
-quarterdeck reply ID[.PART] --ask ID --text TEXT [--link-text TEXT --url URL]... [--image PATH --alt TEXT]...
+quarterdeck reply ID[.PART] --ask ID --text TEXT [--for-review] [--link-text TEXT --url URL]... [--image PATH --alt TEXT]...
                    [--clarify ID.PART=TEXT]... [--option-changed ID.PART]...
-quarterdeck post ID --text TEXT [--link-text TEXT --url URL]... [--image PATH --alt TEXT]...
-quarterdeck converse --title TITLE --text TEXT [--config FILE] [--project ID [--topic ID]]
+quarterdeck post ID --text TEXT [--for-review] [--link-text TEXT --url URL]... [--image PATH --alt TEXT]...
+quarterdeck converse --title TITLE --text TEXT [--for-review] [--config FILE] [--project ID [--topic ID]]
                      [--link-text TEXT --url URL]... [--image PATH --alt TEXT]...
 quarterdeck task review ID --text TEXT [--url URL [--link-text TEXT]]
 quarterdeck resolve ID
@@ -57,12 +57,12 @@ as `reply`.
 | `add` | Saves a new item and prints its ID. A `resource` needs `--url` and `--link-text`; repeat the pair for more links. A `list` or `questions` item needs `--body-file`. See [the input formats and examples](../how-to/save-items.md#add-an-item) and [how to classify items and questions when saving](../how-to/classify-items.md#classify-when-you-save). |
 | `list` | Prints saved items, newest first, with ID, kind, saved date and title. |
 | `show` | Prints the item's text, numbering list entries and questions as `Q7.1`, `Q7.2`. Includes question links, stored states, and saved answers with their timestamps and delivery status. For a standalone conversation, prints the transcript in saved order with timestamps, IDs, delivery status for outgoing messages, and attachments. A standalone Firstmate message is marked `Update`. A task also prints its state, its related conversation while that conversation exists, its result when In review, and its Description. Image references are paths relative to the served site or the item store directory. |
-| `reply` | Adds Firstmate's reply to an existing ask on a whole question item (`Q7`) or one question (`Q7.1`), or to an owner's message in a [conversation](../how-to/talk-to-firstmate.md) (`Q12`). It preserves saved answers and question states. Supply the required `--ask ID` from the inbox note and the reply in `--text`. Pair `--link-text` with `--url` and `--image` with `--alt` in the order given. See [Reply from the command line](../how-to/reply-from-the-command-line.md). |
-| `post` | Adds a standalone update from Firstmate. Accepts a conversation item ID such as `Q12` and prints `Q12 Updated`. |
-| `converse` | Opens a conversation with a title and an update from Firstmate, then prints the new item ID. `--project` and `--topic` file it in a project and a topic of that project, each by ID such as `P1` or `T2`, in any case. `--topic` needs `--project`, and an unknown ID is refused with the IDs and names that exist. See [`firstmate_home`](#json-configuration) for home selection. |
+| `reply` | Adds Firstmate's reply to an existing ask on a whole question item (`Q7`) or one question (`Q7.1`), or to an owner's message in a [conversation](../how-to/talk-to-firstmate.md) (`Q12`). It preserves saved answers and question states. Supply the required `--ask ID` from the inbox note and the reply in `--text`. Pair `--link-text` with `--url` and `--image` with `--alt` in the order given. On a conversation, `--for-review` [marks the reply for the owner's review](../how-to/reply-from-the-command-line.md#mark-a-message-for-review); on a question item it is refused. See [Reply from the command line](../how-to/reply-from-the-command-line.md). |
+| `post` | Adds a standalone update from Firstmate. Accepts a conversation item ID such as `Q12` and prints `Q12 Updated`. `--for-review` [marks the update for the owner's review](../how-to/reply-from-the-command-line.md#mark-a-message-for-review), so the conversation shows in **For review** with **Asked** until the owner sends a message in it or it is resolved. |
+| `converse` | Opens a conversation with a title and an update from Firstmate, then prints the new item ID. `--project` and `--topic` file it in a project and a topic of that project, each by ID such as `P1` or `T2`, in any case. `--topic` needs `--project`, and an unknown ID is refused with the IDs and names that exist. `--for-review` marks the opening update for the owner's review, as it does for `post`. See [`firstmate_home`](#json-configuration) for home selection. |
 | `projects` | Prints each project and its topics with their IDs, topics indented under their project, in name order. Prints `No projects.` when the owner has made none. Only the owner creates and renames them, on the Desk. |
 | `move` | Files a conversation in a project and optionally a topic, by ID, or returns it to Ungrouped with `--ungrouped`. Give exactly one of `--project` and `--ungrouped`. Prints `Q12 Moved`. Items that are not conversations are refused. It changes only the conversation's [`placement`](item-store.md#conversations). |
-| `task review` | Puts a task in review and prints `Q12 In review`. It posts `--text` as a Firstmate update, so the task shows **Unread reply**, and with `--url` it keeps that address as the task's result. `--link-text` names the link and reads Result when left out. The task then shows in **Needs you** with **Approve** and **Changes needed**. A conversation that is not a task, a draft and a resolved task are refused. Resolve a finished task with `resolve`. See [create a task](../how-to/create-a-task.md#review-a-task). |
+| `task review` | Puts a task in review and prints `Q12 In review`. It posts `--text` as a Firstmate update, so the task shows **Unread reply**, and with `--url` it keeps that address as the task's result. `--link-text` names the link and reads Result when left out. The task then shows in **For review**, and its page has **Approve** and **Changes needed**. A conversation that is not a task, a draft and a resolved task are refused. Resolve a finished task with `resolve`. See [create a task](../how-to/create-a-task.md#review-a-task). |
 | `resolve`, `reopen` | Marks a conversation resolved or not resolved and prints `Q12 Resolved` or `Q12 Reopened`. Only a conversation item is accepted. Messages and updates leave the mark as it is. See [resolve a conversation](../how-to/talk-to-firstmate.md#resolve-a-conversation). |
 | `archive`, `unarchive` | Moves a conversation to the Archived tab or back to the Desk and prints `Q12 Archived` or `Q12 Unarchived`. Only a conversation item is accepted. The resolved and pinned marks stay, and replies still work. See [archive a conversation](../how-to/talk-to-firstmate.md#archive-a-conversation). |
 | `mark` | Sets question state, optionally for a whole questions item. `--via` is required with `answered` and accepted only with that state. Skips exit with status 0. See [Read answers](../how-to/read-answers.md) for which questions are marked. |
@@ -199,9 +199,10 @@ is pending. The same ID with a different title or text returns 409. A successful
 response contains `message` (delivery status), `href` (the relative URL of
 the conversation card), `row` (the conversation row HTML), `hold` (the Hold
 result row HTML), and `attention`
-(the started conversation’s Needs you row HTML, or `null` if it needs no attention).
-The browser updates that conversation's rows and derives the tab count from the
-current Needs you table.
+(the started conversation’s For review row HTML, or `null` if it does not wait for the owner).
+The browser shows that conversation's rows at once, derives the tab counts from the
+lists, and then reads the lists again from `index.html?lists=1`. That request
+returns the Desk page and is not written to the [visit log](#visit-log).
 
 On an existing conversation, the owner's messages use the
 [ask endpoint](#ask-endpoint) with `"part": "Q12"`, including their first
@@ -248,6 +249,15 @@ can be pinned, and any other ID returns 400. The request changes the
 conversation's [`pinned` field](item-store.md#conversations) and nothing else.
 It adds no message, leaves unread replies unread and keeps the conversation's
 latest activity. The response is `{"pinned": true}` or `{"pinned": false}`.
+
+### Later endpoint
+
+`POST /laters` (under any `base_path`) uses the same origin check as `/pins`
+and needs no `firstmate_home`. Send `{"part": "Q7", "later": true}` to keep a
+question item or a conversation for later, or `"later": false` to take it out.
+Any other item, ID or field returns 400. The request changes the item's
+[`later` field](item-store.md#later) and nothing else. The response is
+`{"later": true}` or `{"later": false}`.
 
 ### Resolution and archive endpoints
 

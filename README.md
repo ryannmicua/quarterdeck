@@ -28,11 +28,14 @@ own copy of the saved content.
 
 ## Features
 
-- **Desk** opens on **Conversations**, where you start a conversation, keep
+- **Desk** reads [like a mailbox](docs/how-to/talk-to-firstmate.md#read-the-desk-like-a-mailbox): lists on one side and,
+  on a wide screen, the open item on the other. It opens on **Conversations**, where you start a conversation, find
+  unread replies on top, keep
   [pinned conversations](docs/how-to/talk-to-firstmate.md#order-and-pins) in view and
   [group conversations](docs/how-to/talk-to-firstmate.md#group-conversations) by project and topic. Its
-  **Needs you** tab holds [questions to answer](docs/how-to/answer-questions.md)
-  and [unread replies](docs/how-to/use-the-library.md#when-an-item-moves).
+  **For review** tab holds only [what waits for you](docs/how-to/answer-questions.md#what-for-review-holds),
+  and what you chose to [deal with later](docs/how-to/answer-questions.md#deal-with-an-item-later).
+- **References** is the Desk tab for your [saved links and lists](docs/how-to/use-the-library.md#references-on-the-desk).
 - **Under way** lists the work in progress with its status, pull request and
   conversation. See [See work under way](docs/how-to/see-work-under-way.md).
 - **Watch** lists what Firstmate has yet to reply to and shows its current work.
@@ -40,7 +43,7 @@ own copy of the saved content.
 - **Open Hold** gives you searchable access to saved links, lists, and
   answered items and conversations on the served Desk. See
   [Find references and answered questions](docs/how-to/use-the-library.md).
-- **Catch-up** shows explicitly saved notices in **Needs you**. See
+- **Catch-up** shows explicitly saved notices under **Unread** on **Conversations**. See
   [Catch up on finished work](docs/how-to/catch-up.md).
 - **Workers** is its own page, linked from the header. See
   [how to enable and check the roster](docs/how-to/read-workers.md).

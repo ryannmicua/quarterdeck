@@ -6,10 +6,14 @@ These are terms Quarterdeck uses on its pages and in the CLI.
 
 | Word | Meaning |
 |---|---|
-| Desk | The landing page. It has four tabs. |
-| Conversations | The Desk tab that opens first. It holds the form to start a conversation, the Project filter and every saved conversation. |
-| New conversation | The button that shows the form to start a conversation. The form stays hidden until you select it or the browser restores unsent text, and selecting it again hides the form and keeps unsent text. |
-| Needs you | The [Desk tab for items and notices that need attention](../how-to/answer-questions.md). |
+| Desk | The landing page. It has five tabs above its lists. On a wide screen the item you select opens beside the lists. |
+| Conversations | The Desk tab that opens first. It holds the buttons that start a conversation or a task, the filters and every saved conversation. Its count is the number of rows under **Unread**. |
+| New conversation | The button that shows the form to start a conversation. On a wide screen the form opens beside the lists, like a new message. The form stays hidden until you select it or the browser restores unsent text, and selecting it again hides the form and keeps unsent text. |
+| Discard draft | The button on that form that clears the title and the message and closes the form. |
+| For review | The [Desk tab for what waits for you](../how-to/answer-questions.md): question sets, tasks to review, conversations Firstmate marked for you and messages that were not delivered. Its count leaves out **Later**. |
+| References | The [Desk tab for your saved links and lists](../how-to/use-the-library.md#references-on-the-desk), newest first. Hold lists the same items, with a search and filters. |
+| Later | The group at the end of **For review** for items you chose to deal with later. |
+| Deal with later, Remove from Later | [Move an item into Later, or take it out](../how-to/answer-questions.md#deal-with-an-item-later). |
 | Under way | The [Desk tab for work in progress](../how-to/see-work-under-way.md). It lists one row for each piece of work in the saved workers reading. |
 | Watch | A read-only page for what Firstmate has yet to reply to and what its workers are doing. |
 | Workers | The [roster page](../how-to/read-workers.md) that reads the workers of the configured Firstmate home and refreshes the reading. |
@@ -29,9 +33,12 @@ These are terms Quarterdeck uses on its pages and in the CLI.
 | Ungrouped | A conversation that is in no project. Every conversation starts there unless you start it inside a project or topic. |
 | Move | Change which project and topic a conversation is in, or return it to Ungrouped. |
 | All | The default Project filter. It shows every conversation, grouped or not. |
+| Unread | The first group on **Conversations**. It holds each conversation with a reply you have not opened, unless that conversation waits in **For review**, and each unread Catch-up notice. |
+| Unread only | The Desk filter, beside Tasks only, that hides conversations with no unread reply. |
 | Pinned | The group above Recent conversations for conversations you chose to keep in view. |
-| Recent conversations | Every conversation that is not pinned, newest activity first. |
-| Pin, Unpin | [Keep a conversation in Pinned, or return it to its place by activity](../how-to/talk-to-firstmate.md#order-and-pins). |
+| Recent conversations | Every other conversation, newest activity first. |
+| Pin, Unpin | [Keep a conversation in Pinned, or return it to its place by activity](../how-to/talk-to-firstmate.md#order-and-pins). The button is on the conversation's page. |
+| Show earlier messages | The button in a long conversation that brings back the messages folded away in the middle. Its label carries their number, such as Show 3 earlier messages. |
 | Resolved | The mark on a conversation that you or Firstmate marked settled. It shows as a check with the word. A message does not clear it. |
 | Resolve, Reopen | [Mark a conversation resolved, or clear the mark](../how-to/talk-to-firstmate.md#resolve-a-conversation). |
 | Archived | The Desk tab that holds archived conversations. They are out of Pinned, Recent conversations and the Project filter. |
@@ -70,7 +77,7 @@ A task has one state. **Resolved** is the existing [Resolved](#conversations) ma
 |---|---|
 | Draft | You saved the task and have not started it. Firstmate has heard nothing. |
 | Started | You started the task. Firstmate has the Description. |
-| In review | Firstmate posted the result and waits for you. The task shows in **Needs you**. |
+| In review | Firstmate posted the result and waits for you. The task shows in **For review**. |
 | Resolved | You approved the task, or you or Firstmate resolved it. |
 
 ## Status words
@@ -81,7 +88,7 @@ A task has one state. **Resolved** is the existing [Resolved](#conversations) ma
 | Replied | The last message in a conversation is from Firstmate and you have read it. |
 | Messaged | The last message in a conversation is yours and reached the inbox. On Watch, you have an unanswered delivered message in the current turn. |
 | Not delivered | A saved message, ask or answer failed to reach the inbox. |
-| Asked | On the Desk, Firstmate asked a question that is still open. On Watch, you asked Firstmate on a question set and it has yet to reply. |
+| Asked | On the Desk, Firstmate asked a question that is still open, or marked a conversation message for your review and you have not sent a message since. On Watch, you asked Firstmate on a question set and it has yet to reply. |
 | Answered, Closed | The states of a question. See [question states](item-store.md#question-states). |
 | Open | A question that has no answer yet. |
 
@@ -110,7 +117,7 @@ reading, in your local time zone.
 
 | Word | Meaning |
 | --- | --- |
-| Catch-up | Short notices about finished work. Unread notices appear in **Needs you** and can also be reviewed from the CLI. |
+| Catch-up | Short notices about finished work. Unread notices appear under **Unread** on **Conversations** and can also be reviewed from the CLI. |
 | notice | One [Catch-up entry](../how-to/catch-up.md#read-the-notices-on-the-desk). |
 | Mark read | Acknowledge one notice. |
 | Mark all notices read | Acknowledge the notices [shown on the Desk](../how-to/catch-up.md#read-the-notices-on-the-desk). |
