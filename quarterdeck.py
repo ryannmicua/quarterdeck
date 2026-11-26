@@ -4056,10 +4056,9 @@ def desk_item(item: dict[str, object]) -> bool:
     return bool(open_parts or pending)
 
 
-def catch_up_note(data, notice):
+def catch_up_note(items_by_id, notice):
     links = []
-    target = notice.get("item")
-    item = next((item for item in data["items"] if item["id"] == target), None) if target else None
+    item = items_by_id.get(notice.get("item"))
     if item is not None:
         links.append(f'<a href="{item_page_name(str(item["id"]))}">{esc(item["title"])}</a>')
     if "url" in notice:
@@ -4077,12 +4076,13 @@ def catch_up_section(data: dict[str, object]) -> str:
     notices = unread_catch_ups(data)
     if not notices:
         return ""
+    items_by_id = {item["id"]: item for item in data["items"]}  # type: ignore[union-attr]
     many = len(notices) > 1
     count = f' <span data-count>({len(notices)})</span>' if many else ""
     read_all = '<button type="button" data-read-all>Mark all read</button>' if many else ""
     status = '<p class="meta failed" role="status" data-catch-up-status></p>'
     return (f'<section class="catch-up"><div class="section-head"><h2>Catch-up{count}</h2>{read_all}</div>{status}'
-            f'<ul class="notes">{"".join(catch_up_note(data, notice) for notice in notices)}</ul></section>')
+            f'<ul class="notes">{"".join(catch_up_note(items_by_id, notice) for notice in notices)}</ul></section>')
 
 
 def workers_section(ready: bool) -> str:

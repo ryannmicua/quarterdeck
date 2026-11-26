@@ -287,9 +287,6 @@ class CatchUpPageTests(CatchUpCase):
         self.assertNotIn("read_at", notices[1])
 
     def test_acknowledgment_buttons_in_the_browser(self) -> None:
-        chrome = shutil.which("google-chrome")
-        if not chrome:
-            self.skipTest("google-chrome is required for the Catch-up browser test")
         self.notice("A")
         self.notice("B")
         self.notice("C")
@@ -410,6 +407,44 @@ class CatchUpPageTests(CatchUpCase):
 </script>
 </body>""")
 
+        self.check_in_browser(port, instrumented_page)
+        self.assertTrue(all("read_at" in notice for notice in self.store()["catch_ups"]))
+
+    def test_acknowledging_the_final_notice_reveals_desk_guidance(self) -> None:
+        self.notice()
+        port = self.start()
+        list_page = quarterdeck.list_page
+
+        def instrumented_page(*args, **kwargs):
+            return list_page(*args, **kwargs).replace("</body>", """
+<output id="browser-result">Incomplete</output>
+<script>
+{
+  const result = document.getElementById('browser-result');
+  const guidance = document.querySelector('main > p.empty');
+  if (guidance.getClientRects().length) {
+    result.textContent = 'Desk guidance should be hidden while a notice is displayed';
+  } else {
+    const observer = new MutationObserver(() => {
+      if (document.querySelector('.catch-up')) return;
+      observer.disconnect();
+      result.textContent = guidance.getClientRects().length && guidance.textContent.startsWith('Nothing is saved yet.')
+        ? 'PASS' : 'Acknowledging the final notice should reveal the standard Desk guidance';
+    });
+    observer.observe(document.querySelector('main'), {childList:true});
+    document.querySelector('button[data-read="C1"]').click();
+  }
+}
+</script>
+</body>""")
+
+        self.check_in_browser(port, instrumented_page)
+        self.assertIn("read_at", self.store()["catch_ups"][0])
+
+    def check_in_browser(self, port, instrumented_page) -> None:
+        chrome = shutil.which("google-chrome")
+        if not chrome:
+            self.skipTest("google-chrome is required for the Catch-up browser test")
         with patch.object(quarterdeck, "list_page", instrumented_page):
             browser = subprocess.run(
                 [chrome, "--headless", "--disable-background-networking", "--no-first-run", "--lang=en-US",
@@ -420,7 +455,6 @@ class CatchUpPageTests(CatchUpCase):
             )
         result = browser.stdout.partition('<output id="browser-result">')[2].partition("</output>")[0]
         self.assertEqual(result, "PASS", browser.stderr)
-        self.assertTrue(all("read_at" in notice for notice in self.store()["catch_ups"]))
 
 
 if __name__ == "__main__":
