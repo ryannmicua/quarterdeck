@@ -28,8 +28,8 @@ where to set it. Rendered snapshots have no Under way tab.
 4. Select **Question** on a **Question asked** row to open the question. It
    opens the first address in the question, such as a review board, or the
    Quarterdeck conversation when the question has no address.
-5. Select **Pull request** to open the pull request. Select **Conversation**
-   to open the Quarterdeck conversation about the work.
+5. Select **Pull request** to open the pull request in a new tab. Select
+   **Conversation** to open the Quarterdeck conversation about the work.
 
 A row is one ship or scout with an open terminal. A second mate has no row.
 Work the home recorded as merged today also has a row until the day ends,
