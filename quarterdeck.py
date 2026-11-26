@@ -3498,8 +3498,9 @@ def message_blocks(text: str) -> list[tuple[str, int, list[str]]]:
         marker = MESSAGE_MARKER.match(line)
         if marker:
             kind = "ul" if marker.group(1) else "ol"
-            if current is None or current[0] != kind:
-                current = (kind, int(marker.group(2) or 1), [])
+            number = int(marker.group(2) or 1)
+            if current is None or current[0] != kind or (kind == "ol" and number != current[1] + len(current[2])):
+                current = (kind, number, [])
                 blocks.append(current)
             current[2].append(marker.group(3))
         elif not gap and current is not None and current[0] != "p" and line[:1] in " \t":

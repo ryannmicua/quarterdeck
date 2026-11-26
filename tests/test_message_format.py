@@ -56,6 +56,11 @@ class MessageFormatTests(unittest.TestCase):
 
     def test_paragraph_after_blank_line_ends_the_list(self):
         self.assertEqual(render("- a\n\n  later"), '<div class="record rich"><ul><li>a</li></ul><p>  later</p></div>')
+    def test_numbered_list_restarting_at_one_is_a_new_list(self):
+        out = render("1. a\n2. b\n\n1. x\n2. y")
+        self.assertEqual(out, '<div class="record rich"><ol><li>a</li><li>b</li></ol><ol><li>x</li><li>y</li></ol></div>')
+        self.assertEqual(render("1. a\n\n1. b"), '<div class="record rich"><ol><li>a</li></ol><ol><li>b</li></ol></div>')
+
 
 if __name__ == "__main__":
     unittest.main()
