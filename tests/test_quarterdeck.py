@@ -5452,6 +5452,54 @@ check(whole.querySelector('.thread-messages').textContent.includes('Show another
 await checkImage(whole);
 """, setup=f"const replacement = {json.dumps(replacement)};", page=page, viewport_width=390)
 
+    def long_conversation(self, read: int) -> tuple[int, list[dict[str, object]]]:
+        """A conversation of 30 Firstmate messages with the first `read` of them already read."""
+        self.assertEqual(self.run_cli("converse", "--title", "Long thread", "--text", "Message 1. " + "Words. " * 60)[:2], (0, "Q5\n"))
+        for number in range(2, 31):
+            self.assertEqual(self.run_cli("post", "Q5", "--text", f"Message {number}. " + "Words. " * 60)[0], 0)
+        port = self.start("/qd", ask_home=self.inbox())
+        thread = self.messages("item", 4)
+        if read:
+            status, body = self.post(port, "/qd/replies/read", {"part": "Q5", "ids": [m["id"] for m in thread[:read]]})
+            self.assertEqual((status, body if status != 200 else 200), (200, 200))
+        return port, self.messages("item", 4)
+
+    OPEN_PROBE = r"""
+const line = id => document.getElementById(id).getBoundingClientRect();
+const inView = id => line(id).top >= 0 && line(id).top < innerHeight;
+"""
+
+    def test_a_conversation_opens_on_its_first_unread_message(self) -> None:
+        port, thread = self.long_conversation(read=12)
+        first, last = thread[12]["id"], thread[-1]["id"]
+        self.check_page(port, self.OPEN_PROBE + f"""
+await settled();
+check(scrollY > 0, 'The page stayed at the top');
+check(Math.abs(line('reply-{first}').top - 16) < 2, 'The first unread message is not at the top of the view');
+check(!inView('reply-{last}'), 'The test thread fits in one view');
+check(!document.getElementById('reply-{thread[11]["id"]}').hasAttribute('data-unread'), 'A read message is marked unread');
+""", page=self.fetch(port, "/qd/q5.html")[1], setup="window.fetch = async () => ({ok: true, json: async () => ({replies: {}})});")
+
+    def test_a_conversation_without_unread_messages_opens_on_the_latest(self) -> None:
+        port, thread = self.long_conversation(read=30)
+        last = thread[-1]["id"]
+        self.check_page(port, self.OPEN_PROBE + f"""
+await settled();
+check(scrollY > 0, 'The page stayed at the top');
+check(inView('reply-{last}') && line('reply-{last}').bottom <= innerHeight, 'The latest message is not in view');
+check(!inView('reply-{thread[0]["id"]}'), 'The first message is still in view');
+""", page=self.fetch(port, "/qd/q5.html")[1])
+
+    def test_a_fragment_beats_the_first_unread_message(self) -> None:
+        port, thread = self.long_conversation(read=12)
+        chosen, first = thread[3]["id"], thread[12]["id"]
+        self.check_page(port, self.OPEN_PROBE + f"""
+await settled();
+check(inView('reply-{chosen}'), 'The linked message is not in view ');
+check(!inView('reply-{first}'), 'The first unread message took over from the link');
+""", page=self.fetch(port, "/qd/q5.html")[1], fragment=f"#reply-{chosen}",
+                        setup="window.fetch = async () => ({ok: true, json: async () => ({replies: {}})});")
+
     def test_conversation_message_images_fit_inside_the_message(self) -> None:
         wide = self.picture("wide.png", tiny_png((40, 160, 40), 1440, height=900))
         tall = self.picture("tall.png", tiny_png((40, 40, 160), 390, height=844))
