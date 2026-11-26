@@ -4027,9 +4027,13 @@ if (whole) {
   if (navigation === 'reload' || navigation === 'back_forward') return;
   const hidden = document.querySelector('[data-reply-id][data-unread]');
   if (hidden) {
-    expandAnswer(hidden.closest('[data-conversation]'));
+    const section = hidden.closest('[data-conversation]');
+    expandAnswer(section);
     const thread = hidden.closest('details.thread');
-    if (thread) thread.open = true;
+    if (thread && !thread.open) {
+      thread.open = true;
+      acknowledgeReplies(section, unreadReplyIds(thread));
+    }
   }
   const shown = [...document.querySelectorAll('.msg')].filter(message => message.getClientRects().length);
   const unread = shown.find(message => message.hasAttribute('data-unread'));

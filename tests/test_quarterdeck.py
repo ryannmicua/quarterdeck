@@ -5491,7 +5491,7 @@ check(inView('reply-{last}') && line('reply-{last}').bottom <= innerHeight, 'The
 check(!inView('reply-{thread[0]["id"]}'), 'The first message is still in view');
 """, page=self.fetch(port, "/qd/q5.html")[1])
 
-    def test_a_question_set_opens_its_collapsed_thread_on_the_first_unread_reply(self) -> None:
+    def test_a_question_set_opens_its_collapsed_thread_on_the_first_unread_reply_and_reads_it(self) -> None:
         port = self.start("/qd", ask_home=self.inbox())
         self.ask(port, "Q4.2", "Which blue?")
         self.assertEqual(self.run_cli("reply", "Q4.2", "--ask", self.messages("2", 3)[0]["id"], "--text", "Navy.")[0], 0)
@@ -5500,8 +5500,11 @@ check(!inView('reply-{thread[0]["id"]}'), 'The first message is still in view');
 await settled();
 const message = document.getElementById('reply-{reply["id"]}');
 check(card(2).querySelector('details').open && message.getClientRects().length, 'The unread reply is hidden');
-check(message.hasAttribute('data-unread') && calls.length === 0, 'Opening on load changed what is unread');
-""", setup="const calls = []; window.fetch = async path => { calls.push(path); };")
+check(calls.length === 1 && calls[0][0] === 'replies/read' && calls[0][1].part === 'Q4.2' && calls[0][1].ids.join() === '{reply["id"]}',
+  'Opening the thread on load did not acknowledge its reply: ' + JSON.stringify(calls));
+check(!message.hasAttribute('data-unread') && card(2).querySelector('.badge').textContent !== 'Unread reply', 'The revealed reply is still unread');
+""", setup="const calls = []; window.fetch = async (path, options) => { calls.push([path, JSON.parse(options.body)]); "
+                 "return {ok: true, json: async () => ({replies: Object.fromEntries(calls.at(-1)[1].ids.map(id => [id, true]))})}; };")
 
     def test_a_fragment_beats_the_first_unread_message(self) -> None:
         port, thread = self.long_conversation(read=12)
