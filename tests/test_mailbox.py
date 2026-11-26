@@ -7,6 +7,7 @@ import socket
 import subprocess
 import sys
 import uuid
+from itertools import chain
 from pathlib import Path
 from unittest.mock import patch
 
@@ -527,7 +528,7 @@ class MailboxBrowserTests(MailboxCase):
             outcome, stderr = base.WorkersTests.browser_page(self, self.port, route, window_size=window_size)
         self.assertEqual(outcome, "PASS", stderr)
 
-    def check_reference_description_drags(self) -> None:
+    def check_reference_pointer_gestures(self) -> None:
         chrome = shutil.which("google-chrome")
         if not chrome:
             self.skipTest("google-chrome is required for the mailbox browser tests")
@@ -550,12 +551,12 @@ class MailboxBrowserTests(MailboxCase):
                     yield from map(json.loads, parts)
 
             responses = messages()
+            events = []
             session_id = None
             sequence = 0
-            loaded = False
 
             def command(method, **params):
-                nonlocal sequence, loaded
+                nonlocal sequence
                 sequence += 1
                 request = {"id": sequence, "method": method, "params": params}
                 if session_id:
@@ -565,21 +566,52 @@ class MailboxBrowserTests(MailboxCase):
                     if response.get("id") == sequence:
                         self.assertNotIn("error", response, response)
                         return response["result"]
-                    loaded |= response.get("method") == "Page.loadEventFired"
+                    events.append(response)
                 self.fail(f"Chrome closed its debugging pipe during {method}")
+
+            def wait_for_event(method, matches):
+                for event in chain(events, responses):
+                    if event.get("method") == method and matches(event["params"]):
+                        return event["params"]
+                self.fail(f"Chrome closed its debugging pipe while waiting for {method}")
 
             def evaluate(expression):
                 result = command("Runtime.evaluate", expression=expression, returnByValue=True)
                 self.assertNotIn("exceptionDetails", result, result)
                 return result["result"].get("value")
 
+            def mouse(event_type, x, y, **params):
+                command("Input.dispatchMouseEvent", type=event_type, x=x, y=y, **params)
+
+            pane_display = "getComputedStyle(document.getElementById('pane-frame')).display"
             try:
-                target = command("Target.createTarget", url="about:blank")["targetId"]
+                command("Target.setDiscoverTargets", discover=True)
+                target = wait_for_event("Target.targetCreated", lambda event: event["targetInfo"]["type"] == "page")["targetInfo"]["targetId"]
                 session_id = command("Target.attachToTarget", targetId=target, flatten=True)["sessionId"]
                 command("Page.enable")
-                command("Page.navigate", url=f"http://127.0.0.1:{self.port}/qd/?tab=references")
-                if not loaded:
-                    self.assertTrue(any(response.get("method") == "Page.loadEventFired" for response in responses))
+                command("Page.setLifecycleEventsEnabled", enabled=True)
+                navigation = command("Page.navigate", url=f"http://127.0.0.1:{self.port}/qd/?tab=references")
+                self.assertIn("loaderId", navigation, navigation)
+                wait_for_event("Page.lifecycleEvent", lambda event: event["name"] == "load"
+                               and event["frameId"] == navigation["frameId"] and event["loaderId"] == navigation["loaderId"])
+                self.assertTrue(evaluate("!document.getElementById('desk-panel-references').hidden"))
+                for selector, url in ((".bookmark-title", "https://example.com/tides"),
+                                      (".notice-links a", "https://example.com/datum")):
+                    x, y = evaluate(f"""(() => {{
+  const link = document.querySelector('#topics-references [data-id="Q5"] {selector}');
+  const box = link.getBoundingClientRect();
+  window.referenceClick = null;
+  document.addEventListener('click', event => {{
+    window.referenceClick = [event.target.closest('a')?.href, !event.defaultPrevented];
+    event.preventDefault();
+  }}, {{once:true}});
+  return [box.left + box.width / 2, box.top + box.height / 2];
+}})()""")
+                    mouse("mouseMoved", x, y)
+                    mouse("mousePressed", x, y, button="left", buttons=1, clickCount=1)
+                    mouse("mouseReleased", x, y, button="left", clickCount=1)
+                    self.assertEqual(evaluate("window.referenceClick"), [url, True])
+                    self.assertEqual(evaluate(pane_display), "none", url)
                 for item_id, expected in (("Q5", "The official tables."), ("Q4", "What to check before the proof run.")):
                     start, end, y = evaluate(f"""(() => {{
   const text = document.querySelector('#topics-references [data-id="{item_id}"] .topic-latest');
@@ -588,13 +620,13 @@ class MailboxBrowserTests(MailboxCase):
   const box = range.getBoundingClientRect();
   return [box.left + 1, box.right + 2, box.top + box.height / 2];
 }})()""")
-                    command("Input.dispatchMouseEvent", type="mouseMoved", x=start, y=y)
-                    command("Input.dispatchMouseEvent", type="mousePressed", x=start, y=y, button="left", buttons=1, clickCount=1)
-                    command("Input.dispatchMouseEvent", type="mouseMoved", x=(start + end) / 2, y=y, button="left", buttons=1)
-                    command("Input.dispatchMouseEvent", type="mouseMoved", x=end, y=y, button="left", buttons=1)
-                    command("Input.dispatchMouseEvent", type="mouseReleased", x=end, y=y, button="left", clickCount=1)
+                    mouse("mouseMoved", start, y)
+                    mouse("mousePressed", start, y, button="left", buttons=1, clickCount=1)
+                    mouse("mouseMoved", (start + end) / 2, y, button="left", buttons=1)
+                    mouse("mouseMoved", end, y, button="left", buttons=1)
+                    mouse("mouseReleased", end, y, button="left", clickCount=1)
                     self.assertEqual(evaluate("window.getSelection().toString()"), expected, item_id)
-                    self.assertEqual(evaluate("getComputedStyle(document.getElementById('pane-frame')).display"), "none", item_id)
+                    self.assertEqual(evaluate(pane_display), "none", item_id)
             finally:
                 browser.terminate()
 
@@ -828,17 +860,6 @@ const hit = (id, selector) => {
   const box = row(id).querySelector(selector).getBoundingClientRect();
   return document.elementFromPoint(box.left + box.width / 2, box.top + box.height / 2);
 };
-for (const [selector, url] of [['.bookmark-title', 'https://example.com/tides'], ['.notice-links a', 'https://example.com/datum']]) {
-  const link = hit('Q5', selector).closest('a');
-  check(link?.href === url, 'The external link did not point to ' + url);
-  let allowed = false;
-  document.addEventListener('click', event => {
-    allowed = !event.defaultPrevented;
-    event.preventDefault();
-  }, {once:true});
-  link.click();
-  check(allowed && !shown('pane-frame'), 'The Desk intercepted the external link to ' + url);
-}
 hit('Q5', '.topic-latest').click();
 await until(() => pane()?.querySelector('h1')?.textContent === 'Port tide tables', 'Clicking the description did not open the saved item');
 check(row('Q5').getAttribute('aria-current') === 'true', 'The open reference was not marked');
@@ -857,7 +878,7 @@ for (const link of [...row('Q5').querySelectorAll('a'), row('Q4').querySelector(
         'The focused link had no individual focus indicator: ' + link.textContent);
 }
 """, window_size="1000,900")
-        self.check_reference_description_drags()
+        self.check_reference_pointer_gestures()
         item_page = base.WorkersTests.instrumented_page(quarterdeck.item_page, r"""
 check(window === window.top && location.pathname === '/qd/q5.html' && location.search === '?from=desk-references',
       'The saved item did not open as the top-level page');
