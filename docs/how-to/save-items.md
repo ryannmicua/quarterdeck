@@ -136,8 +136,10 @@ quarterdeck show Q3      # read Q3
 quarterdeck remove Q3    # delete Q3 and retire its ID
 ```
 
-Use the displayed ID, such as `Q3` or `q3`. To correct an item you saved with
-`add`, remove it and add it again. The new item gets a new ID.
+Use the displayed ID, such as `Q3` or `q3`. To correct a title, description or
+resource links, use [`edit`](#edit-a-saved-item), which keeps the ID. For other
+changes, such as a list's entries or a question, remove the item and add it
+again. The new item gets a new ID.
 
 ## See them
 

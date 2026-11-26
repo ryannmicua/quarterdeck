@@ -1,11 +1,42 @@
 import json
 import sys
 import unittest
+from html.parser import HTMLParser
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import quarterdeck  # noqa: E402
 from test_quarterdeck import StoreCase  # noqa: E402
+
+
+def anchors(html: str) -> list[tuple[str, str]]:
+    class Anchors(HTMLParser):
+        def __init__(self) -> None:
+            super().__init__()
+            self.found: list[tuple[str, str]] = []
+            self.href: str | None = None
+
+        def handle_starttag(self, tag, attrs):
+            if tag == "a":
+                self.href = dict(attrs).get("href")
+                self.found.append((self.href, ""))
+
+        def handle_data(self, data):
+            if self.href is not None:
+                href, text = self.found[-1]
+                self.found[-1] = (href, text + data)
+
+        def handle_endtag(self, tag):
+            if tag == "a":
+                self.href = None
+
+    parser = Anchors()
+    parser.feed(html)
+    return parser.found
+
+
+def references_section(index: str) -> str:
+    return index.split("<h2>References</h2>")[1].split("<h2>Answered")[0]
 
 
 class _Base(StoreCase):
@@ -37,9 +68,24 @@ class ResourceLinkTests(_Base):
         code, shown, err = self.run_cli("show", "Q1")
         self.assertEqual(code, 0, err)
         self.assertIn("First: https://example.com/a\nSecond: https://example.com/b", shown)
-        html = quarterdeck.item_body_html(self.store()["items"][0])
-        self.assertLess(html.index("First"), html.index("Second"))
-        self.assertEqual(html.count('class="open-link"'), 2)
+        pages = quarterdeck.site_pages(quarterdeck.read_store(quarterdeck.store_path()), "Quarterdeck", "index.html")
+        expected = [("https://example.com/a", "First"), ("https://example.com/b", "Second")]
+        item_links = [pair for pair in anchors(pages["q1.html"]) if pair[0].startswith("https://example.com/")]
+        self.assertEqual(item_links, expected)
+        row_links = [pair for pair in anchors(references_section(pages["index.html"])) if pair[0].startswith("https://example.com/")]
+        self.assertEqual(row_links, [("https://example.com/a", "Design review"), ("https://example.com/b", "Second")])
+
+    def test_many_links_are_accepted(self) -> None:
+        pairs = [arg for n in range(13) for arg in ("--link-text", f"Link {n}", "--url", f"https://example.com/{n}")]
+        self.add("resource", "Many", "Many links.", *pairs)
+        self.assertEqual(len(self.store()["items"][0]["body"]["links"]), 13)
+
+    def test_a_list_reference_links_its_page_once(self) -> None:
+        self.add("list", "Harbor chores", "Chores.", "--body-file", "-", stdin="Buy rope\n")
+        pages = quarterdeck.site_pages(quarterdeck.read_store(quarterdeck.store_path()), "Quarterdeck", "index.html")
+        row = references_section(pages["index.html"])
+        self.assertEqual([href for href, _text in anchors(row)], ["q1.html"])
+        self.assertIn("Q1", row)
 
     def test_unpaired_or_missing_links_are_refused(self) -> None:
         for extra in (("--url", "https://example.com/a", "--url", "https://example.com/b", "--link-text", "One"),
@@ -60,7 +106,8 @@ class ResourceLinkTests(_Base):
         item = after["items"][0]
         self.assertEqual((item["id"], item["saved_at"], item["kind"]), (before["id"], before["saved_at"], before["kind"]))
         self.assertEqual((item["title"], item["description"]), ("Design review 2", "Now with the board"))
-        self.assertEqual([link["text"] for link in item["body"]["links"]], ["The review", "Review board"])
+        self.assertEqual(item["body"]["links"], [{"text": "The review", "url": "https://example.com/review"},
+                                                 {"text": "Review board", "url": "https://example.com/board"}])
         self.assertEqual(after["next_id"], 2)
         self.assertEqual(self.run_cli("render", "--output", str(self.root / "out" / "index.html"))[0], 0)
 

@@ -497,7 +497,16 @@ class PageTests(StoreCase):
             'Install from git+https://example.org/tools.git@v2.'
         )
         pages = self.pages()
-        self.assertNotIn('class="lib-desc"', pages["index.html"].split("<h2>References</h2>")[1].split("<h2>Answered")[0])
+        class Visible(HTMLParser):
+            text = ""
+
+            def handle_data(parser, data):
+                parser.text += data
+
+        visible = Visible()
+        visible.feed(pages["index.html"].split("<h2>References</h2>")[1].split("<h2>Answered")[0])
+        self.assertIn("Notes", visible.text)
+        self.assertNotIn("Install from git+https://example.org/tools.git@v2.", visible.text)
         self.assertNotIn(expected, pages["index.html"].split("<h2>References</h2>")[0])
         for name in ("q1.html", "q2.html"):
             self.assertIn(f'<p class="lead">{expected}</p>', pages[name])
@@ -1711,7 +1720,12 @@ check(![...document.querySelectorAll('#panel-references .lib-item')].some(row =>
 references.value = 'chart';
 references.dispatchEvent(new Event('input', {bubbles: true}));
 const bookmark = dialog.querySelector('#panel-references a[href="https://example.org/map"]');
-check(bookmark && !dialog.querySelector('#panel-references .lib-desc'), 'A bookmark should link out and show no description');
+check(bookmark && !dialog.querySelector('#panel-references').innerText.includes('A chart of the quay'),
+      'A bookmark should link out and show no description');
+window.addEventListener('click', e => e.preventDefault(), {once: true});
+bookmark.click();
+check(history.state?.libraryLookup?.tab === 'tab-references' && history.state.libraryLookup.query === 'chart',
+      'Following a bookmark did not keep the References lookup');
 references.value = 'q3.1';
 references.dispatchEvent(new Event('input', {bubbles: true}));
 check(![...document.querySelectorAll('#panel-references li')].some(row => !row.hidden), 'A reference matched a question ID');

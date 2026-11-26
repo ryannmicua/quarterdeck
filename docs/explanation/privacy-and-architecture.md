@@ -55,7 +55,9 @@ and builds its [report](../how-to/read-the-report.md) from the local item store.
 An item holds its own copy of what was saved: the link, the list, the
 questions with their context. A file that changes or disappears
 later does not change the item, so Q7.3 means the same thing tomorrow as
-today. To correct content you saved with `add`, remove the item and save a new one.
+today. To correct a title, description or resource links, use
+[`edit`](../how-to/save-items.md#edit-a-saved-item), which keeps the ID. For other
+content, remove the item and save a new one.
 To change its classification, use [`classify`](../how-to/classify-items.md#change-it-later).
 
 ## Network

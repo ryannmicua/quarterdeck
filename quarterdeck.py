@@ -593,9 +593,6 @@ def question_entries(raw: object, pending: dict[str, bytes] | None = None, *,
     return questions
 
 
-RESOURCE_LINK_LIMIT = 12
-
-
 def resource_links(body: dict[str, object]) -> list[dict[str, str]]:
     """A resource's links in order. The older single-link body reads as a list of one."""
     if "links" in body:
@@ -604,8 +601,6 @@ def resource_links(body: dict[str, object]) -> list[dict[str, str]]:
         links = question_links(body["links"], "resource")
         if not links:
             raise ValueError("a resource needs at least one link")
-        if len(links) > RESOURCE_LINK_LIMIT:
-            raise ValueError(f"a resource can hold at most {RESOURCE_LINK_LIMIT} links")
         return links
     if set(body) != {"url", "link_text"}:
         raise ValueError("a resource needs a url and link_text, or a list of links")
@@ -2412,7 +2407,7 @@ body:has(dialog[open]) { overflow:hidden; }
 .ref-title { font:500 var(--text-md)/1.4 var(--sans); }
 .ref-more { display:inline-flex; flex-wrap:wrap; gap:0 .8rem; font-size:var(--text-sm); }
 .ref-meta { display:inline-flex; flex-wrap:wrap; gap:0 .8rem; margin-left:auto; font-size:var(--text-sm); color:var(--soft); }
-.ref-meta a, .lib-title.ref-id { color:var(--soft); font:400 var(--text-sm)/1.4 var(--sans); }
+.ref-meta a, .ref-id { color:var(--soft); font:400 var(--text-sm)/1.4 var(--sans); }
 .lib-item .meta { display:flex; flex-wrap:wrap; gap:0 1rem; font-size:var(--text-md); }
 .page-section { margin:2rem 0 0; }
 .page-head { display:flex; flex-wrap:wrap; gap:.6rem 1.5rem; align-items:center; justify-content:space-between; max-width:52rem; }
@@ -2727,7 +2722,7 @@ LIBRARY_SCRIPT = r"""
     if (e.target === dialog || e.target.closest('[data-close]')) {
       dialog.close();
     } else if (!e.defaultPrevented && e.button === 0 && !e.altKey && !e.ctrlKey && !e.metaKey && !e.shiftKey
-               && e.target.closest('a.lib-title, a.ref-page')) {
+               && e.target.closest('a.lib-title, a.ref-title, a.ref-extra')) {
       const tab = selectedTab();
       const filters = Object.fromEntries(filtersOf(tab).map(select => [select.name, select.value]));
       history.replaceState({...history.state, libraryLookup:{tab:tab.id, query:searchOf(tab).value, filters}}, '');
@@ -4046,13 +4041,15 @@ def reference_row(item, *, served):
         extra = "".join(f'<a class="ref-extra" href="{esc(link["url"])}" rel="noopener noreferrer">{esc(link["text"])}</a>'
                         for link in more)
     else:
-        title, extra = f'<a class="ref-title ref-page" href="{page}">{esc(item["title"])}</a>', ""
+        title, extra = f'<a class="ref-title" href="{page}">{esc(item["title"])}</a>', ""
     project = f'<span>{esc(item["project"])}</span>' if item.get("project") else ""
     attributes = filter_data(item)
     if served:
         search = f'{item["title"]} {item["description"]}'
         attributes += f' data-id="{item_id}" data-search="{esc(search.casefold())}"'
-    small = project + day_time(item["saved_at"]) + f'<a class="lib-title ref-id" href="{page}">{item_id}</a>'
+    item_ref = (f'<a class="lib-title ref-id" href="{page}">{item_id}</a>' if kind == "resource"
+                else f'<span class="ref-id">{item_id}</span>')
+    small = project + day_time(item["saved_at"]) + item_ref
     return (f'<li class="lib-item ref-row"{attributes} title="{esc(item["description"])}">'
             f'{title}{f"<span class=ref-more>{extra}</span>" if extra else ""}<span class="ref-meta">{small}</span></li>')
 
