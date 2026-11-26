@@ -261,6 +261,10 @@ or `${XDG_CONFIG_HOME:-~/.config}/quarterdeck.json` when it exists.
 | `base_path` | string | none | The URL prefix described above. |
 | `firstmate_home` | absolute path after expanding `~` | unset | Local destination for answers, asks and conversation messages submitted to `serve`, and the home whose workers the page lists. When set, `converse` requires it to resolve to an existing directory. See [how the store records the binding](item-store.md#conversations). |
 
+`serve` reads `firstmate_home` at startup. `converse` reads it each time it runs.
+Changes to this setting require a server restart before `converse` can open
+a conversation the owner can respond to on that server.
+
 When `firstmate_home` is absent, `serve` uses a legacy `homes` list only for
 answer delivery and only if it contains exactly one object with a valid
 `path`. Relative legacy paths are resolved from the config file's directory.

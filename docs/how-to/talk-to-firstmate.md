@@ -25,7 +25,8 @@ under a message that shows **Not delivered** once the
 [inbox is available](read-answers.md#connect-the-inbox). The retry keeps the
 original message and note IDs. To send or retry in a conversation already
 [bound to a Firstmate home](../reference/item-store.md#conversations), point
-`firstmate_home` to the bound directory and restore access if needed.
+`firstmate_home` to the bound directory and restore access if needed. Restart
+the server if you changed the setting.
 
 ## Read replies
 
