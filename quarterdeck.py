@@ -5325,12 +5325,13 @@ DESK_SCRIPT = talk_script(r"""
   const inProject = row => {
     const project = scopeProject.value, topic = scopeTopic.value;
     if (!project) return true;
+    if (isNotice(row)) return false;
     if (project === '-') return !row.dataset.project;
     return row.dataset.project === project && (!topic || row.dataset.topic === topic);
   };
   // A row opened while unread keeps its place under Unread until the owner moves on, so it also passes Unread only.
   const inScope = row => {
-    if (isNotice(row)) return !scopeProject.value && !tasksOnly.checked;
+    if (isNotice(row)) return inProject(row) && !tasksOnly.checked;
     if (unreadOnly.checked && row.dataset.unread !== 'true' && row.dataset.sticky !== 'true') return false;
     if (tasksOnly.checked && row.dataset.task !== 'true') return false;
     return inProject(row);
@@ -5361,7 +5362,7 @@ DESK_SCRIPT = talk_script(r"""
     if (!noneInScope.hidden) noneInScope.textContent = scopeEmptyText();
     noneArchived.hidden = !groups.archived.hidden;
     readAll.hidden = noticeButtons().length < 2;
-    setCount(conversationTab, groups.unread.querySelectorAll('.topic[data-unread="true"]:not([hidden])').length);
+    setCount(conversationTab, rowsOf(groups.unread).filter(row => row.dataset.unread === 'true' && inProject(row)).length);
   };
   const applyScope = params => {
     for (const [name, value] of [['project', scopeProject.value], ['topic', scopeTopic.value], ['tasks', tasksOnly.checked ? '1' : ''],
@@ -5731,7 +5732,7 @@ DESK_SCRIPT = talk_script(r"""
   if (arrivingDeskTab) {
     select(arrivingDeskTab, false);
     const wanted = arrival.get('row') ?? '';
-    const rows = rowsOf(panelOf(arrivingDeskTab));
+    const rows = rowsOf(panelOf(arrivingDeskTab)).filter(row => !row.hidden);
     // A question answered meanwhile has left For review; its place is taken by the next one down.
     const below = row => row.classList.contains('review') && BigInt(row.dataset.id.slice(1)) < BigInt(wanted.slice(1) || '0');
     const row = arrivalRow(rows, wanted) ?? (/^Q[1-9][0-9]*$/.test(wanted) ? rows.find(below) : undefined);

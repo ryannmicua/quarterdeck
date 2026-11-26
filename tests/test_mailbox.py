@@ -865,6 +865,23 @@ choose('P2');
 check(visible('topics-unread') === 'Q6,Q2' && count('conversations') === '2', 'The other project lost its new conversation');
 """, budget=90000)
 
+    def test_the_conversations_count_follows_only_the_project_and_not_tasks_only(self) -> None:
+        self.file_projects()
+        self.run_in_desk(self.PROJECT_STEPS + r"""
+document.getElementById('scope-tasks').click();
+check(visible('topics-unread') === '' && count('conversations') === '2', 'Tasks only lowered the unread count: ' + count('conversations'));
+choose('P1');
+check(count('conversations') === '1', 'The project did not narrow the unread count under Tasks only');
+""")
+
+    def test_arriving_after_an_answer_lands_on_the_next_item_the_project_shows(self) -> None:
+        self.file_projects()
+        self.run_in_desk(self.PROJECT_STEPS + "choose('-');")
+        self.run_in_desk(self.PROJECT_STEPS + r"""
+check(visible('review-waiting') === 'Q3', 'Ungrouped did not hold for the arrival');
+check(document.activeElement?.closest('.topic')?.dataset.id === 'Q3', 'The arrival did not land on the next shown item');
+""", route="/qd/?tab=needs-you&row=Q9")
+
     def test_a_phone_sized_desk_fits_the_project_choice(self) -> None:
         self.file_projects()
         self.run_in_desk(self.PROJECT_STEPS + r"""
