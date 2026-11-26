@@ -13,23 +13,22 @@ words the Desk uses.
 On a screen at least 60rem wide, the Desk has two parts. The tabs and their
 lists are on the left. The conversation or question set you select opens on
 the right, without leaving the Desk, and its row stays marked in the list.
-**Under way** takes the whole width, because it is a table.
 
 On a narrower screen the lists fill the screen and a row opens the item's own
 page. That page has [Back to and Next unread](go-back-to-the-list.md).
 
 A row has no buttons. It shows the title, the first words of the latest
-message, the status, the number of messages once there is more than one, and
+message, the status, and
 the time of the latest activity. The title is bold while a reply is unread.
 
 ## Start a conversation
 
 1. On the Desk, stay on **Conversations**.
-2. Select **New conversation**. A blank message opens, beside the list on a wide screen and above it on a narrow one. It is to Firstmate, and the cursor moves to **Conversation title**.
+2. Select **New conversation**. A blank message opens beside the list on a wide screen or in a dedicated compose view on a narrow screen. It is to Firstmate, and the cursor moves to **Conversation title**.
 3. Type a short **Conversation title** and your **Message**, then select **Start conversation**.
 
-Select **New conversation** again to hide the form. Unsent text stays in the hidden form, and the form closes after Quarterdeck starts the conversation.
-Select **Discard draft** to clear the text and close the form.
+Select **New conversation** again on a wide screen or **Back to Conversations**
+on a narrow screen to close the form. The form keeps any unsent text.
 
 Quarterdeck saves the conversation under a new ID such as Q12 and attempts
 delivery to Firstmate's inbox. The new conversation joins the top of **Recent
@@ -120,9 +119,8 @@ Type in **Your message** on the conversation and select **Send message**. The
 conversation shows messages from oldest to newest, as one stacked thread. The
 newest message is open, and so is every reply you have not read and every
 message that was not delivered. Each earlier message is folded to one line with
-its sender, its first words and its time. Select a line to open it. In a long
-conversation only the first and the last of those lines show, and
-**Show earlier messages** brings back the rest. Each of your messages
+its sender, its first words and its time. Select a line to open it. The message
+that awaits your review stays open. Each of your messages
 shows **Sent** or **Not delivered**. Select **Send message again**
 under a message that shows **Not delivered** once the
 [inbox is available](read-answers.md#connect-the-inbox). The retry keeps the

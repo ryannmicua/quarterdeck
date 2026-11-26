@@ -870,8 +870,13 @@ def check_store(data: object) -> dict[str, object]:
             for flag in CONVERSATION_FLAGS:
                 if flag in item and (item[flag] is not True or item["kind"] != "conversation"):
                     raise ValueError(f"only a conversation can be {flag}")
-            if "later" in item and (item["later"] is not True or item["kind"] not in ("questions", "conversation")):
-                raise ValueError("only a question item or a conversation can be kept for later")
+            if "later" in item:
+                later = item["later"]
+                if item["kind"] not in ("questions", "conversation") or not (
+                    later is True or isinstance(later, list) and later and
+                    all(isinstance(value, str) and re.fullmatch(r"[0-9a-f]{32}", value) for value in later)
+                ):
+                    raise ValueError("only a question item or a conversation can be kept for later")
             if "placement" in item:
                 if item["kind"] != "conversation":
                     raise ValueError("only a conversation can be placed in a project")
@@ -1168,17 +1173,19 @@ def thread_unread(item, part):
 UNREAD_REPLY = "Unread reply"
 
 
-def first_unread_reply(item, part):
-    return next((m for m in part_thread(item, part) if unread_reply(m)), None)
+def item_replies(item):
+    parts = question_parts(item) if item["kind"] == "questions" else ()
+    for part in (*parts, None):
+        yield from (message for message in part_thread(item, part) if message["author"] == "firstmate")
+
+
+def unread_messages(item):
+    return (message for message in item_replies(item) if unread_reply(message))
 
 
 def unread_target(item):
-    parts = question_parts(item) if item["kind"] == "questions" else ()
-    for part in (*parts, None):
-        reply = first_unread_reply(item, part)
-        if reply:
-            return f'reply-{reply["id"]}'
-    return None
+    reply = next(unread_messages(item), None)
+    return f'reply-{reply["id"]}' if reply else None
 
 
 def has_pending_ask(item):
@@ -1192,7 +1199,8 @@ def has_pending_ask(item):
 
 def conversation_activity(item):
     """The moment of a conversation's latest message, or of its saving. Pinning and reading never change it."""
-    return max([parse_utc(item["saved_at"])] + [parse_utc(m["at"]) for m in part_thread(item, None)])
+    return max([parse_utc(item["saved_at"])] +
+               [parse_utc(m["at"]) for thread in item.get("conversation", {}).values() for m in thread])
 
 
 def by_activity(items):
@@ -1214,21 +1222,24 @@ def is_archived(item):
 
 def is_later(item):
     """The owner chose to deal with this item later. It stays in For review, under Later, and leaves the tab's count."""
-    return item.get("later") is True
+    return "later" in item
 
 
-def asks_owner(item):
+def owner_request(item):
     """A conversation waits for the owner while Firstmate's latest marked message has no message of the owner's after it.
     Resolving the conversation ends the wait."""
     if item["kind"] != "conversation" or is_resolved(item):
-        return False
-    waiting = False
-    for message in part_thread(item, None):
+        return None
+    for message in reversed(part_thread(item, None)):
         if message["author"] == "you":
-            waiting = False
-        elif message.get(FOR_REVIEW):
-            waiting = True
-    return waiting
+            break
+        if message.get(FOR_REVIEW):
+            return message
+    return None
+
+
+def asks_owner(item):
+    return owner_request(item) is not None
 
 
 # A task is a conversation that holds work for Firstmate. Its optional `task` field carries the state, the owner's
@@ -1304,6 +1315,8 @@ def put_record(item, part, state, *, mark=None, **desk_fields):
     if earlier:
         record["earlier_answers"] = earlier
     item.setdefault("answers", {})[str(part)] = record
+    if is_later(item) and not any(part_state(item, n, replies=False) == "open" for n in question_parts(item)):
+        item.pop("later")
     return record
 
 
@@ -1335,6 +1348,8 @@ def mark_item(args):
         with locked_store(store):
             data = read_store(store)
             item = find_item(data, item_id)
+            if args.state == "open" and is_later(item) and not attention_summary(item, served=True):
+                item.pop("later")
             for number in part_numbers(item, args.id):
                 previous = part_record(item, number)
                 if via:
@@ -1644,12 +1659,7 @@ def start_conversation(store, home, binding, payload):
     result = ask_message(store, home, binding, {"part": item_id, "id": message_id, "action": "retry"},
                          include_thread=False)
     with locked_store(store, read_only=True):
-        data = read_store(store)
-    item = find_item(data, item_id)
-    summary = attention_summary(item, served=True)
-    return {**result, "href": item_page_name(item_id), "row": conversation_row(item, data.get("projects", [])),
-            "hold": library_row(item, served=True),
-            "attention": review_row(item, summary) if summary else None}
+        return conversation_result(read_store(store), item_id, result)
 
 
 def conversation_result(data, item_id, result):
@@ -1657,7 +1667,7 @@ def conversation_result(data, item_id, result):
     item = find_item(data, item_id)
     summary = attention_summary(item, served=True)
     return {**result, "href": item_page_name(item_id), "row": conversation_row(item, data.get("projects", [])),
-            "hold": library_row(item, served=True),
+            "hold": "" if is_archived(item) else library_row(item, served=True),
             "attention": review_row(item, summary) if summary else None}
 
 
@@ -1763,6 +1773,7 @@ def start_task(store, home, binding, payload):
             if payload["home"] != binding or not conversation_home_matches(item, binding):
                 raise AnswerConflict("Firstmate home changed. This message belongs to the original home.")
             item["task"]["state"] = "started"
+            item.pop("later", None)
             thread.append(new_ask(message_id, TASK_STARTED, binding))
     return deliver_task_message(store, home, binding, item_id, message_id, "Task started.", "Task saved. Not delivered.")
 
@@ -1785,6 +1796,7 @@ def review_task(store, home, binding, payload):
             item["task"]["state"] = "started"
             item["task"].pop("result", None)
             item["resolved"] = True
+            item.pop("later", None)
             read_firstmate_updates(item)
             return conversation_result(data, item_id, {"message": "Task approved."})
     message_id = read_message_id(payload["id"])
@@ -1805,6 +1817,7 @@ def review_task(store, home, binding, payload):
                 raise AnswerConflict("Firstmate home changed. This message belongs to the original home.")
             item["task"]["state"] = "started"
             item["task"].pop("result", None)
+            item.pop("later", None)
             read_firstmate_updates(item)
             part_thread(item, None).append(new_ask(message_id, text, binding))
     return deliver_task_message(store, home, binding, item_id, message_id, "Note sent.", "Note saved. Not delivered.")
@@ -1814,8 +1827,17 @@ CONVERSATION_FLAGS = ("pinned", "resolved", "archived")
 FLAG_SUBJECTS = {"pinned": "pin", "resolved": "resolution", "archived": "archive"}
 
 
+def update_conversation_flag(item, flag, value):
+    if value:
+        item[flag] = True
+    else:
+        item.pop(flag, None)
+    if flag == "resolved":
+        item.pop("later", None)
+
+
 def set_conversation_flag(store, payload, flag):
-    """Set or clear a conversation's pinned, resolved or archived flag. Nothing else about it changes, and no flag locks it."""
+    """Set or clear a conversation's pinned, resolved or archived flag."""
     subject = FLAG_SUBJECTS[flag]
     if not isinstance(payload, dict) or set(payload) != {"part", flag} or type(payload[flag]) is not bool:
         raise ValueError(f"Invalid {subject} fields.")
@@ -1826,10 +1848,7 @@ def set_conversation_flag(store, payload, flag):
         item = find_item(data, item_id)
         if item["kind"] != "conversation":
             raise ValueError(f"Only a conversation can be {flag}.")
-        if payload[flag]:
-            item[flag] = True
-        else:
-            item.pop(flag, None)
+        update_conversation_flag(item, flag, payload[flag])
         result = {flag: payload[flag]}
         if flag != "pinned":  # the Hold list keeps its own row for the conversation
             result["hold"] = "" if is_archived(item) else library_row(item, served=True)
@@ -1852,7 +1871,9 @@ def set_later(store, payload):
         if item["kind"] not in ("questions", "conversation"):
             raise ValueError("Only a question item or a conversation can be kept for later.")
         if payload["later"]:
-            item["later"] = True
+            if not attention_summary(item, served=True):
+                raise AnswerConflict("This item no longer waits for you.")
+            item["later"] = [message["id"] for message in unread_messages(item)] or True
         else:
             item.pop("later", None)
         return {"later": payload["later"]}
@@ -2534,10 +2555,7 @@ def set_flag_command(flag: str, value: bool, done: str):
                 item = find_item(data, target)
                 if item["kind"] != "conversation":
                     raise ValueError(f"use a conversation item, such as Q12: {args.id!r}")
-                if value:
-                    item[flag] = True
-                else:
-                    item.pop(flag, None)
+                update_conversation_flag(item, flag, value)
                 write_store(store, data)
             print(f"{target} {done}")
             return 0
@@ -2571,6 +2589,7 @@ def review_task_command(args: argparse.Namespace) -> int:
                 raise ValueError(f"{target} is a draft; the owner has not started it")
             item["task"]["state"] = "review"
             item["task"].pop("result", None)
+            item.pop("later", None)
             if links:
                 item["task"]["result"] = links[0]
             part_thread(item, None).append(firstmate_message(text, links, []))
@@ -3393,9 +3412,14 @@ body:has(dialog[open]) { overflow:hidden; }
 .fold time { color:var(--soft); font-size:var(--text-sm); white-space:nowrap; }
 .fold:active { background:var(--faint); }
 @media (hover: hover) and (pointer: fine) { .fold:hover { background:var(--faint); } }
-.more-msgs { margin:0 0 .6rem; }
 @media (max-width: 30rem) { .fold { grid-template-columns:auto minmax(0,1fr); } .fold time { display:none; } }
 .mail-pane { display:none; }
+.talk-back { display:none; }
+@media (width < 60rem) {
+  .mailbox:has(#talk-form:not([hidden])) .mail-list > :not(#desk-status) { display:none; }
+  .mail-pane:has(#talk-form:not([hidden])), .talk-back { display:block; }
+  #pane-frame, #pane-empty { display:none; }
+}
 body:has(.mailbox) > main { padding-top:.4rem; }
 .mail-list .desk-tabs { margin:.2rem 0 .6rem; }
 .mail-list .talk-open { margin-top:.2rem; }
@@ -3422,14 +3446,10 @@ body:has(.mailbox) > main { padding-top:.4rem; }
   #pane-frame { flex:1; width:100%; min-height:0; border:0; background:var(--ground); }
   .pane-compose { flex:1; min-height:0; overflow-y:auto; overscroll-behavior:contain; padding:1.2rem clamp(1.5rem, 4vw, 4rem) 2rem; }
   .pane-compose .talk { grid-template-columns:minmax(0, 1fr); }
-  .pane-compose #talk-message, .pane-compose #task-description { min-height:14rem; }
+  .pane-compose #talk-message { min-height:14rem; }
   #pane-empty { margin:2rem clamp(1.5rem, 4vw, 4rem); }
   .pane-compose:not(:has(form:not([hidden]))), #pane-frame:not([data-open]), .mail-pane:has(#pane-frame[data-open]) #pane-empty,
   .mail-pane:has(.pane-compose form:not([hidden])) :is(#pane-frame, #pane-empty) { display:none; }
-  .mailbox[data-tab="under-way"] { grid-template-columns:minmax(0, 1fr); }
-  .mailbox[data-tab="under-way"] .mail-pane { display:none; }
-  .mailbox[data-tab="under-way"] .mail-list { border-right:0; background:var(--ground); padding:0 var(--gutter) 2rem; }
-  .mailbox[data-tab="under-way"] .desk-tabs, .mailbox[data-tab="under-way"] .desk-panel { max-width:68rem; margin-left:auto; margin-right:auto; }
 }
 .resolved-mark, .archived-mark { display:inline-flex; align-items:center; gap:.3rem; font:600 var(--text-sm)/1.5 var(--sans); color:var(--ink); }
 .conversation-state { display:flex; flex-wrap:wrap; align-items:center; gap:.5rem 1rem; margin:.8rem 0 1rem; font-family:var(--sans); }
@@ -3840,6 +3860,12 @@ LIBRARY_SCRIPT = r"""
       localizeStamps(list.querySelector('[data-id="' + id + '"]'));
       run();
     });
+    if (topics || tab.id === 'tab-answered') panel.addEventListener('hold-refreshed', event => {
+      const list = panel.querySelector('.lib-list');
+      list.replaceChildren(...event.detail.children);
+      localizeStamps(list);
+      run();
+    });
     search.addEventListener('input', run);
     for (const select of filters) select.addEventListener('change', run);
     run();
@@ -4071,6 +4097,8 @@ def parse_list_context(query: str) -> dict[str, str] | None:
         value = fields.get(key, [""])[0][:FILTER_VALUE_LIMIT]
         if value:
             context[key] = value
+    if name == "conversations" and "at" in fields and re.fullmatch(r"reply-[0-9a-f]{32}", fields["at"][0]):
+        context["at"] = fields["at"][0]
     return context
 
 
@@ -4078,7 +4106,10 @@ def item_link(item_id: str, context: dict[str, str] | str | None = None, target:
     """The address of an item's page. With a list it names, the page can send the owner back to that list."""
     href = item_page_name(item_id)
     if context:
-        href += "?" + urlencode({"from": context} if isinstance(context, str) else context)
+        params = {"from": context} if isinstance(context, str) else dict(context)
+        if params["from"] == "conversations" and target and target.startswith("reply-"):
+            params["at"] = target
+        href += "?" + urlencode(params)
     return href + (f"#{target}" if target else "")
 
 
@@ -4134,8 +4165,8 @@ def list_members(data: dict[str, object], context: dict[str, str]) -> list[dict[
     if name == "desk-references":
         return [item for item in items if item["kind"] in ("resource", "list")]
     if name in ("conversations", "archived"):
-        wanted = name == "archived"
-        members = [item for item in items if item["kind"] == "conversation" and is_archived(item) == wanted]
+        members = ([item for item in items if desk_conversation(item)] if name == "conversations" else
+                   [item for item in items if item["kind"] == "conversation" and is_archived(item)])
         return list_sorter(name)([item for item in members if in_desk_scope(data, context, item)])
     kinds = {"references": ("resource", "list"), "answered": ("questions",), "hold-conversations": ("conversation",)}[name]
     members = [item for item in items if item["kind"] in kinds and (
@@ -4182,18 +4213,32 @@ def list_unread(name: str, item) -> bool:
 
 
 def attention_target(item, summary) -> str | None:
-    """Where an item's page opens: its first unread reply, else its first open question."""
+    """Where a review opens: the marked request, an unread reply, or the first open question."""
     state, open_parts, _ = summary
+    request = owner_request(item)
+    if request:
+        return f'reply-{request["id"]}'
     if state == "Replied":
         return unread_target(item)
     return f'{item["id"]}.{open_parts[0]}' if open_parts else None
 
 
-def next_unread(data: dict[str, object], context: dict[str, str], current) -> tuple[dict[str, object], str | None] | None:
-    """The next unread item after the current one in its list, wrapping to the start, and where its page opens."""
+def next_unread(data: dict[str, object], context: dict[str, str], current, *, opening=None) -> tuple[dict[str, object], str | None] | None:
+    """The next unread reply or item in the originating list, wrapping to its start."""
     name = context["from"]
     line = list_members(data, context)
-    if all(item["id"] != current["id"] for item in line):
+    present = any(item["id"] == current["id"] for item in line)
+    if name == "conversations" and present:
+        if opening is None:
+            replies = unread_messages(current)
+            next(replies, None)
+        else:
+            thread = item_replies(current)
+            next((message for message in thread if f'reply-{message["id"]}' == opening), None)
+            replies = (message for message in thread if unread_reply(message))
+        if reply := next(replies, None):
+            return current, f'reply-{reply["id"]}'
+    if not present:
         sorter = list_sorter(name)
         line = sorter([*line, current]) if sorter else [current, *line]
     at = next(number for number, item in enumerate(line) if item["id"] == current["id"])
@@ -4219,7 +4264,10 @@ if (document.documentElement.classList.contains('in-pane')) {
     const link = event.target.closest('a[href]');
     if (!link || link.target) return;
     const address = new URL(link.href);
-    if (address.origin !== location.origin) link.target = '_blank';
+    if (address.origin !== location.origin || link.classList.contains('open-link')) {
+      link.target = '_blank';
+      link.relList.add('noopener');
+    }
     else if (!/\/q[1-9][0-9]*\.html$/.test(address.pathname)) link.target = '_top';
   }, true);
 }
@@ -4230,41 +4278,24 @@ THREAD_SCRIPT = r"""
 (() => {
   const open = li => {
     if (!li.classList.contains('folded')) return;
-    li.classList.remove('folded', 'tucked');
-    li.hidden = false;
+    li.classList.remove('folded');
     li.querySelector('.fold').remove();
     const body = li.querySelector('.msg-body');
     body.replaceWith(...body.childNodes);
   };
-  const showAll = list => {
-    for (const li of list.querySelectorAll('.tucked')) {
-      li.hidden = false;
-      li.classList.remove('tucked');
-    }
-    list.querySelector('.more-msgs')?.remove();
-  };
   document.addEventListener('click', event => {
     const fold = event.target.closest('button.fold');
-    if (fold) {
-      const li = fold.closest('li');
-      open(li);
-      li.tabIndex = -1;
-      li.focus({preventScroll: true});
-      return;
-    }
-    const more = event.target.closest('button.show-earlier');
-    if (!more) return;
-    const list = more.closest('ol');
-    const first = list.querySelector('.tucked');
-    showAll(list);
-    first?.querySelector('.fold')?.focus();
+    if (!fold) return;
+    const li = fold.closest('li');
+    open(li);
+    li.tabIndex = -1;
+    li.focus({preventScroll: true});
   });
   const reveal = () => {
     let target = null;
     try { target = location.hash.length > 1 ? document.getElementById(decodeURIComponent(location.hash.slice(1))) : null; } catch {}
     const li = target?.closest('li.msg');
     if (!li || !li.classList.contains('folded')) return;
-    if (li.hidden) showAll(li.closest('ol'));
     open(li);
     li.scrollIntoView({block: 'center'});
   };
@@ -4290,11 +4321,6 @@ THREAD_SCRIPT = r"""
     status.classList.toggle('failed', !saved);
     if (!saved) {
       status.textContent = 'Quarterdeck could not save the change to ' + bar.dataset.title + '. Try again.';
-      return;
-    }
-    const next = document.querySelector('.next-link');
-    if (value && next) {
-      location.assign(next.href);
       return;
     }
     for (const other of buttons) {
@@ -4327,6 +4353,7 @@ def nav_links(saved_href, current, served):
 
 
 def page_shell(title: str, site_title: str, body: str, *, served: bool, saved_name: str, interactive: bool = False,
+               pane_links: bool = False,
                workers: bool = False, library: str = "", conversations: bool = False, filters: bool = False,
                talking: bool = False, starting: bool = False, current: str = "", watching: bool = False) -> str:
     saved_href = quote(saved_name, safe="")
@@ -4342,7 +4369,7 @@ def page_shell(title: str, site_title: str, body: str, *, served: bool, saved_na
         f"  {GENERATED_MARKER}\n  <title>{esc(title)}</title>\n  {links}<style>{PAGE_CSS}</style>\n{PANE_CLASS if served else ''}</head>\n<body>\n"
         f'<header class="bar"><a class="mark" href="{saved_href}">{esc(site_title)}</a>'
         f'<nav>{nav_links(saved_href, current, served)}{opener}</nav></header>\n'
-        f"<main>\n{body}\n</main>\n{library}<script>{PANE_SCRIPT if conversations else ''}{ARRIVAL_SCRIPT if library or starting else ''}{TIME_SCRIPT}{VIEWPORT_SCRIPT if interactive or library else ''}{QUESTION_SCRIPT + THREAD_SCRIPT if conversations else ''}"
+        f"<main>\n{body}\n</main>\n{library}<script>{PANE_SCRIPT if pane_links else ''}{ARRIVAL_SCRIPT if library or starting else ''}{TIME_SCRIPT}{VIEWPORT_SCRIPT if interactive or library else ''}{QUESTION_SCRIPT + THREAD_SCRIPT if conversations else ''}"
         f"{CONVERSATION_TEXT_SCRIPT if library or talking or starting else ''}"
         f"{ANSWER_SCRIPT if interactive else ''}{CONVERSATION_SCRIPT if talking else ''}{DESK_SCRIPT if starting else ''}{TASK_SCRIPT if talking or starting else ''}"
         f"{WORKER_SUMMARY_SCRIPT if workers or watching else ''}"
@@ -4471,20 +4498,9 @@ def read_only_option(item, option):
 
 
 FOLD_SNIPPET_LIMIT = 160
-FOLD_SHOWN = 3  # a thread shows at most this many folded lines before it tucks the middle ones away
 
 
-def folded_messages(thread) -> dict[int, str]:
-    """Which messages of a conversation show as one line: every earlier one that is read and needs no retry. The
-    newest message and any unread reply stay open. In a long thread the middle lines are tucked behind one button."""
-    last = len(thread) - 1
-    folded = [index for index, message in enumerate(thread) if index != last and not unread_reply(message)
-              and not (message["author"] == "you" and message["delivery"] == "pending")]
-    tucked = set(folded[1:-1]) if len(folded) > FOLD_SHOWN else set()
-    return {index: "tucked" if index in tucked else "folded" for index in folded}
-
-
-def message_html(item, message, *, editable, message_number=None, fold=""):
+def message_html(item, message, *, editable, message_number=None, fold=False):
     you = message["author"] == "you"
     when = esc(message["at"])
     delivery = f' <span class="delivery">{delivery_label(message)}</span>' if you else ''
@@ -4511,7 +4527,7 @@ def message_html(item, message, *, editable, message_number=None, fold=""):
     if not fold:
         return f'<li class="msg {message["author"]}"{identity}{unread}>{inner}</li>'
     snippet = esc(" ".join(str(message["text"]).split())[:FOLD_SNIPPET_LIMIT])
-    return (f'<li class="msg {message["author"]} folded{" tucked" if fold == "tucked" else ""}"{identity}{" hidden" if fold == "tucked" else ""}>'
+    return (f'<li class="msg {message["author"]} folded"{identity}>'
             f'<button type="button" class="fold" aria-expanded="false"><strong>{AUTHOR_LABELS[message["author"]]}</strong> '
             f'<span class="snip">{snippet}</span> <time datetime="{when}">{when}</time></button>'
             f'<div class="msg-body" hidden>{inner}</div></li>')
@@ -4522,15 +4538,12 @@ def thread_html(item, number, *, editable):
         thread = part_thread(item, number)
         numbers = conversation_message_numbers(thread)
         home = thread_home(thread) if editable else None
-        folds = folded_messages(thread)
-        rows = []
-        for index, m in enumerate(thread):
-            if folds.get(index) == "tucked" and folds.get(index - 1) != "tucked":
-                hidden = sum(1 for state in folds.values() if state == "tucked")
-                rows.append(f'<li class="more-msgs"><button type="button" class="show-earlier">Show {hidden} earlier messages</button></li>')
-            rows.append(message_html(item, m, editable=editable and m.get("home") == home,
-                                     message_number=numbers.get(m.get("ask", m["id"])), fold=folds.get(index, "")))
-        messages = "".join(rows)
+        request = owner_request(item)
+        messages = "".join(message_html(item, m, editable=editable and m.get("home") == home,
+                                        message_number=numbers.get(m.get("ask", m["id"])),
+                                        fold=(m is not thread[-1] and m is not request
+                                              and not unread_reply(m) and m.get("delivery") != "pending"))
+                           for m in thread)
         return f'<ol class="exchange">{messages}</ol>' if messages else ''
     groups = {}
     for message in part_thread(item, number):
@@ -5192,7 +5205,6 @@ CONVERSATION_SCRIPT = talk_script(r"""
 
 DESK_SCRIPT = talk_script(r"""
 (() => {
-  const mailbox = document.getElementById('mailbox');
   const tabs = [...document.querySelectorAll('.desk-tabs [role="tab"]')];
   const panelOf = tab => document.getElementById(tab.getAttribute('aria-controls'));
   const select = (tab, focus) => {
@@ -5202,7 +5214,7 @@ DESK_SCRIPT = talk_script(r"""
       other.tabIndex = on ? 0 : -1;
       panelOf(other).hidden = !on;
     }
-    mailbox.dataset.tab = tab.id.slice('desk-tab-'.length);
+    if (tab.id !== 'desk-tab-conversations') setComposeOpen(false);
     if (focus) tab.focus();
   };
   for (const tab of tabs) {
@@ -5313,18 +5325,25 @@ DESK_SCRIPT = talk_script(r"""
     readAll.hidden = noticeButtons().length < 2;
     setCount(conversationTab, groups.unread.querySelectorAll('.topic[data-unread="true"]').length);
   };
+  const applyScope = params => {
+    for (const [name, value] of [['project', scopeProject.value], ['topic', scopeTopic.value], ['tasks', tasksOnly.checked ? '1' : ''],
+      ['unread', unreadOnly.checked ? '1' : '']]) {
+      if (value) params.set(name, value); else params.delete(name);
+    }
+  };
+  const scopedAddress = href => {
+    const address = new URL(href);
+    applyScope(address.searchParams);
+    return address;
+  };
   const linkRow = row => {
-    const link = row.querySelector('.topic-title');
+    const link = row.querySelector('.topic-title, .notice-links a[href^="q"][href*="?from=conversations"]');
     if (!link) return;
-    const archived = row.dataset.archived === 'true';
     const [address, hash] = link.getAttribute('href').split('#');
     const [path, query] = address.split('?');
     const params = new URLSearchParams(query);
-    params.set('from', archived ? 'archived' : 'conversations');
-    for (const [name, value] of [['project', scopeProject.value], ['topic', scopeTopic.value], ['tasks', tasksOnly.checked ? '1' : ''],
-      ['unread', unreadOnly.checked ? '1' : '']]) {
-      if (value && !archived) params.set(name, value); else params.delete(name);
-    }
+    if (params.get('from') !== 'conversations') return;
+    applyScope(params);
     link.setAttribute('href', path + '?' + params + (hash === undefined ? '' : '#' + hash));
   };
   const fillSelect = (select, first, entries, value) => {
@@ -5365,20 +5384,23 @@ DESK_SCRIPT = talk_script(r"""
     const project = projectOf(scopeProject.value);
     return !project ? {} : scopeTopic.value ? {project: project.id, topic: scopeTopic.value} : {project: project.id};
   };
-  scopeProject.addEventListener('change', () => syncScope({project: scopeProject.value, topic: ''}));
-  scopeTopic.addEventListener('change', () => syncScope());
-  tasksOnly.addEventListener('change', () => syncScope());
-  unreadOnly.addEventListener('change', () => syncScope());
+  scopeProject.addEventListener('change', () => changeScope({project: scopeProject.value, topic: ''}));
+  scopeTopic.addEventListener('change', () => changeScope());
+  tasksOnly.addEventListener('change', () => changeScope());
+  unreadOnly.addEventListener('change', () => changeScope());
   const taskForm = document.getElementById('task-form');
   if (taskForm) taskForm.taskPlacement = startPlacement;
 
   // The pane: on a wide screen a row opens beside the list. A narrow screen follows the link to the item's own page.
   const wide = matchMedia('(min-width: 60rem)');
   const frame = document.getElementById('pane-frame');
-  const paneCompose = document.getElementById('pane-compose');
-  const talkForms = document.getElementById('talk-forms');
-  const forms = [document.getElementById('talk-form'), taskForm].filter(Boolean);
-  const PANE_KEY = 'quarterdeck-pane';
+  const form = document.getElementById('talk-form');
+  const opener = document.getElementById('talk-open');
+  const setComposeOpen = open => {
+    if (!form) return;
+    form.hidden = !open;
+    opener.setAttribute('aria-expanded', String(open));
+  };
   const ITEM_PAGE = /(?:^|\/)(q[1-9][0-9]*)\.html$/;
   let currentId = null;
   let sticky = null;
@@ -5406,23 +5428,38 @@ DESK_SCRIPT = talk_script(r"""
       unreadList.insertBefore(row, unreadList.children[sticky.index] || null);
     }
   };
-  const closeForms = () => {
-    for (const form of forms) {
-      form.hidden = true;
-      document.querySelector('[aria-controls="' + form.id + '"]')?.setAttribute('aria-expanded', 'false');
-    }
-  };
   const openInPane = (href, id) => {
-    closeForms();
+    setComposeOpen(false);
     frame.dataset.open = 'true';
     if (id) setCurrent(id);
     const address = new URL(href, location.href);
     try { frame.contentWindow.location.replace(address); } catch { frame.src = address; }
-    try { sessionStorage.setItem(PANE_KEY, href); } catch {}
   };
-  const placeForms = () => { (wide.matches ? paneCompose : talkForms).append(...forms); };
-  wide.addEventListener('change', placeForms);
-  placeForms();
+  let navigationRequest;
+  const changeScope = async next => {
+    syncScope(next);
+    const current = frame.contentDocument;
+    if (!current || new URL(current.URL).searchParams.get('from') !== 'conversations') return;
+    navigationRequest?.abort();
+    const request = navigationRequest = new AbortController();
+    const address = scopedAddress(current.URL);
+    if (address.hash.startsWith('#reply-')) address.searchParams.set('at', address.hash.slice(1));
+    const strips = [...current.querySelectorAll('.list-nav')];
+    strips.forEach(strip => strip.querySelector('.next-link')?.remove());
+    try {
+      const response = await fetch(address, {cache: 'no-store', signal: request.signal});
+      if (!response.ok) return;
+      const fresh = new DOMParser().parseFromString(await response.text(), 'text/html');
+      if (request.signal.aborted || current !== frame.contentDocument) return;
+      const following = fresh.querySelector('.next-link');
+      const back = fresh.querySelector('.back-link').getAttribute('href');
+      for (const strip of strips) {
+        const link = strip.querySelector('.back-link');
+        link.setAttribute('href', back);
+        if (following) link.after(following.cloneNode(true));
+      }
+    } catch {}
+  };
   document.getElementById('mail-list').addEventListener('click', event => {
     const link = event.target.closest('a.topic-title, a[data-pane]');
     if (!link || !wide.matches || event.button || event.metaKey || event.ctrlKey || event.shiftKey || event.altKey) return;
@@ -5443,14 +5480,24 @@ DESK_SCRIPT = talk_script(r"""
           const response = await fetch('index.html?lists=1', {cache: 'no-store'});
           if (!response.ok) break;
           const fresh = new DOMParser().parseFromString(await response.text(), 'text/html');
+          if (refreshAgain) continue;
           for (const id of LISTS) {
             const from = fresh.querySelector('#' + id + ' .topic-list');
             const to = document.querySelector('#' + id + ' .topic-list');
             if (!from || !to) continue;
-            const focused = to.contains(document.activeElement) ? document.activeElement.closest('.topic')?.dataset.id : null;
-            to.replaceChildren(...[...from.children].map(node => document.importNode(node, true)));
+            const active = to.contains(document.activeElement) ? document.activeElement : null;
+            const focused = active?.closest('.topic');
+            const notices = new Map([...to.querySelectorAll('[data-notice]')].map(row => [row.dataset.notice, row]));
+            to.replaceChildren(...[...from.children].map(node => notices.get(node.dataset.notice) ?? document.importNode(node, true)));
             localizeStamps(to);
-            if (focused) to.querySelector('.topic[data-id="' + focused + '"] .topic-title')?.focus();
+            if (active?.isConnected) active.focus();
+            else if (focused?.dataset.id) to.querySelector('.topic[data-id="' + focused.dataset.id + '"] .topic-title')?.focus();
+          }
+          if (readAll.disabled) noticeButtons().forEach(control => { control.disabled = true; });
+          for (const name of ['conversations', 'answered']) {
+            const id = 'panel-' + name;
+            const list = fresh.querySelector('#' + id + ' .lib-list');
+            if (list) document.getElementById(id).dispatchEvent(new CustomEvent('hold-refreshed', {detail:list}));
           }
           keepSticky();
           syncScope();
@@ -5474,8 +5521,8 @@ DESK_SCRIPT = talk_script(r"""
     if (!match) return;
     const id = match[1].toUpperCase();
     if (id !== currentId) setCurrent(id);
-    try { sessionStorage.setItem(PANE_KEY, match[1] + '.html' + address.search + address.hash); } catch {}
     refreshLists();
+    if (address.searchParams.get('from') === 'conversations' && scopedAddress(address.href).search !== address.search) changeScope();
   });
   addEventListener('message', event => {
     if (event.origin === location.origin && event.source === frame.contentWindow && event.data === 'quarterdeck-changed') refreshLists();
@@ -5491,9 +5538,8 @@ DESK_SCRIPT = talk_script(r"""
     const notices = noticeButtons();
     const selected = button === readAll ? notices : [button];
     const ids = selected.map(control => control.dataset.read);
-    const controls = [...notices, readAll];
     const previousFocus = document.activeElement;
-    controls.forEach(control => { control.disabled = true; });
+    [...notices, readAll].forEach(control => { control.disabled = true; });
     try {
       const response = await fetch('catch-ups/read', {method:'POST', redirect:'error',
         headers:{'Content-Type':'application/json'}, body:JSON.stringify({ids})});
@@ -5518,7 +5564,7 @@ DESK_SCRIPT = talk_script(r"""
     } catch {
       report(noticeStatus, conversationPanel, 'The notice could not be marked read. Try again.', true);
     } finally {
-      controls.forEach(control => { control.disabled = false; });
+      [...noticeButtons(), readAll].forEach(control => { control.disabled = false; });
     }
   });
 
@@ -5569,7 +5615,7 @@ DESK_SCRIPT = talk_script(r"""
         if (!id && kind === 'project') Object.assign(next, {project: outcome.result.id, topic: ''});
         if (!id && kind === 'topic') next.topic = outcome.result.id;
         closeGroup(false);
-        syncScope(next);
+        changeScope(next);
         groupStatus.textContent = name + ' saved.';
         (kind === 'project' ? scopeProject : scopeTopic).focus();
       } else {
@@ -5603,12 +5649,6 @@ DESK_SCRIPT = talk_script(r"""
     const below = row => row.classList.contains('review') && BigInt(row.dataset.id.slice(1)) < BigInt(wanted.slice(1) || '0');
     const row = arrivalRow(rows, wanted) ?? (/^Q[1-9][0-9]*$/.test(wanted) ? rows.find(below) : undefined);
     showArrivalRow(row, row?.querySelector('.topic-title, .bookmark-title, a'));
-  } else if (wide.matches) {
-    // A reload keeps the item that was open in the pane.
-    let remembered = null;
-    try { remembered = sessionStorage.getItem(PANE_KEY); } catch {}
-    const match = remembered && ITEM_PAGE.exec(remembered.split(/[?#]/)[0]);
-    if (match && rowOf(match[1].toUpperCase()).length) openInPane(remembered, match[1].toUpperCase());
   }
 
   const holdList = document.getElementById('panel-conversations');
@@ -5643,9 +5683,11 @@ DESK_SCRIPT = talk_script(r"""
   const showReview = (id, html) => {
     for (const old of rowsOf(reviewPanel).filter(other => other.dataset.id === id)) old.remove();
     if (html) {
-      const list = reviewLists.waiting.querySelector('.topic-list');
+      const row = rowFrom(html);
+      const group = row.dataset.unread === 'true' ? reviewLists.waiting : reviewLists.later;
+      const list = group.querySelector('.topic-list');
       const next = [...list.children].find(other => BigInt(other.dataset.id.slice(1)) < BigInt(id.slice(1)));
-      list.insertBefore(rowFrom(html), next || null);
+      list.insertBefore(row, next || null);
     }
     syncReview();
   };
@@ -5656,7 +5698,7 @@ DESK_SCRIPT = talk_script(r"""
     showReview(id, result.attention);
     savedInHold(id, result.hold);
     markCurrent();
-    if (open && wide.matches) openInPane(result.href + '?from=conversations', id);
+    if (open && wide.matches) openInPane(row.querySelector('.topic-title').href, id);
     else if (open && !conversationPanel.hidden) row.querySelector('.topic-title').focus();
     refreshLists();
   };
@@ -5668,32 +5710,21 @@ DESK_SCRIPT = talk_script(r"""
     showSaved(result, Boolean(result.created));
   });
 
-  const form = document.querySelector('#talk-form');
   if (!form) return;
   const topic = form.querySelector('#talk-topic');
   const message = form.querySelector('#talk-message');
   const button = form.querySelector('button[type="submit"]');
-  const opener = document.querySelector('#talk-open');
   const drafts = new Map();
-  const hasDraft = () => Boolean(topic.value.trim() || message.value.trim());
-  const setOpen = open => {
-    form.hidden = !open;
-    opener.setAttribute('aria-expanded', String(open));
-  };
   const refresh = () => {
     button.disabled = !(normalizeTopic(topic.value) && trimmed(message.value));
-    if (hasDraft()) setOpen(true);
   };
   opener.addEventListener('click', () => {
     const open = form.hidden;
-    setOpen(open);
+    setComposeOpen(open);
     if (open) topic.focus();
   });
-  form.querySelector('#talk-discard').addEventListener('click', () => {
-    topic.value = '';
-    message.value = '';
-    refresh();
-    setOpen(false);
+  form.querySelector('.talk-back').addEventListener('click', () => {
+    setComposeOpen(false);
     opener.focus();
   });
   form.addEventListener('input', refresh);
@@ -5704,7 +5735,7 @@ DESK_SCRIPT = talk_script(r"""
     const key = JSON.stringify([title, text]);
     const id = drafts.get(key) ?? messageId();
     drafts.set(key, id);
-    const controls = form.querySelectorAll('button,input,textarea');
+    const controls = form.querySelectorAll('button[type="submit"],input,textarea');
     controls.forEach(c => c.disabled = true);
     startStatus.classList.remove('failed');
     startStatus.textContent = 'Starting conversation';
@@ -5717,7 +5748,7 @@ DESK_SCRIPT = talk_script(r"""
         started = outcome.result;
         topic.value = '';
         message.value = '';
-        setOpen(false);
+        setComposeOpen(false);
       } else {
         startStatus.classList.add('failed');
         startStatus.textContent = outcome.message;
@@ -6491,7 +6522,7 @@ def library_panel(name: str, items: list[dict[str, object]], empty: str, *, serv
     filters = filter_bar(list_id, items, restorable=served)
     row = reference_row if name == "references" else library_row
     rows = "".join(row(item, served=served) for item in items)
-    listing = f'<ul class="lib-list" id="{list_id}">{rows}</ul>' if rows or (served and name == "conversations") else ""
+    listing = f'<ul class="lib-list" id="{list_id}">{rows}</ul>' if rows or (served and name != "references") else ""
     if not served:
         return (filters + listing + (no_match(list_id) if filters else "")) if rows else f'<p class="empty">{esc(empty)}</p>'
     return (f'<div class="lib-tools"><label for="search-{name}">Search</label>'
@@ -6571,10 +6602,7 @@ def task_opener(css="talk-open"):
 
 
 def talk_form(binding):
-    """The two buttons above the list and the forms they open. On a wide screen the Desk shows an open form in the pane."""
-    return ('<button type="button" id="talk-open" class="talk-open" aria-expanded="false" aria-controls="talk-form">'
-            'New conversation</button>' + task_opener() +
-            '<form id="talk-form" class="talk" novalidate aria-label="New conversation" hidden>'
+    return ('<form id="talk-form" class="talk" novalidate aria-label="New conversation" hidden>'
             '<p class="talk-to"><span class="talk-to-label">To</span> <span>Firstmate</span></p>'
             '<div class="talk-field"><label for="talk-topic">Conversation title</label>'
             f'<input id="talk-topic" maxlength="{TITLE_LIMIT}" autocomplete="off"></div>'
@@ -6582,8 +6610,8 @@ def talk_form(binding):
             f'<textarea id="talk-message" maxlength="{TEXT_LIMIT}" rows="2"></textarea></div>'
             '<div class="actions"><button type="submit" class="primary" disabled '
             f'data-home="{esc(binding)}">Start conversation</button>'
-            '<button type="button" id="talk-discard">Discard draft</button></div>'
-            '<p class="meta talk-destination" hidden></p></form>' + task_form(binding))
+            '<button type="button" class="talk-back">Back to Conversations</button></div>'
+            '<p class="meta talk-destination" hidden></p></form>')
 
 
 PREVIEW_LIMIT = 200
@@ -6604,36 +6632,40 @@ def task_mark(item):
 
 
 
-def message_count(item) -> str:
-    """How many messages a thread holds, shown on its row once there is more than one."""
-    count = len(part_thread(item, None))
-    return f'<span class="count">{count} messages</span>' if count > 1 else ""
-
-
 def conversation_row(item, projects=(), *, under_unread=False):
     """One conversation on the Desk. The row carries no buttons; Pin, Move, Resolve and Archive are on its page.
     Under the Unread heading a row leaves out the Unread reply mark, which the heading already gives."""
-    thread = part_thread(item, None)
-    latest = thread[-1] if thread else None
     target = unread_target(item)
-    href = esc(item_link(item["id"], "archived" if is_archived(item) else "conversations", target))
+    origin = "archived" if is_archived(item) and not under_unread else "conversations"
+    href = esc(item_link(item["id"], origin, target))
     status = f'<span class="badge">{UNREAD_REPLY}</span>' if target and not under_unread else ""
-    if has_pending_ask(item):
+    questions = item["kind"] == "questions"
+    pending = question_delivery_pending(item) if questions else has_pending_ask(item)
+    if pending:
         status += '<span>Not delivered</span>'
-    if in_review(item) and status:
-        status += f'<span>{TASK_STATES["review"]}</span>'
-    if asks_owner(item) and not in_review(item):
-        status += '<span>Asked</span>'
-    if not status and is_task(item):
-        status = f'<span>{TASK_STATES[task_state(item)]}</span>'
-    elif not status and not (target and under_unread):
-        status = '<span>Messaged</span>' if latest["author"] == "you" else "<span>Replied</span>"
+    if questions:
+        state, _, _ = question_summary(item, replies=False)
+        status = f'<span>{state}</span>' + status
+        reply = next(unread_messages(item), None)
+        preview = str(reply["text"] if reply else item["description"])
+    else:
+        thread = part_thread(item, None)
+        latest = thread[-1] if thread else None
+        if in_review(item) and status:
+            status += f'<span>{TASK_STATES["review"]}</span>'
+        if asks_owner(item) and not in_review(item):
+            status += '<span>Asked</span>'
+        if not status and is_task(item):
+            status = f'<span>{TASK_STATES[task_state(item)]}</span>'
+        elif not status and not (target and under_unread):
+            status = '<span>Messaged</span>' if latest["author"] == "you" else "<span>Replied</span>"
+        said = next((m["text"] for m in reversed(thread) if m["author"] == "firstmate"), None) if is_task(item) else None
+        preview = str(item["task"]["description"] if said is None and is_task(item) else said if said is not None else latest["text"])
+        if not is_task(item) and latest["author"] == "you":
+            preview = "You: " + preview
     activity = conversation_activity(item).isoformat(timespec="microseconds")
     project = f'<span class="project-name">{esc(item["project"])}</span>' if item.get("project") else ""
-    said = next((m["text"] for m in reversed(thread) if m["author"] == "firstmate"), None) if is_task(item) else None
-    text = str(item["task"]["description"] if said is None and is_task(item) else said if said is not None else latest["text"])
-    yours = "You: " if said is None and not is_task(item) and latest["author"] == "you" else ""
-    preview = (yours + " ".join(text.split()))[:PREVIEW_LIMIT]
+    preview = " ".join(preview.split())[:PREVIEW_LIMIT]
     pinned, resolved, archived = is_pinned(item), is_resolved(item), is_archived(item)
     title = esc(item["title"])
     flags = " ".join(f'data-{name}="{"true" if on else "false"}"' for name, on in
@@ -6646,7 +6678,7 @@ def conversation_row(item, projects=(), *, under_unread=False):
             f'<div class="topic-main"><a class="topic-title" href="{href}">{title}</a>'
             f'<p class="topic-latest">{esc(preview)}</p>'
             f'<p class="meta topic-meta"><span class="placement"{"" if label else " hidden"}>{esc(label)}</span>'
-            f'{task_mark(item)}{project}{resolved_mark(item)}{status}{message_count(item)}{activity_time(item)}</p></div></li>')
+            f'{task_mark(item)}{project}{resolved_mark(item)}{status}{activity_time(item)}</p></div></li>')
 
 
 def notice_row(notice, items_by_id):
@@ -6713,20 +6745,21 @@ def scope_bar(tree):
 
 
 def conversations_panel(items, ask_binding, projects=(), notices=(), items_by_id=None):
-    form = talk_form(ask_binding) if ask_binding else ""
-    live = [item for item in items if not is_archived(item)]
-    empty = (f'<p class="empty" id="no-conversations"{" hidden" if live or notices else ""}>'
+    controls = ('<button type="button" id="talk-open" class="talk-open" aria-expanded="false" aria-controls="talk-form">'
+                'New conversation</button>' + task_opener() + task_form(ask_binding)) if ask_binding else ""
+    empty = (f'<p class="empty" id="no-conversations"{" hidden" if items or notices else ""}>'
              'No conversations yet. A conversation you start with Firstmate shows here.</p>')
     scoped = '<p class="empty" id="no-scoped-conversations" hidden></p>'
     tree = project_tree({"projects": projects})
-    return (f'<div class="talk-forms" id="talk-forms">{form}</div>{scope_bar(tree)}'
+    return (f'<div class="talk-forms" id="talk-forms">{controls}</div>{scope_bar(tree)}'
             f'<p class="sr" id="notice-announcement" role="status"></p>{empty}{scoped}'
             f'{conversation_groups(items, projects, notices, items_by_id)}')
 
 
 def archived_panel(items, projects=()):
     """Archived conversations, newest activity first. Replying still works from each one's page."""
-    rows = "".join(conversation_row(item, projects) for item in by_activity(item for item in items if is_archived(item)))
+    rows = "".join(conversation_row(item, projects)
+                   for item in by_activity(item for item in items if item["kind"] == "conversation" and is_archived(item)))
     return (f'<p class="empty" id="no-archived"{" hidden" if rows else ""}>'
             'No conversations are archived. A conversation you archive shows here.</p>'
             f'<section class="topics" id="topics-archived"{"" if rows else " hidden"}>'
@@ -6777,16 +6810,15 @@ def review_row(item, summary, context="needs-you"):
         when = day_time(item["saved_at"])
     else:
         thread = part_thread(item, None)
-        said = next((m["text"] for m in reversed(thread) if m["author"] == "firstmate"), None)
-        preview = str(said if said is not None else item["task"]["description"] if is_task(item) else thread[-1]["text"])
+        request = owner_request(item) or next((m for m in reversed(thread) if m["author"] == "firstmate"), None)
+        preview = str(request["text"] if request else item["task"]["description"])
         facts.insert(0, task_mark(item))
         facts.append(f'<span>{TASK_STATES["review"]}</span>' if in_review(item) else '<span>Asked</span>' if asks_owner(item) else "")
-        facts.append(message_count(item))
         when = activity_time(item)
     if pending:
         facts.append('<span>Not delivered</span>')
     project = f'<span class="project-name">{esc(item["project"])}</span>' if item.get("project") else ""
-    return (f'<li class="topic review" data-id="{item["id"]}" data-unread="{"true" if state == "Replied" or not shows_later(item) else "false"}">'
+    return (f'<li class="topic review" data-id="{item["id"]}" data-unread="{"true" if not shows_later(item) else "false"}">'
             f'<div class="topic-main"><a class="topic-title" href="{href}"><span class="id">{item["id"]}</span> {esc(item["title"])}</a>'
             f'<p class="topic-latest">{esc(" ".join(preview.split())[:PREVIEW_LIMIT])}</p>'
             f'<p class="meta topic-meta">{"".join(facts)}{project}{when}</p></div></li>')
@@ -6881,7 +6913,7 @@ def underway_panel(view):
 
 
 
-def desk_tabs(conversations, attention, references, underway, archived, unread, waiting):
+def desk_tabs(conversations, attention, references, underway, archived, unread, waiting, *, compose):
     """The Desk as a mailbox: the tabs and their lists on one side, and on a wide screen the open item on the other."""
     def count(total):
         return f' <span class="tab-count"{"" if total else " hidden"}>{total or ""}</span>'
@@ -6897,11 +6929,12 @@ def desk_tabs(conversations, attention, references, underway, archived, unread, 
     body = "".join(f'<section class="desk-panel" role="tabpanel" id="desk-panel-{name}" aria-labelledby="desk-tab-{name}"'
                    f'{"" if number == 0 else " hidden"}>{content}</section>'
                    for number, (name, _, content, _) in enumerate(panels))
-    return ('<div class="mailbox" id="mailbox" data-tab="conversations"><div class="mail-list" id="mail-list">'
+    return ('<div class="mailbox" id="mailbox"><div class="mail-list" id="mail-list">'
             f'<div class="desk-tabs" role="tablist" aria-label="Desk">{tabs}</div>'
             '<p class="meta desk-feedback" id="desk-status" role="status"></p>'
             f'{body}</div>'
-            '<section class="mail-pane" id="mail-pane" aria-label="Open item"><div class="pane-compose" id="pane-compose"></div>'
+            '<section class="mail-pane" id="mail-pane" aria-label="Open item">'
+            f'<div class="pane-compose" id="pane-compose">{compose}</div>'
             '<iframe id="pane-frame" name="quarterdeck-pane" title="Open item"></iframe>'
             '<p class="empty" id="pane-empty">Select a row to read it here.</p></section></div>')
 
@@ -6962,35 +6995,46 @@ def watch_page(data, site_title, *, workers_ready):
                       current="watch", watching=workers_ready)
 
 
+def question_delivery_pending(item):
+    return question_summary(item, replies=False)[2] or has_pending_ask(item)
+
+
 def attention_summary(item, *, served):
-    """What an item shows in For review, or None when it does not wait for the owner. A question item waits while a
-    question is open, an answer is undelivered or a reply on it is unread. A conversation waits while its task is
-    In review, Firstmate marked a message for review, or a message of the owner's is undelivered. An unread reply
-    alone leaves a conversation in Conversations, under Unread."""
+    """What an item shows in For review, or None when it does not wait for the owner."""
     kind = item["kind"]
     if kind == "questions":
         state, open_parts, pending = question_summary(item, replies=served)
-        pending = pending or (served and has_pending_ask(item))
-        return (state, open_parts, pending) if open_parts or pending or state == "Replied" else None
+        if open_parts or (not served and pending):
+            return state, open_parts, pending or (served and has_pending_ask(item))
+        return None
     if not served or kind != "conversation":
         return None
-    pending = has_pending_ask(item)
-    if not (in_review(item) or asks_owner(item) or pending):
+    review = in_review(item)
+    if not (review or asks_owner(item)):
         return None
-    state = ("Replied" if thread_unread(item, None) else TASK_STATES["review"] if in_review(item)
-             else "Asked" if asks_owner(item) else "Messaged")
-    return state, [], pending
+    state = "Replied" if thread_unread(item, None) else TASK_STATES["review"] if review else "Asked"
+    return state, [], has_pending_ask(item)
 
 
 def shows_later(item) -> bool:
-    """An item kept for later sits under Later until a reply on it is unread; the reply lifts it back up."""
-    return is_later(item) and unread_target(item) is None
+    """A new unread reply temporarily lifts a deferred item into the waiting group."""
+    later = item.get("later")
+    if later is None:
+        return False
+    existing = set() if later is True else set(later)
+    return not any(message["id"] not in existing for message in unread_messages(item))
 
 
 def unread_conversation(item) -> bool:
-    """A conversation that shows under Unread: it has an unread reply and does not wait in For review."""
-    return (item["kind"] == "conversation" and unread_target(item) is not None
-            and attention_summary(item, served=True) is None)
+    """A thread with an unread reply that does not wait in For review."""
+    return unread_target(item) is not None and attention_summary(item, served=True) is None
+
+
+def desk_conversation(item) -> bool:
+    if item["kind"] == "conversation":
+        return not is_archived(item) or unread_conversation(item)
+    return item["kind"] == "questions" and not attention_summary(item, served=True) and (
+        unread_target(item) is not None or question_delivery_pending(item))
 
 
 def list_page(data: dict[str, object], site_title: str, *, served: bool, saved_name: str = "index.html",
@@ -6999,7 +7043,7 @@ def list_page(data: dict[str, object], site_title: str, *, served: bool, saved_n
     empty = "Nothing is saved yet. Ask Firstmate to send something to Quarterdeck, such as a link, a list or open questions."
     attention = [(item, summary) for item in items if (summary := attention_summary(item, served=served))]
     if served:
-        conversations = [item for item in items if item["kind"] == "conversation"]
+        conversations = [item for item in items if desk_conversation(item)]
         notices = unread_catch_ups(data)
         unread = sum(1 for item in conversations if unread_conversation(item)) + len(notices)
         body = '<h1 class="sr">Desk</h1>' + desk_tabs(
@@ -7008,8 +7052,9 @@ def list_page(data: dict[str, object], site_title: str, *, served: bool, saved_n
             review_panel(attention),
             references_panel(items),
             underway_panel(underway),
-            archived_panel(conversations, data.get("projects", [])),
+            archived_panel(items, data.get("projects", [])),
             unread, sum(1 for item, _ in attention if not shows_later(item)),
+            compose=talk_form(ask_binding) if ask_binding else "",
         )
         return page_shell(site_title, site_title, body, served=True, saved_name=saved_name,
                           library=library_dialog(data), current="desk", starting=True)
@@ -7040,14 +7085,14 @@ def item_body_html(item: dict[str, object]) -> str:
             for number, entry in enumerate(entries, 1)) + "</ol>"
 
 
-def list_nav(item, data, context, *, end=False) -> str:
+def list_nav(item, data, context, *, opening=None, end=False) -> str:
     """Back to the list the page was opened from (the Desk when it names none), the next unread item in that list,
     and Deal with later on an item that waits for the owner."""
     if context is None:
         label, href, following = "Desk", "index.html", None
     else:
         label, href = LIST_KINDS[context["from"]].label, back_link_href(context, item["id"])
-        following = next_unread(data, context, item) if data is not None else None
+        following = next_unread(data, context, item, opening=opening) if data is not None else None
     links = f'<a class="back-link" href="{esc(href)}">Back to {label}</a>'
     if following:
         target_item, target = following
@@ -7068,8 +7113,9 @@ def item_page(item: dict[str, object], site_title: str, *, served: bool, saved_n
     lead = "" if talking else f'<p class="lead">{linked_text(item["description"])}</p>'
     placed = placement_label(item, (data or {}).get("projects", [])) if talking else ""
     context = parse_list_context(query) if served else None
+    opening = context.pop("at", None) if context else None
     body = (
-        f'{list_nav(item, data, context) if served else ""}'
+        f'{list_nav(item, data, context, opening=opening) if served else ""}'
         f'<p class="id">{esc(item_id)}</p><h1>{esc(item["title"])}</h1>'
         f'<p class="meta">{"Task" if is_task(item) else esc(KIND_LABELS[str(item["kind"])])}{" · " + esc(placed) if placed else ""}'
         f'{" · " + esc(item["project"]) if item.get("project") else ""}'
@@ -7078,12 +7124,12 @@ def item_page(item: dict[str, object], site_title: str, *, served: bool, saved_n
         f'{conversation_state(item, ask_binding, project_tree(data or {})) if talking and served else ""}'
 
         f'{task_blocks(item, data, ask_binding) if talking and served else ""}'
-        f'{lead}{content}{list_nav(item, data, context, end=True) if served else ""}'
+        f'{lead}{content}{list_nav(item, data, context, opening=opening, end=True) if served else ""}'
     )
     return page_shell(f"{item_id} {item['title']} · {site_title}", site_title, body,
                       served=served, saved_name=saved_name,
                       interactive=served and has_answer_controls(item),
-                      conversations=served and (questions or talking), talking=served and talking)
+                      pane_links=served, conversations=served and (questions or talking), talking=served and talking)
 
 
 def site_pages(data: dict[str, object], site_title: str, saved_name: str) -> dict[str, str]:
@@ -7564,10 +7610,7 @@ def make_handler(site_title: str, base_path: str = "", store: Path | None = None
             if item["kind"] in ("questions", "conversation"):
                 _, ask_binding = ask_destination(ask_home, require_directory=item["kind"] == "conversation")
             content = item_page(item, site_title, served=True, ask_binding=ask_binding, data=data, query=request.query)
-            # The Desk shows an item in its pane, so a page that takes the owner's actions may be framed by Quarterdeck alone.
-            guarded = has_answer_controls(item) or item["kind"] == "conversation" or (
-                item["kind"] == "questions" and (bool(part_thread(item, None)) or question_summary(item)[0] == "Replied"))
-            self.send_text(200, content, "text/html; charset=utf-8", framing="self" if guarded else "")
+            self.send_text(200, content, "text/html; charset=utf-8", framing="self")
 
         def do_POST(self) -> None:  # noqa: N802 - http.server naming
             endpoint = self.path.removeprefix(base_path)

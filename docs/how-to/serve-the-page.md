@@ -93,6 +93,5 @@ listener and proxy on the trusted network, or protect both with an owner access
 gate. Browser submissions require an `Origin` that matches the public host and
 scheme. Conversation starts, task creations and reviews, pins, resolutions, archives, later marks, project and topic changes,
 moves, asks, reply acknowledgments and Catch-up acknowledgments use the same check. The served Desk
-blocks framing by any page. A standalone conversation page may be framed only by a page
-of the same origin, which is how the Desk shows it beside its lists. So may a question page that has answer controls,
-unread replies, or an existing set discussion, even if all questions are closed. No other site can frame them.
+blocks framing by any page. A served item page allows framing only by a page of
+the same origin, which is how the Desk shows the item beside its lists.

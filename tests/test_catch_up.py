@@ -232,7 +232,7 @@ const tab = document.getElementById('desk-tab-conversations');
 const count = tab.querySelector('.tab-count');
 const panel = document.getElementById('desk-panel-conversations');
 const review = document.getElementById('desk-panel-needs-you');
-const question = review.querySelector('a[href="q1.html?from=needs-you#Q1.1"]');
+const question = () => review.querySelector('a[href="q1.html?from=needs-you#Q1.1"]');
 const notice = panel.querySelector('button[data-read="C1"]').closest('li');
 const waitForCount = expected => new Promise(resolve => {
   const observer = new MutationObserver(() => {
@@ -253,11 +253,11 @@ check(notice.querySelector('a[href="q1.html?from=conversations"]').textContent =
 let changed = waitForCount('2');
 notice.querySelector('button').click();
 await changed;
-check(!notice.isConnected && question.isConnected, 'Mark read removed the wrong row');
+check(!notice.isConnected && question(), 'Mark read removed the wrong row');
 changed = waitForCount('');
 panel.querySelector('[data-read-all]').click();
 await changed;
-check(!panel.querySelector('.notice') && question.isConnected && count.hidden, 'Bulk acknowledgment changed the question or kept the count');
+check(!panel.querySelector('.notice') && question() && count.hidden, 'Bulk acknowledgment changed the question or kept the count');
 """
         page = base.WorkersTests.instrumented_page(quarterdeck.list_page, steps)
         with patch.object(quarterdeck, "list_page", page):
@@ -284,9 +284,9 @@ const current = panel.querySelector('[data-read="C2"]');
 const stale = panel.querySelector('[data-read="C1"]');
 const clickAndWait = button => new Promise(resolve => {
   const observer = new MutationObserver(() => {
-    if (!button.disabled) { observer.disconnect(); resolve(); }
+    if (!button.isConnected || !button.disabled) { observer.disconnect(); resolve(); }
   });
-  observer.observe(button, {attributes:true, attributeFilter:['disabled']});
+  observer.observe(panel, {subtree:true, childList:true, attributes:true, attributeFilter:['disabled']});
   button.click();
 });
 const realFetch = window.fetch;
@@ -302,13 +302,23 @@ check(status.textContent.includes('Reload') && count.textContent === '2' &&
       current.isConnected && stale.isConnected && !current.disabled && !stale.disabled,
       'A stale batch removed or disabled a notice');
 await clickAndWait(current);
-check(!current.isConnected && stale.isConnected && count.textContent === '1' && bulk.hidden,
+check(!current.isConnected && count.textContent === '1' && bulk.hidden,
       'The unread notice was no longer individually actionable after a conflict');
+const fresh = () => panel.querySelector('[data-read="C3"]');
+if (!fresh()) await new Promise(resolve => {
+  const observer = new MutationObserver(() => { if (fresh()) { observer.disconnect(); resolve(); } });
+  observer.observe(panel, {subtree:true, childList:true});
+});
+check(!stale.isConnected && !panel.querySelector('[data-read="C2"]') && !fresh().disabled,
+      'The refreshed list kept stale notices or disabled the new arrival');
 """
         list_page = quarterdeck.list_page
+        first_load = True
 
         def stale_page(data, *args, **kwargs):
-            return list_page(snapshot, *args, **kwargs)
+            nonlocal first_load
+            initial, first_load = first_load, False
+            return list_page(snapshot if initial else data, *args, **kwargs)
 
         page = base.WorkersTests.instrumented_page(stale_page, steps)
         with patch.object(quarterdeck, "list_page", page):
@@ -341,9 +351,9 @@ check(count.textContent === '1' && !table.hidden && guidance.hidden, 'The notice
 const read = notice.querySelector('button');
 await new Promise(resolve => {
   const observer = new MutationObserver(() => {
-    if (!read.disabled) { observer.disconnect(); resolve(); }
+    if (!notice.isConnected) { observer.disconnect(); resolve(); }
   });
-  observer.observe(read, {attributes:true, attributeFilter:['disabled']});
+  observer.observe(table, {subtree:true, childList:true});
   read.focus();
   read.click();
 });

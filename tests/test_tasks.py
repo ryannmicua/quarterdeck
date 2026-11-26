@@ -295,6 +295,7 @@ class ReviewTaskTests(TaskCase):
         port = self.start("/qd", ask_home=home)
         self.started(port)
         self.ask_review("--url", "https://example.com/guide")
+        self.assertEqual(self.post(port, "/qd/laters", {"part": "Q1", "later": True})[0], 200)
         binding = re.search(r'class="task-review" data-id="Q1" data-home="([^"]+)"', self.fetch(port, "/qd/q1.html")[1])[1]
         body = {"part": "Q1", "decision": "changes", "id": uuid.uuid4().hex, "note": "Add the ferry times.", "home": binding}
         status, result = self.post(port, "/qd/reviews", body)
@@ -303,6 +304,7 @@ class ReviewTaskTests(TaskCase):
         self.assertEqual(task["task"]["state"], "started")
         self.assertNotIn("result", task["task"])
         self.assertNotIn("resolved", task)
+        self.assertNotIn("later", task)
         last = task["conversation"]["item"][-1]
         self.assertEqual((last["id"], last["author"], last["text"], last["delivery"]),
                          (body["id"], "you", "Changes needed.\n\nAdd the ferry times.", "sent"))
@@ -312,6 +314,11 @@ class ReviewTaskTests(TaskCase):
         self.assertEqual(self.notes(home).count("Add the ferry times."), 1)
         self.assertEqual(self.post(port, "/qd/reviews", {**body, "id": uuid.uuid4().hex})[0], 409)
         self.assertEqual(self.post(port, "/qd/reviews", {**body, "note": "Other.", })[0], 409)
+        self.ask_review()
+        with quarterdeck.changing_store(quarterdeck.store_path()) as data:
+            quarterdeck.read_firstmate_updates(data["items"][0])
+        waiting = self.needs_you(port).split('id="review-later"', 1)[0]
+        self.assertIn('data-id="Q1"', waiting)
 
     def test_review_requests_check_their_fields(self) -> None:
         port = self.start("/qd", ask_home=self.inbox())

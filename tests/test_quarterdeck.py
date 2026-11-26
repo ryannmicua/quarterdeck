@@ -368,7 +368,7 @@ class PageTests(StoreCase):
         quarterdeck.send_answer(quarterdeck.store_path(), None, {"part": "Q1.2", "answer": "Blue", "revision": ""})
         page, _ = self.served_pages()
         self.assertIn('<span>Answered</span><span>Not delivered</span>', page.split("<dialog", 1)[0])
-        self.assertIn('<a class="topic-title" href="q1.html?from=needs-you"><span class="id">Q1</span> Pier lights</a>', page)
+        self.assertIn('<a class="topic-title" href="q1.html?from=conversations">Pier lights</a>', page)
         for part in (1, 2):
             record = quarterdeck.read_store(quarterdeck.store_path())["items"][0]["answers"][str(part)]
             quarterdeck.send_answer(quarterdeck.store_path(), self.inbox_home(),
@@ -894,9 +894,10 @@ class ServeTests(StoreCase):
         self.add("questions", "Delivery to retry", "A choice already made.", "--body-file", "-", stdin=json.dumps(delivery))
         port = self.start("/qd")
         self.assertEqual(self.post_answer(port, "Q2.1", "Yes")[0], 200)
-        desk = self.fetch(port, "/qd/")[1].split('id="desk-panel-needs-you"', 1)[1].split('id="desk-panel-under-way"', 1)[0]
-        self.assertRegex(desk, r'<li class="topic review" data-id="Q2" data-unread="true"><div class="topic-main"><a class="topic-title" href="q2[.]html[?]from=needs-you">'
-                               r'.*?<span>Answered</span><span>Not delivered</span>')
+        conversations, desk = self.fetch(port, "/qd/")[1].split('id="desk-panel-needs-you"', 1)
+        self.assertRegex(conversations, r'href="q2[.]html[?]from=conversations".*?<span>Answered</span><span>Not delivered</span>')
+        desk = desk.split('id="desk-panel-references"', 1)[0]
+        self.assertNotIn('data-id="Q2"', desk)
         self.assertIn('<li class="topic review" data-id="Q1" data-unread="true"><div class="topic-main"><a class="topic-title" href="q1.html?from=needs-you#Q1.1"', desk)
         self.assertNotIn("Deliver the harbour chart?", desk)
 
@@ -1501,13 +1502,12 @@ reach(button('panel-references').querySelector('a[href^="q1.html"]'));
 document.getElementById('desk-tab-needs-you').click();
 const list = document.getElementById('mail-list');
 const rows = [...document.querySelectorAll('#desk-panel-needs-you .topic')];
-check(rows.length === 3, 'For review should have one row per fixture item');
-const [pending, first, second] = rows;
+check(rows.length === 2, 'For review should have one row per question set awaiting an answer');
+const [first, second] = rows;
 const project = first.querySelector('.project-name');
 check(project.textContent === 'W'.repeat(40) && project.checkVisibility(), 'The row lost its project');
 check(list.scrollWidth === list.clientWidth && document.documentElement.scrollWidth <= innerWidth, 'A long project widened the list');
 check(first.querySelector('.topic-meta').textContent.startsWith('1 of 2 openNot delivered'), 'An open row lost its count or its delivery notice');
-check(pending.querySelector('.topic-meta').textContent.startsWith('AnsweredNot delivered'), 'A pending-only row lost its delivery notice');
 check(!document.querySelector('#desk-panel-needs-you button'), 'A row carried a button');
 const hit = node => {
   node.scrollIntoView({block:'center'});
@@ -1515,7 +1515,7 @@ const hit = node => {
   return document.elementFromPoint(rect.left + rect.width / 2, rect.top + rect.height / 2)?.closest('a');
 };
 for (const [row, destination, label] of [
-  [pending, 'q3.html?from=needs-you', 'Q3'], [first, 'q2.html?from=needs-you#Q2.1', 'Q2 Tide tables'],
+  [first, 'q2.html?from=needs-you#Q2.1', 'Q2 Tide tables'],
   [second, 'q1.html?from=needs-you#Q1.2', 'Q1 Pier lights']
 ]) {
   const links = [...row.querySelectorAll('a')];
@@ -2138,7 +2138,11 @@ check(!button('send').disabled && button('send').textContent === 'Send 2 answers
             with self.subTest(method=method, path=path):
                 status, _, headers = self.fetch(port, path, method=method)
                 self.assertEqual(status, expected)
-                expected_policy = "frame-ancestors 'none'" if path == "/qd/" else None
+                expected_policy = None
+                if path == "/qd/":
+                    expected_policy = "frame-ancestors 'none'"
+                elif path in ("/qd/q1.html", "/qd/q2.html", "/qd/q3.html"):
+                    expected_policy = "frame-ancestors 'self'"
                 self.assertEqual(headers.get("Content-Security-Policy"), expected_policy)
 
     def test_pages_follow_the_store_without_a_restart(self) -> None:
@@ -4215,11 +4219,10 @@ class ConversationTests(ImageCase):
         self.ask(port, "Q3.2", "Do you have a preview?")
         desk, library = self.fetch(port, "/qd/")[1].split('<dialog', 1)
         reply = self.messages("2", 3)[1]
-        self.assertIn('<span class="tab-count">2</span>', desk)
-        self.assertEqual(desk.count('href="q4.html?from=needs-you#reply-'), 1)
-        self.assertEqual(desk.count('href="q3.html?from=needs-you"'), 1)
-        self.assertIn('<span class="badge">Unread reply</span><span>Answered</span>', desk)
-        self.assertRegex(desk, r'href="q3[.]html[?]from=needs-you".*?<span>Answered</span><span>Not delivered</span>')
+        self.assertIn('>Conversations <span class="tab-count">1</span>', desk)
+        self.assertIn('>For review <span class="tab-count" hidden></span>', desk)
+        self.assertEqual(desk.count('href="q4.html?from=conversations&amp;at=reply-'), 1)
+        self.assertRegex(desk, r'href="q3[.]html[?]from=conversations".*?<span>Answered</span><span>Not delivered</span>')
         answered = library.split('id="panel-answered"', 1)[1]
         self.assertIn(f'href="q4.html?from=answered#reply-{reply["id"]}" data-detail>Two decisions</a>', answered)
         self.assertRegex(answered, r'href="q3\.html[?]from=answered"[^<]*</a></div><p class="meta">Answered</p>')
@@ -4282,7 +4285,7 @@ class ConversationTests(ImageCase):
             with self.subTest(target=target):
                 _, page, headers = self.fetch(port, f"/qd/{target.split('.')[0].lower()}.html")
                 self.assertNotIn('id="open-item-ask"', page)
-                self.assertNotIn("Content-Security-Policy", headers)
+                self.assertEqual(headers.get("Content-Security-Policy"), "frame-ancestors 'self'")
                 ask = {**question_ask, "part": target}
                 for payload in (ask, {**ask, "action": "retry"},
                                 {"part": target, "id": ask["id"], "action": "retry"}):
@@ -6187,7 +6190,7 @@ class TalkToFirstmateTests(ImageCase):
         group = re.search(r'<section class="topics" id="topics-unread"[^>]*>(.*?)</section>', page, re.DOTALL)
         return re.findall(r'data-id="(Q\d+)"', group[1])
 
-    def test_the_desk_opens_on_conversations_with_the_form_above_the_list_and_a_for_review_tab(self) -> None:
+    def test_the_desk_opens_on_conversations_with_a_compose_button_and_a_for_review_tab(self) -> None:
         port = self.start("/qd", ask_home=self.inbox())
         page = self.fetch(port, "/qd/")[1]
         self.assertEqual(re.findall(r'role="tab" id="desk-tab-([a-z-]+)"[^>]*aria-selected="(\w+)"', page),
@@ -6195,7 +6198,8 @@ class TalkToFirstmateTests(ImageCase):
         self.assertIn('>Conversations <span class="tab-count" hidden></span></button>', page)
         self.assertIn('>For review <span class="tab-count" hidden></span></button>', page)
         self.assertIn('<h1 class="sr">Desk</h1>', page)  # the heading stays for screen readers and takes no room
-        self.assertLess(page.index('<form id="talk-form"'), page.index('id="topics-recent"'))
+        self.assertLess(page.index('id="talk-open"'), page.index('id="topics-recent"'))
+        self.assertIn('id="pane-compose"><form id="talk-form"', page)
         self.assertIn("No conversations yet. A conversation you start with Firstmate shows here.", page)
         self.assertIn("Nothing is waiting for your review.", page)
         self.assertIn('<section class="mail-pane" id="mail-pane" aria-label="Open item">', page)
@@ -6214,9 +6218,8 @@ class TalkToFirstmateTests(ImageCase):
         row = re.search(r'<li class="topic" data-id="Q1".*?</li>', page, re.DOTALL)[0]
         self.assertIn('data-unread="true"', row)
         self.assertNotIn(quarterdeck.UNREAD_REPLY, row)  # the Unread heading already says it
-        self.assertIn('<span class="count">2 messages</span>', row)
         unread = self.thread()[-1]["id"]
-        self.assertIn(f'href="q1.html?from=conversations#reply-{unread}"', row)
+        self.assertIn(f'href="q1.html?from=conversations&amp;at=reply-{unread}#reply-{unread}"', row)
         self.assertIn(f'id="reply-{unread}" tabindex="-1"', self.fetch(port, "/qd/q1.html")[1])
         needs = page.partition('id="desk-panel-needs-you"')[2].partition('id="desk-panel-under-way"')[0]
         self.assertEqual(page.count('<span class="tab-count">1</span>'), 1)
@@ -6478,8 +6481,7 @@ for (const time of times) {{
         _, (status, result) = self.begin(port)
         self.assertEqual(status, 200)
         self.assertIn("<span>Not delivered</span>", result["row"])
-        self.assertIn('class="topic-title" href="q1.html?from=needs-you"', result["attention"])
-        self.assertIn("<span>Not delivered</span>", result["attention"])
+        self.assertIsNone(result["attention"])
 
     def test_watch_lists_what_firstmate_has_yet_to_reply_to(self) -> None:
         port = self.start("/qd", ask_home=self.inbox())
@@ -6521,8 +6523,8 @@ for (const time of times) {{
         self.assertIn("Firstmate owes you nothing.", self.fetch(port, "/qd/watch.html")[1])
         desk = self.fetch(port, "/qd/")[1].split("<dialog", 1)[0]
         self.assertIn('<span class="tab-count">1</span>', desk)
-        self.assertEqual(desk.count('class="topic-title" href="q1.html?from=needs-you#reply-'), 1)
-        self.assertEqual(desk.count("<span>Not delivered</span>"), 2)
+        self.assertEqual(desk.count('class="topic-title" href="q1.html?from=conversations&amp;at=reply-'), 1)
+        self.assertEqual(desk.count("<span>Not delivered</span>"), 1)
 
     def test_watch_keeps_delivered_messages_until_their_own_replies(self) -> None:
         port = self.start("/qd", ask_home=self.inbox())
@@ -6767,7 +6769,7 @@ const held = [...button('conversations-list').querySelectorAll('.lib-item')];
 check(held.map(row => row.dataset.id).join() === 'Q3,Q2,Q1', 'Replay duplicated or reordered a Hold topic');
 """, path="/qd/", viewport=(390, 844))
 
-    def test_start_and_replay_update_only_the_started_topic_attention(self) -> None:
+    def test_start_and_replay_show_delivery_in_conversations(self) -> None:
         port = self.start("/qd", ask_home=self.inbox())
         self.begin(port)
         self.assertEqual(self.run_cli("catch-up", "add", "--title", "Review ready", "--summary", "Read the proof.")[0], 0)
@@ -6776,8 +6778,7 @@ check(held.map(row => row.dataset.id).join() === 'Q3,Q2,Q1', 'Replay duplicated 
         self.inbox(accept=False)
         draft, (status, pending) = self.begin(port, "Quay signs", "Navy or black?")
         self.assertEqual(status, 200)
-        self.assertIn('href="q2.html?from=needs-you"', pending["attention"])
-        self.assertNotIn('href="q1.html', pending["attention"])
+        self.assertIsNone(pending["attention"])
         self.inbox()
         status, sent = self.post(port, "/qd/conversations", draft)
         self.assertEqual(status, 200)
@@ -6800,13 +6801,12 @@ const submit = async () => {
   await new Promise(resolve => setTimeout(resolve, 50));
 };
 await submit();
-const failed = document.querySelector('#desk-panel-needs-you a[href^="q2.html"]');
-check(count.textContent === '1' && !count.hidden && failed?.closest('li').textContent.includes('Not delivered'),
-      'The failed start did not add its own For review row');
+const row = () => document.querySelector('#desk-panel-conversations .topic[data-id="Q2"]');
+check(count.hidden && row()?.textContent.includes('Not delivered'), 'The failed start did not show in Conversations');
 check(notice.isConnected && unrelated.isConnected && !document.querySelector('#desk-panel-needs-you a[href^="q1.html"]'),
       'The start replaced or refreshed an unrelated row');
 await submit();
-check(!failed.isConnected && count.hidden && notice.isConnected && unrelated.isConnected,
+check(row() && !row().textContent.includes('Not delivered') && count.hidden && notice.isConnected && unrelated.isConnected,
       'The replay did not clear just its own failure');
 """
         with patch.object(quarterdeck, "list_page", return_value=original):
@@ -6822,7 +6822,7 @@ check(!failed.isConnected && count.hidden && notice.isConnected && unrelated.isC
         first, second = [m for m in self.thread() if m["author"] == "firstmate"]
         desk = self.fetch(port, "/qd/")[1]
         before_dialog = desk.split("<dialog", 1)[0]
-        self.assertEqual(before_dialog.count(f'href="q1.html?from=conversations#reply-{first["id"]}"'), 1)
+        self.assertEqual(before_dialog.count(f'href="q1.html?from=conversations&amp;at=reply-{first["id"]}#reply-{first["id"]}"'), 1)
         self.assertNotIn("from=needs-you", before_dialog)  # an unread reply alone does not wait in For review
         steps = f"""
   await quiet();
@@ -7007,8 +7007,9 @@ opener.click();
 check(form.hidden && opener.getAttribute('aria-expanded') === 'false', 'A form with a draft did not close');
 check(!opener.hasAttribute('aria-disabled'), 'The opener was marked disabled');
 check(topic.value === 'Quay sign colours', 'Closing the form lost the draft');
-form.dispatchEvent(new Event('input', {bubbles: true}));
-check(!form.hidden && opener.getAttribute('aria-expanded') === 'true', 'A draft did not reopen the form on input');
+opener.click();
+check(!form.hidden && opener.getAttribute('aria-expanded') === 'true' && topic.value === 'Quay sign colours',
+      'Reopening the form lost the draft');
 """, path="/qd/", viewport=(390, 844))
 
     def test_a_conversation_replays_once_and_retries_with_the_same_note(self) -> None:
@@ -7389,6 +7390,7 @@ window.fetch = async (path, init) => {
 const form = button('talk-form');
 const topic = button('talk-topic');
 const message = button('talk-message');
+button('talk-open').click();
 topic.value = 'Quay sign';
 message.value = 'Navy or black?';
 form.dispatchEvent(new Event('input', {bubbles:true}));
@@ -7407,6 +7409,7 @@ check(posts.length === 2 && posts[1].id === posts[0].id, 'Undo discarded the int
 check(button('desk-status').textContent === 'Firstmate home changed.', 'The saved refusal was not shown');
 form.requestSubmit();
 const needs = button('desk-tab-needs-you');
+form.querySelector('.talk-back').click();
 needs.click();
 needs.focus();
 await new Promise(resolve => setTimeout(resolve, 50));
@@ -7418,6 +7421,7 @@ check(document.activeElement === needs && needs.getAttribute('aria-selected') ==
       'The refusal moved focus or switched tabs');
 check(topic.value === 'Quay sign' && message.value === 'Navy or black?', 'The refusal lost the draft');
 button('desk-tab-conversations').click();
+button('talk-open').click();
 form.requestSubmit();
 await new Promise(resolve => setTimeout(resolve, 50));
 check(posts.length === 4 && posts[3].id === posts[0].id, 'The unavailable home refusal discarded the original creation ID');
@@ -7657,7 +7661,7 @@ class ConversationGroupingTests(ImageCase):
         self.assertEqual(after["items"][0]["placement"], {"project": "P1", "topic": "T1"})
         row = self.row(port)
         self.assertIn("Pocket Atlas / Signs", row)
-        self.assertRegex(row, r'href="q1\.html\?from=conversations#reply-[0-9a-f]{32}"')
+        self.assertRegex(row, r'href="q1\.html\?from=conversations&amp;at=reply-[0-9a-f]{32}#reply-[0-9a-f]{32}"')
         self.assertIn("Conversation · Pocket Atlas / Signs · saved", self.fetch(port, "/qd/q1.html")[1])
         self.assertEqual(quarterdeck.conversation_activity(after["items"][0]),
                          quarterdeck.conversation_activity(before["items"][0]))
@@ -7691,7 +7695,7 @@ class ConversationGroupingTests(ImageCase):
         data = json.loads(re.search(r'<script type="application/json" id="groups-data">(.*?)</script>', desk)[1])
         self.assertEqual([(p["id"], [t["name"] for t in p["topics"]]) for p in data],
                          [("P1", ["Printing", "Wayfinding"]), ("P2", ["Tides"])])
-        self.assertLess(desk.index('<form id="talk-form"'), desk.index('id="scope"'))
+        self.assertLess(desk.index('id="talk-open"'), desk.index('id="scope"'))
         self.assertLess(desk.index('id="scope"'), desk.index('id="topics-recent"'))
         self.assertIn('<label for="talk-topic">Conversation title</label>', desk)
 

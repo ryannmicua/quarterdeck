@@ -9,8 +9,7 @@ These are terms Quarterdeck uses on its pages and in the CLI.
 | Desk | The landing page. It has five tabs above its lists. On a wide screen the item you select opens beside the lists. |
 | Conversations | The Desk tab that opens first. It holds the buttons that start a conversation or a task, the filters and every saved conversation. Its count is the number of rows under **Unread**. |
 | New conversation | The button that shows the form to start a conversation. On a wide screen the form opens beside the lists, like a new message. The form stays hidden until you select it or the browser restores unsent text, and selecting it again hides the form and keeps unsent text. |
-| Discard draft | The button on that form that clears the title and the message and closes the form. |
-| For review | The [Desk tab for what waits for you](../how-to/answer-questions.md): question sets, tasks to review, conversations Firstmate marked for you and messages that were not delivered. Its count leaves out **Later**. |
+| For review | The [Desk tab for what waits for you](../how-to/answer-questions.md), including open question sets, tasks to review and conversations Firstmate marked for you. Its count leaves out **Later**. |
 | References | The [Desk tab for your saved links and lists](../how-to/use-the-library.md#references-on-the-desk), newest first. Hold lists the same items, with a search and filters. |
 | Later | The group at the end of **For review** for items you chose to deal with later. |
 | Deal with later, Remove from Later | [Move an item into Later, or take it out](../how-to/answer-questions.md#deal-with-an-item-later). |
@@ -38,7 +37,6 @@ These are terms Quarterdeck uses on its pages and in the CLI.
 | Pinned | The group above Recent conversations for conversations you chose to keep in view. |
 | Recent conversations | Every other conversation, newest activity first. |
 | Pin, Unpin | [Keep a conversation in Pinned, or return it to its place by activity](../how-to/talk-to-firstmate.md#order-and-pins). The button is on the conversation's page. |
-| Show earlier messages | The button in a long conversation that brings back the messages folded away in the middle. Its label carries their number, such as Show 3 earlier messages. |
 | Resolved | The mark on a conversation that you or Firstmate marked settled. It shows as a check with the word. A message does not clear it. |
 | Resolve, Reopen | [Mark a conversation resolved, or clear the mark](../how-to/talk-to-firstmate.md#resolve-a-conversation). |
 | Archived | The Desk tab that holds archived conversations. They are out of Pinned, Recent conversations and the Project filter. |

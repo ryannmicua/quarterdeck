@@ -252,13 +252,12 @@ the field; the wait is read from the thread each time.
 
 ### Later
 
-A questions item or a conversation item may carry `later`, which is `true`
-when the owner chose to deal with it later. The field is optional, absent
-means it is not put aside, and no other kind of item may have it. An item with
-`later` shows under **Later** in **For review** while it still waits for the
-owner and has no unread reply. Sending a message in a conversation removes the
-field from that conversation. A store saved before the field existed needs no
-change.
+A questions item or a conversation item may carry `later` when the owner puts
+it aside. Its value is a list of reply IDs that were unread at deferral, or
+`true` when there were no unread replies. A deferred item appears under
+**Later** while it waits for the owner and every reply received since deferral
+has been read. Ending the request clears the field. A store saved before the
+field existed needs no change.
 
 A conversation item may also carry `task`, which makes it a task. It is an object
 with `state` (`draft`, `started` or `review`), `description` (plain text, up to 20,000

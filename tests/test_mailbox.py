@@ -89,7 +89,7 @@ class MembershipTests(MailboxCase):
         self.assertEqual(self.counts(page), {"Conversations": "", "For review": "1"})
         waiting = page.split('id="review-waiting"')[1].split("</section>")[0]
         self.assertIn(f'<a class="topic-title" href="q1.html?from=needs-you#reply-{reply["id"]}"><span class="id">Q1</span> Lighthouse photo rights</a>', waiting)
-        self.assertIn('<span class="badge">Unread reply</span><span>Asked</span><span class="count">2 messages</span>', waiting)
+        self.assertIn('<span class="badge">Unread reply</span><span>Asked</span>', waiting)
         self.assertIn('<p class="topic-latest">Print is covered. Do you want web use as well?</p>', waiting)
         row = re.search(r'<li class="topic" data-id="Q1".*?</li>', page, re.DOTALL)[0]
         self.assertIn('<span class="badge">Unread reply</span><span>Asked</span>', row)
@@ -113,6 +113,25 @@ class MembershipTests(MailboxCase):
         self.assertFalse(quarterdeck.asks_owner(self.item("Q1")))
         self.firstmate("post", "Q2", "--text", "No change needed after all.")  # an update without the mark keeps the wait
         self.assertTrue(quarterdeck.asks_owner(self.item("Q2")))
+
+    def test_replaying_a_start_preserves_archived_navigation_and_hold_membership(self) -> None:
+        initial, _ = self.begin(self.port, "Bell schedule", "When does the bell ring?")
+        self.firstmate("archive", "Q1")
+        status, result = self.post(self.port, "/qd/conversations", initial)
+        self.assertEqual(status, 200)
+        self.assertIn('href="q1.html?from=archived"', result["row"])
+        self.assertEqual(result["hold"], "")
+        self.assertEqual(self.group(self.desk(self.port), "topics-archived"), ["Q1"])
+
+    def test_a_review_row_keeps_pointing_to_the_outstanding_request(self) -> None:
+        self.firstmate("converse", "--title", "Bell schedule", "--text", "Should Sunday differ?", "--for-review")
+        request = self.item("Q1")["conversation"]["item"][0]["id"]
+        self.read("Q1")
+        self.firstmate("post", "Q1", "--text", "Saturday is settled.")
+        waiting = self.desk(self.port).split('id="review-waiting"', 1)[1].split("</section>", 1)[0]
+        self.assertIn(f'q1.html?from=needs-you#reply-{request}', waiting)
+        self.assertIn('<p class="topic-latest">Should Sunday differ?</p>', waiting)
+        self.assertIn(f'class="msg firstmate" data-reply-id="{request}"', self.fetch(self.port, "/qd/q1.html")[1])
 
     def test_the_mark_is_for_conversations_and_the_help_names_it(self) -> None:
         self.questions("Pocket guide paper")
@@ -165,7 +184,7 @@ class MembershipTests(MailboxCase):
         self.assertRegex(page, r'<button type="button" data-read-all>Mark all notices read</button>')
         self.assertIn('id="no-conversations" hidden', page)  # a notice is something to read, so the list is not empty
 
-    def test_conversation_rows_carry_no_buttons_and_say_how_long_the_thread_is(self) -> None:
+    def test_conversation_rows_carry_a_title_preview_and_status(self) -> None:
         first, _ = self.begin(self.port, "Bell schedule", "When does the bell ring?")
         self.begin(self.port, "Quay signs", "Navy or black?")
         self.firstmate("reply", "Q1", "--ask", first["id"], "--text", "At nine.")
@@ -174,9 +193,9 @@ class MembershipTests(MailboxCase):
         rows = {item: re.search(rf'<li class="topic" data-id="{item}".*?</li>', page, re.DOTALL)[0] for item in ("Q1", "Q2")}
         for row in rows.values():
             self.assertNotIn("<button", row)
-        self.assertIn('<span>Replied</span><span class="count">2 messages</span>', rows["Q1"])
+        self.assertIn('<span>Replied</span>', rows["Q1"])
         self.assertIn('<p class="topic-latest">You: Navy or black?</p>', rows["Q2"])
-        self.assertNotIn('class="count"', rows["Q2"])  # one message needs no count
+        self.assertNotIn('2 messages', rows["Q1"])
         self.assertNotIn("<h1>Desk</h1>", page)
 
 
@@ -304,11 +323,35 @@ class LaterTests(MailboxCase):
         first, _ = self.begin(self.port, "Bell schedule", "When does the bell ring?")
         self.firstmate("reply", "Q4", "--ask", first["id"], "--text", "At nine, unless you say otherwise.", "--for-review")
         self.later("Q4")
-        self.assertIs(self.item("Q4")["later"], True)
+        self.assertEqual(self.group(self.desk(self.port), "review-later"), ["Q4"])
         body = {"part": "Q4", "id": uuid.uuid4().hex, "text": "Nine is fine.", "home": first["home"]}
         self.assertEqual(self.post(self.port, "/qd/asks", body)[0], 200)
         self.assertNotIn("later", self.item("Q4"))
         self.assertNotIn("Q4", self.desk(self.port).split('id="desk-panel-needs-you"')[1].split('id="desk-panel-under-way"')[0])
+
+    def test_deferring_ignores_existing_unread_replies_and_resolution_ends_the_cycle(self) -> None:
+        self.firstmate("converse", "--title", "Bell schedule", "--text", "Should Sunday differ?", "--for-review")
+        self.firstmate("post", "Q4", "--text", "Saturday is settled.")
+        self.assertEqual(self.later("Q4"), (200, {"later": True}))
+        self.assertEqual(self.group(self.desk(self.port), "review-later"), ["Q4"])
+        self.firstmate("post", "Q4", "--text", "The holiday schedule arrived.")
+        latest = self.item("Q4")["conversation"]["item"][-1]["id"]
+        self.assertEqual(self.group(self.desk(self.port), "review-later"), [])
+        self.assertEqual(self.post(self.port, "/qd/replies/read", {"part": "Q4", "ids": [latest]})[0], 200)
+        self.assertEqual(self.group(self.desk(self.port), "review-later"), ["Q4"])
+        self.firstmate("resolve", "Q4")
+        self.firstmate("reopen", "Q4")
+        self.assertEqual(self.group(self.desk(self.port), "review-later"), [])
+        self.assertIn("Q4", self.group(self.desk(self.port), "review-waiting"))
+
+    def test_closing_a_deferred_question_set_ends_its_review_cycle(self) -> None:
+        self.assertEqual(self.later("Q3")[0], 200)
+        self.firstmate("mark", "Q3", "closed")
+        status, page, headers = self.fetch(self.port, "/qd/q3.html")
+        self.assertEqual((status, headers.get("Content-Security-Policy")), (200, "frame-ancestors 'self'"))
+        self.assertNotIn('class="later"', page)
+        self.firstmate("mark", "Q3.1", "open")
+        self.assertIn("Q3", self.group(self.desk(self.port), "review-waiting"))
 
     def test_later_refuses_other_items_bad_fields_and_other_origins(self) -> None:
         self.add("resource", "Tide chart", "A chart.", "--url", "https://example.com/tides", "--link-text", "Chart")
@@ -343,18 +386,14 @@ class ThreadTests(MailboxCase):
     def messages(self, page: str) -> list[str]:
         thread = page.split('<div class="thread-messages">')[1].split("</ol>")[0]
         states = []
-        for attrs in re.findall(r'<li class="(msg [^"]*|more-msgs)"([^>]*)>', thread):
-            name, rest = attrs
-            states.append("more" if name == "more-msgs" else "tucked" if "tucked" in name else "folded" if "folded" in name else "open")
-            if "tucked" in name:
-                self.assertIn(" hidden", rest)
+        for name in re.findall(r'<li class="(msg [^"]*)"', thread):
+            states.append("folded" if "folded" in name else "open")
         return states
 
-    def test_earlier_read_messages_fold_to_one_line_and_a_long_thread_tucks_its_middle(self) -> None:
+    def test_earlier_read_messages_each_fold_to_one_line(self) -> None:
         self.long_thread()
         page = self.fetch(self.port, "/qd/q1.html")[1]
-        self.assertEqual(self.messages(page), ["folded", "more", "tucked", "tucked", "tucked", "folded", "open"])
-        self.assertIn('<button type="button" class="show-earlier">Show 3 earlier messages</button>', page)
+        self.assertEqual(self.messages(page), ["folded"] * 5 + ["open"])
         self.assertRegex(page, r'<li class="msg you folded" data-ask-id="[0-9a-f]{32}" id="message-1" tabindex="-1">'
                                r'<button type="button" class="fold" aria-expanded="false"><strong>You</strong> '
                                r'<span class="snip">Please check the tide charts[.]</span> <time datetime="[^"]+">[^<]+</time></button>'
@@ -373,10 +412,10 @@ class ThreadTests(MailboxCase):
         self.firstmate("post", "Q1", "--text", "Noted.")
         page = self.fetch(self.port, "/qd/q1.html")[1]
         # Five read messages fold, two unread updates stay open, the undelivered message keeps its retry in view.
-        self.assertEqual(self.messages(page), ["folded", "more", "tucked", "tucked", "tucked", "folded", "open", "open", "open", "open"])
+        self.assertEqual(self.messages(page), ["folded"] * 5 + ["open"] * 4)
         self.assertIn(f'data-retry-ask="{pending["id"]}"', page)
 
-    def test_a_short_thread_folds_without_tucking_and_a_single_message_stays_open(self) -> None:
+    def test_a_single_message_stays_open(self) -> None:
         first, _ = self.begin(self.port, "Bell schedule", "When does the bell ring?")
         self.assertEqual(self.messages(self.fetch(self.port, "/qd/q1.html")[1]), ["open"])
         self.firstmate("reply", "Q1", "--ask", first["id"], "--text", "At nine.")
@@ -389,7 +428,7 @@ class ThreadTests(MailboxCase):
         body = {"part": "Q1", "id": uuid.uuid4().hex, "text": "Thank you.", "home": first["home"]}
         status, result = self.post(self.port, "/qd/asks", body)
         self.assertEqual(status, 200)
-        self.assertIn('class="show-earlier">Show 3 earlier messages</button>', result["thread"])
+        self.assertEqual(result["thread"].count('class="fold"'), 5)
         self.assertTrue(result["thread"].rstrip().endswith("</li></ol>"))
         self.assertNotIn("folded", result["thread"].rsplit("<li", 1)[1])
 
@@ -397,15 +436,12 @@ class ThreadTests(MailboxCase):
         self.long_thread()
         self.check_answer_page(self.port, r"""
 const list = document.querySelector('.thread-messages .exchange');
-const state = () => [...list.children].map(li => li.classList.contains('more-msgs') ? 'more' : li.hidden ? 'tucked' : li.classList.contains('folded') ? 'folded' : 'open').join();
-check(state() === 'folded,more,tucked,tucked,tucked,folded,open', 'The thread did not start folded: ' + state());
+const state = () => [...list.children].map(li => li.classList.contains('folded') ? 'folded' : 'open').join();
+check(state() === 'folded,folded,folded,folded,folded,open', 'The thread did not start folded: ' + state());
 const first = list.querySelector('#message-1');
 first.querySelector('.fold').click();
-check(state().startsWith('open,more') && !first.querySelector('.fold') && !first.querySelector('.msg-body')
+check(state().startsWith('open,folded') && !first.querySelector('.fold') && !first.querySelector('.msg-body')
       && first.querySelector('.record, p:not(.who)') && document.activeElement === first, 'A folded line did not open in place');
-list.querySelector('.show-earlier').click();
-check(state() === 'open,folded,folded,folded,folded,open' && document.activeElement.classList.contains('fold'),
-      'Show earlier messages did not bring the middle of the thread back');
 check(document.documentElement.scrollWidth <= innerWidth, 'The thread scrolled sideways');
 location.hash = '#message-2';
 await new Promise(resolve => setTimeout(resolve, 50));
@@ -432,9 +468,9 @@ class ScopeTests(MailboxCase):
         self.assertEqual([item["id"] for item in quarterdeck.list_members(self.store(), context)], ["Q3", "Q1"])
         back, following = self.links("q3.html?from=conversations&unread=1")
         self.assertEqual(back, ("index.html?tab=conversations&unread=1&row=Q3", "Back to Conversations"))
-        self.assertRegex(following[0], r"^q1[.]html[?]from=conversations&unread=1#reply-[0-9a-f]+$")
+        self.assertRegex(following[0], r"^q1[.]html[?]from=conversations&unread=1&at=reply-[0-9a-f]+#reply-[0-9a-f]+$")
         # The read conversation is out of the filtered list. It stands after the unread ones, so Next unread starts over.
-        self.assertRegex(self.links("q2.html?from=conversations&unread=1")[1][0], r"^q3[.]html[?]from=conversations&unread=1#reply-")
+        self.assertRegex(self.links("q2.html?from=conversations&unread=1")[1][0], r"^q3[.]html[?]from=conversations&unread=1&at=reply-[0-9a-f]+#reply-")
 
     def test_the_list_puts_unread_first_then_pinned_then_the_rest(self) -> None:
         self.assertEqual(self.post(self.port, "/qd/pins", {"part": "Q2", "pinned": True})[0], 200)
@@ -453,6 +489,15 @@ class ScopeTests(MailboxCase):
         self.assertEqual(self.group(page, "topics-unread"), ["Q3", "Q1"])
         self.assertEqual(self.group(page, "topics-archived"), ["Q3"])
         self.assertIn('href="q3.html?from=archived#reply-', page)
+        self.assertIn('href="q3.html?from=conversations&amp;at=reply-', page)
+        self.assertRegex(self.links("q1.html?from=conversations&unread=1")[1][0], r"^q3[.]html[?]from=conversations&unread=1&at=reply-[0-9a-f]+#reply-")
+        self.assertRegex(self.links("q3.html?from=conversations&unread=1")[1][0], r"^q1[.]html[?]from=conversations&unread=1&at=reply-[0-9a-f]+#reply-")
+
+    def test_next_unread_does_not_return_to_a_reply_whose_read_is_pending(self) -> None:
+        self.firstmate("post", "Q3", "--text", "The west dock is ready too.")
+        second = self.item("Q3")["conversation"]["item"][-1]["id"]
+        _, following = self.links(f"q3.html?from=conversations&at=reply-{second}")
+        self.assertRegex(following[0], r"^q1[.]html[?]from=conversations&at=reply-")
 
     def test_a_list_refresh_is_not_logged_as_a_visit(self) -> None:
         log = self.root / "state" / "quarterdeck" / "visits.jsonl"
@@ -466,12 +511,9 @@ class ScopeTests(MailboxCase):
         self.fetch(self.port, "/qd/index.html")
         self.assertEqual(len(log.read_text().splitlines()), visits + 1)
 
-    def test_an_item_page_may_be_framed_by_quarterdeck_alone_and_knows_the_pane(self) -> None:
-        status, page, headers = self.fetch(self.port, "/qd/q1.html?from=conversations")
+    def test_an_item_page_may_be_framed_by_quarterdeck_alone(self) -> None:
+        status, _, headers = self.fetch(self.port, "/qd/q1.html?from=conversations")
         self.assertEqual((status, headers.get("Content-Security-Policy")), (200, "frame-ancestors 'self'"))
-        self.assertIn("window.frameElement.id === 'pane-frame'", page)
-        self.assertIn("quarterdeck-changed", page)
-        self.assertNotIn("in-pane", self.fetch(self.port, "/qd/")[1].split("<style>")[0])
 
 
 class MailboxBrowserTests(MailboxCase):
@@ -514,7 +556,7 @@ check(document.documentElement.scrollWidth <= innerWidth && document.documentEle
       'The mailbox did not fit the window');
 """)
 
-    def test_a_question_set_opens_in_the_pane_and_deal_with_later_moves_on(self) -> None:
+    def test_a_question_set_opens_in_the_pane_and_stays_open_when_deferred(self) -> None:
         self.questions("Harbor map first edition", TWO_QUESTIONS)  # Q4
         self.run_in_desk(r"""
 document.getElementById('desk-tab-needs-you').click();
@@ -522,24 +564,93 @@ check(ids('review-waiting') === 'Q4,Q3' && !shown('review-later'), 'For review d
 document.querySelector('#review-waiting .topic[data-id="Q4"] .topic-title').click();
 await until(() => pane()?.querySelector('h1')?.textContent === 'Harbor map first edition', 'The question set did not open in the pane');
 pane().querySelector('button.later').click();
-await until(() => pane()?.querySelector('h1')?.textContent === 'Pocket guide paper', 'Deal with later did not open the next item');
 await until(() => ids('review-later') === 'Q4' && ids('review-waiting') === 'Q3' && count('needs-you') === '1',
             'The item did not move under Later and out of the count');
+check(pane().querySelector('h1').textContent === 'Harbor map first edition', 'Deferring left the current item');
+pane().querySelector('.next-link').click();
+await until(() => pane()?.querySelector('h1')?.textContent === 'Pocket guide paper', 'Next unread did not open the next item');
 check(document.querySelector('.topic[aria-current="true"]').dataset.id === 'Q3', 'The list did not mark the item now open');
+""")
+
+    def test_next_unread_visits_each_reply_before_leaving_the_conversation(self) -> None:
+        self.firstmate("post", "Q2", "--text", "The west dock is ready too.")
+        first, second = (f'reply-{reply["id"]}' for reply in self.item("Q2")["conversation"]["item"])
+        self.run_in_desk(r"""
+const [first, second] = """ + json.dumps([first, second]) + r""";
+document.querySelector('#topics-unread .topic[data-id="Q2"] .topic-title').click();
+await until(() => pane()?.activeElement?.id === first, 'The first unread reply did not open');
+pane().querySelector('.next-link').click();
+await until(() => pane()?.activeElement?.id === second && count('conversations') === '1',
+            'Next unread did not read the second reply in the same conversation');
+pane().querySelector('.list-nav.end .next-link').click();
+await until(() => pane()?.querySelector('h1')?.textContent === 'Sail inventory' && count('conversations') === '',
+            'Next unread did not continue to the next conversation');
+""")
+
+    def test_next_unread_tracks_scope_changes_without_reopening_the_item(self) -> None:
+        self.run_in_desk(r"""
+document.querySelector('#topics-unread .topic[data-id="Q2"] .topic-title').click();
+await until(() => pane()?.querySelector('h1')?.textContent === 'Dock lights', 'The conversation did not open');
+const opened = pane();
+check(opened.querySelectorAll('.next-link').length === 2, 'The unfiltered list did not offer the next reply');
+document.getElementById('scope-tasks').click();
+await until(() => opened.querySelector('.back-link').href.includes('tasks=1'), 'The pane did not adopt the current filter');
+check(pane() === opened && !opened.querySelector('.next-link'), 'Next unread still offered a filtered-out conversation');
+document.getElementById('scope-tasks').click();
+await until(() => opened.querySelectorAll('.next-link').length === 2, 'Clearing the filter did not restore both Next unread links');
+opened.querySelector('.next-link').click();
+await until(() => pane()?.querySelector('h1')?.textContent === 'Sail inventory', 'The restored link did not open the next reply');
+""")
+
+    def test_pane_writes_update_hold_and_preserve_notice_acknowledgment(self) -> None:
+        self.firstmate("catch-up", "add", "--title", "Tide chart published", "--summary", "The chart is ready.")
+        self.run_in_desk(r"""
+const send = window.fetch;
+let refuse;
+window.fetch = (path, ...args) => path === 'catch-ups/read'
+  ? new Promise(resolve => { refuse = resolve; })
+  : send(path, ...args);
+const notice = () => document.querySelector('[data-read="C1"]');
+notice().click();
+check(notice().disabled, 'The acknowledgment control stayed enabled while saving');
+document.querySelector('#topics-unread .topic[data-id="Q2"] .topic-title').click();
+await until(() => pane()?.querySelector('h1')?.textContent === 'Dock lights' && count('conversations') === '2',
+            'Reading the reply did not refresh the Desk');
+check(notice().disabled, 'Refreshing enabled the notice before the acknowledgment finished');
+refuse(new Response('', {status:409}));
+await until(() => notice().nextElementSibling.textContent.includes('Reload'), 'The notice lost its refusal guidance');
+pane().querySelector('button.archive').click();
+await until(() => ids('topics-archived') === 'Q2', 'The archive did not refresh the Desk');
+check(notice().nextElementSibling.textContent.includes('Reload'), 'Archiving erased unrelated notice feedback');
+document.getElementById('open-library').click();
+document.getElementById('tab-conversations').click();
+check(!document.querySelector('#conversations-list [data-id="Q2"]'), 'Hold still offered the archived conversation');
 """)
 
     def test_a_narrow_screen_follows_the_link_to_the_items_own_page(self) -> None:
         self.run_in_desk(r"""
 check(!shown('mail-pane'), 'A narrow screen showed the pane');
 let prevented = null;
-document.addEventListener('click', event => { prevented = event.defaultPrevented; event.preventDefault(); });
+document.addEventListener('click', event => {
+  if (!event.target.closest('a')) return;
+  prevented = event.defaultPrevented;
+  event.preventDefault();
+});
 document.querySelector('#topics-unread .topic-title').click();
 check(prevented === false, 'A narrow screen did not leave the link to open its page');
-check(document.getElementById('talk-form').parentElement.id === 'talk-forms', 'A narrow screen moved the form out of the list');
+document.getElementById('talk-open').click();
+check(shown('mail-pane') && document.getElementById('talk-form').checkVisibility() &&
+      !document.querySelector('.desk-tabs').checkVisibility() && document.activeElement.id === 'talk-topic',
+      'A narrow screen did not give the composer its own view');
+type('talk-topic', 'Keep this draft');
+document.querySelector('.talk-back').click();
+check(!shown('mail-pane') && document.querySelector('.desk-tabs').checkVisibility(), 'Back did not return to the list');
+document.getElementById('talk-open').click();
+check(document.getElementById('talk-topic').value === 'Keep this draft', 'Back cleared the unsent draft');
 check(document.documentElement.scrollWidth <= innerWidth, 'The Desk scrolled sideways');
 """, window_size="390,844")
 
-    def test_a_new_conversation_is_written_in_the_pane_and_can_be_discarded(self) -> None:
+    def test_a_new_conversation_is_written_in_the_pane_and_keeps_its_draft(self) -> None:
         self.run_in_desk(r"""
 const form = document.getElementById('talk-form');
 check(form.parentElement.id === 'pane-compose' && form.hidden && !shown('pane-compose'), 'The form did not wait in the pane');
@@ -552,12 +663,11 @@ check(form.querySelector('.talk-to').textContent === 'To Firstmate', 'The messag
 type('talk-topic', 'Pier lighting');
 type('talk-message', 'Can the east pier lights come on earlier?');
 check(!form.querySelector('[type=submit]').disabled, 'A written message could not be started');
-document.getElementById('talk-discard').click();
-check(form.hidden && document.getElementById('talk-topic').value === '' && document.getElementById('talk-message').value === ''
-      && document.activeElement.id === 'talk-open' && shown('pane-frame'), 'Discard draft did not clear the message and return to the open item');
 document.getElementById('talk-open').click();
-type('talk-topic', 'Pier lighting');
-type('talk-message', 'Can the east pier lights come on earlier?');
+check(form.hidden && shown('pane-frame'), 'Closing the composer did not return to the open item');
+document.getElementById('talk-open').click();
+check(document.getElementById('talk-topic').value === 'Pier lighting' &&
+      document.getElementById('talk-message').value === 'Can the east pier lights come on earlier?', 'Closing cleared the draft');
 form.requestSubmit();
 await until(() => pane()?.querySelector('h1')?.textContent === 'Pier lighting', 'The started conversation did not open in the pane');
 await until(() => document.querySelector('#topics-recent .topic')?.dataset.id === 'Q4', 'The started conversation did not join the list');
@@ -573,7 +683,7 @@ const visible = () => [...document.querySelectorAll('#desk-panel-conversations .
 check(visible() === 'Q2,C1,Q1', 'The list did not start with every conversation: ' + visible());
 document.getElementById('scope-unread').click();
 check(visible() === 'Q2,C1' && !shown('topics-recent'), 'Unread only kept a read conversation');
-check(document.querySelector('#topics-unread .topic-title').getAttribute('href').includes('from=conversations&unread=1'),
+check(new URL(document.querySelector('#topics-unread .topic-title').href).searchParams.get('unread') === '1',
       'A row did not carry the filter to its page');
 check(JSON.parse(sessionStorage.getItem('quarterdeck-scope')).unread === true, 'The filter was not kept for Back');
 document.querySelector('#topics-unread .topic-title').click();
@@ -606,6 +716,10 @@ document.querySelector('#topics-references .topic[data-id="Q5"] .bookmark-id').c
 await until(() => pane()?.querySelector('h1')?.textContent === 'Port tide tables', 'The saved item did not open in the pane');
 check(document.querySelector('#topics-references .topic[data-id="Q5"] .bookmark-title').href === 'https://example.com/tides',
       'The title of a saved link did not go to what it saves');
+const destination = pane().querySelector('.open-link');
+pane().addEventListener('click', event => event.preventDefault(), {once:true});
+destination.click();
+check(destination.target === '_blank', 'The saved destination would open inside the reading pane');
 check(document.documentElement.scrollWidth <= innerWidth, 'The Desk scrolled sideways');
 """)
         self.run_in_desk(r"""
@@ -615,13 +729,12 @@ check(document.activeElement === document.querySelector('#topics-references .top
 check(document.documentElement.scrollWidth <= innerWidth, 'The Desk scrolled sideways');
 """, window_size="390,844", route="/qd/?tab=references&row=Q4")
 
-    def test_under_way_takes_the_whole_width(self) -> None:
+    def test_under_way_keeps_the_reading_pane_beside_the_list(self) -> None:
         self.run_in_desk(r"""
+const width = document.getElementById('mail-list').getBoundingClientRect().width;
 document.getElementById('desk-tab-under-way').click();
-check(document.getElementById('mailbox').dataset.tab === 'under-way' && !shown('mail-pane'), 'Under way kept the pane');
-check(document.getElementById('mail-list').getBoundingClientRect().width > innerWidth - 2, 'Under way did not take the width of the window');
-document.getElementById('desk-tab-conversations').click();
-check(shown('mail-pane'), 'Conversations did not bring the pane back');
+check(shown('desk-panel-under-way') && shown('mail-pane'), 'Under way lost the pane');
+check(document.getElementById('mail-list').getBoundingClientRect().width === width, 'Switching tabs moved the list');
 """)
 
 

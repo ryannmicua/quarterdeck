@@ -84,14 +84,15 @@ The mailbox browser checks in `tests/test_mailbox.py` run against a live test
 server. At 1440 pixels wide they select a row and wait for the item to open in
 the pane, without its site header or Back link. They check that the reply is
 marked read, that the row keeps its place under **Unread** until the next row
-opens, that **Next unread** inside the pane moves the list with it, and that
-**Deal with later** moves a question set under **Later** and opens the next
-one. They write a new conversation in the pane, discard it, and start one.
-They check **Unread only**, including its empty message, that a saved list
-and a saved link open in the pane from **References**, and that **Under
-way** takes the whole width. At 390 pixels wide they check that a row keeps
-its link to the item's own page and that the form stays in the list. A
-fixture check opens folded messages in a conversation thread.
+opens, and that **Next unread** visits each reply before moving to the next
+conversation. They change the scope while reading and check both navigation
+links. **Deal with later** moves a question set under **Later** and leaves it
+open. An archive in the pane updates Hold while a pending notice keeps its
+disabled control and refusal feedback. The checks cover **Unread only**, the
+destination of a saved link opened from **References**, and the pane beside
+**Under way**. At 390 pixels wide they open the dedicated compose view and
+return to the list, then reopen the unsent draft. A fixture check opens
+folded messages in a conversation thread.
 
 The grouping browser checks fill the **Project** filter with invented
 projects and topics and verify which rows each choice shows, including

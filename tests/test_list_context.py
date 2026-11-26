@@ -153,7 +153,7 @@ class BackAndNextTests(ListContextCase):
     def test_next_unread_in_other_lists_counts_only_unread_replies_and_keeps_the_list(self) -> None:
         # Conversations lists Q5 then Q4, and both are unread.
         address, _ = self.strip(self.port, "q5.html?from=conversations")[1]
-        self.assertRegex(address, r"^q4[.]html[?]from=conversations#reply-[0-9a-f]+$")
+        self.assertRegex(address, r"^q4[.]html[?]from=conversations&at=reply-[0-9a-f]+#reply-[0-9a-f]+$")
         address, _ = self.strip(self.port, "q5.html?from=hold-conversations")[1]
         self.assertRegex(address, r"^q4[.]html[?]from=hold-conversations#reply-[0-9a-f]+$")
 
@@ -192,7 +192,7 @@ class BackAndNextTests(ListContextCase):
     def test_a_conversation_archived_from_its_page_keeps_its_place_in_conversations(self) -> None:
         self.run_cli("archive", "Q5")
         address, _ = self.strip(self.port, "q5.html?from=conversations")[1]
-        self.assertRegex(address, r"^q4[.]html[?]from=conversations#reply-")
+        self.assertRegex(address, r"^q4[.]html[?]from=conversations&at=reply-[0-9a-f]+#reply-")
         self.assertEqual(self.strip(self.port, "q5.html?from=archived")[0][1], "Back to Archived")
         self.assertEqual([text for _, text in self.strip(self.port, "q5.html?from=archived")], ["Back to Archived"])
 
@@ -233,14 +233,14 @@ class ListRowLinkTests(ListContextCase):
         self.assertIn('class="topic-title" href="q1.html?from=needs-you#Q1.1"', needs_you)
         self.assertNotIn('href="q5.html', needs_you)  # an unread reply alone keeps a conversation in Conversations
         conversations = page.split('id="desk-panel-conversations"')[1].split('id="desk-panel-needs-you"')[0]
-        self.assertEqual(re.findall(r'class="topic-title" href="(q\d)[.]html[?]from=conversations#reply-', conversations), ["q5", "q4"])
+        self.assertEqual(re.findall(r'class="topic-title" href="(q\d)[.]html[?]from=conversations&amp;at=reply-[0-9a-f]+#reply-', conversations), ["q5", "q4"])
 
     def test_an_archived_conversation_links_with_the_archived_list(self) -> None:
         self.run_cli("archive", "Q4")
         page = self.desk()
         archived = page.split('id="desk-panel-archived"')[1].split("</section>")[0]
         self.assertRegex(archived, r'class="topic-title" href="q4[.]html[?]from=archived#reply-')
-        self.assertNotIn("from=conversations#reply-" + "q4", page)
+        self.assertNotIn("from=conversations", archived)
 
     def test_every_hold_row_names_its_list_and_the_script_may_add_the_filters(self) -> None:
         page = self.desk()
@@ -382,6 +382,7 @@ class DeskScopeTests(ListContextCase):
         self.assertIsNone(link)
         link = self.next_link("q3.html?from=conversations&project=P1")
         params = dict(re.findall(r"([a-z]+)=([^&#]*)", link.split("?", 1)[1].split("#")[0]))
+        self.assertEqual(params.pop("at"), link.split("#", 1)[1])
         self.assertEqual(params, {"from": "conversations", "project": "P1"})
         self.assertEqual(self.strip(self.port, "q1.html?from=conversations&project=P1&topic=T1")[0],
                          ("index.html?tab=conversations&project=P1&topic=T1&row=Q1", "Back to Conversations"))

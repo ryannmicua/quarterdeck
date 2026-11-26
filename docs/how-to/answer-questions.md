@@ -8,25 +8,25 @@ open. Items you put under **Later** are not counted.
 
 **For review** holds only what waits for you:
 
-- a question set with an open question, an answer that was not delivered, or a reply you have not read
+- a question set with an open question
 - a task that waits for [your review](create-a-task.md#review-a-task)
 - a conversation in which Firstmate [marked a message for your review](reply-from-the-command-line.md#mark-a-message-for-review)
-- a conversation with a message of yours that was not delivered
 
-A conversation with an unread reply and nothing else stays on
-**Conversations**, under **Unread**. So do [Catch-up notices](catch-up.md#read-the-notices-on-the-desk).
+Unread replies on items that have no open request are in **Conversations**
+under **Unread**, along with [Catch-up notices](catch-up.md#read-the-notices-on-the-desk).
+A failed delivery also stays visible in **Conversations**, where you can open the item to retry.
 
 Each row links the saved ID and title and shows the first open question or
-the latest message from Firstmate. Under it are the status, the project and
-the date. Select the row to open the first open question. If there is an
-unread reply, the row [opens that message](ask-firstmate.md#read-replies). See
+the message that asks for your review. Under it are the status, the project and
+the date. Select the row to open the first open question. If there is a
+marked message, the row opens that message even after it has been read. A
+question set with an unread reply [opens the reply](ask-firstmate.md#read-replies). See
 [where the page opens](ask-firstmate.md#read-replies). On a wide screen the
 item opens beside the list.
 The item page has the question wording, options, and suggestions. Each
 question has an ID you can cite later.
 
-A question set shows how many questions are open, such as **1 of 2 open**. With
-none open and an answer still to deliver, it shows **Answered**. A conversation
+A question set shows how many questions are open, such as **1 of 2 open**. A conversation
 shows **Asked**, and a task **In review**. **Unread reply** comes first when there
 is an unread reply. The row also shows **Not delivered** while an
 answer or retryable ask needs delivery.
@@ -36,10 +36,10 @@ answer or retryable ask needs delivery.
 Select **Deal with later** on an item that waits for you to put it under
 **Later**, at the end of **For review**. The button sits beside **Next unread**,
 at the top and at the bottom of the item.
-The next item in the list opens, when there is one.
+Select **Next unread** when you are ready to move on.
 
-An item under **Later** stays there until you answer it, send a message in it
-or resolve it. It leaves the tab's count, and **Next unread** passes over it.
+An item under **Later** stays there while the deferred request is open. It leaves
+the tab's count, and **Next unread** passes over it.
 A new reply from Firstmate lifts it back among the waiting items until you
 read it. Select **Remove from Later** to take it out yourself.
 

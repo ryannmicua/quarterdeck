@@ -16,15 +16,16 @@ the same project, tag and search in Hold, and brings the item's row into view. T
 
 **Next unread** opens the next unread item in the same list, after the one you
 are reading. When you reach the end of the list it continues from the start.
-The link is missing when no other item in the list is unread.
+The link appears when there is another reply or item to open.
 
 - In **For review**, every item that waits for you counts. An item under
-  [Later](answer-questions.md#deal-with-an-item-later) does not. The link opens the first unread reply, or the
-  first open question.
+  [Later](answer-questions.md#deal-with-an-item-later) is skipped. The link opens the marked request,
+  the first unread reply, or the first open question.
 - In every other list, an item is unread when it has an
   [Unread reply](../reference/glossary.md#status-words). Catch-up notices do not count.
-- In **Conversations**, **Next unread** follows the Desk's project, topic,
-  **Tasks only** and **Unread only**, as Hold follows its filters.
+- In **Conversations**, **Next unread** opens each unread reply in the current
+  conversation before moving to the next row. It follows the Desk's project,
+  topic, **Tasks only** and **Unread only** filters.
 - In Hold, **Next unread** follows the project, tag and search of the list you
   came from.
 

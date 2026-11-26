@@ -58,15 +58,16 @@ or **Close Hold**.
 
 ## When an item moves
 
-An item with questions stays in **For review** while it has an open question
-or a pending answer. Otherwise it is filed under **Answered**. An unread reply
-or a retryable ask also shows the item once in **For review**, including when
-the item is filed under **Answered**. Both locations can show **Unread reply**. See
+An item with questions stays in **For review** while it has an open question.
+A pending answer stays visible in **Conversations** until delivery. Once its
+questions are answered or closed and no answer is pending, the item is filed
+under **Answered**. An unread reply or a retryable ask can still bring it into
+**Conversations**. See
 [how to read question-card replies](ask-firstmate.md#read-replies).
 
 Standalone conversations are in **Conversations**, on the Desk and in Hold,
 until you [archive one](talk-to-firstmate.md#archive-a-conversation). One with an unread reply sits under **Unread** there. A conversation also shows in **For review** while a task in it
-waits for your review, Firstmate marked a message in it for you, or a message of yours was not delivered. See [how to open a conversation's unread message](talk-to-firstmate.md#read-replies).
+waits for your review or Firstmate marked a message in it for you. See [how to open a conversation's unread message](talk-to-firstmate.md#read-replies).
 
 Reopen a question with `quarterdeck mark Q5.2 open` to return
 its item to the Desk. The item stays saved until you remove it with
