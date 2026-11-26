@@ -104,6 +104,12 @@ must carry its project and topic. Phone-width checks verify that the
 filter, the name form and the move form never scroll the page sideways and that
 every control is at least 44 pixels tall.
 
+The project browser checks file invented conversations in two projects and
+verify that a project narrows **Conversations**, **For review** and
+**References** with their counts, that **Ungrouped** shows only what has no
+project, that the choice survives a reload, and that a conversation the lists
+bring in for another project does not show under the chosen one.
+
 The Catch-up browser check opens the Desk with saved notices and an
 open question. At phone width it checks that the notices sit under **Unread**
 on **Conversations** and not in **For review**, and checks their details and links. It

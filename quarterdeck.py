@@ -3423,6 +3423,9 @@ body:has(dialog[open]) { overflow:hidden; }
 body:has(.mailbox) > main { padding-top:.4rem; }
 .mail-list .desk-tabs { margin:.2rem 0 .6rem; }
 .mail-list .talk-open { margin-top:.2rem; }
+.mail-list .project-filter { display:flex; flex-wrap:wrap; gap:.3rem .9rem; margin:.3rem 0 .2rem; }
+.mail-list .project-filter > .scope-field { flex:1 1 12rem; max-width:none; flex-direction:row; align-items:center; gap:.6rem; }
+.mail-list .project-filter select { flex:1; min-width:0; }
 .mail-list .scope { margin:.7rem 0 .4rem; gap:.3rem .9rem; align-items:center; }
 .mail-list .scope > .scope-field { flex:1 1 100%; max-width:none; flex-direction:row; align-items:center; gap:.6rem; }
 .mail-list .scope > .scope-field select { flex:1; min-width:0; }
@@ -3463,7 +3466,7 @@ body:has(.mailbox) > main { padding-top:.4rem; }
 .scope { max-width:52rem; margin:1rem 0; display:flex; flex-wrap:wrap; gap:.6rem 1rem; align-items:end; font-family:var(--sans); }
 .scope-field { display:flex; flex-direction:column; gap:.2rem; min-width:0; flex:1 1 9rem; max-width:18rem; }
 .scope-field label { margin:0; font-size:var(--text-sm); color:var(--soft); }
-.scope select, .move-form select, .group-form input { box-sizing:border-box; min-height:var(--tap); width:100%; padding:.4rem .6rem; font:var(--text-md)/1.3 var(--sans);
+.scope select, .project-filter select, .move-form select, .group-form input { box-sizing:border-box; min-height:var(--tap); width:100%; padding:.4rem .6rem; font:var(--text-md)/1.3 var(--sans);
   background:var(--raised); color:var(--ink); border:1px solid var(--soft); border-radius:5px; }
 .scope-actions, .group-form, .move-form { display:flex; flex-wrap:wrap; gap:.5rem 1rem; align-items:end; }
 .group-form { flex:1 1 100%; }
@@ -5214,6 +5217,11 @@ DESK_SCRIPT = talk_script(r"""
 (() => {
   const tabs = [...document.querySelectorAll('.desk-tabs [role="tab"]')];
   const panelOf = tab => document.getElementById(tab.getAttribute('aria-controls'));
+  // The project choice shows on the tabs it narrows.
+  const showFilter = tab => {
+    document.getElementById('project-filter').hidden = !['desk-tab-conversations', 'desk-tab-needs-you', 'desk-tab-references'].includes(tab.id)
+      || document.getElementById('scope-project').options.length < 3;
+  };
   const select = (tab, focus) => {
     for (const other of tabs) {
       const on = other === tab;
@@ -5222,6 +5230,7 @@ DESK_SCRIPT = talk_script(r"""
       panelOf(other).hidden = !on;
     }
     if (tab.id !== 'desk-tab-conversations') setComposeOpen(false);
+    showFilter(tab);
     if (focus) tab.focus();
   };
   for (const tab of tabs) {
@@ -5259,11 +5268,17 @@ DESK_SCRIPT = talk_script(r"""
     count.textContent = total || '';
   };
   // For review counts what waits for the owner; what the owner put aside for later is not counted.
+  const noReview = document.getElementById('no-review');
+  const noReviewText = noReview.textContent;
+  const shownRows = group => rowsOf(group).filter(row => !row.hidden);
   const syncReview = () => {
-    const waiting = rowsOf(reviewLists.waiting).length;
+    const waiting = shownRows(reviewLists.waiting).length;
     reviewLists.waiting.hidden = !waiting;
-    reviewLists.later.hidden = !rowsOf(reviewLists.later).length;
-    document.getElementById('no-review').hidden = Boolean(waiting);
+    reviewLists.later.hidden = !shownRows(reviewLists.later).length;
+    noReview.hidden = Boolean(waiting);
+    noReview.textContent = !scopeProject.value ? noReviewText
+      : scopeProject.value === '-' ? 'Nothing outside a project is waiting for your review.'
+      : 'Nothing in ' + (topicOf(projectOf(scopeProject.value), scopeTopic.value) ?? projectOf(scopeProject.value)).name + ' is waiting for your review.';
     setCount(document.getElementById('desk-tab-needs-you'), waiting);
   };
   const scope = document.getElementById('scope');
@@ -5287,6 +5302,18 @@ DESK_SCRIPT = talk_script(r"""
     return !project ? '' : topic ? project.name + ' / ' + topic.name : project.name;
   };
   const isNotice = row => row.classList.contains('notice');
+  const referencesList = document.getElementById('topics-references');
+  const noReferences = document.getElementById('no-references');
+  const noReferencesText = noReferences.textContent;
+  const referencesPanel = document.getElementById('desk-panel-references');
+  // References are not filed in a project, so a project hides them; All and Ungrouped show them.
+  const syncReferences = () => {
+    const shown = shownRows(referencesList).length;
+    referencesList.hidden = !shown;
+    noReferences.hidden = Boolean(shown);
+    noReferences.textContent = rowsOf(referencesList).length && !shown
+      ? 'References are not filed in a project. Choose All or Ungrouped to see them.' : noReferencesText;
+  };
   const labelRow = row => {
     const span = row.querySelector('.placement');
     if (!span) return;
@@ -5294,15 +5321,20 @@ DESK_SCRIPT = talk_script(r"""
     span.textContent = label;
     span.hidden = !label;
   };
-  // A row opened while unread keeps its place under Unread until the owner moves on, so it also passes Unread only.
-  const inScope = row => {
+  // The project filter narrows every list whose items can be in a project; an item with no project shows under All and Ungrouped.
+  const inProject = row => {
     const project = scopeProject.value, topic = scopeTopic.value;
-    if (isNotice(row)) return !project && !tasksOnly.checked;
-    if (unreadOnly.checked && row.dataset.unread !== 'true' && row.dataset.sticky !== 'true') return false;
-    if (tasksOnly.checked && row.dataset.task !== 'true') return false;
     if (!project) return true;
+    if (isNotice(row)) return false;
     if (project === '-') return !row.dataset.project;
     return row.dataset.project === project && (!topic || row.dataset.topic === topic);
+  };
+  // A row opened while unread keeps its place under Unread until the owner moves on, so it also passes Unread only.
+  const inScope = row => {
+    if (isNotice(row)) return inProject(row) && !tasksOnly.checked;
+    if (unreadOnly.checked && row.dataset.unread !== 'true' && row.dataset.sticky !== 'true') return false;
+    if (tasksOnly.checked && row.dataset.task !== 'true') return false;
+    return inProject(row);
   };
   const scopeEmptyText = () => {
     const tasks = tasksOnly.checked;
@@ -5330,7 +5362,7 @@ DESK_SCRIPT = talk_script(r"""
     if (!noneInScope.hidden) noneInScope.textContent = scopeEmptyText();
     noneArchived.hidden = !groups.archived.hidden;
     readAll.hidden = noticeButtons().length < 2;
-    setCount(conversationTab, groups.unread.querySelectorAll('.topic[data-unread="true"]').length);
+    setCount(conversationTab, rowsOf(groups.unread).filter(row => row.dataset.unread === 'true' && inProject(row)).length);
   };
   const applyScope = params => {
     for (const [name, value] of [['project', scopeProject.value], ['topic', scopeTopic.value], ['tasks', tasksOnly.checked ? '1' : ''],
@@ -5358,13 +5390,14 @@ DESK_SCRIPT = talk_script(r"""
     select.value = [...select.options].some(option => option.value === value) ? value : '';
   };
   const SCOPE_KEY = 'quarterdeck-scope';
+  const PROJECT_KEY = 'quarterdeck-project';  // the project choice stays with this browser; the other filters stay with the tab
   const syncScope = (next = {project: scopeProject.value, topic: scopeTopic.value}) => {
     if (next.tasks !== undefined) tasksOnly.checked = Boolean(next.tasks);
     if (next.unread !== undefined) unreadOnly.checked = Boolean(next.unread);
     fillSelect(scopeProject, [['', 'All'], ['-', 'Ungrouped']], tree, next.project);
     const project = projectOf(scopeProject.value);
     fillSelect(scopeTopic, [['', 'All topics']], project ? project.topics : [], project ? next.topic : '');
-    document.getElementById('scope-project-field').hidden = !tree.length;
+    showFilter(tabs.find(tab => tab.getAttribute('aria-selected') === 'true'));
     scope.dataset.projects = tree.length ? 'yes' : 'no';
     scopeTopicField.hidden = !project;
     newTopic.hidden = renameProject.hidden = !project;
@@ -5375,7 +5408,10 @@ DESK_SCRIPT = talk_script(r"""
       linkRow(row);
     }
     for (const row of rowsOf(groups.archived)) labelRow(row);
+    for (const row of [...rowsOf(reviewPanel), ...rowsOf(referencesPanel)]) row.hidden = !inProject(row);
     syncGroups();
+    syncReview();
+    syncReferences();
     groupStatus.textContent = '';
     if (destination) {
       const label = project ? labelOf(project.id, scopeTopic.value) : '';
@@ -5383,8 +5419,8 @@ DESK_SCRIPT = talk_script(r"""
       destination.textContent = label ? 'Starts in ' + label + '.' : 'Starts ungrouped.';
     }
     try {
-      sessionStorage.setItem(SCOPE_KEY, JSON.stringify({project: scopeProject.value, topic: scopeTopic.value,
-        tasks: tasksOnly.checked, unread: unreadOnly.checked}));
+      sessionStorage.setItem(SCOPE_KEY, JSON.stringify({tasks: tasksOnly.checked, unread: unreadOnly.checked}));
+      localStorage.setItem(PROJECT_KEY, JSON.stringify({project: scopeProject.value, topic: scopeTopic.value}));
     } catch {}
   };
   const startPlacement = () => {
@@ -5519,10 +5555,6 @@ DESK_SCRIPT = talk_script(r"""
           }
           keepSticky();
           syncScope();
-          syncReview();
-          const references = document.getElementById('topics-references');
-          references.hidden = !references.querySelector('.topic');
-          document.getElementById('no-references').hidden = !references.hidden;
           markCurrent();
         } catch {
           break;
@@ -5690,18 +5722,17 @@ DESK_SCRIPT = talk_script(r"""
   try {
     const saved = arrival.get('tab') === 'conversations'
       ? {project: arrival.get('project'), topic: arrival.get('topic'), tasks: arrival.get('tasks') === '1', unread: arrival.get('unread') === '1'}
-      : JSON.parse(sessionStorage.getItem(SCOPE_KEY)) || {};
+      : {...JSON.parse(sessionStorage.getItem(SCOPE_KEY)), ...JSON.parse(localStorage.getItem(PROJECT_KEY))};
     syncScope({project: saved.project || '', topic: saved.topic || '', tasks: saved.tasks === true, unread: saved.unread === true});
   } catch {
     syncScope({project: '', topic: '', tasks: false, unread: false});
   }
-  syncReview();
 
   const arrivingDeskTab = tabs.find(tab => tab.id === 'desk-tab-' + arrival.get('tab'));
   if (arrivingDeskTab) {
     select(arrivingDeskTab, false);
     const wanted = arrival.get('row') ?? '';
-    const rows = rowsOf(panelOf(arrivingDeskTab));
+    const rows = rowsOf(panelOf(arrivingDeskTab)).filter(row => !row.hidden);
     // A question answered meanwhile has left For review; its place is taken by the next one down.
     const below = row => row.classList.contains('review') && BigInt(row.dataset.id.slice(1)) < BigInt(wanted.slice(1) || '0');
     const row = arrivalRow(rows, wanted) ?? (/^Q[1-9][0-9]*$/.test(wanted) ? rows.find(below) : undefined);
@@ -5745,6 +5776,7 @@ DESK_SCRIPT = talk_script(r"""
       const list = group.querySelector('.topic-list');
       const next = [...list.children].find(other => BigInt(other.dataset.id.slice(1)) < BigInt(id.slice(1)));
       list.insertBefore(row, next || null);
+      row.hidden = !inProject(row);
     }
     syncReview();
   };
@@ -6775,17 +6807,22 @@ def conversation_groups(items, projects=(), notices=(), items_by_id=None):
                    f'<ul class="topic-list">{rows}</ul></section>' for name, heading, rows, tools in groups)
 
 
-def scope_bar(tree):
-    """The filters above the list, and the forms that create and rename projects and topics."""
+def project_filter(tree):
+    """The project choice above the tabs. It narrows Conversations, For review and References together."""
     projects = "".join(f'<option value="{esc(project["id"])}">{esc(project["name"])}</option>' for project in tree)
-    data = json.dumps(tree, ensure_ascii=False).replace("<", "\\u003c")
     shown = "" if tree else " hidden"
-    return (f'<div class="scope" id="scope" data-projects="{"yes" if tree else "no"}">'
-            f'<script type="application/json" id="groups-data">{data}</script>'
-            f'<div class="scope-field" id="scope-project-field"{shown}><label for="scope-project">Project</label>'
+    return (f'<div class="project-filter" id="project-filter"{shown}>'
+            '<div class="scope-field" id="scope-project-field"><label for="scope-project">Project</label>'
             f'<select id="scope-project"><option value="">All</option><option value="-">Ungrouped</option>{projects}</select></div>'
             '<div class="scope-field" id="scope-topic-field" hidden><label for="scope-topic">Topic</label>'
-            '<select id="scope-topic"><option value="">All topics</option></select></div>'
+            '<select id="scope-topic"><option value="">All topics</option></select></div></div>')
+
+
+def scope_bar(tree):
+    """The Conversations filters, and the forms that create and rename projects and topics."""
+    data = json.dumps(tree, ensure_ascii=False).replace("<", "\\u003c")
+    return (f'<div class="scope" id="scope" data-projects="{"yes" if tree else "no"}">'
+            f'<script type="application/json" id="groups-data">{data}</script>'
             '<div class="scope-check"><input type="checkbox" id="scope-unread"><label for="scope-unread">Unread only</label></div>'
             '<div class="scope-check"><input type="checkbox" id="scope-tasks"><label for="scope-tasks">Tasks only</label></div>'
             '<div class="scope-actions"><button type="button" id="new-project">New project</button>'
@@ -6876,7 +6913,9 @@ def review_row(item, summary, context="needs-you"):
     if pending:
         facts.append('<span>Not delivered</span>')
     project = f'<span class="project-name">{esc(item["project"])}</span>' if item.get("project") else ""
-    return (f'<li class="topic review" data-id="{item["id"]}" data-unread="{"true" if not shows_later(item) else "false"}">'
+    placement = item.get("placement", {})
+    where = "".join(f' data-{name}="{esc(placement[name])}"' for name in ("project", "topic") if name in placement)
+    return (f'<li class="topic review" data-id="{item["id"]}" data-unread="{"true" if not shows_later(item) else "false"}"{where}>'
             f'<div class="topic-main"><a class="topic-title" href="{href}"><span class="id">{item["id"]}</span> {esc(item["title"])}</a>'
             f'<p class="topic-latest">{esc(" ".join(preview.split())[:PREVIEW_LIMIT])}</p>'
             f'<p class="meta topic-meta">{"".join(facts)}{project}{when}</p></div></li>')
@@ -6971,7 +7010,7 @@ def underway_panel(view):
 
 
 
-def desk_tabs(conversations, attention, references, underway, archived, unread, waiting, *, compose):
+def desk_tabs(conversations, attention, references, underway, archived, unread, waiting, *, compose, filters=""):
     """The Desk as a mailbox: the tabs and their lists on one side, and on a wide screen the open item on the other."""
     def count(total):
         return f' <span class="tab-count"{"" if total else " hidden"}>{total or ""}</span>'
@@ -6988,7 +7027,7 @@ def desk_tabs(conversations, attention, references, underway, archived, unread, 
                    f'{"" if number == 0 else " hidden"}>{content}</section>'
                    for number, (name, _, content, _) in enumerate(panels))
     return ('<div class="mailbox" id="mailbox"><div class="mail-list" id="mail-list">'
-            f'<div class="desk-tabs" role="tablist" aria-label="Desk">{tabs}</div>'
+            f'{filters}<div class="desk-tabs" role="tablist" aria-label="Desk">{tabs}</div>'
             '<p class="meta desk-feedback" id="desk-status" role="status"></p>'
             f'{body}</div>'
             '<section class="mail-pane" id="mail-pane" aria-label="Open item">'
@@ -7119,6 +7158,7 @@ def list_page(data: dict[str, object], site_title: str, *, served: bool, saved_n
             archived_panel(items, data.get("projects", [])),
             unread, sum(1 for item, _ in attention if not shows_later(item)),
             compose=talk_form(ask_binding) if ask_binding else "",
+            filters=project_filter(project_tree(data)),
         )
         return page_shell(site_title, site_title, body, served=True, saved_name=saved_name,
                           library=library_dialog(data), current="desk", starting=True)

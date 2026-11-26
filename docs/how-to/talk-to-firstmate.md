@@ -85,14 +85,18 @@ and in at most one topic inside that project. You create, rename and assign
 both. Conversations you already had stay **Ungrouped** until you move them, and
 **All** still lists them.
 
-The **Project** filter sits between the form and the list. It opens on **All**.
-Choose a project to see its conversations, including those filed directly in
-it. Then choose a **Topic** to narrow the list. Choose **Ungrouped** to see
-conversations that are in no project. Archived conversations stay in
-**Archived** and leave the filter's lists. Within the filter, **Unread** comes first,
-then **Pinned**, and each group keeps its order by latest activity. The filter stays when you
-open a conversation and go back. **For review**, **Watch** and **Open Hold** do
-not change with it.
+The **Project** filter sits above the tabs on **Conversations**, **For review**
+and **References**. It opens on **All**. Choose a project to see its
+conversations, including those filed directly in it. Then choose a **Topic** to
+narrow the list. Choose **Ungrouped** to see conversations that are in no
+project. The filter also narrows **For review**, and the counts on the tabs
+count only the chosen project. A reference or a question set is never filed in a
+project, so a project hides it; **All** and **Ungrouped** show it. Archived
+conversations stay in **Archived** and leave the filter's lists. Within the
+filter, **Unread** comes first, then **Pinned**, and each group keeps its order
+by latest activity. The choice stays when you open a conversation and go back,
+when you reload the page and when the lists update on their own. This browser
+remembers it. **Watch** and **Open Hold** do not change with it.
 
 - To make a project, select **New project**, type its name and select **Save
   name**. With a project chosen, **New topic** adds a topic to it.

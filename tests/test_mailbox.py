@@ -798,6 +798,99 @@ document.dispatchEvent(new Event('visibilitychange'));
 await within(() => checks() === 1, 'The Desk did not check once on return');
 """, budget=60000)
 
+    def file_projects(self) -> None:
+        """Q1 in rms cares (P1), Q2 in quarterdeck (P2), Q3 ungrouped, Q4 waiting for review in P1, and a reference Q5."""
+        for name in ("rms cares", "quarterdeck"):
+            self.assertEqual(self.post(self.port, "/qd/groups", {"name": name})[0], 200)
+        self.firstmate("move", "Q1", "--project", "P1")
+        self.firstmate("move", "Q2", "--project", "P2")
+        self.firstmate("converse", "--title", "Rope plan", "--text", "Please look.", "--project", "P1", "--for-review")  # Q4
+        self.add("resource", "Port tide tables", "The tables.", "--url", "https://example.com/tides", "--link-text", "Tide tables")  # Q5
+
+    PROJECT_STEPS = r"""
+const choose = value => { const select = document.getElementById('scope-project'); select.value = value; select.dispatchEvent(new Event('change', {bubbles: true})); };
+const visible = section => [...document.querySelectorAll('#' + section + ' .topic:not([hidden])')].map(row => row.dataset.id).join();
+const tabNamed = name => document.getElementById('desk-tab-' + name);
+"""
+
+    def test_a_project_narrows_conversations_for_review_and_references_with_their_counts_and_is_kept(self) -> None:
+        self.file_projects()
+        self.run_in_desk(self.PROJECT_STEPS + r"""
+check(visible('topics-unread') === 'Q2,Q1' && count('conversations') === '2' && count('needs-you') === '2', 'All did not show everything');
+check(getComputedStyle(document.getElementById('project-filter')).display !== 'none', 'The project choice is not on the Desk');
+choose('P1');
+check(visible('topics-unread') === 'Q1' && count('conversations') === '1', 'A project did not narrow Conversations and its count');
+check(visible('review-waiting') === 'Q4' && count('needs-you') === '1', 'A project did not narrow For review and its count');
+choose('P2');
+check(visible('topics-unread') === 'Q2' && count('conversations') === '1' && count('needs-you') === '', 'The other project kept the first one\'s items or a zero count');
+check(document.getElementById('no-review').textContent === 'Nothing in quarterdeck is waiting for your review.' && !document.getElementById('no-review').hidden, 'An empty For review gave no reason');
+choose('-');
+check(visible('topics-unread') === '' && count('conversations') === '' && visible('review-waiting') === 'Q3' && count('needs-you') === '1', 'Ungrouped did not show only items with no project');
+tabNamed('references').click();
+check(visible('topics-references') === 'Q5' && getComputedStyle(document.getElementById('project-filter')).display !== 'none', 'Ungrouped did not show the reference');
+choose('P1');
+check(visible('topics-references') === '' && !document.getElementById('no-references').hidden, 'A project did not set the references aside');
+tabNamed('under-way').click();
+check(getComputedStyle(document.getElementById('project-filter')).display === 'none', 'The project choice shows on a tab it does not narrow');
+check(JSON.parse(localStorage.getItem('quarterdeck-project')).project === 'P1', 'The choice was not kept in this browser');
+""")
+        self.run_in_desk(self.PROJECT_STEPS + r"""
+check(document.getElementById('scope-project').value === 'P1', 'A reload lost the project');
+check(visible('topics-unread') === 'Q1' && count('conversations') === '1' && count('needs-you') === '1', 'A reload showed other projects');
+choose('');
+check(visible('topics-unread') === 'Q2,Q1' && count('needs-you') === '2', 'All did not bring everything back');
+""")
+
+    def test_the_chosen_project_holds_when_the_live_list_brings_in_conversations(self) -> None:
+        self.file_projects()
+        calls = []
+        real = quarterdeck.desk_version
+
+        def version(data, underway):
+            calls.append(1)
+            if len(calls) == 2:
+                self.firstmate("converse", "--title", "Rope order", "--text", "On its way.", "--project", "P2")  # Q6
+            if len(calls) == 4:
+                self.firstmate("converse", "--title", "Net repair", "--text", "Booked.", "--project", "P1")  # Q7
+            return real(data, underway)
+        with patch.object(quarterdeck, "desk_version", version):
+            self.run_in_desk(self.LIVE_STEPS + self.PROJECT_STEPS + r"""
+choose('P1');
+await within(() => document.querySelector('.topic[data-id="Q6"]'), 'The other project\'s conversation never arrived');
+check(document.getElementById('scope-project').value === 'P1' && visible('topics-unread') === 'Q1' && count('conversations') === '1',
+      'A conversation in another project showed under the chosen one: ' + visible('topics-unread'));
+await within(() => document.querySelector('.topic[data-id="Q7"]'), 'The chosen project\'s conversation never arrived');
+check(visible('topics-unread') === 'Q7,Q1' && count('conversations') === '2' && count('needs-you') === '1', 'The new conversation did not join the chosen project');
+choose('P2');
+check(visible('topics-unread') === 'Q6,Q2' && count('conversations') === '2', 'The other project lost its new conversation');
+""", budget=90000)
+
+    def test_the_conversations_count_follows_only_the_project_and_not_tasks_only(self) -> None:
+        self.file_projects()
+        self.run_in_desk(self.PROJECT_STEPS + r"""
+document.getElementById('scope-tasks').click();
+check(visible('topics-unread') === '' && count('conversations') === '2', 'Tasks only lowered the unread count: ' + count('conversations'));
+choose('P1');
+check(count('conversations') === '1', 'The project did not narrow the unread count under Tasks only');
+""")
+
+    def test_arriving_after_an_answer_lands_on_the_next_item_the_project_shows(self) -> None:
+        self.file_projects()
+        self.run_in_desk(self.PROJECT_STEPS + "choose('-');")
+        self.run_in_desk(self.PROJECT_STEPS + r"""
+check(visible('review-waiting') === 'Q3', 'Ungrouped did not hold for the arrival');
+check(document.activeElement?.closest('.topic')?.dataset.id === 'Q3', 'The arrival did not land on the next shown item');
+""", route="/qd/?tab=needs-you&row=Q9")
+
+    def test_a_phone_sized_desk_fits_the_project_choice(self) -> None:
+        self.file_projects()
+        self.run_in_desk(self.PROJECT_STEPS + r"""
+choose('P1');
+const filter = document.getElementById('project-filter').getBoundingClientRect();
+check(filter.width > 0 && filter.right <= innerWidth, 'The project choice does not fit the phone');
+check(document.documentElement.scrollWidth <= innerWidth, 'The phone Desk scrolls sideways');
+""", window_size="390,844")
+
     def test_a_question_set_opens_in_the_pane_and_stays_open_when_deferred(self) -> None:
         self.questions("Harbor map first edition", TWO_QUESTIONS)  # Q4
         self.run_in_desk(r"""
