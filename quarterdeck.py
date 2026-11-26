@@ -2401,7 +2401,6 @@ body:has(dialog[open]) { overflow:hidden; }
 .lib-item p { margin:.2rem 0 0; }
 .lib-head { display:flex; gap:.2rem .8rem; align-items:baseline; }
 .lib-title { font:700 var(--text-lg)/1.3 var(--sans); }
-.lib-desc { font-size:var(--text-md); color:var(--soft); }
 .lib-item.ref-row { display:flex; flex-wrap:wrap; align-items:baseline; gap:0 .9rem; padding:.4rem 0; }
 .ref-title { font:500 var(--text-md)/1.4 var(--sans); }
 .ref-more { display:inline-flex; flex-wrap:wrap; gap:0 .8rem; font-size:var(--text-sm); }
@@ -4079,8 +4078,7 @@ def library_row(item, *, served):
         detail = f'<p class="meta">{label}</p>'
     else:
         replied = '<span class="badge">Replied</span>' if unread else ""
-        description = '' if kind == "conversation" else f'<p class="lib-desc">{linked_text(item["description"])}</p>'
-        detail = description + f'<p class="meta"><span>{KIND_LABELS[kind]}</span>{replied}{day_time(item["saved_at"])}</p>'
+        detail = f'<p class="meta"><span>{KIND_LABELS[kind]}</span>{replied}{day_time(item["saved_at"])}</p>'
     return (f'<li class="lib-item"{attributes}>'
             f'<div class="lib-head"><span class="id">{item_id}</span>'
             f'{title}{project}</div>{detail}{tags}</li>')
@@ -5112,9 +5110,10 @@ def make_parser() -> argparse.ArgumentParser:
     add.add_argument("--body-file", metavar="PATH", help="the body of a list or questions; - reads standard input. Questions may carry PNG, JPEG or still WebP images "
                                                           "(up to 5 MB each) that are copied in when saved")
 
-    edit = command("edit", "change a saved item's title, description or links",
-                   "Change a saved item's title, description or, for a resource, its links, in place. The ID, saved date, "
-                   "answers and messages stay. Giving --link-text and --url replaces all of a resource's links.", edit_item)
+    edit = command("edit", "change a resource or question item's title, description or links",
+                   "Change a resource or question item's title, description or, for a resource, its links, in place. "
+                   "The ID, saved date, answers and messages stay. Giving --link-text and --url replaces all of a "
+                   "resource's links. Lists and conversations cannot be edited.", edit_item)
     edit.add_argument("id", help="item ID, such as Q7")
     edit.add_argument("--title", help="the new title")
     edit.add_argument("--description", help="the new description")

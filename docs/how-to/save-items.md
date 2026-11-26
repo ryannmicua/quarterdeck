@@ -138,8 +138,10 @@ quarterdeck remove Q3    # delete Q3 and retire its ID
 
 Use the displayed ID, such as `Q3` or `q3`. To correct a resource or question
 item's title, description or resource links, use [`edit`](#edit-a-saved-item),
-which keeps the ID. For other changes, such as a list or a question, remove the
-item and add it again. The new item gets a new ID.
+which keeps the ID. To change a list's entries or a question, remove the item
+and add it again with `add`. Removing deletes its answers and messages, and the
+new item gets a new ID. A conversation cannot be recreated with `add`, so
+removing one deletes its messages and images for good.
 
 ## See them
 

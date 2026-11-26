@@ -1683,6 +1683,8 @@ window.addEventListener('pageshow', async () => {
                  "--link-text", "Notes", "--url", "https://example.org/notes")
         for title in ("First stop", "Second stop"):
             self.add("list", title, "A local destination.", "--body-file", "-", stdin="Stop\n")
+        self.add("resource", "Harbor lights", "Lamp colours.", "--project", "Beta", "--tag", "product-design",
+                 "--link-text", "Lights", "--url", "https://example.org/lights")
 
         list_page = quarterdeck.list_page
         item_page = quarterdeck.item_page
@@ -1697,9 +1699,11 @@ const tab = document.getElementById('tab-references');
 const panel = document.getElementById('panel-references');
 const search = panel.querySelector('input');
 const project = panel.querySelector('select[name="project"]');
+const tagFilter = panel.querySelector('select[name="tag"]');
 const shown = () => [...panel.querySelectorAll('.lib-item:not([hidden]) .ref-title')].map(link => link.textContent).join();
 try {
   const visits = Number(sessionStorage.getItem('bookmark-visits'));
+  const reached = sessionStorage.getItem('bookmark-destination');
   if (!visits) {
     document.getElementById('open-library').click();
     tab.click();
@@ -1707,19 +1711,24 @@ try {
     project.dispatchEvent(new Event('change', {bubbles:true}));
     search.value = 'harbor';
     search.dispatchEvent(new Event('input', {bubbles:true}));
-    check(shown() === 'Harbor chart', 'The fixture lookup did not select the Harbor chart');
-    panel.querySelector('a.ref-title').click();
+    check(shown() === 'Harbor lights,Harbor chart', 'The project and search did not match both Beta harbor items');
+    tagFilter.value = 'research';
+    tagFilter.dispatchEvent(new Event('change', {bubbles:true}));
+    check(shown() === 'Harbor chart', 'The tag did not narrow the lookup to the Harbor chart');
+    panel.querySelector('.lib-item:not([hidden]) a.ref-title').click();
   } else {
     check(dialog.open && tab.getAttribute('aria-selected') === 'true' && !panel.hidden,
           'The library did not reopen on References after bookmark visit ' + visits);
     const query = visits === 1 ? 'harbor' : 'quay chart';
-    check(project.value === 'Beta' && search.value === query && shown() === 'Harbor chart',
-          'The References search or project filter was not restored after bookmark visit ' + visits);
+    check(reached === (visits === 1 ? '/qd/q3.html' : '/qd/q4.html'),
+          'Bookmark visit ' + visits + ' reached ' + reached);
+    check(project.value === 'Beta' && tagFilter.value === 'research' && search.value === query && shown() === 'Harbor chart',
+          'The References search, project or tag filter was not restored after bookmark visit ' + visits);
     if (visits === 1) {
       search.value = 'quay chart';
       search.dispatchEvent(new Event('input', {bubbles:true}));
       check(shown() === 'Harbor chart', 'The second lookup did not select the Harbor chart');
-      panel.querySelector('a.ref-extra').click();
+      panel.querySelector('.lib-item:not([hidden]) a.ref-extra').click();
     } else report('PASS');
   }
 } catch (error) { report(error.message); }
@@ -1731,6 +1740,7 @@ try {
 <script>
 window.addEventListener('pageshow', () => {
   sessionStorage.setItem('bookmark-visits', Number(sessionStorage.getItem('bookmark-visits')) + 1);
+  sessionStorage.setItem('bookmark-destination', location.pathname);
   history.back();
 });
 </script>

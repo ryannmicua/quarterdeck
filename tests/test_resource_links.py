@@ -115,13 +115,18 @@ class ResourceLinkTests(_Base):
         self.add("questions", "Decisions", "Open questions.", "--body-file", "-",
                  stdin=json.dumps([{"question": "Go?", "context": "Now", "options": ["Yes", "No"]}]))
         self.answer_all("Q1", 1)
+        home, binding = quarterdeck.ask_destination(self.root / "home", require_directory=True)
+        quarterdeck.ask_message(quarterdeck.store_path(), home, binding,
+                                {"part": "Q1.1", "id": "a" * 32, "text": "Which rope?", "home": binding})
         data = self.store()
+        self.assertEqual([m["text"] for m in data["items"][0]["conversation"]["1"]], ["Which rope?"])
         code, _out, err = self.run_cli("edit", "Q1", "--title", "Renamed")
         self.assertEqual(code, 0, err)
         item = self.store()["items"][0]
         self.assertEqual(item["title"], "Renamed")
         self.assertEqual(item["answers"], data["items"][0]["answers"])
         self.assertEqual(item["body"], data["items"][0]["body"])
+        self.assertEqual(item["conversation"], data["items"][0]["conversation"])
 
     def test_edit_refusals_change_nothing(self) -> None:
         self.add_review()
