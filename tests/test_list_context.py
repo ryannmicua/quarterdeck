@@ -45,7 +45,7 @@ class ListContextCase(StoreCase):
         return out.strip()
 
     def answer(self, part: str) -> None:
-        """Answer one question with a delivery that succeeds, so the set leaves Needs you."""
+        """Answer one question with a delivery that succeeds, so the set leaves For review."""
         home = self.root / "home"
         script = home / "bin" / "fm-inbox.sh"
         script.parent.mkdir(parents=True, exist_ok=True)
@@ -106,7 +106,7 @@ class BackAndNextTests(ListContextCase):
         self.port = self.start()
 
     def test_a_page_opened_from_needs_you_goes_back_to_needs_you_at_its_row(self) -> None:
-        self.assertEqual(self.strip(self.port, "q2.html?from=needs-you")[0], ("index.html?tab=needs-you&row=Q2", "Back to Needs you"))
+        self.assertEqual(self.strip(self.port, "q2.html?from=needs-you")[0], ("index.html?tab=needs-you&row=Q2", "Back to For review"))
 
     def test_a_page_opened_from_each_list_names_that_list(self) -> None:
         for name, label, address in (
@@ -125,7 +125,7 @@ class BackAndNextTests(ListContextCase):
         self.assertEqual(link, ("index.html?hold=conversations&project=Harbor&tag=lamps&search=Dock+lights&row=Q4",
                                 "Back to Hold conversations"))
         self.assertEqual(self.strip(self.port, "q4.html?from=needs-you&project=Harbor&search=Dock")[0],
-                         ("index.html?tab=needs-you&row=Q4", "Back to Needs you"))
+                         ("index.html?tab=needs-you&row=Q4", "Back to For review"))
 
     def test_the_address_cannot_inject_markup_into_the_page(self) -> None:
         page = self.get(self.port, "q4.html?from=answered&project=%22%3E%3Cb%3Ex%3C%2Fb%3E&search=%3Cscript%3Ealert(1)%3C%2Fscript%3E")
@@ -140,24 +140,20 @@ class BackAndNextTests(ListContextCase):
                 self.assertEqual(self.strip(self.port, path), [("index.html", "Back to Desk")])
 
     def test_next_unread_in_needs_you_follows_the_list_order_and_opens_the_first_open_question(self) -> None:
-        # Needs you lists the newest first: Q5, Q4, Q3, Q2, Q1.
+        # For review lists the newest first: Q3, Q2, Q1. The unread conversations Q5 and Q4 are not in it.
         read = lambda path: self.strip(self.port, path)  # noqa: E731
         self.assertEqual(read("q3.html?from=needs-you")[1], ("q2.html?from=needs-you#Q2.1", "Next unread"))
         self.assertEqual(read("q2.html?from=needs-you")[1], ("q1.html?from=needs-you#Q1.1", "Next unread"))
-        next_address, _ = read("q4.html?from=needs-you")[1]
-        self.assertRegex(next_address, r"^q3[.]html[?]from=needs-you#Q3[.]1$")
-        next_address, _ = read("q5.html?from=needs-you")[1]
-        self.assertRegex(next_address, r"^q4[.]html[?]from=needs-you#reply-[0-9a-f]+$")
+        for path in ("q4.html?from=needs-you", "q5.html?from=needs-you"):
+            self.assertEqual(read(path)[1], ("q3.html?from=needs-you#Q3.1", "Next unread"))
 
     def test_next_unread_wraps_from_the_end_of_a_list_to_its_start(self) -> None:
-        address, words = self.strip(self.port, "q1.html?from=needs-you")[1]
-        self.assertRegex(address, r"^q5[.]html[?]from=needs-you#reply-[0-9a-f]+$")
-        self.assertEqual(words, "Next unread")
+        self.assertEqual(self.strip(self.port, "q1.html?from=needs-you")[1], ("q3.html?from=needs-you#Q3.1", "Next unread"))
 
     def test_next_unread_in_other_lists_counts_only_unread_replies_and_keeps_the_list(self) -> None:
         # Conversations lists Q5 then Q4, and both are unread.
         address, _ = self.strip(self.port, "q5.html?from=conversations")[1]
-        self.assertRegex(address, r"^q4[.]html[?]from=conversations#reply-[0-9a-f]+$")
+        self.assertRegex(address, r"^q4[.]html[?]from=conversations&at=reply-[0-9a-f]+#reply-[0-9a-f]+$")
         address, _ = self.strip(self.port, "q5.html?from=hold-conversations")[1]
         self.assertRegex(address, r"^q4[.]html[?]from=hold-conversations#reply-[0-9a-f]+$")
 
@@ -186,7 +182,7 @@ class BackAndNextTests(ListContextCase):
         self.assertEqual(self.strip(self.port, second)[0][0], "index.html?tab=needs-you&row=Q1")
 
     def test_an_answered_item_keeps_its_place_in_needs_you_for_the_next_unread(self) -> None:
-        # Q2 is answered and leaves Needs you, yet Next unread still follows the place where Q2 stood.
+        # Q2 is answered and leaves For review, yet Next unread still follows the place where Q2 stood.
         self.answer("Q2.1")
         desk = self.get(self.port, "").split("<dialog")[0]
         self.assertNotIn('href="q2.html', desk.split('id="desk-panel-needs-you"')[1])
@@ -196,7 +192,7 @@ class BackAndNextTests(ListContextCase):
     def test_a_conversation_archived_from_its_page_keeps_its_place_in_conversations(self) -> None:
         self.run_cli("archive", "Q5")
         address, _ = self.strip(self.port, "q5.html?from=conversations")[1]
-        self.assertRegex(address, r"^q4[.]html[?]from=conversations#reply-")
+        self.assertRegex(address, r"^q4[.]html[?]from=conversations&at=reply-[0-9a-f]+#reply-")
         self.assertEqual(self.strip(self.port, "q5.html?from=archived")[0][1], "Back to Archived")
         self.assertEqual([text for _, text in self.strip(self.port, "q5.html?from=archived")], ["Back to Archived"])
 
@@ -233,18 +229,18 @@ class ListRowLinkTests(ListContextCase):
     def test_every_desk_row_names_its_list_in_the_link_to_its_page(self) -> None:
         page = self.desk()
         needs_you = page.split('id="desk-panel-needs-you"')[1].split("</section>")[0]
-        self.assertIn('class="card-link" href="q1.html?from=needs-you#Q1.1"', needs_you)
-        self.assertRegex(needs_you, r'class="card-link" href="q5[.]html[?]from=needs-you#reply-')
-        self.assertIn('<tr class="work next" data-id="Q1">', needs_you)
+        self.assertIn('<li class="topic review" data-id="Q1" data-unread="true">', needs_you)
+        self.assertIn('class="topic-title" href="q1.html?from=needs-you#Q1.1"', needs_you)
+        self.assertNotIn('href="q5.html', needs_you)  # an unread reply alone keeps a conversation in Conversations
         conversations = page.split('id="desk-panel-conversations"')[1].split('id="desk-panel-needs-you"')[0]
-        self.assertEqual(re.findall(r'class="topic-title" href="(q\d)[.]html[?]from=conversations#reply-', conversations), ["q5", "q4"])
+        self.assertEqual(re.findall(r'class="topic-title" href="(q\d)[.]html[?]from=conversations&amp;at=reply-[0-9a-f]+#reply-', conversations), ["q5", "q4"])
 
     def test_an_archived_conversation_links_with_the_archived_list(self) -> None:
         self.run_cli("archive", "Q4")
         page = self.desk()
         archived = page.split('id="desk-panel-archived"')[1].split("</section>")[0]
         self.assertRegex(archived, r'class="topic-title" href="q4[.]html[?]from=archived#reply-')
-        self.assertNotIn("from=conversations#reply-" + "q4", page)
+        self.assertNotIn("from=conversations", archived)
 
     def test_every_hold_row_names_its_list_and_the_script_may_add_the_filters(self) -> None:
         page = self.desk()
@@ -386,6 +382,7 @@ class DeskScopeTests(ListContextCase):
         self.assertIsNone(link)
         link = self.next_link("q3.html?from=conversations&project=P1")
         params = dict(re.findall(r"([a-z]+)=([^&#]*)", link.split("?", 1)[1].split("#")[0]))
+        self.assertEqual(params.pop("at"), link.split("#", 1)[1])
         self.assertEqual(params, {"from": "conversations", "project": "P1"})
         self.assertEqual(self.strip(self.port, "q1.html?from=conversations&project=P1&topic=T1")[0],
                          ("index.html?tab=conversations&project=P1&topic=T1&row=Q1", "Back to Conversations"))
@@ -413,9 +410,9 @@ class ListContextBrowserTests(ListContextCase):
         self.run_in_desk("""
 const tab = document.getElementById('desk-tab-needs-you');
 check(tab.getAttribute('aria-selected') === 'true' && !document.getElementById('desk-panel-needs-you').hidden,
-      'Back did not open Needs you');
+      'Back did not open For review');
 check(document.getElementById('desk-panel-conversations').hidden, 'Conversations stayed open');
-const link = document.querySelector('#desk-panel-needs-you tr[data-id="Q2"] .card-link');
+const link = document.querySelector('#desk-panel-needs-you li[data-id="Q2"] .topic-title');
 check(document.activeElement === link, 'The row of Q2 did not take focus');
 const box = link.getBoundingClientRect();
 check(box.top >= 0 && box.bottom <= innerHeight, 'The row of Q2 is out of view');
@@ -427,8 +424,8 @@ check(document.documentElement.scrollWidth <= innerWidth, 'The page scrolls side
         self.seed()
         self.answer("Q2.1")
         self.run_in_desk("""
-check(!document.querySelector('#desk-panel-needs-you tr[data-id="Q2"]'), 'Q2 is still on Needs you');
-check(document.activeElement === document.querySelector('#desk-panel-needs-you tr[data-id="Q1"] .card-link'),
+check(!document.querySelector('#desk-panel-needs-you li[data-id="Q2"]'), 'Q2 is still on For review');
+check(document.activeElement === document.querySelector('#desk-panel-needs-you li[data-id="Q1"] .topic-title'),
       'Focus did not land on the row below the answered question');
 """, "/qd/?tab=needs-you&row=Q2")
 
@@ -447,7 +444,7 @@ check(document.activeElement === document.querySelector('#topics-archived [data-
 check(document.getElementById('desk-tab-conversations').getAttribute('aria-selected') === 'true', 'The first tab changed');
 """, "/qd/?tab=nowhere&row=Q2")
         self.run_in_desk("""
-check(document.getElementById('desk-tab-needs-you').getAttribute('aria-selected') === 'true', 'Needs you did not open');
+check(document.getElementById('desk-tab-needs-you').getAttribute('aria-selected') === 'true', 'For review did not open');
 check(document.activeElement === document.body, 'Something took focus for a row that does not exist');
 """, "/qd/?tab=needs-you&row=nothing")
 

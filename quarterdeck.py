@@ -870,6 +870,13 @@ def check_store(data: object) -> dict[str, object]:
             for flag in CONVERSATION_FLAGS:
                 if flag in item and (item[flag] is not True or item["kind"] != "conversation"):
                     raise ValueError(f"only a conversation can be {flag}")
+            if "later" in item:
+                later = item["later"]
+                if item["kind"] not in ("questions", "conversation") or not (
+                    later is True or isinstance(later, list) and later and
+                    all(isinstance(value, str) and re.fullmatch(r"[0-9a-f]{32}", value) for value in later)
+                ):
+                    raise ValueError("only a question item or a conversation can be kept for later")
             if "placement" in item:
                 if item["kind"] != "conversation":
                     raise ValueError("only a conversation can be placed in a project")
@@ -1062,6 +1069,9 @@ def validate_records(item):
 # A question's conversation: the asks the owner sent and the replies Firstmate wrote, oldest first, kept apart from the
 # answer so that a reply never changes what was decided.
 AUTHOR_LABELS = {"you": "You", "firstmate": "Firstmate"}
+FOR_REVIEW = "for_review"  # Firstmate's mark on a message that waits for the owner
+FOR_REVIEW_HELP = ("on a conversation: this message needs the owner, so the conversation shows in For review, "
+                   "with Asked, until the owner sends a message in it or resolves it")
 
 
 def validate_conversation(item):
@@ -1084,6 +1094,8 @@ def validate_conversation(item):
             you = author == "you"
             required = {"id", "author", "text", "at"} | ({"delivery", "request_id", "home"} if you else {"read"})
             optional = set() if you else {"ask", "links", "images", "clarify"}
+            if not you and item["kind"] == "conversation":
+                optional.add(FOR_REVIEW)
             if not you and index == 0 and item["kind"] == "conversation":
                 optional.add("home")
             if not required <= set(message) <= required | optional:
@@ -1094,6 +1106,8 @@ def validate_conversation(item):
                 raise ValueError("invalid message")
             seen.add(message["id"])
             parse_utc(message["at"])
+            if FOR_REVIEW in message and message[FOR_REVIEW] is not True:
+                raise ValueError("invalid message")
             if "home" in message and (not isinstance(message["home"], str)
                                       or not re.fullmatch(r"[0-9a-f]{64}", message["home"])):
                 raise ValueError("invalid message home")
@@ -1159,17 +1173,19 @@ def thread_unread(item, part):
 UNREAD_REPLY = "Unread reply"
 
 
-def first_unread_reply(item, part):
-    return next((m for m in part_thread(item, part) if unread_reply(m)), None)
+def item_replies(item):
+    parts = question_parts(item) if item["kind"] == "questions" else ()
+    for part in (*parts, None):
+        yield from (message for message in part_thread(item, part) if message["author"] == "firstmate")
+
+
+def unread_messages(item):
+    return (message for message in item_replies(item) if unread_reply(message))
 
 
 def unread_target(item):
-    parts = question_parts(item) if item["kind"] == "questions" else ()
-    for part in (*parts, None):
-        reply = first_unread_reply(item, part)
-        if reply:
-            return f'reply-{reply["id"]}'
-    return None
+    reply = next(unread_messages(item), None)
+    return f'reply-{reply["id"]}' if reply else None
 
 
 def has_pending_ask(item):
@@ -1183,7 +1199,8 @@ def has_pending_ask(item):
 
 def conversation_activity(item):
     """The moment of a conversation's latest message, or of its saving. Pinning and reading never change it."""
-    return max([parse_utc(item["saved_at"])] + [parse_utc(m["at"]) for m in part_thread(item, None)])
+    return max([parse_utc(item["saved_at"])] +
+               [parse_utc(m["at"]) for thread in item.get("conversation", {}).values() for m in thread])
 
 
 def by_activity(items):
@@ -1201,6 +1218,28 @@ def is_resolved(item):
 
 def is_archived(item):
     return item.get("archived") is True
+
+
+def is_later(item):
+    """The owner chose to deal with this item later. It stays in For review, under Later, and leaves the tab's count."""
+    return "later" in item
+
+
+def owner_request(item):
+    """A conversation waits for the owner while Firstmate's latest marked message has no message of the owner's after it.
+    Resolving the conversation ends the wait."""
+    if item["kind"] != "conversation" or is_resolved(item):
+        return None
+    for message in reversed(part_thread(item, None)):
+        if message["author"] == "you":
+            break
+        if message.get(FOR_REVIEW):
+            return message
+    return None
+
+
+def asks_owner(item):
+    return owner_request(item) is not None
 
 
 # A task is a conversation that holds work for Firstmate. Its optional `task` field carries the state, the owner's
@@ -1276,6 +1315,8 @@ def put_record(item, part, state, *, mark=None, **desk_fields):
     if earlier:
         record["earlier_answers"] = earlier
     item.setdefault("answers", {})[str(part)] = record
+    if is_later(item) and not any(part_state(item, n, replies=False) == "open" for n in question_parts(item)):
+        item.pop("later")
     return record
 
 
@@ -1307,6 +1348,8 @@ def mark_item(args):
         with locked_store(store):
             data = read_store(store)
             item = find_item(data, item_id)
+            if args.state == "open" and is_later(item) and not attention_summary(item, served=True):
+                item.pop("later")
             for number in part_numbers(item, args.id):
                 previous = part_record(item, number)
                 if via:
@@ -1549,6 +1592,8 @@ def ask_message(store, home, binding, payload, *, home_available=True, include_t
                     raise AnswerConflict("Question closed. Reopen it before asking.")
                 thread = item.setdefault("conversation", {}).setdefault(key, [])
                 thread.append(new_ask(message_id, text, binding))
+                if item["kind"] == "conversation":
+                    item.pop("later", None)
                 write_store(store, data)
     elif not retry or fields != {"part", "id", "action"}:
         raise ValueError("Invalid ask fields.")
@@ -1614,21 +1659,16 @@ def start_conversation(store, home, binding, payload):
     result = ask_message(store, home, binding, {"part": item_id, "id": message_id, "action": "retry"},
                          include_thread=False)
     with locked_store(store, read_only=True):
-        data = read_store(store)
-    item = find_item(data, item_id)
-    summary = attention_summary(item, served=True)
-    return {**result, "href": item_page_name(item_id), "row": conversation_row(item, data.get("projects", [])),
-            "hold": library_row(item, served=True),
-            "attention": desk_row(item, summary, primary=False, context="needs-you") if summary else None}
+        return conversation_result(read_store(store), item_id, result)
 
 
 def conversation_result(data, item_id, result):
-    """What the Desk needs to show one conversation again after it changed: its row, its Hold row and its Needs you row."""
+    """What the Desk needs to show one conversation again after it changed: its row, its Hold row and its For review row."""
     item = find_item(data, item_id)
     summary = attention_summary(item, served=True)
     return {**result, "href": item_page_name(item_id), "row": conversation_row(item, data.get("projects", [])),
-            "hold": library_row(item, served=True),
-            "attention": desk_row(item, summary, primary=False, context="needs-you") if summary else None}
+            "hold": "" if is_archived(item) else library_row(item, served=True),
+            "attention": review_row(item, summary) if summary else None}
 
 
 def read_firstmate_updates(item):
@@ -1733,6 +1773,7 @@ def start_task(store, home, binding, payload):
             if payload["home"] != binding or not conversation_home_matches(item, binding):
                 raise AnswerConflict("Firstmate home changed. This message belongs to the original home.")
             item["task"]["state"] = "started"
+            item.pop("later", None)
             thread.append(new_ask(message_id, TASK_STARTED, binding))
     return deliver_task_message(store, home, binding, item_id, message_id, "Task started.", "Task saved. Not delivered.")
 
@@ -1755,6 +1796,7 @@ def review_task(store, home, binding, payload):
             item["task"]["state"] = "started"
             item["task"].pop("result", None)
             item["resolved"] = True
+            item.pop("later", None)
             read_firstmate_updates(item)
             return conversation_result(data, item_id, {"message": "Task approved."})
     message_id = read_message_id(payload["id"])
@@ -1775,6 +1817,7 @@ def review_task(store, home, binding, payload):
                 raise AnswerConflict("Firstmate home changed. This message belongs to the original home.")
             item["task"]["state"] = "started"
             item["task"].pop("result", None)
+            item.pop("later", None)
             read_firstmate_updates(item)
             part_thread(item, None).append(new_ask(message_id, text, binding))
     return deliver_task_message(store, home, binding, item_id, message_id, "Note sent.", "Note saved. Not delivered.")
@@ -1784,8 +1827,17 @@ CONVERSATION_FLAGS = ("pinned", "resolved", "archived")
 FLAG_SUBJECTS = {"pinned": "pin", "resolved": "resolution", "archived": "archive"}
 
 
+def update_conversation_flag(item, flag, value):
+    if value:
+        item[flag] = True
+    else:
+        item.pop(flag, None)
+    if flag == "resolved":
+        item.pop("later", None)
+
+
 def set_conversation_flag(store, payload, flag):
-    """Set or clear a conversation's pinned, resolved or archived flag. Nothing else about it changes, and no flag locks it."""
+    """Set or clear a conversation's pinned, resolved or archived flag."""
     subject = FLAG_SUBJECTS[flag]
     if not isinstance(payload, dict) or set(payload) != {"part", flag} or type(payload[flag]) is not bool:
         raise ValueError(f"Invalid {subject} fields.")
@@ -1796,10 +1848,7 @@ def set_conversation_flag(store, payload, flag):
         item = find_item(data, item_id)
         if item["kind"] != "conversation":
             raise ValueError(f"Only a conversation can be {flag}.")
-        if payload[flag]:
-            item[flag] = True
-        else:
-            item.pop(flag, None)
+        update_conversation_flag(item, flag, payload[flag])
         result = {flag: payload[flag]}
         if flag != "pinned":  # the Hold list keeps its own row for the conversation
             result["hold"] = "" if is_archived(item) else library_row(item, served=True)
@@ -1808,6 +1857,26 @@ def set_conversation_flag(store, payload, flag):
 
 def pin_conversation(store, payload):
     return set_conversation_flag(store, payload, "pinned")
+
+
+def set_later(store, payload):
+    """Keep a question item or a conversation for later, or take it out of Later. Nothing else about it changes."""
+    if not isinstance(payload, dict) or set(payload) != {"part", "later"} or type(payload["later"]) is not bool:
+        raise ValueError("Invalid later fields.")
+    item_id = payload["part"]
+    if not isinstance(item_id, str) or item_id != item_id.upper() or not ID_RE.fullmatch(item_id):
+        raise ValueError("Unknown item.")
+    with changing_store(store) as data:
+        item = find_item(data, item_id)
+        if item["kind"] not in ("questions", "conversation"):
+            raise ValueError("Only a question item or a conversation can be kept for later.")
+        if payload["later"]:
+            if not attention_summary(item, served=True):
+                raise AnswerConflict("This item no longer waits for you.")
+            item["later"] = [message["id"] for message in unread_messages(item)] or True
+        else:
+            item.pop("later", None)
+        return {"later": payload["later"]}
 
 
 def move_conversation(store, payload):
@@ -2401,11 +2470,13 @@ def reply_parts(args: argparse.Namespace):
     return text, links, images, pending
 
 
-def firstmate_message(text, links, images, ask=None, *, fractional=False):
+def firstmate_message(text, links, images, ask=None, *, fractional=False, for_review=False):
     message: dict[str, object] = {"id": uuid.uuid4().hex, "author": "firstmate", "text": text,
                                   "at": now_text(fractional=fractional), "read": False}
     if ask is not None:
         message["ask"] = ask
+    if for_review:
+        message[FOR_REVIEW] = True
     if links:
         message["links"] = links
     if images:
@@ -2437,7 +2508,9 @@ def reply_item(args: argparse.Namespace) -> int:
             if ask not in asks:
                 raise ValueError(f"No {noun} {ask!r} on {target}.")
             option_changed = any(note["option_changed"] for note in clarify.values())
-            message = firstmate_message(text, links, images, ask, fractional=option_changed)
+            if args.for_review and item["kind"] != "conversation":
+                raise ValueError("--for-review needs a conversation; a question item already shows in For review")
+            message = firstmate_message(text, links, images, ask, fractional=option_changed, for_review=args.for_review)
             if clarify:
                 if item["kind"] != "questions":
                     raise ValueError("--clarify needs a question item")
@@ -2463,7 +2536,7 @@ def post_update(args: argparse.Namespace) -> int:
             item = find_item(data, target)
             if item["kind"] != "conversation":
                 raise ValueError(f"post to a conversation item, such as Q12: {args.id!r}")
-            part_thread(item, None).append(firstmate_message(text, links, images))
+            part_thread(item, None).append(firstmate_message(text, links, images, for_review=args.for_review))
             save_images(store, item["id"], pending, tree=REPLY_IMAGES)
             write_store(store, data)
         print(f"{target} Updated")
@@ -2482,10 +2555,7 @@ def set_flag_command(flag: str, value: bool, done: str):
                 item = find_item(data, target)
                 if item["kind"] != "conversation":
                     raise ValueError(f"use a conversation item, such as Q12: {args.id!r}")
-                if value:
-                    item[flag] = True
-                else:
-                    item.pop(flag, None)
+                update_conversation_flag(item, flag, value)
                 write_store(store, data)
             print(f"{target} {done}")
             return 0
@@ -2500,7 +2570,7 @@ unarchive_conversation = set_flag_command("archived", False, "Unarchived")
 
 
 def review_task_command(args: argparse.Namespace) -> int:
-    """Firstmate posts a task's result and asks for the owner's review: the task goes In review and shows in Needs you."""
+    """Firstmate posts a task's result and asks for the owner's review: the task goes In review and shows in For review."""
     def action() -> int:
         target = args.id.upper()
         text = clean_text(args.text, "text", TEXT_LIMIT, multiline=True)
@@ -2519,6 +2589,7 @@ def review_task_command(args: argparse.Namespace) -> int:
                 raise ValueError(f"{target} is a draft; the owner has not started it")
             item["task"]["state"] = "review"
             item["task"].pop("result", None)
+            item.pop("later", None)
             if links:
                 item["task"]["result"] = links[0]
             part_thread(item, None).append(firstmate_message(text, links, []))
@@ -2534,7 +2605,7 @@ def converse(args: argparse.Namespace) -> int:
         title = clean_text(args.title, "title", TITLE_LIMIT)
         text, links, images, pending = reply_parts(args)
         home = configured_firstmate_home(selected_config(args))
-        message = firstmate_message(text, links, images)
+        message = firstmate_message(text, links, images, for_review=args.for_review)
         if home is not None:
             _, binding = ask_destination(home, require_directory=True)
             if binding is None:
@@ -3296,34 +3367,97 @@ body:has(dialog[open]) { overflow:hidden; }
   .talk .actions { align-self:end; }
   .talk p[id], .talk output { grid-column:1 / -1; }
 }
-.desk-tabs { margin:1rem 0 1.2rem; border-bottom:1px solid var(--rule); }
+.desk-tabs { flex-wrap:wrap; margin:1rem 0 1.2rem; border-bottom:1px solid var(--rule); }
 .desk-tabs [role="tab"] { font-size:var(--text-md); margin-bottom:-1px; }
-@media (max-width: 40rem) { .desk-tabs { flex-wrap:wrap; } .desk-tabs [role="tab"] { padding:.5rem .3rem; font-size:var(--text-sm); }
+@media (max-width: 40rem) { .desk-tabs [role="tab"] { padding:.5rem .3rem; font-size:var(--text-sm); }
   .desk-tabs .tab-count { min-width:0; margin-left:.2rem; padding:0 .35rem; } }
 .tab-count { display:inline-block; min-width:1.6em; margin-left:.3rem; padding:0 .45rem; border-radius:1em; text-align:center;
   font:600 var(--text-sm)/1.5 var(--sans); color:var(--signal); background:var(--signal-ground); }
 .desk-panel > .empty { margin:1rem 0; }
 .topics { max-width:52rem; }
-.topics h2 { margin:1.6rem 0 .5rem; }
+.topics h2 { margin:0; font:700 var(--text-md)/1.3 var(--sans); color:var(--soft); }
+.topics-head { display:flex; flex-wrap:wrap; gap:.3rem 1rem; align-items:center; justify-content:space-between; margin:1.4rem 0 .4rem; }
+.topics-head .desk-feedback { flex:1 1 100%; margin:0; }
 .topic-list { list-style:none; margin:0; padding:0; border-top:1px solid var(--rule); font-family:var(--sans); }
-.topic { display:grid; grid-template-columns:minmax(0,1fr) auto; gap:.4rem 1rem; align-items:center; padding:.8rem 0; border-bottom:1px solid var(--rule); }
-.topic > .desk-feedback { grid-column:1 / -1; margin:0; }
-.topic-main { min-width:0; flex:1; }
-.topic-title { display:inline-block; padding:.2rem 0; font:700 var(--text-lg)/1.3 var(--serif); }
-.topic-latest { margin:.1rem 0 .3rem; color:var(--soft); display:-webkit-box; -webkit-line-clamp:2; -webkit-box-orient:vertical; overflow:hidden; }
+.topic { position:relative; padding:.6rem .5rem; border-bottom:1px solid var(--rule); border-left:4px solid transparent; }
+.topic-main { min-width:0; }
+.topic-title { display:inline-block; padding:.1rem 0; font:500 var(--text-md)/1.35 var(--sans); }
+.topic[data-unread="true"] .topic-title { font-weight:700; }
+.topic-title::after { content:""; position:absolute; inset:0; }
+.topic-title:focus-visible { outline:none; }
+.topic:has(.topic-title:focus-visible) { outline:3px solid var(--focus); outline-offset:-3px; }
+.topic[aria-current="true"] { background:var(--faint); border-left-color:var(--signal); }
+@media (hover: hover) and (pointer: fine) { .topic:not(.notice, .bookmark):hover { background:var(--faint); } }
+.topic:not(.notice, .bookmark):active { background:var(--faint); }
+.topic-latest { margin:.05rem 0 .2rem; color:var(--soft); font-size:var(--text-sm); display:-webkit-box; -webkit-line-clamp:2; -webkit-box-orient:vertical; overflow:hidden; }
 .topic-meta { display:flex; flex-wrap:wrap; gap:0 1rem; margin:0; }
 .topic-meta .badge { font-size:var(--text-sm); }
-.topic-actions { display:flex; flex-wrap:wrap; gap:.4rem; justify-content:flex-end; }
-.topic-actions button { flex:none; min-width:5rem; }
-.topic-actions button:active { background:var(--faint); }
-@media (max-width: 30rem) { .topic { grid-template-columns:minmax(0,1fr); } .topic-actions { justify-content:flex-start; } }
+.notice-title { margin:0; font:700 var(--text-md)/1.35 var(--sans); }
+.notice-summary { margin:.05rem 0 .2rem; color:var(--soft); font-size:var(--text-sm); }
+.notice-links { margin:0 0 .2rem; }
+.notice-links a { display:inline-block; margin-right:.9rem; padding:.3rem 0; }
+.topic.notice button { margin-top:.3rem; }
+.bookmark-title { display:inline-block; padding:.1rem 0; font:500 var(--text-md)/1.35 var(--sans); }
+.topic.bookmark a { display:inline-block; padding:.3rem 0; }
+.topic.bookmark .notice-links { font-size:var(--text-sm); }
+.bookmark-id { font:700 var(--text-sm)/1.4 var(--mono); }
+.topic.notice .desk-feedback { margin:.2rem 0 0; }
+.talk-to { display:flex; gap:.8rem; margin:0; padding:0 0 .5rem; border-bottom:1px solid var(--rule); }
+.talk p.talk-to { color:var(--ink); font-weight:400; }
+.talk-to-label { color:var(--soft); font-weight:600; }
+.msg.folded { padding:0; }
+.fold { display:grid; grid-template-columns:auto minmax(0,1fr) auto; gap:0 .8rem; align-items:baseline; width:100%; text-align:left; border:0;
+  border-radius:6px; background:transparent; padding:.5rem .9rem; }
+.fold .snip { color:var(--soft); white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+.fold time { color:var(--soft); font-size:var(--text-sm); white-space:nowrap; }
+.fold:active { background:var(--faint); }
+@media (hover: hover) and (pointer: fine) { .fold:hover { background:var(--faint); } }
+@media (max-width: 30rem) { .fold { grid-template-columns:auto minmax(0,1fr); } .fold time { display:none; } }
+.mail-pane { display:none; }
+.talk-back { display:none; }
+@media (width < 60rem) {
+  .mailbox:has(#talk-form:not([hidden])) .mail-list > :not(#desk-status) { display:none; }
+  .mail-pane:has(#talk-form:not([hidden])), .talk-back { display:block; }
+  #pane-frame, #pane-empty { display:none; }
+}
+body:has(.mailbox) > main { padding-top:.4rem; }
+.mail-list .desk-tabs { margin:.2rem 0 .6rem; }
+.mail-list .talk-open { margin-top:.2rem; }
+.mail-list .scope { margin:.7rem 0 .4rem; gap:.3rem .9rem; align-items:center; }
+.mail-list .scope > .scope-field { flex:1 1 100%; max-width:none; flex-direction:row; align-items:center; gap:.6rem; }
+.mail-list .scope > .scope-field select { flex:1; min-width:0; }
+.mail-list .topics-head { margin-top:1rem; }
+.in-pane .bar, .in-pane .back-link { display:none; }
+.in-pane main { padding-top:1rem; }
+.in-pane .list-nav:not(:has(.next-link, .later)) { display:none; }
+.list-nav .later-status { flex:1 1 100%; margin:0; }
+.list-nav .later-status:empty { display:none; }
+.list-nav .later-status.failed { color:var(--signal); font-weight:600; }
+@media (min-width: 60rem) {
+  body:has(.mailbox) { height:100dvh; display:flex; flex-direction:column; overflow:hidden; }
+  body:has(.mailbox) > main { flex:1; min-height:0; width:100%; max-width:none; margin:0; padding:0; }
+  .mailbox { display:grid; grid-template-columns:clamp(22rem, 40vw, 36rem) minmax(0, 1fr); height:100%; }
+  .mail-list { min-width:0; overflow-y:auto; overscroll-behavior:contain; padding:0 .8rem 2rem; border-right:1px solid var(--rule); background:var(--raised); }
+  .mail-list .desk-tabs { flex-wrap:wrap; gap:0 .25rem; margin:.3rem 0 .6rem; }
+  .mail-list .desk-tabs [role="tab"] { padding:.5rem .1rem; font-size:var(--text-sm); }
+  .mail-list .desk-tabs .tab-count { min-width:0; margin-left:.1rem; padding:0 .25rem; }
+
+  .mail-pane { display:flex; flex-direction:column; min-width:0; min-height:0; }
+  #pane-frame { flex:1; width:100%; min-height:0; border:0; background:var(--ground); }
+  .pane-compose { flex:1; min-height:0; overflow-y:auto; overscroll-behavior:contain; padding:1.2rem clamp(1.5rem, 4vw, 4rem) 2rem; }
+  .pane-compose .talk { grid-template-columns:minmax(0, 1fr); }
+  .pane-compose #talk-message { min-height:14rem; }
+  #pane-empty { margin:2rem clamp(1.5rem, 4vw, 4rem); }
+  .pane-compose:not(:has(form:not([hidden]))), #pane-frame:not([data-open]), .mail-pane:has(#pane-frame[data-open]) #pane-empty,
+  .mail-pane:has(.pane-compose form:not([hidden])) :is(#pane-frame, #pane-empty) { display:none; }
+}
 .resolved-mark, .archived-mark { display:inline-flex; align-items:center; gap:.3rem; font:600 var(--text-sm)/1.5 var(--sans); color:var(--ink); }
 .conversation-state { display:flex; flex-wrap:wrap; align-items:center; gap:.5rem 1rem; margin:.8rem 0 1rem; font-family:var(--sans); }
 .conversation-state button { min-width:5rem; }
 .conversation-state .state-status { flex-basis:100%; margin:0; }
 .conversation-state .state-status:empty { display:none; }
 .conversation-state .state-status.failed { color:var(--signal); font-weight:600; }
-.topic > .move-form { grid-column:1 / -1; padding:.4rem 0 0; }
+.move-form { margin:0 0 1rem; max-width:52rem; }
 #scope[data-projects="no"] ~ .topics .move { display:none; }
 .topic-meta .placement { color:var(--ink); font-weight:600; }
 .scope { max-width:52rem; margin:1rem 0; display:flex; flex-wrap:wrap; gap:.6rem 1rem; align-items:end; font-family:var(--sans); }
@@ -3726,6 +3860,12 @@ LIBRARY_SCRIPT = r"""
       localizeStamps(list.querySelector('[data-id="' + id + '"]'));
       run();
     });
+    if (topics || tab.id === 'tab-answered') panel.addEventListener('hold-refreshed', event => {
+      const list = panel.querySelector('.lib-list');
+      list.replaceChildren(...event.detail.children);
+      localizeStamps(list);
+      run();
+    });
     search.addEventListener('input', run);
     for (const select of filters) select.addEventListener('change', run);
     run();
@@ -3928,10 +4068,11 @@ class ListKind(NamedTuple):
 
 
 HOLD_FILTERS = ("project", "tag", "search")
-DESK_SCOPE = ("project", "topic", "tasks")
+DESK_SCOPE = ("project", "topic", "tasks", "unread")
 LIST_KINDS = {
-    "needs-you": ListKind("Needs you", "desk", "needs-you"),
+    "needs-you": ListKind("For review", "desk", "needs-you"),
     "conversations": ListKind("Conversations", "desk", "conversations", DESK_SCOPE),
+    "desk-references": ListKind("References", "desk", "references"),
     "archived": ListKind("Archived", "desk", "archived"),
     "watch": ListKind("Watch", "watch", ""),
     "references": ListKind("References", "hold", "references", HOLD_FILTERS),
@@ -3956,6 +4097,8 @@ def parse_list_context(query: str) -> dict[str, str] | None:
         value = fields.get(key, [""])[0][:FILTER_VALUE_LIMIT]
         if value:
             context[key] = value
+    if name == "conversations" and "at" in fields and re.fullmatch(r"reply-[0-9a-f]{32}", fields["at"][0]):
+        context["at"] = fields["at"][0]
     return context
 
 
@@ -3963,7 +4106,10 @@ def item_link(item_id: str, context: dict[str, str] | str | None = None, target:
     """The address of an item's page. With a list it names, the page can send the owner back to that list."""
     href = item_page_name(item_id)
     if context:
-        href += "?" + urlencode({"from": context} if isinstance(context, str) else context)
+        params = {"from": context} if isinstance(context, str) else dict(context)
+        if params["from"] == "conversations" and target and target.startswith("reply-"):
+            params["at"] = target
+        href += "?" + urlencode(params)
     return href + (f"#{target}" if target else "")
 
 
@@ -4012,12 +4158,15 @@ def list_members(data: dict[str, object], context: dict[str, str]) -> list[dict[
     items = newest_first(data["items"])  # type: ignore[arg-type]
     name = context["from"]
     if name == "needs-you":
-        return [item for item in items if attention_summary(item, served=True)]
+        waiting = [item for item in items if attention_summary(item, served=True)]
+        return [i for i in waiting if not shows_later(i)] + [i for i in waiting if shows_later(i)]
     if name == "watch":
         return [row[0] for row in watch_requests(data)]
+    if name == "desk-references":
+        return [item for item in items if item["kind"] in ("resource", "list")]
     if name in ("conversations", "archived"):
-        wanted = name == "archived"
-        members = [item for item in items if item["kind"] == "conversation" and is_archived(item) == wanted]
+        members = ([item for item in items if desk_conversation(item)] if name == "conversations" else
+                   [item for item in items if item["kind"] == "conversation" and is_archived(item)])
         return list_sorter(name)([item for item in members if in_desk_scope(data, context, item)])
     kinds = {"references": ("resource", "list"), "answered": ("questions",), "hold-conversations": ("conversation",)}[name]
     members = [item for item in items if item["kind"] in kinds and (
@@ -4026,8 +4175,10 @@ def list_members(data: dict[str, object], context: dict[str, str]) -> list[dict[
 
 
 def in_desk_scope(data: dict[str, object], context: dict[str, str], item) -> bool:
-    """Whether a conversation shows under the Desk's project, topic and Tasks only scope, as the Desk's script decides it."""
+    """Whether a conversation shows under the Desk's project, topic, Tasks only and Unread only scope, as the Desk's script decides it."""
     if context.get("tasks") and not is_task(item):
+        return False
+    if context.get("unread") and unread_target(item) is None:
         return False
     project = context.get("project", "")
     if project == "-":
@@ -4047,29 +4198,47 @@ def list_sorter(name: str):
     if name in ("conversations", "archived"):
         def sort_conversations(items):
             ordered = by_activity(items)
-            return [i for i in ordered if is_pinned(i)] + [i for i in ordered if not is_pinned(i)] if name == "conversations" else ordered
+            if name != "conversations":
+                return ordered
+            unread = [i for i in ordered if unread_conversation(i)]
+            rest = [i for i in ordered if not unread_conversation(i)]
+            return unread + [i for i in rest if is_pinned(i)] + [i for i in rest if not is_pinned(i)]
         return sort_conversations
     return None if name == "watch" else newest_first
 
 
 def list_unread(name: str, item) -> bool:
-    """Needs you holds only what still needs the owner; every other list counts an unread reply."""
-    return name == "needs-you" or unread_target(item) is not None
+    """For review holds only what waits for the owner, and Later is put aside; every other list counts an unread reply."""
+    return not shows_later(item) if name == "needs-you" else unread_target(item) is not None
 
 
 def attention_target(item, summary) -> str | None:
-    """Where an item's page opens: its first unread reply, else its first open question."""
+    """Where a review opens: the marked request, an unread reply, or the first open question."""
     state, open_parts, _ = summary
+    request = owner_request(item)
+    if request:
+        return f'reply-{request["id"]}'
     if state == "Replied":
         return unread_target(item)
     return f'{item["id"]}.{open_parts[0]}' if open_parts else None
 
 
-def next_unread(data: dict[str, object], context: dict[str, str], current) -> tuple[dict[str, object], str | None] | None:
-    """The next unread item after the current one in its list, wrapping to the start, and where its page opens."""
+def next_unread(data: dict[str, object], context: dict[str, str], current, *, opening=None) -> tuple[dict[str, object], str | None] | None:
+    """The next unread reply or item in the originating list, wrapping to its start."""
     name = context["from"]
     line = list_members(data, context)
-    if all(item["id"] != current["id"] for item in line):
+    present = any(item["id"] == current["id"] for item in line)
+    if name == "conversations" and present:
+        if opening is None:
+            replies = unread_messages(current)
+            next(replies, None)
+        else:
+            thread = item_replies(current)
+            next((message for message in thread if f'reply-{message["id"]}' == opening), None)
+            replies = (message for message in thread if unread_reply(message))
+        if reply := next(replies, None):
+            return current, f'reply-{reply["id"]}'
+    if not present:
         sorter = list_sorter(name)
         line = sorter([*line, current]) if sorter else [current, *line]
     at = next(number for number, item in enumerate(line) if item["id"] == current["id"])
@@ -4080,10 +4249,99 @@ def next_unread(data: dict[str, object], context: dict[str, str], current) -> tu
     return None
 
 
+# An item page shown in the Desk's pane tells the Desk when something was saved, and sends other links to the whole window.
+PANE_SCRIPT = r"""
+if (document.documentElement.classList.contains('in-pane')) {
+  const send = window.fetch;
+  window.fetch = async (...args) => {
+    const response = await send(...args);
+    try {
+      if (args[1]?.method === 'POST' && response.ok) window.parent.postMessage('quarterdeck-changed', location.origin);
+    } catch {}
+    return response;
+  };
+  document.addEventListener('click', event => {
+    const link = event.target.closest('a[href]');
+    if (!link || link.target) return;
+    const address = new URL(link.href);
+    if (address.origin !== location.origin || link.classList.contains('open-link')) {
+      link.target = '_blank';
+      link.relList.add('noopener');
+    }
+    else if (!/\/q[1-9][0-9]*\.html$/.test(address.pathname)) link.target = '_top';
+  }, true);
+}
+"""
+
+# A conversation reads as a stacked thread, and an item that waits for the owner can be kept for later.
+THREAD_SCRIPT = r"""
+(() => {
+  const open = li => {
+    if (!li.classList.contains('folded')) return;
+    li.classList.remove('folded');
+    li.querySelector('.fold').remove();
+    const body = li.querySelector('.msg-body');
+    body.replaceWith(...body.childNodes);
+  };
+  document.addEventListener('click', event => {
+    const fold = event.target.closest('button.fold');
+    if (!fold) return;
+    const li = fold.closest('li');
+    open(li);
+    li.tabIndex = -1;
+    li.focus({preventScroll: true});
+  });
+  const reveal = () => {
+    let target = null;
+    try { target = location.hash.length > 1 ? document.getElementById(decodeURIComponent(location.hash.slice(1))) : null; } catch {}
+    const li = target?.closest('li.msg');
+    if (!li || !li.classList.contains('folded')) return;
+    open(li);
+    li.scrollIntoView({block: 'center'});
+  };
+  addEventListener('hashchange', reveal);
+  reveal();
+})();
+(() => {
+  const buttons = [...document.querySelectorAll('button.later')];
+  const status = document.querySelector('.later-status');
+  for (const button of buttons) button.addEventListener('click', async () => {
+    const bar = button;
+    const value = button.dataset.later !== 'true';
+    buttons.forEach(other => { other.disabled = true; });
+    let saved = false;
+    try {
+      const response = await fetch('laters', {method:'POST', headers:{'Content-Type':'application/json'},
+        body:JSON.stringify({part:bar.dataset.id, later:value})});
+      saved = response.ok;
+    } catch {
+      saved = false;
+    }
+    buttons.forEach(other => { other.disabled = false; });
+    status.classList.toggle('failed', !saved);
+    if (!saved) {
+      status.textContent = 'Quarterdeck could not save the change to ' + bar.dataset.title + '. Try again.';
+      return;
+    }
+    for (const other of buttons) {
+      other.dataset.later = String(value);
+      other.textContent = value ? 'Remove from Later' : 'Deal with later';
+    }
+    status.textContent = bar.dataset.title + (value ? ' is in Later.' : ' is out of Later.');
+    button.focus();
+  });
+})();
+"""
+
 CONVERSATION_TEXT_SCRIPT = r"""
 const trimmed = value => value.replace(/^[\p{White_Space}\u001c-\u001f]+|[\p{White_Space}\u001c-\u001f]+$/gu, '');
 const normalizeTopic = value => trimmed(value.replace(/[\p{White_Space}\u001c-\u001f]+/gu, ' '));
 """
+
+
+# Set before the page draws: an item page inside the Desk's pane shows without the site header and the Back link.
+PANE_CLASS = ("  <script>try { if (window.frameElement && window.frameElement.id === 'pane-frame') "
+              "document.documentElement.classList.add('in-pane'); } catch {}</script>\n")
 
 
 def nav_links(saved_href, current, served):
@@ -4095,6 +4353,7 @@ def nav_links(saved_href, current, served):
 
 
 def page_shell(title: str, site_title: str, body: str, *, served: bool, saved_name: str, interactive: bool = False,
+               pane_links: bool = False,
                workers: bool = False, library: str = "", conversations: bool = False, filters: bool = False,
                talking: bool = False, starting: bool = False, current: str = "", watching: bool = False) -> str:
     saved_href = quote(saved_name, safe="")
@@ -4107,10 +4366,10 @@ def page_shell(title: str, site_title: str, body: str, *, served: bool, saved_na
     return (
         "<!doctype html>\n<html lang=\"en\">\n<head>\n  <meta charset=\"utf-8\">\n"
         "  <meta name=\"viewport\" content=\"width=device-width, initial-scale=1\">\n"
-        f"  {GENERATED_MARKER}\n  <title>{esc(title)}</title>\n  {links}<style>{PAGE_CSS}</style>\n</head>\n<body>\n"
+        f"  {GENERATED_MARKER}\n  <title>{esc(title)}</title>\n  {links}<style>{PAGE_CSS}</style>\n{PANE_CLASS if served else ''}</head>\n<body>\n"
         f'<header class="bar"><a class="mark" href="{saved_href}">{esc(site_title)}</a>'
         f'<nav>{nav_links(saved_href, current, served)}{opener}</nav></header>\n'
-        f"<main>\n{body}\n</main>\n{library}<script>{ARRIVAL_SCRIPT if library or starting else ''}{TIME_SCRIPT}{VIEWPORT_SCRIPT if interactive or library else ''}{QUESTION_SCRIPT if conversations else ''}"
+        f"<main>\n{body}\n</main>\n{library}<script>{PANE_SCRIPT if pane_links else ''}{ARRIVAL_SCRIPT if library or starting else ''}{TIME_SCRIPT}{VIEWPORT_SCRIPT if interactive or library else ''}{QUESTION_SCRIPT + THREAD_SCRIPT if conversations else ''}"
         f"{CONVERSATION_TEXT_SCRIPT if library or talking or starting else ''}"
         f"{ANSWER_SCRIPT if interactive else ''}{CONVERSATION_SCRIPT if talking else ''}{DESK_SCRIPT if starting else ''}{TASK_SCRIPT if talking or starting else ''}"
         f"{WORKER_SUMMARY_SCRIPT if workers or watching else ''}"
@@ -4159,23 +4418,21 @@ def review_actions(item, ask_binding, *, primary):
             '<p class="meta review-status" role="status"></p></div>')
 
 
-def desk_row(item, summary, *, primary, context=None, ask_binding=None):
+
+def desk_row(item, summary, *, primary):
+    """One row of the rendered, read-only Desk table."""
     state, open_parts, pending = summary
-    href = esc(item_link(item["id"], context, attention_target(item, summary)))
-    review = review_actions(item, ask_binding, primary=False) if context and in_review(item) else ""
+    href = esc(item_link(item["id"], None, attention_target(item, summary)))
     title = esc(item["title"])
     project = esc(item["project"]) if item.get("project") else ""
     remaining = len(open_parts)
     count = f'{remaining} of {len(question_parts(item))} open' if remaining else "None open"
     latest = (f'<span class="badge">{UNREAD_REPLY}</span>' if state == "Replied" else
               "Asked" if remaining else esc(state))
-    if review and state == "Replied":
-        latest += f' <span>{TASK_STATES["review"]}</span>'
     if pending:
-        failure = '<span>Not delivered</span>'
-        latest = failure if state == "Messaged" else f'{latest} {failure}'
-    return (f'<tr class="work{' next' if primary else ''}{' review-row' if review else ''}"{f' data-id="{item["id"]}"' if context else ""}><th scope="row">'
-            f'<a class="card-link" href="{href}"><span class="id">{item["id"]}</span> {title}</a>{review}</th>'
+        latest = f'{latest} <span>Not delivered</span>'
+    return (f'<tr class="work{' next' if primary else ''}"><th scope="row">'
+            f'<a class="card-link" href="{href}"><span class="id">{item["id"]}</span> {title}</a></th>'
             f'<td class="project">{project}</td><td>{count}</td><td>{latest}</td></tr>')
 
 
@@ -4240,7 +4497,10 @@ def read_only_option(item, option):
     return f'<li class="option">{image_link(item, option["image"])}<span>{linked_text(option["label"])}</span></li>'
 
 
-def message_html(item, message, *, editable, message_number=None):
+FOLD_SNIPPET_LIMIT = 160
+
+
+def message_html(item, message, *, editable, message_number=None, fold=False):
     you = message["author"] == "you"
     when = esc(message["at"])
     delivery = f' <span class="delivery">{delivery_label(message)}</span>' if you else ''
@@ -4261,9 +4521,16 @@ def message_html(item, message, *, editable, message_number=None):
     elif not you and "ask" not in message:
         reference = ' <span>Firstmate update</span>'
     unread = " data-unread" if unread_reply(message) else ""
-    return (f'<li class="msg {message["author"]}"{identity}{unread}><p class="who"><strong>{AUTHOR_LABELS[message["author"]]}</strong> '
-            f'<time datetime="{when}">{when}</time>{delivery}{reference}</p>{message_text_html(message["text"])}'
-            f'{links_html(message)}{shots_html(item, message, tree=REPLY_IMAGES)}{controls}</li>')
+    inner = (f'<p class="who"><strong>{AUTHOR_LABELS[message["author"]]}</strong> '
+             f'<time datetime="{when}">{when}</time>{delivery}{reference}</p>{message_text_html(message["text"])}'
+             f'{links_html(message)}{shots_html(item, message, tree=REPLY_IMAGES)}{controls}')
+    if not fold:
+        return f'<li class="msg {message["author"]}"{identity}{unread}>{inner}</li>'
+    snippet = esc(" ".join(str(message["text"]).split())[:FOLD_SNIPPET_LIMIT])
+    return (f'<li class="msg {message["author"]} folded"{identity}>'
+            f'<button type="button" class="fold" aria-expanded="false"><strong>{AUTHOR_LABELS[message["author"]]}</strong> '
+            f'<span class="snip">{snippet}</span> <time datetime="{when}">{when}</time></button>'
+            f'<div class="msg-body" hidden>{inner}</div></li>')
 
 
 def thread_html(item, number, *, editable):
@@ -4271,8 +4538,11 @@ def thread_html(item, number, *, editable):
         thread = part_thread(item, number)
         numbers = conversation_message_numbers(thread)
         home = thread_home(thread) if editable else None
-        messages = ''.join(message_html(item, m, editable=editable and m.get("home") == home,
-                                        message_number=numbers.get(m.get("ask", m["id"])))
+        request = owner_request(item)
+        messages = "".join(message_html(item, m, editable=editable and m.get("home") == home,
+                                        message_number=numbers.get(m.get("ask", m["id"])),
+                                        fold=(m is not thread[-1] and m is not request
+                                              and not unread_reply(m) and m.get("delivery") != "pending"))
                            for m in thread)
         return f'<ol class="exchange">{messages}</ol>' if messages else ''
     groups = {}
@@ -4334,19 +4604,46 @@ def item_conversation(item, ask_binding):
             f'{editor}{thread}</section>')
 
 
-def conversation_state(item, ask_binding=None):
-    """The resolved mark and the controls that resolve, reopen, archive and unarchive one conversation."""
-    resolved, archived = is_resolved(item), is_archived(item)
+
+
+def later_button(item):
+    """Deal with later on an item that waits for the owner; Remove from Later on one already put aside."""
+    if not is_later(item) and not attention_summary(item, served=True):
+        return ""
+    later = is_later(item)
+    return (f'<button type="button" class="later" data-id="{item["id"]}" data-title="{esc(item["title"])}" '
+            f'data-later="{"true" if later else "false"}">{"Remove from Later" if later else "Deal with later"}</button>')
+
+
+def move_form(item, tree):
+    """The form that files one conversation in a project and topic, or returns it to Ungrouped."""
+    placement = item.get("placement", {})
+    data = json.dumps(tree, ensure_ascii=False).replace("<", "\\u003c")
+    return (f'<script type="application/json" id="groups-data">{data}</script>'
+            f'<form id="move-form" class="move-form" hidden novalidate aria-label="Move conversation" '
+            f'data-project="{esc(placement.get("project", ""))}" data-topic="{esc(placement.get("topic", ""))}">'
+            '<div class="scope-field"><label for="move-project">Project</label><select id="move-project"></select></div>'
+            '<div class="scope-field" id="move-topic-field"><label for="move-topic">Topic</label><select id="move-topic"></select></div>'
+            '<div class="actions"><button type="submit">Save move</button>'
+            '<button type="button" id="move-cancel">Cancel move</button></div></form>')
+
+
+def conversation_state(item, ask_binding=None, tree=None):
+    """The marks on one conversation and the controls that pin, move, resolve and archive it."""
+    pinned, resolved, archived = is_pinned(item), is_resolved(item), is_archived(item)
     title = esc(item["title"])
     state = (f'<span class="task-state"{" hidden" if resolved else ""}>{TASK_STATES[task_state(item)]}</span>'
              if is_task(item) else "")
-    return (f'<div class="conversation-state" data-id="{item["id"]}" data-title="{title}" '
+    move = ('<button type="button" class="move" aria-expanded="false" aria-controls="move-form"'
+            f'{" hidden" if archived else ""}>Move</button>') if tree else ""
+    return (f'<div class="conversation-state" data-id="{item["id"]}" data-title="{title}" data-pinned="{"true" if pinned else "false"}" '
             f'data-resolved="{"true" if resolved else "false"}" data-archived="{"true" if archived else "false"}">'
             f'{state}{resolved_mark(item)}<span class="archived-mark"{"" if archived else " hidden"}>Archived</span>'
+            f'<button type="button" class="pin"{" hidden" if archived else ""}>{"Unpin" if pinned else "Pin"}</button>{move}'
             f'<button type="button" class="resolve">{"Reopen" if resolved else "Resolve"}</button>'
             f'<button type="button" class="archive">{"Unarchive" if archived else "Archive"}</button>'
             f'{task_opener("") if ask_binding else ""}'
-            '<p class="meta state-status" role="status"></p></div>')
+            f'<p class="meta state-status" role="status"></p></div>{move_form(item, tree) if tree else ""}')
 
 
 def related_link(item):
@@ -4802,35 +5099,105 @@ CONVERSATION_SCRIPT = talk_script(r"""
   const status = bar.querySelector('.state-status');
   const mark = bar.querySelector('.resolved-mark');
   const archivedMark = bar.querySelector('.archived-mark');
+  const moveButton = bar.querySelector('button.move');
+  const moveForm = document.getElementById('move-form');
   const words = {
-    resolved: {labels: ['Resolve', 'Reopen'], done: ['is reopened.', 'is resolved.']},
-    archived: {labels: ['Archive', 'Unarchive'], done: ['is unarchived.', 'is archived.']}
+    pinned: {path: 'pins', labels: ['Pin', 'Unpin'], done: ['is unpinned.', 'is pinned.']},
+    resolved: {path: 'resolutions', labels: ['Resolve', 'Reopen'], done: ['is reopened.', 'is resolved.']},
+    archived: {path: 'archives', labels: ['Archive', 'Unarchive'], done: ['is unarchived.', 'is archived.']}
+  };
+  const say = (text, failed) => {
+    status.classList.toggle('failed', failed);
+    status.textContent = text;
+  };
+  const closeMove = () => {
+    if (!moveForm) return;
+    moveForm.hidden = true;
+    moveButton.setAttribute('aria-expanded', 'false');
   };
   bar.addEventListener('click', async event => {
-    const button = event.target.closest('button.resolve, button.archive');
+    const button = event.target.closest('button.pin, button.resolve, button.archive');
     if (!button || button.disabled) return;
-    const key = button.classList.contains('archive') ? 'archived' : 'resolved';
+    const key = button.classList.contains('archive') ? 'archived' : button.classList.contains('pin') ? 'pinned' : 'resolved';
     const value = bar.dataset[key] !== 'true';
     const done = words[key].done[value ? 1 : 0];
     const hadFocus = document.activeElement === button;
     button.disabled = true;
     let saved = false;
     try {
-      saved = (await postJson(key === 'archived' ? 'archives' : 'resolutions', {part:bar.dataset.id, [key]:value})).ok;
+      saved = (await postJson(words[key].path, {part:bar.dataset.id, [key]:value})).ok;
     } catch {
       saved = false;
     }
     button.disabled = false;
-    status.classList.toggle('failed', !saved);
     if (saved) {
       bar.dataset[key] = String(value);
       button.textContent = words[key].labels[value ? 1 : 0];
       mark.hidden = bar.dataset.resolved !== 'true';
       archivedMark.hidden = bar.dataset.archived !== 'true';
+      // An archived conversation is out of Pinned and out of the Project filter, so it offers neither control.
+      const archived = bar.dataset.archived === 'true';
+      bar.querySelector('button.pin').hidden = archived;
+      if (moveButton) moveButton.hidden = archived;
+      if (archived) closeMove();
     }
-    status.textContent = saved ? bar.dataset.title + ' ' + done
-      : 'Quarterdeck could not save the change to ' + bar.dataset.title + '. Try again.';
+    say(saved ? bar.dataset.title + ' ' + done : 'Quarterdeck could not save the change to ' + bar.dataset.title + '. Try again.', !saved);
     if (hadFocus) button.focus();
+  });
+  if (!moveForm) return;
+  const tree = JSON.parse(document.getElementById('groups-data').textContent);
+  const moveProject = document.getElementById('move-project');
+  const moveTopic = document.getElementById('move-topic');
+  const fillSelect = (select, first, entries, value) => {
+    select.replaceChildren(...first.map(([id, name]) => new Option(name, id)), ...entries.map(entry => new Option(entry.name, entry.id)));
+    select.value = [...select.options].some(option => option.value === value) ? value : '';
+  };
+  const projectOf = id => tree.find(project => project.id === id);
+  const syncTopics = value => {
+    const project = projectOf(moveProject.value);
+    fillSelect(moveTopic, [['', 'No topic']], project ? project.topics : [], value);
+    document.getElementById('move-topic-field').hidden = !project;
+  };
+  moveButton.addEventListener('click', () => {
+    const open = moveForm.hidden;
+    if (!open) { closeMove(); return; }
+    fillSelect(moveProject, [['', 'Ungrouped']], tree, moveForm.dataset.project);
+    syncTopics(moveForm.dataset.topic);
+    moveForm.hidden = false;
+    moveButton.setAttribute('aria-expanded', 'true');
+    moveProject.focus();
+  });
+  moveProject.addEventListener('change', () => syncTopics(''));
+  document.getElementById('move-cancel').addEventListener('click', () => { closeMove(); moveButton.focus(); });
+  moveForm.addEventListener('keydown', event => {
+    if (event.key !== 'Escape') return;
+    closeMove();
+    moveButton.focus();
+  });
+  moveForm.addEventListener('submit', async event => {
+    event.preventDefault();
+    const project = moveProject.value || null;
+    const topic = project && moveTopic.value || null;
+    const controls = moveForm.querySelectorAll('select,button');
+    controls.forEach(control => { control.disabled = true; });
+    let saved = false;
+    try {
+      saved = (await postJson('moves', {part: bar.dataset.id, project, topic})).ok;
+    } catch {
+      saved = false;
+    }
+    controls.forEach(control => { control.disabled = false; });
+    if (!saved) {
+      say('Quarterdeck could not move ' + bar.dataset.title + '. Try again.', true);
+      return;
+    }
+    moveForm.dataset.project = project || '';
+    moveForm.dataset.topic = topic || '';
+    const found = projectOf(project);
+    const place = found?.topics.find(entry => entry.id === topic);
+    closeMove();
+    say(bar.dataset.title + ' moved to ' + (!found ? 'Ungrouped' : place ? found.name + ' / ' + place.name : found.name) + '.', false);
+    moveButton.focus();
   });
 })();
 """)
@@ -4847,6 +5214,7 @@ DESK_SCRIPT = talk_script(r"""
       other.tabIndex = on ? 0 : -1;
       panelOf(other).hidden = !on;
     }
+    if (tab.id !== 'desk-tab-conversations') setComposeOpen(false);
     if (focus) tab.focus();
   };
   for (const tab of tabs) {
@@ -4867,86 +5235,34 @@ DESK_SCRIPT = talk_script(r"""
     }
   };
   const conversationPanel = document.getElementById('desk-panel-conversations');
-  const attentionPanel = document.getElementById('desk-panel-needs-you');
-  const attentionRows = attentionPanel.querySelector('tbody');
-  const attentionTable = attentionPanel.querySelector('.desk');
-  const attentionEmpty = attentionPanel.querySelector('.empty');
-  const attentionTab = document.getElementById('desk-tab-needs-you');
-  const count = attentionTab.querySelector('.tab-count');
-  const noticeButtons = () => [...attentionRows.querySelectorAll('button[data-read]')];
-  const readAll = attentionPanel.querySelector('[data-read-all]');
-  const syncAttention = () => {
-    const total = attentionRows.rows.length;
-    count.hidden = attentionTable.hidden = !total;
-    count.textContent = total || '';
-    attentionEmpty.hidden = Boolean(total);
-    readAll.hidden = noticeButtons().length < 2;
-  };
-  const updateAttention = (id, html) => {
-    const items = [...attentionRows.querySelectorAll('tr.work')];
-    const rowId = row => row.querySelector('.id').textContent;
-    const previous = items.find(row => rowId(row) === id);
-    const focused = previous?.contains(document.activeElement);
-    previous?.remove();
-    if (html) {
-      const next = items.find(row => row !== previous && BigInt(rowId(row).slice(1)) < BigInt(id.slice(1)));
-      if (next) next.insertAdjacentHTML('beforebegin', html);
-      else attentionRows.insertAdjacentHTML('beforeend', html);
-    }
-    syncAttention();
-    if (focused) {
-      const replacement = [...attentionRows.querySelectorAll('tr.work')].find(row => rowId(row) === id);
-      (replacement?.querySelector('.card-link') || attentionTab).focus();
-    }
-  };
-  attentionPanel.addEventListener('click', async event => {
-    const button = event.target.closest('button[data-read], button[data-read-all]');
-    if (!button || button.disabled) return;
-    const noticeStatus = button.nextElementSibling;
-    const noticeAnnouncement = document.getElementById('notice-announcement');
-    noticeStatus.textContent = '';
-    noticeAnnouncement.textContent = '';
-    const notices = noticeButtons();
-    const selected = button === readAll ? notices : [button];
-    const ids = selected.map(control => control.dataset.read);
-    const controls = [...notices, readAll];
-    const previousFocus = document.activeElement;
-    controls.forEach(control => { control.disabled = true; });
-    try {
-      const response = await fetch('catch-ups/read', {method:'POST', redirect:'error',
-        headers:{'Content-Type':'application/json'}, body:JSON.stringify({ids})});
-      if (response.status === 409) {
-        report(noticeStatus, attentionPanel, 'A notice may already be read. Reload the page when ready.', false);
-        return;
-      }
-      if (!response.ok) throw new Error('refused');
-      const {read} = await response.json();
-      if (!Array.isArray(read) || read.length !== ids.length || !ids.every((id, index) => read[index] === id)) {
-        throw new Error('Unconfirmed acknowledgment');
-      }
-      const focused = document.activeElement === document.body ? previousFocus : document.activeElement;
-      const hadFocus = attentionPanel.contains(focused);
-      selected.forEach(control => control.closest('tr').remove());
-      syncAttention();
-      report(noticeAnnouncement, attentionPanel, ids.length === 1 ? 'Notice marked read.' : 'Notices marked read.', false);
-      if (hadFocus && !attentionPanel.hidden && (!focused.isConnected || (focused === readAll && readAll.hidden))) {
-        attentionTab.focus();
-      }
-    } catch {
-      report(noticeStatus, attentionPanel, 'The notice could not be marked read. Try again.', true);
-    } finally {
-      controls.forEach(control => { control.disabled = false; });
-    }
-  });
-  const groups = {pinned: document.querySelector('#topics-pinned'), recent: document.querySelector('#topics-recent'),
-    archived: document.querySelector('#topics-archived')};
+  const reviewPanel = document.getElementById('desk-panel-needs-you');
+  const conversationTab = document.getElementById('desk-tab-conversations');
+  const reviewLists = {waiting: document.getElementById('review-waiting'), later: document.getElementById('review-later')};
+  const groups = {unread: document.querySelector('#topics-unread'), pinned: document.querySelector('#topics-pinned'),
+    recent: document.querySelector('#topics-recent'), archived: document.querySelector('#topics-archived')};
   const none = document.getElementById('no-conversations');
   const noneArchived = document.getElementById('no-archived');
   const noneInScope = document.getElementById('no-scoped-conversations');
   const rowsOf = group => [...group.querySelectorAll('.topic')];
+  const noticeButtons = () => [...conversationPanel.querySelectorAll('button[data-read]')];
+  const readAll = conversationPanel.querySelector('[data-read-all]');
+  const setCount = (tab, total) => {
+    const count = tab.querySelector('.tab-count');
+    count.hidden = !total;
+    count.textContent = total || '';
+  };
+  // For review counts what waits for the owner; what the owner put aside for later is not counted.
+  const syncReview = () => {
+    const waiting = rowsOf(reviewLists.waiting).length;
+    reviewLists.waiting.hidden = !waiting;
+    reviewLists.later.hidden = !rowsOf(reviewLists.later).length;
+    document.getElementById('no-review').hidden = Boolean(waiting);
+    setCount(document.getElementById('desk-tab-needs-you'), waiting);
+  };
   const scope = document.getElementById('scope');
   const scopeProject = document.getElementById('scope-project');
   const tasksOnly = document.getElementById('scope-tasks');
+  const unreadOnly = document.getElementById('scope-unread');
   const scopeTopic = document.getElementById('scope-topic');
   const scopeTopicField = document.getElementById('scope-topic-field');
   const newProject = document.getElementById('new-project');
@@ -4963,14 +5279,19 @@ DESK_SCRIPT = talk_script(r"""
     const topic = topicOf(project, topicId);
     return !project ? '' : topic ? project.name + ' / ' + topic.name : project.name;
   };
+  const isNotice = row => row.classList.contains('notice');
   const labelRow = row => {
-    const label = labelOf(row.dataset.project, row.dataset.topic);
     const span = row.querySelector('.placement');
+    if (!span) return;
+    const label = labelOf(row.dataset.project, row.dataset.topic);
     span.textContent = label;
     span.hidden = !label;
   };
+  // A row opened while unread keeps its place under Unread until the owner moves on, so it also passes Unread only.
   const inScope = row => {
     const project = scopeProject.value, topic = scopeTopic.value;
+    if (isNotice(row)) return !project && !tasksOnly.checked;
+    if (unreadOnly.checked && row.dataset.unread !== 'true' && row.dataset.sticky !== 'true') return false;
     if (tasksOnly.checked && row.dataset.task !== 'true') return false;
     if (!project) return true;
     if (project === '-') return !row.dataset.project;
@@ -4978,6 +5299,10 @@ DESK_SCRIPT = talk_script(r"""
   };
   const scopeEmptyText = () => {
     const tasks = tasksOnly.checked;
+    if (unreadOnly.checked) {
+      return tasks ? 'No task is unread. A reply on a task that you have not opened shows here.'
+        : 'No conversation is unread. A reply you have not opened shows here.';
+    }
     if (scopeProject.value === '-') {
       return tasks ? 'No task is outside a project. A task you move out of a project shows here.'
         : 'Every conversation is in a project. A conversation you move out of a project shows here.';
@@ -4988,40 +5313,38 @@ DESK_SCRIPT = talk_script(r"""
     return tasks ? 'No tasks in ' + name + ' yet. A task you create or move into it shows here.'
       : 'No conversations in ' + name + ' yet. A conversation you start or move into it shows here.';
   };
+  const liveRows = '#topics-unread .topic, #topics-pinned .topic, #topics-recent .topic';
   const syncGroups = () => {
     for (const group of Object.values(groups)) group.hidden = !rowsOf(group).some(row => !row.hidden);
     // Archived rows live in their own tab and never count toward the filtered Conversations list.
-    const any = Boolean(document.querySelector('#topics-pinned .topic, #topics-recent .topic'));
+    const any = Boolean(document.querySelector(liveRows));
     none.hidden = any;
-    noneInScope.hidden = !any || Boolean(document.querySelector('#topics-pinned .topic:not([hidden]), #topics-recent .topic:not([hidden])'));
+    noneInScope.hidden = !any || rowsOf(conversationPanel).some(row => !row.hidden);
     if (!noneInScope.hidden) noneInScope.textContent = scopeEmptyText();
     noneArchived.hidden = !groups.archived.hidden;
+    readAll.hidden = noticeButtons().length < 2;
+    setCount(conversationTab, groups.unread.querySelectorAll('.topic[data-unread="true"]').length);
+  };
+  const applyScope = params => {
+    for (const [name, value] of [['project', scopeProject.value], ['topic', scopeTopic.value], ['tasks', tasksOnly.checked ? '1' : ''],
+      ['unread', unreadOnly.checked ? '1' : '']]) {
+      if (value) params.set(name, value); else params.delete(name);
+    }
+  };
+  const scopedAddress = href => {
+    const address = new URL(href);
+    applyScope(address.searchParams);
+    return address;
   };
   const linkRow = row => {
-    const link = row.querySelector('.topic-title');
-    const archived = row.dataset.archived === 'true';
+    const link = row.querySelector('.topic-title, .notice-links a[href^="q"][href*="?from=conversations"]');
+    if (!link) return;
     const [address, hash] = link.getAttribute('href').split('#');
     const [path, query] = address.split('?');
     const params = new URLSearchParams(query);
-    params.set('from', archived ? 'archived' : 'conversations');
-    for (const [name, value] of [['project', scopeProject.value], ['topic', scopeTopic.value], ['tasks', tasksOnly.checked ? '1' : '']]) {
-      if (value && !archived) params.set(name, value); else params.delete(name);
-    }
+    if (params.get('from') !== 'conversations') return;
+    applyScope(params);
     link.setAttribute('href', path + '?' + params + (hash === undefined ? '' : '#' + hash));
-  };
-  const place = row => {
-    const name = row.dataset.archived === 'true' ? 'archived' : row.dataset.pinned === 'true' ? 'pinned' : 'recent';
-    linkRow(row);
-    const list = groups[name].querySelector('.topic-list');
-    // The filter applies only outside Archived, and before the row takes its place by pin and activity.
-    row.hidden = name !== 'archived' && !inScope(row);
-    const {activity, id} = row.dataset;
-    const next = rowsOf(list.parentElement).find(other => other !== row && (
-      other.dataset.activity < activity ||
-      (other.dataset.activity === activity && BigInt(other.dataset.id.slice(1)) < BigInt(id.slice(1)))
-    ));
-    list.insertBefore(row, next || null);
-    syncGroups();
   };
   const fillSelect = (select, first, entries, value) => {
     select.replaceChildren(...first.map(([id, name]) => new Option(name, id)), ...entries.map(entry => new Option(entry.name, entry.id)));
@@ -5030,6 +5353,7 @@ DESK_SCRIPT = talk_script(r"""
   const SCOPE_KEY = 'quarterdeck-scope';
   const syncScope = (next = {project: scopeProject.value, topic: scopeTopic.value}) => {
     if (next.tasks !== undefined) tasksOnly.checked = Boolean(next.tasks);
+    if (next.unread !== undefined) unreadOnly.checked = Boolean(next.unread);
     fillSelect(scopeProject, [['', 'All'], ['-', 'Ungrouped']], tree, next.project);
     const project = projectOf(scopeProject.value);
     fillSelect(scopeTopic, [['', 'All topics']], project ? project.topics : [], project ? next.topic : '');
@@ -5038,11 +5362,12 @@ DESK_SCRIPT = talk_script(r"""
     scopeTopicField.hidden = !project;
     newTopic.hidden = renameProject.hidden = !project;
     renameTopic.hidden = !scopeTopic.value;
-    for (const row of conversationPanel.querySelectorAll('.topic')) {
+    for (const row of rowsOf(conversationPanel)) {
       row.hidden = !inScope(row);
       labelRow(row);
       linkRow(row);
     }
+    for (const row of rowsOf(groups.archived)) labelRow(row);
     syncGroups();
     groupStatus.textContent = '';
     if (destination) {
@@ -5050,28 +5375,204 @@ DESK_SCRIPT = talk_script(r"""
       destination.hidden = !tree.length;
       destination.textContent = label ? 'Starts in ' + label + '.' : 'Starts ungrouped.';
     }
-    try { sessionStorage.setItem(SCOPE_KEY, JSON.stringify({project: scopeProject.value, topic: scopeTopic.value, tasks: tasksOnly.checked})); } catch {}
+    try {
+      sessionStorage.setItem(SCOPE_KEY, JSON.stringify({project: scopeProject.value, topic: scopeTopic.value,
+        tasks: tasksOnly.checked, unread: unreadOnly.checked}));
+    } catch {}
   };
   const startPlacement = () => {
     const project = projectOf(scopeProject.value);
     return !project ? {} : scopeTopic.value ? {project: project.id, topic: scopeTopic.value} : {project: project.id};
   };
-  scopeProject.addEventListener('change', () => syncScope({project: scopeProject.value, topic: ''}));
-  scopeTopic.addEventListener('change', () => syncScope());
-  tasksOnly.addEventListener('change', () => syncScope());
+  scopeProject.addEventListener('change', () => changeScope({project: scopeProject.value, topic: ''}));
+  scopeTopic.addEventListener('change', () => changeScope());
+  tasksOnly.addEventListener('change', () => changeScope());
+  unreadOnly.addEventListener('change', () => changeScope());
   const taskForm = document.getElementById('task-form');
   if (taskForm) taskForm.taskPlacement = startPlacement;
+
+  // The pane: on a wide screen a row opens beside the list. A narrow screen follows the link to the item's own page.
+  const wide = matchMedia('(min-width: 60rem)');
+  const frame = document.getElementById('pane-frame');
+  const form = document.getElementById('talk-form');
+  const opener = document.getElementById('talk-open');
+  const setComposeOpen = open => {
+    if (!form) return;
+    form.hidden = !open;
+    opener.setAttribute('aria-expanded', String(open));
+  };
+  const ITEM_PAGE = /(?:^|\/)(q[1-9][0-9]*)\.html$/;
+  let currentId = null;
+  let sticky = null;
+  const rowOf = id => [...document.querySelectorAll('#mail-list .topic')].filter(row => row.dataset.id === id);
+  const markCurrent = () => {
+    for (const row of document.querySelectorAll('#mail-list .topic')) {
+      if (row.dataset.id && row.dataset.id === currentId) row.setAttribute('aria-current', 'true');
+      else row.removeAttribute('aria-current');
+    }
+  };
+  const setCurrent = id => {
+    const unreadList = groups.unread.querySelector('.topic-list');
+    const row = [...unreadList.children].find(other => other.dataset.id === id);
+    sticky = row ? {id, index: [...unreadList.children].indexOf(row)} : null;
+    currentId = id;
+    markCurrent();
+  };
+  const keepSticky = () => {
+    if (!sticky) return;
+    const unreadList = groups.unread.querySelector('.topic-list');
+    const row = rowsOf(conversationPanel).find(other => other.dataset.id === sticky.id);
+    if (!row) { sticky = null; return; }
+    if (row.parentElement !== unreadList) {
+      row.dataset.sticky = 'true';
+      unreadList.insertBefore(row, unreadList.children[sticky.index] || null);
+    }
+  };
+  const openInPane = (href, id) => {
+    setComposeOpen(false);
+    frame.dataset.open = 'true';
+    if (id) setCurrent(id);
+    const address = new URL(href, location.href);
+    try { frame.contentWindow.location.replace(address); } catch { frame.src = address; }
+  };
+  let navigationRequest;
+  const changeScope = async next => {
+    syncScope(next);
+    const current = frame.contentDocument;
+    if (!current || new URL(current.URL).searchParams.get('from') !== 'conversations') return;
+    navigationRequest?.abort();
+    const request = navigationRequest = new AbortController();
+    const address = scopedAddress(current.URL);
+    if (address.hash.startsWith('#reply-')) address.searchParams.set('at', address.hash.slice(1));
+    const strips = [...current.querySelectorAll('.list-nav')];
+    strips.forEach(strip => strip.querySelector('.next-link')?.remove());
+    try {
+      const response = await fetch(address, {cache: 'no-store', signal: request.signal});
+      if (!response.ok) return;
+      const fresh = new DOMParser().parseFromString(await response.text(), 'text/html');
+      if (request.signal.aborted || current !== frame.contentDocument) return;
+      const following = fresh.querySelector('.next-link');
+      const back = fresh.querySelector('.back-link').getAttribute('href');
+      for (const strip of strips) {
+        const link = strip.querySelector('.back-link');
+        link.setAttribute('href', back);
+        if (following) link.after(following.cloneNode(true));
+      }
+    } catch {}
+  };
+  document.getElementById('mail-list').addEventListener('click', event => {
+    const link = event.target.closest('a.topic-title, a[data-pane]');
+    if (!link || !wide.matches || event.button || event.metaKey || event.ctrlKey || event.shiftKey || event.altKey) return;
+    event.preventDefault();
+    openInPane(link.getAttribute('href'), link.closest('.topic').dataset.id);
+  });
+
+  const LISTS = ['topics-unread', 'topics-pinned', 'topics-recent', 'topics-archived', 'review-waiting', 'review-later', 'topics-references'];
+  let refreshing = null;
+  let refreshAgain = false;
+  // The lists are drawn again from the server after anything changes, so every count and group stays true.
+  const refreshLists = () => {
+    if (refreshing) { refreshAgain = true; return refreshing; }
+    refreshing = (async () => {
+      do {
+        refreshAgain = false;
+        try {
+          const response = await fetch('index.html?lists=1', {cache: 'no-store'});
+          if (!response.ok) break;
+          const fresh = new DOMParser().parseFromString(await response.text(), 'text/html');
+          if (refreshAgain) continue;
+          for (const id of LISTS) {
+            const from = fresh.querySelector('#' + id + ' .topic-list');
+            const to = document.querySelector('#' + id + ' .topic-list');
+            if (!from || !to) continue;
+            const active = to.contains(document.activeElement) ? document.activeElement : null;
+            const focused = active?.closest('.topic');
+            const notices = new Map([...to.querySelectorAll('[data-notice]')].map(row => [row.dataset.notice, row]));
+            to.replaceChildren(...[...from.children].map(node => notices.get(node.dataset.notice) ?? document.importNode(node, true)));
+            localizeStamps(to);
+            if (active?.isConnected) active.focus();
+            else if (focused?.dataset.id) to.querySelector('.topic[data-id="' + focused.dataset.id + '"] .topic-title')?.focus();
+          }
+          if (readAll.disabled) noticeButtons().forEach(control => { control.disabled = true; });
+          for (const name of ['conversations', 'answered']) {
+            const id = 'panel-' + name;
+            const list = fresh.querySelector('#' + id + ' .lib-list');
+            if (list) document.getElementById(id).dispatchEvent(new CustomEvent('hold-refreshed', {detail:list}));
+          }
+          keepSticky();
+          syncScope();
+          syncReview();
+          const references = document.getElementById('topics-references');
+          references.hidden = !references.querySelector('.topic');
+          document.getElementById('no-references').hidden = !references.hidden;
+          markCurrent();
+        } catch {
+          break;
+        }
+      } while (refreshAgain);
+      refreshing = null;
+    })();
+    return refreshing;
+  };
+  frame.addEventListener('load', () => {
+    let address = null;
+    try { address = frame.contentWindow.location; } catch { return; }
+    const match = ITEM_PAGE.exec(address.pathname);
+    if (!match) return;
+    const id = match[1].toUpperCase();
+    if (id !== currentId) setCurrent(id);
+    refreshLists();
+    if (new URLSearchParams(address.search).get('from') === 'conversations' && scopedAddress(address.href).search !== address.search) changeScope();
+  });
+  addEventListener('message', event => {
+    if (event.origin === location.origin && event.source === frame.contentWindow && event.data === 'quarterdeck-changed') refreshLists();
+  });
+
+  conversationPanel.addEventListener('click', async event => {
+    const button = event.target.closest('button[data-read], button[data-read-all]');
+    if (!button || button.disabled) return;
+    const noticeStatus = button.nextElementSibling;
+    const noticeAnnouncement = document.getElementById('notice-announcement');
+    noticeStatus.textContent = '';
+    noticeAnnouncement.textContent = '';
+    const notices = noticeButtons();
+    const selected = button === readAll ? notices : [button];
+    const ids = selected.map(control => control.dataset.read);
+    const previousFocus = document.activeElement;
+    [...notices, readAll].forEach(control => { control.disabled = true; });
+    try {
+      const response = await fetch('catch-ups/read', {method:'POST', redirect:'error',
+        headers:{'Content-Type':'application/json'}, body:JSON.stringify({ids})});
+      if (response.status === 409) {
+        report(noticeStatus, conversationPanel, 'A notice may already be read. Reload the page when ready.', false);
+        return;
+      }
+      if (!response.ok) throw new Error('refused');
+      const {read} = await response.json();
+      if (!Array.isArray(read) || read.length !== ids.length || !ids.every((id, index) => read[index] === id)) {
+        throw new Error('Unconfirmed acknowledgment');
+      }
+      const focused = document.activeElement === document.body ? previousFocus : document.activeElement;
+      const hadFocus = conversationPanel.contains(focused);
+      selected.forEach(control => control.closest('.topic').remove());
+      syncGroups();
+      refreshLists();  // a list read that was under way may still hold the notice, so read the lists once more
+      report(noticeAnnouncement, conversationPanel, ids.length === 1 ? 'Notice marked read.' : 'Notices marked read.', false);
+      if (hadFocus && !conversationPanel.hidden && (!focused.isConnected || (focused === readAll && readAll.hidden))) {
+        conversationTab.focus();
+      }
+    } catch {
+      report(noticeStatus, conversationPanel, 'The notice could not be marked read. Try again.', true);
+    } finally {
+      [...noticeButtons(), readAll].forEach(control => { control.disabled = false; });
+    }
+  });
 
   const groupForm = document.getElementById('group-form');
   const groupName = document.getElementById('group-name');
   const groupSave = groupForm.querySelector('button[type="submit"]');
-  const moveForm = document.getElementById('move-form');
-  const moveProject = document.getElementById('move-project');
-  const moveTopic = document.getElementById('move-topic');
   let naming = null;
-  let moving = null;
   const openGroup = (trigger, mode) => {
-    closeMove(false);
     naming = {...mode, trigger};
     document.getElementById('group-label').textContent = (mode.kind === 'project' ? 'Project' : 'Topic') + ' name';
     groupName.value = mode.name || '';
@@ -5114,7 +5615,7 @@ DESK_SCRIPT = talk_script(r"""
         if (!id && kind === 'project') Object.assign(next, {project: outcome.result.id, topic: ''});
         if (!id && kind === 'topic') next.topic = outcome.result.id;
         closeGroup(false);
-        syncScope(next);
+        changeScope(next);
         groupStatus.textContent = name + ' saved.';
         (kind === 'project' ? scopeProject : scopeTopic).focus();
       } else {
@@ -5129,188 +5630,102 @@ DESK_SCRIPT = talk_script(r"""
     }
   });
 
-  const syncMoveTopics = value => {
-    const project = projectOf(moveProject.value);
-    fillSelect(moveTopic, [['', 'No topic']], project ? project.topics : [], value);
-    document.getElementById('move-topic-field').hidden = !project;
-  };
-  const closeMove = refocus => {
-    if (!moving) return;
-    const row = moving;
-    moving = null;
-    moveForm.hidden = true;
-    scope.after(moveForm);
-    if (refocus) row.querySelector('button.move').focus();
-  };
-  const note = (row, text, failed) => report(row.hidden ? startStatus : row.querySelector('.desk-feedback'), conversationPanel, text, failed);
-  moveProject.addEventListener('change', () => syncMoveTopics(''));
-  document.getElementById('move-cancel').addEventListener('click', () => closeMove(true));
-  moveForm.addEventListener('keydown', event => { if (event.key === 'Escape') closeMove(true); });
-  moveForm.addEventListener('submit', async event => {
-    event.preventDefault();
-    const row = moving;
-    const title = row.querySelector('.pin').dataset.title;
-    const project = moveProject.value || null;
-    const topic = project && moveTopic.value || null;
-    const controls = moveForm.querySelectorAll('select,button');
-    controls.forEach(control => { control.disabled = true; });
-    let saved = false;
-    try {
-      saved = (await postJson('moves', {part: row.dataset.id, project, topic})).ok;
-    } catch {
-      saved = false;
-    }
-    controls.forEach(control => { control.disabled = false; });
-    if (!saved) {
-      note(row, 'Quarterdeck could not move ' + title + '. Try again.', true);
-      return;
-    }
-    for (const [name, value] of [['project', project], ['topic', topic]]) {
-      if (value) row.dataset[name] = value; else delete row.dataset[name];
-    }
-    closeMove(false);
-    labelRow(row);
-    row.hidden = !inScope(row);
-    syncGroups();
-    note(row, title + ' moved to ' + (labelOf(project, topic) || 'Ungrouped') + '.', false);
-    if (!row.hidden) row.querySelector('button.move').focus();
-    else (document.querySelector('.topic:not([hidden]) .topic-title') || scopeProject).focus();
-  });
-  conversationPanel.addEventListener('click', event => {
-    const button = event.target.closest('button.move');
-    if (!button || button.disabled) return;
-    const row = button.closest('.topic');
-    if (moving === row) { closeMove(true); return; }
-    closeMove(false);
-    closeGroup(false);
-    moving = row;
-    fillSelect(moveProject, [['', 'Ungrouped']], tree, row.dataset.project || '');
-    syncMoveTopics(row.dataset.topic || '');
-    row.append(moveForm);
-    moveForm.hidden = false;
-    moveProject.focus();
-  });
   try {
     const saved = arrival.get('tab') === 'conversations'
-      ? {project: arrival.get('project'), topic: arrival.get('topic'), tasks: arrival.get('tasks') === '1'}
+      ? {project: arrival.get('project'), topic: arrival.get('topic'), tasks: arrival.get('tasks') === '1', unread: arrival.get('unread') === '1'}
       : JSON.parse(sessionStorage.getItem(SCOPE_KEY)) || {};
-    syncScope({project: saved.project || '', topic: saved.topic || '', tasks: saved.tasks === true});
+    syncScope({project: saved.project || '', topic: saved.topic || '', tasks: saved.tasks === true, unread: saved.unread === true});
   } catch {
-    syncScope({project: '', topic: '', tasks: false});
+    syncScope({project: '', topic: '', tasks: false, unread: false});
   }
-
-  const flags = {
-    pin: {path:'pins', key:'pinned', labels:['Pin', 'Unpin'], done:['is unpinned.', 'is pinned.'], failed:'the pin for '},
-    resolve: {path:'resolutions', key:'resolved', labels:['Resolve', 'Reopen'], done:['is reopened.', 'is resolved.'], failed:'the resolution for '},
-    archive: {path:'archives', key:'archived', labels:['Archive', 'Unarchive'], done:['is unarchived.', 'is archived.'], failed:'the archive for '}
-  };
-  const holdList = document.getElementById('panel-conversations');
-  const onRowClick = async event => {
-    const button = event.target.closest('button.pin, button.resolve, button.archive');
-    if (!button || button.disabled) return;
-    const flag = flags[button.className];
-    const row = button.closest('.topic');
-    const panel = row.closest('.desk-panel');
-    const rowStatus = row.querySelector('.desk-feedback');
-    const value = row.dataset[flag.key] !== 'true';
-    const hadFocus = document.activeElement === button;
-    button.disabled = true;
-    let outcome = null;
-    try {
-      outcome = await postJson(flag.path, {part: row.dataset.id, [flag.key]: value});
-    } catch {
-      outcome = null;
-    }
-    const focused = document.activeElement;
-    button.disabled = false;
-    if (outcome?.ok) {
-      const title = button.dataset.title;
-      row.dataset[flag.key] = String(value);
-      button.textContent = flag.labels[value ? 1 : 0];
-      button.setAttribute('aria-label', flag.labels[value ? 1 : 0] + ' ' + title);
-      row.querySelector('.resolved-mark').hidden = row.dataset.resolved !== 'true';
-      row.querySelector('button.pin').hidden = row.dataset.archived === 'true';
-      row.querySelector('button.move').hidden = row.dataset.archived === 'true';
-      if (flag.key === 'archived' && row.contains(moveForm)) closeMove(false);
-      const neighbour = row.nextElementSibling || row.previousElementSibling
-        || [...panel.querySelectorAll('.topic')].find(other => other !== row && !other.closest('[hidden]'));
-      place(row);
-      if (flag.key === 'archived') {
-        // The row left this tab, so the shared status line carries the news.
-        startStatus.classList.remove('failed');
-        startStatus.textContent = title + ' ' + flag.done[value ? 1 : 0];
-        if (hadFocus) (neighbour?.querySelector('.topic-title') || document.getElementById(panel.getAttribute('aria-labelledby'))).focus();
-      } else {
-        report(rowStatus, panel, title + ' ' + flag.done[value ? 1 : 0], false);
-        if (!panel.hidden && (focused === button || (hadFocus && focused === document.body))) button.focus();
-      }
-      if (flag.key !== 'pinned' && holdList && outcome.result.hold !== undefined) {
-        holdList.dispatchEvent(new CustomEvent('conversation-saved', {detail: {id: row.dataset.id, html: outcome.result.hold}}));
-      }
-    } else {
-      report(rowStatus, panel, 'Quarterdeck could not save ' + flag.failed + button.dataset.title + '. Try again.', true);
-      if (!panel.hidden && (focused === button || (hadFocus && focused === document.body))) button.focus();
-    }
-  };
-  conversationPanel.addEventListener('click', onRowClick);
-  document.getElementById('desk-panel-archived').addEventListener('click', onRowClick);
+  syncReview();
 
   const arrivingDeskTab = tabs.find(tab => tab.id === 'desk-tab-' + arrival.get('tab'));
   if (arrivingDeskTab) {
     select(arrivingDeskTab, false);
     const wanted = arrival.get('row') ?? '';
-    const rows = [...panelOf(arrivingDeskTab).querySelectorAll('tr.work, tr.notice, li.topic')];
-    // A question answered meanwhile has left Needs you; its place is taken by the next one down.
-    const below = row => row.classList.contains('work') && BigInt(row.dataset.id.slice(1)) < BigInt(wanted.slice(1) || '0');
+    const rows = rowsOf(panelOf(arrivingDeskTab));
+    // A question answered meanwhile has left For review; its place is taken by the next one down.
+    const below = row => row.classList.contains('review') && BigInt(row.dataset.id.slice(1)) < BigInt(wanted.slice(1) || '0');
     const row = arrivalRow(rows, wanted) ?? (/^Q[1-9][0-9]*$/.test(wanted) ? rows.find(below) : undefined);
-    showArrivalRow(row, row?.querySelector('.card-link, .topic-title, a'));
+    showArrivalRow(row, row?.querySelector('.topic-title, .bookmark-title, a'));
   }
 
-  const form = document.querySelector('#talk-form');
-  if (!form) return;
-  const topic = form.querySelector('#talk-topic');
-  const message = form.querySelector('#talk-message');
-  const button = form.querySelector('button[type="submit"]');
-  const opener = document.querySelector('#talk-open');
-  const drafts = new Map();
-  const hasDraft = () => Boolean(topic.value.trim() || message.value.trim());
-  const setOpen = open => {
-    form.hidden = !open;
-    opener.setAttribute('aria-expanded', String(open));
+  const holdList = document.getElementById('panel-conversations');
+  const savedInHold = (id, html) => {
+    if (holdList && html !== undefined) holdList.dispatchEvent(new CustomEvent('conversation-saved', {detail: {id, html}}));
   };
-  const refresh = () => {
-    button.disabled = !(normalizeTopic(topic.value) && trimmed(message.value));
-    if (hasDraft()) setOpen(true);
-  };
-  opener.addEventListener('click', () => {
-    const open = form.hidden;
-    setOpen(open);
-    if (open) topic.focus();
-  });
-  const show = html => {
+  const idOf = href => (ITEM_PAGE.exec(href.split(/[?#]/)[0]) || [])[1]?.toUpperCase();
+  const rowFrom = html => {
     const holder = document.createElement('template');
     holder.innerHTML = html;
     const row = holder.content.firstElementChild;
-    const replaced = document.querySelector('.topic[data-id="' + row.dataset.id + '"]');
-    if (replaced?.contains(moveForm)) closeMove(false);
-    replaced?.remove();
     localizeStamps(row);
-    labelRow(row);
-    row.hidden = !inScope(row);
-    place(row);
     return row;
+  };
+  // A saved conversation takes its place by pin and latest activity at once, before the lists are drawn again.
+  const show = html => {
+    const row = rowFrom(html);
+    for (const old of rowOf(row.dataset.id).filter(other => !other.classList.contains('review'))) old.remove();
+    const name = row.dataset.archived === 'true' ? 'archived' : row.dataset.pinned === 'true' ? 'pinned' : 'recent';
+    labelRow(row);
+    linkRow(row);
+    row.hidden = name !== 'archived' && !inScope(row);
+    const list = groups[name].querySelector('.topic-list');
+    const {activity, id} = row.dataset;
+    const next = [...list.children].find(other => other.dataset.activity < activity ||
+      (other.dataset.activity === activity && BigInt(other.dataset.id.slice(1)) < BigInt(id.slice(1))));
+    list.insertBefore(row, next || null);
+    syncGroups();
+    return row;
+  };
+  // Its For review row is replaced, added in the order of the list, or removed.
+  const showReview = (id, html) => {
+    for (const old of rowsOf(reviewPanel).filter(other => other.dataset.id === id)) old.remove();
+    if (html) {
+      const row = rowFrom(html);
+      const group = row.dataset.unread === 'true' ? reviewLists.waiting : reviewLists.later;
+      const list = group.querySelector('.topic-list');
+      const next = [...list.children].find(other => BigInt(other.dataset.id.slice(1)) < BigInt(id.slice(1)));
+      list.insertBefore(row, next || null);
+    }
+    syncReview();
+  };
+  // What was just saved shows in the lists, and opens in the pane on a wide screen.
+  const showSaved = (result, open) => {
+    const id = idOf(result.href);
+    const row = show(result.row);
+    showReview(id, result.attention);
+    savedInHold(id, result.hold);
+    markCurrent();
+    if (open && wide.matches) openInPane(row.querySelector('.topic-title').href, id);
+    else if (open && !conversationPanel.hidden) row.querySelector('.topic-title').focus();
+    refreshLists();
   };
   document.addEventListener('task-saved', event => {
     const result = event.detail;
     result.handled = true;
     startStatus.classList.remove('failed');
     startStatus.textContent = result.message;
-    const row = show(result.row);
-    updateAttention(row.dataset.id, result.attention);
-    document.getElementById('panel-conversations').dispatchEvent(new CustomEvent('conversation-saved', {
-      detail: {id: row.dataset.id, html: result.hold}
-    }));
-    if (result.created && !conversationPanel.hidden) row.querySelector('.topic-title').focus();
+    showSaved(result, Boolean(result.created));
+  });
+
+  if (!form) return;
+  const topic = form.querySelector('#talk-topic');
+  const message = form.querySelector('#talk-message');
+  const button = form.querySelector('button[type="submit"]');
+  const drafts = new Map();
+  const refresh = () => {
+    button.disabled = !(normalizeTopic(topic.value) && trimmed(message.value));
+  };
+  opener.addEventListener('click', () => {
+    const open = form.hidden;
+    setComposeOpen(open);
+    if (open) topic.focus();
+  });
+  form.querySelector('.talk-back').addEventListener('click', () => {
+    setComposeOpen(false);
+    opener.focus();
   });
   form.addEventListener('input', refresh);
   form.addEventListener('submit', async event => {
@@ -5320,7 +5735,7 @@ DESK_SCRIPT = talk_script(r"""
     const key = JSON.stringify([title, text]);
     const id = drafts.get(key) ?? messageId();
     drafts.set(key, id);
-    const controls = form.querySelectorAll('button,input,textarea');
+    const controls = form.querySelectorAll('button[type="submit"],input,textarea');
     controls.forEach(c => c.disabled = true);
     startStatus.classList.remove('failed');
     startStatus.textContent = 'Starting conversation';
@@ -5330,14 +5745,10 @@ DESK_SCRIPT = talk_script(r"""
       if (outcome.ok || outcome.saved === false) drafts.delete(key);
       if (outcome.ok) {
         startStatus.textContent = outcome.result.message;
-        started = show(outcome.result.row);
-        updateAttention(started.dataset.id, outcome.result.attention);
-        document.getElementById('panel-conversations').dispatchEvent(new CustomEvent('conversation-saved', {
-          detail: {id: started.dataset.id, html: outcome.result.hold}
-        }));
+        started = outcome.result;
         topic.value = '';
         message.value = '';
-        setOpen(false);
+        setComposeOpen(false);
       } else {
         startStatus.classList.add('failed');
         startStatus.textContent = outcome.message;
@@ -5348,7 +5759,7 @@ DESK_SCRIPT = talk_script(r"""
     }
     controls.forEach(c => c.disabled = false);
     refresh();
-    if (!conversationPanel.hidden) started?.querySelector('.topic-title').focus();
+    if (started) showSaved(started, true);
   });
   refresh();
 })();
@@ -6111,7 +6522,7 @@ def library_panel(name: str, items: list[dict[str, object]], empty: str, *, serv
     filters = filter_bar(list_id, items, restorable=served)
     row = reference_row if name == "references" else library_row
     rows = "".join(row(item, served=served) for item in items)
-    listing = f'<ul class="lib-list" id="{list_id}">{rows}</ul>' if rows or (served and name == "conversations") else ""
+    listing = f'<ul class="lib-list" id="{list_id}">{rows}</ul>' if rows or (served and name != "references") else ""
     if not served:
         return (filters + listing + (no_match(list_id) if filters else "")) if rows else f'<p class="empty">{esc(empty)}</p>'
     return (f'<div class="lib-tools"><label for="search-{name}">Search</label>'
@@ -6189,17 +6600,18 @@ def task_opener(css="talk-open"):
             'Create a task</button>')
 
 
+
 def talk_form(binding):
-    return ('<button type="button" id="talk-open" class="talk-open" aria-expanded="false" aria-controls="talk-form">'
-            'New conversation</button>' + task_opener() +
-            '<form id="talk-form" class="talk" novalidate aria-label="New conversation" hidden>'
+    return ('<form id="talk-form" class="talk" novalidate aria-label="New conversation" hidden>'
+            '<p class="talk-to"><span class="talk-to-label">To</span> <span>Firstmate</span></p>'
             '<div class="talk-field"><label for="talk-topic">Conversation title</label>'
             f'<input id="talk-topic" maxlength="{TITLE_LIMIT}" autocomplete="off"></div>'
             '<div class="talk-field"><label for="talk-message">Message</label>'
             f'<textarea id="talk-message" maxlength="{TEXT_LIMIT}" rows="2"></textarea></div>'
             '<div class="actions"><button type="submit" class="primary" disabled '
-            f'data-home="{esc(binding)}">Start conversation</button></div>'
-            '<p class="meta talk-destination" hidden></p></form>' + task_form(binding))
+            f'data-home="{esc(binding)}">Start conversation</button>'
+            '<button type="button" class="talk-back">Back to Conversations</button></div>'
+            '<p class="meta talk-destination" hidden></p></form>')
 
 
 PREVIEW_LIMIT = 200
@@ -6215,43 +6627,49 @@ def resolved_mark(item):
     return f'<span class="resolved-mark"{"" if is_resolved(item) else " hidden"}>{CHECK_ICON}Resolved</span>'
 
 
-def flag_button(name, on, off, active, title):
-    verb = on if active else off
-    return f'<button type="button" class="{name}" data-title="{title}" aria-label="{verb} {title}">{verb}</button>'
-
-
 def task_mark(item):
     return '<span class="task-mark">Task</span>' if is_task(item) else ""
 
 
-def conversation_row(item, projects=()):
-    thread = part_thread(item, None)
-    latest = thread[-1] if thread else None
+
+def conversation_row(item, projects=(), *, under_unread=False):
+    """One conversation on the Desk. The row carries no buttons; Pin, Move, Resolve and Archive are on its page.
+    Under the Unread heading a row leaves out the Unread reply mark, which the heading already gives."""
     target = unread_target(item)
-    href = esc(item_link(item["id"], "archived" if is_archived(item) else "conversations", target))
-    status = f'<span class="badge">{UNREAD_REPLY}</span>' if target else ""
-    if has_pending_ask(item):
+    origin = "archived" if is_archived(item) and not under_unread else "conversations"
+    href = esc(item_link(item["id"], origin, target))
+    status = f'<span class="badge">{UNREAD_REPLY}</span>' if target and not under_unread else ""
+    questions = item["kind"] == "questions"
+    pending = question_delivery_pending(item) if questions else has_pending_ask(item)
+    if pending:
         status += '<span>Not delivered</span>'
-    if in_review(item) and status:
-        status += f'<span>{TASK_STATES["review"]}</span>'
-    if not status and is_task(item):
-        status = f'<span>{TASK_STATES[task_state(item)]}</span>'
-    elif not status:
-        status = '<span>Messaged</span>' if latest["author"] == "you" else "<span>Replied</span>"
+    if questions:
+        state, _, _ = question_summary(item, replies=False)
+        status = f'<span>{state}</span>' + status
+        reply = next(unread_messages(item), None)
+        preview = str(reply["text"] if reply else item["description"])
+    else:
+        thread = part_thread(item, None)
+        latest = thread[-1] if thread else None
+        if in_review(item) and status:
+            status += f'<span>{TASK_STATES["review"]}</span>'
+        if asks_owner(item) and not in_review(item):
+            status += '<span>Asked</span>'
+        if not status and is_task(item):
+            status = f'<span>{TASK_STATES[task_state(item)]}</span>'
+        elif not status and not (target and under_unread):
+            status = '<span>Messaged</span>' if latest["author"] == "you" else "<span>Replied</span>"
+        said = next((m["text"] for m in reversed(thread) if m["author"] == "firstmate"), None) if is_task(item) else None
+        preview = str(item["task"]["description"] if said is None and is_task(item) else said if said is not None else latest["text"])
+        if not is_task(item) and latest["author"] == "you":
+            preview = "You: " + preview
     activity = conversation_activity(item).isoformat(timespec="microseconds")
     project = f'<span class="project-name">{esc(item["project"])}</span>' if item.get("project") else ""
-    said = next((m["text"] for m in reversed(thread) if m["author"] == "firstmate"), None) if is_task(item) else None
-    preview = " ".join(str(item["task"]["description"] if said is None and is_task(item) else
-                           said if said is not None else latest["text"]).split())[:PREVIEW_LIMIT]
+    preview = " ".join(preview.split())[:PREVIEW_LIMIT]
     pinned, resolved, archived = is_pinned(item), is_resolved(item), is_archived(item)
     title = esc(item["title"])
-    pin = flag_button("pin", "Unpin", "Pin", pinned, title)
-    move = f'<button type="button" class="move" aria-label="Move {title}">Move</button>'
-    if archived:
-        pin = pin.replace('<button ', '<button hidden ', 1)
-        move = move.replace('<button ', '<button hidden ', 1)
     flags = " ".join(f'data-{name}="{"true" if on else "false"}"' for name, on in
-                     (("pinned", pinned), ("resolved", resolved), ("archived", archived)))
+                     (("pinned", pinned), ("resolved", resolved), ("archived", archived), ("unread", bool(target))))
     flags += ' data-task="true"' if is_task(item) else ""
     placement = item.get("placement", {})
     where = "".join(f' data-{name}="{esc(placement[name])}"' for name in ("project", "topic") if name in placement)
@@ -6260,25 +6678,48 @@ def conversation_row(item, projects=()):
             f'<div class="topic-main"><a class="topic-title" href="{href}">{title}</a>'
             f'<p class="topic-latest">{esc(preview)}</p>'
             f'<p class="meta topic-meta"><span class="placement"{"" if label else " hidden"}>{esc(label)}</span>'
-            f'{task_mark(item)}{project}{resolved_mark(item)}{status}{activity_time(item)}</p></div>'
-            f'<div class="topic-actions">{pin}{move}{flag_button("resolve", "Reopen", "Resolve", resolved, title)}'
-            f'{flag_button("archive", "Unarchive", "Archive", archived, title)}</div>'
-            '<p class="meta desk-feedback" role="status"></p></li>')
+            f'{task_mark(item)}{project}{resolved_mark(item)}{status}{activity_time(item)}</p></div></li>')
 
 
-def conversation_groups(items, projects=()):
-    """The Pinned and Recent groups. Each is a list kept in newest-activity order; the script moves rows between them."""
-    ordered = by_activity(item for item in items if not is_archived(item))
-    groups = []
-    for name, heading, pinned in (("pinned", "Pinned", True), ("recent", "Recent conversations", False)):
-        rows = "".join(conversation_row(item, projects) for item in ordered if is_pinned(item) == pinned)
-        groups.append(f'<section class="topics" id="topics-{name}"{"" if rows else " hidden"}><h2>{heading}</h2>'
-                      f'<ul class="topic-list">{rows}</ul></section>')
-    return "".join(groups)
+def notice_row(notice, items_by_id):
+    """One unread Catch-up notice, shown with the unread conversations. It asks nothing, so reading it is all it needs."""
+    title = esc(notice["title"])
+    project = f'<span class="project-name">{esc(notice["project"])}</span>' if notice.get("project") else ""
+    links = []
+    item = items_by_id.get(notice.get("item"))
+    if item is not None:
+        links.append(f'<a href="{esc(item_link(item["id"], "conversations"))}" data-pane>{esc(item["title"])}</a>')
+    if "url" in notice:
+        links.append(f'<a href="{esc(notice["url"])}" rel="noopener noreferrer">{esc(notice["link_text"])}</a>')
+    return (f'<li class="topic notice" data-notice="{notice["id"]}" data-unread="true"'
+            f'{f' data-item="{item["id"]}"' if item is not None else ""}>'
+            f'<div class="topic-main"><p class="notice-title"><span class="id">{notice["id"]}</span> {title}</p>'
+            f'<p class="notice-summary">{esc(notice["summary"])}</p>'
+            f'{f'<p class="notice-links">{"".join(links)}</p>' if links else ""}'
+            f'<p class="meta topic-meta">{project}{day_time(notice["saved_at"])}</p>'
+            f'<button type="button" data-read="{notice["id"]}" aria-label="Mark read, {title}">Mark read</button>'
+            '<p class="meta desk-feedback failed" role="status"></p></div></li>')
+
+
+
+def conversation_groups(items, projects=(), notices=(), items_by_id=None):
+    """The Unread, Pinned and Recent groups, each in newest-activity order. Unread holds the conversations with an unread
+    reply that do not wait in For review, and the unread Catch-up notices."""
+    ordered = by_activity(items)
+    unread = [item for item in ordered if unread_conversation(item)]
+    rest = [item for item in ordered if not is_archived(item) and not unread_conversation(item)]
+    notice_rows = "".join(notice_row(notice, items_by_id or {}) for notice in notices)
+    bulk = (f'<button type="button" data-read-all{" hidden" if len(notices) < 2 else ""}>Mark all notices read</button>'
+            '<p class="meta desk-feedback failed" role="status"></p>')
+    groups = [("unread", "Unread", "".join(conversation_row(item, projects, under_unread=True) for item in unread) + notice_rows, bulk),
+              ("pinned", "Pinned", "".join(conversation_row(item, projects) for item in rest if is_pinned(item)), ""),
+              ("recent", "Recent conversations", "".join(conversation_row(item, projects) for item in rest if not is_pinned(item)), "")]
+    return "".join(f'<section class="topics" id="topics-{name}"{"" if rows else " hidden"}><div class="topics-head"><h2>{heading}</h2>{tools}</div>'
+                   f'<ul class="topic-list">{rows}</ul></section>' for name, heading, rows, tools in groups)
 
 
 def scope_bar(tree):
-    """The project filter above the list, the forms that create and rename projects and topics, and the one Move form."""
+    """The filters above the list, and the forms that create and rename projects and topics."""
     projects = "".join(f'<option value="{esc(project["id"])}">{esc(project["name"])}</option>' for project in tree)
     data = json.dumps(tree, ensure_ascii=False).replace("<", "\\u003c")
     shown = "" if tree else " hidden"
@@ -6288,6 +6729,7 @@ def scope_bar(tree):
             f'<select id="scope-project"><option value="">All</option><option value="-">Ungrouped</option>{projects}</select></div>'
             '<div class="scope-field" id="scope-topic-field" hidden><label for="scope-topic">Topic</label>'
             '<select id="scope-topic"><option value="">All topics</option></select></div>'
+            '<div class="scope-check"><input type="checkbox" id="scope-unread"><label for="scope-unread">Unread only</label></div>'
             '<div class="scope-check"><input type="checkbox" id="scope-tasks"><label for="scope-tasks">Tasks only</label></div>'
             '<div class="scope-actions"><button type="button" id="new-project">New project</button>'
             '<button type="button" id="new-topic" hidden>New topic</button>'
@@ -6298,69 +6740,109 @@ def scope_bar(tree):
             f'<input id="group-name" maxlength="{GROUP_NAME_LIMIT}" autocomplete="off"></div>'
             '<div class="actions"><button type="submit" disabled>Save name</button>'
             '<button type="button" id="group-cancel">Discard name</button></div></form>'
-            '<p class="meta desk-feedback" id="group-status" role="status"></p></div>'
-            '<form id="move-form" class="move-form" hidden novalidate aria-label="Move conversation">'
-            '<div class="scope-field"><label for="move-project">Project</label><select id="move-project"></select></div>'
-            '<div class="scope-field" id="move-topic-field"><label for="move-topic">Topic</label><select id="move-topic"></select></div>'
-            '<div class="actions"><button type="submit">Save move</button>'
-            '<button type="button" id="move-cancel">Cancel move</button></div></form>')
+            '<p class="meta desk-feedback" id="group-status" role="status"></p></div>')
 
 
-def conversations_panel(items, ask_binding, projects=()):
-    form = talk_form(ask_binding) if ask_binding else ""
-    live = [item for item in items if not is_archived(item)]
-    empty = (f'<p class="empty" id="no-conversations"{" hidden" if live else ""}>'
+
+def conversations_panel(items, ask_binding, projects=(), notices=(), items_by_id=None):
+    controls = ('<button type="button" id="talk-open" class="talk-open" aria-expanded="false" aria-controls="talk-form">'
+                'New conversation</button>' + task_opener() + task_form(ask_binding)) if ask_binding else ""
+    empty = (f'<p class="empty" id="no-conversations"{" hidden" if items or notices else ""}>'
              'No conversations yet. A conversation you start with Firstmate shows here.</p>')
     scoped = '<p class="empty" id="no-scoped-conversations" hidden></p>'
     tree = project_tree({"projects": projects})
-    return f'{form}{scope_bar(tree)}{empty}{scoped}{conversation_groups(items, projects)}'
+    return (f'<div class="talk-forms" id="talk-forms">{controls}</div>{scope_bar(tree)}'
+            f'<p class="sr" id="notice-announcement" role="status"></p>{empty}{scoped}'
+            f'{conversation_groups(items, projects, notices, items_by_id)}')
 
 
 def archived_panel(items, projects=()):
     """Archived conversations, newest activity first. Replying still works from each one's page."""
-    rows = "".join(conversation_row(item, projects) for item in by_activity(item for item in items if is_archived(item)))
+    rows = "".join(conversation_row(item, projects)
+                   for item in by_activity(item for item in items if item["kind"] == "conversation" and is_archived(item)))
     return (f'<p class="empty" id="no-archived"{" hidden" if rows else ""}>'
             'No conversations are archived. A conversation you archive shows here.</p>'
             f'<section class="topics" id="topics-archived"{"" if rows else " hidden"}>'
             f'<h2 class="sr">Archived conversations</h2><ul class="topic-list">{rows}</ul></section>')
 
 
-def catch_up_row(notice, items_by_id):
-    title = esc(notice["title"])
-    project = esc(notice.get("project", ""))
-    phone_project = f'<p class="meta notice-project">{project}</p>' if project else ""
-    links = []
-    item = items_by_id.get(notice.get("item"))
-    if item is not None:
-        links.append(f'<a href="{esc(item_link(item["id"], "needs-you"))}">{esc(item["title"])}</a>')
-    if "url" in notice:
-        links.append(f'<a href="{esc(notice["url"])}" rel="noopener noreferrer">{esc(notice["link_text"])}</a>')
-    return (f'<tr class="notice"{f' data-item="{item["id"]}"' if item is not None else ""}><th scope="row"><span class="id">{notice["id"]}</span> {title}'
-            f'{phone_project}<p>{esc(notice["summary"])}</p>{"".join(links)}</th>'
-            f'<td class="project">{project}</td><td></td><td>{day_time(notice["saved_at"])}<br>'
-            f'<button type="button" data-read="{notice["id"]}" aria-label="Mark read, {title}">Mark read</button>'
-            '<p class="meta desk-feedback failed" role="status"></p></td></tr>')
+
+def bookmark_row(item):
+    """One saved resource or list on the References tab. A resource's title goes straight to what it saves, and its ID
+    opens the saved item; a list's title opens the list."""
+    item_id, kind = item["id"], item["kind"]
+    page = esc(item_link(item_id, "desk-references"))
+    if kind == "resource":
+        first, *more = resource_links(item["body"])
+        title = f'<a class="bookmark-title" href="{esc(first["url"])}" rel="noopener noreferrer">{esc(item["title"])}</a>'
+        extra = "".join(f'<a href="{esc(link["url"])}" rel="noopener noreferrer">{esc(link["text"])}</a>' for link in more)
+        saved = f'<a class="bookmark-id" href="{page}" data-pane aria-label="{item_id}, the saved item">{item_id}</a>'
+    else:
+        title = f'<a class="bookmark-title" href="{page}" data-pane>{esc(item["title"])}</a>'
+        extra, saved = "", f'<span class="id">{item_id}</span>'
+    project = f'<span class="project-name">{esc(item["project"])}</span>' if item.get("project") else ""
+    description = " ".join(str(item["description"]).split())[:PREVIEW_LIMIT]
+    return (f'<li class="topic bookmark" data-id="{item_id}"><div class="topic-main">{title}'
+            f'<p class="topic-latest">{esc(description)}</p>'
+            f'{f'<p class="notice-links">{extra}</p>' if extra else ""}'
+            f'<p class="meta topic-meta">{saved}{project}{day_time(item["saved_at"])}</p></div></li>')
 
 
-def desk_table(attention, notice_rows="", context=None, ask_binding=None):
+def references_panel(items):
+    """The References tab: every saved resource and list, newest first. Hold still searches and filters them."""
+    rows = "".join(bookmark_row(item) for item in items if item["kind"] in ("resource", "list"))
+    return (f'<p class="empty" id="no-references"{" hidden" if rows else ""}>No references are saved yet. '
+            'A link or a list that Firstmate saves for you shows here.</p>'
+            f'<section class="topics" id="topics-references"{"" if rows else " hidden"}><h2 class="sr">References</h2>'
+            f'<ul class="topic-list">{rows}</ul></section>')
+
+
+def review_row(item, summary, context="needs-you"):
+    """One item that waits for the owner, on the For review tab."""
+    state, open_parts, pending = summary
+    href = esc(item_link(item["id"], context, attention_target(item, summary)))
+    facts = [f'<span class="badge">{UNREAD_REPLY}</span>'] if state == "Replied" else []
+    if item["kind"] == "questions":
+        questions = item["body"]["questions"]  # type: ignore[index]
+        facts.append(f'<span>{len(open_parts)} of {len(question_parts(item))} open</span>' if open_parts
+                     else f'<span>{esc(question_summary(item, replies=False)[0])}</span>')
+        preview = str(questions[open_parts[0] - 1]["question"]) if open_parts else str(item["description"])
+        when = day_time(item["saved_at"])
+    else:
+        thread = part_thread(item, None)
+        request = owner_request(item) or next((m for m in reversed(thread) if m["author"] == "firstmate"), None)
+        preview = str(request["text"] if request else item["task"]["description"])
+        facts.insert(0, task_mark(item))
+        facts.append(f'<span>{TASK_STATES["review"]}</span>' if in_review(item) else '<span>Asked</span>' if asks_owner(item) else "")
+        when = activity_time(item)
+    if pending:
+        facts.append('<span>Not delivered</span>')
+    project = f'<span class="project-name">{esc(item["project"])}</span>' if item.get("project") else ""
+    return (f'<li class="topic review" data-id="{item["id"]}" data-unread="{"true" if not shows_later(item) else "false"}">'
+            f'<div class="topic-main"><a class="topic-title" href="{href}"><span class="id">{item["id"]}</span> {esc(item["title"])}</a>'
+            f'<p class="topic-latest">{esc(" ".join(preview.split())[:PREVIEW_LIMIT])}</p>'
+            f'<p class="meta topic-meta">{"".join(facts)}{project}{when}</p></div></li>')
+
+
+
+def desk_table(attention):
     primary = next((item for item, summary in attention if summary[1]), None)
-    rows = "".join(desk_row(item, summary, primary=item is primary, context=context, ask_binding=ask_binding)
-                   for item, summary in attention)
-    hidden = "" if rows or notice_rows else " hidden"
-    return (f'<div class="desk"{hidden}><table><caption class="sr">Items that need you</caption><thead><tr>'
+    rows = "".join(desk_row(item, summary, primary=item is primary) for item, summary in attention)
+    return ('<div class="desk"><table><caption class="sr">Items that need you</caption><thead><tr>'
             '<th scope="col">Item</th><th scope="col" class="project">Project</th>'
-            f'<th scope="col">Questions</th><th scope="col">Latest</th></tr></thead><tbody>{notice_rows}{rows}</tbody></table></div>')
+            f'<th scope="col">Questions</th><th scope="col">Latest</th></tr></thead><tbody>{rows}</tbody></table></div>')
 
 
-def needs_you_panel(attention, notices, items_by_id, ask_binding=None):
-    rows = "".join(catch_up_row(notice, items_by_id) for notice in notices)
-    hide_bulk = " hidden" if len(notices) < 2 else ""
-    hide_empty = " hidden" if attention or notices else ""
-    return (f'<button type="button" data-read-all{hide_bulk}>Mark all notices read</button>'
-            '<p class="meta desk-feedback failed" role="status"></p>'
-            '<p class="sr" id="notice-announcement" role="status"></p>'
-            f'{desk_table(attention, rows, "needs-you", ask_binding)}'
-            f'<p class="empty"{hide_empty}>Nothing needs you. Questions, unread replies, failed deliveries, tasks to review and notices show here.</p>')
+def review_panel(attention):
+    """The For review tab: what waits for the owner, then what the owner chose to deal with later."""
+    waiting = "".join(review_row(item, summary) for item, summary in attention if not shows_later(item))
+    later = "".join(review_row(item, summary) for item, summary in attention if shows_later(item))
+    return (f'<p class="empty" id="no-review"{" hidden" if waiting else ""}>Nothing is waiting for your review. '
+            'Questions, tasks to review and what Firstmate marks for you show here.</p>'
+            f'<section class="topics" id="review-waiting"{"" if waiting else " hidden"}><h2 class="sr">Waiting for you</h2>'
+            f'<ul class="topic-list">{waiting}</ul></section>'
+            f'<section class="topics" id="review-later"{"" if later else " hidden"}><div class="topics-head"><h2>Later</h2></div>'
+            f'<ul class="topic-list">{later}</ul></section>')
 
 
 def underway_title(title, project):
@@ -6430,23 +6912,31 @@ def underway_panel(view):
     return note + underway_group("In progress", active) + underway_group("Merged today", done, merged=True)
 
 
-def desk_tabs(conversations, attention, underway, archived, total):
-    hidden = "" if total else " hidden"
-    count = f' <span class="tab-count"{hidden}>{total or ""}</span>'
-    panels = (("conversations", "Conversations", conversations),
-              ("needs-you", "Needs you", attention),
-              ("under-way", "Under way", underway),
-              ("archived", "Archived", archived))
+
+def desk_tabs(conversations, attention, references, underway, archived, unread, waiting, *, compose):
+    """The Desk as a mailbox: the tabs and their lists on one side, and on a wide screen the open item on the other."""
+    def count(total):
+        return f' <span class="tab-count"{"" if total else " hidden"}>{total or ""}</span>'
+    panels = (("conversations", "Conversations", conversations, count(unread)),
+              ("needs-you", "For review", attention, count(waiting)),
+              ("references", "References", references, ""),
+              ("under-way", "Under way", underway, ""),
+              ("archived", "Archived", archived, ""))
     tabs = "".join(f'<button type="button" role="tab" id="desk-tab-{name}" aria-controls="desk-panel-{name}" '
                    f'aria-selected="{"true" if number == 0 else "false"}" tabindex="{0 if number == 0 else -1}">'
-                   f'{label}{count if name == "needs-you" else ""}</button>'
-                   for number, (name, label, _) in enumerate(panels))
+                   f'{label}{total}</button>'
+                   for number, (name, label, _, total) in enumerate(panels))
     body = "".join(f'<section class="desk-panel" role="tabpanel" id="desk-panel-{name}" aria-labelledby="desk-tab-{name}"'
                    f'{"" if number == 0 else " hidden"}>{content}</section>'
-                   for number, (name, _, content) in enumerate(panels))
-    return (f'<div class="desk-tabs" role="tablist" aria-label="Desk">{tabs}</div>'
+                   for number, (name, _, content, _) in enumerate(panels))
+    return ('<div class="mailbox" id="mailbox"><div class="mail-list" id="mail-list">'
+            f'<div class="desk-tabs" role="tablist" aria-label="Desk">{tabs}</div>'
             '<p class="meta desk-feedback" id="desk-status" role="status"></p>'
-            f'{body}')
+            f'{body}</div>'
+            '<section class="mail-pane" id="mail-pane" aria-label="Open item">'
+            f'<div class="pane-compose" id="pane-compose">{compose}</div>'
+            '<iframe id="pane-frame" name="quarterdeck-pane" title="Open item"></iframe>'
+            '<p class="empty" id="pane-empty">Select a row to read it here.</p></section></div>')
 
 
 def latest_unanswered(thread):
@@ -6505,18 +6995,46 @@ def watch_page(data, site_title, *, workers_ready):
                       current="watch", watching=workers_ready)
 
 
+def question_delivery_pending(item):
+    return question_summary(item, replies=False)[2] or has_pending_ask(item)
+
+
 def attention_summary(item, *, served):
+    """What an item shows in For review, or None when it does not wait for the owner."""
     kind = item["kind"]
     if kind == "questions":
         state, open_parts, pending = question_summary(item, replies=served)
-    elif served and kind == "conversation":
-        state, open_parts, pending = ("Replied" if thread_unread(item, None) else "Messaged"), [], False
-        if state == "Messaged" and in_review(item):
-            state = TASK_STATES["review"]
-    else:
+        if open_parts or (not served and pending):
+            return state, open_parts, pending or (served and has_pending_ask(item))
         return None
-    pending = pending or (served and has_pending_ask(item))
-    return (state, open_parts, pending) if open_parts or pending or state == "Replied" or in_review(item) else None
+    if not served or kind != "conversation":
+        return None
+    review = in_review(item)
+    if not (review or asks_owner(item)):
+        return None
+    state = "Replied" if thread_unread(item, None) else TASK_STATES["review"] if review else "Asked"
+    return state, [], has_pending_ask(item)
+
+
+def shows_later(item) -> bool:
+    """A new unread reply temporarily lifts a deferred item into the waiting group."""
+    later = item.get("later")
+    if later is None:
+        return False
+    existing = set() if later is True else set(later)
+    return not any(message["id"] not in existing for message in unread_messages(item))
+
+
+def unread_conversation(item) -> bool:
+    """A thread with an unread reply that does not wait in For review."""
+    return unread_target(item) is not None and attention_summary(item, served=True) is None
+
+
+def desk_conversation(item) -> bool:
+    if item["kind"] == "conversation":
+        return not is_archived(item) or unread_conversation(item)
+    return item["kind"] == "questions" and not attention_summary(item, served=True) and (
+        unread_target(item) is not None or question_delivery_pending(item))
 
 
 def list_page(data: dict[str, object], site_title: str, *, served: bool, saved_name: str = "index.html",
@@ -6525,14 +7043,18 @@ def list_page(data: dict[str, object], site_title: str, *, served: bool, saved_n
     empty = "Nothing is saved yet. Ask Firstmate to send something to Quarterdeck, such as a link, a list or open questions."
     attention = [(item, summary) for item in items if (summary := attention_summary(item, served=served))]
     if served:
-        conversations = [item for item in items if item["kind"] == "conversation"]
+        conversations = [item for item in items if desk_conversation(item)]
         notices = unread_catch_ups(data)
-        body = "<h1>Desk</h1>" + desk_tabs(
-            conversations_panel(conversations, ask_binding, data.get("projects", [])),
-            needs_you_panel(attention, notices, {item["id"]: item for item in items}, ask_binding),
+        unread = sum(1 for item in conversations if unread_conversation(item)) + len(notices)
+        body = '<h1 class="sr">Desk</h1>' + desk_tabs(
+            conversations_panel(conversations, ask_binding, data.get("projects", []), notices,
+                                {item["id"]: item for item in items}),
+            review_panel(attention),
+            references_panel(items),
             underway_panel(underway),
-            archived_panel(conversations, data.get("projects", [])),
-            len(attention) + len(notices),
+            archived_panel(items, data.get("projects", [])),
+            unread, sum(1 for item, _ in attention if not shows_later(item)),
+            compose=talk_form(ask_binding) if ask_binding else "",
         )
         return page_shell(site_title, site_title, body, served=True, saved_name=saved_name,
                           library=library_dialog(data), current="desk", starting=True)
@@ -6563,18 +7085,22 @@ def item_body_html(item: dict[str, object]) -> str:
             for number, entry in enumerate(entries, 1)) + "</ol>"
 
 
-def list_nav(item, data, context, *, end=False) -> str:
-    """Back to the list the page was opened from (the Desk when it names none), and the next unread item in that list."""
+def list_nav(item, data, context, *, opening=None, end=False) -> str:
+    """Back to the list the page was opened from (the Desk when it names none), the next unread item in that list,
+    and Deal with later on an item that waits for the owner."""
     if context is None:
         label, href, following = "Desk", "index.html", None
     else:
         label, href = LIST_KINDS[context["from"]].label, back_link_href(context, item["id"])
-        following = next_unread(data, context, item) if data is not None else None
+        following = next_unread(data, context, item, opening=opening) if data is not None else None
     links = f'<a class="back-link" href="{esc(href)}">Back to {label}</a>'
     if following:
         target_item, target = following
         links += f'<a class="next-link" href="{esc(item_link(target_item["id"], context, target))}">Next unread</a>'
-    return f'<nav class="list-nav{" end" if end else ""}" aria-label="List links{" at the end of the page" if end else ""}">{links}</nav>'
+    later = later_button(item) if item["kind"] in ("questions", "conversation") else ""
+    said = '<p class="meta later-status" role="status"></p>' if later and end else ""
+    return (f'<nav class="list-nav{" end" if end else ""}" aria-label="List links{" at the end of the page" if end else ""}">'
+            f'{links}{later}{said}</nav>')
 
 
 def item_page(item: dict[str, object], site_title: str, *, served: bool, saved_name: str = "index.html",
@@ -6587,21 +7113,23 @@ def item_page(item: dict[str, object], site_title: str, *, served: bool, saved_n
     lead = "" if talking else f'<p class="lead">{linked_text(item["description"])}</p>'
     placed = placement_label(item, (data or {}).get("projects", [])) if talking else ""
     context = parse_list_context(query) if served else None
+    opening = context.pop("at", None) if context else None
     body = (
-        f'{list_nav(item, data, context) if served else ""}'
+        f'{list_nav(item, data, context, opening=opening) if served else ""}'
         f'<p class="id">{esc(item_id)}</p><h1>{esc(item["title"])}</h1>'
         f'<p class="meta">{"Task" if is_task(item) else esc(KIND_LABELS[str(item["kind"])])}{" · " + esc(placed) if placed else ""}'
         f'{" · " + esc(item["project"]) if item.get("project") else ""}'
         f' · saved {day_time(item["saved_at"])}</p>'
         f'{tag_labels(list(item.get("tags", [])))}'
-        f'{conversation_state(item, ask_binding) if talking and served else ""}'
+        f'{conversation_state(item, ask_binding, project_tree(data or {})) if talking and served else ""}'
+
         f'{task_blocks(item, data, ask_binding) if talking and served else ""}'
-        f'{lead}{content}{list_nav(item, data, context, end=True) if served else ""}'
+        f'{lead}{content}{list_nav(item, data, context, opening=opening, end=True) if served else ""}'
     )
     return page_shell(f"{item_id} {item['title']} · {site_title}", site_title, body,
                       served=served, saved_name=saved_name,
                       interactive=served and has_answer_controls(item),
-                      conversations=served and (questions or talking), talking=served and talking)
+                      pane_links=served, conversations=served and (questions or talking), talking=served and talking)
 
 
 def site_pages(data: dict[str, object], site_title: str, saved_name: str) -> dict[str, str]:
@@ -6964,7 +7492,7 @@ def make_handler(site_title: str, base_path: str = "", store: Path | None = None
         server_version = "Quarterdeck"
 
         def send_text(self, status: int, body: str | bytes, content_type: str = "text/plain; charset=utf-8",
-                      cache: str = "no-store", *, prevent_framing: bool = False) -> None:
+                      cache: str = "no-store", *, framing: str = "") -> None:
             data = body if isinstance(body, bytes) else body.encode("utf-8")
             packed = (len(data) >= GZIP_MIN_BYTES and accepts_gzip(self.headers.get("Accept-Encoding"))
                       and not content_type.startswith("image/"))
@@ -6979,8 +7507,8 @@ def make_handler(site_title: str, base_path: str = "", store: Path | None = None
             self.send_header("Cache-Control", cache)
             self.send_header("X-Content-Type-Options", "nosniff")
             self.send_header("Referrer-Policy", "no-referrer")
-            if prevent_framing:
-                self.send_header("Content-Security-Policy", "frame-ancestors 'none'")
+            if framing:
+                self.send_header("Content-Security-Policy", f"frame-ancestors '{framing}'")
             self.end_headers()
             self.wfile.write(data)
 
@@ -7054,7 +7582,8 @@ def make_handler(site_title: str, base_path: str = "", store: Path | None = None
                 return
             if name == "index.html":
                 try:
-                    visit_log.record(self.headers.get("User-Agent"))
+                    if request.query != "lists=1":  # the Desk fetching its own lists again is not a visit
+                        visit_log.record(self.headers.get("User-Agent"))
                 except (OSError, ValueError) as exc:  # a visit that cannot be logged must never stop the page
                     print(f"quarterdeck: could not log the visit: {exc}", file=sys.stderr, flush=True)
                 _, ask_binding = ask_destination(ask_home, require_directory=True)
@@ -7062,7 +7591,7 @@ def make_handler(site_title: str, base_path: str = "", store: Path | None = None
                                           data["items"]) if workers_home is not None else None)
                 self.send_text(200, list_page(data, site_title, served=True, ask_binding=ask_binding, underway=underway),
                                "text/html; charset=utf-8",
-                               prevent_framing=True)
+                               framing="none")
                 return
             try:
                 item = find_item(data, discussion[1] if discussion else name.removesuffix(".html"))
@@ -7081,14 +7610,12 @@ def make_handler(site_title: str, base_path: str = "", store: Path | None = None
             if item["kind"] in ("questions", "conversation"):
                 _, ask_binding = ask_destination(ask_home, require_directory=item["kind"] == "conversation")
             content = item_page(item, site_title, served=True, ask_binding=ask_binding, data=data, query=request.query)
-            prevent_framing = has_answer_controls(item) or item["kind"] == "conversation" or (
-                item["kind"] == "questions" and (bool(part_thread(item, None)) or question_summary(item)[0] == "Replied"))
-            self.send_text(200, content, "text/html; charset=utf-8", prevent_framing=prevent_framing)
+            self.send_text(200, content, "text/html; charset=utf-8", framing="self")
 
         def do_POST(self) -> None:  # noqa: N802 - http.server naming
             endpoint = self.path.removeprefix(base_path)
             subjects = {"/answers": "answer", "/asks": "ask", "/conversations": "conversation", "/replies/read": "reply acknowledgment",
-                        "/pins": "pin", "/resolutions": "resolution", "/archives": "archive",
+                        "/pins": "pin", "/resolutions": "resolution", "/archives": "archive", "/laters": "later",
                         "/groups": "project", "/moves": "move", "/tasks": "task", "/reviews": "review",
                         "/catch-ups/read": "catch-up read"}
             if not self.path.startswith(base_path) or endpoint not in subjects:
@@ -7138,6 +7665,8 @@ def make_handler(site_title: str, base_path: str = "", store: Path | None = None
                     record = set_conversation_flag(active_store, payload, "resolved")
                 elif endpoint == "/archives":
                     record = set_conversation_flag(active_store, payload, "archived")
+                elif endpoint == "/laters":
+                    record = set_later(active_store, payload)
                 elif endpoint == "/groups":
                     record = change_projects(active_store, payload)
                 elif endpoint == "/moves":
@@ -7170,7 +7699,7 @@ def make_handler(site_title: str, base_path: str = "", store: Path | None = None
             except (OSError, StoreReadError):
                 self.send_text(500, f"Could not save the {subject}.")
             except (ValueError, RecursionError):
-                self.send_text(400, f"Check the conversation and {subject}." if endpoint in ("/pins", "/resolutions", "/archives", "/moves")
+                self.send_text(400, f"Check the conversation and {subject}." if endpoint in ("/pins", "/resolutions", "/archives", "/moves", "/laters")
                                else "Check the name and try again." if endpoint == "/groups"
                                else "Check the title and description, then try again." if endpoint == "/tasks"
                                else "Check the note and try again." if endpoint == "/reviews"
@@ -7239,7 +7768,7 @@ def serve(args: argparse.Namespace) -> int:
     exposed = [host for host in bind_hosts(args) if not is_loopback(host)]
     if exposed:
         print(f"quarterdeck: warning: {', '.join(exposed)} is not a loopback address; anyone who can reach this port can "
-              "read saved items, answers, conversations, images, and unread Catch-up notices. They can submit answers, pin, resolve and archive topics, acknowledge "
+              "read saved items, answers, conversations, images, and unread Catch-up notices. They can submit answers, pin, resolve and archive topics, keep items for later, acknowledge "
               "replies, and mark Catch-up notices read by ID. "
               "With firstmate_home set, they can read or check the worker and second mate roster, "
               "send asks, start conversations and send messages.",
@@ -7522,6 +8051,7 @@ def make_parser() -> argparse.ArgumentParser:
     reply.add_argument("id", help="item or question ID, such as Q7 or Q7.1; a conversation's item ID, such as Q12")
     reply.add_argument("--ask", required=True, metavar="ID", help="the ask or message ID from the inbox note")
     reply.add_argument("--text", required=True, help="the reply")
+    reply.add_argument("--for-review", action="store_true", help=FOR_REVIEW_HELP)
     attachment_options(reply)
     reply.add_argument("--clarify", action="append", metavar="Q7.1=TEXT",
                        help="on a reply to the whole item: context that now shows at that question; repeat for more questions")
@@ -7534,6 +8064,7 @@ def make_parser() -> argparse.ArgumentParser:
                    "with a --url and each --image with an --alt, in the order given.", post_update)
     post.add_argument("id", help="a conversation's item ID, such as Q12")
     post.add_argument("--text", required=True, help="the message")
+    post.add_argument("--for-review", action="store_true", help=FOR_REVIEW_HELP)
     attachment_options(post)
 
     for name, handler, verb in (("resolve", resolve_conversation, "mark a conversation resolved"),
@@ -7550,8 +8081,8 @@ def make_parser() -> argparse.ArgumentParser:
     task_actions = task_cmd.add_subparsers(dest="task_action", required=True)
     task_review = task_actions.add_parser(
         "review", help="post a task's result and put the task In review",
-        description="Post Firstmate's update with the result and put the task In review. It shows in Needs you with "
-                    "Approve and Changes needed. Approving resolves it; a note returns it to Started.")
+        description="Post Firstmate's update with the result and put the task In review. It shows in For review, "
+                    "and its page has Approve and Changes needed. Approving resolves it; a note returns it to Started.")
     task_review.set_defaults(handler=review_task_command)
     task_review.add_argument("id", help="a task's item ID, such as Q12")
     task_review.add_argument("--text", required=True, help="what was done and what to check")
@@ -7565,6 +8096,7 @@ def make_parser() -> argparse.ArgumentParser:
     converse_cmd.add_argument("--title", required=True, help="a short topic that says what the conversation is about")
     converse_cmd.add_argument("--config", type=Path, help="use the same JSON config file as serve")
     converse_cmd.add_argument("--text", required=True, help="the message")
+    converse_cmd.add_argument("--for-review", action="store_true", help=FOR_REVIEW_HELP)
     converse_cmd.add_argument("--project", metavar="ID", help="file the conversation in this project, by ID such as P1; see quarterdeck projects")
     converse_cmd.add_argument("--topic", metavar="ID", help="with --project: file it in this topic of the project, by ID such as T2")
     attachment_options(converse_cmd)
@@ -7640,7 +8172,7 @@ def make_parser() -> argparse.ArgumentParser:
 
     serve_parser = command("serve", "serve the page over HTTP",
                            "Anyone who can reach the service can read saved items, answers, conversations and reply images. "
-                           "They can read unread Catch-up notices, including their details and links. They can submit answers, pin, resolve and archive topics, acknowledge replies, and mark Catch-up notices read by ID "
+                           "They can read unread Catch-up notices, including their details and links. They can submit answers, pin, resolve and archive topics, keep items for later, acknowledge replies, and mark Catch-up notices read by ID "
                            "as the owner. With firstmate_home set, they can also "
                            "send asks, start conversations, create and start tasks, send messages and read or check that home's workers "
                            "and second mates from the Workers page or workers.json. Browser "

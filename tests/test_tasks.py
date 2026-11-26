@@ -47,7 +47,7 @@ class TaskCase(base.ImageCase):
 
     def needs_you(self, port):
         page = self.fetch(port, "/qd/")[1]
-        return re.search(r'id="desk-panel-needs-you".*?</section>', page, re.DOTALL)[0]
+        return page.split('id="desk-panel-needs-you"')[1].split('id="desk-panel-under-way"')[0]
 
 
 class CreateTaskTests(TaskCase):
@@ -214,11 +214,11 @@ class ReviewTaskTests(TaskCase):
         self.assertEqual((code, err), (0, ""), err)
         return out
 
-    def test_review_puts_the_task_in_needs_you_with_its_result_and_two_actions(self) -> None:
+    def test_review_puts_the_task_in_for_review_and_its_page_offers_the_result_and_two_actions(self) -> None:
         home = self.inbox()
         port = self.start("/qd", ask_home=home)
         self.started(port)
-        self.assertNotIn("Approve", self.needs_you(port))
+        self.assertNotIn('data-id="Q1"', self.needs_you(port))
         self.assertEqual(self.ask_review("--url", "https://example.com/guide", "--link-text", "Harbor guide"), "Q1 In review\n")
         task = self.task()
         self.assertEqual(task["task"]["state"], "review")
@@ -227,15 +227,18 @@ class ReviewTaskTests(TaskCase):
         self.assertEqual((last["author"], last["text"], last["links"]),
                          ("firstmate", "The guide is ready to read.", [{"text": "Harbor guide", "url": "https://example.com/guide"}]))
         panel = self.needs_you(port)
-        self.assertIn('<a class="ref-link" href="https://example.com/guide" target="_blank" rel="noopener noreferrer">Harbor guide</a>', panel)
-        self.assertIn('<button type="button" class="approve">Approve</button>', panel)
-        self.assertIn('class="changes" aria-expanded="false">Changes needed</button>', panel)
+        # The row carries no buttons: it opens the task, and the task's page holds the result and the two decisions.
+        self.assertRegex(panel, r'<li class="topic review" data-id="Q1" data-unread="true">.*class="topic-title" href="q1[.]html[?]from=needs-you#reply-')
+        self.assertRegex(panel, r'<span class="task-mark">Task</span><span class="badge">Unread reply</span><span>In review</span>')
+        self.assertNotIn("<button", panel)
         self.assertRegex(self.row(self.fetch(port, "/qd/")[1], "Q1"), r'<span class="task-mark">Task</span>.*<span class="badge">Unread reply</span>')
         with quarterdeck.changing_store(quarterdeck.store_path()) as data:
             quarterdeck.read_firstmate_updates(data["items"][0])
         self.assertIn('<span>In review</span>', self.row(self.fetch(port, "/qd/")[1], "Q1"))
-        self.assertIn("Approve", self.needs_you(port))
+        self.assertIn('data-id="Q1"', self.needs_you(port))
         page = self.fetch(port, "/qd/q1.html")[1]
+        self.assertIn('<a class="ref-link" href="https://example.com/guide" target="_blank" rel="noopener noreferrer">Harbor guide</a>', page)
+        self.assertIn('class="changes" aria-expanded="false">Changes needed</button>', page)
         self.assertIn('<h2 id="review-title">Result</h2>', page)
         self.assertIn('<button type="button" class="approve primary">Approve</button>', page)
         self.assertIn('<span class="task-state">In review</span>', page)
@@ -273,7 +276,7 @@ class ReviewTaskTests(TaskCase):
         task = self.task()
         self.assertEqual(task["task"], {"state": "started", "description": "Draft next season's ferry timetable."})
         self.assertIs(task["resolved"], True)
-        self.assertNotIn("Approve", self.needs_you(port))
+        self.assertNotIn('data-id="Q1"', self.needs_you(port))
         self.assertIn('data-resolved="true"', result["row"])
         self.assertEqual(self.post(port, "/qd/reviews", {"part": "Q1", "decision": "approve"})[0], 409)
         quarterdeck.check_store(self.store())
@@ -282,9 +285,9 @@ class ReviewTaskTests(TaskCase):
         port = self.start("/qd", ask_home=self.inbox())
         self.started(port)
         self.ask_review()
-        self.assertIn("Approve", self.needs_you(port))
+        self.assertIn('data-id="Q1"', self.needs_you(port))
         self.run_cli("resolve", "Q1")
-        self.assertNotIn("Approve", self.needs_you(port))
+        self.assertNotIn('data-id="Q1"', self.needs_you(port))
         self.assertIn('<span class="task-state" hidden>', self.fetch(port, "/qd/q1.html")[1])
 
     def test_changes_needed_sends_the_note_and_returns_the_task_to_started(self) -> None:
@@ -292,7 +295,8 @@ class ReviewTaskTests(TaskCase):
         port = self.start("/qd", ask_home=home)
         self.started(port)
         self.ask_review("--url", "https://example.com/guide")
-        binding = re.search(r'class="task-review" data-id="Q1" data-home="([^"]+)"', self.needs_you(port))[1]
+        self.assertEqual(self.post(port, "/qd/laters", {"part": "Q1", "later": True})[0], 200)
+        binding = re.search(r'class="task-review" data-id="Q1" data-home="([^"]+)"', self.fetch(port, "/qd/q1.html")[1])[1]
         body = {"part": "Q1", "decision": "changes", "id": uuid.uuid4().hex, "note": "Add the ferry times.", "home": binding}
         status, result = self.post(port, "/qd/reviews", body)
         self.assertEqual((status, result["message"], result["attention"]), (200, "Note sent.", None))
@@ -300,6 +304,7 @@ class ReviewTaskTests(TaskCase):
         self.assertEqual(task["task"]["state"], "started")
         self.assertNotIn("result", task["task"])
         self.assertNotIn("resolved", task)
+        self.assertNotIn("later", task)
         last = task["conversation"]["item"][-1]
         self.assertEqual((last["id"], last["author"], last["text"], last["delivery"]),
                          (body["id"], "you", "Changes needed.\n\nAdd the ferry times.", "sent"))
@@ -309,6 +314,11 @@ class ReviewTaskTests(TaskCase):
         self.assertEqual(self.notes(home).count("Add the ferry times."), 1)
         self.assertEqual(self.post(port, "/qd/reviews", {**body, "id": uuid.uuid4().hex})[0], 409)
         self.assertEqual(self.post(port, "/qd/reviews", {**body, "note": "Other.", })[0], 409)
+        self.ask_review()
+        with quarterdeck.changing_store(quarterdeck.store_path()) as data:
+            quarterdeck.read_firstmate_updates(data["items"][0])
+        waiting = self.needs_you(port).split('id="review-later"', 1)[0]
+        self.assertIn('data-id="Q1"', waiting)
 
     def test_review_requests_check_their_fields(self) -> None:
         port = self.start("/qd", ask_home=self.inbox())
@@ -469,31 +479,28 @@ const none = button('no-scoped-conversations');
 check(none.hidden, 'The empty message showed while conversations were listed');
 button('scope-tasks').click();
 check(!none.hidden && none.textContent === 'No tasks yet. A task you create shows here.', 'Tasks only with no tasks did not explain itself: ' + none.textContent);
-check(button('topics-recent').hidden, 'The recent group stayed visible with no task in it');
+check(button('topics-unread').hidden, 'The group stayed visible with no task in it');
 button('scope-tasks').click();
-check(none.hidden && !button('topics-recent').hidden, 'Clearing the filter did not bring the list back');
+check(none.hidden && !button('topics-unread').hidden, 'Clearing the filter did not bring the list back');
 """, path="/qd/", viewport=(390, 844))
 
-    def test_a_review_is_decided_from_needs_you(self) -> None:
+    def test_a_review_is_decided_on_the_task_page(self) -> None:
         port = self.start("/qd", ask_home=self.inbox())
         self.create(port, title="Write the guide")
         self.assertEqual(self.run_cli("task", "review", "Q1", "--text", "Ready.", "--url", "https://example.com/guide")[0], 0)
-        row = self.row(self.fetch(port, "/qd/")[1], "Q1")
         self.check_answer_page(port, r"""
-button('desk-tab-needs-you').click();
 const posts = [];
-let refuse = false;
+let refuse = true;
 window.fetch = async (path, init) => {
   posts.push([path, JSON.parse(init.body)]);
   if (refuse) throw new Error('interrupted');
-  return {ok:true, status:200, json: async () => ({message:'Task approved.', href:'q1.html', row:%s, hold:'', attention:null})};
+  return {ok:false, status:409, json: async () => ({message:'This task is no longer in review. Reload the page.', saved:true})};
 };
 const settle = () => new Promise(resolve => setTimeout(resolve, 80));
-const rows = () => document.querySelectorAll('#desk-panel-needs-you tr.work').length;
 const box = document.querySelector('.task-review');
-check(rows() === 1 && box.querySelector('.approve').textContent === 'Approve'
-      && box.querySelector('.changes').textContent === 'Changes needed', 'Needs you did not offer both decisions');
-check(box.closest('tr').querySelector('.ref-link').href === 'https://example.com/guide', 'The result link was missing');
+check(box.querySelector('.approve').textContent === 'Approve'
+      && box.querySelector('.changes').textContent === 'Changes needed', 'The task page did not offer both decisions');
+check(document.querySelector('.review-panel .ref-link').href === 'https://example.com/guide', 'The result link was missing');
 const note = box.querySelector('.review-note');
 check(note.hidden && box.querySelector('.changes').getAttribute('aria-expanded') === 'false', 'The note started open');
 box.querySelector('.changes').click();
@@ -503,7 +510,6 @@ check(note.querySelector('.send-note').disabled, 'Send note was enabled with no 
 note.querySelector('textarea').dispatchEvent(new KeyboardEvent('keydown', {key:'Escape', bubbles:true}));
 check(note.hidden && document.activeElement === box.querySelector('.changes'), 'Escape did not close the note');
 box.querySelector('.changes').click();
-refuse = true;
 note.querySelector('textarea').value = '  Add the Monday rows. ';
 note.querySelector('textarea').dispatchEvent(new Event('input', {bubbles:true}));
 note.querySelector('.send-note').click();
@@ -511,15 +517,14 @@ await settle();
 const [path, body] = posts[0];
 check(path === 'reviews' && body.part === 'Q1' && body.decision === 'changes' && body.note === 'Add the Monday rows.'
       && /^[0-9a-f]{32}$/.test(body.id) && /^[0-9a-f]{64}$/.test(body.home), 'Send note posted the wrong request: ' + JSON.stringify(posts));
-check(rows() === 1 && /could not be saved|Offline/.test(box.querySelector('.review-status').textContent)
-      && !note.querySelector('.send-note').disabled, 'An interrupted note changed the row or hid the reason');
+check(/could not be saved|Offline/.test(box.querySelector('.review-status').textContent)
+      && !note.querySelector('.send-note').disabled, 'An interrupted note hid the reason or locked the form');
 refuse = false;
 note.querySelector('.send-note').click();
 await settle();
 check(posts[1][1].id === body.id, 'Sending an interrupted note again used a new message ID');
-check(rows() === 0 && document.getElementById('desk-status').textContent === 'Task approved.', 'A saved review did not leave Needs you');
-check(document.querySelector('.tab-count').hidden, 'The Needs you count stayed');
-""" % json.dumps(row), path="/qd/", viewport=(390, 844))
+check(box.querySelector('.review-status').textContent === 'This task is no longer in review. Reload the page.', 'A refusal was not shown');
+""", path="/qd/q1.html", viewport=(390, 844))
 
     def test_a_task_page_starts_a_draft_and_creates_a_related_task(self) -> None:
         port = self.desk()

@@ -599,6 +599,13 @@ class PageTests(ClassificationCase):
             with self.subTest(served=served):
                 page = (quarterdeck.list_page(data, "Quarterdeck", served=True) if served else
                         quarterdeck.site_pages(data, "Quarterdeck", "index.html")["index.html"])
+                if served:  # the served Desk lists what waits for the owner as rows; the rendered page keeps its table
+                    rows = re.findall(r'<li class="topic review" data-id="(Q\d+)".*?<span class="id">Q\d+</span> ([^<]*)</a>(.*?)</li>',
+                                      page, re.DOTALL)
+                    found = [(f"{item} {title}", (re.search(r'<span class="project-name">([^<]*)</span>', rest) or ["", ""])[1])
+                             for item, title, rest in rows]
+                    self.assertEqual(found, expected_rows)
+                    continue
                 desk = DeskTables()
                 desk.feed(page)
                 desk.close()

@@ -4,41 +4,61 @@ You or Firstmate can start a conversation about anything. Each conversation
 is its own saved item, with the conversation title as its name. To send a message, use the
 served page with [`firstmate_home` configured](read-answers.md#connect-the-inbox)
 to point to an existing directory. The Desk opens on **Conversations**. Its
-**Conversation title** and **Message** fields sit directly above the list once that
+**New conversation** button sits above the list once that
 directory is available. Switching tabs keeps the same page address. See the [glossary](../reference/glossary.md) for the
 words the Desk uses.
+
+## Read the Desk like a mailbox
+
+On a screen at least 60rem wide, the Desk has two parts. The tabs and their
+lists are on the left. The conversation or question set you select opens on
+the right, without leaving the Desk, and its row stays marked in the list.
+
+On a narrower screen the lists fill the screen and a row opens the item's own
+page. That page has [Back to and Next unread](go-back-to-the-list.md).
+
+A row has no buttons. It shows the title, the first words of the latest
+message, the status, and
+the time of the latest activity. The title is bold while a reply is unread.
 
 ## Start a conversation
 
 1. On the Desk, stay on **Conversations**.
-2. Select **New conversation**. The cursor moves to **Conversation title**.
+2. Select **New conversation**. A blank message opens beside the list on a wide screen or in a dedicated compose view on a narrow screen. It is to Firstmate, and the cursor moves to **Conversation title**.
 3. Type a short **Conversation title** and your **Message**, then select **Start conversation**.
 
-Select **New conversation** again to hide the form. Unsent text stays in the hidden form, and the form closes after Quarterdeck starts the conversation.
+Select **New conversation** again on a wide screen or **Back to Conversations**
+on a narrow screen to close the form. The form keeps any unsent text.
 
 Quarterdeck saves the conversation under a new ID such as Q12 and attempts
 delivery to Firstmate's inbox. The new conversation joins the top of **Recent
-conversations** and takes keyboard focus if **Conversations** is visible.
+conversations**. On a wide screen it opens beside the list. On a narrow screen
+it takes keyboard focus if **Conversations** is visible.
 The result appears above the selected tab's contents. If you switch tabs while
 the request is in progress, the selected tab stays open. A refused request
 keeps the draft in the form. If Quarterdeck saves the conversation but delivery
 fails, it shows **Not delivered** and you can retry from its page.
-An unsent draft stays in the fields when you switch to **Needs you** and back.
+An unsent draft stays in the fields when you switch to **For review** and back.
 Conversations leave question answers and states unchanged.
 
 ## Order and pins
 
-Each group lists its conversations by latest activity. A new conversation, message or
+**Conversations** has three groups: **Unread**, **Pinned** and **Recent
+conversations**. Each group lists its conversations by latest activity. A new conversation, message or
 reply brings a conversation to the front of its group, and quiet ones sink.
 Each row shows the date and time of that latest activity in your time zone.
-Select **Pin** on a row to move it into **Pinned**. Select **Unpin** to return
+Open a conversation and select **Pin** to move it into **Pinned**. Select **Unpin** to return
 it to its place by activity. Pinning does not change the messages, the unread
 reply or whose turn it is. Each group keeps its own order, so a pinned
 conversation stays above every recent one.
 
+Select **Unread only** above the list to hide every conversation with no
+unread reply. The filter stays when you open a conversation and go back, and
+**Next unread** follows it.
+
 ## Resolve a conversation
 
-Select **Resolve** on a row, or on the conversation page, to show that the
+Open a conversation and select **Resolve** to show that the
 conversation is settled. A resolved conversation shows a check with
 **Resolved**. Select **Reopen** to clear it. Firstmate can do the same with
 `quarterdeck resolve` and `quarterdeck reopen`.
@@ -49,13 +69,13 @@ or reopen it yourself when you want it to change.
 
 ## Archive a conversation
 
-Select **Archive** on a row, or on the conversation page, to move a
-conversation out of **Pinned** and **Recent conversations** and into the
+Open a conversation and select **Archive** to move it
+out of **Pinned** and **Recent conversations** and into the
 **Archived** tab. Select **Unarchive** to return it. An archived conversation
 keeps its **Resolved** mark, its pin, and its project and topic, and it
 returns to **Pinned** if you pinned it. You can still open it and send messages, and Firstmate can still
-reply. An unread reply on an archived conversation still shows in
-**Needs you**. Firstmate can archive with `quarterdeck archive` and
+reply. An unread reply on an archived conversation still shows under
+**Unread**. Firstmate can archive with `quarterdeck archive` and
 `quarterdeck unarchive`. [Hold](use-the-library.md) leaves out archived conversations.
 
 ## Group conversations
@@ -69,9 +89,9 @@ The **Project** filter sits between the form and the list. It opens on **All**.
 Choose a project to see its conversations, including those filed directly in
 it. Then choose a **Topic** to narrow the list. Choose **Ungrouped** to see
 conversations that are in no project. Archived conversations stay in
-**Archived** and leave the filter's lists. Within the filter, **Pinned** comes first
-and each group keeps its order by latest activity. The filter stays when you
-open a conversation and go back. **Needs you**, **Watch** and **Open Hold** do
+**Archived** and leave the filter's lists. Within the filter, **Unread** comes first,
+then **Pinned**, and each group keeps its order by latest activity. The filter stays when you
+open a conversation and go back. **For review**, **Watch** and **Open Hold** do
 not change with it.
 
 - To make a project, select **New project**, type its name and select **Save
@@ -83,8 +103,8 @@ not change with it.
   first. The line under the form says where the conversation will start, such
   as "Starts in Field Atlas / Wayfinding." From **All** or **Ungrouped**, it
   starts ungrouped.
-- To change where a conversation is, select **Move** on its row, choose the
-  project and topic, and select **Save move**. Choose **Ungrouped** to
+- To change where a conversation is, open it and select **Move**, choose the
+  project and topic, and select **Save move**. The button shows once you have made a project. Choose **Ungrouped** to
   take it out of its project. Moving changes nothing else about the
   conversation: its messages, pin, unread reply and place by latest activity stay.
 
@@ -96,7 +116,11 @@ conversation no access to the others and shares no context with them.
 ## Send more messages
 
 Type in **Your message** on the conversation and select **Send message**. The
-conversation shows messages from oldest to newest. Each of your messages
+conversation shows messages from oldest to newest, as one stacked thread. The
+newest message is open, and so is every reply you have not read and every
+message that was not delivered. Each earlier message is folded to one line with
+its sender, its first words and its time. Select a line to open it. The message
+that awaits your review stays open. Each of your messages
 shows **Sent** or **Not delivered**. Select **Send message again**
 under a message that shows **Not delivered** once the
 [inbox is available](read-answers.md#connect-the-inbox). The retry keeps the
@@ -111,11 +135,12 @@ The card labels a standalone message **Firstmate update**. A reply links to
 the message it answers. Attached images fit inside their message. Select an
 image to open it at full size in a new tab.
 
-A conversation with an unread Firstmate message shows **Unread reply** on its
-row in **Conversations**. See [when it also appears in Needs you](use-the-library.md#when-an-item-moves).
+A conversation with an unread Firstmate message sits under **Unread** on
+**Conversations**, with a bold title. The tab shows how many rows are there.
 Opening the row takes you to the unread message and marks that message read.
-The row stays marked while other unread replies remain. The conversation
-keeps its place by activity. A conversation page opened without a link to a
+On a wide screen the row keeps its place under **Unread** until you select
+another row, then takes its place by activity. A reply alone does not put a
+conversation in **For review**. See [what does](answer-questions.md#what-for-review-holds). A conversation page opened without a link to a
 message starts at its first unread message, or at the latest message when all
 are read. Reload, send a message, or retry delivery to
 refresh the conversation. Replies shown after a send or retry stay unread

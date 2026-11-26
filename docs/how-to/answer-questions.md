@@ -1,27 +1,49 @@
 # Answer questions
 
-Select **Needs you** on the Desk to reach the table. The tab shows the number
-of rows when any need attention. Each question set counts once, regardless of
-how many questions are open. [Catch-up notices](catch-up.md#read-the-notices-on-the-desk)
-appear first, followed by saved items, newest saved first. A task that waits for
-your review shows here with its result and two choices, as
-[create a task](create-a-task.md#review-a-task) describes.
+Select **For review** on the Desk. The tab shows the number of items that wait
+for you. Each question set counts once, regardless of how many questions are
+open. Items you put under **Later** are not counted.
 
-The **Item** column links the saved ID and title, **Questions** shows the
-open count, and **Latest** shows the current status. On wider screens,
-**Project** shows the assigned project. Select the item link or tap its row
-to open the first open question. If there is an unread reply, the link
-[opens that message](ask-firstmate.md#read-replies). If there are no open
-questions or unread replies, the link opens the item page. See
-[where the page opens](ask-firstmate.md#read-replies).
+## What For review holds
+
+**For review** holds only what waits for you:
+
+- a question set with an open question
+- a task that waits for [your review](create-a-task.md#review-a-task)
+- a conversation in which Firstmate [marked a message for your review](reply-from-the-command-line.md#mark-a-message-for-review)
+
+Unread replies on items that have no open request are in **Conversations**
+under **Unread**, along with [Catch-up notices](catch-up.md#read-the-notices-on-the-desk).
+A failed delivery also stays visible in **Conversations**, where you can open the item to retry.
+
+Each row links the saved ID and title and shows the first open question or
+the message that asks for your review. Under it are the status, the project and
+the date. Select the row to open the first open question. If there is a
+marked message, the row opens that message even after it has been read. A
+question set with an unread reply [opens the reply](ask-firstmate.md#read-replies). See
+[where the page opens](ask-firstmate.md#read-replies). On a wide screen the
+item opens beside the list.
 The item page has the question wording, options, and suggestions. Each
 question has an ID you can cite later.
 
-Items with open questions show **Asked**. If no questions are open and an
-answer still needs delivery, the row shows **None open** and **Answered**.
-**Unread reply** takes precedence over both **Asked** and **Answered** when
-there is an unread reply. The row also shows **Not delivered** while an
+A question set shows how many questions are open, such as **1 of 2 open**. A conversation
+shows **Asked**, and a task **In review**. **Unread reply** comes first when there
+is an unread reply. The row also shows **Not delivered** while an
 answer or retryable ask needs delivery.
+
+## Deal with an item later
+
+Select **Deal with later** on an item that waits for you to put it under
+**Later**, at the end of **For review**. The button sits beside **Next unread**,
+at the top and at the bottom of the item.
+Select **Next unread** when you are ready to move on.
+
+An item under **Later** stays there while the deferred request is open. It leaves
+the tab's count, and **Next unread** passes over it.
+A new reply from Firstmate lifts it back among the waiting items until you
+read it. Select **Remove from Later** to take it out yourself.
+
+## Answer on the item page
 
 An item page lists every question in one list. A question marked **Answered**
 with a **Sent** answer and no unread replies collapses to one line below the
@@ -33,8 +55,8 @@ correction awaiting delivery returns to the expanded questions. The
 **Send answers** bar stays at the bottom of the screen while you scroll,
 so you can compare answers and send them together.
 
-After you answer, **Back to Needs you** returns you to the table and **Next unread**
-opens the next item, skipping Catch-up notices. See [Go back to the list](go-back-to-the-list.md).
+After you answer, **Next unread** opens the next item that waits for you.
+On a narrow screen **Back to For review** returns you to the list. See [Go back to the list](go-back-to-the-list.md).
 
 If the question has [review links](save-items.md#a-question-that-points-to-a-review-page),
 open them for context before choosing an answer.

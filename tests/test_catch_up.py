@@ -218,7 +218,7 @@ class CatchUpPageTests(CatchUpCase):
         help_text = " ".join(out.split())
         self.assertIn("mark Catch-up notices read by ID as the owner", help_text)
 
-    def test_needs_you_shows_and_acknowledges_notices_with_the_open_questions(self) -> None:
+    def test_notices_show_under_unread_in_conversations_and_are_acknowledged_there(self) -> None:
         if not shutil.which("google-chrome"):
             self.skipTest("google-chrome is required for the Catch-up browser test")
         item = self.add("questions", "Tide launch decisions", "One question.", "--body-file", "-", stdin=json.dumps([
@@ -228,34 +228,36 @@ class CatchUpPageTests(CatchUpCase):
         self.notice("Second notice")
         self.notice("Third notice")
         steps = """
-const tab = document.getElementById('desk-tab-needs-you');
+const tab = document.getElementById('desk-tab-conversations');
 const count = tab.querySelector('.tab-count');
-const panel = document.getElementById('desk-panel-needs-you');
-const question = panel.querySelector('a[href="q1.html?from=needs-you#Q1.1"]');
-const notice = panel.querySelector('button[data-read="C1"]').closest('tr');
+const panel = document.getElementById('desk-panel-conversations');
+const review = document.getElementById('desk-panel-needs-you');
+const question = () => review.querySelector('a[href="q1.html?from=needs-you#Q1.1"]');
+const notice = panel.querySelector('button[data-read="C1"]').closest('li');
 const waitForCount = expected => new Promise(resolve => {
   const observer = new MutationObserver(() => {
     if (count.textContent === expected) { observer.disconnect(); resolve(); }
   });
   observer.observe(count, {childList:true});
 });
-check(panel.hidden && count.textContent === '4', 'Catch-up did not contribute one row per notice');
-tab.click();
+check(!panel.hidden && count.textContent === '3', 'Catch-up did not contribute one row per notice');
+check(notice.closest('#topics-unread') && !review.querySelector('.notice') &&
+      document.querySelector('#desk-tab-needs-you .tab-count').textContent === '1', 'A notice did not sit under Unread, apart from For review');
 check(notice.textContent.includes('Quay review') && notice.textContent.includes('The work is published.'),
       'The notice missed its title or summary');
-check(innerWidth <= 640 && notice.querySelector('.notice-project').checkVisibility() &&
-      notice.querySelector('.notice-project').textContent === 'harbour', 'The phone layout hid the notice project');
-check(notice.querySelector('a[href="q1.html?from=needs-you"]').textContent === 'Tide launch decisions' &&
+check(innerWidth <= 640 && notice.querySelector('.project-name').checkVisibility() &&
+      notice.querySelector('.project-name').textContent === 'harbour', 'The phone layout hid the notice project');
+check(notice.querySelector('a[href="q1.html?from=conversations"]').textContent === 'Tide launch decisions' &&
       notice.querySelector('a[href="https://example.com/review"]').textContent === 'Open the review',
       'The notice links missed their destinations');
-let changed = waitForCount('3');
+let changed = waitForCount('2');
 notice.querySelector('button').click();
 await changed;
-check(!notice.isConnected && question.isConnected, 'Mark read removed the wrong row');
-changed = waitForCount('1');
+check(!notice.isConnected && question(), 'Mark read removed the wrong row');
+changed = waitForCount('');
 panel.querySelector('[data-read-all]').click();
 await changed;
-check(!panel.querySelector('.notice') && question.isConnected, 'Bulk acknowledgment changed the question');
+check(!panel.querySelector('.notice') && question() && count.hidden, 'Bulk acknowledgment changed the question or kept the count');
 """
         page = base.WorkersTests.instrumented_page(quarterdeck.list_page, steps)
         with patch.object(quarterdeck, "list_page", page):
@@ -273,9 +275,8 @@ check(!panel.querySelector('.notice') && question.isConnected, 'Bulk acknowledgm
         self.age_read("C1", 8)
         self.notice("New arrival")
         steps = """
-const tab = document.getElementById('desk-tab-needs-you');
-tab.click();
-const panel = document.getElementById('desk-panel-needs-you');
+const tab = document.getElementById('desk-tab-conversations');
+const panel = document.getElementById('desk-panel-conversations');
 const count = tab.querySelector('.tab-count');
 const bulk = panel.querySelector('[data-read-all]');
 const status = bulk.nextElementSibling;
@@ -283,9 +284,9 @@ const current = panel.querySelector('[data-read="C2"]');
 const stale = panel.querySelector('[data-read="C1"]');
 const clickAndWait = button => new Promise(resolve => {
   const observer = new MutationObserver(() => {
-    if (!button.disabled) { observer.disconnect(); resolve(); }
+    if (!button.isConnected || !button.disabled) { observer.disconnect(); resolve(); }
   });
-  observer.observe(button, {attributes:true, attributeFilter:['disabled']});
+  observer.observe(panel, {subtree:true, childList:true, attributes:true, attributeFilter:['disabled']});
   button.click();
 });
 const realFetch = window.fetch;
@@ -301,13 +302,23 @@ check(status.textContent.includes('Reload') && count.textContent === '2' &&
       current.isConnected && stale.isConnected && !current.disabled && !stale.disabled,
       'A stale batch removed or disabled a notice');
 await clickAndWait(current);
-check(!current.isConnected && stale.isConnected && count.textContent === '1' && bulk.hidden,
+check(!current.isConnected && count.textContent === '1' && bulk.hidden,
       'The unread notice was no longer individually actionable after a conflict');
+const fresh = () => panel.querySelector('[data-read="C3"]');
+if (!fresh()) await new Promise(resolve => {
+  const observer = new MutationObserver(() => { if (fresh()) { observer.disconnect(); resolve(); } });
+  observer.observe(panel, {subtree:true, childList:true});
+});
+check(!stale.isConnected && !panel.querySelector('[data-read="C2"]') && !fresh().disabled,
+      'The refreshed list kept stale notices or disabled the new arrival');
 """
         list_page = quarterdeck.list_page
+        first_load = True
 
         def stale_page(data, *args, **kwargs):
-            return list_page(snapshot, *args, **kwargs)
+            nonlocal first_load
+            initial, first_load = first_load, False
+            return list_page(snapshot if initial else data, *args, **kwargs)
 
         page = base.WorkersTests.instrumented_page(stale_page, steps)
         with patch.object(quarterdeck, "list_page", page):
@@ -325,13 +336,12 @@ check(!current.isConnected && stale.isConnected && count.textContent === '1' && 
                     "--url", "https://example.com/review", "--link-text", "Open review")
         self.assertEqual(self.run_cli("remove", item)[0], 0)
         steps = """
-const tab = document.getElementById('desk-tab-needs-you');
-tab.click();
-const panel = document.getElementById('desk-panel-needs-you');
+const tab = document.getElementById('desk-tab-conversations');
+const panel = document.getElementById('desk-panel-conversations');
 const count = tab.querySelector('.tab-count');
-const notice = panel.querySelector('tr.notice');
-const guidance = panel.querySelector('.empty');
-const table = panel.querySelector('.desk');
+const notice = panel.querySelector('li.notice');
+const guidance = document.getElementById('no-conversations');
+const table = document.getElementById('topics-unread');
 check(!notice.querySelector('a[href^="q1.html"]') &&
       notice.querySelector('a[href="https://example.com/review"]').textContent === 'Open review',
       'Deleting the linked item broke the notice links');
@@ -341,9 +351,9 @@ check(count.textContent === '1' && !table.hidden && guidance.hidden, 'The notice
 const read = notice.querySelector('button');
 await new Promise(resolve => {
   const observer = new MutationObserver(() => {
-    if (!read.disabled) { observer.disconnect(); resolve(); }
+    if (!notice.isConnected) { observer.disconnect(); resolve(); }
   });
-  observer.observe(read, {attributes:true, attributeFilter:['disabled']});
+  observer.observe(table, {subtree:true, childList:true});
   read.focus();
   read.click();
 });

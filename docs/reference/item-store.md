@@ -243,6 +243,22 @@ store saved before these fields existed needs no change. A conversation's latest
 which orders the Desk, is the time of its newest message or its `saved_at`,
 whichever is later.
 
+A message from Firstmate in a conversation item may carry `"for_review": true`.
+The field is optional and only `true` is accepted. It is set with
+`--for-review` on `reply`, `post` or `converse`. The conversation shows in
+**For review**, with **Asked**, while its latest marked message has no message
+of the owner's after it and the conversation is not resolved. Nothing clears
+the field; the wait is read from the thread each time.
+
+### Later
+
+A questions item or a conversation item may carry `later` when the owner puts
+it aside. Its value is a list of reply IDs that were unread at deferral, or
+`true` when there were no unread replies. A deferred item appears under
+**Later** while it waits for the owner and every reply received since deferral
+has been read. Ending the request clears the field. A store saved before the
+field existed needs no change.
+
 A conversation item may also carry `task`, which makes it a task. It is an object
 with `state` (`draft`, `started` or `review`), `description` (plain text, up to 20,000
 characters) and optionally `source` (the ID of the conversation it was created from),

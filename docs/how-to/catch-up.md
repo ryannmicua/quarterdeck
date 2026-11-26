@@ -1,7 +1,7 @@
 # Catch up on finished work
 
 Catch-up records short notices that you or Firstmate explicitly save about
-finished work. Each unread notice adds one row to **Needs you** on the Desk.
+finished work. Each unread notice adds one row under **Unread** on the Desk's **Conversations** tab.
 
 ## Save a notice
 
@@ -23,13 +23,13 @@ summarize the result in one sentence. See
 
 ## Read the notices on the Desk
 
-Open **Needs you** to see each unread notice's summary, project and saved
-links. If the linked Quarterdeck item is removed, its link disappears and any
+Open **Conversations** to see each unread notice under **Unread**, with its
+summary, project and saved links. A notice asks nothing of you, so it does not
+show in **For review**. If the linked Quarterdeck item is removed, its link disappears and any
 external link remains.
-Select **Mark read** to remove that notice from the table and update the tab
+Select **Mark read** to remove that notice from the list and update the tab
 count. When there are several notices, **Mark all notices read** acknowledges
-the notices in the table. Questions, replies and failed deliveries stay in
-the table. If Quarterdeck reports that a notice may already be read, reload
+the notices in the list. Unread conversations stay where they are. If Quarterdeck reports that a notice may already be read, reload
 the Desk to see the current list.
 
 ## Read the notices from the CLI

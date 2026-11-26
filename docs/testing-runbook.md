@@ -66,36 +66,48 @@ filters and check which reference rows, reviewed cards, and empty messages
 are visible in the narrow and desktop layouts.
 
 The Desk replay browser check delays a start until a stale notice has shown
-reload guidance. It verifies that the start result and the inline notice
-guidance are available on **Needs you**, and that replay keeps one Hold result
-per topic. The first-start check searches Hold by both title and item ID
-without reloading. The pin check scrolls beyond the first phone viewport and
-checks that a refusal appears beside the acted-on topic. A pin refusal that
-arrives on **Needs you**, and stale notice guidance that arrives on
-**Conversations**, must also show in the shared result above the open tab.
-The resolve and archive checks
-click each row control and the conversation page controls, and verify that a
-pinned row leaves **Pinned** for **Archived** and returns on unarchive, that the
-mark and labels follow the saved state and that a refusal shows beside the row.
+reload guidance. It verifies that the start result and the stale notice
+guidance, which arrive while **For review** is open, show in the shared result
+above the open tab, that the notice keeps its guidance on **Conversations**,
+and that replay keeps one Hold result per topic. The first-start check
+searches Hold by both title and item ID without reloading. The conversation
+page checks click **Pin**, **Resolve**, **Archive** and **Move** on the page, and
+verify that the labels and marks follow the saved state, that an archived
+conversation hides **Pin**, and that a refusal shows beside the controls.
 The replay check
 verifies that the initial and inserted rows show October 2 in Tokyo for a
 message saved at 18:30 UTC on October 1. The Desk tab check uses the old
 bookmark fragment to verify that Conversations still opens first and that
 clicking or using the keyboard leaves the address unchanged.
 
+The mailbox browser checks in `tests/test_mailbox.py` run against a live test
+server. At 1440 pixels wide they select a row and wait for the item to open in
+the pane, without its site header or Back link. They check that the reply is
+marked read, that the row keeps its place under **Unread** until the next row
+opens, and that **Next unread** visits each reply before moving to the next
+conversation. They change the scope while reading and check both navigation
+links. **Deal with later** moves a question set under **Later** and leaves it
+open. An archive in the pane updates Hold while a pending notice keeps its
+disabled control and refusal feedback. The checks cover **Unread only**, the
+destination of a saved link opened from **References**, and the pane beside
+**Under way**. At 390 pixels wide they open the dedicated compose view and
+return to the list, then reopen the unsent draft. A fixture check opens
+folded messages in a conversation thread.
+
 The grouping browser checks fill the **Project** filter with invented
 projects and topics and verify which rows each choice shows, including
 **Ungrouped** and an empty project. They create, rename and cancel a project
-and a topic, move a conversation into a topic and back to **Ungrouped**, and
-check that a refused move keeps the row and says so beside it. A scoped start
-must carry its project and topic. A phone-width check verifies that the
+and a topic. On a conversation's page they move it into a topic and back to
+**Ungrouped**, and check that a refused move keeps the form open and says so. A scoped start
+must carry its project and topic. Phone-width checks verify that the
 filter, the name form and the move form never scroll the page sideways and that
 every control is at least 44 pixels tall.
 
-The Catch-up browser check opens **Needs you** with saved notices and an
-open question. At phone width it checks the notice details and links. It
+The Catch-up browser check opens the Desk with saved notices and an
+open question. At phone width it checks that the notices sit under **Unread**
+on **Conversations** and not in **For review**, and checks their details and links. It
 acknowledges a notice and then acknowledges the remaining notices, checks
-the tab count, and verifies that the question stays in the table. The browser
+the tab count, and verifies that the question stays in **For review**. The browser
 checks also cover stale and incomplete acknowledgments, a deleted item link,
 and restoring empty guidance after reading the final notice.
 
@@ -141,7 +153,7 @@ conflicts return local drafts to their editors, preserve saved asks, and keep
 reference items outside the conversation workflow. The closed-item check closes
 the questions between saving an ask and delivering it, then verifies that the
 saved ask survives the conflict and the discussion stays readable. The closed
-discussion refresh check covers framing protection and a reply arriving in a
+discussion refresh check covers the same-origin framing rule and a reply arriving in a
 read-only tab after a question reopens.
 
 For a screen change, also save one item of each kind, run `quarterdeck serve`,

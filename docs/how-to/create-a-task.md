@@ -36,8 +36,8 @@ Existing conversations are not tasks until you create one from them.
 ## Review a task
 
 Firstmate posts the result and, when you should check it first, puts the task In review with
-`quarterdeck task review Q12 --text "..." --url https://example.com/result`. The task then shows in **Needs you**
-with its result linked and two choices.
+`quarterdeck task review Q12 --text "..." --url https://example.com/result`. The task then shows in **For review**.
+Open it to see its result linked and two choices.
 
 - Select **Approve** to resolve the task. Deciding counts the updates Firstmate posted with the result as read.
 - Select **Changes needed**, write a **Note** and select **Send note**. Quarterdeck sends the note to Firstmate
