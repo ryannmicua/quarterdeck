@@ -4689,6 +4689,7 @@ check(saved.querySelector('a').href === 'https://example.com/preview', 'The save
         self.assertEqual(self.run_cli("reply", "Q4", "--ask", ask["id"], "--text", "Here is the whole layout.")[0], 0)
         _, reply = self.messages("item", 3)
         self.check_page(port, r"""
+document.querySelectorAll('details.thread').forEach(thread => thread.open = false);  // opened on load; these steps open it by hand
 const calls = [];
 window.fetch = async (url, options) => {
   const body = JSON.parse(options.body);
@@ -5490,6 +5491,18 @@ check(inView('reply-{last}') && line('reply-{last}').bottom <= innerHeight, 'The
 check(!inView('reply-{thread[0]["id"]}'), 'The first message is still in view');
 """, page=self.fetch(port, "/qd/q5.html")[1])
 
+    def test_a_question_set_opens_its_collapsed_thread_on_the_first_unread_reply(self) -> None:
+        port = self.start("/qd", ask_home=self.inbox())
+        self.ask(port, "Q4.2", "Which blue?")
+        self.assertEqual(self.run_cli("reply", "Q4.2", "--ask", self.messages("2", 3)[0]["id"], "--text", "Navy.")[0], 0)
+        reply = self.messages("2", 3)[1]
+        self.check_page(port, f"""
+await settled();
+const message = document.getElementById('reply-{reply["id"]}');
+check(card(2).querySelector('details').open && message.getClientRects().length, 'The unread reply is hidden');
+check(message.hasAttribute('data-unread') && calls.length === 0, 'Opening on load changed what is unread');
+""", setup="const calls = []; window.fetch = async path => { calls.push(path); };")
+
     def test_a_fragment_beats_the_first_unread_message(self) -> None:
         port, thread = self.long_conversation(read=12)
         chosen, first = thread[3]["id"], thread[12]["id"]
@@ -6054,6 +6067,7 @@ check(calls.join() === 'asks', 'The live update acknowledged the reply without a
                 data = json.dumps([first["id"], later["id"], replacement, replacement_id, replace_first])
                 setup = f"const [first, later, replacement, replacementId, replaceFirst] = {data};"
                 self.check_page(port, r"""
+document.querySelectorAll('details.thread').forEach(thread => thread.open = false);  // opened on load; these steps open it by hand
 const calls = [];
 const complete = {};
 window.fetch = (url, options) => new Promise(resolve => {
@@ -6096,6 +6110,7 @@ check(unread.join() === later && decision.querySelector('.badge').textContent ==
             with self.subTest(old_first=old_first):
                 data = json.dumps([first_request, old, new, old_first])
                 self.check_page(port, r"""
+document.querySelectorAll('details.thread').forEach(thread => thread.open = false);  // opened on load; these steps open it by hand
 const requests = [];
 const complete = [];
 window.fetch = (url, options) => new Promise(resolve => {

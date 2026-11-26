@@ -4025,6 +4025,12 @@ if (whole) {
   if (document.getElementById(location.hash.slice(1))) return;
   const navigation = performance.getEntriesByType?.('navigation')[0]?.type;
   if (navigation === 'reload' || navigation === 'back_forward') return;
+  const hidden = document.querySelector('[data-reply-id][data-unread]');
+  if (hidden) {
+    expandAnswer(hidden.closest('[data-conversation]'));
+    const thread = hidden.closest('details.thread');
+    if (thread) thread.open = true;
+  }
   const shown = [...document.querySelectorAll('.msg')].filter(message => message.getClientRects().length);
   const unread = shown.find(message => message.hasAttribute('data-unread'));
   const stamp = message => Date.parse(message.querySelector('time')?.dateTime) || 0;
