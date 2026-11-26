@@ -85,7 +85,7 @@ fields if they pass the same validation as resource URLs.
 | --- | --- |
 | References | Item descriptions on served and rendered pages |
 | Item page | Item descriptions, question prompts, context, options and suggested answers |
-| Served item page | Ask and reply text in whole-item and numbered-question conversations, and clarification text on question cards |
+| Served item page | Ask and reply text in question threads, clarification text on question cards, and all messages in standalone conversations |
 
 Quarterdeck uses the address as the link text. Inline links open in a new tab
 so you can keep a draft answer open while following a link. Selecting an option
@@ -147,9 +147,9 @@ item folders in place. `add` and `render` preserve saved image files.
 
 See the [supported umask](../how-to/save-items.md#known-limits).
 
-A failed `add` or `reply`, or an interrupted `remove`, can leave files that no item names.
+A failed `add`, `reply`, `post` or `converse`, or an interrupted `remove`, can leave files that no item names.
 Retrying does not clean them up. Where the destination does not support hard
-links, an interrupted image write during `add`, `reply`, or `render` can leave a partial
+links, an interrupted image write during `add`, `reply`, `post`, `converse` or `render` can leave a partial
 file. Delete that partial file by hand before retrying the write. See the
 [serving boundary](../explanation/privacy-and-architecture.md#what-quarterdeck-reads-and-writes)
 and [export behavior](cli-and-config.md#rendered-images).
@@ -162,9 +162,10 @@ on individual questions. These threads are separate from `answers`.
 
 A standalone `conversation` item requires a `conversation` object with only
 the key `item`. Its `body` is `{}` and its `description` is a generic label.
-Older descriptions are accepted and omitted from listings. The home binding
-on the first message also binds the conversation. See
-[how to start a conversation](../how-to/talk-to-firstmate.md).
+Older descriptions are accepted and omitted from listings. The earliest
+message with a `home` field binds the conversation. `converse` records that
+field on the opening update when a home is configured. Otherwise the owner's
+first message supplies it.
 
 Each thread stores messages in the order they were saved. Every reply
 names the earlier ask or message it answers.
@@ -175,7 +176,7 @@ text, up to 20,000 characters) and `at` (UTC).
 | `author` | Other fields |
 | --- | --- |
 | `you` | An ask or conversation message with a browser-generated ID. `delivery` (`pending` or `sent`), a stable `request_id` string for inbox retries, and `home`, a hexadecimal `sha256` digest of the resolved path of the configured Firstmate home. |
-| `firstmate` | A reply added by `quarterdeck reply`. `ask` (ID of an earlier message from `you` in the same thread), `read` (true once the page acknowledges this reply), and optional `links` (the same `text` and `url` objects as question links), `images` (`file` and `alt`), and, on a reply to a question item as a whole, `clarify`: question numbers mapped to `text` and `option_changed` (true or false). |
+| `firstmate` | `read` (true once the page acknowledges the message) and optional `links` (the same `text` and `url` objects as question links) and `images` (`file` and `alt`). A reply also has `ask`, the ID of an earlier message from `you` in the same thread. Standalone conversation updates omit `ask`. An opening update may carry `home` in the same digest format as a message from `you`. A reply to a question item as a whole may include `clarify`, which maps question numbers to `text` and `option_changed` (true or false). |
 
 Clarification keys are one-based question numbers as strings. The clarification
 text is plain text, up to 20,000 characters. Reply images use the item's

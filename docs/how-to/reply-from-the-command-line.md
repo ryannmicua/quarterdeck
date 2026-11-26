@@ -5,9 +5,9 @@ Use the target and message IDs from the inbox note. A note that begins
 or a numbered question. For [`CONVERSATION`](../reference/cli-and-config.md#conversation-endpoint),
 see [Reply in a conversation](#reply-in-a-conversation).
 
-For both targets, `quarterdeck reply` must use the live server's
+Run `quarterdeck reply`, `post`, and `converse` with the live server's
 [item store](../reference/item-store.md). If the server uses a custom
-`XDG_STATE_HOME`, run the reply command with the same setting.
+`XDG_STATE_HOME`, use the same setting for these commands.
 
 ```sh
 quarterdeck reply Q7 --ask "$ask_id" --text "The whole layout is ready for review."
@@ -59,4 +59,25 @@ for the transcript fields.
 Quarterdeck prints the target and `Replied`, for example `Q7.1 Replied`.
 See how to read replies on a [question card](ask-firstmate.md#read-replies)
 or [conversation card](talk-to-firstmate.md#read-replies).
-See the [CLI reference](../reference/cli-and-config.md#items) for the command.
+
+## Post an update or open a conversation
+
+Before using either command, [update Quarterdeck and restart the live server](update.md)
+so it can read standalone updates in the item store.
+
+For `converse`, use the same configuration as `serve`. Pass the live config
+with `--config FILE`, or match the server's `XDG_CONFIG_HOME` when it uses the
+default config lookup. See the [config reference](../reference/cli-and-config.md#json-configuration)
+for the restart requirement after a `firstmate_home` change.
+
+Use `post` to add an update to an existing conversation or `converse` to open
+one with a title and a first message from Firstmate.
+
+```sh
+quarterdeck post Q12 --text "The amber lamps are installed."
+quarterdeck converse --title "Pier lamp install" --text "Started the install."
+```
+
+See the [CLI reference](../reference/cli-and-config.md#items) for attachments
+and command output. The owner can [respond on the conversation page](talk-to-firstmate.md#send-more-messages).
+Use [reply](#reply-in-a-conversation) to answer their message.

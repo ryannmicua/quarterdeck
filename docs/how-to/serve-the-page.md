@@ -79,7 +79,7 @@ the browser-facing `Host` and the `/qd/` prefix.
 The default bind is `127.0.0.1`. A loopback listener refuses requests whose
 `Host` is outside loopback. Quarterdeck has no login. Anyone who can reach the
 service can read saved items, their images, answers, conversations, and reply
-images. They can also send answers and acknowledge replies as the owner.
+images. They can also send answers and acknowledge Firstmate messages as the owner.
 When `firstmate_home` is set, anyone who can reach the service can view the
 home's worker and second mate roster and run a check from the Workers page
 or `GET /workers.json`. They can also send asks to that home's inbox and, with the

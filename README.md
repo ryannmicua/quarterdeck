@@ -27,9 +27,9 @@ own copy of the saved content.
 
 ## Features
 
-- **Desk** shows questions that need attention and conversations with unread
-  replies in one table. See
-  [how to open and answer questions](docs/how-to/answer-questions.md).
+- **Desk** puts [questions to answer](docs/how-to/answer-questions.md) and
+  [unread conversation activity](docs/how-to/use-the-library.md#when-an-item-moves)
+  in one table.
 - **Open library** gives you searchable access to saved links, lists, and
   answered items and conversations on the served Desk. See
   [Find references and answered questions](docs/how-to/use-the-library.md).
@@ -77,11 +77,10 @@ and the [CLI reference](docs/reference/cli-and-config.md).
 
 ## How it relates to Firstmate
 
-Firstmate runs the crew. Quarterdeck is a separate shelf: Firstmate puts
-things on it only when you ask, with the `quarterdeck` command. When you ask
-from a card or start a conversation, Firstmate can reply there with text,
-links and images.
-See [Reply from the command line](docs/how-to/reply-from-the-command-line.md).
+Firstmate runs the crew. Quarterdeck keeps what you ask Firstmate to save.
+Firstmate can reply to a card ask or a conversation message, post a standalone
+update, or open a conversation. See
+[Reply from the command line](docs/how-to/reply-from-the-command-line.md).
 
 ## Privacy model
 

@@ -10,6 +10,8 @@ quarterdeck list
 quarterdeck show ID
 quarterdeck reply ID[.PART] --ask ID --text TEXT [--link-text TEXT --url URL]... [--image PATH --alt TEXT]...
                    [--clarify ID.PART=TEXT]... [--option-changed ID.PART]...
+quarterdeck post ID --text TEXT [--link-text TEXT --url URL]... [--image PATH --alt TEXT]...
+quarterdeck converse --title TITLE --text TEXT [--config FILE] [--link-text TEXT --url URL]... [--image PATH --alt TEXT]...
 quarterdeck mark ID[.PART] answered --via WHERE
 quarterdeck mark ID[.PART] closed|open
 quarterdeck classify ID[.PART] [--project NAME] [--tag TAG ...] [--kind KIND]
@@ -32,12 +34,19 @@ uppercase form.
 
 ### Items
 
+See [Reply from the command line](../how-to/reply-from-the-command-line.md) for
+store selection and [the setup for `post` and `converse`](../how-to/reply-from-the-command-line.md#post-an-update-or-open-a-conversation).
+The attachment options on `post` and `converse` follow the same pairing rules
+as `reply`.
+
 | Command | What it does |
 | --- | --- |
 | `add` | Saves a new item and prints its ID. A `resource` needs `--url` and `--link-text`. A `list` or `questions` item needs `--body-file`. See [the input formats and examples](../how-to/save-items.md#add-an-item) and [how to classify items and questions when saving](../how-to/classify-items.md#classify-when-you-save). |
 | `list` | Prints saved items, newest first, with ID, kind, saved date and title. |
-| `show` | Prints the item's text, numbering list entries and questions as `Q7.1`, `Q7.2`. Includes question links, stored states, and saved answers with their timestamps and delivery status. For a standalone conversation, prints the messages and replies in saved order with timestamps, IDs, delivery status for outgoing messages, and reply attachments. Image references are paths relative to the served site or the item store directory. |
-| `reply` | Adds Firstmate's reply to an existing ask on a whole question item (`Q7`) or one question (`Q7.1`), or to a message in a [conversation](../how-to/talk-to-firstmate.md) (`Q12`). It preserves saved answers and question states. Supply the required `--ask ID` from the inbox note and the reply in `--text`. Pair `--link-text` with `--url` and `--image` with `--alt` in the order given. See [Reply from the command line](../how-to/reply-from-the-command-line.md). |
+| `show` | Prints the item's text, numbering list entries and questions as `Q7.1`, `Q7.2`. Includes question links, stored states, and saved answers with their timestamps and delivery status. For a standalone conversation, prints the transcript in saved order with timestamps, IDs, delivery status for outgoing messages, and attachments. A standalone Firstmate message is marked `Update`. Image references are paths relative to the served site or the item store directory. |
+| `reply` | Adds Firstmate's reply to an existing ask on a whole question item (`Q7`) or one question (`Q7.1`), or to an owner's message in a [conversation](../how-to/talk-to-firstmate.md) (`Q12`). It preserves saved answers and question states. Supply the required `--ask ID` from the inbox note and the reply in `--text`. Pair `--link-text` with `--url` and `--image` with `--alt` in the order given. See [Reply from the command line](../how-to/reply-from-the-command-line.md). |
+| `post` | Adds a standalone update from Firstmate. Accepts a conversation item ID such as `Q12` and prints `Q12 Updated`. |
+| `converse` | Opens a conversation with a title and an update from Firstmate, then prints the new item ID. See [`firstmate_home`](#json-configuration) for home selection. |
 | `mark` | Sets question state, optionally for a whole questions item. `--via` is required with `answered` and accepted only with that state. Skips exit with status 0. See [Read answers](../how-to/read-answers.md) for which questions are marked. |
 | `classify` | Requires at least one classification option. Use `--project` for an item ID, `--kind` for a question ID, and `--tag` for either. See [how to change classification](../how-to/classify-items.md#change-it-later). |
 | `stats` | Prints a question activity table by default or JSON with `--json`. See [Read the report](../how-to/read-the-report.md) for date filtering and field definitions. |
@@ -167,11 +176,13 @@ is pending. The same ID with a different topic or text returns 409. A successful
 response contains `message` (delivery status) and `href` (the relative URL of
 the conversation card).
 
-Later messages use the [ask endpoint](#ask-endpoint) with `"part": "Q12"`.
-The directory requirement applies to both sends and retries. A different
-resolved Firstmate home path results in 409 before saving or delivering
-the message.
-The inbox note for every conversation message is
+On an existing conversation, the owner's messages use the
+[ask endpoint](#ask-endpoint) with `"part": "Q12"`, including their first
+message in a conversation opened with `converse`.
+The directory requirement applies to both sends and retries. If the
+conversation is [bound to a home](item-store.md#conversations), a different
+resolved path results in 409 before saving or delivering the message.
+The inbox note for each message sent by the owner is
 `CONVERSATION Q12 <message id> Topic: <topic>`, a line break, then the message
 text. See [Reply in a conversation](../how-to/reply-from-the-command-line.md#reply-in-a-conversation).
 
@@ -181,11 +192,11 @@ text. See [Reply in a conversation](../how-to/reply-from-the-command-line.md#rep
 `/answers`. The served page sends `{"part": "Q7.1", "ids": ["<reply id>"]}`
 when the user opens that question's **Messages**, or sends `"part": "Q7"`
 when the user opens the whole-item **Messages**. On a standalone conversation
-card, the browser sends `"part": "Q12"` and the displayed unread reply IDs
-on open and after a send or retry refresh. A GET alone leaves read records
-intact. Every ID must belong to the named conversation. The response field
-`replies` maps each reply ID in that conversation to its current read status
-(`true` for read).
+card, the browser sends `"part": "Q12"` and the displayed unread Firstmate
+message IDs on open and after a send or retry refresh. A GET alone leaves
+read records intact. Every ID must identify a Firstmate message in the named
+thread. The response field `replies` maps each Firstmate message ID in that
+thread to its current read status (`true` for read).
 
 ### Workers endpoint
 
@@ -242,7 +253,7 @@ the documentation to read; `help --json` prints a machine-readable index.
 
 ## JSON configuration
 
-The config is optional. `render`, `serve` and `service` read `--config FILE`,
+The config is optional. `converse`, `render`, `serve` and `service` read `--config FILE`,
 or `${XDG_CONFIG_HOME:-~/.config}/quarterdeck.json` when it exists.
 
 | Key | Type | Default | Meaning |
@@ -250,7 +261,11 @@ or `${XDG_CONFIG_HOME:-~/.config}/quarterdeck.json` when it exists.
 | `page_title` | string | `Quarterdeck` | The site name in the navigation bar and browser title. `--title` overrides it for `render` and `serve`. |
 | `output_dir` | string path | `${XDG_STATE_HOME:-~/.local/state}/quarterdeck` | Where `render` writes the pages. |
 | `base_path` | string | none | The URL prefix described above. |
-| `firstmate_home` | absolute path after expanding `~` | unset | Local destination for answers, asks and conversation messages submitted to `serve`, and the home whose workers the page lists. |
+| `firstmate_home` | absolute path after expanding `~` | unset | Local destination for answers, asks and conversation messages submitted to `serve`, and the home whose workers the page lists. When set, `converse` requires it to resolve to an existing directory. See [how the store records the binding](item-store.md#conversations). |
+
+`serve` reads `firstmate_home` at startup. `converse` reads it each time it runs.
+Changes to this setting require a server restart before `converse` can open
+a conversation the owner can respond to on that server.
 
 When `firstmate_home` is absent, `serve` uses a legacy `homes` list only for
 answer delivery and only if it contains exactly one object with a valid

@@ -1,16 +1,15 @@
 # Save items to Quarterdeck
 
-Firstmate saves an item when the captain asks, such as "send this to
-Quarterdeck" or "save this Lavish page to Quarterdeck". Nothing is saved
-automatically. `add` and `remove` change Quarterdeck's own
+Firstmate uses `add` when the captain asks to save a link, list, or set of
+questions. `add` and `remove` change Quarterdeck's own
 [item store](../reference/item-store.md). `list` and `show` read it.
 
 ## Add an item
 
 With `add`, supply a kind, a title that says what it is about, and a one-or-two
 sentence description: what it is and why it was saved, so the captain
-recognises it later. `add` prints the new ID. To save a conversation, use
-[Talk to Firstmate](talk-to-firstmate.md).
+recognises it later. `add` prints the new ID. Start a conversation from the
+[Desk](talk-to-firstmate.md) or the [command line](reply-from-the-command-line.md#post-an-update-or-open-a-conversation).
 
 See [inline web addresses](../reference/item-store.md#inline-web-addresses) for
 where pasted URLs become clickable.

@@ -150,6 +150,11 @@ def selected_config(args: argparse.Namespace) -> dict[str, object]:
     return load_config(selected_config_path(args))
 
 
+def configured_firstmate_home(config: dict[str, object]) -> Path | None:
+    home = config.get("firstmate_home")
+    return Path(home) if isinstance(home, str) else None
+
+
 def page_title(args: argparse.Namespace, config: dict[str, object]) -> str:
     configured = config.get("page_title")
     return getattr(args, "title", None) or (configured if isinstance(configured, str) and configured.strip() else DEFAULT_TITLE)
@@ -840,15 +845,18 @@ def validate_conversation(item):
                 or not isinstance(messages, list) or not messages):
             raise ValueError("invalid conversation")
         asks = set()
-        for message in messages:
+        for index, message in enumerate(messages):
             if not isinstance(message, dict):
                 raise ValueError("invalid message")
             author = message.get("author")
             if not isinstance(author, str) or author not in AUTHOR_LABELS:
                 raise ValueError("invalid message")
             you = author == "you"
-            required = {"id", "author", "text", "at"} | ({"delivery", "request_id", "home"} if you else {"read", "ask"})
-            if not required <= set(message) <= required | (set() if you else {"links", "images", "clarify"}):
+            required = {"id", "author", "text", "at"} | ({"delivery", "request_id", "home"} if you else {"read"})
+            optional = set() if you else {"ask", "links", "images", "clarify"}
+            if not you and index == 0 and item["kind"] == "conversation":
+                optional.add("home")
+            if not required <= set(message) <= required | optional:
                 raise ValueError("invalid message")
             if (not isinstance(message["id"], str) or not re.fullmatch(r"[0-9a-f]{32}", message["id"])
                     or message["id"] in seen
@@ -856,12 +864,13 @@ def validate_conversation(item):
                 raise ValueError("invalid message")
             seen.add(message["id"])
             parse_utc(message["at"])
+            if "home" in message and (not isinstance(message["home"], str)
+                                      or not re.fullmatch(r"[0-9a-f]{64}", message["home"])):
+                raise ValueError("invalid message home")
             if you:
                 if (message["delivery"] not in ("pending", "sent")
                         or not isinstance(message["request_id"], str)
-                        or not re.fullmatch(r"quarterdeck-[0-9a-f]{32}", message["request_id"])
-                        or not isinstance(message["home"], str)
-                        or not re.fullmatch(r"[0-9a-f]{64}", message["home"])):
+                        or not re.fullmatch(r"quarterdeck-[0-9a-f]{32}", message["request_id"])):
                     raise ValueError("invalid ask")
                 asks.add(message["id"])
                 continue
@@ -869,7 +878,9 @@ def validate_conversation(item):
             if "clarify" in message and (item["kind"] != "questions" or part != "item"
                                          or not valid_clarifications(message["clarify"], parts)):
                 raise ValueError("invalid reply")
-            if (not isinstance(message["ask"], str) or message["ask"] not in asks
+            # A Firstmate message without an ask is a standalone update, on conversations only.
+            if (("ask" in message and (not isinstance(message["ask"], str) or message["ask"] not in asks))
+                    or ("ask" not in message and item["kind"] != "conversation")
                     or type(message["read"]) is not bool or question_links(links, "reply") != links
                     or not isinstance(images, list)
                     or [image_entry(image, "reply image", None) for image in images] != images):
@@ -1163,7 +1174,11 @@ def ask_note(item, target, message):
 
 
 def conversation_home_matches(item, binding):
-    return item["kind"] != "conversation" or part_thread(item, None)[0]["home"] == binding
+    return item["kind"] != "conversation" or thread_home(part_thread(item, None)) in (None, binding)
+
+
+def thread_home(thread):
+    return next((m["home"] for m in thread if "home" in m), None)
 
 
 def ask_message(store, home, binding, payload, *, home_available=True, include_thread=True):
@@ -1230,6 +1245,15 @@ def ask_message(store, home, binding, payload, *, home_available=True, include_t
         return ask_result(item, part, message, include_thread=include_thread)
 
 
+def append_conversation(data, title, message):
+    item_id = f"Q{data['next_id']}"
+    data["next_id"] = int(data["next_id"]) + 1
+    data["items"].append({"id": item_id, "kind": "conversation", "title": title,
+                          "description": "Conversation with Firstmate.", "saved_at": now_text(), "body": {},
+                          "conversation": {"item": [message]}})
+    return item_id
+
+
 def start_conversation(store, home, binding, payload):
     """Save a new conversation item holding its first message, then deliver that message like any ask."""
     if not isinstance(payload, dict) or set(payload) != {"id", "title", "text", "home"}:
@@ -1243,7 +1267,7 @@ def start_conversation(store, home, binding, payload):
         data = read_store(store)
         for item in data["items"]:
             first = item.get("conversation", {}).get("item", [None])[0] if item["kind"] == "conversation" else None
-            if first and first["id"] == message_id:
+            if first and first["author"] == "you" and first["id"] == message_id:
                 if (item["title"], first["text"]) != (title, text):
                     raise AnswerConflict("Message ID already in use. Reload the Desk.")
                 if payload["home"] != binding or first["home"] != binding:
@@ -1253,11 +1277,7 @@ def start_conversation(store, home, binding, payload):
         else:
             if payload["home"] != binding:
                 raise AnswerConflict("Firstmate home changed. This message belongs to the original home.")
-            item_id = f"Q{data['next_id']}"
-            data["next_id"] = int(data["next_id"]) + 1
-            data["items"].append({"id": item_id, "kind": "conversation", "title": title,
-                                  "description": "Conversation with Firstmate.", "saved_at": now_text(), "body": {},
-                                  "conversation": {"item": [new_ask(message_id, text, binding)]}})
+            item_id = append_conversation(data, title, new_ask(message_id, text, binding))
             write_store(store, data)
     result = ask_message(store, home, binding, {"part": item_id, "id": message_id, "action": "retry"},
                          include_thread=False)
@@ -1312,7 +1332,7 @@ def item_text(item: dict[str, object]) -> str:
                 reference = f"Message {numbers[message['id']]}"
             else:
                 label = who
-                reference = f"In reply to message {numbers[message['ask']]}"
+                reference = f"In reply to message {numbers[message['ask']]}" if "ask" in message else "Update"
             lines.append(f"{message['at']}  {label}  {message['id']}  {reference}")
             lines.extend("  " + line for line in message["text"].splitlines())
             lines.extend(f"  Link: {link['text']}: {link['url']}" for link in message.get("links", []))
@@ -1608,6 +1628,46 @@ def clarify_arguments(clarified, changed, item_id, part):
     return result
 
 
+def reply_text_and_links(args: argparse.Namespace):
+    text = clean_text(args.text, "reply text", TEXT_LIMIT, multiline=True)
+    link_texts, urls = args.link_text or [], args.url or []
+    if len(link_texts) != len(urls):
+        raise ValueError("each --link-text needs its own --url")
+    links = question_links([{"text": t, "url": u} for t, u in zip(link_texts, urls)], "reply")
+    return text, links
+
+
+def read_reply_images(args: argparse.Namespace):
+    paths, alts = args.image or [], args.alt or []
+    if len(paths) != len(alts):
+        raise ValueError("each --image needs its own --alt text that describes it")
+    named: list[tuple[dict[str, str], str]] = []
+    images = [image_entry({"path": path, "alt": alt}, f"reply image {number}", named)
+              for number, (path, alt) in enumerate(zip(paths, alts), 1)]
+    pending: dict[str, bytes] = {}
+    read_images(named, pending)
+    return images, pending
+
+
+def reply_parts(args: argparse.Namespace):
+    """The text, links and images shared by post and converse."""
+    text, links = reply_text_and_links(args)
+    images, pending = read_reply_images(args)
+    return text, links, images, pending
+
+
+def firstmate_message(text, links, images, ask=None, *, fractional=False):
+    message: dict[str, object] = {"id": uuid.uuid4().hex, "author": "firstmate", "text": text,
+                                  "at": now_text(fractional=fractional), "read": False}
+    if ask is not None:
+        message["ask"] = ask
+    if links:
+        message["links"] = links
+    if images:
+        message["images"] = images
+    return message
+
+
 def reply_item(args: argparse.Namespace) -> int:
     def action() -> int:
         target = args.id.upper()
@@ -1615,20 +1675,9 @@ def reply_item(args: argparse.Namespace) -> int:
             item_id, part = parse_thread_target(target)
         except ValueError as exc:
             raise ValueError(f"reply to a conversation item, a question item or one of its questions, such as Q7 or Q7.1: {args.id!r}") from exc
-        text = clean_text(args.text, "reply text", TEXT_LIMIT, multiline=True)
-        link_texts, urls = args.link_text or [], args.url or []
-        if len(link_texts) != len(urls):
-            raise ValueError("each --link-text needs its own --url")
-        links = question_links([{"text": t, "url": u} for t, u in zip(link_texts, urls)], "reply")
+        text, links = reply_text_and_links(args)
         clarify = clarify_arguments(args.clarify or [], args.option_changed or [], item_id, part)
-        paths, alts = args.image or [], args.alt or []
-        if len(paths) != len(alts):
-            raise ValueError("each --image needs its own --alt text that describes it")
-        named: list[tuple[dict[str, str], str]] = []
-        images = [image_entry({"path": path, "alt": alt}, f"reply image {number}", named)
-                  for number, (path, alt) in enumerate(zip(paths, alts), 1)]
-        pending: dict[str, bytes] = {}
-        read_images(named, pending)
+        images, pending = read_reply_images(args)
         store = store_path()
         with locked_store(store):
             data = read_store(store)
@@ -1643,23 +1692,59 @@ def reply_item(args: argparse.Namespace) -> int:
             if ask not in asks:
                 raise ValueError(f"No {noun} {ask!r} on {target}.")
             option_changed = any(note["option_changed"] for note in clarify.values())
-            message: dict[str, object] = {"id": uuid.uuid4().hex, "author": "firstmate", "text": text,
-                                          "at": now_text(fractional=option_changed),
-                                          "read": False, "ask": ask}
+            message = firstmate_message(text, links, images, ask, fractional=option_changed)
             if clarify:
                 if item["kind"] != "questions":
                     raise ValueError("--clarify needs a question item")
                 if not valid_clarifications(clarify, question_parts(item)):
                     raise ValueError("--clarify names a question this item does not have")
                 message["clarify"] = clarify
-            if links:
-                message["links"] = links
-            if images:
-                message["images"] = images
             thread.append(message)
             save_images(store, item_id, pending, tree=REPLY_IMAGES)
             write_store(store, data)
         print(f"{target} Replied")
+        return 0
+    return run_item_command(action)
+
+
+def post_update(args: argparse.Namespace) -> int:
+    """Firstmate's own update on a conversation: no ask to answer, unread like a reply, no inbox note."""
+    def action() -> int:
+        target = args.id.upper()
+        text, links, images, pending = reply_parts(args)
+        store = store_path()
+        with locked_store(store):
+            data = read_store(store)
+            item = find_item(data, target)
+            if item["kind"] != "conversation":
+                raise ValueError(f"post to a conversation item, such as Q12: {args.id!r}")
+            part_thread(item, None).append(firstmate_message(text, links, images))
+            save_images(store, item["id"], pending, tree=REPLY_IMAGES)
+            write_store(store, data)
+        print(f"{target} Updated")
+        return 0
+    return run_item_command(action)
+
+
+def converse(args: argparse.Namespace) -> int:
+    """Open a conversation in Firstmate's own name; its first message is an update, and no inbox note is sent."""
+    def action() -> int:
+        title = clean_text(args.title, "title", TITLE_LIMIT)
+        text, links, images, pending = reply_parts(args)
+        home = configured_firstmate_home(selected_config(args))
+        message = firstmate_message(text, links, images)
+        if home is not None:
+            _, binding = ask_destination(home, require_directory=True)
+            if binding is None:
+                raise ValueError("firstmate_home must resolve to an existing directory")
+            message["home"] = binding
+        store = store_path()
+        with locked_store(store):
+            data = read_store(store)
+            item_id = append_conversation(data, title, message)
+            save_images(store, item_id, pending, tree=REPLY_IMAGES)
+            write_store(store, data)
+        print(item_id)
         return 0
     return run_item_command(action)
 
@@ -2671,6 +2756,8 @@ def message_html(item, message, *, editable, message_number=None):
             reference = f' <span>Message {message_number}</span>'
         else:
             reference = f' <a href="#message-{message_number}">In reply to message {message_number}</a>'
+    elif not you and "ask" not in message:
+        reference = ' <span>Firstmate update</span>'
     unread = " data-unread" if unread_reply(message) else ""
     return (f'<li class="msg {message["author"]}"{identity}{unread}><p class="who"><strong>{AUTHOR_LABELS[message["author"]]}</strong> '
             f'<time datetime="{when}">{when}</time>{delivery}{reference}</p><p class="record">{linked_text(message["text"])}</p>'
@@ -2681,8 +2768,9 @@ def thread_html(item, number, *, editable):
     if item["kind"] == "conversation":
         thread = part_thread(item, number)
         numbers = conversation_message_numbers(thread)
-        messages = ''.join(message_html(item, m, editable=editable and m.get("home") == thread[0]["home"],
-                                        message_number=numbers[m.get("ask", m["id"])])
+        home = thread_home(thread) if editable else None
+        messages = ''.join(message_html(item, m, editable=editable and m.get("home") == home,
+                                        message_number=numbers.get(m.get("ask", m["id"])))
                            for m in thread)
         return f'<ol class="exchange">{messages}</ol>' if messages else ''
     groups = {}
@@ -4163,22 +4251,23 @@ class VisitLog:
             os.close(descriptor)
 
 
+def ask_destination(ask_home: Path | None, *, require_directory: bool) -> tuple[Path | None, str | None]:
+    if ask_home is not None:
+        try:
+            resolved = ask_home.resolve(strict=require_directory)
+            if require_directory and not resolved.is_dir():
+                return None, None
+        except (OSError, RuntimeError):
+            return None, None
+        return resolved, hashlib.sha256(os.fsencode(resolved)).hexdigest()
+    return None, None
+
+
 def make_handler(site_title: str, base_path: str = "", store: Path | None = None, home: Path | None = None,
                  *, ask_home: Path | None = None, workers_home: Path | None = None) -> type[BaseHTTPRequestHandler]:
     """Every page is built from the item store when it is requested."""
     visit_log = VisitLog(visits_path())
     saved_workers = SavedWorkers()
-
-    def ask_destination(*, require_directory):
-        if ask_home is not None:
-            try:
-                resolved = ask_home.resolve(strict=require_directory)
-                if require_directory and not resolved.is_dir():
-                    return None, None
-            except (OSError, RuntimeError):
-                return None, None
-            return resolved, hashlib.sha256(os.fsencode(resolved)).hexdigest()
-        return None, None
 
     class Handler(BaseHTTPRequestHandler):
         server_version = "Quarterdeck"
@@ -4273,7 +4362,7 @@ def make_handler(site_title: str, base_path: str = "", store: Path | None = None
                     visit_log.record(self.headers.get("User-Agent"))
                 except (OSError, ValueError) as exc:  # a visit that cannot be logged must never stop the page
                     print(f"quarterdeck: could not log the visit: {exc}", file=sys.stderr, flush=True)
-                _, ask_binding = ask_destination(require_directory=True)
+                _, ask_binding = ask_destination(ask_home, require_directory=True)
                 self.send_text(200, list_page(data, site_title, served=True, ask_binding=ask_binding), "text/html; charset=utf-8",
                                prevent_framing=bool(ask_binding))
                 return
@@ -4284,7 +4373,7 @@ def make_handler(site_title: str, base_path: str = "", store: Path | None = None
                 return
             if discussion:
                 if item["kind"] == "questions":
-                    _, binding = ask_destination(require_directory=False)
+                    _, binding = ask_destination(ask_home, require_directory=False)
                     snapshot = set_discussion(item, editable=binding is not None and conversation_editable(item, None))
                     self.send_text(200, json.dumps(snapshot), "application/json")
                 else:
@@ -4292,7 +4381,7 @@ def make_handler(site_title: str, base_path: str = "", store: Path | None = None
                 return
             ask_binding = None
             if item["kind"] in ("questions", "conversation"):
-                _, ask_binding = ask_destination(require_directory=item["kind"] == "conversation")
+                _, ask_binding = ask_destination(ask_home, require_directory=item["kind"] == "conversation")
             content = item_page(item, site_title, served=True, ask_binding=ask_binding)
             prevent_framing = has_answer_controls(item) or item["kind"] == "conversation" or (
                 item["kind"] == "questions" and (bool(part_thread(item, None)) or question_summary(item)[0] == "Replied"))
@@ -4313,10 +4402,10 @@ def make_handler(site_title: str, base_path: str = "", store: Path | None = None
                 self.send_text(403, "Open the question on Quarterdeck.")
                 return
             if endpoint in ("/asks", "/conversations"):
-                ask_path, ask_binding = ask_destination(require_directory=True)
+                ask_path, ask_binding = ask_destination(ask_home, require_directory=True)
                 home_available = ask_path is not None
                 if endpoint == "/asks" and not home_available:
-                    ask_path, ask_binding = ask_destination(require_directory=False)
+                    ask_path, ask_binding = ask_destination(ask_home, require_directory=False)
                 if ask_path is None:
                     self.send_text(403, "Configure an available firstmate_home to ask Firstmate.")
                     return
@@ -4383,8 +4472,7 @@ def serve(args: argparse.Namespace) -> int:
         config = load_config(config_path)
         tls = tls_context(args)
         base_path = effective_base_path(args)
-        explicit_home = config.get("firstmate_home")
-        firstmate = Path(explicit_home) if isinstance(explicit_home, str) else None
+        firstmate = configured_firstmate_home(config)
         handler = make_handler(page_title(args, config), base_path, home=answer_home(config, config_path),
                                ask_home=firstmate, workers_home=firstmate)
         port = args.port
@@ -4555,6 +4643,8 @@ COMMAND_DOCS = {
     "list": ["how-to/save-items.md", "reference/cli-and-config.md"],
     "show": ["how-to/read-answers.md", "how-to/save-items.md", "reference/cli-and-config.md"],
     "reply": ["how-to/reply-from-the-command-line.md", "how-to/talk-to-firstmate.md", "reference/cli-and-config.md", "reference/item-store.md"],
+    "post": ["how-to/reply-from-the-command-line.md", "reference/cli-and-config.md", "reference/item-store.md"],
+    "converse": ["how-to/reply-from-the-command-line.md", "how-to/talk-to-firstmate.md", "reference/cli-and-config.md", "reference/item-store.md"],
     "remove": ["how-to/save-items.md", "reference/cli-and-config.md"],
     "render": ["how-to/serve-the-page.md", "reference/cli-and-config.md", "explanation/privacy-and-architecture.md"],
     "serve": ["how-to/answer-questions.md", "how-to/use-the-library.md", "how-to/ask-firstmate.md", "how-to/talk-to-firstmate.md", "how-to/read-workers.md", "how-to/serve-the-page.md", "reference/cli-and-config.md", "explanation/privacy-and-architecture.md"],
@@ -4654,22 +4744,42 @@ def make_parser() -> argparse.ArgumentParser:
     show = command("show", "show one item in full", "Show one item in full, with its parts numbered (Q7.1, Q7.2, ...).", show_item)
     show.add_argument("id", help="item ID, such as Q7")
 
+    def attachment_options(sub: argparse.ArgumentParser) -> None:
+        sub.add_argument("--link-text", action="append", metavar="TEXT", help="the words of a link; repeat for more links")
+        sub.add_argument("--url", action="append", metavar="URL", help="the http(s) address for the matching --link-text")
+        sub.add_argument("--image", action="append", metavar="PATH", help="a PNG, JPEG or still WebP file (up to 5 MB) copied into the private store; repeat for more")
+        sub.add_argument("--alt", action="append", metavar="TEXT", help="alt text that describes the matching --image")
+
     reply = command("reply", "add Firstmate's reply to an ask or a conversation message",
-                    "Add Firstmate's reply under an ask on a question item (Q7) or one question (Q7.1), or under a message in a "
-                    "conversation started with Talk to Firstmate (an inbox note that begins CONVERSATION; reply to its item ID, "
-                    "such as Q12, with its message ID). The reply shows as Replied until the owner opens it. A reply leaves answers "
+                    "Add Firstmate's reply under an ask on a question item (Q7) or one question (Q7.1), or under the owner's "
+                    "message in any conversation. For a note that begins CONVERSATION, use its item ID (such as Q12) and message ID. "
+                    "The reply shows as Replied until the owner opens it. A reply leaves answers "
                     "and states intact. Pair each --link-text with a --url and each --image with an --alt, in the order given.", reply_item)
     reply.add_argument("id", help="item or question ID, such as Q7 or Q7.1; a conversation's item ID, such as Q12")
     reply.add_argument("--ask", required=True, metavar="ID", help="the ask or message ID from the inbox note")
     reply.add_argument("--text", required=True, help="the reply")
-    reply.add_argument("--link-text", action="append", metavar="TEXT", help="the words of a link; repeat for more links")
-    reply.add_argument("--url", action="append", metavar="URL", help="the http(s) address for the matching --link-text")
+    attachment_options(reply)
     reply.add_argument("--clarify", action="append", metavar="Q7.1=TEXT",
                        help="on a reply to the whole item: context that now shows at that question; repeat for more questions")
     reply.add_argument("--option-changed", action="append", metavar="Q7.1",
                        help="with --clarify for the same question: an option really changed, so the owner reviews a draft before sending")
-    reply.add_argument("--image", action="append", metavar="PATH", help="a PNG, JPEG or still WebP file (up to 5 MB) copied into the private store; repeat for more")
-    reply.add_argument("--alt", action="append", metavar="TEXT", help="alt text that describes the matching --image")
+
+    post = command("post", "post Firstmate's own update on a conversation",
+                   "Add an update from Firstmate to a conversation, with no ask to answer. It shows in time order as a "
+                   "Firstmate update and as Replied until the owner opens it. Sends no inbox note. Pair each --link-text "
+                   "with a --url and each --image with an --alt, in the order given.", post_update)
+    post.add_argument("id", help="a conversation's item ID, such as Q12")
+    post.add_argument("--text", required=True, help="the message")
+    attachment_options(post)
+
+    converse_cmd = command("converse", "open a conversation in Firstmate's name and print its ID",
+                           "Open a conversation with a title and a first message from Firstmate, shown as a Firstmate update "
+                           "and as Replied until the owner opens it. Sends no inbox note; the owner and Firstmate continue "
+                           "it as any conversation. Pair each --link-text with a --url and each --image with an --alt.", converse)
+    converse_cmd.add_argument("--title", required=True, help="a short topic that says what the conversation is about")
+    converse_cmd.add_argument("--config", type=Path, help="use the same JSON config file as serve")
+    converse_cmd.add_argument("--text", required=True, help="the message")
+    attachment_options(converse_cmd)
 
     mark = command("mark", "mark questions answered, closed or open",
                    "Set the state of a question (Q7.3) or every question in an item (Q7). Marking answered records an "
