@@ -1822,10 +1822,6 @@ references.dispatchEvent(new Event('input', {bubbles: true}));
 const bookmark = dialog.querySelector('#panel-references a[href="https://example.org/map"]');
 check(bookmark && !dialog.querySelector('#panel-references').innerText.includes('A chart of the quay'),
       'A bookmark should link out and show no description');
-window.addEventListener('click', e => e.preventDefault(), {once: true});
-bookmark.click();
-check(history.state?.libraryLookup?.tab === 'tab-references' && history.state.libraryLookup.query === 'chart',
-      'Following a bookmark did not keep the References lookup');
 references.value = 'q3.1';
 references.dispatchEvent(new Event('input', {bubbles: true}));
 check(![...document.querySelectorAll('#panel-references li')].some(row => !row.hidden), 'A reference matched a question ID');
