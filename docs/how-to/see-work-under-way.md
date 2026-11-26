@@ -33,7 +33,7 @@ where to set it. Rendered snapshots have no Under way tab.
 
 A row is one ship or scout with an open terminal. A second mate has no row.
 Work the home recorded as merged today also has a row until the day ends,
-even when its terminal has closed. 
+even when its terminal has closed.
 
 ## What the statuses mean
 
