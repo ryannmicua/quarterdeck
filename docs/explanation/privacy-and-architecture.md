@@ -19,7 +19,8 @@ for who can start conversations and use the other browser controls.
   which items are exported.
 - `serve` reads the item store to build pages and writes to it when users
   submit answers, send asks, start conversations, send messages, acknowledge
-  Firstmate messages, or [acknowledge Catch-up notices](../reference/cli-and-config.md#catch-up-endpoint).
+  Firstmate messages, [pin or unpin conversations](../reference/cli-and-config.md#pin-endpoint),
+  or [acknowledge Catch-up notices](../reference/cli-and-config.md#catch-up-endpoint).
   It also writes the [local visit log](../reference/cli-and-config.md#visit-log).
   It serves only files listed for the requested item from
   the corresponding [private image folder](../reference/item-store.md#store-layout).
@@ -70,7 +71,9 @@ and serving pages make no outbound requests or model calls. The installer
 uses Git to clone or update the checkout.
 
 The served Desk includes archived question and answer text in its HTML so the
-Answered tab can search it in the browser.
+Answered tab in Hold can search it in the browser. Each row in the Desk's
+**Conversations** tab includes up to 200 characters of the latest message
+after whitespace is collapsed. Watch uses the [saved workers reading](../reference/cli-and-config.md#watch-page).
 
 Opening a link takes the browser to the saved destination. Pages do not embed
 the server's config or store paths. See [inline web addresses](../reference/item-store.md#inline-web-addresses)

@@ -7,6 +7,7 @@ Guides are grouped by purpose, following Diataxis:
   [saving items](how-to/save-items.md), [serving the page](how-to/serve-the-page.md),
   [asking Firstmate from a card](how-to/ask-firstmate.md),
   [talking to Firstmate about any topic](how-to/talk-to-firstmate.md),
+  [watching what Firstmate owes](how-to/watch-firstmate.md),
   [replying from the command line](how-to/reply-from-the-command-line.md),
   [reading the Workers page](how-to/read-workers.md),
   and [catching up on finished work](how-to/catch-up.md).

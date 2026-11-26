@@ -28,15 +28,18 @@ own copy of the saved content.
 
 ## Features
 
-- **Desk** puts [questions to answer](docs/how-to/answer-questions.md) and
-  [unread conversation activity](docs/how-to/use-the-library.md#when-an-item-moves)
-  in one table.
-- **Open library** gives you searchable access to saved links, lists, and
+- **Desk** opens on **Conversations**, where you start a conversation and keep
+  [pinned topics](docs/how-to/talk-to-firstmate.md#order-and-pins) in view. Its
+  **Needs you** tab holds [questions to answer](docs/how-to/answer-questions.md)
+  and [unread replies](docs/how-to/use-the-library.md#when-an-item-moves).
+- **Watch** lists what Firstmate has yet to reply to and shows its current work.
+  See [Watch Firstmate](docs/how-to/watch-firstmate.md).
+- **Open Hold** gives you searchable access to saved links, lists, and
   answered items and conversations on the served Desk. See
   [Find references and answered questions](docs/how-to/use-the-library.md).
-- **Catch-up** shows notices about finished work. See
+- **Catch-up** shows explicitly saved notices in **Needs you**. See
   [Catch up on finished work](docs/how-to/catch-up.md).
-- **Workers** is its own page, linked from **Desk**. See
+- **Workers** is its own page, linked from the header. See
   [how to enable and check the roster](docs/how-to/read-workers.md).
 - The served Desk gives each item a page with its ID and title at the top.
   A resource's link opens the saved address. List entries and questions
@@ -69,7 +72,7 @@ quarterdeck serve
 ```
 
 `add` prints `Q1`. Open the address `serve` prints, then select
-**Open library** and find **Calls redesign** under **References**. For a
+**Open Hold** and find **Calls redesign** under **References**. For a
 read-first install, download `install.sh`, read it, then run it. Run
 `quarterdeck help` for command help or `quarterdeck help --json` for the
 command index.

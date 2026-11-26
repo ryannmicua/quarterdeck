@@ -16,6 +16,7 @@ Run one group while changing it, then the whole suite before a pull request
 | Card asks, replies, and acknowledgment | `PYTHONPATH=tests python3 -m unittest -v test_quarterdeck.ConversationTests` |
 | Desk conversations, home binding, and export exclusion | `PYTHONPATH=tests python3 -m unittest -v test_quarterdeck.TalkToFirstmateTests` |
 | Workers snapshot and refresh | `PYTHONPATH=tests python3 -m unittest -v test_quarterdeck.WorkersTests` |
+| Catch-up store, CLI and owner acknowledgment endpoint | `PYTHONPATH=tests python3 -m unittest -v test_catch_up` |
 | `service`, `url` and `help` | `PYTHONPATH=tests python3 -m unittest -v test_quarterdeck.ServiceAndHelpTests` |
 | Commit guard for the item store and visit log | `PYTHONPATH=tests python3 -m unittest -v test_quarterdeck.PrivacyGuardTests.test_local_state_is_ignored_and_force_staging_is_rejected` |
 
@@ -41,7 +42,7 @@ pixels, the Desk check confirms one row per fixture item and that every cell
 hits its row's item link.
 It also checks that the item ID labels the link when the title is invisible
 and that a long project name and delivery status fit without horizontal
-scrolling. A 320-pixel sheet check covers both tabs and Close library. A
+scrolling. A 320-pixel sheet check covers both tabs and Close Hold. A
 zoomed viewport check verifies the sheet at 640 CSS pixels and the drawer
 at a fractional width just above it.
 At 140 pixels tall, browser checks cover the Send
@@ -54,7 +55,7 @@ The Desk history check opens a library item, updates answers, then goes Back,
 Forward, and Back again. Both returns verify the same tab and search against a
 fresh Desk and archive, including filters whose values disappear from the
 refreshed results. After dismissal, returning from an item opened through
-the Desk table and reloading the Desk both leave the library closed.
+the Desk table and reloading the Desk both leave Hold closed.
 
 The classification tests parse served and exported HTML to verify item and
 project pairs in a single Desk table, including sets with multiple prompts.
@@ -62,8 +63,17 @@ The classification browser tests use headless `google-chrome` to select
 filters and check which reference rows, reviewed cards, and empty messages
 are visible in the narrow and desktop layouts.
 
-The workers browser tests use headless `google-chrome` on the Desk and the
-Workers page. They check for zero Workers requests on the Desk and count
+The Catch-up browser check opens **Needs you** with saved notices and an
+open question. At phone width it checks the notice details and links. It
+acknowledges a notice and then acknowledges the remaining notices, checks
+the tab count, and verifies that the question stays in the table. The browser
+checks also cover stale and incomplete acknowledgments, a deleted item link,
+and restoring empty guidance after reading the final notice.
+
+The workers browser tests use headless `google-chrome` on the Desk, Watch, and
+Workers. The Watch check opens the page before and after a manual Workers
+check, verifies the saved roster and time, and counts fleet script calls.
+The Workers tests check for zero Workers requests on the Desk and count
 requests on entry, during a virtual minute of idle time, and after a manual
 check. They cover a click during entry, reuse of fresh saved readings,
 replacement of expired readings on entry, two overlapping views that receive
@@ -106,6 +116,6 @@ discussion refresh check covers framing protection and a reply arriving in a
 read-only tab after a question reopens.
 
 For a screen change, also save one item of each kind, run `quarterdeck serve`,
-and check the Desk, each tab of the library pop-out (try 3, 30 and 200 saved items) and each item page at phone width (about 390 px) and
+and check the Desk, each tab of Hold pop-out (try 3, 30 and 200 saved items) and each item page at phone width (about 390 px) and
 desktop width: the page scrolls to its last element and back, and nothing
 scrolls sideways.

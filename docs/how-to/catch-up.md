@@ -1,11 +1,7 @@
 # Catch up on finished work
 
-Catch-up shows short notices that Firstmate saves when a piece of work is
-finished. Read a notice, follow its link if you want, and mark it read. The
-notice then leaves the Desk.
-
-Quarterdeck never creates a notice by itself. A notice appears only when you or
-Firstmate saves it with `quarterdeck catch-up add`.
+Catch-up records short notices that you or Firstmate explicitly save about
+finished work. Each unread notice adds one row to **Needs you** on the Desk.
 
 ## Save a notice
 
@@ -27,29 +23,26 @@ summarize the result in one sentence. See
 
 ## Read the notices on the Desk
 
-Unread notices show on the served Desk, above the questions, newest first.
-Each row shows the title, summary, saved date, and any links or project name.
-Reload the Desk to see notices saved since you opened it.
+Open **Needs you** to see each unread notice's summary, project and saved
+links. If the linked Quarterdeck item is removed, its link disappears and any
+external link remains.
+Select **Mark read** to remove that notice from the table and update the tab
+count. When there are several notices, **Mark all notices read** acknowledges
+the notices in the table. Questions, replies and failed deliveries stay in
+the table. If Quarterdeck reports that a notice may already be read, reload
+the Desk to see the current list.
 
-- Select **Mark read** on a row to read that notice.
-- When multiple notices are shown, the heading includes a count and
-  **Mark all read** acknowledges every notice shown.
+## Read the notices from the CLI
 
-A notice leaves the Desk as soon as the page confirms it was marked read.
-When the last notice leaves, the Catch-up section closes. If the Desk has no
-items that need attention, its usual empty-state message appears.
-If the page cannot confirm the change, the rows and any unsent draft stay in
-place. If Catch-up says it could not mark the notice read, retry from the same
-page. If it says a notice may already be read, reload when ready to see the
-current list. Send or copy any unsent draft before reloading.
-
-To review or acknowledge notices from a terminal, see the
-[`catch-up` commands](../reference/cli-and-config.md#items).
+Run `quarterdeck catch-up list` to see unread notices, newest first.
+Run `quarterdeck catch-up read C4` to print a notice’s details and mark it
+read, or use `quarterdeck catch-up read --all` for every unread notice.
+See the [command reference](../reference/cli-and-config.md#items).
 
 ## How long a notice stays
 
 Unread notices stay until they are read. When you save a notice or successfully
 acknowledge a notice, Quarterdeck removes any read notices whose retention
-period has elapsed since they were first marked read. If the CLI and the Desk
+period has elapsed since they were first marked read. If the CLI and the server
 use different periods, a write using the shorter period can remove a notice
 sooner. See [how each process loads `catch_up_days`](../reference/cli-and-config.md#json-configuration).

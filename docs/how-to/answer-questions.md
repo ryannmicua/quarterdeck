@@ -1,18 +1,24 @@
 # Answer questions
 
-The **Desk** table shows items newest first. The **Item** column links the
-saved ID and title, **Project** shows the assigned project, **Questions**
-shows the open count, and **Latest** shows the current status. Select the
-item link or tap anywhere on its row. The link jumps to the first open
-question when there is one and opens the top of the item page otherwise.
+Select **Needs you** on the Desk to reach the table. The tab shows the number
+of rows when any need attention. Each question set counts once, regardless of
+how many questions are open. [Catch-up notices](catch-up.md#read-the-notices-on-the-desk)
+appear first, followed by saved items, newest saved first.
+
+The **Item** column links the saved ID and title, **Questions** shows the
+open count, and **Latest** shows the current status. On wider screens,
+**Project** shows the assigned project. Select the item link or tap its row
+to open the first open question. If there is an unread reply, the link
+[opens that message](ask-firstmate.md#read-replies). If there are no open
+questions or unread replies, the link opens the top of the item page.
 The item page has the question wording, options, and suggestions. Each
 question has an ID you can cite later.
 
 Items with open questions show **Asked**. If no questions are open and an
 answer still needs delivery, the row shows **None open** and **Answered**.
-**Replied** takes precedence over both **Asked** and **Answered** when there is
-an unread reply. The row also shows **Not delivered** alongside any of these
-statuses while an answer needs delivery.
+**Unread reply** takes precedence over both **Asked** and **Answered** when
+there is an unread reply. The row also shows **Not delivered** while an
+answer or retryable ask needs delivery.
 
 An item page lists every question in one list. A question marked **Answered**
 with a **Sent** answer and no unread replies collapses to one line below the
@@ -36,7 +42,7 @@ When you need more information before deciding, see how to
 [send answers together with a set message](ask-firstmate.md#discuss-the-whole-set).
 
 To find an item after it leaves the Desk, open
-[**Answered** in the library](use-the-library.md#when-an-item-moves).
+[**Answered** in Hold](use-the-library.md#when-an-item-moves).
 
 **Answered** is the question's state. Submitting a new answer sets it, and
 [marking a question](read-answers.md) can set it manually. **Sent** means the

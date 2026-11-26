@@ -10,6 +10,7 @@
 - [Answer questions](answer-questions.md)
 - [Ask Firstmate from a card](ask-firstmate.md)
 - [Talk to Firstmate](talk-to-firstmate.md)
+- [Watch Firstmate](watch-firstmate.md)
 - [Reply from the command line](reply-from-the-command-line.md)
 - [Find references and answered questions](use-the-library.md)
 - [Read and mark answers](read-answers.md)
