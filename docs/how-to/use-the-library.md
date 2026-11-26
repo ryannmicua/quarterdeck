@@ -1,8 +1,8 @@
 # Find references and answered questions
 
-Select **Open library** in the served Desk header. It opens a bottom sheet
+Select **Open Hold** in the served Desk header. It opens a bottom sheet
 at viewport widths up to `40rem` and a right-side drawer at wider widths.
-Select **Close library**, press Escape, or tap outside the library to return
+Select **Close Hold**, press Escape, or tap outside Hold to return
 to the Desk.
 
 The pop-out has three tabs.
@@ -31,28 +31,28 @@ question. An ID-shaped topic such as `Q5.3` also matches in **Conversations**.
 Use the [project and tag filters](classify-items.md#see-it-on-the-page) when
 available to narrow the lists, including on rendered pages.
 
-After opening an item from the library, use your browser’s Back button to
+After opening an item from Hold, use your browser’s Back button to
 return to the same tab, search and filters with fresh results. A restored
 filter remains selected and can be cleared even if no items match it.
-Closing the library clears the saved lookup, so reloading the Desk or
-returning from an item opened through the Desk table leaves the library closed.
+Closing Hold clears the saved lookup, so reloading the Desk or
+returning from an item opened through the Desk table leaves Hold closed.
 
 When there’s enough room, results scroll beneath the search box. The whole
 sheet or drawer scrolls when the window is short or the controls leave too
 little room for results. Scroll back to the top to reach Search, the tabs,
-or **Close library**.
+or **Close Hold**.
 
 ## When an item moves
 
-An item with questions stays on the Desk while it has an open question or a
-non-closed question with an answer awaiting delivery. Otherwise it appears under
-**Answered**. Pending asks and unread replies leave the item in its current
-listing. Both locations can show **Replied**. See
+An item with questions stays in **Needs you** while it has an open question
+or a pending answer. Otherwise it is filed under **Answered**. An unread reply
+or a retryable ask also shows the item once in **Needs you**, including when
+the item is filed under **Answered**. Both locations can show **Unread reply**. See
 [how to read question-card replies](ask-firstmate.md#read-replies).
 
-Standalone conversations are always in **Conversations**. They also appear on
-the Desk while they have unread replies or updates from Firstmate. Both
-locations show **Replied** until you [read them on the card](talk-to-firstmate.md#read-replies).
+Standalone conversations are always in **Conversations**, on the Desk and in
+Hold. They also appear once in **Needs you** while they have an unread reply
+or a retryable message. See [how to open a conversation's unread message](talk-to-firstmate.md#read-replies).
 
 Reopen a question with `quarterdeck mark Q5.2 open` to return
 its item to the Desk. The item stays saved until you remove it with

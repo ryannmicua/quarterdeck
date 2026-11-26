@@ -55,7 +55,7 @@ as `reply`.
 | `mark` | Sets question state, optionally for a whole questions item. `--via` is required with `answered` and accepted only with that state. Skips exit with status 0. See [Read answers](../how-to/read-answers.md) for which questions are marked. |
 | `classify` | Requires at least one classification option. Use `--project` for an item ID, `--kind` for a question ID, and `--tag` for either. See [how to change classification](../how-to/classify-items.md#change-it-later). |
 | `stats` | Prints a question activity table by default or JSON with `--json`. See [Read the report](../how-to/read-the-report.md) for date filtering and field definitions. |
-| `catch-up` | `catch-up add` prints the new notice ID, such as `C4`. `catch-up list` prints the ID, UTC saved date and title of each unread notice, newest first. `catch-up read` accepts notice IDs in either case or `--all` for every unread notice. It prints a line such as `C4 Read` once per notice, even if the ID was supplied more than once. If any supplied ID is missing from the store, the command leaves all notices unchanged. `--all` skips the store write when no notices are unread. See [Catch up on finished work](../how-to/catch-up.md). |
+| `catch-up` | `catch-up add` prints the new notice ID, such as `C4`. `catch-up list` prints the ID, UTC saved date and title of each unread notice, newest first. `catch-up read` accepts notice IDs in either case or `--all` for every unread notice in the initial snapshot. It prints and flushes the notice details before taking the store's write lock, then acknowledges the printed IDs and prints a line such as `C4 Read` once per notice. If any requested ID is missing when the command reads or acknowledges the batch, the command leaves the notices unchanged. `--all` skips the store write when no notices are unread. See [Catch up on finished work](../how-to/catch-up.md). |
 | `remove` | Deletes an item. Its ID is never used again. See [image removal](item-store.md#store-layout). |
 
 ### Pages
@@ -72,8 +72,8 @@ on served and rendered pages.
 
 Rendered item pages include current saved answers with their timestamps and
 delivery status. Earlier answers, conversation text, clarifications, reply
-links, reply images, and Replied badges are exclusive to the served site,
-along with Catch-up notices and answer controls.
+links, reply images, and Unread reply badges are exclusive to the served site.
+Answer controls, Watch and Catch-up notices are available on served pages.
 
 If `XDG_STATE_HOME` is set when you run `service`, the generated unit includes
 that setting so it uses the same [item store](item-store.md) and
@@ -95,8 +95,8 @@ serves the Desk (`/` or `/index.html` under the base path). Each JSON line
 holds the UTC time with milliseconds (`ts`), the `page` value `main`, and
 `device`, set to `phone` for a phone browser or `desktop` otherwise, judged
 from the `User-Agent`. The record holds no address, item or content. Item
-pages, images, the discussion endpoint, and the Workers page and its JSON
-endpoints are outside the visit log. Quarterdeck has no login, so every Desk
+pages, images, Watch, the discussion endpoint, and the Workers page and its
+JSON endpoints are outside the visit log. Quarterdeck has no login, so every Desk
 load counts, whoever makes it.
 Logging needs no flag.
 Quarterdeck keeps existing records without automatic pruning. It rejects
@@ -179,8 +179,12 @@ topic, up to 200 characters. The page generates the 32-character lowercase
 hexadecimal ID. Repeating the same request reuses the saved conversation
 instead of creating another, and retries delivery of the first message while it
 is pending. The same ID with a different topic or text returns 409. A successful
-response contains `message` (delivery status) and `href` (the relative URL of
-the conversation card).
+response contains `message` (delivery status), `href` (the relative URL of
+the conversation card), `row` (the conversation row HTML), `hold` (the Hold
+result row HTML), and `attention`
+(the started topic’s Needs you row HTML, or `null` if it needs no attention).
+The browser updates that topic's rows and derives the tab count from the
+current Needs you table.
 
 On an existing conversation, the owner's messages use the
 [ask endpoint](#ask-endpoint) with `"part": "Q12"`, including their first
@@ -192,16 +196,32 @@ The inbox note for each message sent by the owner is
 `CONVERSATION Q12 <message id> Topic: <topic>`, a line break, then the message
 text. See [Reply in a conversation](../how-to/reply-from-the-command-line.md#reply-in-a-conversation).
 
+### Pin endpoint
+
+`POST /pins` (under any `base_path`) uses the same origin check as `/answers`
+and needs no `firstmate_home`. Send `{"part": "Q12", "pinned": true}` to pin a
+conversation or `"pinned": false` to unpin it. Only a standalone conversation
+can be pinned, and any other ID returns 400. The request changes the
+conversation's [`pinned` field](item-store.md#conversations) and nothing else.
+It adds no message, leaves unread replies unread and keeps the conversation's
+latest activity. The response is `{"pinned": true}` or `{"pinned": false}`.
+
+### Watch page
+
+`GET /watch.html` (under any `base_path`) serves the read-only
+[Watch page](../how-to/watch-firstmate.md). When `firstmate_home` is set,
+**Current work** reads `GET /workers-saved.json`. Reading that endpoint
+leaves the fleet snapshot untouched.
+
 ### Reply acknowledgment endpoint
 
 `POST /replies/read` (under any `base_path`) uses the same origin check as
 `/answers`. The served page sends `{"part": "Q7.1", "ids": ["<reply id>"]}`
-when the user opens that question's **Messages**, or sends `"part": "Q7"`
-when the user opens the whole-item **Messages**. On a standalone conversation
-card, the browser sends `"part": "Q12"` and the displayed unread Firstmate
-message IDs on open and after a send or retry refresh. A GET alone leaves
-read records intact. Every ID must identify a Firstmate message in the named
-thread. The response field `replies` maps each Firstmate message ID in that
+when the user opens a notice for that reply. A reply in a whole-item
+discussion or standalone conversation uses the item ID as `part`. Explicitly
+opening **Messages** acknowledges all unread replies it shows. Sending,
+retrying, and a GET alone leave read records intact. Every ID must identify a
+Firstmate message in the named thread. The response field `replies` maps each Firstmate message ID in that
 thread to its current read status (`true` for read).
 
 ### Catch-up endpoint

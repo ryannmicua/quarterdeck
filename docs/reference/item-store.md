@@ -213,6 +213,13 @@ message with a `home` field binds the conversation. `converse` records that
 field on the opening update when a home is configured. Otherwise the owner's
 first message supplies it.
 
+A conversation item may also carry `pinned`, which is `true` when the owner
+pinned it. The field is optional, absent means unpinned, and only a
+conversation may have it. Pinning and unpinning change nothing else about the
+item, and an older store needs no change. A conversation's latest activity,
+which orders the Desk, is the time of its newest message or its `saved_at`,
+whichever is later.
+
 Each thread stores messages in the order they were saved. Every reply
 names the earlier ask or message it answers.
 
@@ -231,7 +238,7 @@ text is plain text, up to 20,000 characters. Reply images use the item's
 ## Question states
 
 The stored `state` is Open, Answered or Closed. The served page derives
-**Replied** from unread replies without changing the stored state. See
+**Unread reply** from unread replies without changing the stored state. See
 [how to read replies](../how-to/ask-firstmate.md) and
 [what static exports include](cli-and-config.md#pages).
 

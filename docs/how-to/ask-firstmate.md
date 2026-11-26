@@ -71,9 +71,10 @@ numbered ask also refreshes its conversation. If that refresh finds an unread
 reply on a folded answer, the question expands and its **Messages** panel stays
 open if you already opened it.
 
+Open a row marked **Unread reply** to go to that message and mark it read.
 Select **Messages** on the question to acknowledge the replies shown there.
 If it is already open, close and reopen it to acknowledge the replies it shows. A
-closed question can also show **Replied**. See
+closed question can also show **Unread reply**. See
 [where to find items with unread replies](use-the-library.md#when-an-item-moves).
 
 ## Retry a missed delivery

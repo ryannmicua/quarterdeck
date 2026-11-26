@@ -697,6 +697,8 @@ def check_store(data: object) -> dict[str, object]:
             if item_classification(item.get("project"), item.get("tags"), stored=True) != {
                     k: item[k] for k in ("project", "tags") if k in item}:
                 raise ValueError("item project or tags are not in the saved format")
+            if "pinned" in item and (item["pinned"] is not True or item["kind"] != "conversation"):
+                raise ValueError("only a conversation can be pinned")
             if "answers" in item:
                 validate_records(item)
             if "conversation" in item:
@@ -971,6 +973,45 @@ def unread_reply(message):
 
 def thread_unread(item, part):
     return any(map(unread_reply, part_thread(item, part)))
+
+
+UNREAD_REPLY = "Unread reply"
+
+
+def first_unread_reply(item, part):
+    return next((m for m in part_thread(item, part) if unread_reply(m)), None)
+
+
+def unread_target(item):
+    parts = question_parts(item) if item["kind"] == "questions" else ()
+    for part in (*parts, None):
+        reply = first_unread_reply(item, part)
+        if reply:
+            return f'reply-{reply["id"]}'
+    return None
+
+
+def has_pending_ask(item):
+    return any(
+        message["author"] == "you" and message["delivery"] == "pending"
+        for key, thread in item.get("conversation", {}).items()
+        if conversation_editable(item, None if key == "item" else int(key))
+        for message in thread
+    )
+
+
+def conversation_activity(item):
+    """The moment of a conversation's latest message, or of its saving. Pinning and reading never change it."""
+    return max([parse_utc(item["saved_at"])] + [parse_utc(m["at"]) for m in part_thread(item, None)])
+
+
+def by_activity(items):
+    """Newest activity first, the newest saved item first on a tie."""
+    return sorted(items, key=lambda item: (conversation_activity(item), int(str(item["id"])[1:])), reverse=True)
+
+
+def is_pinned(item):
+    return item.get("pinned") is True
 
 
 def part_state(item, part, *, replies=True):
@@ -1328,7 +1369,29 @@ def start_conversation(store, home, binding, payload):
             write_store(store, data)
     result = ask_message(store, home, binding, {"part": item_id, "id": message_id, "action": "retry"},
                          include_thread=False)
-    return {**result, "href": item_page_name(item_id)}
+    with locked_store(store, read_only=True):
+        item = find_item(read_store(store), item_id)
+    summary = attention_summary(item, served=True)
+    return {**result, "href": item_page_name(item_id), "row": conversation_row(item), "hold": library_row(item, served=True),
+            "attention": desk_row(item, summary, primary=False) if summary else None}
+
+
+def pin_conversation(store, payload):
+    """Keep a conversation in the Pinned group, or return it to its place by activity. Nothing else about it changes."""
+    if not isinstance(payload, dict) or set(payload) != {"part", "pinned"} or type(payload["pinned"]) is not bool:
+        raise ValueError("Invalid pin fields.")
+    item_id = payload["part"]
+    if not isinstance(item_id, str) or item_id != item_id.upper() or not ID_RE.fullmatch(item_id):
+        raise ValueError("Unknown conversation.")
+    with changing_store(store) as data:
+        item = find_item(data, item_id)
+        if item["kind"] != "conversation":
+            raise ValueError("Only a conversation can be pinned.")
+        if payload["pinned"]:
+            item["pinned"] = True
+        else:
+            item.pop("pinned", None)
+        return {"pinned": payload["pinned"]}
 
 
 def mark_replies_read(store, payload):
@@ -1628,20 +1691,21 @@ class CatchUpConflict(ValueError):
     pass
 
 
-def mark_catch_ups_read(store: Path, ids: list[str] | None, days: int) -> list[str]:
-    """Mark the named notices, or all unread notices, and return their IDs."""
+def catch_ups_by_ids(data, ids):
+    notices = {notice["id"]: notice for notice in catch_ups(data)}
+    if not notices.keys() >= set(ids):
+        raise CatchUpConflict("Unknown catch-up notice.")
+    return [notices[notice_id] for notice_id in ids]
+
+
+def mark_catch_ups_read(store: Path, ids: list[str], days: int) -> list[str]:
+    """Mark the named notices and return their IDs."""
     with locked_store(store):
         data = read_store(store)
-        if ids is None:
-            ids = [str(notice["id"]) for notice in unread_catch_ups(data)]
-            if not ids:
-                return ids
-        notices = {notice["id"]: notice for notice in catch_ups(data)}
-        if not notices.keys() >= set(ids):
-            raise CatchUpConflict("Unknown catch-up notice.")
+        notices = catch_ups_by_ids(data, ids)
         stamp = now_text()
-        for notice_id in ids:
-            notices[notice_id].setdefault("read_at", stamp)
+        for notice in notices:
+            notice.setdefault("read_at", stamp)
         prune_catch_ups(data, days)
         write_store(store, data)
         return ids
@@ -1682,6 +1746,17 @@ def list_catch_ups(args: argparse.Namespace) -> int:
     return run_item_command(action)
 
 
+def print_catch_up(notice):
+    print(f"{notice['id']}  {notice['saved_at']}  {notice['title']}")
+    print(f"  {notice['summary']}")
+    if "project" in notice:
+        print(f"  Project: {notice['project']}")
+    if "item" in notice:
+        print(f"  Item: {notice['item']}")
+    if "url" in notice:
+        print(f"  {notice['link_text']}: {notice['url']}")
+
+
 def read_catch_up(args: argparse.Namespace) -> int:
     def action() -> int:
         store = store_path()
@@ -1693,9 +1768,16 @@ def read_catch_up(args: argparse.Namespace) -> int:
             ids = list(dict.fromkeys(parse_catch_up_id(value) for value in args.ids))
         else:
             raise ValueError("give a catch-up ID such as C4, or --all")
-        marked = mark_catch_ups_read(store, ids, catch_up_days(selected_config(args)))
-        if not marked:
+        days = catch_up_days(selected_config(args))
+        data = read_store(store)
+        notices = unread_catch_ups(data) if ids is None else catch_ups_by_ids(data, ids)
+        if not notices:
             print("No unread catch-up notices.")
+            return 0
+        for notice in notices:
+            print_catch_up(notice)
+        sys.stdout.flush()
+        marked = mark_catch_ups_read(store, [str(notice["id"]) for notice in notices], days)
         for notice_id in marked:
             print(f"{notice_id} Read")
         return 0
@@ -2194,12 +2276,14 @@ PAGE_CSS = """
 @media (min-width: 90rem) { :root { --gutter: 3rem; --page: 150rem; --side: 20rem; } }
 
 * { box-sizing: border-box; }
-html { -webkit-text-size-adjust: 100%; }
+html { -webkit-text-size-adjust: 100%; -webkit-tap-highlight-color: transparent; }
+a, button, [role="tab"] { touch-action: manipulation; }
 body { margin: 0; background: var(--ground); color: var(--ink); font: var(--text-body)/1.55 var(--serif); overflow-wrap: anywhere; }
 a { color: inherit; text-decoration-thickness: 1px; text-underline-offset: .18em; }
 a:focus-visible { outline: 3px solid var(--focus); outline-offset: 2px; }
 .bar { display: flex; gap: 1rem; align-items: baseline; justify-content: space-between; padding: .9rem var(--gutter);
   border-bottom: 1px solid var(--rule); font-family: var(--sans); }
+.bar { flex-wrap: wrap; }
 .bar .mark { font: 700 var(--text-md)/1.2 var(--serif); text-decoration: none; }
 .bar nav a { font-size: var(--text-sm); margin-left: 1rem; }
 main { max-width: var(--page); margin: 0 auto; padding: 1.5rem var(--gutter) 4rem; }
@@ -2282,29 +2366,27 @@ textarea { display:block; width:100%; resize:vertical; background:var(--ground);
 .desk td.project { overflow-wrap:anywhere; }
 .desk .work { position:relative; cursor:pointer; border-left:5px solid var(--rule); }
 .desk .work.next { background:var(--signal-ground); }
-.desk .work:hover { background:var(--faint); }
-.desk .work.next:hover { background:var(--signal-ground); box-shadow:inset 0 0 0 2px var(--signal); }
+@media (hover: hover) and (pointer: fine) {
+  .desk .work:hover { background:var(--faint); }
+  .desk .work.next:hover { background:var(--signal-ground); box-shadow:inset 0 0 0 2px var(--signal); }
+}
+.desk .work:active { background:var(--faint); }
 .desk .work:has(.card-link:focus-visible) { outline:3px solid var(--focus); outline-offset:-3px; }
 .desk .card-link { display:inline-block; padding:.35rem 0; }
 .desk .card-link::after { content:""; position:absolute; inset:0; }
-.sr, [data-catch-up-status]:empty { position:absolute; width:1px; height:1px; overflow:hidden; clip-path:inset(50%); white-space:nowrap; }
+.desk .notice-project { display:none; }
+.desk .notice p { margin:.25rem 0; font-weight:400; }
+.desk .notice a { display:inline-block; margin-right:.65rem; }
+.desk .notice .desk-feedback { max-width:16ch; overflow-wrap:anywhere; }
+[data-read-all][hidden] + .desk-feedback { display:none; }
+.sr, .desk-feedback:empty { position:absolute; width:1px; height:1px; overflow:hidden; clip-path:inset(50%); white-space:nowrap; }
 .button-link, .work-action { display:inline-flex; align-items:center; min-height:44px; padding:.5rem .85rem; border-radius:5px; font:600 var(--text-md)/1.3 var(--sans);
   text-decoration:none; border:1px solid var(--soft); background:var(--raised); color:var(--ink); }
 .work-action { background:var(--ink); color:var(--raised); border-color:var(--ink); }
 .section-head { display:flex; flex-wrap:wrap; gap:.5rem 1rem; align-items:center; justify-content:space-between; margin-top:2rem; }
 .section-head h1 { margin:0; }
-.workers-link { margin:1.5rem 0 0; }
+.workers-link { margin:1.5rem 0 0; font-family:var(--sans); }
 #workers > .section-head:first-child { margin-top:0; }
-.catch-up { margin:0 0 1.5rem; }
-.catch-up + p.empty { display:none; }
-.catch-up .section-head { margin-top:0; }
-.catch-up h2 { margin:0; }
-.notes { list-style:none; margin:.5rem 0 0; padding:0; border-top:1px solid var(--rule); font-family:var(--sans); }
-.note { display:flex; flex-wrap:wrap; gap:.5rem 1rem; align-items:center; justify-content:space-between; padding:.8rem 0; border-bottom:1px solid var(--rule); }
-.note-text { flex:1 1 20rem; min-width:0; }
-.note h3 { font:700 var(--text-md)/1.3 var(--sans); margin:0; }
-.note p { margin:.15rem 0 0; }
-.note .meta { display:flex; flex-wrap:wrap; gap:0 1rem; font-size:var(--text-md); }
 .roster { list-style:none; margin:.5rem 0 0; padding:0; border-top:1px solid var(--rule); font-family:var(--sans); }
 .roster > li { padding:.9rem 0; border-bottom:1px solid var(--rule); }
 .roster p { margin:.15rem 0 0; }
@@ -2329,6 +2411,8 @@ textarea { display:block; width:100%; resize:vertical; background:var(--ground);
 .earlier-answers summary { cursor:pointer; }
 @media (max-width: 40rem) {
   .desk th, .desk td { padding:.6rem .3rem; }
+  .desk-panel .desk .project, [aria-labelledby="waiting-title"] .desk .project { display:none; }
+  .desk .notice-project { display:block; }
 }
 [hidden] { display:none !important; }
 .bar nav { display:flex; flex-wrap:wrap; gap:.4rem 1rem; align-items:center; }
@@ -2412,13 +2496,45 @@ body:has(dialog[open]) { overflow:hidden; }
 .page-head h1 { margin:0; }
 .talk, .composer { max-width:52rem; margin:1rem 0; padding:clamp(1rem,3vw,1.5rem); background:var(--raised); border:1px solid var(--rule);
   border-radius:8px; font-family:var(--sans); }
-.talk[hidden] { display:none; }
 .talk label, .composer label { margin:.8rem 0 .2rem; }
-.talk label:first-child, .composer label:first-child { margin-top:0; }
+.composer label:first-child, .talk-field label { margin-top:0; }
 .talk input { display:block; width:100%; min-height:var(--tap); background:var(--ground); color:var(--ink); border:1px solid var(--soft);
   border-radius:4px; padding:.55rem; font:inherit; }
-.talk p[id], .composer p[id] { margin:.4rem 0 0; color:var(--signal); font-weight:600; }
+.talk textarea { min-height:var(--tap); }
+.talk { display:grid; gap:.8rem; grid-template-columns:minmax(0, 1fr); }
 .talk .actions, .composer .actions { margin-top:.8rem; }
+.talk .actions { margin:0; }
+.talk p[id], .composer p[id] { margin:.4rem 0 0; color:var(--signal); font-weight:600; }
+.talk p[id] { margin:0; }
+.talk output { margin:0; }
+.talk output:empty { display:none; }
+.talk-field { display:flex; flex-direction:column; }
+.talk-field input { flex:1; }
+@media (width > 48rem) {
+  .talk { grid-template-columns:minmax(10rem, 1fr) minmax(14rem, 2fr) auto; align-items:stretch; }
+  .talk .actions { align-self:end; }
+  .talk p[id], .talk output { grid-column:1 / -1; }
+}
+.desk-tabs { margin:1rem 0 1.2rem; border-bottom:1px solid var(--rule); }
+.desk-tabs [role="tab"] { font-size:var(--text-md); margin-bottom:-1px; }
+.tab-count { display:inline-block; min-width:1.6em; margin-left:.3rem; padding:0 .45rem; border-radius:1em; text-align:center;
+  font:600 var(--text-sm)/1.5 var(--sans); color:var(--signal); background:var(--signal-ground); }
+.desk-panel > .empty { margin:1rem 0; }
+.topics { max-width:52rem; }
+.topics h2 { margin:1.6rem 0 .5rem; }
+.topic-list { list-style:none; margin:0; padding:0; border-top:1px solid var(--rule); font-family:var(--sans); }
+.topic { display:grid; grid-template-columns:minmax(0,1fr) auto; gap:.4rem 1rem; align-items:center; padding:.8rem 0; border-bottom:1px solid var(--rule); }
+.topic > .desk-feedback { grid-column:1 / -1; margin:0; }
+.topic-main { min-width:0; flex:1; }
+.topic-title { display:inline-block; padding:.2rem 0; font:700 var(--text-lg)/1.3 var(--serif); }
+.topic-latest { margin:.1rem 0 .3rem; color:var(--soft); display:-webkit-box; -webkit-line-clamp:2; -webkit-box-orient:vertical; overflow:hidden; }
+.topic-meta { display:flex; flex-wrap:wrap; gap:0 1rem; margin:0; }
+.topic-meta .badge { font-size:var(--text-sm); }
+.pin { flex:none; min-width:5rem; }
+.pin:active { background:var(--faint); }
+#desk-status { margin:.6rem 0 0; }
+.tab-count[hidden] { display:none; }
+.bar nav a[aria-current="page"] { font-weight:700; text-decoration-thickness:2px; }
 .conversation .composer { margin:1rem 0 0; padding:1rem 0 0; background:none; border:0; border-top:1px solid var(--rule); border-radius:0; max-width:none; }
 .conversation .exchange { margin:0; }
 .queue { margin:1rem 0; }
@@ -2441,10 +2557,34 @@ const localizeTimes = root => {
     time.textContent = localTime(time.dateTime);
   }
 };
+const localizeDays = root => {
+  for (const time of root.querySelectorAll('time.day[datetime]:not([datetime=""])')) {
+    time.textContent = new Date(time.dateTime).toLocaleDateString(undefined, {dateStyle:'medium'});
+  }
+};
 localizeTimes(document);
-for (const time of document.querySelectorAll('time.day[datetime]:not([datetime=""])')) {
-  time.textContent = new Date(time.dateTime).toLocaleDateString(undefined, {dateStyle:'medium'});
-}
+localizeDays(document);
+"""
+
+
+WORKER_SUMMARY_SCRIPT = r"""
+const exceptions = new Set(['Question asked', 'Stuck', 'Unreachable']);
+const make = (tag, className, text) => {
+  const node = document.createElement(tag);
+  if (className) node.className = className;
+  if (text !== undefined) node.textContent = text;
+  return node;
+};
+const workerSummary = worker => {
+  const item = make('li');
+  const head = make('div', 'head');
+  head.append(make('strong', 'who', worker.name),
+    make('span', exceptions.has(worker.status) ? 'status exception' : 'status', worker.status));
+  item.append(head);
+  if (worker.project) item.append(make('p', 'project', worker.project));
+  item.append(make('p', 'doing', worker.activity));
+  return item;
+};
 """
 
 
@@ -2456,14 +2596,7 @@ WORKERS_SCRIPT = r"""
   const heading = section.querySelector('h1');
   const status = section.querySelector('#workers-status');
   const list = section.querySelector('#workers-list');
-  const exceptions = new Set(['Question asked', 'Stuck', 'Unreachable']);
   let lastObservedAt = null;
-  const make = (tag, className, text) => {
-    const node = document.createElement(tag);
-    if (className) node.className = className;
-    if (text !== undefined) node.textContent = text;
-    return node;
-  };
   const stamped = (label, iso) => {
     const line = make('p', 'when', label + ' ');
     const time = make('time', '', localTime(iso));
@@ -2472,13 +2605,7 @@ WORKERS_SCRIPT = r"""
     return line;
   };
   const row = (worker, mate) => {
-    const item = make('li');
-    const head = make('div', 'head');
-    head.append(make('strong', 'who', worker.name),
-      make('span', exceptions.has(worker.status) ? 'status exception' : 'status', worker.status));
-    item.append(head);
-    if (worker.project) item.append(make('p', 'project', worker.project));
-    item.append(make('p', 'doing', worker.activity));
+    const item = workerSummary(worker);
     if (mate) item.append(worker.contact_at ? stamped('Reached', worker.contact_at) : make('p', 'when', 'Contact unavailable'));
     else if (worker.active_at) item.append(stamped('Active', worker.active_at));
     if (worker.links.length) {
@@ -2551,70 +2678,6 @@ WORKERS_SCRIPT = r"""
   button.addEventListener('click', () => load(true));
   load(false);
 })();
-"""
-
-
-CATCH_UP_SCRIPT = r"""
-{
-  const section = document.querySelector('.catch-up');
-  const focusHeading = heading => {
-    heading.tabIndex = -1;
-    heading.focus();
-  };
-  const finish = (ids, previousFocus) => {
-    const focused = document.activeElement === document.body ? previousFocus : document.activeElement;
-    const hadFocus = section.contains(focused);
-    for (const id of ids) section.querySelector('.note[data-id="' + id + '"]').remove();
-    const left = section.querySelectorAll('.note').length;
-    if (!left) {
-      section.remove();
-      if (hadFocus && !focused.isConnected) focusHeading(document.querySelector('main h1'));
-      return;
-    }
-    const count = section.querySelector('[data-count]');
-    if (left === 1) {
-      count.remove();
-      section.querySelector('[data-read-all]').remove();
-    } else {
-      count.textContent = '(' + left + ')';
-    }
-    if (hadFocus && !focused.isConnected) focusHeading(section.querySelector('h2'));
-  };
-  const markRead = async ids => {
-    const status = section.querySelector('[data-catch-up-status]');
-    const controls = section.querySelectorAll('button');
-    const previousFocus = document.activeElement;
-    controls.forEach(button => { button.disabled = true; });
-    status.textContent = '';
-    try {
-      const response = await fetch('catch-ups/read', {method:'POST', redirect:'error', headers:{'Content-Type':'application/json'},
-                                                      body:JSON.stringify({ids})});
-      if (response.status === 409) {
-        status.textContent = 'A notice may already be read. Reload the page when ready.';
-        return;
-      }
-      if (!response.ok) throw new Error(response.status);
-      const {read} = await response.json();
-      if (!Array.isArray(read) || read.length !== ids.length || !ids.every((id, index) => read[index] === id)) {
-        throw new Error('Unconfirmed acknowledgment');
-      }
-      finish(ids, previousFocus);
-    } catch (error) {
-      status.textContent = 'The notice could not be marked read. Try again.';
-    } finally {
-      controls.forEach(button => { button.disabled = false; });
-    }
-  };
-  section.addEventListener('click', event => {
-    const button = event.target.closest('button');
-    if (!button) return;
-    if (button.hasAttribute('data-read-all')) {
-      markRead([...section.querySelectorAll('.note')].map(note => note.dataset.id));
-    } else if (button.dataset.read) {
-      markRead([button.dataset.read]);
-    }
-  });
-}
 """
 
 
@@ -2754,8 +2817,8 @@ LIBRARY_SCRIPT = r"""
     }
     const status = panel.querySelector('[data-status]');
     const none = panel.querySelector('[data-none]');
-    const rows = [...panel.querySelectorAll('.lib-item')];
     const run = () => {
+      const rows = panel.querySelectorAll('.lib-item');
       const query = topics ? normalizeTopic(search.value) : search.value.trim();
       const id = idQuery.exec(query);
       const terms = caseFold(query).split(topics ? ' ' : /\s+/);
@@ -2773,6 +2836,16 @@ LIBRARY_SCRIPT = r"""
       status.textContent = active && !hasMatch ? 'No results match your search.' : '';
       if (!panel.hidden) updateScrollMode();
     };
+    if (topics) panel.addEventListener('conversation-saved', event => {
+      const list = panel.querySelector('.lib-list');
+      const {id, html} = event.detail;
+      list.querySelector('[data-id="' + id + '"]')?.remove();
+      const next = [...list.children].find(row => BigInt(row.dataset.id.slice(1)) < BigInt(id.slice(1)));
+      if (next) next.insertAdjacentHTML('beforebegin', html);
+      else list.insertAdjacentHTML('beforeend', html);
+      localizeDays(list.querySelector('[data-id="' + id + '"]'));
+      run();
+    });
     search.addEventListener('input', run);
     for (const select of filters) select.addEventListener('change', run);
     run();
@@ -2905,11 +2978,19 @@ const normalizeTopic = value => trimmed(value.replace(/[\p{White_Space}\u001c-\u
 """
 
 
+def nav_links(saved_href, current, served):
+    links = [("desk", "Desk", saved_href)]
+    if served:
+        links += [("watch", "Watch", "watch.html"), ("workers", "Workers", "workers.html")]
+    return "".join(f'<a href="{href}"{" aria-current=\"page\"" if key == current else ""}>{label}</a>'
+                   for key, label, href in links)
+
+
 def page_shell(title: str, site_title: str, body: str, *, served: bool, saved_name: str, interactive: bool = False,
                workers: bool = False, library: str = "", conversations: bool = False, filters: bool = False,
-               talking: bool = False, starting: bool = False, catch_up: bool = False) -> str:
+               talking: bool = False, starting: bool = False, current: str = "", watching: bool = False) -> str:
     saved_href = quote(saved_name, safe="")
-    opener = ('<button type="button" id="open-library" aria-haspopup="dialog" aria-controls="library">Open library</button>'
+    opener = ('<button type="button" id="open-library" aria-haspopup="dialog" aria-controls="library">Open Hold</button>'
               if library else "")
     links = (
         '<link rel="manifest" href="manifest.webmanifest">\n  <link rel="icon" href="icon.svg" type="image/svg+xml">\n'
@@ -2920,11 +3001,12 @@ def page_shell(title: str, site_title: str, body: str, *, served: bool, saved_na
         "  <meta name=\"viewport\" content=\"width=device-width, initial-scale=1\">\n"
         f"  {GENERATED_MARKER}\n  <title>{esc(title)}</title>\n  {links}<style>{PAGE_CSS}</style>\n</head>\n<body>\n"
         f'<header class="bar"><a class="mark" href="{saved_href}">{esc(site_title)}</a>'
-        f'<nav><a href="{saved_href}">Desk</a>{opener}</nav></header>\n'
+        f'<nav>{nav_links(saved_href, current, served)}{opener}</nav></header>\n'
         f"<main>\n{body}\n</main>\n{library}<script>{TIME_SCRIPT}{VIEWPORT_SCRIPT if interactive or library else ''}{QUESTION_SCRIPT if conversations else ''}"
         f"{CONVERSATION_TEXT_SCRIPT if library or talking or starting else ''}"
-        f"{ANSWER_SCRIPT if interactive else ''}{CONVERSATION_SCRIPT if talking else ''}{START_SCRIPT if starting else ''}"
-        f"{CATCH_UP_SCRIPT if catch_up else ''}{WORKERS_SCRIPT if workers else ''}{FILTER_SCRIPT if filters or library else ''}"
+        f"{ANSWER_SCRIPT if interactive else ''}{CONVERSATION_SCRIPT if talking else ''}{DESK_SCRIPT if starting else ''}"
+        f"{WORKER_SUMMARY_SCRIPT if workers or watching else ''}"
+        f"{WORKERS_SCRIPT if workers else ''}{WATCH_SCRIPT if watching else ''}{FILTER_SCRIPT if filters or library else ''}"
         f"{f'const libraryCaseFolds = {library_case_folds()};' + LIBRARY_SCRIPT if library else ''}</script>\n</body>\n</html>\n"
     )
 
@@ -2937,8 +3019,8 @@ def question_summary(item, *, replies=True) -> tuple[str, list[int], bool]:
     states = [part_record(item, n).get("state", "open") for n in question_parts(item)]
     open_parts = [n for n, state in enumerate(states, 1) if state == "open"]
     state = "Open" if open_parts else ("Closed" if all(s == "closed" for s in states) else "Answered")
-    if replies and (thread_unread(item, None) or any(thread_unread(item, n) for n in question_parts(item))):
-        state = "Replied"
+    if replies and unread_target(item):
+        state = "Replied"  # the internal name; the page shows UNREAD_REPLY
     pending = any(delivery_pending(r) for r in item.get("answers", {}).values())
     return state, open_parts, pending
 
@@ -2948,23 +3030,26 @@ def progress_text(item, summary):
     state, open_parts, _ = summary
     remaining = f"{len(open_parts)} of {len(question_parts(item))} open" if open_parts else ""
     if state == "Replied":
-        return f"Replied, {remaining}" if remaining else "Replied"
+        return f"{UNREAD_REPLY}, {remaining}" if remaining else UNREAD_REPLY
     return remaining or state
 
 
 def desk_row(item, summary, *, primary):
     state, open_parts, pending = summary
     href = item_page_name(item["id"])
-    if open_parts:
+    if state == "Replied":
+        href += f'#{unread_target(item)}'
+    elif open_parts:
         href += f'#{item["id"]}.{open_parts[0]}'
     title = esc(item["title"])
     project = esc(item["project"]) if item.get("project") else ""
     remaining = len(open_parts)
     count = f'{remaining} of {len(question_parts(item))} open' if remaining else "None open"
-    latest = ('<span class="badge">Replied</span>' if state == "Replied" else
+    latest = (f'<span class="badge">{UNREAD_REPLY}</span>' if state == "Replied" else
               "Asked" if remaining else esc(state))
     if pending:
-        latest += ' <span>Not delivered</span>'
+        failure = '<span>Not delivered</span>'
+        latest = failure if state == "Messaged" else f'{latest} {failure}'
     return (f'<tr class="work{' next' if primary else ''}"><th scope="row">'
             f'<a class="card-link" href="{href}"><span class="id">{item["id"]}</span> {title}</a></th>'
             f'<td class="project">{project}</td><td>{count}</td><td>{latest}</td></tr>')
@@ -3040,7 +3125,8 @@ def message_html(item, message, *, editable, message_number=None):
         controls = ('<div class="actions">'
                     f'<button type="button" data-retry-ask="{message["id"]}">'
                     f'{"Send message again" if item["kind"] == "conversation" else "Send ask again"}</button></div>')
-    identity = f' data-ask-id="{message["id"]}"' if you else f' data-reply-id="{message["id"]}"'
+    identity = (f' data-ask-id="{message["id"]}"' if you
+                else f' data-reply-id="{message["id"]}" id="reply-{message["id"]}" tabindex="-1"')
     reference = ""
     if message_number is not None:
         if you:
@@ -3117,7 +3203,7 @@ def item_conversation(item, ask_binding):
     if not thread:
         return ""
     unread = thread_unread(item, None)
-    badge = '<span class="badge">Replied</span>' if unread else '<span class="badge" hidden></span>'
+    badge = f'<span class="badge">{UNREAD_REPLY}</span>' if unread else '<span class="badge" hidden></span>'
     editor = queue_panel(target, ask_binding) if asking else ''
     return (f'<section id="{target}" class="work item-conversation" data-conversation aria-labelledby="item-conversation-title">'
             f'<div class="eyebrow">{badge}</div><h2 id="item-conversation-title">Discuss this set</h2>'
@@ -3130,7 +3216,7 @@ def conversation_page(item, ask_binding):
     editable = bool(ask_binding) and conversation_home_matches(item, ask_binding)
     thread = thread_html(item, None, editable=editable)
     unread = thread_unread(item, None)
-    badge = '<span class="badge">Replied</span>' if unread else '<span class="badge" hidden></span>'
+    badge = f'<span class="badge">{UNREAD_REPLY}</span>' if unread else '<span class="badge" hidden></span>'
     if editable:
         composer = (f'<div class="composer"><label for="message-{target}">Your message</label>'
                     f'<textarea id="message-{target}" maxlength="{TEXT_LIMIT}" rows="3" aria-describedby="error-{target}"></textarea>'
@@ -3183,6 +3269,8 @@ def question_form(item, served, *, ask_binding=None):
         record = part_record(item, number)
         status = record.get("state", "open")
         label = part_state(item, number, replies=served).capitalize()
+        if label == "Replied":
+            label = UNREAD_REPLY
         answer = record.get("answer", "")
         editable = served and status != "closed"
         notes = clarifications(item, number) if served else []
@@ -3270,11 +3358,11 @@ function expandAnswer(section) {
 function updateProgress() {
   const progress = document.querySelector('.progress');
   if (!progress) return;
-  const replied = [...replyStates.keys()].some(s => s.querySelector('.badge').textContent === 'Replied');
+  const replied = [...replyStates.keys()].some(s => s.querySelector('.badge').textContent === 'Unread reply');
   const remaining = sections.filter(s => s.dataset.state === 'open').length;
   const open = remaining ? remaining + ' of ' + sections.length + ' open' : '';
   const state = sections.every(s => s.dataset.state === 'closed') ? 'Closed' : 'Answered';
-  progress.textContent = replied ? ['Replied', open].filter(Boolean).join(', ') : (open || state);
+  progress.textContent = replied ? ['Unread reply', open].filter(Boolean).join(', ') : (open || state);
 }
 function reconcileReplies(section, snapshot = {}) {
   const states = replyStates.get(section);
@@ -3295,13 +3383,12 @@ function reconcileReplies(section, snapshot = {}) {
   const state = section.dataset.state;
   const badge = section.querySelector('.badge');
   const unread = section.classList.contains('conversation') ? visibleUnread : [...states.values()].includes(false);
-  badge.textContent = unread ? 'Replied' : state ? state[0].toUpperCase() + state.slice(1) : '';
+  badge.textContent = unread ? 'Unread reply' : state ? state[0].toUpperCase() + state.slice(1) : '';
   badge.hidden = !badge.textContent;
   if (unread) expandAnswer(section);
   updateProgress();
 }
-async function acknowledgeReplies(section) {
-  const shown = [...section.querySelectorAll('[data-reply-id][data-unread]')].map(reply => reply.dataset.replyId);
+async function acknowledgeReplies(section, shown) {
   for (let start = 0; start < shown.length; start += 1000) {
     const ids = shown.slice(start, start + 1000);
     try {
@@ -3315,6 +3402,7 @@ async function acknowledgeReplies(section) {
     }
   }
 }
+const unreadReplyIds = root => [...root.querySelectorAll('[data-reply-id][data-unread]')].map(reply => reply.dataset.replyId);
 const whole = document.querySelector('.item-conversation:not(.conversation)');
 let sending = false;
 let discussionRequest;
@@ -3395,12 +3483,24 @@ if (whole) {
     }
   }, 10000);
 }
+(() => {
+  const target = document.getElementById(location.hash.slice(1));
+  if (!target?.hasAttribute('data-reply-id')) return;
+  const section = target.closest('[data-conversation]');
+  expandAnswer(section);
+  const thread = target.closest('details.thread');
+  if (thread) thread.open = true;
+  const focusReply = () => setTimeout(() => target.focus(), 0);
+  if (document.readyState === 'complete') focusReply();
+  else addEventListener('load', focusReply, {once:true});
+  if (target.hasAttribute('data-unread')) acknowledgeReplies(section, [target.dataset.replyId]);
+})();
 document.addEventListener('click', event => {
   const summary = event.target.closest('.thread > summary');
   if (!summary || summary.parentElement.open || event.defaultPrevented) return;
   event.preventDefault();
   summary.parentElement.open = true;
-  acknowledgeReplies(summary.closest('[data-conversation]'));
+  acknowledgeReplies(summary.closest('[data-conversation]'), unreadReplyIds(summary.parentElement));
 });
 """
 
@@ -3427,11 +3527,7 @@ CONVERSATION_SCRIPT = talk_script(r"""
 (() => {
   const section = document.querySelector('.conversation');
   if (!section) return;
-  const refreshReplies = () => {
-    reconcileReplies(section);
-    acknowledgeReplies(section);
-  };
-  refreshReplies();
+  reconcileReplies(section);
   const field = section.querySelector('textarea');
   const button = section.querySelector('#send-message');
   if (!field || !button) return;
@@ -3461,7 +3557,7 @@ CONVERSATION_SCRIPT = talk_script(r"""
       if (outcome.ok) {
         messages.innerHTML = outcome.result.thread;
         localizeTimes(messages);
-        refreshReplies();
+        reconcileReplies(section);
         output.textContent = outcome.result.message;
         if (body.text !== undefined) field.value = '';
       } else {
@@ -3493,26 +3589,173 @@ CONVERSATION_SCRIPT = talk_script(r"""
 """)
 
 
-START_SCRIPT = talk_script(r"""
+DESK_SCRIPT = talk_script(r"""
 (() => {
-  const open = document.querySelector('#open-talk');
+  const tabs = [...document.querySelectorAll('.desk-tabs [role="tab"]')];
+  const panelOf = tab => document.getElementById(tab.getAttribute('aria-controls'));
+  const select = (tab, focus) => {
+    for (const other of tabs) {
+      const on = other === tab;
+      other.setAttribute('aria-selected', String(on));
+      other.tabIndex = on ? 0 : -1;
+      panelOf(other).hidden = !on;
+    }
+    if (focus) tab.focus();
+  };
+  for (const tab of tabs) {
+    tab.addEventListener('click', () => select(tab, false));
+    tab.addEventListener('keydown', event => {
+      const at = tabs.indexOf(tab);
+      const next = event.key === 'Home' ? tabs[0] : event.key === 'End' ? tabs[tabs.length - 1]
+        : event.key === 'ArrowRight' ? tabs[(at + 1) % tabs.length]
+        : event.key === 'ArrowLeft' ? tabs[(at + tabs.length - 1) % tabs.length] : null;
+      if (next) { event.preventDefault(); select(next, true); }
+    });
+  }
+  const startStatus = document.getElementById('desk-status');
+  const report = (target, panel, text, failed) => {
+    for (const node of panel.hidden ? [target, startStatus] : [target]) {
+      node.classList.toggle('failed', failed);
+      node.textContent = text;
+    }
+  };
+  const conversationPanel = document.getElementById('desk-panel-conversations');
+  const attentionPanel = document.getElementById('desk-panel-needs-you');
+  const attentionRows = attentionPanel.querySelector('tbody');
+  const attentionTable = attentionPanel.querySelector('.desk');
+  const attentionEmpty = attentionPanel.querySelector('.empty');
+  const attentionTab = document.getElementById('desk-tab-needs-you');
+  const count = attentionTab.querySelector('.tab-count');
+  const noticeButtons = () => [...attentionRows.querySelectorAll('button[data-read]')];
+  const readAll = attentionPanel.querySelector('[data-read-all]');
+  const syncAttention = () => {
+    const total = attentionRows.rows.length;
+    count.hidden = attentionTable.hidden = !total;
+    count.textContent = total || '';
+    attentionEmpty.hidden = Boolean(total);
+    readAll.hidden = noticeButtons().length < 2;
+  };
+  const updateAttention = (id, html) => {
+    const items = [...attentionRows.querySelectorAll('tr.work')];
+    const rowId = row => row.querySelector('.id').textContent;
+    const previous = items.find(row => rowId(row) === id);
+    const focused = previous?.contains(document.activeElement);
+    previous?.remove();
+    if (html) {
+      const next = items.find(row => row !== previous && BigInt(rowId(row).slice(1)) < BigInt(id.slice(1)));
+      if (next) next.insertAdjacentHTML('beforebegin', html);
+      else attentionRows.insertAdjacentHTML('beforeend', html);
+    }
+    syncAttention();
+    if (focused) {
+      const replacement = [...attentionRows.querySelectorAll('tr.work')].find(row => rowId(row) === id);
+      (replacement?.querySelector('.card-link') || attentionTab).focus();
+    }
+  };
+  attentionPanel.addEventListener('click', async event => {
+    const button = event.target.closest('button[data-read], button[data-read-all]');
+    if (!button || button.disabled) return;
+    const noticeStatus = button.nextElementSibling;
+    const noticeAnnouncement = document.getElementById('notice-announcement');
+    noticeStatus.textContent = '';
+    noticeAnnouncement.textContent = '';
+    const notices = noticeButtons();
+    const selected = button === readAll ? notices : [button];
+    const ids = selected.map(control => control.dataset.read);
+    const controls = [...notices, readAll];
+    const previousFocus = document.activeElement;
+    controls.forEach(control => { control.disabled = true; });
+    try {
+      const response = await fetch('catch-ups/read', {method:'POST', redirect:'error',
+        headers:{'Content-Type':'application/json'}, body:JSON.stringify({ids})});
+      if (response.status === 409) {
+        report(noticeStatus, attentionPanel, 'A notice may already be read. Reload the page when ready.', false);
+        return;
+      }
+      if (!response.ok) throw new Error('refused');
+      const {read} = await response.json();
+      if (!Array.isArray(read) || read.length !== ids.length || !ids.every((id, index) => read[index] === id)) {
+        throw new Error('Unconfirmed acknowledgment');
+      }
+      const focused = document.activeElement === document.body ? previousFocus : document.activeElement;
+      const hadFocus = attentionPanel.contains(focused);
+      selected.forEach(control => control.closest('tr').remove());
+      syncAttention();
+      report(noticeAnnouncement, attentionPanel, ids.length === 1 ? 'Notice marked read.' : 'Notices marked read.', false);
+      if (hadFocus && !attentionPanel.hidden && (!focused.isConnected || (focused === readAll && readAll.hidden))) {
+        attentionTab.focus();
+      }
+    } catch {
+      report(noticeStatus, attentionPanel, 'The notice could not be marked read. Try again.', true);
+    } finally {
+      controls.forEach(control => { control.disabled = false; });
+    }
+  });
+  const groups = {true: document.querySelector('#topics-pinned'), false: document.querySelector('#topics-recent')};
+  const none = document.getElementById('no-conversations');
+  const rowsOf = group => [...group.querySelectorAll('.topic')];
+  const syncGroups = () => {
+    for (const group of Object.values(groups)) group.hidden = !rowsOf(group).length;
+    none.hidden = Boolean(document.querySelector('.topic'));
+  };
+  const place = row => {
+    const list = groups[row.dataset.pinned === 'true'].querySelector('.topic-list');
+    const {activity, id} = row.dataset;
+    const next = rowsOf(list.parentElement).find(other => other !== row && (
+      other.dataset.activity < activity ||
+      (other.dataset.activity === activity && BigInt(other.dataset.id.slice(1)) < BigInt(id.slice(1)))
+    ));
+    list.insertBefore(row, next || null);
+    syncGroups();
+  };
+  conversationPanel.addEventListener('click', async event => {
+    const button = event.target.closest('button.pin');
+    if (!button || button.disabled) return;
+    const row = button.closest('.topic');
+    const pinStatus = button.nextElementSibling;
+    const pinned = row.dataset.pinned !== 'true';
+    const hadFocus = document.activeElement === button;
+    button.disabled = true;
+    let saved = false;
+    try {
+      saved = (await postJson('pins', {part: row.dataset.id, pinned})).ok;
+    } catch {
+      saved = false;
+    }
+    const focused = document.activeElement;
+    button.disabled = false;
+    if (saved) {
+      row.dataset.pinned = String(pinned);
+      const verb = pinned ? 'Unpin' : 'Pin';
+      button.textContent = verb;
+      button.setAttribute('aria-label', verb + ' ' + button.dataset.title);
+      place(row);
+      report(pinStatus, conversationPanel, button.dataset.title + (pinned ? ' is pinned.' : ' is unpinned.'), false);
+    } else {
+      report(pinStatus, conversationPanel, 'Quarterdeck could not save the pin for ' + button.dataset.title + '. Try again.', true);
+    }
+    if (!conversationPanel.hidden && (focused === button || (hadFocus && focused === document.body))) button.focus();
+  });
+
   const form = document.querySelector('#talk-form');
-  if (!open || !form) return;
+  if (!form) return;
   const topic = form.querySelector('#talk-topic');
   const message = form.querySelector('#talk-message');
   const button = form.querySelector('button[type="submit"]');
-  const output = form.querySelector('output');
-  const error = form.querySelector('#talk-error');
   const drafts = new Map();
   const refresh = () => {
     button.disabled = !(normalizeTopic(topic.value) && trimmed(message.value));
   };
-  open.addEventListener('click', () => {
-    form.hidden = !form.hidden;
-    open.setAttribute('aria-expanded', String(!form.hidden));
-    if (!form.hidden) topic.focus();
-  });
-  form.addEventListener('input', () => { error.hidden = true; refresh(); });
+  const show = html => {
+    const holder = document.createElement('template');
+    holder.innerHTML = html;
+    const row = holder.content.firstElementChild;
+    document.querySelector('.topic[data-id="' + row.dataset.id + '"]')?.remove();
+    localizeDays(row);
+    place(row);
+    return row;
+  };
+  form.addEventListener('input', refresh);
   form.addEventListener('submit', async event => {
     event.preventDefault();
     const title = normalizeTopic(topic.value), text = trimmed(message.value);
@@ -3522,27 +3765,65 @@ START_SCRIPT = talk_script(r"""
     drafts.set(key, id);
     const controls = form.querySelectorAll('button,input,textarea');
     controls.forEach(c => c.disabled = true);
-    output.textContent = 'Starting conversation';
+    startStatus.classList.remove('failed');
+    startStatus.textContent = 'Starting conversation';
+    let started = null;
     try {
       const outcome = await postJson('conversations', {id, title, text, home:button.dataset.home});
       if (outcome.ok || outcome.saved === false) drafts.delete(key);
       if (outcome.ok) {
-        output.textContent = outcome.result.message;
-        location.href = outcome.result.href;
-        return;
+        startStatus.textContent = outcome.result.message;
+        started = show(outcome.result.row);
+        updateAttention(started.dataset.id, outcome.result.attention);
+        document.getElementById('panel-conversations').dispatchEvent(new CustomEvent('conversation-saved', {
+          detail: {id: started.dataset.id, html: outcome.result.hold}
+        }));
+        topic.value = '';
+        message.value = '';
+      } else {
+        startStatus.classList.add('failed');
+        startStatus.textContent = outcome.message;
       }
-      output.textContent = '';
-      error.textContent = outcome.message;
-      error.hidden = false;
     } catch {
-      output.textContent = SENDING_FAILED();
+      startStatus.classList.add('failed');
+      startStatus.textContent = SENDING_FAILED();
     }
     controls.forEach(c => c.disabled = false);
     refresh();
+    if (!conversationPanel.hidden) started?.querySelector('.topic-title').focus();
   });
   refresh();
 })();
 """)
+
+
+WATCH_SCRIPT = r"""
+(() => {
+  const status = document.getElementById('watch-work-status');
+  const list = document.getElementById('watch-work-list');
+  if (!status || !list) return;
+  const failed = () => {
+    status.className = 'meta failed';
+    status.textContent = 'Current work could not be loaded. Open Workers to check it.';
+  };
+  fetch('workers-saved.json', {cache: 'no-store', headers: {Accept: 'application/json'}}).then(response => {
+    if (!response.ok) throw new Error('worker read failed');
+    return response.json();
+  }).then(({snapshot}) => {
+    if (!snapshot) {
+      status.textContent = 'Workers have not been checked yet. Open Workers to check them.';
+      return;
+    }
+    const rows = [...snapshot.workers, ...snapshot.second_mates];
+    for (const worker of rows) list.append(workerSummary(worker));
+    list.hidden = !rows.length;
+    status.textContent = rows.length ? 'Worker reading taken ' : 'No workers are running. Reading taken ';
+    const time = make('time', '', localTime(snapshot.observed_at));
+    time.dateTime = snapshot.observed_at;
+    status.append(time);
+  }).catch(failed);
+})();
+"""
 
 
 ANSWER_SCRIPT = r"""
@@ -3837,7 +4118,7 @@ if (send) {
     }
   });
   function updateFold(section, record) {
-    if (record.state !== 'answered' || record.delivery !== 'sent' || section.querySelector('.badge').textContent === 'Replied') {
+    if (record.state !== 'answered' || record.delivery !== 'sent' || section.querySelector('.badge').textContent === 'Unread reply') {
       expandAnswer(section);
       return;
     }
@@ -4054,7 +4335,9 @@ def reference_row(item, *, served):
 
 def library_row(item, *, served):
     item_id, kind = item["id"], item["kind"]
-    title = f'<a class="lib-title" href="{item_page_name(item_id)}">{esc(item["title"])}</a>'
+    target = unread_target(item) if served and kind in ("questions", "conversation") else None
+    href = item_page_name(item_id) + (f"#{target}" if target else "")
+    title = f'<a class="lib-title" href="{href}">{esc(item["title"])}</a>'
     project = f'<span class="project-name">{esc(item["project"])}</span>' if item.get("project") else ""
     tags = tag_labels(all_tags(item))
     attributes = filter_data(item)
@@ -4074,10 +4357,10 @@ def library_row(item, *, served):
         attributes += f' data-id="{item_id}" data-search="{esc(" ".join(search).casefold())}"'
     if kind == "questions":
         state, _, _ = question_summary(item, replies=served)
-        label = '<span class="badge">Replied</span>' if state == "Replied" else state
+        label = f'<span class="badge">{UNREAD_REPLY}</span>' if state == "Replied" else state
         detail = f'<p class="meta">{label}</p>'
     else:
-        replied = '<span class="badge">Replied</span>' if unread else ""
+        replied = f'<span class="badge">{UNREAD_REPLY}</span>' if unread else ""
         detail = f'<p class="meta"><span>{KIND_LABELS[kind]}</span>{replied}{day_time(item["saved_at"])}</p>'
     return (f'<li class="lib-item"{attributes}>'
             f'<div class="lib-head"><span class="id">{item_id}</span>'
@@ -4089,7 +4372,7 @@ def library_panel(name: str, items: list[dict[str, object]], empty: str, *, serv
     filters = filter_bar(list_id, items, restorable=served)
     row = reference_row if name == "references" else library_row
     rows = "".join(row(item, served=served) for item in items)
-    listing = f'<ul class="lib-list" id="{list_id}">{rows}</ul>' if rows else ""
+    listing = f'<ul class="lib-list" id="{list_id}">{rows}</ul>' if rows or (served and name == "conversations") else ""
     if not served:
         return (filters + listing + (no_match(list_id) if filters else "")) if rows else f'<p class="empty">{esc(empty)}</p>'
     return (f'<div class="lib-tools"><label for="search-{name}">Search</label>'
@@ -4113,7 +4396,7 @@ def library_dialog(data: dict[str, object]) -> str:
     references, answered = library_lists(data, served=True)
     items = [item for item in newest_first(data["items"]) if item["kind"] == "conversation"]  # type: ignore[arg-type]
     conversations = library_panel("conversations", items,
-                                  "No conversations yet. Talk to Firstmate from the Desk to start one.", served=True)
+                                  "No conversations yet. Start one from the Desk.", served=True)
     names = (("references", "References"), ("answered", "Answered"), ("conversations", "Conversations"))
     tabs = "".join(f'<button type="button" role="tab" id="tab-{name}" aria-controls="panel-{name}" '
                    f'aria-selected="{"true" if number == 0 else "false"}" tabindex="{0 if number == 0 else -1}">{label}</button>'
@@ -4121,44 +4404,15 @@ def library_dialog(data: dict[str, object]) -> str:
     panels = "".join(f'<section class="lib-panel" role="tabpanel" id="panel-{name}" aria-labelledby="tab-{name}"'
                      f'{"" if number == 0 else " hidden"}>{content}</section>'
                      for number, (name, content) in enumerate(zip((n for n, _ in names), (references, answered, conversations))))
-    return (f'<dialog id="library" class="library" aria-label="Library"><div class="lib-top">'
-            f'<div role="tablist" aria-label="Library">{tabs}</div><button type="button" data-close>Close library</button></div>'
+    return (f'<dialog id="library" class="library" aria-label="Hold"><div class="lib-top">'
+            f'<div role="tablist" aria-label="Hold">{tabs}</div><button type="button" data-close>Close Hold</button></div>'
             f'{panels}</dialog>\n')
 
 
 def desk_item(item: dict[str, object]) -> bool:
     """A question item stays on the Desk while a question is open or a non-closed question has pending delivery."""
-    _, open_parts, pending = question_summary(item)
+    _, open_parts, pending = question_summary(item, replies=False)
     return bool(open_parts or pending)
-
-
-def catch_up_note(items_by_id, notice):
-    links = []
-    item = items_by_id.get(notice.get("item"))
-    if item is not None:
-        links.append(f'<a href="{item_page_name(str(item["id"]))}">{esc(item["title"])}</a>')
-    if "url" in notice:
-        links.append(f'<a href="{esc(notice["url"])}" rel="noopener noreferrer">{esc(notice["link_text"])}</a>')
-    project = f' <span class="project-name">{esc(notice["project"])}</span>' if "project" in notice else ""
-    button = (f'<button type="button" data-read="{esc(notice["id"])}" aria-label="Mark read, {esc(notice["title"])}">'
-              "Mark read</button>")
-    return (f'<li class="note" data-id="{esc(notice["id"])}"><div class="note-text"><h3>{esc(notice["title"])}{project}</h3>'
-            f'<p>{esc(notice["summary"])}</p><p class="meta">{"".join(f"<span>{link}</span>" for link in links)}'
-            f'{day_time(notice["saved_at"])}</p></div>{button}</li>')
-
-
-def catch_up_section(data: dict[str, object]) -> str:
-    """Unread notices, newest first. The section is absent when none is unread."""
-    notices = unread_catch_ups(data)
-    if not notices:
-        return ""
-    items_by_id = {item["id"]: item for item in data["items"]}  # type: ignore[union-attr]
-    many = len(notices) > 1
-    count = f' <span data-count>({len(notices)})</span>' if many else ""
-    read_all = '<button type="button" data-read-all>Mark all read</button>' if many else ""
-    status = '<p class="meta failed" role="status" data-catch-up-status></p>'
-    return (f'<section class="catch-up"><div class="section-head"><h2>Catch-up{count}</h2>{read_all}</div>{status}'
-            f'<ul class="notes">{"".join(catch_up_note(items_by_id, notice) for notice in notices)}</ul></section>')
 
 
 def workers_section(ready: bool) -> str:
@@ -4174,58 +4428,213 @@ def workers_page(site_title: str, *, ready: bool) -> str:
     """The Workers page: it reads the saved reading and the home only from its own script."""
     return page_shell(f"Workers · {site_title}", site_title,
                       workers_section(ready),
-                      served=True, saved_name="index.html", workers=ready)
+                      served=True, saved_name="index.html", workers=ready, current="workers")
 
 
 def talk_form(binding):
-    return ('<form id="talk-form" class="talk" hidden novalidate><label for="talk-topic">Topic</label>'
-            f'<input id="talk-topic" maxlength="{TITLE_LIMIT}" autocomplete="off">'
-            f'<label for="talk-message">Message</label><textarea id="talk-message" maxlength="{TEXT_LIMIT}" rows="3"></textarea>'
-            f'<p id="talk-error" hidden></p><div class="actions"><button type="submit" class="primary" disabled '
-            f'data-home="{esc(binding)}">Start conversation</button><output role="status" tabindex="0"></output></div></form>')
+    return ('<form id="talk-form" class="talk" novalidate aria-label="New conversation">'
+            '<div class="talk-field"><label for="talk-topic">Topic</label>'
+            f'<input id="talk-topic" maxlength="{TITLE_LIMIT}" autocomplete="off"></div>'
+            '<div class="talk-field"><label for="talk-message">Message</label>'
+            f'<textarea id="talk-message" maxlength="{TEXT_LIMIT}" rows="2"></textarea></div>'
+            '<div class="actions"><button type="submit" class="primary" disabled '
+            f'data-home="{esc(binding)}">Start conversation</button></div></form>')
+
+
+PREVIEW_LIMIT = 200
+
+
+def conversation_row(item):
+    latest = part_thread(item, None)[-1]
+    target = unread_target(item)
+    href = item_page_name(item["id"]) + (f'#{target}' if target else "")
+    status = f'<span class="badge">{UNREAD_REPLY}</span>' if target else ""
+    if has_pending_ask(item):
+        status += '<span>Not delivered</span>'
+    if not status:
+        status = '<span>Messaged</span>' if latest["author"] == "you" else "<span>Replied</span>"
+    activity = conversation_activity(item).isoformat(timespec="microseconds")
+    project = f'<span class="project-name">{esc(item["project"])}</span>' if item.get("project") else ""
+    preview = " ".join(str(latest["text"]).split())[:PREVIEW_LIMIT]
+    pinned = is_pinned(item)
+    verb = "Unpin" if pinned else "Pin"
+    title = esc(item["title"])
+    return (f'<li class="topic" data-id="{item["id"]}" data-activity="{activity}" data-pinned="{"true" if pinned else "false"}">'
+            f'<div class="topic-main"><a class="topic-title" href="{href}">{title}</a>'
+            f'<p class="topic-latest">{esc(preview)}</p>'
+            f'<p class="meta topic-meta">{project}{status}{day_time(latest["at"])}</p></div>'
+            f'<button type="button" class="pin" data-title="{title}" aria-label="{verb} {title}">{verb}</button>'
+            '<p class="meta desk-feedback" role="status"></p></li>')
+
+
+def conversation_groups(items):
+    """The Pinned and Recent groups. Each is a list kept in newest-activity order; the script moves rows between them."""
+    ordered = by_activity(items)
+    groups = []
+    for name, heading, pinned in (("pinned", "Pinned", True), ("recent", "Recent conversations", False)):
+        rows = "".join(conversation_row(item) for item in ordered if is_pinned(item) == pinned)
+        groups.append(f'<section class="topics" id="topics-{name}"{"" if rows else " hidden"}><h2>{heading}</h2>'
+                      f'<ul class="topic-list">{rows}</ul></section>')
+    return "".join(groups)
+
+
+def conversations_panel(items, ask_binding):
+    form = talk_form(ask_binding) if ask_binding else ""
+    empty = (f'<p class="empty" id="no-conversations"{" hidden" if items else ""}>'
+             'No conversations yet. A topic you start with Firstmate shows here.</p>')
+    return f'{form}{empty}{conversation_groups(items)}'
+
+
+def catch_up_row(notice, items_by_id):
+    title = esc(notice["title"])
+    project = esc(notice.get("project", ""))
+    phone_project = f'<p class="meta notice-project">{project}</p>' if project else ""
+    links = []
+    item = items_by_id.get(notice.get("item"))
+    if item is not None:
+        links.append(f'<a href="{item_page_name(item["id"])}">{esc(item["title"])}</a>')
+    if "url" in notice:
+        links.append(f'<a href="{esc(notice["url"])}" rel="noopener noreferrer">{esc(notice["link_text"])}</a>')
+    return (f'<tr class="notice"><th scope="row"><span class="id">{notice["id"]}</span> {title}'
+            f'{phone_project}<p>{esc(notice["summary"])}</p>{"".join(links)}</th>'
+            f'<td class="project">{project}</td><td></td><td>{day_time(notice["saved_at"])}<br>'
+            f'<button type="button" data-read="{notice["id"]}" aria-label="Mark read, {title}">Mark read</button>'
+            '<p class="meta desk-feedback failed" role="status"></p></td></tr>')
+
+
+def desk_table(attention, notice_rows=""):
+    primary = next((item for item, summary in attention if summary[1]), None)
+    rows = "".join(desk_row(item, summary, primary=item is primary) for item, summary in attention)
+    hidden = "" if rows or notice_rows else " hidden"
+    return (f'<div class="desk"{hidden}><table><caption class="sr">Items that need you</caption><thead><tr>'
+            '<th scope="col">Item</th><th scope="col" class="project">Project</th>'
+            f'<th scope="col">Questions</th><th scope="col">Latest</th></tr></thead><tbody>{notice_rows}{rows}</tbody></table></div>')
+
+
+def needs_you_panel(attention, notices, items_by_id):
+    rows = "".join(catch_up_row(notice, items_by_id) for notice in notices)
+    hide_bulk = " hidden" if len(notices) < 2 else ""
+    hide_empty = " hidden" if attention or notices else ""
+    return (f'<button type="button" data-read-all{hide_bulk}>Mark all notices read</button>'
+            '<p class="meta desk-feedback failed" role="status"></p>'
+            '<p class="sr" id="notice-announcement" role="status"></p>'
+            f'{desk_table(attention, rows)}'
+            f'<p class="empty"{hide_empty}>Nothing needs you. Questions, unread replies, failed deliveries and notices show here.</p>')
+
+
+def desk_tabs(conversations, attention, total):
+    hidden = "" if total else " hidden"
+    count = f' <span class="tab-count"{hidden}>{total or ""}</span>'
+    panels = (("conversations", "Conversations", conversations),
+              ("needs-you", "Needs you", attention))
+    tabs = "".join(f'<button type="button" role="tab" id="desk-tab-{name}" aria-controls="desk-panel-{name}" '
+                   f'aria-selected="{"true" if number == 0 else "false"}" tabindex="{0 if number == 0 else -1}">'
+                   f'{label}{count if number else ""}</button>'
+                   for number, (name, label, _) in enumerate(panels))
+    body = "".join(f'<section class="desk-panel" role="tabpanel" id="desk-panel-{name}" aria-labelledby="desk-tab-{name}"'
+                   f'{"" if number == 0 else " hidden"}>{content}</section>'
+                   for number, (name, _, content) in enumerate(panels))
+    return (f'<div class="desk-tabs" role="tablist" aria-label="Desk">{tabs}</div>'
+            '<p class="meta desk-feedback" id="desk-status" role="status"></p>'
+            f'{body}')
+
+
+def latest_unanswered(thread):
+    answered = {message["ask"] for message in thread if message["author"] == "firstmate" and "ask" in message}
+    pending = (message for message in thread if message["author"] == "you" and message["delivery"] == "sent"
+               and message["id"] not in answered)
+    return max(pending, key=lambda message: parse_utc(message["at"]), default=None)
+
+
+def watch_requests(data):
+    """Items where Firstmate has a delivered message or ask it has not replied to yet, newest request first."""
+    rows = []
+    for item in data["items"]:
+        if item["kind"] == "conversation":
+            thread = part_thread(item, None)
+            last_update = max((index for index, message in enumerate(thread)
+                               if message["author"] == "firstmate" and "ask" not in message), default=-1)
+            waiting = latest_unanswered(thread[last_update + 1:])
+            if waiting:
+                rows.append((item, "Messaged", waiting["at"], None))
+        elif item["kind"] == "questions":
+            waiting = []
+            for key, thread in item.get("conversation", {}).items():
+                latest = latest_unanswered(thread)
+                if latest:
+                    waiting.append((parse_utc(latest["at"]), latest["at"], key))
+            if waiting:
+                _, at, key = max(waiting)
+                rows.append((item, "Asked", at, item["id"] if key == "item" else f'{item["id"]}.{key}'))
+    return sorted(rows, key=lambda row: (parse_utc(row[2]), int(row[0]["id"][1:])), reverse=True)
+
+
+def watch_page(data, site_title, *, workers_ready):
+    rows = []
+    for item, status, at, target in watch_requests(data):
+        href = item_page_name(item["id"]) + (f"#{target}" if target else "")
+        project = esc(item["project"]) if item.get("project") else ""
+        rows.append(f'<tr><th scope="row"><a href="{href}"><span class="id">{item["id"]}</span> {esc(item["title"])}</a></th>'
+                    f'<td class="project">{project}</td><td>{status}</td><td>{day_time(at)}</td></tr>')
+    if rows:
+        waiting = ('<div class="desk"><table><caption class="sr">Requests Firstmate has not replied to, newest first</caption>'
+                   '<thead><tr><th scope="col">Item</th><th scope="col" class="project">Project</th>'
+                   '<th scope="col">Latest</th><th scope="col">Sent</th></tr></thead>'
+                   f'<tbody>{"".join(rows)}</tbody></table></div>')
+    else:
+        waiting = '<p class="empty">Firstmate owes you nothing. A message or question it has yet to reply to shows here.</p>'
+    if workers_ready:
+        work = ('<div id="watch-work"><p class="meta" id="watch-work-status" role="status">Loading current work</p>'
+                '<ul class="roster" id="watch-work-list" hidden></ul></div>')
+    else:
+        work = '<p class="empty">Current work shows here once firstmate_home names a Firstmate home.</p>'
+    body = ('<h1>Watch</h1><section class="page-section" aria-labelledby="waiting-title"><h2 id="waiting-title">Waiting on Firstmate</h2>'
+            f'{waiting}</section><section class="page-section" aria-labelledby="work-title"><h2 id="work-title">Current work</h2>'
+            f'{work}<p class="workers-link"><a href="workers.html">Workers</a></p></section>')
+    return page_shell(f"Watch · {site_title}", site_title, body, served=True, saved_name="index.html",
+                      current="watch", watching=workers_ready)
+
+
+def attention_summary(item, *, served):
+    kind = item["kind"]
+    if kind == "questions":
+        state, open_parts, pending = question_summary(item, replies=served)
+    elif served and kind == "conversation":
+        state, open_parts, pending = ("Replied" if thread_unread(item, None) else "Messaged"), [], False
+    else:
+        return None
+    pending = pending or (served and has_pending_ask(item))
+    return (state, open_parts, pending) if open_parts or pending or state == "Replied" else None
 
 
 def list_page(data: dict[str, object], site_title: str, *, served: bool, saved_name: str = "index.html",
-              ask_binding: str | None = None, notices: str = "") -> str:
+              ask_binding: str | None = None) -> str:
     items = newest_first(data["items"])  # type: ignore[arg-type]
-    attention = []
-    for item in items:
-        if item["kind"] == "questions" and desk_item(item):
-            summary = question_summary(item, replies=served)
-            attention.append((item, summary))
-        elif served and item["kind"] == "conversation" and thread_unread(item, None):
-            attention.append((item, ("Replied", [], False)))
-    primary = next((item for item, summary in attention if summary[1]), None)
-
-    def desk() -> str:
-        rows = "".join(desk_row(item, summary, primary=item is primary) for item, summary in attention)
-        return ('<div class="desk"><table><caption class="sr">Items that need you, newest first</caption><thead><tr>'
-                '<th scope="col">Item</th><th scope="col" class="project">Project</th>'
-                f'<th scope="col">Questions</th><th scope="col">Latest</th></tr></thead><tbody>{rows}</tbody></table></div>')
-
+    empty = "Nothing is saved yet. Ask Firstmate to send something to Quarterdeck, such as a link, a list or open questions."
+    attention = [(item, summary) for item in items if (summary := attention_summary(item, served=served))]
+    if served:
+        conversations = [item for item in items if item["kind"] == "conversation"]
+        notices = unread_catch_ups(data)
+        body = "<h1>Desk</h1>" + desk_tabs(
+            conversations_panel(conversations, ask_binding),
+            needs_you_panel(attention, notices, {item["id"]: item for item in items}),
+            len(attention) + len(notices),
+        )
+        return page_shell(site_title, site_title, body, served=True, saved_name=saved_name,
+                          library=library_dialog(data), current="desk", starting=True)
     heading = "<h1>Desk</h1>"
-    if served and ask_binding:
-        heading = ('<div class="page-head"><h1>Desk</h1><button type="button" id="open-talk" aria-expanded="false" '
-                   'aria-controls="talk-form">Talk to Firstmate</button></div>' + talk_form(ask_binding))
-    body = heading + notices
     if attention:
-        body += desk()
+        body = heading + desk_table(attention)
+    elif not items:
+        body = f'{heading}<p class="empty">{esc(empty)}</p>'
     else:
-        empty = ("Nothing is on your Desk. A question that needs an answer shows here." if items else
-                 "Nothing is saved yet. Ask Firstmate to send something to Quarterdeck, such as a link, a list or open questions.")
-        body += f'<p class="empty">{esc(empty)}</p>'
-    if served:
-        body += '<p class="workers-link"><a href="workers.html">Workers</a></p>'
-    library = ""
-    if served:
-        library = library_dialog(data)
-    elif items:
+        body = f'{heading}<p class="empty">Nothing is on your Desk. A question that needs an answer shows here.</p>'
+    if items:
         references, answered = library_lists(data, served=False)
         body += (f'<section class="page-section"><h2>References</h2>{references}</section>'
                  f'<section class="page-section"><h2>Answered</h2>{answered}</section>')
-    return page_shell(site_title, site_title, body, served=served, saved_name=saved_name,
-                      library=library, filters=bool(items) and not served,
-                      starting=served and bool(ask_binding), catch_up=bool(notices))
+    return page_shell(site_title, site_title, body, served=False, saved_name=saved_name,
+                      filters=bool(items))
 
 
 def item_body_html(item: dict[str, object]) -> str:
@@ -4692,13 +5101,17 @@ def make_handler(site_title: str, base_path: str = "", store: Path | None = None
                 return
             picture = IMAGE_URL_RE.fullmatch(name)
             discussion = re.fullmatch(r"(q[1-9][0-9]*)[.]discussion[.]json", name)
-            if name != "index.html" and not picture and not discussion and not ITEM_PAGE_RE.fullmatch(name):
+            if name not in ("index.html", "watch.html") and not picture and not discussion and not ITEM_PAGE_RE.fullmatch(name):
                 self.send_text(404, "Not found\n")
                 return
             try:
                 data = read_store(store or store_path())
             except ValueError:
                 self.send_text(500, "Quarterdeck could not read its item store\n")
+                return
+            if name == "watch.html":
+                self.send_text(200, watch_page(data, site_title, workers_ready=workers_home is not None),
+                               "text/html; charset=utf-8")
                 return
             if picture:
                 self.send_image(data, *picture.groups())
@@ -4709,10 +5122,9 @@ def make_handler(site_title: str, base_path: str = "", store: Path | None = None
                 except (OSError, ValueError) as exc:  # a visit that cannot be logged must never stop the page
                     print(f"quarterdeck: could not log the visit: {exc}", file=sys.stderr, flush=True)
                 _, ask_binding = ask_destination(ask_home, require_directory=True)
-                notices = catch_up_section(data)
-                self.send_text(200, list_page(data, site_title, served=True, ask_binding=ask_binding, notices=notices),
+                self.send_text(200, list_page(data, site_title, served=True, ask_binding=ask_binding),
                                "text/html; charset=utf-8",
-                               prevent_framing=bool(ask_binding) or bool(notices))
+                               prevent_framing=True)
                 return
             try:
                 item = find_item(data, discussion[1] if discussion else name.removesuffix(".html"))
@@ -4738,6 +5150,7 @@ def make_handler(site_title: str, base_path: str = "", store: Path | None = None
         def do_POST(self) -> None:  # noqa: N802 - http.server naming
             endpoint = self.path.removeprefix(base_path)
             subjects = {"/answers": "answer", "/asks": "ask", "/conversations": "conversation", "/replies/read": "reply acknowledgment",
+                        "/pins": "pin",
                         "/catch-ups/read": "catch-up read"}
             if not self.path.startswith(base_path) or endpoint not in subjects:
                 self.send_text(405, "Use the question page.")
@@ -4773,6 +5186,8 @@ def make_handler(site_title: str, base_path: str = "", store: Path | None = None
                     record = ask_message(active_store, ask_path, ask_binding, payload, home_available=home_available)
                 elif endpoint == "/conversations":
                     record = start_conversation(active_store, ask_path, ask_binding, payload)
+                elif endpoint == "/pins":
+                    record = pin_conversation(active_store, payload)
                 elif endpoint == "/catch-ups/read":
                     if not isinstance(payload, dict) or set(payload) != {"ids"}:
                         raise ValueError("Invalid catch-up read.")
@@ -4801,7 +5216,8 @@ def make_handler(site_title: str, base_path: str = "", store: Path | None = None
             except (OSError, StoreReadError):
                 self.send_text(500, f"Could not save the {subject}.")
             except (ValueError, RecursionError):
-                self.send_text(400, f"Check the question and {subject}.")
+                self.send_text(400, f"Check the conversation and {subject}." if endpoint == "/pins"
+                               else f"Check the question and {subject}.")
             else:
                 self.send_text(200, json.dumps(record), "application/json")
 
@@ -4864,8 +5280,8 @@ def serve(args: argparse.Namespace) -> int:
     exposed = [host for host in bind_hosts(args) if not is_loopback(host)]
     if exposed:
         print(f"quarterdeck: warning: {', '.join(exposed)} is not a loopback address; anyone who can reach this port can "
-              "read saved items, answers, conversations, images, and unread Catch-up notice titles, summaries, links "
-              "and projects. They can submit answers, acknowledge replies, and mark Catch-up notices read. "
+              "read saved items, answers, conversations, images, and unread Catch-up notices. They can submit answers, pin topics, acknowledge "
+              "replies, and mark Catch-up notices read by ID. "
               "With firstmate_home set, they can read or check the worker and second mate roster, "
               "send asks, start conversations and send messages.",
               file=sys.stderr, flush=True)
@@ -4945,8 +5361,8 @@ def service(args: argparse.Namespace) -> int:
     exposed = [host for host in bind_hosts(args) if not is_loopback(host)]
     if exposed:
         print(f"quarterdeck: warning: {', '.join(exposed)} is not a loopback address; anyone who can reach the port can "
-              "read your saved items and unread Catch-up notice titles, summaries, links and projects. They can send "
-              "answers and mark Catch-up notices read as the owner.", file=sys.stderr)
+              "read saved items and unread Catch-up notices. They can send answers and mark Catch-up notices read by ID as the owner.",
+              file=sys.stderr)
     return 0
 
 
@@ -5134,7 +5550,7 @@ def make_parser() -> argparse.ArgumentParser:
     reply = command("reply", "add Firstmate's reply to an ask or a conversation message",
                     "Add Firstmate's reply under an ask on a question item (Q7) or one question (Q7.1), or under the owner's "
                     "message in any conversation. For a note that begins CONVERSATION, use its item ID (such as Q12) and message ID. "
-                    "The reply shows as Replied until the owner opens it. A reply leaves answers "
+                    "The reply shows as Unread reply until the owner opens it. A reply leaves answers "
                     "and states intact. Pair each --link-text with a --url and each --image with an --alt, in the order given.", reply_item)
     reply.add_argument("id", help="item or question ID, such as Q7 or Q7.1; a conversation's item ID, such as Q12")
     reply.add_argument("--ask", required=True, metavar="ID", help="the ask or message ID from the inbox note")
@@ -5147,7 +5563,7 @@ def make_parser() -> argparse.ArgumentParser:
 
     post = command("post", "post Firstmate's own update on a conversation",
                    "Add an update from Firstmate to a conversation, with no ask to answer. It shows in time order as a "
-                   "Firstmate update and as Replied until the owner opens it. Sends no inbox note. Pair each --link-text "
+                   "Firstmate update and as Unread reply until the owner opens it. Sends no inbox note. Pair each --link-text "
                    "with a --url and each --image with an --alt, in the order given.", post_update)
     post.add_argument("id", help="a conversation's item ID, such as Q12")
     post.add_argument("--text", required=True, help="the message")
@@ -5155,7 +5571,7 @@ def make_parser() -> argparse.ArgumentParser:
 
     converse_cmd = command("converse", "open a conversation in Firstmate's name and print its ID",
                            "Open a conversation with a title and a first message from Firstmate, shown as a Firstmate update "
-                           "and as Replied until the owner opens it. Sends no inbox note; the owner and Firstmate continue "
+                           "and as Unread reply until the owner opens it. Sends no inbox note; the owner and Firstmate continue "
                            "it as any conversation. Pair each --link-text with a --url and each --image with an --alt.", converse)
     converse_cmd.add_argument("--title", required=True, help="a short topic that says what the conversation is about")
     converse_cmd.add_argument("--config", type=Path, help="use the same JSON config file as serve")
@@ -5187,8 +5603,8 @@ def make_parser() -> argparse.ArgumentParser:
                        help="print structured counts, including the off-Desk total, and median waits in seconds")
 
     catch_up = command("catch-up", "save and read catch-up notices",
-                       "Short notices Firstmate saves when finished work is ready. Unread notices show on the Desk above the "
-                       "questions. A read notice leaves the Desk. After catch_up_days days (default "
+                       "Short notices Firstmate saves when finished work is ready. List unread notices with catch-up list. "
+                       "After a notice has been read for catch_up_days days (default "
                        f"{CATCH_UP_DAYS}), the next save or mark-read removes it. Quarterdeck never saves one by itself.",
                        None)
     catch_up_actions = catch_up.add_subparsers(dest="catch_up_action", required=True)
@@ -5205,7 +5621,7 @@ def make_parser() -> argparse.ArgumentParser:
                                                 description="List unread notices, newest first.")
     catch_up_list.set_defaults(handler=list_catch_ups)
     catch_up_read = catch_up_actions.add_parser("read", help="mark notices read",
-                                                description="Mark notices read. A read notice leaves the Desk at once.")
+                                                description="Print notice details, then mark the notices read.")
     catch_up_read.set_defaults(handler=read_catch_up)
     catch_up_read.add_argument("ids", nargs="*", metavar="ID", help="notice IDs, such as C4")
     catch_up_read.add_argument("--all", action="store_true", help="mark every unread notice read")
@@ -5220,9 +5636,9 @@ def make_parser() -> argparse.ArgumentParser:
     render_parser.add_argument("--title", help="override the page title")
 
     serve_parser = command("serve", "serve the page over HTTP",
-                           "Anyone who can reach the service can read saved items, answers, conversations, reply images, "
-                           "and unread Catch-up notice titles, summaries, links and projects. They can submit answers, acknowledge "
-                           "replies, and mark Catch-up notices read as the owner. With firstmate_home set, they can also "
+                           "Anyone who can reach the service can read saved items, answers, conversations and reply images. "
+                           "They can read unread Catch-up notices, including their details and links. They can submit answers, pin topics, acknowledge replies, and mark Catch-up notices read by ID "
+                           "as the owner. With firstmate_home set, they can also "
                            "send asks, start conversations, send messages and read or check that home's workers "
                            "and second mates from the Workers page or workers.json. Browser "
                            "writes require the same origin as the served page.", serve)
