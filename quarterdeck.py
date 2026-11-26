@@ -2247,6 +2247,7 @@ textarea { display:block; width:100%; resize:vertical; background:var(--ground);
 .workers-link { margin:1.5rem 0 0; }
 #workers > .section-head:first-child { margin-top:0; }
 .catch-up { margin:0 0 1.5rem; }
+.catch-up + p.empty { display:none; }
 .catch-up .section-head { margin-top:0; }
 .catch-up h2 { margin:0; }
 .notes { list-style:none; margin:.5rem 0 0; padding:0; border-top:1px solid var(--rule); font-family:var(--sans); }
@@ -2514,11 +2515,6 @@ CATCH_UP_SCRIPT = r"""
     const left = section.querySelectorAll('.note').length;
     if (!left) {
       section.remove();
-      const empty = document.querySelector('[data-empty-desk]');
-      if (empty) {
-        empty.textContent = empty.dataset.emptyDesk;
-        empty.removeAttribute('data-empty-desk');
-      }
       if (hadFocus && !focused.isConnected) focusHeading(document.querySelector('main h1'));
       return;
     }
@@ -4141,10 +4137,7 @@ def list_page(data: dict[str, object], site_title: str, *, served: bool, saved_n
     else:
         empty = ("Nothing is on your Desk. A question that needs an answer shows here." if items else
                  "Nothing is saved yet. Ask Firstmate to send something to Quarterdeck, such as a link, a list or open questions.")
-        if notices:
-            body += f'<p class="empty" data-empty-desk="{esc(empty)}">No questions need your attention.</p>'
-        else:
-            body += f'<p class="empty">{esc(empty)}</p>'
+        body += f'<p class="empty">{esc(empty)}</p>'
     if served:
         body += '<p class="workers-link"><a href="workers.html">Workers</a></p>'
     library = ""

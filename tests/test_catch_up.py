@@ -206,7 +206,7 @@ class CatchUpPageTests(CatchUpCase):
         self.notice()
         page = self.get(self.start(), "/qd/")
         self.assertIn("<h2>Catch-up</h2>", page)
-        self.assertIn("No questions need your attention.", page)
+        self.assertIn('<p class="empty">Nothing is saved yet.', page)
         self.assertNotIn("data-read-all>", page)
         self.assertNotIn("(1)", page)
 
@@ -392,7 +392,7 @@ class CatchUpPageTests(CatchUpCase):
     check(noticeDay() === 'Nov 26, 2026', 'The notice should keep its local date');
     check(!document.querySelector('.catch-up a[href="q1.html"]') &&
           document.querySelector('main > p.empty') === guidance &&
-          guidance.textContent === 'No questions need your attention.',
+          guidance.textContent.startsWith('Nothing is saved yet.') && !guidance.getClientRects().length,
           'A conflict should preserve the displayed Desk snapshot');
     check(document.getElementById('talk-form') === form && !form.hidden &&
           document.getElementById('talk-message') === draft && draft.value === 'Draft about the tide chart.',
