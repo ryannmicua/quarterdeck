@@ -1929,7 +1929,7 @@ check(!error.hidden && field(2).value === 'Red', 'Closing the row discarded its 
         self.assertEqual(self.run_cli("mark", "Q1.4", "open")[0], 0)
         self.check_answer_page(port, r"""
 const savedDay = document.querySelector('main > .meta time');
-check(savedDay.textContent === 'Jan 11, 2026', 'The saved date was not shown in local time');
+check(savedDay.textContent.replace(/\s+/g, ' ') === 'Jan 11, 2026, 1:25 AM', 'The saved date was not shown in local time');
 const originalAnswerTime = card(4).querySelector('.saved-answer time');
 check(originalAnswerTime.textContent.replace(/\s+/g, ' ') === 'Jan 11, 2026, 1:25 AM',
       'Wrong local time for the saved answer');
@@ -6217,6 +6217,27 @@ class TalkToFirstmateTests(ImageCase):
         self.assertIn('<time class="stamp" datetime="2026-11-05T14:07:09Z">2026-11-05</time>', row)
         quiet = re.search(r'<li class="topic" data-id="Q2".*?</li>', page, re.DOTALL)[0]
         self.assertIn('datetime="2026-10-02T09:00:00Z"', quiet)
+
+    def test_an_item_page_shows_the_time_saved_with_the_date(self) -> None:
+        port = self.start("/qd", ask_home=self.inbox())
+        self.seed_conversations(port)
+        with quarterdeck.changing_store(quarterdeck.store_path()) as data:
+            data["items"][0]["saved_at"] = "2026-11-26T09:15:30Z"
+        page = self.fetch(port, "/qd/q1.html")[1]
+        self.assertIn(' · saved <time class="day" datetime="2026-11-26T09:15:30Z">2026-11-26</time></p>', page)
+
+    def test_every_saved_moment_is_shown_in_local_date_and_time(self) -> None:
+        port = self.start("/qd", ask_home=self.inbox())
+        self.seed_conversations(port)
+        script = self.fetch(port, "/qd/")[1]
+        self.assertIn("time.day[datetime]", script)
+        self.assertNotIn("toLocaleDateString", script)
+        self.assertNotIn("localizeDays", script)
+        self.assertIn("{dateStyle:'medium', timeStyle:'short'}", script)
+        row = quarterdeck.day_time("2026-11-26T09:15:30Z")
+        self.assertEqual(row, '<time class="day" datetime="2026-11-26T09:15:30Z">2026-11-26</time>')
+        for page in ("/qd/", "/qd/watch.html"):
+            self.assertIn("time.day[datetime]", self.fetch(port, page)[1])
 
     def test_pinning_groups_a_conversation_and_changes_nothing_else(self) -> None:
         port = self.start("/qd", ask_home=self.inbox())
