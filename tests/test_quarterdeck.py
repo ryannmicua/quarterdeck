@@ -6139,6 +6139,18 @@ class TalkToFirstmateTests(ImageCase):
         self.assertIn('<span class="tab-count">1</span>', page)
         self.assertEqual(needs.count(f'href="q1.html#reply-{unread}"'), 1)
 
+    def test_a_conversation_row_shows_the_time_of_its_latest_activity(self) -> None:
+        port = self.start("/qd", ask_home=self.inbox())
+        self.seed_conversations(port)
+        self.assertEqual(self.run_cli("post", "Q1", "--text", "Amber it is.")[0], 0)
+        with quarterdeck.changing_store(quarterdeck.store_path()) as data:
+            data["items"][0]["conversation"]["item"][-1]["at"] = "2026-11-05T14:07:09Z"
+        page = self.desk_topics(port)[0]
+        row = re.search(r'<li class="topic" data-id="Q1".*?</li>', page, re.DOTALL)[0]
+        self.assertIn('<time class="stamp" datetime="2026-11-05T14:07:09Z">2026-11-05</time>', row)
+        quiet = re.search(r'<li class="topic" data-id="Q2".*?</li>', page, re.DOTALL)[0]
+        self.assertIn('datetime="2026-10-02T09:00:00Z"', quiet)
+
     def test_pinning_groups_a_conversation_and_changes_nothing_else(self) -> None:
         port = self.start("/qd", ask_home=self.inbox())
         self.seed_conversations(port)
@@ -6702,8 +6714,8 @@ for (const query of ['', 'bell schedule', 'Q1']) {
 const form = button('talk-form');
 const tab = button('desk-tab-needs-you');
 const initialDate = document.querySelector('.topic[data-id="Q1"] time');
-const expectedDate = 'Oct 2, 2026';
-check(initialDate.textContent === expectedDate, 'The initial row did not show the next date in Tokyo');
+const expectedDate = 'Oct 2, 2026, 3:30 AM';
+check(initialDate.textContent === expectedDate, 'The initial row did not show the next date and time in Tokyo');
 let complete;
 let refuseNotice;
 window.fetch = path => {
