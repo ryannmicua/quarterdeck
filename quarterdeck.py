@@ -2410,7 +2410,7 @@ body:has(dialog[open]) { overflow:hidden; }
 .lib-desc { font-size:var(--text-md); color:var(--soft); }
 .lib-item.ref-row { display:flex; flex-wrap:wrap; align-items:baseline; gap:0 .9rem; padding:.4rem 0; }
 .ref-title { font:500 var(--text-md)/1.4 var(--sans); }
-.ref-links { display:inline-flex; flex-wrap:wrap; gap:0 .8rem; font-size:var(--text-sm); }
+.ref-more { display:inline-flex; flex-wrap:wrap; gap:0 .8rem; font-size:var(--text-sm); }
 .ref-meta { display:inline-flex; flex-wrap:wrap; gap:0 .8rem; margin-left:auto; font-size:var(--text-sm); color:var(--soft); }
 .ref-meta a, .lib-title.ref-id { color:var(--soft); font:400 var(--text-sm)/1.4 var(--sans); }
 .lib-item .meta { display:flex; flex-wrap:wrap; gap:0 1rem; font-size:var(--text-md); }
@@ -4054,7 +4054,7 @@ def reference_row(item, *, served):
         attributes += f' data-id="{item_id}" data-search="{esc(search.casefold())}"'
     small = project + day_time(item["saved_at"]) + f'<a class="lib-title ref-id" href="{page}">{item_id}</a>'
     return (f'<li class="lib-item ref-row"{attributes} title="{esc(item["description"])}">'
-            f'{title}{f"<span class=ref-links>{extra}</span>" if extra else ""}<span class="ref-meta">{small}</span></li>')
+            f'{title}{f"<span class=ref-more>{extra}</span>" if extra else ""}<span class="ref-meta">{small}</span></li>')
 
 
 def library_row(item, *, served):
