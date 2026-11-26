@@ -27,7 +27,7 @@ A draft shows **Draft** on the Desk and nothing reaches Firstmate. Open it and s
 
 ## Find tasks
 
-Select **Tasks only** beside **Project** on the Desk to hide conversations that are not tasks. The filter
+Select **Tasks only** beside **Unread only** on the Desk to hide conversations that are not tasks. The filter
 stays when you open a task and go back.
 
 A task shows a **Task** mark and one state: **Draft**, **Started**, **In review** or **Resolved**.
