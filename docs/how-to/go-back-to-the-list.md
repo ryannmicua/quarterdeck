@@ -5,8 +5,8 @@ and again at the bottom of the page. They sit at the bottom as well so you can
 reach them with your thumb after you answer or reply.
 
 **Back to** and the list's name returns you to the list you came from. The
-link opens the same tab, with the same project, tag and search, and brings the
-item's row into view. The lists are the Desk tabs **Needs you**,
+link opens the same tab, with the same project and topic in Conversations, or
+the same project, tag and search in Hold, and brings the item's row into view. The lists are the Desk tabs **Needs you**,
 **Conversations** and **Archived**, the **Watch** page, and the Hold tabs
 **References**, **Answered** and **Hold conversations**.
 
@@ -19,6 +19,8 @@ The link is missing when no other item in the list is unread.
   first open question.
 - In every other list, an item is unread when it has an
   [Unread reply](../reference/glossary.md#status-words).
+- In **Conversations**, **Next unread** follows the Desk's project and topic,
+  as Hold follows its filters.
 - In Hold, **Next unread** follows the project, tag and search of the list you
   came from.
 

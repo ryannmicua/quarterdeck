@@ -3408,18 +3408,20 @@ class ListKind(NamedTuple):
     label: str  # the list's name, as the Back link says it
     page: str   # the page that shows the list: "desk", "hold" or "watch"
     tab: str    # its tab on that page
+    filters: tuple[str, ...] = ()  # the list's filters, which its links carry
 
 
+HOLD_FILTERS = ("project", "tag", "search")
+DESK_SCOPE = ("project", "topic")
 LIST_KINDS = {
     "needs-you": ListKind("Needs you", "desk", "needs-you"),
-    "conversations": ListKind("Conversations", "desk", "conversations"),
+    "conversations": ListKind("Conversations", "desk", "conversations", DESK_SCOPE),
     "archived": ListKind("Archived", "desk", "archived"),
     "watch": ListKind("Watch", "watch", ""),
-    "references": ListKind("References", "hold", "references"),
-    "answered": ListKind("Answered", "hold", "answered"),
-    "hold-conversations": ListKind("Hold conversations", "hold", "conversations"),
+    "references": ListKind("References", "hold", "references", HOLD_FILTERS),
+    "answered": ListKind("Answered", "hold", "answered", HOLD_FILTERS),
+    "hold-conversations": ListKind("Hold conversations", "hold", "conversations", HOLD_FILTERS),
 }
-HOLD_FILTERS = ("project", "tag", "search")
 FILTER_VALUE_LIMIT = 200
 
 
@@ -3434,11 +3436,10 @@ def parse_list_context(query: str) -> dict[str, str] | None:
     if kind is None:
         return None
     context = {"from": name}
-    if kind.page == "hold":
-        for key in HOLD_FILTERS:
-            value = fields.get(key, [""])[0][:FILTER_VALUE_LIMIT]
-            if value:
-                context[key] = value
+    for key in kind.filters:
+        value = fields.get(key, [""])[0][:FILTER_VALUE_LIMIT]
+        if value:
+            context[key] = value
     return context
 
 
@@ -3455,10 +3456,8 @@ def back_link_href(context: dict[str, str], item_id: str) -> str:
     kind = LIST_KINDS[context["from"]]
     if kind.page == "watch":
         return f"watch.html#watch-{item_id}"
-    if kind.page == "desk":
-        return "index.html?" + urlencode({"tab": kind.tab, "row": item_id})
-    filters = {key: context[key] for key in HOLD_FILTERS if key in context}
-    return "index.html?" + urlencode({"hold": kind.tab, **filters, "row": item_id})
+    filters = {key: context[key] for key in kind.filters if key in context}
+    return "index.html?" + urlencode({"tab" if kind.page == "desk" else "hold": kind.tab, **filters, "row": item_id})
 
 
 ID_QUERY_RE = re.compile(r"(q[0-9]+)(?:[.]([0-9]+))?", re.IGNORECASE)
@@ -3502,11 +3501,27 @@ def list_members(data: dict[str, object], context: dict[str, str]) -> list[dict[
         return [row[0] for row in watch_requests(data)]
     if name in ("conversations", "archived"):
         wanted = name == "archived"
-        return list_sorter(name)([item for item in items if item["kind"] == "conversation" and is_archived(item) == wanted])
+        members = [item for item in items if item["kind"] == "conversation" and is_archived(item) == wanted]
+        return list_sorter(name)([item for item in members if in_desk_scope(data, context, item)])
     kinds = {"references": ("resource", "list"), "answered": ("questions",), "hold-conversations": ("conversation",)}[name]
     members = [item for item in items if item["kind"] in kinds and (
         name != "answered" or not desk_item(item)) and not (name == "hold-conversations" and is_archived(item))]
     return [item for item in members if library_matches(item, context, topics=name == "hold-conversations")]
+
+
+def in_desk_scope(data: dict[str, object], context: dict[str, str], item) -> bool:
+    """Whether a conversation shows under the Desk's project and topic scope, as the Desk's script decides it."""
+    project = context.get("project", "")
+    if project == "-":
+        return not item.get("placement")
+    found = find_project(data.get("projects", []), project)  # type: ignore[arg-type]
+    if found is None:
+        return True
+    placement = item.get("placement") or {}
+    topic = context.get("topic", "")
+    if not any(entry["id"] == topic for entry in found["topics"]):  # type: ignore[attr-defined]
+        topic = ""
+    return placement.get("project") == project and (not topic or placement.get("topic") == topic)
 
 
 def list_sorter(name: str):
@@ -4362,10 +4377,21 @@ DESK_SCRIPT = talk_script(r"""
     if (!noneInScope.hidden) noneInScope.textContent = scopeEmptyText();
     noneArchived.hidden = !groups.archived.hidden;
   };
+  const linkRow = row => {
+    const link = row.querySelector('.topic-title');
+    const archived = row.dataset.archived === 'true';
+    const [address, hash] = link.getAttribute('href').split('#');
+    const [path, query] = address.split('?');
+    const params = new URLSearchParams(query);
+    params.set('from', archived ? 'archived' : 'conversations');
+    for (const [name, value] of [['project', scopeProject.value], ['topic', scopeTopic.value]]) {
+      if (value && !archived) params.set(name, value); else params.delete(name);
+    }
+    link.setAttribute('href', path + '?' + params + (hash === undefined ? '' : '#' + hash));
+  };
   const place = row => {
     const name = row.dataset.archived === 'true' ? 'archived' : row.dataset.pinned === 'true' ? 'pinned' : 'recent';
-    const link = row.querySelector('.topic-title');
-    link.setAttribute('href', link.getAttribute('href').replace(/([?&]from=)[^&#]*/, '$1' + (name === 'archived' ? 'archived' : 'conversations')));
+    linkRow(row);
     const list = groups[name].querySelector('.topic-list');
     // The filter applies only outside Archived, and before the row takes its place by pin and activity.
     row.hidden = name !== 'archived' && !inScope(row);
@@ -4394,6 +4420,7 @@ DESK_SCRIPT = talk_script(r"""
     for (const row of conversationPanel.querySelectorAll('.topic')) {
       row.hidden = !inScope(row);
       labelRow(row);
+      linkRow(row);
     }
     syncGroups();
     groupStatus.textContent = '';
@@ -4540,7 +4567,8 @@ DESK_SCRIPT = talk_script(r"""
     moveProject.focus();
   });
   try {
-    const saved = JSON.parse(sessionStorage.getItem(SCOPE_KEY)) || {};
+    const saved = arrival.get('tab') === 'conversations'
+      ? {project: arrival.get('project'), topic: arrival.get('topic')} : JSON.parse(sessionStorage.getItem(SCOPE_KEY)) || {};
     syncScope({project: saved.project || '', topic: saved.topic || ''});
   } catch {
     syncScope({project: '', topic: ''});

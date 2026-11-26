@@ -331,6 +331,68 @@ class HoldFilterTests(ListContextCase):
         self.assertTrue(match(item, {"search": "  "}, topics=False))
 
 
+class DeskScopeTests(ListContextCase):
+    """Next unread and Back in Desk Conversations follow the Desk's project and topic scope."""
+
+    def setUp(self) -> None:
+        super().setUp()
+        for title in ("Harbor lamps", "Quay signs", "Harbor chart", "Rope order"):
+            self.talk(title)
+        with quarterdeck.changing_store(quarterdeck.store_path()) as data:
+            data["projects"] = [{"id": "P1", "name": "Harbor", "topics": [{"id": "T1", "name": "Lamps"}, {"id": "T2", "name": "Charts"}]}]
+            for item in data["items"]:
+                if item["id"] == "Q1":
+                    item["placement"] = {"project": "P1", "topic": "T1"}
+                if item["id"] == "Q3":
+                    item["placement"] = {"project": "P1", "topic": "T2"}
+        self.port = self.start()
+
+    def next_link(self, path: str) -> str | None:
+        links = self.strip(self.port, path)
+        return links[1][0] if len(links) > 1 else None
+
+    def next_item(self, path: str) -> str | None:
+        link = self.next_link(path)
+        return re.match(r"q\d+", link)[0].upper() if link else None
+
+    def test_the_address_keeps_the_scope_of_conversations_only(self) -> None:
+        parse = quarterdeck.parse_list_context
+        self.assertEqual(parse("from=conversations&project=P1&topic=T1&tag=rope&search=x"),
+                         {"from": "conversations", "project": "P1", "topic": "T1"})
+        self.assertEqual(parse("from=archived&project=P1&topic=T1"), {"from": "archived"})
+        self.assertEqual(parse("from=answered&topic=T1&project=Harbor"), {"from": "answered", "project": "Harbor"})
+
+    def test_without_a_scope_next_unread_goes_through_every_conversation(self) -> None:
+        # Conversations lists Q4, Q3, Q2, Q1, newest activity first.
+        self.assertEqual(self.next_item("q3.html?from=conversations"), "Q2")
+        self.assertEqual(self.next_item("q1.html?from=conversations"), "Q4")
+
+    def test_a_project_scope_narrows_the_list_the_next_unread_comes_from(self) -> None:
+        self.assertEqual(self.next_item("q3.html?from=conversations&project=P1"), "Q1")
+        self.assertEqual(self.next_item("q1.html?from=conversations&project=P1"), "Q3")
+        self.assertEqual(self.next_item("q4.html?from=conversations&project=-"), "Q2")
+        self.assertEqual(self.next_item("q2.html?from=conversations&project=-"), "Q4")
+
+    def test_a_topic_scope_narrows_the_list_to_that_topic(self) -> None:
+        self.assertIsNone(self.next_item("q1.html?from=conversations&project=P1&topic=T1"))
+        self.assertEqual(self.next_item("q3.html?from=conversations&project=P1&topic=T1"), "Q1")
+
+    def test_a_scope_the_desk_does_not_know_shows_every_conversation_as_the_desk_does(self) -> None:
+        self.assertEqual(self.next_item("q3.html?from=conversations&project=P9"), "Q2")
+        self.assertEqual(self.next_item("q1.html?from=conversations&project=P1&topic=T9"), "Q3")
+
+    def test_the_next_page_and_back_keep_the_scope(self) -> None:
+        link = self.next_link("q3.html?from=conversations&project=P1&topic=T2")
+        self.assertIsNone(link)
+        link = self.next_link("q3.html?from=conversations&project=P1")
+        params = dict(re.findall(r"([a-z]+)=([^&#]*)", link.split("?", 1)[1].split("#")[0]))
+        self.assertEqual(params, {"from": "conversations", "project": "P1"})
+        self.assertEqual(self.strip(self.port, "q1.html?from=conversations&project=P1&topic=T1")[0],
+                         ("index.html?tab=conversations&project=P1&topic=T1&row=Q1", "Back to Conversations"))
+        self.assertEqual(self.strip(self.port, "q1.html?from=conversations")[0],
+                         ("index.html?tab=conversations&row=Q1", "Back to Conversations"))
+
+
 class ListContextBrowserTests(ListContextCase):
     def run_in_desk(self, steps: str, route: str, window_size: str = "390,844") -> None:
         if not shutil.which("google-chrome"):
@@ -437,3 +499,25 @@ project.value = '';
 search.dispatchEvent(new Event('input', {bubbles: true}));
 check(/^q1[.]html[?]from=hold-conversations#reply-[0-9a-f]+$/.test(link.getAttribute('href')), 'Clearing the filters left them in the link');
 """, "/qd/")
+
+    def test_back_to_conversations_restores_its_scope_and_the_links_follow_the_scope(self) -> None:
+        for title in ("Harbor lamps", "Quay signs"):
+            self.talk(title)
+        with quarterdeck.changing_store(quarterdeck.store_path()) as data:
+            data["projects"] = [{"id": "P1", "name": "Harbor", "topics": [{"id": "T1", "name": "Lamps"}]}]
+            data["items"][0]["placement"] = {"project": "P1", "topic": "T1"}
+        self.run_in_desk("""
+const project = document.getElementById('scope-project');
+const topic = document.getElementById('scope-topic');
+check(project.value === 'P1' && topic.value === 'T1', 'The scope did not return: ' + project.value + ' ' + topic.value);
+check(document.querySelector('.topic[data-id="Q2"]').hidden, 'Q2 shows outside the scope');
+const link = document.querySelector('.topic[data-id="Q1"] .topic-title');
+check(document.activeElement === link, 'The row of Q1 did not take focus');
+const params = () => new URLSearchParams(link.getAttribute('href').split('#')[0].split('?')[1]);
+check(params().get('from') === 'conversations' && params().get('project') === 'P1' && params().get('topic') === 'T1',
+      'The link did not carry the scope: ' + link.getAttribute('href'));
+project.value = '';
+project.dispatchEvent(new Event('change'));
+check(!params().has('project') && !params().has('topic') && params().get('from') === 'conversations',
+      'Clearing the scope left it in the link: ' + link.getAttribute('href'));
+""", "/qd/?tab=conversations&project=P1&topic=T1&row=Q1")
