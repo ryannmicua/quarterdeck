@@ -75,6 +75,10 @@ searches Hold by both title and item ID without reloading. The conversation
 page checks click **Pin**, **Resolve**, **Archive** and **Move** on the page, and
 verify that the labels and marks follow the saved state, that an archived
 conversation hides **Pin**, and that a refusal shows beside the controls.
+The mailbox check for moving items opens a saved link and a question set in the
+pane, moves each into a project with **Move**, and checks that each shows under
+that project's filter once the live list reads again, and leaves it when moved
+back to **Ungrouped**.
 The replay check
 verifies that the initial and inserted rows show October 2 in Tokyo for a
 message saved at 18:30 UTC on October 1. The Desk tab check uses the old

@@ -271,15 +271,15 @@ A task in `draft` may have no messages yet, and `started` is set when the owner 
 `Task started.` is saved. A `source` names a conversation other than the task itself; once that
 conversation is removed, the task keeps the `source` and shows no related conversation.
 
-A conversation item may also carry `placement`, an object with `project` (a
+Any item may also carry `placement`, an object with `project` (a
 project ID such as `P1`) and optionally `topic` (a topic ID such as `T2` in
-that project). Absent means ungrouped, and only a conversation may have it.
+that project). Absent means ungrouped. A conversation, a saved link or list, and a set of questions may all have it.
 The store lists the owner's projects in an optional top-level `projects` array
 of `{"id": "P1", "name": "Field Atlas", "topics": [{"id": "T1", "name": "Wayfinding"}]}`.
 Names are up to 60 characters, and no two projects, or two topics in one
 project, share a name when case is ignored. A project or topic keeps its ID when
 renamed, and nothing deletes one. Moving or renaming changes nothing else about
-a conversation, and an older store needs no change.
+an item, and an older store needs no change.
 
 Each thread stores messages in the order they were saved. Every reply
 names the earlier ask or message it answers.
