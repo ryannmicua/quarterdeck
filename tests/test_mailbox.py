@@ -720,6 +720,57 @@ class MailboxBrowserTests(MailboxCase):
             self.firstmate("converse", "--title", title, "--text", f"Update on {title.lower()}.")
         self.questions("Pocket guide paper")  # Q3
 
+    MOVE_STEPS = r"""
+const choose = (id, value) => { const select = document.getElementById(id); select.value = value; select.dispatchEvent(new Event('change', {bubbles: true})); };
+const visible = section => [...document.querySelectorAll('#' + section + ' .topic:not([hidden])')].map(row => row.dataset.id).join();
+const place = async (title, project, topic, was = '') => {
+  await until(() => pane()?.querySelector('h1')?.textContent === title && pane().querySelector('button.move'), title + ' did not open with Move');
+  const page = pane();
+  const form = page.getElementById('move-form');
+  check(page.documentElement.classList.contains('in-pane') && form.hidden, 'The move form started open in the pane');
+  page.querySelector('button.move').click();
+  check(!form.hidden && page.getElementById('move-project').value === was, 'Move did not open on the current place');
+  page.getElementById('move-project').value = project;
+  page.getElementById('move-project').dispatchEvent(new Event('change', {bubbles: true}));
+  if (topic) page.getElementById('move-topic').value = topic;
+  form.requestSubmit();
+  await until(() => form.hidden && page.querySelector('.state-status').textContent.startsWith(title + ' moved to '), title + ' was not moved');
+};
+"""
+
+    def test_a_reference_and_a_question_set_are_moved_into_a_project_from_the_pane_and_show_under_its_filter(self) -> None:
+        for name in ("rms cares", "quarterdeck"):
+            self.assertEqual(self.post(self.port, "/qd/groups", {"name": name})[0], 200)
+        self.add("resource", "Port tide tables", "The tables.", "--url", "https://example.com/tides", "--link-text", "Tide tables")  # Q4
+        self.run_in_desk(self.MOVE_STEPS + r"""
+document.getElementById('desk-tab-references').click();
+document.querySelector('#topics-references .topic[data-id="Q4"] .bookmark-id').click();
+await place('Port tide tables', 'P1', '');
+await until(() => document.querySelector('#topics-references .topic[data-id="Q4"]')?.dataset.project === 'P1', 'The References row did not take the project from the live list');
+choose('scope-project', 'P2');
+check(visible('topics-references') === '' && document.getElementById('no-references').textContent
+      === 'No references in quarterdeck yet. A reference you move into it shows here.', 'Another project kept the reference or gave no reason');
+choose('scope-project', 'P1');
+check(visible('topics-references') === 'Q4', 'The project did not show the moved reference');
+choose('scope-project', '-');
+check(visible('topics-references') === '', 'Ungrouped kept the moved reference');
+choose('scope-project', '');
+document.getElementById('desk-tab-needs-you').click();
+document.querySelector('#review-waiting .topic[data-id="Q3"] .topic-title').click();
+await place('Pocket guide paper', 'P2', '');
+await until(() => document.querySelector('#review-waiting .topic[data-id="Q3"]')?.dataset.project === 'P2', 'The For review row did not take the project from the live list');
+choose('scope-project', 'P2');
+check(visible('review-waiting') === 'Q3', 'The project did not show the moved question set');
+choose('scope-project', 'P1');
+check(visible('review-waiting') === '', 'The wrong project showed the question set');
+document.getElementById('desk-tab-references').click();
+document.querySelector('#topics-references .topic[data-id="Q4"] .bookmark-id').click();
+await place('Port tide tables', '', '', 'P1');
+await until(() => !document.querySelector('#topics-references .topic[data-id="Q4"]')?.dataset.project, 'The References row kept the project it was moved out of');
+""")
+        placements = {item["id"]: item.get("placement") for item in self.store()["items"]}
+        self.assertEqual((placements["Q3"], placements["Q4"]), ({"project": "P2"}, None))
+
     def test_a_row_opens_in_the_pane_on_a_wide_screen_is_read_and_keeps_its_place(self) -> None:
         self.run_in_desk(r"""
 check(shown('mail-pane') && !shown('pane-frame') && shown('pane-empty'), 'The pane did not start empty beside the list');
@@ -880,7 +931,7 @@ check(visible('topics-unread') === '' && count('conversations') === '' && visibl
 tabNamed('references').click();
 check(visible('topics-references') === 'Q5' && getComputedStyle(document.getElementById('project-filter')).display !== 'none', 'Ungrouped did not show the reference');
 choose('P1');
-check(visible('topics-references') === '' && !document.getElementById('no-references').hidden, 'A project did not set the references aside');
+check(visible('topics-references') === '' && !document.getElementById('no-references').hidden, 'A project kept a reference that is in no project');
 tabNamed('under-way').click();
 check(getComputedStyle(document.getElementById('project-filter')).display === 'none', 'The project choice shows on a tab it does not narrow');
 check(JSON.parse(localStorage.getItem('quarterdeck-project')).project === 'P1', 'The choice was not kept in this browser');

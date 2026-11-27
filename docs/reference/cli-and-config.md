@@ -298,10 +298,11 @@ topics in name order.
 
 `POST /moves` (under any `base_path`) uses the same origin check and needs no
 `firstmate_home`. Send `{"part": "Q12", "project": "P1", "topic": "T2"}`, with
-`"topic": null` for a project only, or both `null` to return the conversation to
-Ungrouped. Only a conversation can be moved, and an unknown ID, a topic outside
-the project, or a topic without a project returns 400. The request changes the
-conversation's [`placement`](item-store.md#conversations) and nothing else. It adds no
+`"topic": null` for a project only, or both `null` to return the item to
+Ungrouped. A conversation, a saved link or list, and a set of questions can all be
+moved. An unknown ID, a topic outside the project, or a topic without a project
+returns 400. The request changes the item's [`placement`](item-store.md#conversations)
+and nothing else. It adds no
 message, keeps the pin and the unread reply, and leaves the latest activity alone.
 The response repeats `project` and `topic`.
 

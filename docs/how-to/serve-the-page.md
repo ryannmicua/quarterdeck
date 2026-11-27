@@ -81,7 +81,7 @@ The default bind is `127.0.0.1`. A loopback listener refuses requests whose
 service can read saved items, their images, answers, conversations, reply
 images, and unread Catch-up notices including their titles, summaries, links
 and projects. They can also send answers, pin, resolve and archive conversations, keep items for later,
-create and rename projects and topics, move conversations between them, acknowledge Firstmate
+create and rename projects and topics, move conversations, references and question sets between them, acknowledge Firstmate
 messages, and mark Catch-up notices read as the owner.
 When `firstmate_home` is set, anyone who can reach the service can view the
 home's worker and second mate roster and run a check from the Workers page

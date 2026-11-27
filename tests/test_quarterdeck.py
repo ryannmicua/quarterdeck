@@ -7635,13 +7635,52 @@ class ConversationGroupingTests(ImageCase):
         self.assertEqual(self.post(port, "/qd/moves", {"part": "Q2", "project": "P1", "topic": "T2"})[0], 200)
         self.assertEqual(self.store()["items"][1]["placement"], {"project": "P1", "topic": "T2"})
 
+    def test_move_places_a_reference_a_list_and_a_question_set_and_returns_each_to_ungrouped(self) -> None:
+        port = self.start("/qd", ask_home=self.inbox())
+        self.atlas(port)
+        self.add("resource", "Tide tables", "The tables.", "--url", "https://example.com/tides", "--link-text", "Tides")  # Q1
+        self.add("list", "Harbor chores", "Chores.", "--body-file", "-", stdin="Buy rope\n")  # Q2
+        self.add("questions", "Pier lights", "Pick the lamp colour.", "--body-file", "-", stdin=json.dumps(QUESTIONS))  # Q3
+        before = self.store()
+        for item_id in ("Q1", "Q2", "Q3"):
+            with self.subTest(item=item_id):
+                self.assertEqual(self.post(port, "/qd/moves", {"part": item_id, "project": "P1", "topic": "T2"}),
+                                 (200, {"project": "P1", "topic": "T2"}))
+                item = next(entry for entry in self.store()["items"] if entry["id"] == item_id)
+                self.assertEqual(item.pop("placement"), {"project": "P1", "topic": "T2"})
+                self.assertEqual(item, next(entry for entry in before["items"] if entry["id"] == item_id))
+                self.assertRegex(self.fetch(port, "/qd/")[1], rf'<li [^>]*data-id="{item_id}"[^>]*data-project="P1" data-topic="T2"')
+                self.assertEqual(self.post(port, "/qd/moves", {"part": item_id, "project": "P2", "topic": None})[0], 200)
+                self.assertRegex(self.fetch(port, "/qd/")[1], rf'<li [^>]*data-id="{item_id}"[^>]*data-project="P2"')
+                self.assertEqual(self.post(port, "/qd/moves", {"part": item_id, "project": None, "topic": None})[0], 200)
+        self.assertEqual(self.store(), before)
+
+    def test_an_item_page_offers_move_and_names_where_a_moved_item_is(self) -> None:
+        port = self.start("/qd")
+        self.add("resource", "Tide tables", "The tables.", "--url", "https://example.com/tides", "--link-text", "Tides")  # Q1
+        self.add("questions", "Pier lights", "Pick the lamp colour.", "--body-file", "-", stdin=json.dumps(QUESTIONS))  # Q2
+        for item_id in ("Q1", "Q2"):
+            self.assertNotIn('id="move-form"', self.fetch(port, f"/qd/{item_id.lower()}.html")[1])  # no project yet
+        self.atlas(port)
+        for item_id, noun in (("Q1", "reference"), ("Q2", "question set")):
+            with self.subTest(item=item_id):
+                page = self.fetch(port, f"/qd/{item_id.lower()}.html")[1]
+                self.assertIn('<button type="button" class="move" aria-expanded="false" aria-controls="move-form">Move</button>', page)
+                self.assertIn(f'<form id="move-form" class="move-form" hidden novalidate aria-label="Move {noun}" data-project="" data-topic="">', page)
+                self.assertNotIn(">Pin<", page)
+                self.assertEqual(self.post(port, "/qd/moves", {"part": item_id, "project": "P1", "topic": "T2"})[0], 200)
+                page = self.fetch(port, f"/qd/{item_id.lower()}.html")[1]
+                self.assertIn('data-project="P1" data-topic="T2">', page)
+                self.assertIn(" · Field Atlas / Printing", page)
+        self.assertNotIn('id="move-form"', quarterdeck.item_page(self.store()["items"][0], "Quarterdeck", served=False))
+
     def test_move_refuses_other_items_unknown_places_bad_fields_and_other_origins(self) -> None:
         port = self.start("/qd", ask_home=self.inbox())
         self.atlas(port)
         self.begin(port)
         self.add("questions", "Pier lights", "Pick the lamp colour.", "--body-file", "-", stdin=json.dumps(QUESTIONS))
         before = self.store()
-        for payload in ({"part": "Q2", "project": "P1", "topic": None}, {"part": "Q9", "project": "P1", "topic": None},
+        for payload in ({"part": "Q9", "project": "P1", "topic": None},
                         {"part": "q1", "project": "P1", "topic": None}, {"part": "Q1.1", "project": "P1", "topic": None},
                         {"part": "Q1", "project": "P9", "topic": None}, {"part": "Q1", "project": "P1", "topic": "T3"},
                         {"part": "Q1", "project": None, "topic": "T1"}, {"part": "Q1", "project": "P1"},
@@ -7735,6 +7774,25 @@ class ConversationGroupingTests(ImageCase):
         self.assertEqual(self.run_cli("move", "Q1", "--project", "P1", "--topic", "t1")[0], 0)
         self.assertEqual(self.store(), before)
 
+    def test_the_command_line_moves_a_reference_a_list_and_a_question_set_and_returns_each_to_ungrouped(self) -> None:
+        port = self.start("/qd")
+        self.atlas(port)
+        self.add("resource", "Tide tables", "The tables.", "--url", "https://example.com/tides", "--link-text", "Tides")  # Q1
+        self.add("list", "Harbor chores", "Chores.", "--body-file", "-", stdin="Buy rope\n")  # Q2
+        self.add("questions", "Pier lights", "Pick the lamp colour.", "--body-file", "-", stdin=json.dumps(QUESTIONS))  # Q3
+        before = self.store()
+        for item_id in ("Q1", "Q2", "Q3"):
+            with self.subTest(item=item_id):
+                self.assertEqual(self.run_cli("move", item_id.lower(), "--project", "p1", "--topic", "t2")[1].strip(), f"{item_id} Moved")
+                self.assertEqual(self.run_cli("move", item_id, "--project", "P2")[1].strip(), f"{item_id} Moved")
+                item = next(entry for entry in self.store()["items"] if entry["id"] == item_id)
+                self.assertEqual(item["placement"], {"project": "P2"})
+                self.assertEqual(self.run_cli("move", item_id, "--ungrouped")[1].strip(), f"{item_id} Moved")
+        self.assertEqual(self.store(), before)
+        self.assertEqual(self.run_cli("move", "Q1", "--project", "P1", "--topic", "T2")[0], 0)
+        self.assertEqual(self.run_cli("move", "Q1", "--project", "P2", "--topic", "T2")[0], 2)  # a topic of another project
+        self.assertEqual(self.store()["items"][0]["placement"], {"project": "P1", "topic": "T2"})
+
     def test_the_command_line_refuses_unknown_places_and_other_items(self) -> None:
         port = self.start("/qd")
         self.assertEqual(self.run_cli("projects")[1], "No projects.\n")
@@ -7747,7 +7805,6 @@ class ConversationGroupingTests(ImageCase):
                               (("converse", "--title", "T", "--text", "x", "--project", "P2", "--topic", "T1"), "no topic with ID 'T1' in P2 Harbor; its topics are: T3 Tides"),
                               (("converse", "--title", "T", "--text", "x", "--project", "P2", "--topic", "Tides"), "no topic with ID 'Tides' in P2 Harbor"),
                               (("converse", "--title", "T", "--text", "x", "--topic", "T3"), "--topic needs --project"),
-                              (("move", "Q1", "--project", "P2"), "move a conversation"),
                               (("move", "Q2", "--project", "Nowhere"), "no project with ID 'Nowhere'"),
                               (("move", "Q2"), "give --project"),
                               (("move", "Q2", "--project", "P2", "--ungrouped"), "give --project"),
@@ -7781,7 +7838,10 @@ class ConversationGroupingTests(ImageCase):
         damaged(lambda data: data["items"][0].update(placement={}))
         damaged(lambda data: data["items"][0].update(placement="P1"))
         damaged(lambda data: data["items"][0].update(placement={"project": "P1", "extra": 1}))
-        damaged(lambda data: data["items"][1].update(placement={"project": "P1"}))
+        damaged(lambda data: data["items"][1].update(placement={"project": "P9"}))
+        placed = json.loads(json.dumps(good))
+        placed["items"][1]["placement"] = {"project": "P1"}  # a saved list can be in a project too
+        self.assertTrue(quarterdeck.check_store(placed))
         damaged(lambda data: data.update(projects={}))
         damaged(lambda data: data["projects"].append({"id": "P1", "name": "Again", "topics": []}))
         damaged(lambda data: data["projects"].append({"id": "P3", "name": "field atlas", "topics": []}))

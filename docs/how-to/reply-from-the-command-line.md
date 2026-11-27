@@ -114,6 +114,6 @@ quarterdeck move Q12 --ungrouped
 ```
 
 An ID matches in any case. An unknown project or topic ID is refused with the
-IDs and names that exist, and nothing is saved. Moving a conversation changes
-nothing but where it is filed. Suggest a new project or topic to the owner in
+IDs and names that exist, and nothing is saved. Moving an item changes
+nothing but where it is filed. `move` takes a conversation, a saved link or list, or a set of questions by its ID. Suggest a new project or topic to the owner in
 the conversation instead of creating one.

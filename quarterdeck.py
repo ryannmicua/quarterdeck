@@ -878,8 +878,6 @@ def check_store(data: object) -> dict[str, object]:
                 ):
                     raise ValueError("only a question item or a conversation can be kept for later")
             if "placement" in item:
-                if item["kind"] != "conversation":
-                    raise ValueError("only a conversation can be placed in a project")
                 check_placement(data.get("projects", []), item["placement"])
             if "task" in item:
                 if item["kind"] != "conversation":
@@ -1879,17 +1877,15 @@ def set_later(store, payload):
         return {"later": payload["later"]}
 
 
-def move_conversation(store, payload):
-    """Change which project and topic a conversation is in, or return it to Ungrouped. Nothing else about it changes."""
+def move_item_placement(store, payload):
+    """Change which project and topic a saved item is in, or return it to Ungrouped. Nothing else about it changes."""
     if not isinstance(payload, dict) or set(payload) != {"part", "project", "topic"}:
         raise ValueError("Invalid move fields.")
     item_id = payload["part"]
     if not isinstance(item_id, str) or item_id != item_id.upper() or not ID_RE.fullmatch(item_id):
-        raise ValueError("Unknown conversation.")
+        raise ValueError("Unknown item.")
     with changing_store(store) as data:
         item = find_item(data, item_id)
-        if item["kind"] != "conversation":
-            raise ValueError("Only a conversation can be moved.")
         placement = new_placement(data.get("projects", []), payload["project"], payload["topic"])
         if placement:
             item["placement"] = placement
@@ -2638,14 +2634,12 @@ def list_projects(args: argparse.Namespace) -> int:
 
 
 def move_item(args: argparse.Namespace) -> int:
-    """Move a conversation into a project and topic, or back to Ungrouped. Nothing else about it changes."""
+    """Move a saved item into a project and topic, or back to Ungrouped. Nothing else about it changes."""
     def action() -> int:
         if args.ungrouped == (args.project is not None):
             raise ValueError("give --project, with --topic if you want one, or --ungrouped")
         with changing_store(store_path()) as data:
             item = find_item(data, args.id)
-            if item["kind"] != "conversation":
-                raise ValueError(f"move a conversation, such as Q12: {args.id!r}")
             placement = named_placement(data, args.project, args.topic)
             if placement:
                 item["placement"] = placement
@@ -4378,7 +4372,8 @@ def nav_links(saved_href, current, served):
 def page_shell(title: str, site_title: str, body: str, *, served: bool, saved_name: str, interactive: bool = False,
                pane_links: bool = False,
                workers: bool = False, library: str = "", conversations: bool = False, filters: bool = False,
-               talking: bool = False, starting: bool = False, current: str = "", watching: bool = False) -> str:
+               talking: bool = False, starting: bool = False, current: str = "", watching: bool = False,
+               placing: bool = False) -> str:
     saved_href = quote(saved_name, safe="")
     opener = ('<button type="button" id="open-library" aria-haspopup="dialog" aria-controls="library">Open Hold</button>'
               if library else "")
@@ -4394,7 +4389,7 @@ def page_shell(title: str, site_title: str, body: str, *, served: bool, saved_na
         f'<nav>{nav_links(saved_href, current, served)}{opener}</nav></header>\n'
         f"<main>\n{body}\n</main>\n{library}<script>{PANE_SCRIPT if pane_links else ''}{ARRIVAL_SCRIPT if library or starting else ''}{TIME_SCRIPT}{VIEWPORT_SCRIPT if interactive or library else ''}{QUESTION_SCRIPT + THREAD_SCRIPT if conversations else ''}"
         f"{CONVERSATION_TEXT_SCRIPT if library or talking or starting else ''}"
-        f"{ANSWER_SCRIPT if interactive else ''}{CONVERSATION_SCRIPT if talking else ''}{DESK_SCRIPT if starting else ''}{TASK_SCRIPT if talking or starting else ''}"
+        f"{ANSWER_SCRIPT if interactive else ''}{CONVERSATION_SCRIPT if talking or placing else ''}{DESK_SCRIPT if starting else ''}{TASK_SCRIPT if talking or starting else ''}"
         f"{WORKER_SUMMARY_SCRIPT if workers or watching else ''}"
         f"{WORKERS_SCRIPT if workers else ''}{WATCH_SCRIPT if watching else ''}{FILTER_SCRIPT if filters or library else ''}"
         f"{f'const libraryCaseFolds = {library_case_folds()};' + LIBRARY_SCRIPT if library else ''}"
@@ -4639,16 +4634,27 @@ def later_button(item):
 
 
 def move_form(item, tree):
-    """The form that files one conversation in a project and topic, or returns it to Ungrouped."""
+    """The form that files one item in a project and topic, or returns it to Ungrouped."""
     placement = item.get("placement", {})
     data = json.dumps(tree, ensure_ascii=False).replace("<", "\\u003c")
     return (f'<script type="application/json" id="groups-data">{data}</script>'
-            f'<form id="move-form" class="move-form" hidden novalidate aria-label="Move conversation" '
+            f'<form id="move-form" class="move-form" hidden novalidate aria-label="Move {MOVE_NOUNS[item["kind"]]}" '
             f'data-project="{esc(placement.get("project", ""))}" data-topic="{esc(placement.get("topic", ""))}">'
             '<div class="scope-field"><label for="move-project">Project</label><select id="move-project"></select></div>'
             '<div class="scope-field" id="move-topic-field"><label for="move-topic">Topic</label><select id="move-topic"></select></div>'
             '<div class="actions"><button type="submit">Save move</button>'
             '<button type="button" id="move-cancel">Cancel move</button></div></form>')
+
+
+MOVE_NOUNS = {"conversation": "conversation", "resource": "reference", "list": "reference", "questions": "question set"}
+
+
+def item_move(item, tree):
+    """The Move control on a saved reference or set of questions. It is the same control and form a conversation has."""
+    title = esc(item["title"])
+    return (f'<div class="conversation-state" data-id="{item["id"]}" data-title="{title}">'
+            '<button type="button" class="move" aria-expanded="false" aria-controls="move-form">Move</button>'
+            f'<p class="meta state-status" role="status"></p></div>{move_form(item, tree)}')
 
 
 def conversation_state(item, ask_binding=None, tree=None):
@@ -5319,13 +5325,15 @@ DESK_SCRIPT = talk_script(r"""
   const noReferences = document.getElementById('no-references');
   const noReferencesText = noReferences.textContent;
   const referencesPanel = document.getElementById('desk-panel-references');
-  // References are not filed in a project, so a project hides them; All and Ungrouped show them.
+  // A project shows the references moved into it, and Ungrouped the ones outside every project.
   const syncReferences = () => {
     const shown = shownRows(referencesList).length;
     referencesList.hidden = !shown;
     noReferences.hidden = Boolean(shown);
-    noReferences.textContent = rowsOf(referencesList).length && !shown
-      ? 'References are not filed in a project. Choose All or Ungrouped to see them.' : noReferencesText;
+    const project = projectOf(scopeProject.value);
+    noReferences.textContent = !rowsOf(referencesList).length || shown ? noReferencesText
+      : !project ? 'Every reference is in a project. A reference you move out of a project shows here.'
+      : 'No references in ' + (topicOf(project, scopeTopic.value) ?? project).name + ' yet. A reference you move into it shows here.';
   };
   const labelRow = row => {
     const span = row.querySelector('.placement');
@@ -6890,7 +6898,9 @@ def bookmark_row(item):
         extra, saved = "", f'<span class="id">{item_id}</span>'
     project = f'<span class="project-name">{esc(item["project"])}</span>' if item.get("project") else ""
     description = " ".join(str(item["description"]).split())[:PREVIEW_LIMIT]
-    return (f'<li class="topic bookmark" data-id="{item_id}"><div class="topic-main">{title}'
+    placement = item.get("placement", {})
+    where = "".join(f' data-{name}="{esc(placement[name])}"' for name in ("project", "topic") if name in placement)
+    return (f'<li class="topic bookmark" data-id="{item_id}"{where}><div class="topic-main">{title}'
             f'<p class="topic-latest">{esc(description)}</p>'
             f'{f'<p class="notice-links">{extra}</p>' if extra else ""}'
             f'<p class="meta topic-meta">{saved}{project}{day_time(item["saved_at"])}</p></div></li>')
@@ -7228,7 +7238,8 @@ def item_page(item: dict[str, object], site_title: str, *, served: bool, saved_n
     content = (question_form(item, served, ask_binding=ask_binding) if questions
                else conversation_page(item, ask_binding) if talking else item_body_html(item))
     lead = "" if talking else f'<p class="lead">{linked_text(item["description"])}</p>'
-    placed = placement_label(item, (data or {}).get("projects", [])) if talking else ""
+    placed = placement_label(item, data.get("projects", [])) if data is not None else ""
+    tree = project_tree(data) if data is not None else []
     context = parse_list_context(query) if served else None
     opening = context.pop("at", None) if context else None
     body = (
@@ -7238,15 +7249,16 @@ def item_page(item: dict[str, object], site_title: str, *, served: bool, saved_n
         f'{" · " + esc(item["project"]) if item.get("project") else ""}'
         f' · saved {day_time(item["saved_at"])}</p>'
         f'{tag_labels(list(item.get("tags", [])))}'
-        f'{conversation_state(item, ask_binding, project_tree(data or {})) if talking and served else ""}'
-
+        f'{conversation_state(item, ask_binding, tree) if talking and served else ""}'
+        f'{item_move(item, tree) if tree and served and not talking else ""}'
         f'{task_blocks(item, data, ask_binding) if talking and served else ""}'
         f'{lead}{content}{list_nav(item, data, context, opening=opening, end=True) if served else ""}'
     )
     return page_shell(f"{item_id} {item['title']} · {site_title}", site_title, body,
                       served=served, saved_name=saved_name,
                       interactive=served and has_answer_controls(item),
-                      pane_links=served, conversations=served and (questions or talking), talking=served and talking)
+                      pane_links=served, conversations=served and (questions or talking), talking=served and talking,
+                      placing=served and bool(tree))
 
 
 def site_pages(data: dict[str, object], site_title: str, saved_name: str) -> dict[str, str]:
@@ -7790,7 +7802,7 @@ def make_handler(site_title: str, base_path: str = "", store: Path | None = None
                 elif endpoint == "/groups":
                     record = change_projects(active_store, payload)
                 elif endpoint == "/moves":
-                    record = move_conversation(active_store, payload)
+                    record = move_item_placement(active_store, payload)
                 elif endpoint == "/catch-ups/read":
                     if not isinstance(payload, dict) or set(payload) != {"ids"}:
                         raise ValueError("Invalid catch-up read.")
@@ -8225,13 +8237,14 @@ def make_parser() -> argparse.ArgumentParser:
                            "List the owner's projects and the topic in each, with their IDs. The owner creates and renames "
                            "them on the Desk; use an ID with converse or move.", list_projects)
 
-    move_cmd = command("move", "move a conversation to a project and topic, or back to Ungrouped",
-                       "Change which project and topic a conversation is filed in. The conversation keeps its ID, messages, "
-                       "pin and latest activity.", move_item)
-    move_cmd.add_argument("id", help="a conversation's item ID, such as Q12")
+    move_cmd = command("move", "move an item to a project and topic, or back to Ungrouped",
+                       "Change which project and topic a conversation, a saved link or list, or a set of questions is filed in. "
+                       "The item keeps its ID, content and answers; a conversation also keeps its messages, pin and latest activity.",
+                       move_item)
+    move_cmd.add_argument("id", help="an item's ID, such as Q12")
     move_cmd.add_argument("--project", metavar="ID", help="the project, by ID such as P1")
     move_cmd.add_argument("--topic", metavar="ID", help="with --project: a topic of that project, by ID such as T2")
-    move_cmd.add_argument("--ungrouped", action="store_true", help="return the conversation to Ungrouped")
+    move_cmd.add_argument("--ungrouped", action="store_true", help="return the item to Ungrouped")
 
     mark = command("mark", "mark questions answered, closed or open",
                    "Set the state of a question (Q7.3) or every question in an item (Q7). Marking answered records an "

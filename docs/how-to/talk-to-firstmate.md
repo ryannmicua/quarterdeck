@@ -90,8 +90,9 @@ and **References**. It opens on **All**. Choose a project to see its
 conversations, including those filed directly in it. Then choose a **Topic** to
 narrow the list. Choose **Ungrouped** to see conversations that are in no
 project. The filter also narrows **For review**, and the counts on the tabs
-count only the chosen project. A reference or a question set is never filed in a
-project, so a project hides it; **All** and **Ungrouped** show it. Archived
+count only the chosen project. A reference or a question set is in no
+project until you move it into one. A project then shows it, **Ungrouped**
+shows the ones in no project, and **All** shows every one. Archived
 conversations stay in **Archived** and leave the filter's lists. Within the
 filter, **Unread** comes first, then **Pinned**, and each group keeps its order
 by latest activity. The choice stays when you open a conversation and go back,
@@ -107,7 +108,7 @@ remembers it. **Watch** and **Open Hold** do not change with it.
   first. The line under the form says where the conversation will start, such
   as "Starts in Field Atlas / Wayfinding." From **All** or **Ungrouped**, it
   starts ungrouped.
-- To change where a conversation is, open it and select **Move**, choose the
+- To change where a conversation, a saved reference or a question set is, open it and select **Move**, choose the
   project and topic, and select **Save move**. The button shows once you have made a project. Choose **Ungrouped** to
   take it out of its project. Moving changes nothing else about the
   conversation: its messages, pin, unread reply and place by latest activity stay.
