@@ -123,7 +123,9 @@ Type in **Your message** on the conversation and select **Send message**. The
 conversation shows messages from oldest to newest, as one stacked thread. The
 newest message is open, and so is every reply you have not read and every
 message that was not delivered. Each earlier message is folded to one line with
-its sender, its first words and its time. Select a line to open it. The message
+its sender, its first words and its time. Select a line to open it, and select
+its top line or its header again to fold it back. A link to the message opens
+it again. The message
 that awaits your review stays open. Each of your messages
 shows **Sent** or **Not delivered**. Select **Send message again**
 under a message that shows **Not delivered** once the

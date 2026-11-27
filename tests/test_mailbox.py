@@ -458,14 +458,65 @@ const list = document.querySelector('.thread-messages .exchange');
 const state = () => [...list.children].map(li => li.classList.contains('folded') ? 'folded' : 'open').join();
 check(state() === 'folded,folded,folded,folded,folded,open', 'The thread did not start folded: ' + state());
 const first = list.querySelector('#message-1');
-first.querySelector('.fold').click();
-check(state().startsWith('open,folded') && !first.querySelector('.fold') && !first.querySelector('.msg-body')
-      && first.querySelector('.record, p:not(.who)') && document.activeElement === first, 'A folded line did not open in place');
+const fold = first.querySelector(':scope > .fold');
+const body = first.querySelector(':scope > .msg-body');
+fold.click();
+check(state().startsWith('open,folded') && !body.hidden && fold.getAttribute('aria-expanded') === 'true'
+      && first.querySelector('.record, p:not(.who)'), 'A folded line did not open in place');
+fold.click();
+check(state() === 'folded,folded,folded,folded,folded,open' && body.hidden && fold.getAttribute('aria-expanded') === 'false',
+      'The fold control did not fold an opened message back: ' + state());
+fold.click();
+const text = body.querySelector('.record, p:not(.who)');
+const link = document.createElement('a');
+link.href = '#message-1';
+body.querySelector(':scope > .who').append(link);
+link.addEventListener('click', event => event.preventDefault());
+link.click();
+check(state().startsWith('open'), 'Clicking a link folded the message');
+getSelection().selectAllChildren(text);
+text.click();
+check(state().startsWith('open'), 'Selecting text folded the message');
+getSelection().removeAllRanges();
+text.click();
+check(state().startsWith('open'), 'Clicking the message text folded the message');
+text.click();
+text.click();
+text.dispatchEvent(new MouseEvent('dblclick', {bubbles: true, detail: 2}));
+check(state().startsWith('open'), 'Double-clicking the message text folded the message');
+body.querySelector(':scope > .who').click();
+check(state().startsWith('folded') && fold.getAttribute('aria-expanded') === 'false', 'Clicking the header line did not fold the message');
+fold.focus();
+fold.click();
+check(state().startsWith('open') && document.activeElement === fold, 'The fold control lost focus');
+fold.click();
+check(state().startsWith('folded') && document.activeElement === fold, 'The fold control did not fold again');
+check(fold.tagName === 'BUTTON', 'The fold control is not a button, so Enter and Space would not work');
+fold.click();
 check(document.documentElement.scrollWidth <= innerWidth, 'The thread scrolled sideways');
+fold.click();
 location.hash = '#message-2';
 await new Promise(resolve => setTimeout(resolve, 50));
 check(!document.getElementById('message-2').classList.contains('folded'), 'An address did not open the message it names');
+const second = document.getElementById('message-2');
+second.querySelector(':scope > .fold').click();
+check(second.classList.contains('folded'), 'The named message did not fold back');
+const again = [...document.querySelectorAll('a[href="#message-2"]')].find(a => !second.contains(a));
+check(again && location.hash === '#message-2', 'The thread has no other link to message 2');
+again.click();
+check(!second.classList.contains('folded'), 'A link to the address already shown did not reopen its message');
 """, viewport=(390, 844))
+
+    def test_an_opened_message_folds_back_in_the_wide_reading_pane(self) -> None:
+        self.long_thread()
+        self.check_answer_page(self.port, r"""
+const first = document.getElementById('message-1');
+const fold = first.querySelector(':scope > .fold');
+fold.click();
+check(first.querySelector(':scope > .msg-body').hidden === false, 'A folded line did not open');
+fold.click();
+check(first.classList.contains('folded') && fold.getAttribute('aria-expanded') === 'false', 'An opened message did not fold back');
+""", viewport=(1440, 900))
 
 
 class ScopeTests(MailboxCase):
