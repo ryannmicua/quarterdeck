@@ -29,7 +29,7 @@ These are terms Quarterdeck uses on its pages and in the CLI.
 | Message | The text you send. |
 | Project | A group you create for related conversations. A conversation is in at most one project. |
 | Topic | A subject inside one project. A conversation is in at most one topic, and that topic belongs to its project. |
-| Ungrouped | A conversation that is in no project. Every conversation starts there unless you start it inside a project or topic. |
+| Ungrouped | A conversation, reference or question set that is in no project. Every item starts there unless you start a conversation inside a project or topic. |
 | Move | Change which project and topic a conversation, a saved link or list, or a set of questions is in, or return it to Ungrouped. |
 | All | The default Project filter. It shows every conversation, grouped or not, and every reference. |
 | Unread | The first group on **Conversations**. It holds each conversation with a reply you have not opened, unless that conversation waits in **For review**, and each unread Catch-up notice. |
